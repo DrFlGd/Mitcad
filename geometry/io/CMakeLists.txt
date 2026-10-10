@@ -16,6 +16,10 @@ add_library(mitcad_geometry_io STATIC
   include/mitcad/io/obj.hpp
   include/mitcad/io/step.hpp
   include/mitcad/io/stl.hpp)
+# Shaded meshes of faces (USDZ export, mitcad#123).
+target_sources(mitcad_geometry_io PRIVATE
+  src/face_mesh.cpp
+  include/mitcad/io/face_mesh.hpp)
 target_include_directories(mitcad_geometry_io PUBLIC include)
 target_link_libraries(mitcad_geometry_io
   PUBLIC TKernel TKMath TKG3d TKBRep TKMesh

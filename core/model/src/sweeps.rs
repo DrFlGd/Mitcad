@@ -83,6 +83,19 @@ pub struct SweepSpec<'a> {
     pub guide: Option<SweepGuide<'a>>,
 }
 
+/// A face of a sweep's guide surfaces (mitcad#157), for
+/// [`crate::Kernel::surface_sweep`]: a face of a body (every piece of a
+/// split face). The path lies on the guide surfaces, each of its curves on
+/// one face; the profile keeps its place in the frame of the path's tangent
+/// and the surface's normal where the path runs, so it turns with the
+/// surface. The orientation must be perpendicular; `twist`, `taper` and a
+/// guide rail do not apply.
+#[derive(Debug, Clone, Copy)]
+pub struct GuideSurface<'a, S> {
+    pub body: &'a S,
+    pub face: &'a FaceName,
+}
+
 /// A section of a loft.
 #[derive(Debug, Clone, Copy)]
 pub enum LoftSection<'a, S> {
@@ -295,7 +308,7 @@ pub struct RibSpec<'a, S> {
 /// Faces: `side(<segment>)` from each profile segment, caps
 /// `start(<region>)` at the profile and `end(<region>)` at the far end.
 #[derive(Debug, Clone, Copy)]
-pub struct HelixSpec<'a> {
+pub struct HelixSpec<'a, S> {
     pub feature: FeatureUid,
     pub frame: SketchFrame,
     pub regions: &'a [ProfileRegion],
@@ -312,4 +325,9 @@ pub struct HelixSpec<'a> {
     /// A growth is built as FreeCAD builds it (mitcad#83), not by Mitcad's
     /// own construction.
     pub freecad: bool,
+    /// The bodies the result is cut from, joined to or intersected with:
+    /// where a profile side lies on one of their cylinders about the axis,
+    /// the result is built so that booleans with them work (mitcad#60; see
+    /// `geometry::HelixSweepSpec`).
+    pub bodies: &'a [S],
 }

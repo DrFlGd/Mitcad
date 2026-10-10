@@ -28,7 +28,8 @@ pub mod ffi {
     }
 
     /// `geometry::SweepSpec` without the profiles; `scaling` 0 scale, 1
-    /// stretch, 2 none.
+    /// stretch, 2 none. Guide surfaces (mitcad#157): face names and the
+    /// index of each one's body in the bodies passed along.
     struct SweepInput {
         path: Vec<SweepCurve>,
         extent1: f64,
@@ -38,6 +39,8 @@ pub mod ffi {
         taper: f64,
         rail: Vec<SweepCurve>,
         scaling: u8,
+        guide_faces: Vec<String>,
+        guide_bodies: Vec<usize>,
     }
 
     /// A loft section: `kind` 0 a region (`index` into the frames and
@@ -133,6 +136,7 @@ pub mod ffi {
             frame: &Frame,
             regions: &[Region],
             input: &SweepInput,
+            bodies: &ShapeList,
         ) -> Result<SharedPtr<Shape>>;
         fn loft_solid(
             feature: &str,
@@ -148,6 +152,7 @@ pub mod ffi {
             frame: &Frame,
             regions: &[Region],
             input: &HelixInput,
+            bodies: &ShapeList,
         ) -> Result<SharedPtr<Shape>>;
         fn rib_solid(
             feature: &str,
@@ -164,6 +169,8 @@ use mitcad_model::{
     LoftSpec, PathCurve, PipeSection, PipeSpec, ProfileScaling, RibSpec, SweepOrientation,
     SweepSpec, ThicknessLocation,
 };
+// Sweeps along guide surfaces (mitcad#157).
+use mitcad_model::GuideSurface;
 
 use super::shape::ffi::new_shape_list;
 use super::{Shape, failed, occt, profile};
@@ -237,8 +244,27 @@ fn curves(path: &[PathCurve]) -> Vec<ffi::SweepCurve> {
 }
 
 pub fn sweep(spec: &SweepSpec<'_>) -> Result<SharedPtr<Shape>, KernelError> {
+    surface_sweep(spec, &[])
+}
+
+/// A sweep, along guide surfaces when there are some (mitcad#157).
+pub fn surface_sweep(
+    spec: &SweepSpec<'_>,
+    surfaces: &[GuideSurface<'_, SharedPtr<Shape>>],
+) -> Result<SharedPtr<Shape>, KernelError> {
+    let mut bodies = new_shape_list();
+    let mut guide_faces = Vec::new();
+    let mut guide_bodies = Vec::new();
+    for surface in surfaces {
+        occt(surface.body)?;
+        guide_faces.push(surface.face.to_string());
+        guide_bodies.push(bodies.size());
+        bodies.pin_mut().push(surface.body.clone());
+    }
     let regions: Vec<profile::ffi::Region> = spec.regions.iter().map(profile::region).collect();
     let input = ffi::SweepInput {
+        guide_faces,
+        guide_bodies,
         path: curves(spec.path),
         extent1: spec.extent1,
         extent2: spec.extent2,
@@ -257,6 +283,7 @@ pub fn sweep(spec: &SweepSpec<'_>) -> Result<SharedPtr<Shape>, KernelError> {
         &profile::frame(&spec.frame),
         &regions,
         &input,
+        &bodies,
     )
     .map_err(failed)
 }
@@ -376,7 +403,14 @@ pub fn coil(spec: &CoilSpec) -> Result<SharedPtr<Shape>, KernelError> {
 
 /// FreeCAD's helices (mitcad#4): the profiles turned about the axis as they
 /// move along it.
-pub fn helix(spec: &mitcad_model::HelixSpec<'_>) -> Result<SharedPtr<Shape>, KernelError> {
+pub fn helix(
+    spec: &mitcad_model::HelixSpec<'_, SharedPtr<Shape>>,
+) -> Result<SharedPtr<Shape>, KernelError> {
+    let mut bodies = new_shape_list();
+    for body in spec.bodies {
+        occt(body)?;
+        bodies.pin_mut().push(body.clone());
+    }
     let regions: Vec<profile::ffi::Region> = spec.regions.iter().map(profile::region).collect();
     let input = ffi::HelixInput {
         origin: spec.origin,
@@ -393,6 +427,7 @@ pub fn helix(spec: &mitcad_model::HelixSpec<'_>) -> Result<SharedPtr<Shape>, Ker
         &profile::frame(&spec.frame),
         &regions,
         &input,
+        &bodies,
     )
     .map_err(failed)
 }

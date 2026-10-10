@@ -1,0 +1,64 @@
+Mitcad's patch to OCCT 8.0.1, under OCCT's licence:
+SPDX-License-Identifier: LGPL-2.1-only WITH OCCT-exception-1.0
+
+Fillets and chamfers whose contact runs along the far edge of a face (a
+face exactly as wide as the contact distance, 0014): the ends of that
+contact at the vertices of the edge (mitcad#121).
+
+ChFi3d_Builder::SplitKPart: 0014 hatches such a tangency line a little
+inside its face and puts the ends it finds on the arcs across, near a
+vertex, at that vertex (SnapToVertex). That was done only where the
+domains of both faces' lines are filled in the main loop. Where the other
+line's domain is shorter at an end of the spine (the faces at the end are
+slanted or curved, so that the contact on the other face reaches them
+first), the end of the line on the boundary is filled later, in the
+processing of the spine's extensions (intf, intl), without the snap. Its
+common point then lay on the arc a hatching shift (ten times the 2d
+tolerance) from the vertex: the arc was cut there, which left an edge of
+that length in the face at the end, and the result was not a valid shell
+(an inconsistently oriented face). Those calls now pass the snap tolerance
+too.
+diff --git a/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_SpKP.cxx b/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_SpKP.cxx
+index f258c5a..b80b06d 100644
+--- a/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_SpKP.cxx
++++ b/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_SpKP.cxx
+@@ -1302,7 +1302,8 @@ bool ChFi3d_Builder::SplitKPart(const occ::handle<ChFiDS_SurfData>&
+                  true,
+                  2,
+                  pitol,
+-                 bout1);
++                 bout1,
++                 snap2);
+           if (!CP2.IsOnArc() || (CP2.IsOnArc() && SearchFace(Spine, CP2, F2, FBID)))
+           {
+             CP2 = sov;
+@@ -1331,7 +1332,8 @@ bool ChFi3d_Builder::SplitKPart(const occ::handle<ChFiDS_SurfData>&
+                  true,
+                  1,
+                  pitol,
+-                 bout1);
++                 bout1,
++                 snap1);
+           if (!CP1.IsOnArc() || (CP1.IsOnArc() && SearchFace(Spine, CP1, F1, FBID)))
+           {
+             CP1 = sov;
+@@ -1438,7 +1440,8 @@ bool ChFi3d_Builder::SplitKPart(const occ::handle<ChFiDS_SurfData>&
+                  false,
+                  2,
+                  pitol,
+-                 bout2);
++                 bout2,
++                 snap2);
+           if (!CP2.IsOnArc() || (CP2.IsOnArc() && SearchFace(Spine, CP2, F2, FBID)))
+           {
+             CP2 = sov;
+@@ -1467,7 +1470,8 @@ bool ChFi3d_Builder::SplitKPart(const occ::handle<ChFiDS_SurfData>&
+                  false,
+                  1,
+                  pitol,
+-                 bout2);
++                 bout2,
++                 snap1);
+           if (!CP1.IsOnArc() || (CP1.IsOnArc() && SearchFace(Spine, CP1, F1, FBID)))
+           {
+             CP1 = sov;

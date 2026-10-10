@@ -3,6 +3,7 @@
 
 #include <deque>
 #include <functional>
+#include <memory>
 #include <optional>
 #include <string>
 #include <utility>
@@ -20,11 +21,13 @@
 #include <gp_Trsf.hxx>
 
 #include "OcctViewer.hpp"
+#include "browser/BrowserPanel.hpp"
 #include "browser/DocumentHost.hpp"
 #include "browser/DocumentSnapshot.hpp"
 #include "files/ProjectDialogs.hpp"
 #include "files/Projects.hpp"
 #include "framework/CommandSession.hpp"
+#include "framework/DocumentSession.hpp"
 #include "framework/ModelWorker.hpp"
 #include "mitcad/geometry/shape.hpp"
 #include "mitcad_bridge/lib.h"
@@ -33,6 +36,7 @@
 
 class QAction;
 class QCloseEvent;
+class QDockWidget;
 class QDragEnterEvent;
 class QDropEvent;
 class QElapsedTimer;
@@ -46,17 +50,28 @@ class AutosaveManager;
 class BrowserController;
 class CommandRegistry;
 class CommandSearch;
+class ComputeProgress;
 class F3dImport;
 class FloatingLayout;
 class GlassCard;
 class LockController;
 class ProjectIndicator;
+class ProjectsPanel;
 class RemoteController;
 class LiveController;
 class Ribbon;
 class UpdateController;
 class ReportCenter;
 class ViewController;
+#ifdef MITCAD_MACOS_NATIVE_UI
+namespace mac {
+class NativeMacWindow;
+}
+using NativeMacWindow = mac::NativeMacWindow;
+class NativeCommandForm;
+class NativeWidgetView;
+#endif
+struct BrowserNode;
 struct FileVersion;
 struct RecoverableSession;
 
@@ -75,20 +90,33 @@ class MainWindow : public QMainWindow, public SketchHost, public DocumentHost {
 
 public:
   // With demo set, starts with a dimensioned block instead of an empty part.
-  explicit MainWindow(bool demo = false, QWidget* parent = nullptr);
+  explicit MainWindow(bool demo = false, QWidget* parent = nullptr, bool nativeUi = false);
   ~MainWindow() override;
 
+  // Presents the selected frontend; the Qt host is the embedded viewport
+  // root when AppKit owns the visible window.
+  void present();
+  bool usesNativeUi() const { return m_nativeUi; }
+
   OcctViewer* viewerWidget() const { return m_viewer; }
+  DocumentSession& documentSession() const { return *m_documentSession; }
+
+  // Live MCP access runs on the UI thread and follows the same model and
+  // edit-lock workflows as this window. A replacement invalidates its ID.
+  QString mcpDocumentId() const { return m_mcpDocumentId; }
+  QJsonObject mcpDocumentInfo() const;
+  QJsonObject mcpQuery(const QJsonObject& request) const;
+  QJsonObject mcpCommand(const QJsonObject& request);
 
   // Sets a parameter's value (mm or rad, written in its unit), as typed in
   // the parameters dialog (--set).
   bool setParameterValue(const QString& name, double value);
 
   // Replaces the document with a file without asking about unsaved
-  // changes: a project, or any file Import takes as a new document (an
+  // changes: a design, or any file Import takes as a new document (an
   // .f3d design is imported with its history after the window shows;
   // U6). On failure, returns false with the reason in error; when the
-  // user cancelled opening a project, error is empty.
+  // user cancelled opening a design, error is empty.
   bool openFile(const QString& path, QString& error);
 
   // Opens a file the system asks for (Finder, the Dock, `open -a`) the way
@@ -103,9 +131,18 @@ public:
 
   // A job computes the model on the worker thread (P7); the document is
   // the worker's until it is done. (CommandHost and DocumentHost.)
-  bool modelBusy() const override { return m_job != nullptr; }
+  bool modelBusy() const override { return m_documentSession->busy(); }
   void whenIdle(QObject* context, std::function<void()> call) override;
   bool lastCancelled() const override { return m_lastCancelled; }
+#ifdef MITCAD_MACOS_NATIVE_UI
+  bool asynchronousCommands() const override { return m_nativeUi; }
+  bool modelCommandAsync(const QJsonObject& request, QObject* context, AsyncCompletion completion) override;
+  bool modelPreviewAsync(const QByteArray& request, const QString& name, QObject* context,
+                         AsyncCompletion completion) override;
+  bool modelInspectionAsync(const QString& name, QObject* context, InspectionTask task,
+                            InspectionCompletion completion) override;
+  void cancelModelJob() override { m_documentSession->cancelJob(); }
+#endif
 
   // CommandHost
   QJsonValue query(const QJsonObject& query) const override;
@@ -168,12 +205,30 @@ protected:
   void dropEvent(QDropEvent* event) override;
 
 private:
-  enum class Mode {
-    Idle,
-    PickPlane, // Create Sketch waits for a plane or a planar face
-    Sketch,
-    Command, // a feature or sketch command's panel
-  };
+  bool m_nativeUi = false;
+#ifdef MITCAD_MACOS_NATIVE_UI
+  void createNativeWindow();
+  void refreshNativeWindow();
+  void refreshNativeActions();
+  void refreshNativeInspector();
+  bool requestNativeClose();
+  void nativeAction(const QString& id);
+  std::unique_ptr<NativeMacWindow> m_nativeWindow;
+  std::unique_ptr<NativeCommandForm> m_nativeForm;
+  std::unique_ptr<NativeWidgetView> m_nativeIdleForm;
+  QHash<QString, QPointer<QAction>> m_nativeActions;
+  QHash<QString, BrowserNode> m_nativeNodes;
+  QByteArray m_nativeSnapshotKey;
+  bool m_nativeCanRename = false;
+  bool m_nativeCanToggleVisibility = false;
+  QPointer<QWidget> m_nativeIdlePage;
+  QPointer<ComputeProgress> m_nativeProgress;
+  quint64 m_nativeJobGeneration = 0;
+  bool m_nativeClosingCommand = false;
+  QString m_nativeFocusInput;
+#endif
+  using Mode = DocumentSession::Mode;
+  QString mcpBlockedReason(bool editing) const;
 
   void registerCommands();
   void createMenus();
@@ -219,12 +274,10 @@ private:
   // is what the dialog says the job does; the job may change it. Jobs
   // logged WhenSlow log their start and end only when they take longer
   // than the first, blocked wait (model commands, which are mostly quick).
-  enum class JobLog { Always, WhenSlow };
+  using JobLog = DocumentSession::JobLog;
   bool runJob(const QString& label, const QString& stage, const std::function<void(ModelJob&)>& job,
               JobLog log = JobLog::Always);
   void waitForJob(const QString& label, ModelJob& job, const QElapsedTimer& clock, bool& logged);
-  // Runs the calls that waited for the model (whenIdle) while it is free.
-  void runIdleCalls();
   // How a new document comes to the window: read or made on the worker.
   using DocumentMaker = std::function<rust::Box<Document>(ModelJob&)>;
   // Makes a new document the window's: `make` reads or makes it, then it is
@@ -267,10 +320,23 @@ private:
   // the `joint_drag` query per pointer move shows where the occurrences go,
   // `drag_occurrence` on release keeps it, one undo step.
   void setUpOccurrenceDrag();
-  // The occurrence a drag of a body that `path` places moves: the innermost
-  // one whose parent component has joints, unless it is held fixed
-  // (grounded); empty when there is none.
-  QString dragOccurrenceOf(const QString& path) const;
+  // What a left drag that starts on `item` does (mitcad#150), so that the
+  // hover's hint and the refusal agree: Drag moves `path`, the innermost
+  // occurrence of the item's path whose parent component has joints and
+  // whose unit can move (`text`: "Drag to move Pin:1 (Joint1: rz)");
+  // Refuse says why not in `text` (grounded, held fixed by its joints, no
+  // joints, a body of the root, a command open, read-only); Select (a
+  // window selection) in a design without components, and in a command or
+  // sketch on what could not be dragged anyway.
+  struct DragAnswer {
+    OccurrenceDragStart start = OccurrenceDragStart::Select;
+    QString path;
+    QString text;
+  };
+  DragAnswer dragAnswer(const SelectionItem& item) const;
+  // The pointer over `item` in the view: the move cursor and the hint
+  // when a drag would move it.
+  void showDragHint(const SelectionItem& item);
   void occurrenceDragStarted(const SelectionItem& item, const gp_Pnt& grabbed);
   void occurrenceDragged(const gp_Pnt& target);
   void occurrenceDragFinished(const gp_Pnt& target, bool cancelled);
@@ -333,6 +399,7 @@ private:
   void showThreads(const std::vector<BodyDisplay>& bodies);
 
   void newDocument();
+  bool deferForNativeCommand(std::function<void()> action);
   void openDocument();
   bool save();
   bool saveAs();
@@ -351,7 +418,7 @@ private:
     // the user cancelled.
     QString failure;
   };
-  // Writes the project file to `path`; in a project with version history
+  // Writes the design file to `path`; in a project with version history
   // (P12d) also records a version with `description` (empty: the
   // automatic message of the undo steps since the last save). With
   // `required` the version is required (Save and Restore, mitcad#114):
@@ -359,7 +426,7 @@ private:
   // written, and `required` says why (`failure`, empty when cancelled), so
   // that the caller writes nothing over those bytes.
   bool writeFile(const QString& path, const QString& description = QString(), VersionRecord* required = nullptr);
-  // What follows writing the document's project file (`content`) to path:
+  // What follows writing the document's design file (`content`) to path:
   // the document is that file's now (mark_saved) and its autosave goes.
   // `status`: what the status bar says (empty: "Saved <path>"), red when
   // `problem`.
@@ -392,11 +459,13 @@ private:
   // for a loose file).
   void followFileProject(const QString& path);
   void updateProjectIndicator();
-  // File > New Project: the dialog, then the project's first design opens.
+  // File > New Project: the dialog, then the empty project in the Projects
+  // panel (mitcad#145).
   void newProject();
-  // What New Project chose: a project made (its design opened, or the
-  // design `moving` moved into it), Open It or Open It Instead. True when
-  // a project is the current one now.
+  // What New Project chose: a project made (shown in the Projects panel, a
+  // design it took from its folder opened, or the design `moving` moved
+  // into it), Open It or Open It Instead. True when a project is the
+  // current one now.
   bool handleNewProject(const std::optional<NewProjectResult>& result, const QString& moving);
   // File > Open Project: a folder (asked when empty) recognised; a project
   // opens with a design, anything else goes to New Project. `ask`: unsaved
@@ -404,8 +473,9 @@ private:
   void openProjectFolder(const QString& folder = QString(), bool ask = true);
   // An older project without versions: its repository and a first version.
   bool startProjectHistory(const QString& root);
-  // A project's design opens: `design` (relative), else the only one, else
-  // the chooser; a project without designs gets one, named after it.
+  // A project shows in the Projects panel and its design opens: `design`
+  // (relative), else the one opened last, else the newest; none (an
+  // untitled design in the project) when it has none (mitcad#145).
   bool openProjectDesign(const QString& root, const QString& design);
   // File > Open from Cloud.
   void openFromCloud(const OpenFromCloudOptions& options = OpenFromCloudOptions(), bool ask = true);
@@ -418,6 +488,59 @@ private:
   bool moveIntoProject(const QString& root);
   // Open Recent's label of a design: "bracket.mitcad - Robot arm".
   QString recentLabel(const QString& path) const;
+  // The Projects panel (mitcad#145, projects/MainWindowProjectsPanel.cpp):
+  // projects, folders and designs in one panel, and File > New Design.
+  // view.projects and file.new_design.
+  void registerProjectsPanelCommands();
+  // The panel (none in the AppKit frontend), in a dock above the browser's
+  // (Docked) or in a card above the browser's (Floating).
+  void createProjectsPanel();
+  void dockProjectsPanel(QDockWidget* browserDock);
+  void addProjectsCard();
+  bool projectsPanelShown() const;
+  // Whether the panel shows at the start (mitcad#151): as the user last
+  // chose, else shown when any project is configured.
+  bool projectsPanelShownAtStart() const;
+  // `remember`: the user's choice, kept for the next start.
+  void setProjectsPanelShown(bool shown, bool remember);
+  // New Project, Open Project, Open from Cloud: the panel shows the project.
+  void showProjectInPanel(const QString& root);
+  // Its projects read again (after Save, a sync, the focus back).
+  void refreshProjectsPanel();
+  // File > New Design: a design named in place in the panel's selected
+  // folder of the current project (else of the selected project), made as
+  // a version and opened.
+  void newDesign();
+  // What the panel asks for (paths relative to the project at `root`).
+  void createDesignInProject(const QString& root, const QString& path);
+  void createFolderInProject(const QString& root, const QString& path);
+  void moveInProject(const QString& root, const QString& from, const QString& to, bool folder);
+  void deleteInProject(const QString& root, const QString& path, bool folder);
+  void openPanelDesign(const QString& path);
+  void panelVersionHistory(const QString& root, const QString& path);
+  // Sync Now of a project: another project is opened first (as Open
+  // Project).
+  void panelProjectAction(const QString& root, const QString& id);
+  // Project Settings of a project in the panel (mitcad#152, #153): the
+  // current project's as File > Project Settings, another's without
+  // opening it (its remote work is not this window's).
+  void panelProjectSettings(const QString& root);
+  // A version recorded in another Cloud project than the current one: sent
+  // in the background when versions are sent at once.
+  void sendPanelProjectVersions(const QString& root);
+  void addExistingProjectFolder();
+  // A command that changes a project's tree (create_folder, new_design,
+  // move, delete) as a version, by the project's author, pushed as Save's
+  // versions are; none when it was refused or cancelled. A refusal is told,
+  // or with `refused` given only put there (the caller asks).
+  std::optional<QJsonObject> projectWrite(const QString& root, QJsonObject command, const QString& title,
+                                          QJsonObject* refused = nullptr);
+  // The open design was moved or renamed to `path`: the window's file, its
+  // version base and its edit lock follow.
+  void openDesignMoved(const QString& path);
+  // Where Save puts an untitled design: the panel's selected folder of the
+  // current project, or "".
+  QString projectsPanelFolder() const;
   // Before Save writes over its file in a project with history: true to
   // write (unchanged outside Mitcad, or Save as New Version chosen, which
   // records a change made outside first), false for Save As, none to
@@ -462,7 +585,7 @@ private:
   std::optional<QString> compareVersionGeometry(const QString& file, const FileVersion* before,
                                                 const FileVersion& version);
   // A version's preview, when it has none: the view as it is, kept by the
-  // project file's blob id (versionThumbnailPath).
+  // design file's blob id (versionThumbnailPath).
   void saveVersionThumbnail(const QString& blob);
   // Remote repositories (P12 remote, files/RemoteController.hpp): what the
   // controller asks the window about the open design.
@@ -532,9 +655,9 @@ private:
   // Opens a file as the document after asking about unsaved changes
   // (recent files, drops).
   void openPath(const QString& path);
-  bool loadProject(const QString& path, QString& error);
-  // A new, empty document named after a file brought in as one.
-  void startImportedDocument(const QString& path);
+  bool loadDesign(const QString& path, QString& error);
+  // Imports an exchange file into a temporary document, then installs it.
+  bool startImportedDocument(const QString& path, QString& error);
   // Import: into the open document (an .f3d design: a new document).
   void importFile();
   bool importPath(const QString& path, bool interactive, QString* error = nullptr);
@@ -562,7 +685,8 @@ private:
   QString documentName() const;
   QString fileDialogDirectory() const;
   // A new, empty document (New, Close, a file brought in as a document).
-  void installEmptyDocument(const QString& name);
+  // False when replacing the current design is cancelled or refused.
+  bool installEmptyDocument(const QString& name, QString* error = nullptr);
   void resetCommandState();
   void updateWindowTitle();
 
@@ -574,48 +698,42 @@ private:
     TopoDS_Shape face;
   };
 
-  rust::Box<Document> m_document;
-  // The model's worker thread and the job it runs (P7): while a job runs,
-  // the job's documents are the worker's.
-  ModelWorker* m_worker = nullptr;
-  ModelJob* m_job = nullptr;
+  // Model and workflow state belong to the presentation-independent
+  // document session. These references adapt the existing Qt host.
+  DocumentSession* m_documentSession = nullptr;
+  QString m_mcpDocumentId;
+  bool m_mcpRequestActive = false;
+  rust::Box<Document>& m_document = m_documentSession->state().document;
+  ModelWorker* m_worker = &m_documentSession->worker();
   bool m_closePending = false; // the window closes when the job is back
-  // What waits for the model to be free (whenIdle), in order.
-  struct IdleCall {
-    QPointer<QObject> context;
-    std::function<void()> call;
-  };
-  std::deque<IdleCall> m_idleCalls;
-  bool m_idleCallsPosted = false;
   QHash<QString, ProfileFace> m_profileFaces; // by "<sketch>|<region>"
   // Answers of queries while the actions are updated (updateActions).
   QHash<QString, QJsonValue>* m_queryMemo = nullptr;
-  QString m_filePath; // empty until saved or opened
-  QString m_documentName; // of an unsaved document made from an imported file
+  QString& m_filePath = m_documentSession->state().filePath;
+  QString& m_documentName = m_documentSession->state().documentName;
   AutosaveManager* m_autosave = nullptr; // writes to the recovery folder (P8)
   // A recovered document's file as the earlier session had it (fileDigest;
   // P8c): Save asks before writing over a change made since. Cleared by
   // Save and by a new document.
-  std::optional<QString> m_recoveredDigest;
+  std::optional<QString>& m_recoveredDigest = m_documentSession->state().recoveredDigest;
   // Versions (P12d): the file's blob ids as opened or last saved, in the
   // folder and in the latest version (null: none), so that Save notices a
   // change made outside Mitcad; cleared by a new document.
-  struct VersionBase {
-    QString path;
-    QString file;
-    QString head;
-  };
-  std::optional<VersionBase> m_versionBase;
+  using VersionBase = DocumentSession::State::VersionBase;
+  std::optional<VersionBase>& m_versionBase = m_documentSession->state().versionBase;
   // The path the file had in the history when it was renamed outside
   // Mitcad (absolute), recorded with the next version.
-  QString m_renamedFrom;
+  QString& m_renamedFrom = m_documentSession->state().renamedFrom;
   // A project's folder for an untitled design (New Design): where Save As
   // puts it.
-  QString m_projectDir;
+  QString& m_projectDir = m_documentSession->state().projectDir;
   QString m_loggedVersionStatus;
   // The current project (mitcad#89) and its indicator.
   ProjectState m_project;
   ProjectIndicator* m_indicator = nullptr;
+  // The Projects panel (mitcad#145) and its dock or card.
+  ProjectsPanel* m_projectsPanel = nullptr;
+  QWidget* m_projectsContainer = nullptr;
   // Open Read-Only is opening a design: the lock controller takes no edit
   // lock on it, and the window is read-only.
   bool m_openingReadOnly = false;
@@ -632,7 +750,7 @@ private:
   RemoteController* m_remote = nullptr;
   // Live updates through an MQTT broker (mitcad#89).
   LiveController* m_live = nullptr;
-  bool m_changeNoted = false; // the first change since opening was told to it
+  bool& m_changeNoted = m_documentSession->state().changeNoted;
   QMenu* m_recentMenu = nullptr;
   QPointer<F3dImport> m_import; // an .f3d import in progress
   OcctViewer* m_viewer = nullptr;
@@ -656,14 +774,14 @@ private:
   DocumentSnapshot m_snapshot;
   // Occurrence paths ("O1/O4") and where they place their components.
   QHash<QString, gp_Trsf> m_placements;
-  Selection m_isolation;      // Isolate: only these are shown
-  bool m_originShown = false; // the browser's light bulb of the origin
-  QJsonValue m_section;       // Section Analysis: the plane the bodies are cut at
+  Selection& m_isolation = m_documentSession->state().isolation;
+  bool& m_originShown = m_documentSession->state().originShown;
+  QJsonValue& m_section = m_documentSession->state().section;
   QString m_loggedCaps;       // the section caps last logged
   QString m_loggedReach;      // how far the bodies reach in front of the sketch, last logged
   QString m_loggedThreads = QStringLiteral("Cosmetic threads shown: 0"); // as last logged
-  QString m_lastError;        // of the last command the model rejected
-  bool m_lastCancelled = false; // ... which the user cancelled (P7)
+  QString& m_lastError = m_documentSession->state().lastError;
+  bool& m_lastCancelled = m_documentSession->state().lastCancelled;
   QStackedWidget* m_commandPages = nullptr;
   QPointer<QWidget> m_panelScroll; // the running command's panel page
   QLabel* m_idleInfo = nullptr;
@@ -672,13 +790,13 @@ private:
   FloatingLayout* m_floating = nullptr; // the central widget in Floating chrome
   GlassCard* m_commandCard = nullptr;
 
-  Mode m_mode = Mode::Idle;
-  bool m_commandInSketch = false; // the running command came from sketch mode
-  QPointer<CommandSession> m_session;
-  QString m_lastCommand; // for Repeat
+  Mode& m_mode = m_documentSession->state().mode;
+  bool& m_commandInSketch = m_documentSession->state().commandInSketch;
+  QPointer<CommandSession>& m_session = m_documentSession->state().activeCommand;
+  QString& m_lastCommand = m_documentSession->state().lastCommand;
   // Called when the running command ends (startCommand).
-  std::function<void(bool committed)> m_commandFinished;
-  Selection m_selection; // what is selected outside commands
+  std::function<void(bool committed)>& m_commandFinished = m_documentSession->state().commandFinished;
+  Selection& m_selection = m_documentSession->state().selection;
   QString m_loggedFeatureFaces = QStringLiteral("none"); // the selected features' faces (UI tests)
   bool m_originVisible = false; // an input takes construction geometry
   std::vector<SketchEntityDisplay> m_sketchDisplay;
@@ -699,6 +817,7 @@ private:
     std::vector<BodyDisplay> bodies; // as shown when the drag began
   };
   std::optional<OccurrenceDragState> m_drag;
+  QString m_dragHint; // the hover's drag hint shown (mitcad#150)
   // A joint being animated (mitcad#55): its definition, the motion and the
   // values still to show; previews only, the document stays as it is.
   struct JointAnimation {
@@ -713,9 +832,9 @@ private:
   std::optional<JointAnimation> m_animation;
 
   // The sketch being edited (sketch mode).
-  bool m_sketchExisting = false; // edited rather than just created
-  int m_sketchEnterDepth = 0;    // undo depth when sketch mode began
-  int m_sketchRestoreMarker = -1; // the marker to restore after editing
+  bool& m_sketchExisting = m_documentSession->state().sketchExisting;
+  int& m_sketchEnterDepth = m_documentSession->state().sketchEnterDepth;
+  int& m_sketchRestoreMarker = m_documentSession->state().sketchRestoreMarker;
 };
 
 } // namespace mitcad

@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-//! Project files: version 2 round trips and errors, version 1 conversion.
+//! Design files: version 2 round trips and errors, version 1 conversion.
 
 use serde_json::{Value, json};
 
@@ -598,7 +598,7 @@ fn malformed_files_are_rejected() {
         assert!(error.to_string().starts_with("not valid JSON: "));
     }
     for text in ["[]", "42", "{}", r#"{"format": "other", "version": 2}"#] {
-        assert_eq!(rejected(text), FileError::NotAProject, "{text}");
+        assert_eq!(rejected(text), FileError::NotADesign, "{text}");
     }
     let version = |v: Value| rejected(&edited(EXAMPLE, |value| value["version"] = v));
     let FileError::Version(message) = version(json!(4)) else {
@@ -611,7 +611,7 @@ fn malformed_files_are_rejected() {
     for v in [json!(0), json!("2"), json!(2.5), json!(-1), Value::Null] {
         assert_eq!(
             version(v.clone()),
-            FileError::Version(format!("unsupported project file version {v}"))
+            FileError::Version(format!("unsupported design file version {v}"))
         );
     }
 }
@@ -668,7 +668,7 @@ fn schema_errors_say_where() {
             matches!(error, FileError::Schema(_)),
             "{expected}: {error:?}"
         );
-        assert_message(error, &["invalid project file: ", expected]);
+        assert_message(error, &["invalid design file: ", expected]);
     }
 }
 

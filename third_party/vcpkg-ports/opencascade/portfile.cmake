@@ -25,6 +25,9 @@ vcpkg_from_github(
         0014-chfi3d-contact-along-face-edge.patch
         0015-brepblend-surfrst-smaller-step-on-failed-reframing.patch
         0016-chfi3d-rounding-rolls-on-anothers-contact-line.patch
+        0017-chfi3d-contact-along-face-edge-ends-at-vertices.patch
+        0018-chfi3d-corner-where-the-end-face-is-split-in-one-plane.patch
+        0019-chfi3d-undone-moresurfdata-corner-fails.patch
         0020-chfi3d-crash-fixes.patch
         0021-chfi3d-corner-of-contour-closed-at-sharp-vertex.patch
         0022-chfi3d-round-edges-asked-for-near-tangent.patch
@@ -35,6 +38,20 @@ vcpkg_from_github(
         0030-standard-failed-allocation-throws.patch
         0031-osd-threadpool-failed-allocations-to-launching-thread.patch
         0032-ncollection-containers-intact-when-allocation-fails.patch
+        0050-chfi3d-kpart-end-runs-into-end-face.patch
+        0051-chfi3d-rolling-on-across-surfdatas.patch
+        0052-chfi3d-rolling-start-beside-tangent-face.patch
+        0053-chfi3d-corner-after-overflow-onto-face-beyond.patch
+        0054-chfi3d-contact-along-a-part-of-a-face-edge.patch
+        0055-chfi3d-kpart-blend-cut-by-face-beyond.patch
+        0056-chfi3d-corner-cutting-the-last-two-walked-pieces.patch
+        0057-chfi3d-kpart-gaps-in-order-across-closed-lines.patch
+        0058-chfi3d-rounding-rolls-on-a-convex-far-edge.patch
+        0059-chfi3d-kpart-blend-cut-by-the-face-at-the-end.patch
+        0060-shapefix-intersecting-edges-once-per-face.patch
+        0070-chfi3d-kpart-cut-to-end-where-the-narrow-face-vanishes.patch
+        0090-chfi3d-double-interference-at-vertex-kind.patch
+        0091-topopebrepbuild-point-uses-within-array.patch
 )
 
 if (VCPKG_LIBRARY_LINKAGE STREQUAL "dynamic")

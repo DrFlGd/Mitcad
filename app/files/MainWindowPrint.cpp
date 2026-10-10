@@ -24,6 +24,8 @@
 #include "Print3d.hpp"
 #include "mitcad/geometry/import.hpp"
 
+#include "../framework/Dialogs.hpp"
+
 namespace mitcad {
 namespace {
 
@@ -128,7 +130,7 @@ void MainWindow::print3d() {
   QString error;
   const QString folder = preparePrintFolder(QDir::tempPath(), design, &error);
   if (folder.isEmpty()) {
-    QMessageBox::warning(this, tr("3D Print"), error);
+    sheetWarning(this, tr("3D Print"), error);
     return;
   }
   const QJsonValue refinement =
@@ -145,7 +147,7 @@ void MainWindow::print3d() {
     command.insert(QStringLiteral("colors"), appearanceColors(sent));
     QJsonObject result;
     if (!runCommand(command, &result)) {
-      QMessageBox::warning(this, tr("3D Print"), tr("Could not write the 3MF file:\n%1").arg(m_lastError));
+      sheetWarning(this, tr("3D Print"), tr("Could not write the 3MF file:\n%1").arg(m_lastError));
       return;
     }
     files << path;
@@ -174,7 +176,7 @@ void MainWindow::print3d() {
         command.insert(QStringLiteral("occurrence"), pieces[i].occurrence);
       }
       if (!runCommand(command)) {
-        QMessageBox::warning(this, tr("3D Print"),
+        sheetWarning(this, tr("3D Print"),
                              tr("Could not write %1:\n%2").arg(QDir::toNativeSeparators(path), m_lastError));
         return;
       }

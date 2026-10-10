@@ -401,7 +401,7 @@ corpus_fingerprint() {
 ui_declared() { sed -n 's/^# check-all sources: *//p' "tools/ui-$1-test.sh" | tr '\n' ' '; }
 
 # ui_base_fingerprint: the digest of the build files every UI test depends
-# on (UI_BASE) and of the build's options (MITCAD_RENDER, ...).
+# on (UI_BASE) and of the build's options (MITCAD_* switches, build type).
 ui_base_fingerprint() {
   {
     files_digest "${UI_BASE[@]}"

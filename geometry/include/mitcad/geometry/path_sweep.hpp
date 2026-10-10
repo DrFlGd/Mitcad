@@ -44,6 +44,18 @@ enum class ProfileScaling { Scale, Stretch, None };
 // parallel orientation a path turning back through the profile's plane is
 // swept in pieces that are fused; the copy where it turns is the face
 // turn(<region>).
+//
+// Guide surfaces (mitcad#157), instead of a guide rail: faces of bodies
+// the path lies on. The profile keeps its place in the frame of the path's
+// tangent and the surface's normal where the path runs (the normal of the
+// face each path curve lies on), so it turns with the surface; twist and
+// taper are ignored. Each path curve must lie on one of the faces (within
+// 1e-4 mm), and the orientation must be perpendicular.
+struct GuideFace {
+  ShapePtr body;
+  std::string face; // a face name; every piece of a split face
+};
+
 struct SweepSpec {
   std::string feature;
   Frame frame;
@@ -56,6 +68,7 @@ struct SweepSpec {
   double taper = 0.0;
   Path rail; // empty: no guide rail
   ProfileScaling scaling = ProfileScaling::Scale;
+  std::vector<GuideFace> guide; // empty: no guide surface
 };
 
 ShapePtr sweep(const SweepSpec& spec);
@@ -119,7 +132,14 @@ ShapePtr coil(const CoilSpec& spec);
 // a hundred times as far from the axis, as FreeCAD builds its conical and
 // growing helices (staying nearly in planes through the axis), for the
 // FreeCAD import. `flip`: the travel `axis` is against the reference axis
-// (FreeCAD's construction depends on it).
+// (FreeCAD's construction depends on it). `bodies`: the bodies the result
+// is cut from, joined to or intersected with (mitcad#60, without a
+// growth): where a side of a profile lies on one of their cylinders about
+// the axis, the helix is built of faces of at most a third of a turn, the
+// same shape, which the booleans with those bodies handle; a straight
+// side as long as the pitch is also moved 0.1 um off the cylinder, into
+// the void a cut's profile faces or the material a join's faces, so that
+// the turns do not touch in an edge on it.
 struct HelixSweepSpec {
   std::string feature;
   Frame frame;
@@ -131,6 +151,7 @@ struct HelixSweepSpec {
   double growth = 0.0;
   bool flip = false;
   bool freecad = false;
+  std::vector<ShapePtr> bodies;
 };
 
 ShapePtr helix_sweep(const HelixSweepSpec& spec);

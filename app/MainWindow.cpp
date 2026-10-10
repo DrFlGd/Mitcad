@@ -32,6 +32,7 @@
 #include <QTimer>
 #include <QToolBar>
 #include <QToolButton>
+#include <QUuid>
 #include <QVBoxLayout>
 #include <QtLogging>
 
@@ -72,6 +73,7 @@
 #include "files/LockController.hpp"
 #include "files/ProjectIndicator.hpp"
 #include "files/RemoteController.hpp"
+#include "projects/ProjectsPanel.hpp"
 #include "files/VersionDialogs.hpp"
 #include "framework/Appearances.hpp"
 #include "framework/Dialogs.hpp"
@@ -92,6 +94,11 @@
 #include "framework/Diagnostics.hpp"
 #include "framework/TestSync.hpp"
 #include "platform/MacChrome.hpp"
+#ifdef MITCAD_MACOS_NATIVE_UI
+#include "platform/NativeMacWindow.hpp"
+#include "platform/NativeForms.hpp"
+#include "platform/NativeDialogs.hpp"
+#endif
 #include "sketch/SketchPalette.hpp"
 #include "sketch/SketchTool.hpp"
 #include "update/UpdateController.hpp"
@@ -159,7 +166,7 @@ QJsonObject sketchPlaneFields(const SelectionItem& item) {
   return fields;
 }
 
-// The document's state is its project file's, as saved or opened: the
+// The document's state is its design file's, as saved or opened: the
 // model then reports it unmodified until its revision changes (P8).
 void markSaved(Document& document) {
   document.command(rustStr(compactJson({{QStringLiteral("cmd"), QStringLiteral("mark_saved")}})));
@@ -179,19 +186,27 @@ void noGuessedMenuRoles(QMenu* menu) {
 
 } // namespace
 
-MainWindow::MainWindow(bool demo, QWidget* parent)
-    : QMainWindow(parent), m_document(demo ? new_demo_document() : new_document()),
+MainWindow::MainWindow(bool demo, QWidget* parent, bool nativeUi)
+    : QMainWindow(parent), m_nativeUi(nativeUi), m_documentSession(new DocumentSession(demo, this)),
+      m_mcpDocumentId(QUuid::createUuid().toString(QUuid::WithoutBraces)),
       m_viewer(new OcctViewer(this)), m_statusLabel(new QLabel(this)),
       m_rendererLabel(new QLabel(this)) {
-  markSaved(*m_document); // the demo's commands are no change to save
-  // The result store (P7d), as every document gets it (installDocument);
-  // what is old in it goes meanwhile.
-  m_document->set_result_store(rustStr(resultStoreDirectory().toUtf8()), rustStr(resultStoreBuildId().toUtf8()),
-                               rustStr(tr("Untitled").toUtf8()));
-  m_document->set_memory_cache_budget(static_cast<std::uint64_t>(CacheSettings::load().memoryMegabytes));
-  collectResultStoreGarbage();
-  m_worker = new ModelWorker(this);
-  m_worker->start();
+  m_documentSession->setWaitHandler([this](const QString& label, ModelJob& job, const QElapsedTimer& clock,
+                                          bool& logged) { waitForJob(label, job, clock, logged); });
+  connect(m_documentSession, &DocumentSession::busyChanged, this, [this](bool busy) {
+    if (!busy && m_closePending) {
+      m_closePending = false;
+      QTimer::singleShot(0, this, [this] {
+#ifdef MITCAD_MACOS_NATIVE_UI
+        if (m_nativeWindow) {
+          m_nativeWindow->close();
+          return;
+        }
+#endif
+        close();
+      });
+    }
+  });
   setAcceptDrops(true);
 
   // The project indicator (mitcad#89): the current project, its kind, the
@@ -200,7 +215,7 @@ MainWindow::MainWindow(bool demo, QWidget* parent)
   m_indicator = new ProjectIndicator([this](const QString& id) { trigger(id); }, this);
   createRemote();
   createLocks();
-  if (chromeStyle() == ChromeStyle::Floating) {
+  if (m_nativeUi || chromeStyle() == ChromeStyle::Floating) {
     // No status bar: the view is the central widget of createPanels(),
     // messages go to a transient pill over it. The labels stay as the store
     // of the texts (the log), in a widget that is never shown; the project
@@ -277,10 +292,14 @@ MainWindow::MainWindow(bool demo, QWidget* parent)
   connect(m_cancelAction, &QAction::triggered, this, &MainWindow::cancel);
   addAction(m_cancelAction);
 
+  if (m_nativeUi) {
+    menuBar()->setNativeMenuBar(false);
+    menuBar()->hide();
+  }
   createMenus();
   createRibbon();
   createPanels();
-  if (chromeStyle() == ChromeStyle::Docked) {
+  if (!m_nativeUi && chromeStyle() == ChromeStyle::Docked) {
     statusBar()->insertPermanentWidget(0, m_controller->failures());
   } else if (auto* titleBar = findChild<TitleBar*>()) {
     // Beside the document's name in the title bar row.
@@ -290,6 +309,12 @@ MainWindow::MainWindow(bool demo, QWidget* parent)
   connect(m_search, &CommandSearch::chosen, this, &MainWindow::trigger, Qt::QueuedConnection);
   createAutosave();
   createLive();
+
+#ifdef MITCAD_MACOS_NATIVE_UI
+  if (m_nativeUi) {
+    createNativeWindow();
+  }
+#endif
 
   recompute();
   showHint(tr("Create a sketch to start modelling. S searches for commands."));
@@ -314,8 +339,25 @@ MainWindow::MainWindow(bool demo, QWidget* parent)
 }
 
 MainWindow::~MainWindow() {
+#ifdef MITCAD_MACOS_NATIVE_UI
+  m_nativeForm.reset();
+  m_nativeIdleForm.reset();
+  m_nativeWindow.reset();
+  setNativeDialogWindow(nullptr);
+#endif
   // The session refers to the window as its host.
   delete m_session;
+}
+
+void MainWindow::present() {
+#ifdef MITCAD_MACOS_NATIVE_UI
+  if (m_nativeWindow) {
+    m_nativeWindow->resize(width(), height());
+    m_nativeWindow->show();
+    return;
+  }
+#endif
+  show();
 }
 
 // ---------------------------------------------------------------------------
@@ -506,7 +548,7 @@ void MainWindow::showDiagnostics() {
                                                       ? QApplication::activeModalWidget()
                                                       : this);
   prepareModal(&dialog);
-  dialog.exec();
+  execDialog(&dialog);
 }
 
 void MainWindow::createMenus() {
@@ -650,6 +692,11 @@ void MainWindow::createRibbon() {
                              {windowAction, filterAction, clearAction}, {filterAction});
   }
   m_ribbon->build();
+  if (m_nativeUi) {
+    // AppKit presents the commands; retain only the shared filter state.
+    m_ribbon->hide();
+    return;
+  }
 
   // Undo and Redo get the system's symbol on macOS, the drawing elsewhere.
   for (const char* id : {"edit.undo", "edit.redo"}) {
@@ -700,6 +747,20 @@ void MainWindow::createRibbon() {
 }
 
 void MainWindow::createPanels() {
+  if (m_nativeUi) {
+    m_controller = new BrowserController(*this, this);
+    m_controller->browser()->hide();
+    m_controller->timeline()->hide();
+    m_commandPages = new QStackedWidget(this);
+    m_idleInfo = new QLabel;
+    m_idleInfo->setWordWrap(true);
+    m_commandPages->addWidget(m_idleInfo);
+    m_palette = new sketch::SketchPalette(*m_sketch, *m_registry, sketchConstraintCommands());
+    m_commandPages->addWidget(m_palette);
+    m_commandPages->hide();
+    setCentralWidget(m_viewer);
+    return;
+  }
   if (chromeStyle() == ChromeStyle::Floating) {
     createFloatingPanels();
     return;
@@ -718,6 +779,8 @@ void MainWindow::createPanels() {
     view->addAction(browserDock->toggleViewAction());
     view->addAction(timelineDock->toggleViewAction());
   }
+  // The Projects panel above the browser (mitcad#145).
+  dockProjectsPanel(browserDock);
 
   m_commandPages = new QStackedWidget;
   // A fixed width, so that the view keeps its size when a panel opens.
@@ -771,6 +834,8 @@ void MainWindow::createFloatingPanels() {
   m_commandCard->hide(); // nothing to say while idle (updateCommandCard)
 
   m_floating = new FloatingLayout(m_viewer, m_header, this);
+  // The Projects card above the browser's (mitcad#145).
+  addProjectsCard();
   m_floating->addCard(browserCard, FloatingLayout::Anchor::TopLeft,
                       {260,
                        [browser = m_controller->browser()] { return browser->contentHeight(); },
@@ -819,6 +884,11 @@ void MainWindow::updateCommandCard() {
 }
 
 void MainWindow::updateStatusPill(bool error) {
+#ifdef MITCAD_MACOS_NATIVE_UI
+  if (m_nativeWindow) {
+    m_nativeWindow->setStatus(m_statusLabel->text(), error);
+  }
+#endif
   if (m_floating != nullptr) {
     m_floating->showStatus(m_statusLabel->text(), error, error ? 10000 : 6000);
   }
@@ -868,6 +938,12 @@ void MainWindow::updateActions() {
   m_registry->updateEnabled([this](const CommandDef& def) { return isAvailable(def); });
   m_confirmAction->setEnabled(m_mode == Mode::Command || m_mode == Mode::Sketch);
   updateWindowTitle();
+#ifdef MITCAD_MACOS_NATIVE_UI
+  if (m_nativeWindow) {
+    refreshNativeWindow();
+  }
+#endif
+  m_documentSession->notifyChanged();
 }
 
 void MainWindow::trigger(const QString& id) {
@@ -925,10 +1001,43 @@ void MainWindow::startFeatureCommand(const CommandDef& def, const QString& editU
   const Selection preselection = editUid.isEmpty() && analysis.isEmpty() ? m_selection : Selection();
   setSelection({});
   m_mode = Mode::Command;
-  auto* session = new CommandSession(def, *this, editUid, this);
+  auto* session = new CommandSession(def, *this, editUid, m_documentSession);
   if (!analysis.isEmpty()) {
     session->editAnalysis(analysis);
   }
+#ifdef MITCAD_MACOS_NATIVE_UI
+  if (m_nativeWindow) {
+    m_session = session;
+    m_lastCommand = def.id;
+    connect(session, &CommandSession::finished, this, &MainWindow::onCommandFinished);
+    session->startAsync(preselection, [this, guarded = QPointer<CommandSession>(session)](
+                                         bool started, const QString& error) {
+      if (!guarded || m_session != guarded) {
+        return;
+      }
+      if (!started) {
+        m_session = nullptr;
+        guarded->deleteLater();
+        m_sketch->setPaused(false);
+        m_mode = m_commandInSketch ? Mode::Sketch : Mode::Idle;
+        m_commandInSketch = false;
+        showError(error);
+        refreshScene();
+        return;
+      }
+      m_nativeForm = createNativeCommandForm(*guarded);
+      m_nativeWindow->showInspector(true);
+      m_nativeWindow->setInspectorView(m_nativeForm->nativeView());
+      if (!m_nativeFocusInput.isEmpty()) {
+        guarded->focusValue(std::exchange(m_nativeFocusInput, QString()));
+      } else if (!guarded->startsWithValues() || !m_nativeForm->focusFirstValue()) {
+        m_nativeWindow->focusViewport();
+      }
+      updateActions();
+    });
+    return;
+  }
+#endif
   QString error;
   if (!session->start(preselection, error)) {
     delete session;
@@ -1018,10 +1127,27 @@ void MainWindow::editAnalysis(const QString& name) {
 void MainWindow::editInstead(const QString& uid, const QString& input) {
   // Not inside the running command's own call: it goes first.
   whenIdle(this, [this, uid, input] {
+#ifdef MITCAD_MACOS_NATIVE_UI
+    if (m_nativeWindow && m_session) {
+      connect(m_session, &CommandSession::finished, this, [this, uid, input] {
+        QTimer::singleShot(0, this, [this, uid, input] { editInstead(uid, input); });
+      });
+      m_session->cancel();
+      return;
+    }
+    if (m_nativeWindow) {
+      m_nativeFocusInput = input;
+    }
+#endif
     if (m_session) {
       m_session->cancel();
     }
     editFeature(uid);
+#ifdef MITCAD_MACOS_NATIVE_UI
+    if (m_nativeWindow && !m_session) {
+      m_nativeFocusInput.clear();
+    }
+#endif
     if (m_session && m_session->isEditing()) {
       m_session->focusValue(input);
     }
@@ -1052,6 +1178,15 @@ void MainWindow::startCommand(const QString& id, const Selection& preselection,
 }
 
 void MainWindow::onCommandFinished(bool committed) {
+#ifdef MITCAD_MACOS_NATIVE_UI
+  if (m_nativeWindow) {
+    m_nativeWindow->setInspectorView(nullptr);
+    // A control may still be dispatching the action that finished this
+    // command. Release its presenter on the following event-loop turn.
+    const std::shared_ptr<NativeCommandForm> form(m_nativeForm.release());
+    QTimer::singleShot(0, this, [form] {});
+  }
+#endif
   CommandSession* session = m_session;
   m_session = nullptr;
   m_mode = m_commandInSketch && m_sketch->isActive() ? Mode::Sketch : Mode::Idle;
@@ -1087,6 +1222,9 @@ void MainWindow::cancel() {
   if (m_controller->cancelEditing()) {
     return; // a rename in the browser or the timeline
   }
+  if (m_projectsPanel != nullptr && m_projectsPanel->cancelEditing()) {
+    return; // a name typed in the Projects panel (mitcad#145)
+  }
   if (m_session) {
     m_session->cancel();
     return;
@@ -1113,13 +1251,19 @@ void MainWindow::openCommandSearch() {
   if (m_mode == Mode::Command) {
     return;
   }
+#ifdef MITCAD_MACOS_NATIVE_UI
+  if (m_nativeWindow) {
+    m_nativeWindow->showCommandSearch();
+    return;
+  }
+#endif
   m_search->popup(m_viewer->mapToGlobal(m_viewer->rect().center()));
 }
 
 void MainWindow::editShortcuts() {
   ShortcutDialog dialog(*m_registry, this);
   prepareModal(&dialog);
-  dialog.exec();
+  execDialog(&dialog);
 }
 
 // ---------------------------------------------------------------------------
@@ -2546,6 +2690,11 @@ void MainWindow::pick(const Selection& items, Qt::KeyboardModifiers modifiers) {
 }
 
 void MainWindow::onPicked(const Selection& items, Qt::KeyboardModifiers modifiers, bool window) {
+  if (m_nativeUi && m_session) {
+    // The session invalidates an in-flight preview before queuing picks.
+    m_session->picked(items, modifiers, window);
+    return;
+  }
   if (modelBusy()) {
     // A pick queued before a job began: it takes effect after the job.
     whenIdle(this, [this, items, modifiers, window] { onPicked(items, modifiers, window); });
@@ -2657,7 +2806,7 @@ void MainWindow::updateIdleView() {
     }
     text += QStringLiteral("<br><span style='color:gray'>%1</span>").arg(lines.join(QStringLiteral("<br>")));
   }
-  if (chromeStyle() == ChromeStyle::Floating) {
+  if (m_nativeUi || chromeStyle() == ChromeStyle::Floating) {
     // The card is for what there is to say: the selection, not the hint.
     text = m_selection.isEmpty() ? QString() : text.mid(text.indexOf(QStringLiteral("<br><br>")) + 8);
   }
@@ -2801,7 +2950,7 @@ void MainWindow::showContextMenu(const QPoint& globalPosition, const SelectionIt
   add(m_registry->action(QStringLiteral("view.fit")));
   add(m_registry->action(QStringLiteral("tools.search")));
   qDebug().noquote() << QStringLiteral("Context menu: %1").arg(entries.join(QStringLiteral(" | ")));
-  menu.exec(globalPosition);
+  execMenu(&menu, globalPosition);
 }
 
 // ---------------------------------------------------------------------------
@@ -3066,14 +3215,14 @@ void MainWindow::redo() {
 }
 
 // ---------------------------------------------------------------------------
-// Project files
+// Design files
 
 void MainWindow::closeEvent(QCloseEvent* event) {
   if (modelBusy()) {
     // The job stops first; the window closes when it is back (runJob).
     event->ignore();
     m_closePending = true;
-    m_job->control().cancel();
+    m_documentSession->cancelJob();
     qDebug() << "Close while computing: cancelling";
     return;
   }
@@ -3092,21 +3241,40 @@ void MainWindow::closeEvent(QCloseEvent* event) {
   }
 }
 
+bool MainWindow::deferForNativeCommand(std::function<void()> action) {
+  if (!m_nativeUi || !m_session) {
+    return false;
+  }
+  connect(m_session, &CommandSession::finished, this, [this, action = std::move(action)] {
+    QTimer::singleShot(0, this, action);
+  });
+  m_session->cancel();
+  return true;
+}
+
 void MainWindow::newDocument() {
+  if (deferForNativeCommand([this] { newDocument(); })) {
+    return;
+  }
   if (!maybeSave()) {
     return;
   }
-  installEmptyDocument(QString());
+  if (!installEmptyDocument(QString())) {
+    return;
+  }
   qInfo() << "New document";
   showHint(tr("Create a sketch to start modelling. S searches for commands."));
 }
 
 void MainWindow::openDocument() {
+  if (deferForNativeCommand([this] { openDocument(); })) {
+    return;
+  }
   if (!maybeSave()) {
     return;
   }
   const QString path =
-      QFileDialog::getOpenFileName(this, tr("Open"), fileDialogDirectory(), openFilter());
+      dialogOpenFileName(this, tr("Open"), fileDialogDirectory(), openFilter());
   if (path.isEmpty()) {
     return;
   }
@@ -3118,7 +3286,7 @@ void MainWindow::openDocument() {
   }
 }
 
-bool MainWindow::loadProject(const QString& path, QString& error) {
+bool MainWindow::loadDesign(const QString& path, QString& error) {
   ScopedTiming timing("open"); // reading, recomputing and showing it
   const QString name = QFileInfo(path).fileName();
   // In a project with version history (P12d): a file renamed outside
@@ -3135,7 +3303,7 @@ bool MainWindow::loadProject(const QString& path, QString& error) {
     error = tr("The file is not UTF-8 text.");
     return false;
   }
-  // Linked components follow their files (relative to the project's).
+  // Linked components follow their files (relative to the design's).
   const QByteArray links = compactJson({{QStringLiteral("cmd"), QStringLiteral("update_links")},
                                         {QStringLiteral("base"), QFileInfo(path).absolutePath()}});
   QJsonArray messages;
@@ -3199,6 +3367,10 @@ bool MainWindow::loadProject(const QString& path, QString& error) {
 }
 
 bool MainWindow::save() {
+  if (m_nativeUi && m_session) {
+    showHint(tr("Finish the current command before saving."));
+    return false;
+  }
   // A read-only window (mitcad#89): Save as Copy or as a new version.
   if (const std::optional<bool> readOnlySaved = readOnlySave(false)) {
     return *readOnlySaved;
@@ -3215,19 +3387,30 @@ bool MainWindow::save() {
 }
 
 bool MainWindow::saveAs() {
+  if (m_nativeUi && m_session) {
+    showHint(tr("Finish the current command before saving."));
+    return false;
+  }
   QFileDialog dialog(this, tr("Save As"), fileDialogDirectory(),
-                     tr("Mitcad projects (*.%1)").arg(kFileSuffix));
+                     tr("Mitcad designs (*.%1)").arg(kFileSuffix));
   dialog.setAcceptMode(QFileDialog::AcceptSave);
   dialog.setDefaultSuffix(kFileSuffix);
   dialog.selectFile(m_filePath.isEmpty() ? documentName() + QLatin1Char('.') + kFileSuffix
                                          : documentName());
-  if (dialog.exec() != QDialog::Accepted || dialog.selectedFiles().isEmpty()) {
+  if (execDialog(&dialog) != QDialog::Accepted || dialog.selectedFiles().isEmpty()) {
     return false;
   }
   return writeFile(dialog.selectedFiles().constFirst());
 }
 
 bool MainWindow::writeFile(const QString& path, const QString& description, VersionRecord* required) {
+  if (m_nativeUi && m_session) {
+    showHint(tr("Finish the current command before saving."));
+    if (required != nullptr) {
+      required->failure = tr("Finish the current command before saving.");
+    }
+    return false;
+  }
   const QString absolute = QFileInfo(path).absoluteFilePath();
   // Stopped by an error (shown here, red): what a caller requiring the
   // version gets as why.
@@ -3297,7 +3480,7 @@ bool MainWindow::writeFile(const QString& path, const QString& description, Vers
   std::optional<rust::String> json;
   QString error;
   try {
-    json = idleDocument().save_project(rustStr(path.toUtf8()), "auto");
+    json = idleDocument().save_design(rustStr(path.toUtf8()), "auto");
   } catch (const std::exception& e) {
     error = QString::fromUtf8(e.what());
   }
@@ -3383,7 +3566,7 @@ bool MainWindow::maybeSave() {
   box.button(QMessageBox::Discard)->setText(tr("&Don't Save"));
   box.setDefaultButton(QMessageBox::Save);
   prepareModal(&box);
-  switch (box.exec()) {
+  switch (execDialog(&box)) {
   case QMessageBox::Save:
     return save();
   case QMessageBox::Discard:
@@ -3395,7 +3578,7 @@ bool MainWindow::maybeSave() {
 
 bool MainWindow::isModified() const {
   // The model compares its revision with the one marked saved (P8), so no
-  // project file is made for it.
+  // design file is made for it.
   return query({{QStringLiteral("query"), QStringLiteral("document")}})
       .toObject()
       .value(QStringLiteral("modified"))
@@ -3416,6 +3599,10 @@ QString MainWindow::fileDialogDirectory() const {
   // A new design of a project goes in it (P12d, mitcad#89).
   if (!m_projectDir.isEmpty()) {
     return m_projectDir;
+  }
+  // The Projects panel's selected folder of the current project (mitcad#145).
+  if (const QString folder = projectsPanelFolder(); !folder.isEmpty()) {
+    return folder;
   }
   if (m_project.isProject()) {
     return m_project.root;
@@ -3474,6 +3661,7 @@ bool MainWindow::installDocument(const QString& label, const QString& path, cons
   // any command or sketch on it, and its recovery data (P8).
   resetCommandState();
   m_document = std::move(*made);
+  m_mcpDocumentId = QUuid::createUuid().toString(QUuid::WithoutBraces);
   m_autosave->replaced();
   m_recoveredDigest.reset();
   m_filePath = path;
@@ -3555,12 +3743,20 @@ void MainWindow::persistResults(const QString& label) {
   reportStored({}, persisted);
 }
 
-void MainWindow::installEmptyDocument(const QString& name) {
-  QString error;
-  installDocument(name.isEmpty() ? tr("Untitled") : name, QString(),
-                  [](ModelJob&) { return new_document(); }, error);
+bool MainWindow::installEmptyDocument(const QString& name, QString* error) {
+  QString reason;
+  if (!installDocument(name.isEmpty() ? tr("Untitled") : name, QString(),
+                       [](ModelJob&) { return new_document(); }, reason)) {
+    if (error != nullptr) {
+      *error = reason;
+    } else if (!reason.isEmpty()) {
+      sheetWarning(this, tr("Mitcad"), tr("Could not create a new design:\n%1").arg(reason));
+    }
+    return false;
+  }
   m_documentName = name;
   updateWindowTitle();
+  return true;
 }
 
 // Leaves any command or sketch, so the next document starts idle.

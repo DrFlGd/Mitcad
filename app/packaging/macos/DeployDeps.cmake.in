@@ -4,7 +4,7 @@
 # install(SCRIPT) after the bundle is installed and before Qt's deploy script.
 #
 # Copies the non-Qt shared libraries of mitcad (OCCT, FreeType and what they
-# link) and, with MITCAD_RENDER, the worker and denoiser module's libraries
+# link) and the render worker and denoiser module's libraries
 # into Contents/Frameworks. Qt's macdeployqt handles Qt
 # alone: the installed binary's rpath is only @executable_path/../Frameworks,
 # so it could not find vcpkg's libraries by itself. Doing the copy here works
@@ -25,20 +25,24 @@ set(mitcad_frameworks "${mitcad_bundle}/Contents/Frameworks")
 
 # vcpkg keeps the Debug libraries apart in debug/lib.
 set(mitcad_dep_dirs "@MITCAD_DEPS_LIB_DIR@")
+set(mitcad_prefer_debug FALSE)
 if(CMAKE_INSTALL_CONFIG_NAME MATCHES "^[Dd]ebug$" AND IS_DIRECTORY "@MITCAD_DEPS_DEBUG_LIB_DIR@")
   set(mitcad_dep_dirs "@MITCAD_DEPS_DEBUG_LIB_DIR@")
+  set(mitcad_prefer_debug TRUE)
 endif()
 
 set(mitcad_executables "${MITCAD_BUILD_EXECUTABLE}")
 set(mitcad_render_modules "@MITCAD_OIDN_MODULES@")
-if(@MITCAD_RENDER@)
-  if(NOT EXISTS "${MITCAD_BUILD_RENDER_EXECUTABLE}")
-    message(FATAL_ERROR "The render worker is missing; build mitcad-render first")
-  endif()
-  list(APPEND mitcad_executables "${MITCAD_BUILD_RENDER_EXECUTABLE}")
-  # Rendering always links release dependencies, including in Debug builds.
-  list(APPEND mitcad_dep_dirs "@MITCAD_DEPS_LIB_DIR@" "@MITCAD_OIDN_ROOT@/lib")
+if(NOT EXISTS "${MITCAD_BUILD_RENDER_EXECUTABLE}")
+  message(FATAL_ERROR "The render worker is missing; build mitcad-render first")
 endif()
+list(APPEND mitcad_executables "${MITCAD_BUILD_RENDER_EXECUTABLE}")
+if(NOT EXISTS "${MITCAD_BUILD_CLI_EXECUTABLE}")
+  message(FATAL_ERROR "The MCP CLI bridge is missing; build mitcad-cli first")
+endif()
+list(APPEND mitcad_executables "${MITCAD_BUILD_CLI_EXECUTABLE}")
+# Rendering always links release dependencies, including in Debug builds.
+list(APPEND mitcad_dep_dirs "@MITCAD_DEPS_LIB_DIR@" "@MITCAD_OIDN_ROOT@/lib")
 
 if(NOT EXISTS "${MITCAD_BUILD_EXECUTABLE}")
   message(FATAL_ERROR "The built executable '${MITCAD_BUILD_EXECUTABLE}' is missing; build mitcad first")
@@ -49,11 +53,56 @@ file(GET_RUNTIME_DEPENDENCIES
   LIBRARIES ${mitcad_render_modules}
   RESOLVED_DEPENDENCIES_VAR mitcad_resolved
   UNRESOLVED_DEPENDENCIES_VAR mitcad_unresolved
+  CONFLICTING_DEPENDENCIES_PREFIX mitcad_conflicts
   DIRECTORIES ${mitcad_dep_dirs}
   # Qt (frameworks, by their names in the load commands) is macdeployqt's job;
   # the system's libraries and frameworks are never bundled.
   PRE_EXCLUDE_REGEXES "^@rpath/Qt[^/]*\\.framework/" "^@rpath/libQt" "^/System/Library/" "^/usr/lib/"
   POST_EXCLUDE_REGEXES "^/System/Library/" "^/usr/lib/" "\\.framework/")
+
+# The Debug app and Release renderer can resolve the same vcpkg library
+# name through different rpaths (for example, FreeType's shared Brotli).
+# Both executables use one Frameworks directory and that install name can
+# have only one variant there: use the active install configuration. This
+# applies only to the two variants in this vcpkg prefix; release-only
+# libraries and distinct Debug names stay in the resolved list unchanged.
+file(REAL_PATH "@MITCAD_DEPS_LIB_DIR@" mitcad_release_dep_dir)
+file(REAL_PATH "@MITCAD_DEPS_DEBUG_LIB_DIR@" mitcad_debug_dep_dir)
+foreach(mitcad_dep_name IN LISTS mitcad_conflicts_FILENAMES)
+  set(mitcad_candidates "${mitcad_conflicts_${mitcad_dep_name}}")
+  list(LENGTH mitcad_candidates mitcad_candidate_count)
+  if(NOT mitcad_candidate_count EQUAL 2)
+    message(FATAL_ERROR "Unexpected runtime dependency conflict for ${mitcad_dep_name}: ${mitcad_candidates}")
+  endif()
+  set(mitcad_release_candidate "")
+  set(mitcad_debug_candidate "")
+  foreach(mitcad_candidate IN LISTS mitcad_candidates)
+    get_filename_component(mitcad_candidate_name "${mitcad_candidate}" NAME)
+    get_filename_component(mitcad_candidate_dir "${mitcad_candidate}" DIRECTORY)
+    file(REAL_PATH "${mitcad_candidate_dir}" mitcad_candidate_dir)
+    if(NOT mitcad_candidate_name STREQUAL mitcad_dep_name)
+      message(FATAL_ERROR "Unexpected runtime dependency name for ${mitcad_dep_name}: ${mitcad_candidate}")
+    elseif(mitcad_candidate_dir STREQUAL mitcad_release_dep_dir)
+      set(mitcad_release_candidate "${mitcad_candidate}")
+    elseif(mitcad_candidate_dir STREQUAL mitcad_debug_dep_dir)
+      set(mitcad_debug_candidate "${mitcad_candidate}")
+    else()
+      message(FATAL_ERROR "Runtime dependency conflict outside this vcpkg prefix for ${mitcad_dep_name}: "
+                          "${mitcad_candidates}")
+    endif()
+  endforeach()
+  if(NOT mitcad_release_candidate OR NOT mitcad_debug_candidate)
+    message(FATAL_ERROR "Runtime dependency conflict is not a Debug/Release pair for ${mitcad_dep_name}: "
+                        "${mitcad_candidates}")
+  endif()
+  if(mitcad_prefer_debug)
+    set(mitcad_selected "${mitcad_debug_candidate}")
+  else()
+    set(mitcad_selected "${mitcad_release_candidate}")
+  endif()
+  message(STATUS "Bundling ${CMAKE_INSTALL_CONFIG_NAME} variant of ${mitcad_dep_name}: ${mitcad_selected}")
+  list(APPEND mitcad_resolved "${mitcad_selected}")
+endforeach()
 
 # Runtime discovery finds a module's dependencies, but not the module itself.
 list(APPEND mitcad_resolved ${mitcad_render_modules})
@@ -65,44 +114,57 @@ foreach(mitcad_dep IN LISTS mitcad_resolved)
     FILES "${mitcad_dep}")
 endforeach()
 
-if(@MITCAD_RENDER@)
-  # Give every copied dylib a path valid for both the app and its worker.
-  # The loader-relative rpath also lets OIDN's dynamically opened CPU module
-  # resolve its dependencies without inheriting the main app's rpaths.
-  find_program(mitcad_install_name_tool install_name_tool REQUIRED)
-  find_program(mitcad_otool otool REQUIRED)
-  set(mitcad_relocate_files "${mitcad_bundle}/Contents/MacOS/@MITCAD_BUNDLE_EXECUTABLE@"
-                            "${mitcad_bundle}/Contents/MacOS/mitcad-render")
-  foreach(mitcad_dep IN LISTS mitcad_resolved)
-    get_filename_component(mitcad_dep_name "${mitcad_dep}" NAME)
-    set(mitcad_copied "${mitcad_frameworks}/${mitcad_dep_name}")
-    list(APPEND mitcad_relocate_files "${mitcad_copied}")
-    execute_process(COMMAND "${mitcad_install_name_tool}" -id "@rpath/${mitcad_dep_name}"
+# Give every copied dylib a path valid for both the app and its worker.
+# The loader-relative rpath also lets OIDN's dynamically opened CPU module
+# resolve its dependencies without inheriting the main app's rpaths.
+find_program(mitcad_install_name_tool install_name_tool REQUIRED)
+find_program(mitcad_otool otool REQUIRED)
+set(mitcad_relocate_files "${mitcad_bundle}/Contents/MacOS/@MITCAD_BUNDLE_EXECUTABLE@"
+                          "${mitcad_bundle}/Contents/MacOS/mitcad-render"
+                          "${mitcad_bundle}/Contents/MacOS/mitcad-cli")
+# install(PROGRAMS) copies the CLI without CMake's target rpath rewrite.
+# Replace its build-tree search paths before macdeployqt scans the bundle.
+set(mitcad_installed_cli "${mitcad_bundle}/Contents/MacOS/mitcad-cli")
+execute_process(COMMAND "${mitcad_otool}" -l "${mitcad_installed_cli}"
+                OUTPUT_VARIABLE mitcad_cli_load_commands COMMAND_ERROR_IS_FATAL ANY)
+string(REGEX MATCHALL "path [^\n]+ \\(offset [0-9]+\\)" mitcad_cli_paths "${mitcad_cli_load_commands}")
+list(REMOVE_DUPLICATES mitcad_cli_paths)
+foreach(mitcad_cli_path IN LISTS mitcad_cli_paths)
+  string(REGEX REPLACE "^path (.*) \\(offset [0-9]+\\)$" "\\1" mitcad_cli_path "${mitcad_cli_path}")
+  execute_process(COMMAND "${mitcad_install_name_tool}" -delete_rpath "${mitcad_cli_path}" "${mitcad_installed_cli}"
+                  COMMAND_ERROR_IS_FATAL ANY)
+endforeach()
+execute_process(COMMAND "${mitcad_install_name_tool}" -add_rpath "@executable_path/../Frameworks"
+                "${mitcad_installed_cli}" COMMAND_ERROR_IS_FATAL ANY)
+foreach(mitcad_dep IN LISTS mitcad_resolved)
+  get_filename_component(mitcad_dep_name "${mitcad_dep}" NAME)
+  set(mitcad_copied "${mitcad_frameworks}/${mitcad_dep_name}")
+  list(APPEND mitcad_relocate_files "${mitcad_copied}")
+  execute_process(COMMAND "${mitcad_install_name_tool}" -id "@rpath/${mitcad_dep_name}"
+                  "${mitcad_copied}" COMMAND_ERROR_IS_FATAL ANY)
+  execute_process(COMMAND "${mitcad_otool}" -l "${mitcad_copied}"
+                  OUTPUT_VARIABLE mitcad_load_commands COMMAND_ERROR_IS_FATAL ANY)
+  string(FIND "${mitcad_load_commands}" "path @loader_path (offset " mitcad_loader_rpath)
+  if(mitcad_loader_rpath EQUAL -1)
+    execute_process(COMMAND "${mitcad_install_name_tool}" -add_rpath "@loader_path"
                     "${mitcad_copied}" COMMAND_ERROR_IS_FATAL ANY)
-    execute_process(COMMAND "${mitcad_otool}" -l "${mitcad_copied}"
-                    OUTPUT_VARIABLE mitcad_load_commands COMMAND_ERROR_IS_FATAL ANY)
-    string(FIND "${mitcad_load_commands}" "path @loader_path (offset " mitcad_loader_rpath)
-    if(mitcad_loader_rpath EQUAL -1)
-      execute_process(COMMAND "${mitcad_install_name_tool}" -add_rpath "@loader_path"
-                      "${mitcad_copied}" COMMAND_ERROR_IS_FATAL ANY)
+  endif()
+endforeach()
+list(REMOVE_DUPLICATES mitcad_relocate_files)
+foreach(mitcad_file IN LISTS mitcad_relocate_files)
+  execute_process(COMMAND "${mitcad_otool}" -L "${mitcad_file}"
+                  OUTPUT_VARIABLE mitcad_load_commands COMMAND_ERROR_IS_FATAL ANY)
+  string(REGEX MATCHALL "\n[ \t]+[^\n]+" mitcad_load_lines "${mitcad_load_commands}")
+  foreach(mitcad_line IN LISTS mitcad_load_lines)
+    string(STRIP "${mitcad_line}" mitcad_reference)
+    string(REGEX REPLACE "[ \t]+\\(compatibility version.*$" "" mitcad_reference "${mitcad_reference}")
+    get_filename_component(mitcad_dep_name "${mitcad_reference}" NAME)
+    if(EXISTS "${mitcad_frameworks}/${mitcad_dep_name}")
+      execute_process(COMMAND "${mitcad_install_name_tool}" -change "${mitcad_reference}"
+                      "@rpath/${mitcad_dep_name}" "${mitcad_file}" COMMAND_ERROR_IS_FATAL ANY)
     endif()
   endforeach()
-  list(REMOVE_DUPLICATES mitcad_relocate_files)
-  foreach(mitcad_file IN LISTS mitcad_relocate_files)
-    execute_process(COMMAND "${mitcad_otool}" -L "${mitcad_file}"
-                    OUTPUT_VARIABLE mitcad_load_commands COMMAND_ERROR_IS_FATAL ANY)
-    string(REGEX MATCHALL "\n[ \t]+[^\n]+" mitcad_load_lines "${mitcad_load_commands}")
-    foreach(mitcad_line IN LISTS mitcad_load_lines)
-      string(STRIP "${mitcad_line}" mitcad_reference)
-      string(REGEX REPLACE "[ \t]+\\(compatibility version.*$" "" mitcad_reference "${mitcad_reference}")
-      get_filename_component(mitcad_dep_name "${mitcad_reference}" NAME)
-      if(EXISTS "${mitcad_frameworks}/${mitcad_dep_name}")
-        execute_process(COMMAND "${mitcad_install_name_tool}" -change "${mitcad_reference}"
-                        "@rpath/${mitcad_dep_name}" "${mitcad_file}" COMMAND_ERROR_IS_FATAL ANY)
-      endif()
-    endforeach()
-  endforeach()
-endif()
+endforeach()
 
 # Not fatal here: tools/check-bundle-macos.sh checks that every library the
 # bundle refers to is in it.

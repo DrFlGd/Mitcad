@@ -236,7 +236,7 @@ fn driven_positions_move_the_linkage() {
     fb.check();
     let a = 100.0_f64.to_radians();
     assert_near(fb.crank_pin(), [30.0 * a.cos(), 30.0 * a.sin(), 0.0]);
-    // The position is in the definition and survives the project file.
+    // The position is in the definition and survives the design file.
     let text = fb.doc.to_json();
     let mut copy = Document::from_json(&text, MockKernel::default()).unwrap();
     copy.recompute();

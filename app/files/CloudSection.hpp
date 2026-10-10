@@ -3,7 +3,8 @@
 
 // The Cloud section of New Project, Open from Cloud and Project Settings
 // (mitcad#89): the service (GitHub, GitLab, Forgejo / Gitea with its
-// server, a shared folder, another address), the account and the
+// server, a shared folder, another address), the owner (a user or an
+// organisation; on GitLab also a group with subgroups, group/sub) and the
 // repository with the way to connect, or a folder, or an address; the
 // address they make, which can also be typed (it fills the fields back);
 // Create Repository in Browser; and the check of the address, while typing
@@ -114,9 +115,9 @@ private:
   QComboBox* m_service = nullptr;
   QLabel* m_serverLabel = nullptr;
   QLineEdit* m_server = nullptr;
-  QLabel* m_accountLabel = nullptr;
-  QWidget* m_accountRow = nullptr;
-  QLineEdit* m_account = nullptr;
+  QLabel* m_ownerLabel = nullptr;
+  QWidget* m_ownerRow = nullptr;
+  QLineEdit* m_owner = nullptr;
   QLineEdit* m_repository = nullptr;
   QLabel* m_connectLabel = nullptr;
   QWidget* m_connectRow = nullptr;

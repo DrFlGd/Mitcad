@@ -13,8 +13,9 @@ namespace mitcad::cli {
 // The lines of mitcad-cli's usage for these commands.
 extern const char* const kProjectsUsage;
 
-// `mitcad-cli project inspect|create|settings ...` (args[0] is "project");
-// the exit status.
+// `mitcad-cli project inspect|create|settings ...` and a project's folders
+// and designs, `project tree|mkdir|new-design|move|delete ...` (mitcad#144)
+// (args[0] is "project"); the exit status.
 int project(const std::vector<std::string>& args);
 
 // `mitcad-cli remote check <url> [--json]`: what a remote holds, without a

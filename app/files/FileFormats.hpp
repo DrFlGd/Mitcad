@@ -8,7 +8,7 @@ namespace mitcad {
 // The kinds of files the File menu opens, imports and exports (U6).
 enum class FileKind {
   None,
-  Project, // .mitcad
+  Design,  // .mitcad
   F3d,     // .f3d, .f3z: a new document with the design's history
   FreeCad, // .FCStd: a new document with the document's stored bodies
   Cad,     // .step, .stp, .iges, .igs, .brep, .brp: bodies without history

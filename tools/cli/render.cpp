@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 // mitcad-cli render (mitcad#48, docs/rendering.md "Final render"): a
 // design's visible bodies rendered to an image file without the user
-// interface, for scripts. Built only with MITCAD_RENDER. The command line
+// interface, for scripts. The command line
 // tool makes the scene and the job as File > Render Image does
 // (app/render/RenderBatch) and runs the render worker mitcad-render in its
 // batch mode, which writes the image; it shares the application's Qt Core

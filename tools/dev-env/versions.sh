@@ -37,7 +37,7 @@ PKGCONF_SHA256=c926ff491cbd9a331a589160811bd97ab1749b4d5198a519338f2cdfabe6940a
 QTKEYCHAIN_VERSION=0.17.0
 QTKEYCHAIN_SHA256=3b85c3929034b0a99da777130c34d99f006fcd3a9d56564159399a33fee0e504
 
-# The Cycles render worker (MITCAD_RENDER, tools/dev-env/build-cycles.sh):
+# The Cycles render worker (tools/dev-env/build-cycles.sh, every build):
 # the sources that vcpkg has no port for. Cycles is fetched by tag and
 # checked against the tag's commit; Open Image Denoise's source archive and
 # ISPC's release (a build tool for Open Image Denoise, not linked) against

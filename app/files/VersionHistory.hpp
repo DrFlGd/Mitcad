@@ -19,7 +19,7 @@ class QTreeWidget;
 
 namespace mitcad {
 
-// One version of a project file: an entry of the version history's
+// One version of a design file: an entry of the version history's
 // `history` command (core/model/src/api/commands.md, "Version history").
 struct FileVersion {
   int number = 0; // v1 is the oldest
@@ -43,7 +43,7 @@ struct FileVersion {
 // The versions of a `history` answer, newest first, numbered.
 std::vector<FileVersion> fileVersions(const QJsonObject& history);
 
-// Where a version's preview is kept: a PNG named by the project file's blob
+// Where a version's preview is kept: a PNG named by the design file's blob
 // id (the same content, the same picture) in "thumbnails" of the user's
 // local application data (MITCAD_THUMBNAIL_DIR for tests), never in a
 // project. Empty when the system gives no place.
@@ -62,7 +62,7 @@ struct VersionHistoryHost {
   std::function<void(QWidget* parent, const FileVersion& version)> saveCopy;
 };
 
-// File > Version History (P12e): the versions of the open project file,
+// File > Version History (P12e): the versions of the open design file,
 // newest first (when, by whom, the description, what changed against the
 // version before, the short id), with the selected version's details, its
 // preview, and its comparison with the version before or with the open
@@ -76,7 +76,7 @@ class VersionHistoryDialog : public QDialog {
 public:
   enum class Choice { None, Open, Restore };
 
-  // `file`: the open project file (absolute) in a project with history;
+  // `file`: the open design file (absolute) in a project with history;
   // `modified`: the open design has unsaved changes.
   VersionHistoryDialog(QWidget* parent, const QString& file, bool modified, VersionHistoryHost host);
   ~VersionHistoryDialog() override;

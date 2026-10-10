@@ -83,12 +83,84 @@
 //   type-in <regex> <text>  click the logged panel field, select all, type
 //   command <id>            trigger the command's action (objectName
 //                           "command_<id>": "sketch.create", "file.export")
+//   open-file <path>        open through the external-file document host
+//                           (Finder or drops), including save/lock questions
 //   menu <Top>/<Item>[/...] trigger an entry of the main window's menu bar
 //                           ('&' and "..." in the names are ignored)
 //   popup <entry>           choose an entry of the open popup menu (a
 //                           context menu), by its text
 //   button <regex>          click the visible button of the target window
 //                           whose text (without '&') matches
+//   native-action <id>      dispatch the native AppKit menu command
+//   native-click <id>       click a native control by accessibilityIdentifier
+//   native-type <id> <text> replace an AppKit field editor's text
+//   native-choice <id> <title> choose a native popup's menu item
+//   native-activate <id>    edit a native history icon or activate a model row
+//   native-select <id> [shift|ctrl] select a native history icon/model row;
+//                           modifiers exercise actual feature mouse input
+//   native-expand <id>      expand a native outline hierarchy
+//   native-click-now <id>   native click without waiting for model idleness
+//   native-click-on-job <job> <id> arm one native button action on the next
+//                           matching actual jobStarted while modelBusy is
+//                           true, before progress-sheet/animation timing;
+//                           fails if the armed job never starts
+//   native-type-now <id> <text> native edit without waiting for idleness;
+//                           these exercise preview cancellation and races
+//   native-key-now <key>... key input without waiting for model idleness
+//   native-file-name <name> edit the real native save filename value
+//   native-file-directory <path> navigate AppKit chooser to existing folder
+//   native-file-cancel      cancel the focused AppKit open/save panel
+//                           AppKit requires actual user acceptance of its
+//                           separate-process chooser; no accept verb exists.
+//   native-resize <w> <h>   resize the native document content in points
+//   native-appearance light|dark set this app's AppKit appearance and Qt
+//                           palette from real system colors, leaving OS
+//                           preferences untouched
+//   native-pinch <x%> <y%> <delta> dispatch magnify Began/Changed/Ended through
+//                           the actual native document NSWindow
+//   qt-pinch <x%> <y%> <delta> send the shared viewer a QNativeGestureEvent
+//                           sequence, for comparison with AppKit routing
+//   native-context-menu <id> cancel|item open a real AppKit browser/history
+//                           context menu; cancel or select in its tracking loop
+//   native-popup <id> cancel|item click a native popup button and choose its
+//                           actual tracked AppKit menu leaf
+//   view-context-menu <x%> <y%> cancel|item right click the actual viewport
+//                           or orientation cube, including native menu tracking
+//   view-context-menu-logged <regex> cancel|item right click a logged position
+//   view-pointer press|move|release <x%> <y%> none|left|right|middle [mods]
+//                           separate events can simulate a release lost to menus
+//   capture-view-orientation <var> record actual camera direction and up
+//   expect-view-orientation <before> changed|unchanged compare that orientation
+//   expect-view-buttons none|left|right|middle inspect OCCT's actual held buttons
+//   capture-view-height <var> record the actual OCCT camera height in mm
+//   expect-view-zoom <before> in|out|unchanged compare actual camera height
+//                           [control-before control-after] also compares
+//                           its ratio with a control gesture, detecting
+//                           duplicated magnification as well as lost input
+//   expect-native-text <id> <regex> assert native control text (6 s)
+//                           native.file.name/directory read the focused
+//                           file panel's public filename/folder properties.
+//   expect-native-enabled <id> true|false assert native control state (6 s)
+//   expect-native-visible <id> true|false assert native document view state
+//   expect-native-layout    full-window canvas, floating card geometry and
+//                           real AppKit hit testing above/around the canvas
+//   expect-native-history [uid...] compare horizontal native history icons,
+//                           marker geometry and rollback appearance with the
+//                           actual model; optional IDs check native and shared
+//                           selection (a single '-' checks empty selection)
+//   native-history-drag begin|to <index>|end send actual marker mouse events;
+//                           separate steps let the real model settle during
+//                           a single drag before its undo steps are merged
+//   native-history-drag-now begin|to <index>|end send the same actual event
+//                           immediately, including while the model is busy
+//   expect-model-busy true|false assert the worker's actual state immediately
+//   capture-undo-depth <var> read the real document's undo depth
+//   expect-undo-depth <base> <change> assert its change since capture
+//   expect-model-bodies <count> <volume-mm3> query real OCCT body volumes
+//   expect-native-dialog-gone <regex> [seconds] assert native window closed
+//                           These native steps require the macOS AppKit UI.
+//                           key/type/button/menu/focus-dialog/screenshot
+//                           also use AppKit when native controls have focus.
 //
 // Windows:
 //   focus-dialog <title regex> [seconds]  wait for a visible window of the
@@ -258,6 +330,9 @@ private:
   int m_errorLine = 0;
   bool m_stay = false;
   bool m_finished = false;
+  QMetaObject::Connection m_nativeJobClickConnection;
+  QString m_nativeJobClickLabel;
+  int m_nativeJobClickLine = 0;
 
   QPointer<QWidget> m_main;
   QPointer<QWidget> m_dialog; // the target of key, type and button; else the main window

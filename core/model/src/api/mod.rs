@@ -66,6 +66,16 @@ fn read_json(json: &str) -> Result<Value, ApiError> {
 #[derive(Debug, Deserialize)]
 #[serde(tag = "cmd", rename_all = "snake_case", deny_unknown_fields)]
 enum Command {
+    #[serde(rename = "begin_command")]
+    BeginCheckpoint,
+    #[serde(rename = "restore_command")]
+    RestoreCheckpoint {
+        token: String,
+    },
+    #[serde(rename = "discard_command")]
+    DiscardCheckpoint {
+        token: String,
+    },
     AddFeature {
         def: FeatureDef<ValueInput>,
         #[serde(default)]
@@ -102,6 +112,8 @@ enum Command {
     },
     SetMarker {
         position: usize,
+        #[serde(default)]
+        temporary: bool,
     },
     AddParameter {
         name: String,
@@ -224,7 +236,7 @@ enum Command {
         name: String,
         new_name: String,
     },
-    // The saved state (P8): the project file was written or read.
+    // The saved state (P8): the design file was written or read.
     MarkSaved,
     // The caches of computed results (P7d, `cache.rs`).
     ClearCache,
@@ -414,6 +426,9 @@ enum Query {
     Configurations,
     LibraryParts,
     PartsList,
+    // A row of assembly constraints before it is added: its references' kinds,
+    // the types they fit and what they measure (mitcad#148).
+    ConstraintRow(Box<joints::ConstraintRowQuery>),
 }
 
 fn names(names: &[String]) -> Value {
@@ -486,6 +501,15 @@ impl<K: Kernel> Document<K> {
 
     fn run_document_command(&mut self, command: Command) -> Result<Value, ApiError> {
         Ok(match command {
+            Command::BeginCheckpoint => json!({"token": self.begin_command()?}),
+            Command::RestoreCheckpoint { token } => {
+                self.restore_command(&token)?;
+                json!({})
+            }
+            Command::DiscardCheckpoint { token } => {
+                self.discard_command(&token)?;
+                json!({})
+            }
             Command::AddFeature {
                 def,
                 name,
@@ -522,8 +546,15 @@ impl<K: Kernel> Document<K> {
                 self.rename_body(uid, &name)?;
                 json!({})
             }
-            Command::SetMarker { position } => {
-                self.set_marker(position)?;
+            Command::SetMarker {
+                position,
+                temporary,
+            } => {
+                if temporary {
+                    self.set_temporary_marker(position)?;
+                } else {
+                    self.set_marker(position)?;
+                }
                 json!({})
             }
             Command::AddParameter {
@@ -559,35 +590,36 @@ impl<K: Kernel> Document<K> {
                 let unit = unit.as_deref().map(parse_unit).transpose()?;
                 let mut changed = Vec::new();
                 if value.is_some() || expression.is_some() || unit.is_some() {
-                    changed = match expression_of(value, expression) {
-                        Ok(Expression::Number(value)) if unit.is_none() => {
-                            let before: Vec<f64> =
-                                self.parameters().iter().map(|p| p.value()).collect();
-                            self.set_parameter(&name, value)?;
-                            self.parameters()
-                                .iter()
-                                .zip(before)
-                                .filter(|(p, old)| p.value() != *old)
-                                .map(|(p, _)| p.name().to_owned())
-                                .collect()
-                        }
-                        Ok(Expression::Number(value)) => {
-                            let unit = unit.expect("checked");
-                            let text = value_to_expression(value, unit);
-                            self.set_parameter_expression(&name, &text, Some(unit))?
-                        }
-                        Ok(Expression::Text(text)) => {
-                            self.set_parameter_expression(&name, &text, unit)?
-                        }
+                    changed = if value.is_none() && expression.is_none() {
                         // Only a new unit: the expression stays.
-                        Err(_) => {
-                            let expression = self
-                                .parameters()
-                                .find(&name)
-                                .and_then(|id| self.parameters().get(id))
-                                .map(|p| p.expression().to_owned())
-                                .ok_or_else(|| ApiError(format!("unknown parameter '{name}'")))?;
-                            self.set_parameter_expression(&name, &expression, unit)?
+                        let expression = self
+                            .parameters()
+                            .find(&name)
+                            .and_then(|id| self.parameters().get(id))
+                            .map(|p| p.expression().to_owned())
+                            .ok_or_else(|| ApiError(format!("unknown parameter '{name}'")))?;
+                        self.set_parameter_expression(&name, &expression, unit)?
+                    } else {
+                        match expression_of(value, expression)? {
+                            Expression::Number(value) if unit.is_none() => {
+                                let before: Vec<f64> =
+                                    self.parameters().iter().map(|p| p.value()).collect();
+                                self.set_parameter(&name, value)?;
+                                self.parameters()
+                                    .iter()
+                                    .zip(before)
+                                    .filter(|(p, old)| p.value() != *old)
+                                    .map(|(p, _)| p.name().to_owned())
+                                    .collect()
+                            }
+                            Expression::Number(value) => {
+                                let unit = unit.expect("checked");
+                                let text = value_to_expression(value, unit);
+                                self.set_parameter_expression(&name, &text, Some(unit))?
+                            }
+                            Expression::Text(text) => {
+                                self.set_parameter_expression(&name, &text, unit)?
+                            }
                         }
                     };
                 }
@@ -845,13 +877,20 @@ impl<K: Kernel> Document<K> {
                         .map(|p| {
                             let dependencies: Vec<String> =
                                 p.dependencies().iter().map(|id| params.name(*id)).collect();
-                            json!({"name": p.name(), "expression": p.expression(),
+                            let mut value = json!({"name": p.name(), "expression": p.expression(),
                                    "unit": p.unit().to_string(), "value": p.value(),
                                    "text": p.formatted_value(DEFAULT_DECIMALS),
                                    "comment": p.comment(), "kind": p.kind().as_str(),
                                    "owner": params.owner(p.id()),
                                    "dependencies": dependencies,
-                                   "favorite": self.is_favorite_parameter(p.name())})
+                                   "favorite": self.is_favorite_parameter(p.name())});
+                            if let Some(context) = p.expression_context() {
+                                value["expression_units"] = json!({
+                                    "length": context.default_length_unit.symbol(),
+                                    "angle": context.default_angle_unit.symbol(),
+                                });
+                            }
+                            value
                         })
                         .collect(),
                 )
@@ -999,6 +1038,8 @@ impl<K: Kernel> Document<K> {
             Query::Configurations => self.configurations_json(),
             Query::LibraryParts => self.library_parts_json(),
             Query::PartsList => self.parts_list_json(),
+            // Assembly constraints (mitcad#148).
+            Query::ConstraintRow(query) => self.constraint_row_json(&query)?,
         };
         Ok(result.to_string())
     }

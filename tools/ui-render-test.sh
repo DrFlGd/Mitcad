@@ -26,7 +26,6 @@
 #   - A worker of another protocol version is stopped with a message, and
 #     without a worker there is no rendered view (MITCAD_RENDER_WORKER).
 #
-# Skipped (exit 0) when the build has no render worker (MITCAD_RENDER off).
 # The app starts five times.
 # Runs headless on Xvfb (see ui-test-lib.sh).
 # Usage: tools/ui-render-test.sh [directory for screenshots]
@@ -34,11 +33,6 @@
 
 UI_APP=${UI_APP:-$(cd "$(dirname "$0")/.." && pwd)/build/dev/app/mitcad}
 BUILD_DIR=$(cd "$(dirname "$UI_APP")/.." 2> /dev/null && pwd)
-if ! grep -qs '^MITCAD_RENDER:BOOL=ON' "$BUILD_DIR/CMakeCache.txt"; then
-  echo "SKIP: $UI_APP is built without the render worker (MITCAD_RENDER=OFF)"
-  exit 0
-fi
-
 source "$(dirname "$0")/ui-test-lib.sh"
 
 SHOTS=${1:-}
@@ -49,6 +43,11 @@ trap 'ui_cleanup; rm -rf "$WORK"' EXIT
 R='r{c1[c4,c2],c2[c1,c3],c3[c2,c4],c4[c3,c1]}'
 # Few samples: the test checks that frames refine, not how they look.
 export MITCAD_RENDER_SAMPLES=16
+# On the CPU (the render device setting): a GPU renders the 16 samples in a
+# few frames, before the steps and previews this test checks are seen
+# (tools/ui-render-device-test.sh tests the GPU's choice).
+mkdir -p "$UI_CONFIG/Mitcad"
+printf '[render]\ndevice=cpu\n' >> "$UI_CONFIG/Mitcad/Mitcad.conf"
 # Where the orientation cube is (it is drawn over the render).
 export MITCAD_LOG_ORIENTATION_CUBE=1
 
@@ -162,6 +161,10 @@ ui_expect_log ": 1 bodies, 1 meshes sent (F2.b0)" "the block went to the worker"
 ui_expect_log "received F2.b0; added F2.b0;" "the worker added it"
 VIEW=$(last_view)
 expect_done "$VIEW" "the frames refined to all samples"
+for _ in $(seq 1 25); do
+  [ "$(grep -cE "Render frame view $VIEW [0-9]+x[0-9]+ samples " "$UI_LOG")" -ge 3 ] && break
+  sleep 0.2
+done
 [ "$(grep -cE "Render frame view $VIEW [0-9]+x[0-9]+ samples " "$UI_LOG")" -ge 3 ] ||
   ui_fail "the view did not refine in steps"
 echo "ok   the view refined in $(grep -cE "Render frame view $VIEW " "$UI_LOG") frames"
@@ -323,7 +326,13 @@ VIEW=$(last_view)
 expect_done "$VIEW" "the two bodies rendered"
 grep -qE "Render view $VIEW: first denoised frame .* after [0-9]+ ms" "$UI_LOG" ||
   ui_fail "no denoised frame of view $VIEW"
-denoised=$(grep -cE "Render frame view $VIEW [0-9]+x[0-9]+ samples [0-9]+ denoised" "$UI_LOG")
+# The last frame is shown (and logged) a little after the worker's "samples
+# in" line, which expect_done waits for.
+for _ in $(seq 1 25); do
+  denoised=$(grep -cE "Render frame view $VIEW [0-9]+x[0-9]+ samples [0-9]+ denoised" "$UI_LOG")
+  [ "$denoised" -ge 2 ] && break
+  sleep 0.2
+done
 [ "$denoised" -ge 2 ] || ui_fail "only $denoised denoised frames of view $VIEW: no preview before the last"
 echo "ok   $denoised denoised frames, the $(grep -E "Render view $VIEW: first denoised frame" "$UI_LOG" | tail -1 | sed 's/.*: first/first/')"
 shot rendered-sketch

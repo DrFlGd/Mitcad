@@ -57,7 +57,7 @@ bool askTrustBroker(QWidget* parent, const QString& project, const QString& addr
   box.setEscapeButton(notNow);
   prepareModal(&box);
   qInfo().noquote() << QStringLiteral("Live trust question: %1 through %2 [Connect, Not Now]").arg(project, address);
-  box.exec();
+  execDialog(&box);
   const bool trusted = box.clickedButton() == connect;
   qInfo().noquote() << QStringLiteral("Live trust: %1 %2").arg(address, trusted ? QStringLiteral("connect")
                                                                                : QStringLiteral("not now"));
@@ -134,7 +134,7 @@ std::optional<BrokerSignIn> askBrokerSignIn(QWidget* parent, const QString& addr
   qInfo().noquote() << QStringLiteral("Live sign-in dialog: %1, user %2, keychain %3")
                            .arg(address, user.isEmpty() ? QStringLiteral("none") : user,
                                 keychain ? QStringLiteral("on") : QStringLiteral("off"));
-  dialog.exec();
+  execDialog(&dialog);
   qInfo().noquote() << (chosen ? QStringLiteral("Live sign-in: %1 as %2%3")
                                      .arg(address, chosen->credentials.user,
                                           chosen->remember ? QStringLiteral(", remembered") : QString())

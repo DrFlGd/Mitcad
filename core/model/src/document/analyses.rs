@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT
 //! Analyses kept in the document (mitcad#41): section analyses, listed in
-//! the browser's Analysis folder and saved in the project file. They
+//! the browser's Analysis folder and saved in the design file. They
 //! change no geometry: adding, editing, renaming, showing, hiding and
 //! deleting one is an undo step that recomputes nothing.
 //!

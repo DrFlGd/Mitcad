@@ -1,13 +1,12 @@
 // SPDX-License-Identifier: MIT
-// Background computation (P7, docs/architecture.md): the main window runs
-// jobs on the model's worker thread and waits for them on the UI thread
-// without freezing. Opening a design is a job, and so is every model
-// command and preview; their callers stay synchronous.
+// Background computation (P7, docs/architecture.md): the main window
+// presents progress while DocumentSession runs jobs on its model worker.
+// The legacy Qt callers stay synchronous; the native frontend can also
+// use the session's asynchronous command and preview entry points.
 #include "MainWindow.hpp"
 
 #include <algorithm>
 #include <chrono>
-#include <cstdint>
 #include <memory>
 
 #include <QApplication>
@@ -18,18 +17,17 @@
 #include <QtLogging>
 
 #include "framework/ComputeProgress.hpp"
-#include "framework/Diagnostics.hpp"
-#include "framework/Json.hpp"
+#include "framework/Dialogs.hpp"
 #include "files/LockController.hpp"
+#ifdef MITCAD_MACOS_NATIVE_UI
+#include "platform/NativeDialogs.hpp"
+#endif
 
 namespace mitcad {
 namespace {
 
 using std::chrono::milliseconds;
 
-// The UI thread blocks this long for a job before it draws again, so that
-// quick jobs change nothing in how the window behaves.
-constexpr milliseconds kBlockFor(50);
 // Until then it draws while input waits in Qt's queue; a job that takes
 // longer gets the progress dialog, and input goes to that.
 constexpr qint64 kDialogAfterMs = 400;
@@ -54,77 +52,10 @@ QString positionOf(const JobProgress& progress) {
 
 bool MainWindow::runJob(const QString& label, const QString& stage, const std::function<void(ModelJob&)>& job,
                         JobLog log) {
-  if (modelBusy()) {
-    // Started while waiting for another job (from a timer or a queued
-    // signal): the model is that job's.
-    qWarning().noquote() << QStringLiteral("Computing %1 refused: the model is busy").arg(label);
-    throw ModelBusy();
-  }
-  // Nothing computes while the view draws: its picks come out of a frame.
+  // View picks are produced inside a frame; the presentation may not
+  // begin a model computation until that frame has finished.
   Q_ASSERT(!m_viewer->isPainting());
-  ModelJob state;
-  state.setStage(stage);
-  if (const int delay = testRecomputeDelay(label); delay > 0) {
-    state.control().set_test_delay(static_cast<std::uint32_t>(delay));
-  }
-  bool logged = log == JobLog::Always;
-  if (logged) {
-    qDebug().noquote() << QStringLiteral("Computing %1 started").arg(label);
-  }
-  QElapsedTimer clock;
-  clock.start();
-  m_job = &state;
-  std::exception_ptr error;
-  if (computeInline()) {
-    try {
-      job(state);
-    } catch (...) {
-      error = std::current_exception();
-    }
-  } else {
-    m_worker->post([&job, &state] { job(state); });
-    try {
-      if (!m_worker->waitFor(kBlockFor)) {
-        waitForJob(label, state, clock, logged);
-      }
-    } catch (...) {
-      // The job uses what is here: it ends before this does.
-      state.control().cancel();
-      m_worker->take();
-      m_job = nullptr;
-      throw;
-    }
-    error = m_worker->take();
-  }
-  m_job = nullptr;
-  if (m_closePending) {
-    // Closing was asked for meanwhile (closeEvent): now it can.
-    m_closePending = false;
-    QTimer::singleShot(0, this, [this] { close(); });
-  }
-  if (!m_idleCalls.empty() && !m_idleCallsPosted) {
-    // What waited for the model, after this job's caller is done with it.
-    m_idleCallsPosted = true;
-    QTimer::singleShot(0, this, &MainWindow::runIdleCalls);
-  }
-  const qint64 elapsed = clock.elapsed();
-  if (error) {
-    // Whatever stopped a job that was asked to stop, it changed nothing:
-    // a cancel.
-    if (state.control().is_cancelled()) {
-      qDebug().noquote() << QStringLiteral("Computing %1 cancelled after %2 ms").arg(label).arg(elapsed);
-      return false;
-    }
-    std::rethrow_exception(error);
-  }
-  // A job that ended although a cancel came late did all it was to do.
-  if (logged) {
-    qDebug().noquote() << QStringLiteral("Computing %1 done in %2 ms (%3 evaluated)")
-                              .arg(label)
-                              .arg(elapsed)
-                              .arg(static_cast<qulonglong>(state.control().progress().evaluated));
-  }
-  return true;
+  return m_documentSession->runJob(label, stage, job, log);
 }
 
 void MainWindow::waitForJob(const QString& label, ModelJob& job, const QElapsedTimer& clock, bool& logged) {
@@ -174,13 +105,22 @@ void MainWindow::waitForJob(const QString& label, ModelJob& job, const QElapsedT
         job.control().cancel();
       });
       dialog->showProgress(job.stage(), job.control().progress(), clock.elapsed());
-      dialog->show();
+      showDialog(dialog.get());
       // The dialog takes clicks; the cursor says so.
       QApplication::restoreOverrideCursor();
       cursorSet = false;
       qDebug().noquote() << QStringLiteral("Progress dialog shown: %1").arg(label);
     }
-    loop.exec(dialog ? QEventLoop::AllEvents : QEventLoop::ExcludeUserInputEvents);
+#ifdef MITCAD_MACOS_NATIVE_UI
+    if (m_nativeUi) {
+      waitNativeUntil([&] {
+        return m_worker->waitFor(milliseconds(0)) || (!dialog && clock.elapsed() >= kDialogAfterMs);
+      });
+    } else
+#endif
+    {
+      loop.exec(dialog ? QEventLoop::AllEvents : QEventLoop::ExcludeUserInputEvents);
+    }
     // A loop returns at once while the application quits: wait a little.
     m_worker->waitFor(milliseconds(dialog ? 10 : 0));
   }
@@ -195,86 +135,33 @@ void MainWindow::waitForJob(const QString& label, ModelJob& job, const QElapsedT
     const bool front = QApplication::activeWindow() == dialog.get();
     QPointer<QWidget> back = before ? before.data() : dialog->parentWidget()->window();
     dialog.reset();
-    if (front && back && back->isVisible()) {
+    if (!m_nativeUi && front && back && back->isVisible()) {
       back->activateWindow();
     }
   }
 }
 
 void MainWindow::whenIdle(QObject* context, std::function<void()> call) {
-  m_idleCalls.push_back({QPointer<QObject>(context), std::move(call)});
-  if (!modelBusy() && !m_idleCallsPosted) {
-    m_idleCallsPosted = true;
-    QTimer::singleShot(0, this, &MainWindow::runIdleCalls);
-  }
-}
-
-void MainWindow::runIdleCalls() {
-  m_idleCallsPosted = false;
-  // A call may compute (a job), and what its wait lets through may queue
-  // more: those run after it, in order. While a job runs, the rest wait for
-  // its end (runJob posts this again).
-  while (!m_idleCalls.empty() && !modelBusy()) {
-    IdleCall next = std::move(m_idleCalls.front());
-    m_idleCalls.pop_front();
-    if (next.context) {
-      next.call();
-    }
-  }
+  m_documentSession->whenIdle(context, std::move(call));
 }
 
 // ---------------------------------------------------------------------------
 // Model commands and previews as jobs
 
 QJsonObject MainWindow::command(const QJsonObject& command) {
+  Q_ASSERT(!m_viewer->isPainting());
   const QString name = command.value(QStringLiteral("cmd")).toString();
   // Every change of the document passes here: a read-only window
   // (mitcad#89) refuses what would change the design.
   if (windowReadOnly() && !m_writeAnyway && !readOnlyModelCommand(name)) {
     throw ReadOnlyError(readOnlyReason().toStdString());
   }
-  // What the progress dialog says: "Undo", "Set parameter".
-  QString stage = name;
-  stage.replace(QLatin1Char('_'), QLatin1Char(' ')).replace(QLatin1Char('.'), QLatin1Char(' '));
-  if (!stage.isEmpty()) {
-    stage[0] = stage[0].toUpper();
-  }
-  const QByteArray json = compactJson(command);
-  ScopedTiming timing("command");
-  timing.setDetail(name);
-  Document& document = *m_document;
-  rust::String answer;
-  const bool done = runJob(
-      name, stage,
-      [&document, &json, &answer](ModelJob& job) {
-        const AttachedJob attached(document, job);
-        answer = document.command(rustStr(json));
-      },
-      JobLog::WhenSlow);
-  if (!done) {
-    throw ComputationCancelled();
-  }
-  timing.finish();
-  return parseObject(answer);
+  return m_documentSession->command(command);
 }
 
 QJsonObject MainWindow::modelPreview(const QByteArray& command, const QString& name) {
-  ScopedTiming timing("preview");
-  timing.setDetail(name);
-  Document& document = *m_document;
-  rust::String answer;
-  const bool done = runJob(
-      QStringLiteral("preview"), tr("Preview of %1").arg(name),
-      [&document, &command, &answer](ModelJob& job) {
-        const AttachedJob attached(document, job);
-        answer = document.preview(rustStr(command));
-      },
-      JobLog::WhenSlow);
-  if (!done) {
-    throw ComputationCancelled();
-  }
-  timing.finish();
-  return parseObject(answer);
+  Q_ASSERT(!m_viewer->isPainting());
+  return m_documentSession->preview(command, name);
 }
 
 } // namespace mitcad

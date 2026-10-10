@@ -63,6 +63,15 @@ pub enum ErrorClass {
     /// A folder that is a project, or inside one, where a new project was
     /// to be made.
     InsideProject,
+    // Folders and designs of a project (mitcad#144).
+    /// The new folder's or design's path, or a move's target, is there
+    /// already.
+    Exists,
+    /// A design is locked by someone else (edit locks).
+    Locked,
+    /// A path the operation does not take: outside the project, a hidden
+    /// name, not a design's name, a folder moved into itself.
+    InvalidPath,
 }
 
 /// A failure of a remote operation: its class, a message for people and

@@ -60,7 +60,10 @@ pub struct Resolved {
 fn named_entities(detail: &mut Detail) -> Vec<&mut Fingerprint> {
     // (A fillet's or chamfer's faces left after [`expand_faces`] were not
     // found.) A thread's faces and an extrusion's object are faces.
-    let faces = matches!(detail, Detail::Thread(_) | Detail::Extrude(_));
+    let faces = matches!(
+        detail,
+        Detail::Thread(_) | Detail::Extrude(_) | Detail::Shell(_) | Detail::OffsetFaces(_)
+    );
     let refs: Vec<&mut Reference> = match detail {
         Detail::Fillet(f) => f
             .edge_sets
@@ -81,6 +84,9 @@ fn named_entities(detail: &mut Detail) -> Vec<&mut Fingerprint> {
             .flatten()
             .filter_map(|d| d.entity.as_mut())
             .collect(),
+        // A shell's removed faces and offset faces (mitcad#154).
+        Detail::Shell(s) => s.input_entities.iter_mut().flatten().collect(),
+        Detail::OffsetFaces(o) => o.input_faces.iter_mut().flatten().collect(),
         _ => Vec::new(),
     };
     refs.into_iter()

@@ -61,7 +61,7 @@ pub struct Environment {
     /// the design).
     pub sun_azimuth: f64,
     /// `image`: an equirectangular (latitude-longitude) HDR image, `.hdr`
-    /// or `.exr`, relative to the project file's folder or absolute. Kept
+    /// or `.exr`, relative to the design file's folder or absolute. Kept
     /// when another preset is chosen.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub image: Option<String>,
@@ -484,7 +484,7 @@ pub const MAX_STRENGTH: f64 = 100.0;
 pub const MAX_EXPOSURE: f64 = 10.0;
 
 impl RenderSettings {
-    /// Whether these are the defaults (a project file leaves them out).
+    /// Whether these are the defaults (a design file leaves them out).
     pub fn is_default(&self) -> bool {
         *self == Self::default()
     }

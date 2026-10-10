@@ -10,7 +10,7 @@ namespace mitcad {
 FileKind fileKind(const QString& path) {
   const QString suffix = QFileInfo(path).suffix().toLower();
   if (suffix == QStringLiteral("mitcad")) {
-    return FileKind::Project;
+    return FileKind::Design;
   }
   if (suffix == QStringLiteral("f3d") || suffix == QStringLiteral("f3z")) {
     return FileKind::F3d;
@@ -46,12 +46,12 @@ const char* const kCad =
 const char* const kMesh = "*.stl *.obj";
 const char* const kDrawing = "*.dxf";
 
-QString kinds(bool project) {
+QString kinds(bool designs) {
   QStringList filters;
   filters << QObject::tr("Supported files (%1%2 %3 %4)")
-                 .arg(project ? QStringLiteral("*.mitcad ") : QString(), QLatin1String(kCad), QLatin1String(kMesh),
+                 .arg(designs ? QStringLiteral("*.mitcad ") : QString(), QLatin1String(kCad), QLatin1String(kMesh),
                       QLatin1String(kDrawing));
-  filters << QObject::tr("Mitcad projects (*.mitcad)");
+  filters << QObject::tr("Mitcad designs (*.mitcad)");
   filters << QObject::tr("CAD files (%1)").arg(QLatin1String(kCad));
   filters << QObject::tr("Meshes: STL and OBJ (%1)").arg(QLatin1String(kMesh));
   filters << QObject::tr("DXF drawings (%1)").arg(QLatin1String(kDrawing));

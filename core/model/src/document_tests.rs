@@ -1037,7 +1037,7 @@ fn only_a_changed_definition_is_a_new_revision() {
     b.doc.preview_add(&fillet, None).unwrap();
     assert_eq!(b.doc.revision(), revision);
     b.doc.clear_preview();
-    // Saving again, and the project file.
+    // Saving again, and the design file.
     b.doc.mark_saved();
     let _ = b.doc.to_json();
     assert_eq!(b.doc.revision(), revision);

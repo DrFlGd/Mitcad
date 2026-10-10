@@ -509,6 +509,19 @@ impl Kernel for TestKernel {
         self.mock.loft(spec)
     }
 
+    // Sweeps, plain and along guide surfaces (mitcad#157).
+    fn sweep(&self, spec: &mitcad_model::SweepSpec<'_>) -> Result<MockShape, KernelError> {
+        self.mock.sweep(spec)
+    }
+
+    fn surface_sweep(
+        &self,
+        spec: &mitcad_model::SweepSpec<'_>,
+        surfaces: &[mitcad_model::GuideSurface<'_, MockShape>],
+    ) -> Result<MockShape, KernelError> {
+        self.mock.surface_sweep(spec, surfaces)
+    }
+
     // With edge_points, a point per edge between its faces' points (see
     // edge_point), 1 mm long, so that fingerprints of edges resolve.
     fn edge_middles(
@@ -691,6 +704,11 @@ struct TestGeometry {
     ids: bool,
     /// Items whose state the history does not hold (suppressed).
     without_result: Vec<i64>,
+    /// Items whose operation changed no body (failed in the file).
+    unchanged: Vec<i64>,
+    /// The state before the operations no item names right before an
+    /// item's own, by item index.
+    starts: HashMap<i64, usize>,
 }
 
 impl StoredGeometry<MockShape> for TestGeometry {
@@ -704,6 +722,14 @@ impl StoredGeometry<MockShape> for TestGeometry {
 
     fn item_without_result(&mut self, index: i64) -> bool {
         self.without_result.contains(&index)
+    }
+
+    fn item_unchanged(&mut self, index: i64) -> bool {
+        self.unchanged.contains(&index)
+    }
+
+    fn item_start(&mut self, index: i64) -> Option<usize> {
+        self.starts.get(&index).copied()
     }
 
     fn state(&mut self, index: usize) -> Result<Vec<StoredBody<MockShape>>, String> {
@@ -2661,6 +2687,105 @@ fn sweeps_pipes_and_lofts_of_the_stream_decoder() {
     assert_eq!(loft["sections"][1]["type"], "point");
     assert_eq!(loft["sections"][1]["point"]["sketch"], "F2");
     assert_eq!(loft["end_condition"]["type"], "point_tangent");
+}
+
+/// Sweeps along guide surfaces (mitcad#157): faces found by their
+/// fingerprints become `guide_surfaces` (a guide rail the stream decoder
+/// also gives is not one); without the faces' geometry the item is not
+/// replayed.
+#[test]
+fn sweeps_along_guide_surfaces_take_the_faces_found() {
+    let kernel = || TestKernel {
+        face_listing: true,
+        ..TestKernel::default()
+    };
+    let base = vec![
+        rectangle_sketch(0),
+        extrude(1, 0, "NewBodyFeatureOperation", "d2"),
+    ];
+    let mut reference = Document::new(kernel());
+    import_design(
+        &mut reference,
+        &timeline_dump(base.clone()),
+        &mut NoGeometry,
+        &Options::default(),
+    );
+    let top = reference.bodies()[0]
+        .shape
+        .faces
+        .iter()
+        .find(|f| f.role == "end")
+        .cloned()
+        .expect("a top face");
+    let point = face_point(&top).map(|x| x / 10.0);
+    let path_sketch = json!({
+        "index": 2, "name": "Sketch2", "objectType": "Sketch",
+        "detail": {
+            "referencePlane": {"kind": "construction_plane", "name": "XY", "origin": "XY"},
+            "model_frame": {"sketch_to_model": [[1.0, 0.0, 0.0, 0.0], [0.0, 1.0, 0.0, 0.0],
+                                                [0.0, 0.0, 1.0, 0.0], [0.0, 0.0, 0.0, 1.0]]},
+            "points": [{"id": "p0", "xyz": [0.0, 0.0, 0.0]}, {"id": "p1", "xyz": [0.0, 5.0, 0.0]}],
+            "curves": [{"id": "c0", "type": "SketchLine", "startSketchPoint": "p0", "endSketchPoint": "p1"}]
+        }
+    });
+    let line = json!([{"_type": "PathEntity", "entity": {"kind": "sketch_entity",
+        "objectType": "SketchLine", "sketch": "Sketch2", "sketch_timeline_index": 2, "id": "c0"}}]);
+    let sweep = |face: Value| {
+        json!({"index": 3, "name": "Sweep1", "objectType": "SweepFeature", "detail": {
+            "profile": [{"kind": "profile", "sketch": "Sketch1", "sketch_timeline_index": 0}],
+            "operation": "NewBodyFeatureOperation", "path": line, "guideRail": line,
+            "guideSurfaces": [face],
+            "distanceOne": param("d7", "1", 1.0, ""), "distanceTwo": param("d8", "1", 1.0, ""),
+            "twistAngle": param("d9", "30 deg", 0.5235987755982988, "deg")}})
+    };
+    let run = |face: Value| {
+        let mut items = base.clone();
+        items.extend([path_sketch.clone(), sweep(face)]);
+        let mut doc = Document::new(kernel());
+        let report = import_design(
+            &mut doc,
+            &timeline_dump(items),
+            &mut NoGeometry,
+            &Options::default(),
+        );
+        let query = json!({"query": "feature", "uid": "F4"}).to_string();
+        let def = doc
+            .query(&query)
+            .ok()
+            .and_then(|a| serde_json::from_str::<Value>(&a).ok())
+            .map(|a| a["def"].clone())
+            .filter(|d| d["type"] == "sweep");
+        (report, def)
+    };
+
+    let (report, def) = run(json!({"kind": "face", "objectType": "BRepFace",
+        "geometry": {"type": "Plane"}, "point_on_face": point,
+        "_f3d": {"recipe": "bounded_face"}}));
+    let item = report.items.iter().find(|i| i.name == "Sweep1").unwrap();
+    assert_eq!(item.outcome, Outcome::Parametric, "{}", report.text());
+    let def = def.expect("a sweep");
+    assert_eq!(
+        def["guide_surfaces"],
+        json!([{"body": "F2.b0", "face": top.to_string()}])
+    );
+    for key in ["guide_rail", "twist_angle", "orientation"] {
+        assert!(def.get(key).is_none(), "{key}: {def}");
+    }
+
+    // The stream decoder's faces by their names only: not replayed (no
+    // stored bodies here to fall back on).
+    let (report, def) = run(json!({"kind": "face", "objectType": "BRepFace",
+        "_f3d": {"recipe": "bounded_face"}}));
+    let item = report.items.iter().find(|i| i.name == "Sweep1").unwrap();
+    assert_ne!(item.outcome, Outcome::Parametric, "{}", report.text());
+    assert!(
+        item.note
+            .as_deref()
+            .is_some_and(|n| n.contains("guide surfaces' geometry was not decoded")),
+        "{}",
+        report.text()
+    );
+    assert!(def.is_none());
 }
 
 #[test]
@@ -5476,6 +5601,212 @@ fn an_item_whose_state_the_history_does_not_hold_is_skipped() {
         report.text()
     );
     assert_eq!(report.items[3].verified, Some(true), "{}", report.text());
+}
+
+#[test]
+fn an_item_whose_operation_changed_no_body_is_skipped_as_failed() {
+    // mitcad#156: the history holds the item's operation, but it left the
+    // bodies as they were (an extrusion that found no body to cut in the
+    // file); no definition does that, so it is skipped, not a fallback.
+    let (mut items, mut geometry) = block_history(Vec::new());
+    let mut failed = extrude(3, 0, "JoinFeatureOperation", "d2");
+    failed["name"] = json!("Extrude3");
+    items.push(failed);
+    geometry.items.insert(3, 2);
+    geometry.unchanged = vec![3];
+    let mut doc = Document::new(TestKernel::default());
+    let report = import_design(
+        &mut doc,
+        &timeline_dump(items),
+        &mut geometry,
+        &Options::default(),
+    );
+    let failed = &report.items[3];
+    assert_eq!(failed.outcome, Outcome::Skipped, "{}", report.text());
+    assert!(
+        failed
+            .note
+            .as_deref()
+            .is_some_and(|n| n.contains("failed in the file")),
+        "{}",
+        report.text()
+    );
+    assert!(failed.features.is_empty(), "{}", report.text());
+    assert_eq!(report.items[2].outcome, Outcome::Parametric);
+    // Without the history's word it is not called failed.
+    let (mut items, mut geometry) = block_history(Vec::new());
+    items.push(extrude(3, 0, "JoinFeatureOperation", "d2"));
+    geometry.items.insert(3, 2);
+    let mut doc = Document::new(TestKernel::default());
+    let report = import_design(
+        &mut doc,
+        &timeline_dump(items),
+        &mut geometry,
+        &Options::default(),
+    );
+    let note = report.items[3].note.as_deref().unwrap_or_default();
+    assert!(!note.contains("failed in the file"), "{}", report.text());
+}
+
+#[test]
+fn operations_before_an_item_s_own_may_be_its_own() {
+    // mitcad#156: a pattern makes an operation per copy, and the item names
+    // the last; the states of the others come between the item before and
+    // its own. From the state the replay is at, the item gives its own
+    // state, with no base feature for the states between.
+    let (items, mut geometry) = block_history(Vec::new());
+    let joined = geometry.states.pop().unwrap();
+    let mut other = Document::new(TestKernel::default());
+    import_design(
+        &mut other,
+        &timeline_dump(vec![
+            circle_sketch(0),
+            extrude(1, 0, "NewBodyFeatureOperation", "d2"),
+        ]),
+        &mut NoGeometry,
+        &Options::default(),
+    );
+    geometry.states.push(shapes(&other));
+    geometry.states.push(joined);
+    geometry.items = HashMap::from([(1, 1), (2, 3)]);
+    let run = |geometry: &mut TestGeometry| {
+        let mut doc = Document::new(TestKernel::default());
+        import_design(
+            &mut doc,
+            &timeline_dump(items.clone()),
+            geometry,
+            &Options::default(),
+        )
+    };
+    // Without the history's word the state between comes in first, and the
+    // join on it gives no state.
+    let report = run(&mut geometry);
+    assert_eq!(
+        report.items[2].outcome,
+        Outcome::Fallback,
+        "{}",
+        report.text()
+    );
+    geometry.starts = HashMap::from([(2, 1)]);
+    let report = run(&mut geometry);
+    assert_eq!(
+        report.items[2].outcome,
+        Outcome::Parametric,
+        "{}",
+        report.text()
+    );
+    assert_eq!(report.items[2].verified, Some(true));
+    assert!(report.warnings.is_empty(), "{}", report.text());
+}
+
+/// History states whose bodies belong to components: (shape, component
+/// object, body id) per body.
+#[derive(Default)]
+struct OwnedStates {
+    states: Vec<Vec<(MockShape, u64, u64)>>,
+    items: HashMap<i64, usize>,
+    components: HashMap<i64, Vec<u64>>,
+}
+
+impl StoredGeometry<MockShape> for OwnedStates {
+    fn state_count(&mut self) -> usize {
+        self.states.len()
+    }
+
+    fn item_state(&mut self, index: i64) -> Option<usize> {
+        self.items.get(&index).copied()
+    }
+
+    fn state(&mut self, index: usize) -> Result<Vec<StoredBody<MockShape>>, String> {
+        Ok(self.states[index]
+            .iter()
+            .map(|(shape, component, id)| StoredBody {
+                shape: shape.clone(),
+                name: None,
+                source: format!("state {index} body {id}"),
+                component: Some(*component),
+                id: Some(*id),
+            })
+            .collect())
+    }
+
+    fn final_bodies(&mut self) -> Result<Vec<StoredBody<MockShape>>, String> {
+        let last = self.states.len() - 1;
+        self.state(last)
+    }
+
+    fn item_components(&mut self, index: i64) -> Option<Vec<u64>> {
+        self.components.get(&index).cloned()
+    }
+
+    fn history_components(&mut self) -> Option<std::collections::HashSet<u64>> {
+        Some(self.components.values().flatten().copied().collect())
+    }
+}
+
+#[test]
+fn a_component_made_from_bodies_takes_them_into_the_placed_component() {
+    // mitcad#156: the root's block becomes the body of the component Base
+    // (placed by the occurrence tree); Base's history starts with it, while
+    // the root's keeps it as it was. The item moves the replay's block into
+    // Base, and the root's copy leaves the history from its state on.
+    let mut reference = Document::new(TestKernel::default());
+    import_design(
+        &mut reference,
+        &timeline_dump(vec![
+            rectangle_sketch(0),
+            extrude(1, 0, "NewBodyFeatureOperation", "d2"),
+        ]),
+        &mut NoGeometry,
+        &Options::default(),
+    );
+    let block = shapes(&reference).remove(0);
+    let mut sketch = rectangle_sketch(0);
+    sketch["_f3d"] = json!({"component": 3});
+    let mut made = extrude(1, 0, "NewBodyFeatureOperation", "d2");
+    made["_f3d"]["component"] = json!(3);
+    let moved = json!({"index": 2, "name": "Body->Comp1", "objectType": "ComponentFromBodies",
+                       "_f3d": {"component": 3, "result_no": -1, "made_result_no": 7}});
+    let mut value: Value = serde_json::to_value(timeline_dump(vec![sketch, made, moved])).unwrap();
+    value["document"] = json!({"root_component": "Assembly"});
+    value["components"] = json!([
+        {"name": "Assembly", "is_root": true, "_f3d": {"object_id": 3}},
+        {"name": "Base", "_f3d": {"object_id": 10}}]);
+    value["occurrences"] = json!([{"component": "Base", "_f3d": {"component_object": 10},
+                                   "isReferencedComponent": false, "children": []}]);
+    let dump = Dump::from_json(&value.to_string()).unwrap();
+    let mut geometry = OwnedStates {
+        states: vec![
+            Vec::new(),
+            vec![(block.clone(), 3, 1)],
+            vec![(block.clone(), 3, 1), (block.clone(), 10, 2)],
+        ],
+        items: HashMap::from([(1, 1), (2, 2)]),
+        components: HashMap::from([(1, vec![3]), (2, vec![10])]),
+    };
+    let mut doc = Document::new(TestKernel::default());
+    let report = import_design(&mut doc, &dump, &mut geometry, &Options::default());
+    let item = &report.items[2];
+    assert_eq!(item.outcome, Outcome::Parametric, "{}", report.text());
+    assert_eq!(item.note.as_deref(), Some("moves its body into Base"));
+    let base = doc
+        .assembly()
+        .components
+        .iter()
+        .find(|c| c.name == "Base")
+        .map(|c| c.uid)
+        .unwrap();
+    // One body, Base's, made by the root's extrusion; no other component.
+    assert_eq!(doc.assembly().components.len(), 1, "{}", report.text());
+    let bodies = doc.bodies();
+    assert_eq!(bodies.len(), 1);
+    assert_eq!(doc.body_component(bodies[0].uid), Some(base));
+    assert_eq!(report.history.matched, 2, "{}", report.text());
+    assert!(
+        report.warnings.iter().all(|w| !w.contains("replaces")),
+        "{}",
+        report.text()
+    );
 }
 
 #[test]

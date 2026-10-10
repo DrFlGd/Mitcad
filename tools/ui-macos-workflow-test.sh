@@ -74,7 +74,7 @@ ui_finish() {
 run_script() {
   local name=$1 script=$2
   shift 2
-  MITCAD_TEST_INPUT=$scripts/$script ui_run_app "$name" "$@"
+  MITCAD_TEST_INPUT=$scripts/$script ui_run_app "$name" --ui=qt "$@"
   ui_expect_no_log 'TestDriver: FAIL' "$name: no step of the script failed"
   ui_expect_no_log 'OCCT view event failed' "$name: no failed view operation"
   if [ "$UI_FAILURES" -gt 0 ]; then ui_finish; fi
@@ -164,9 +164,17 @@ if command -v git > /dev/null; then
   expected="Save block.mitcad: Undo Change d3|$author
 Save block.mitcad: Change d3|$author
 Create project files|$author"
-  # The restore is the newest version: "Restore v2 of block.mitcad (hash)".
-  newest=$(printf '%s\n' "$log" | sed -n 1p)
-  older=$(printf '%s\n' "$log" | sed -n '2,$p')
+  # The design New Design made in the Projects panel (mitcad#145) is the
+  # newest version, the restore the one before: "Restore v2 of
+  # block.mitcad (hash)".
+  added=$(printf '%s\n' "$log" | sed -n 1p)
+  if [ "$added" = "Add gear.mitcad|$author" ]; then
+    ui_pass "git's log has the new design"
+  else
+    ui_fail "git log, newest: $added"
+  fi
+  newest=$(printf '%s\n' "$log" | sed -n 2p)
+  older=$(printf '%s\n' "$log" | sed -n '3,$p')
   if printf '%s' "$newest" | grep -Eq '^Restore v2 of block\.mitcad \([0-9a-f]{7}\)\|macOS Tester\|'; then
     ui_pass "git's log has the restore"
   else

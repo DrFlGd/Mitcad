@@ -3,7 +3,7 @@
 //! free motions, joint origins on each kind of geometry, placements a
 //! joint settles without a solver, limits as values, as-built joints,
 //! rigid groups, degrees of freedom, suppress, edit, delete, undo, copies
-//! and the project file.
+//! and the design file.
 //!
 //! The mock's blocks are 10 x 10 x 5 at their component's origin: the
 //! planar end face's middle is (5, 5, 5) with the normal +Z, the start
@@ -765,6 +765,8 @@ fn rigid_groups_move_as_one_and_count_as_one() {
     assert_eq!(dof["total"], 0, "{dof}");
     assert_eq!(dof["units"][1]["occurrences"], json!(["O2", "O3"]));
     assert_eq!(dof["units"][1]["dof"], 0);
+    // Rigidly joined to the grounded plate, it cannot move at all.
+    assert_eq!(dof["units"][1]["mobile"], false);
     // Joined to a grounded occurrence, the group is fixed.
     let error = rig.refuse(json!({"cmd": "add_rigid_group", "occurrences": ["Pin:1"]}));
     assert!(error.contains("at least two occurrences"), "{error}");
@@ -793,6 +795,13 @@ fn degrees_of_freedom_follow_kinds_grounding_and_groups() {
     assert_eq!(units[0]["dof"], 0);
     assert_eq!(units[1]["dof"], 1);
     assert_eq!(units[2]["dof"], 6);
+    assert_eq!(
+        units
+            .iter()
+            .map(|u| u["mobile"].clone())
+            .collect::<Vec<_>>(),
+        vec![json!(false), json!(true), json!(true)]
+    );
 
     let pin = query(
         &rig.doc,
@@ -800,6 +809,7 @@ fn degrees_of_freedom_follow_kinds_grounding_and_groups() {
     );
     assert_eq!(pin["motions"], json!(["rz"]), "{pin}");
     assert_eq!(pin["dof"], 1);
+    assert_eq!(pin["mobile"], true);
     assert_eq!(pin["joints"][0]["other"], "Plate:1");
     assert_eq!(pin["joints"][0]["kind"], "revolute");
     let free = query(
@@ -949,7 +959,7 @@ fn deleting_an_occurrence_deletes_its_joints() {
 }
 
 #[test]
-fn joints_survive_the_project_file() {
+fn joints_survive_the_design_file() {
     let mut rig = rig();
     rig.ground(rig.o1, true);
     rig.run(json!({"cmd": "add_parameter", "name": "lift", "value": 4}));

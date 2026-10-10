@@ -70,7 +70,9 @@ use f3d_import::abandoned_imports;
 use projects::{projects_command, projects_command_text};
 // Live updates (mitcad#89).
 use live::{LiveHub, new_live_hub};
-use mcp::run_mcp;
+use mcp::{
+    LiveMcpSession, new_live_mcp_session, run_mcp, validate_mcp_command, validate_mcp_query,
+};
 
 #[cxx::bridge(namespace = "mitcad")]
 mod ffi {
@@ -91,17 +93,27 @@ mod ffi {
         /// Serves local MCP tools on stdin/stdout within the workspace.
         fn run_mcp(workspace: &str, read_only: bool) -> Result<()>;
 
+        /// Live MCP protocol only; the application owns and dispatches tools.
+        type LiveMcpSession;
+        fn new_live_mcp_session() -> Box<LiveMcpSession>;
+        /// Serialized protocol response/null, or a tool and its arguments.
+        fn prepare_mcp(self: &mut LiveMcpSession, message: &str) -> Result<String>;
+        /// Complete the pending tool without changing protocol ownership.
+        fn finish_mcp(self: &mut LiveMcpSession, value: &str, is_error: bool) -> Result<String>;
+        fn validate_mcp_command(request: &str) -> Result<()>;
+        fn validate_mcp_query(request: &str) -> Result<()>;
+
         fn new_document() -> Box<Document>;
         /// A 60 x 40 x 20 mm block (Sketch1, Extrude1), used by tests.
         fn new_demo_document() -> Box<Document>;
-        /// Reads a project file (.mitcad JSON, version 1, 2 or 3; the
+        /// Reads a design file (.mitcad JSON, version 1, 2 or 3; the
         /// B-rep references of version 3 stay unresolved). Nothing is
         /// computed until a `recompute` command.
         fn load_document(json: &str) -> Result<Box<Document>>;
-        /// The project file of the document as a single file (version 2,
+        /// The design file of the document as a single file (version 2,
         /// B-rep data inside).
         fn to_json(self: &Document) -> String;
-        /// The project file with the timeline marker at `marker`: what an
+        /// The design file with the timeline marker at `marker`: what an
         /// edit that rolled the marker back will restore (autosave, P8).
         fn to_json_with_marker(self: &Document, marker: usize) -> String;
 
@@ -229,21 +241,22 @@ mod ffi {
         fn set_memory_cache_budget(self: &mut Document, megabytes: u64);
     }
 
-    // Projects and project files of version 3 (P12a): in a folder with
-    // .mitcad/project.json, base features' B-rep data is kept in the
-    // project's store (.mitcad/brep) and the project file refers to it.
+    // Projects and designs in them, design files of version 3 (P12a): in a
+    // folder with .mitcad/project.json, base features' B-rep data is kept in
+    // the project's store (.mitcad/brep) and the design file refers to it.
 
     extern "Rust" {
-        /// Reads the project file at `path`, a version 3 file's B-rep data
+        /// Reads the design file at `path`, a version 3 file's B-rep data
         /// from the store of the project it is in. Nothing is computed.
-        fn load_project(path: &str) -> Result<Box<Document>>;
+        fn load_design(path: &str) -> Result<Box<Document>>;
         /// The same with the file's text read by the caller.
         fn load_document_at(json: &str, path: &str) -> Result<Box<Document>>;
-        /// Writes the project file to `path`, whole or not at all, in
-        /// `format`: "auto" (version 3 in a project, else a single file),
-        /// "single" (version 2, B-rep data inside) or "project" (version 3;
-        /// the path must be in a project). Returns the text written.
-        fn save_project(self: &Document, path: &str, format: &str) -> Result<String>;
+        /// Writes the design file to `path`, whole or not at all, in
+        /// `format`: "auto" (version 3 in a project, else a single-file
+        /// design), "single" (version 2, B-rep data inside) or "project"
+        /// (version 3; the path must be in a project). Returns the text
+        /// written.
+        fn save_design(self: &Document, path: &str, format: &str) -> Result<String>;
         /// What opening the file changed or could not find (missing B-rep
         /// data, renamed parameters).
         fn load_warnings(self: &Document) -> Vec<String>;
@@ -277,7 +290,7 @@ mod ffi {
         fn command(self: &Project, json: &str) -> Result<String>;
         /// The same, answered in text for people (mitcad-cli).
         fn command_text(self: &Project, json: &str) -> Result<String>;
-        /// Reads the project file at `path` as it was in version `rev`, its
+        /// Reads the design file at `path` as it was in version `rev`, its
         /// B-rep data from that version. Nothing is computed, and linked
         /// components keep the bodies saved with the version.
         fn load_version(project: &Project, rev: &str, path: &str) -> Result<Box<Document>>;
@@ -475,8 +488,8 @@ fn load_document(json: &str) -> Result<Box<Document>, mitcad_model::FileError> {
     mitcad_model::Document::from_json(json, OcctKernel).map(|doc| Box::new(Document(doc)))
 }
 
-fn load_project(path: &str) -> Result<Box<Document>, mitcad_model::ProjectError> {
-    mitcad_model::Document::load_project(std::path::Path::new(path), OcctKernel)
+fn load_design(path: &str) -> Result<Box<Document>, mitcad_model::DesignError> {
+    mitcad_model::Document::load_design(std::path::Path::new(path), OcctKernel)
         .map(|doc| Box::new(Document(doc)))
 }
 
@@ -514,13 +527,13 @@ impl Document {
         self.0.to_json_with_marker(marker)
     }
 
-    fn save_project(&self, path: &str, format: &str) -> Result<String, ApiError> {
+    fn save_design(&self, path: &str, format: &str) -> Result<String, ApiError> {
         use mitcad_model::FileFormat;
         let format = match format {
             "auto" => FileFormat::Auto,
             "single" => FileFormat::Single,
             "project" => FileFormat::Project,
-            other => return Err(ApiError(format!("unknown project file format '{other}'"))),
+            other => return Err(ApiError(format!("unknown design file format '{other}'"))),
         };
         self.0
             .save_file(std::path::Path::new(path), format)

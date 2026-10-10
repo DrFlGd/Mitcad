@@ -99,11 +99,14 @@ TopoDS_Face plane_tool(const gp_Pln& plane, const Bnd_Box& around);
 // the face named `near`: up to the first face of the target reached, or to
 // the far side of a body target run through. The tool's faces in the result
 // are named `far`. Throws when the target does not cut across the whole
-// sweep (the kept part would still hold the face named `unreached`) or
-// cuts the face named `near`.
+// sweep (the kept part would still hold the face named `unreached`), or
+// when the target cuts the face named `near`, unless the sweep is
+// `straight` (along `along`, as an extrusion) and the target is a body's
+// first face or a curved face: then each part of the profile (one starting
+// inside the body or on its faces) is swept up to the first face beyond it.
 ShapePtr trimmed(const Shape& sweep, const Target& target, const TopoDS_Shape& tool,
                  const gp_Dir& along, const std::string& near, const NameList& far,
-                 const std::string& unreached);
+                 const std::string& unreached, bool straight = false);
 
 // Splits the solid with a tool and keeps the pieces for which `keep` is
 // true; tool faces in them are named `tool_names`. Unfinished names.

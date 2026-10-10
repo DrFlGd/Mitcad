@@ -127,6 +127,7 @@ fn every_kind_holds_with_its_free_motions() {
         let a = s.analyze();
         assert_eq!(a.dof, motions.len(), "{motions:?}");
         assert_eq!(a.body_dof, vec![motions.len()]);
+        assert_eq!(a.body_mobile, vec![!motions.is_empty()]);
         assert!(a.redundant.is_empty() && a.conflicts.is_empty());
 
         // Driven to values, frame a is where they put it.
@@ -447,8 +448,9 @@ fn a_four_bar_linkage_closes_and_follows_its_crank() {
     assert_eq!(a.redundant.len(), 1);
     assert_eq!(a.redundant[0].joint, fb.joints[3]);
     assert!(a.conflicts.is_empty());
-    // Each link alone is held by its neighbours.
+    // Each link alone is held by its neighbours, but all of them move.
     assert_eq!(a.body_dof, vec![0, 0, 0]);
+    assert_eq!(a.body_mobile, vec![true, true, true]);
 
     // Driven by the crank's angle.
     for angle in [FRAC_PI_3, 2.0, -1.0, 3.0] {
@@ -582,10 +584,13 @@ fn fixed_bodies_stay_and_free_sides_move_onto_them() {
     let analysis = s.analyze();
     assert_eq!(analysis.dof, 0);
     assert_eq!(analysis.body_dof, vec![0, 0, 0]);
+    // Rigidly joined to the fixed one, neither moves at all.
+    assert_eq!(analysis.body_mobile, vec![false, false, false]);
     // A body without joints keeps its six.
     let lone = s.add_body(false);
     assert_eq!(s.analyze().dof, 6);
     assert_eq!(s.analyze().body_dof[lone.0 as usize], 6);
+    assert_eq!(s.analyze().body_mobile, vec![false, false, false, true]);
     // Two fixed bodies whose joint does not hold: a conflict.
     let other = s.add_body(true);
     s.add_joint(joint(

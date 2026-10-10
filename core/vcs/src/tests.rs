@@ -24,6 +24,8 @@ mod library;
 mod projects;
 // Edit locks (mitcad#89).
 mod locks;
+// A project's folders and designs (mitcad#144).
+mod folders;
 
 /// A fresh folder in the temporary directory, removed afterwards.
 struct Scratch(PathBuf);
@@ -361,7 +363,7 @@ fn brep_files_nothing_refers_to_are_removed() {
     let bolt = brep_file("6 bolt");
     let wedge = brep_file("4 wedge");
 
-    // Another project file, not recorded, refers to both bodies' data.
+    // Another design file, not recorded, refers to both bodies' data.
     let other = repo.root().join("drafts/other.mitcad");
     doc.save_file(&other, FileFormat::Auto).unwrap();
     doc.command(r#"{"cmd": "delete_feature", "uid": "F4"}"#)
@@ -419,7 +421,7 @@ fn brep_files_nothing_refers_to_are_removed() {
 }
 
 #[test]
-fn project_extension_casing_preserves_store_history_and_restore() {
+fn design_extension_casing_preserves_store_history_and_restore() {
     for extension in ["mitcad", "MITCAD", "MiTcAd"] {
         let scratch = Scratch::new("extension-store");
         let (repo, mut doc, original) = project(&scratch);
@@ -451,7 +453,7 @@ fn project_extension_casing_preserves_store_history_and_restore() {
         assert!(!repo.root().join(brep_file("6 bolt")).exists());
         assert!(tree_files(&repo).contains(&brep_file("4 wedge")));
         repo.restore(&part, &first, None, &author()).unwrap();
-        let mut restored = Document::load_project(&part, MockKernel::default()).unwrap();
+        let mut restored = Document::load_design(&part, MockKernel::default()).unwrap();
         assert!(restored.load_warnings().is_empty());
         assert_eq!(bodies(&mut restored), bodies(&mut design()));
         let history = repo.history(&part).unwrap();
@@ -488,7 +490,7 @@ fn an_external_case_only_rename_keeps_referenced_geometry() {
         assert!(tree_files(&repo).contains(&brep_file(data)));
         assert!(repo.root().join(brep_file(data)).is_file());
     }
-    let mut reopened = Document::load_project(&part, MockKernel::default()).unwrap();
+    let mut reopened = Document::load_design(&part, MockKernel::default()).unwrap();
     assert!(reopened.load_warnings().is_empty());
     assert_eq!(bodies(&mut reopened), bodies(&mut doc));
     let history = repo.history(&part).unwrap();
@@ -517,7 +519,7 @@ fn unrecorded_uppercase_designs_protect_referenced_store_files() {
         assert!(removed.removed.contains(&brep_file("6 bolt")));
         assert!(removed.deleted.is_empty(), "{removed:?}");
         assert!(repo.root().join(brep_file("6 bolt")).is_file());
-        let mut draft_doc = Document::load_project(&draft, MockKernel::default()).unwrap();
+        let mut draft_doc = Document::load_design(&draft, MockKernel::default()).unwrap();
         assert!(draft_doc.load_warnings().is_empty());
         assert_eq!(bodies(&mut draft_doc).len(), 3);
         fs::remove_file(&draft).unwrap();
@@ -881,7 +883,7 @@ fn restore_records_an_older_version_as_a_new_one() {
         format!("Restore part.mitcad from {}", &first[..7])
     );
     assert_eq!(history[0].blob, history[2].blob);
-    let mut back = Document::load_project(&part, MockKernel::default()).unwrap();
+    let mut back = Document::load_design(&part, MockKernel::default()).unwrap();
     assert!(
         back.load_warnings().is_empty(),
         "{:?}",
@@ -980,6 +982,90 @@ fn versions_summarise_their_changes_and_follow_renames() {
 }
 
 #[test]
+fn versions_follow_renames_when_the_destination_name_was_reused() {
+    let scratch = Scratch::new("reused-version-path");
+    let (repo, mut doc, part) = project(&scratch);
+    let plate = repo.root().join("plate.mitcad");
+    let a_text = fs::read(&part).unwrap();
+    let a_json = doc.to_json();
+    let a_bodies = bodies(&mut doc);
+    let mut other = design();
+    set_parameter(&mut other, "d3", 45.0);
+    other.save_file(&plate, FileFormat::Auto).unwrap();
+    let b_text = fs::read(&plate).unwrap();
+    assert_ne!(a_text, b_text);
+    assert_ne!(a_bodies, bodies(&mut other));
+    // C1: part = A, plate = B; C2: delete B; C3: rename A to plate.
+    let first = repo
+        .commit(&[part.clone(), plate.clone()], "Two designs", &author())
+        .unwrap()
+        .commit
+        .unwrap();
+    fs::remove_file(&plate).unwrap();
+    repo.commit(std::slice::from_ref(&plate), "Delete plate", &author())
+        .unwrap();
+    fs::rename(&part, &plate).unwrap();
+    let renamed = repo
+        .commit(&[part.clone(), plate.clone()], "Rename part", &author())
+        .unwrap()
+        .commit
+        .unwrap();
+
+    let history = repo.history(&plate).unwrap();
+    assert_eq!(history.len(), 2);
+    assert_eq!(history[0].id, renamed);
+    assert_eq!(history[0].renamed_from.as_deref(), Some("part.mitcad"));
+    assert_eq!(history[1].id, first);
+    assert_eq!(history[1].path, "part.mitcad");
+    assert_eq!(history[0].blob, history[1].blob);
+    assert_eq!(repo.read(&first, &part).unwrap(), a_text);
+    assert_eq!(repo.read(&first, &plate).unwrap(), b_text);
+    let summaries: Vec<Option<String>> = repo
+        .summaries(&history)
+        .into_iter()
+        .map(|s| s.map(Result::unwrap))
+        .collect();
+    assert_eq!(summaries, [Some("no changes".to_owned()), None]);
+    let mut opened = repo
+        .load_version(&first, &plate, MockKernel::default())
+        .unwrap();
+    assert!(opened.load_warnings().is_empty());
+    assert_eq!(opened.to_json(), a_json);
+    assert_eq!(bodies(&mut opened), a_bodies);
+    for (from, to) in [
+        (first.as_str(), Some(renamed.as_str())),
+        (renamed.as_str(), Some(first.as_str())),
+        (first.as_str(), None),
+    ] {
+        assert_eq!(repo.diff(&plate, from, to).unwrap().summary, "no changes");
+    }
+
+    // Make Restore record a real change, then check its bytes and blob.
+    set_parameter(&mut doc, "d3", 25.0);
+    doc.save_file(&plate, FileFormat::Auto).unwrap();
+    repo.commit(std::slice::from_ref(&plate), "Change A", &author())
+        .unwrap();
+    let history = repo.history(&plate).unwrap();
+    let summaries = repo.summaries(&history);
+    let diff = repo.diff(&plate, &first, Some("HEAD")).unwrap();
+    assert_eq!(
+        summaries[0].as_ref().unwrap().as_ref().unwrap(),
+        &diff.summary
+    );
+    assert!(diff.summary.starts_with("d3 20 mm -> 25 mm"));
+    let outcome = repo.restore(&plate, &first, None, &author()).unwrap();
+    assert!(outcome.commit.is_some());
+    assert_eq!(fs::read(&plate).unwrap(), a_text);
+    assert!(!part.exists());
+    let history = repo.history(&plate).unwrap();
+    assert_eq!(history[0].blob, history.last().unwrap().blob);
+    assert_eq!(
+        history[0].summary,
+        format!("Restore plate.mitcad from {}", &first[..7])
+    );
+}
+
+#[test]
 fn a_project_is_created_before_its_first_version() {
     let scratch = Scratch::new("create");
     let dir = scratch.join("bracket");
@@ -1041,7 +1127,7 @@ fn a_file_renamed_outside_mitcad_takes_its_display_state_along() {
         serde_json::json!({"renamed_from": "part.mitcad", "display_moved": true})
     );
     assert!(!local(&part).exists() && local(&plate).is_file());
-    let opened = Document::load_project(&plate, MockKernel::default()).unwrap();
+    let opened = Document::load_design(&plate, MockKernel::default()).unwrap();
     assert!(opened.display().origin);
     // A version records the rename: the old path with the new one, the
     // content as it was (the history follows such renames); then the
@@ -1276,7 +1362,7 @@ fn measure_commits_and_history() {
     bodies(&mut old);
 }
 
-/// Times of commits of a large project file of version 3 that
+/// Times of commits of a large design file of version 3 that
 /// `MITCAD_VCS_LARGE` names, with its B-rep files, copied into a project
 /// with history (release builds: `MITCAD_VCS_LARGE=<file> cargo test -p
 /// mitcad-vcs --release -- --ignored --nocapture large`).
@@ -1311,7 +1397,7 @@ fn measure_a_large_project() {
     repo.commit(std::slice::from_ref(&part), "First", &author())
         .unwrap();
     println!("first commit (all B-rep files): {:?}", start.elapsed());
-    // Saves that change the project file only, as a parameter change does.
+    // Saves that change the design file only, as a parameter change does.
     let saves = 50;
     let mut all = std::time::Duration::ZERO;
     for i in 1..=saves {
@@ -1324,7 +1410,7 @@ fn measure_a_large_project() {
         assert_eq!(outcome.written, ["large.mitcad"]);
     }
     println!(
-        "{saves} commits of the project file: {:?} each",
+        "{saves} commits of the design file: {:?} each",
         all / saves as u32
     );
     let start = Instant::now();

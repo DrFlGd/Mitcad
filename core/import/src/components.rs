@@ -25,7 +25,7 @@ use std::collections::{BTreeMap, HashMap};
 
 use mitcad_f3d::design::ir::{Dump, Mat4, OccurrenceNode, TimelineItem};
 use mitcad_model::assembly::{Assembly, Occurrence, from_rows, inverse};
-use mitcad_model::{ComponentUid, Document, Kernel, OccurrenceUid, Transform};
+use mitcad_model::{BodyUid, ComponentUid, Document, Kernel, OccurrenceUid, Transform};
 use serde::Serialize;
 use serde_json::Value;
 
@@ -560,5 +560,157 @@ pub(crate) fn assign_items<S: Clone>(
     for c in components.items.values() {
         let name = names.get(c).cloned().unwrap_or_else(|| c.to_string());
         *report.items.entry(name).or_default() += 1;
+    }
+}
+
+impl<K: crate::ImportKernel> crate::Importer<'_, K> {
+    /// A component made from bodies (mitcad#156) as Mitcad's: the item's
+    /// operation is the one that put its bodies into the new component's
+    /// history (`_f3d.made_result_no`); the replay's bodies of the item's
+    /// own component that are those bodies move into the component placed
+    /// for the file's by a `component_from_bodies` feature
+    /// ([`mitcad_model::Document::move_made_component`]). The history of
+    /// the item's own component keeps them as they were, though the design
+    /// no longer has them there: they leave its states from the item's on
+    /// ([`Oracle::retire`]). False (nothing done) when the history does not
+    /// settle it: the item then falls back as before.
+    pub(crate) fn component_from_bodies(
+        &mut self,
+        at: usize,
+        index: i64,
+        item: &TimelineItem,
+    ) -> bool {
+        use crate::history::{Sig, bodies_distance};
+        let name = crate::item_name(item);
+        let not = |why: &str| {
+            if crate::tracing() {
+                eprintln!("import: {name}: not moved: {why}");
+            }
+            false
+        };
+        if !self.pending.is_empty() {
+            return not("items before it are pending");
+        }
+        let Some(state) = self.oracle.item_state(index) else {
+            return not("no state of its own");
+        };
+        let Some(&[made]) = self.oracle.item_components(index).as_deref() else {
+            return not("not one component's history");
+        };
+        let owner = item
+            .f3d
+            .as_ref()
+            .and_then(|f| f.component)
+            .and_then(|o| self.components.of_object(o));
+        let (Some(owner), Some(target)) = (owner, self.components.known_body(Some(made))) else {
+            return not("its components are not known");
+        };
+        // Into a component the replay has not put anything in yet.
+        if target == owner {
+            return not("the new component is its own");
+        }
+        if let Some(f) = self.doc.features().find(|f| f.component == target) {
+            return not(&format!("the new component has {} already", f.name));
+        }
+        if self
+            .current_bodies()
+            .iter()
+            .any(|(uid, _)| self.doc.body_component(*uid) == Some(target))
+        {
+            return not("the new component has bodies already");
+        }
+        let kernel = self.doc.kernel();
+        let before = state
+            .checked_sub(1)
+            .and_then(|s| self.oracle.try_sigs(kernel, s));
+        let current = self.current_sigs();
+        if before.is_none_or(|b| bodies_distance(&b, &current).is_none()) {
+            return not("the bodies are not the state before it");
+        }
+        let Ok(stored) = self.oracle.state(kernel, state).map(<[_]>::to_vec) else {
+            return not("its state was not rebuilt");
+        };
+        let moved: Vec<Sig> = stored
+            .iter()
+            .filter(|(b, _)| self.components.of_body(b.component) == target)
+            .map(|(_, s)| *s)
+            .collect();
+        if moved.is_empty() {
+            return not("no body of the new component in its state");
+        }
+        // Each moved body: a body of the replay's in the item's component,
+        // and the same body as the file's own component's history keeps it.
+        let mine: Vec<(BodyUid, Sig)> = self
+            .current_bodies()
+            .into_iter()
+            .filter(|(uid, _)| self.doc.body_component(*uid) == Some(owner))
+            .collect();
+        let mut bodies = Vec::new();
+        let mut retired = Vec::new();
+        for sig in &moved {
+            let Some((uid, _)) = mine
+                .iter()
+                .find(|(uid, s)| !bodies.contains(uid) && s.same(sig))
+            else {
+                return not("a body of the new component is none of its own component's");
+            };
+            bodies.push(*uid);
+            if let Some(id) = stored.iter().find_map(|(b, s)| {
+                (self.components.of_body(b.component) == owner && s.same(sig))
+                    .then_some(b.id)
+                    .flatten()
+                    .filter(|id| !retired.contains(id))
+            }) {
+                retired.push(id);
+            }
+        }
+        // The state as the design has it: without the copies the item's
+        // own component's history keeps.
+        let expected: Vec<Sig> = stored
+            .iter()
+            .filter(|(b, _)| b.id.is_none_or(|id| !retired.contains(&id)))
+            .map(|(_, s)| *s)
+            .collect();
+        let depth = self.doc.undo_depth();
+        let def = serde_json::json!({"type": "component_from_bodies",
+                                     "bodies": bodies.iter().map(ToString::to_string).collect::<Vec<_>>()});
+        let added = self.add_in(&def, Some(&name), owner).and_then(|uid| {
+            self.doc
+                .move_made_component(uid, target)
+                .map(|()| uid)
+                .map_err(|e| e.to_string())
+        });
+        let uid = match added {
+            Ok(uid) => uid,
+            Err(e) => {
+                self.undo_to(depth);
+                return not(&e);
+            }
+        };
+        if bodies_distance(&expected, &self.current_sigs()).is_none()
+            || self.doc.body_component(bodies[0]) != Some(target)
+        {
+            self.undo_to(depth);
+            return not("the moved bodies do not give its state");
+        }
+        self.oracle.retire(state, &retired);
+        self.oracle.cursor = Some(state);
+        self.report.history.matched += 1;
+        self.features.insert(index, uid);
+        let report = &mut self.report.items[at];
+        report.features.push(uid.to_string());
+        report.verified = Some(true);
+        report.component = (!owner.is_root()).then(|| self.doc.assembly().name(owner));
+        let note = format!(
+            "moves {} into {}",
+            if bodies.len() == 1 {
+                "its body".to_owned()
+            } else {
+                format!("its {} bodies", bodies.len())
+            },
+            self.doc.assembly().name(target)
+        );
+        self.note(at, crate::report::Outcome::Parametric, note);
+        true
     }
 }

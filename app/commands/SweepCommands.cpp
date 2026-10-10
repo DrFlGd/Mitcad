@@ -86,22 +86,28 @@ CommandDef sweepCommand(const CommandContext& context) {
   def.id = QStringLiteral("solid.sweep");
   def.name = QObject::tr("Sweep");
   def.icon = QStringLiteral("sweep");
-  def.tooltip = QObject::tr("Sweeps profiles along a path, optionally guided by a rail");
+  def.tooltip = QObject::tr("Sweeps profiles along a path, optionally guided by a rail or a surface");
   def.group = QStringLiteral("CREATE");
-  def.keywords = {QStringLiteral("path"), QStringLiteral("rail")};
+  def.keywords = {QStringLiteral("path"), QStringLiteral("rail"), QStringLiteral("guide surface")};
   def.featureType = QStringLiteral("sweep");
   const auto rail = choiceIs(QStringLiteral("type"), QStringLiteral("rail"));
   const auto single = choiceIs(QStringLiteral("type"), QStringLiteral("single"));
+  const auto surface = choiceIs(QStringLiteral("type"), QStringLiteral("surface"));
   const auto partial = choiceIs(QStringLiteral("extent"), QStringLiteral("partial"));
   def.inputs = {
       choiceInput(QStringLiteral("type"), QObject::tr("Type"),
                   {{QStringLiteral("single"), QStringLiteral("Single Path")},
-                   {QStringLiteral("rail"), QStringLiteral("Path + Guide Rail")}},
+                   {QStringLiteral("rail"), QStringLiteral("Path + Guide Rail")},
+                   {QStringLiteral("surface"), QStringLiteral("Path + Guide Surface")}},
                   QStringLiteral("single")),
       selectionInput(QStringLiteral("profiles"), QObject::tr("Profiles"), SelectKind::Profile, 1, 0),
   };
   def.inputs += pathInputs(QStringLiteral("path"), QObject::tr("Path"));
   def.inputs += pathInputs(QStringLiteral("rail"), QObject::tr("Guide Rail"), rail);
+  // Guide surfaces (mitcad#157): faces the path lies on.
+  def.inputs += selectionInput(QStringLiteral("surfaces"), QObject::tr("Guide Surface"), SelectKind::Face, 1, 0)
+                    .withTooltip(QObject::tr("Faces the path lies on; the profile turns with their normal"))
+                    .withVisible(surface);
   def.inputs += {
       checkInput(QStringLiteral("chain"), QObject::tr("Chain Selection"), true)
           .withTooltip(QObject::tr("Also take the curves joined to the selected ones")),
@@ -155,6 +161,12 @@ CommandDef sweepCommand(const CommandContext& context) {
       }
       result.def.insert(QStringLiteral("guide_rail"), rail);
       result.def.insert(QStringLiteral("profile_scaling"), state.choice(QStringLiteral("scaling")));
+    } else if (state.choice(QStringLiteral("type")) == QStringLiteral("surface")) {
+      QJsonArray faces;
+      for (const SelectionItem& item : state.items(QStringLiteral("surfaces"))) {
+        faces.append(item.reference());
+      }
+      result.def.insert(QStringLiteral("guide_surfaces"), faces);
     } else {
       result.def.insert(QStringLiteral("orientation"), state.choice(QStringLiteral("orientation")));
       if (nonZero(state, QStringLiteral("taper"))) {
@@ -182,6 +194,14 @@ CommandDef sweepCommand(const CommandContext& context) {
       state.setChoice(QStringLiteral("scaling"),
                       feature.value(QStringLiteral("profile_scaling")).toString(QStringLiteral("scale")));
     }
+    if (feature.contains(QStringLiteral("guide_surfaces"))) {
+      state.setChoice(QStringLiteral("type"), QStringLiteral("surface"));
+      Selection faces;
+      for (const QJsonValue& face : feature.value(QStringLiteral("guide_surfaces")).toArray()) {
+        faces.append(itemOf(face, context));
+      }
+      state.setItems(QStringLiteral("surfaces"), faces);
+    }
     state.setChoice(QStringLiteral("orientation"),
                     feature.value(QStringLiteral("orientation")).toString(QStringLiteral("perpendicular")));
     loadValue(state, QStringLiteral("taper"), feature.value(QStringLiteral("taper_angle")), feature, context);
@@ -202,6 +222,10 @@ CommandDef sweepCommand(const CommandContext& context) {
       const bool b = feature.value(QStringLiteral("guide_rail")).toObject().value(QStringLiteral("chain")).toBool();
       return pathEditable(feature.value(QStringLiteral("guide_rail"))) && a == b &&
              !feature.contains(QStringLiteral("twist_angle")) && !feature.contains(QStringLiteral("taper_angle"));
+    }
+    // Guide surfaces ignore twist and taper, which the panel would hide.
+    if (feature.contains(QStringLiteral("guide_surfaces"))) {
+      return !feature.contains(QStringLiteral("twist_angle")) && !feature.contains(QStringLiteral("taper_angle"));
     }
     return true;
   };

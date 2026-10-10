@@ -1,0 +1,138 @@
+Mitcad's patch to OCCT 8.0.1, under OCCT's licence:
+SPDX-License-Identifier: LGPL-2.1-only WITH OCCT-exception-1.0
+
+Fillets and chamfers ending at a vertex where the face at the end is split
+in two faces of one plane (mitcad#121): e.g. a tab fused onto a support,
+whose sides continue the support's in their plane. The edge between those
+two faces makes no corner, but OCCT counted it.
+
+- ChFi3d_Builder::PerformIntersectionAtEnd: where the end of a vertex of
+  more than three edges is chosen between walking round the vertex and
+  IntersectMoreCorner (by the number of edges), the edges that lie
+  between two faces of one plane (ChFi3d_EdgeInOnePlane) are not counted.
+  With them, a vertex of four real edges had five, so the end was computed
+  by walking round the vertex from one contact's arc to the other's; with
+  a contact that runs on past the vertex on its face (a concave edge whose
+  face continues there), that arc is not at the vertex and the walk failed
+  ("Failed to find edge"). Such a vertex now goes to IntersectMoreCorner,
+  as one of four edges does. The number of edges is unchanged elsewhere.
+- ChFi3d_Builder::IntersectMoreCorner: the edge that continues the
+  prolonged edge on the opposite face (Arcprolbis) is the vertex's edge
+  that lies on that face; it was the first edge of the vertex other than
+  the three known ones, which with the edge above can be one not on that
+  face. The end of the opposite face's contact was then oriented from an
+  edge not on it, and the face came out inconsistently oriented.
+diff --git a/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_C1.cxx b/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_C1.cxx
+index 4aea6e8..0abaa2c 100644
+--- a/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_C1.cxx
++++ b/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_C1.cxx
+@@ -618,6 +618,49 @@ bool ChFi3d_SelectStripe(NCollection_List<occ::handle<ChFiDS_Stripe>>::Iterator&
+ //            when such an edge is found and set.
+ //=======================================================================
+ 
++// Whether edge E lies between two faces of one plane (a face split in two,
++// e.g. where two solids were fused): such an edge makes no corner.
++static bool ChFi3d_EdgeInOnePlane(const TopoDS_Edge& E, const ChFiDS_Map& EFMap)
++{
++  if (!EFMap.Contains(E))
++  {
++    return false;
++  }
++  TopoDS_Face aF1, aF2;
++  for (NCollection_List<TopoDS_Shape>::Iterator It(EFMap(E)); It.More(); It.Next())
++  {
++    const TopoDS_Face& aCur = TopoDS::Face(It.Value());
++    if (aF1.IsNull())
++    {
++      aF1 = aCur;
++    }
++    else if (aCur.IsSame(aF1))
++    {
++      continue;
++    }
++    else if (aF2.IsNull())
++    {
++      aF2 = aCur;
++    }
++    else if (!aCur.IsSame(aF2))
++    {
++      return false; // more than two faces
++    }
++  }
++  if (aF2.IsNull())
++  {
++    return false;
++  }
++  const BRepAdaptor_Surface aS1(aF1, false), aS2(aF2, false);
++  if (aS1.GetType() != GeomAbs_Plane || aS2.GetType() != GeomAbs_Plane)
++  {
++    return false;
++  }
++  const gp_Pln aP1 = aS1.Plane(), aP2 = aS2.Plane();
++  const double aTol = std::max(BRep_Tool::Tolerance(E), Precision::Confusion());
++  return aP1.Axis().IsParallel(aP2.Axis(), 1.e-6) && aP1.Distance(aP2.Location()) <= aTol;
++}
++
+ // The orientation of edge E in face F (taken FORWARD); FORWARD if absent.
+ static TopAbs_Orientation ChFi3d_OrientationInFace(const TopoDS_Shape& E, const TopoDS_Face& F)
+ {
+@@ -2016,14 +2059,26 @@ void ChFi3d_Builder::PerformIntersectionAtEnd(const int Index)
+   NCollection_List<TopoDS_Shape>::Iterator ItF;
+   int                                      nbarete;
+   nbarete = ChFi3d_NbNotDegeneratedEdges(Vtx, myVEMap);
++  // The edges between two faces of one plane make no corner: they are not
++  // counted where the corner's kind is chosen by the number of edges.
++  int nbareteCorner = nbarete;
++  for (NCollection_List<TopoDS_Shape>::Iterator ItE(myVEMap(Vtx)); ItE.More(); ItE.Next())
++  {
++    if (ChFi3d_EdgeInOnePlane(TopoDS::Edge(ItE.Value()), myEFMap))
++    {
++      nbareteCorner--;
++    }
++  }
+   ChFi3d_ChercheBordsLibres(myVEMap, Vtx, bordlibre, edgelibre1, edgelibre2);
+   if (bordlibre)
+   {
+-    nbarete = (nbarete - 2) / 2 + 2;
++    nbarete       = (nbarete - 2) / 2 + 2;
++    nbareteCorner = (nbareteCorner - 2) / 2 + 2;
+   }
+   else
+   {
+-    nbarete = nbarete / 2;
++    nbarete       = nbarete / 2;
++    nbareteCorner = nbareteCorner / 2;
+   }
+   // it is determined if there is an edge of sewing and it face
+ 
+@@ -2625,7 +2680,7 @@ void ChFi3d_Builder::PerformIntersectionAtEnd(const int Index)
+           possible2 = true;
+         }
+       }
+-      if ((possible1 && possible2) || (!possible1 && !possible2) || (nbarete > 4))
++      if ((possible1 && possible2) || (!possible1 && !possible2) || (nbareteCorner > 4))
+       {
+         while (!trouve)
+         {
+@@ -5426,6 +5481,8 @@ void ChFi3d_Builder::IntersectMoreCorner(const int Index)
+     DStr.ChangeShapeInterferences(IArcspine).Append(interfv);
+ 
+     // Modif of lvt to find the suite of Arcprol in the other face
++    // (an edge of Fop: with more edges at the vertex, e.g. where Fv is
++    // split in two faces of one plane, others are not on Fop)
+     {
+       NCollection_List<TopoDS_Shape>::Iterator It;
+       for (It.Initialize(myVEMap(Vtx)); It.More(); It.Next())
+@@ -5433,8 +5490,10 @@ void ChFi3d_Builder::IntersectMoreCorner(const int Index)
+         if (!(Arcprol.IsSame(It.Value()) || Arcspine.IsSame(It.Value())
+               || Arcpiv.IsSame(It.Value())))
+         {
+-          Arcprolbis = TopoDS::Edge(It.Value());
+-          break;
++          if (Arcprolbis.IsNull() || !containE(Fop, TopoDS::Edge(Arcprolbis)))
++          {
++            Arcprolbis = TopoDS::Edge(It.Value());
++          }
+         }
+       }
+     }

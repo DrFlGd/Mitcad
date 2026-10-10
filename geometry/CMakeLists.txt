@@ -193,6 +193,11 @@ if(BUILD_TESTING)
   target_sources(test_geometry PRIVATE tests/test_fillet_ends.cpp)
   # Allocations that fail inside OCCT, with the port's patch (mitcad#132).
   target_sources(test_geometry PRIVATE tests/test_allocation.cpp)
+  # ShapeFix on faces with many holes, with the port's patch 0060 (mitcad#60).
+  target_sources(test_geometry PRIVATE tests/test_shapefix.cpp)
+  # A chamfer whose pieces meet at a vertex of the edge they reach, with the
+  # port's patches 0090 and 0091 (mitcad#160).
+  target_sources(test_geometry PRIVATE tests/test_chamfer_kernel.cpp)
   target_link_libraries(test_geometry PRIVATE mitcad_geometry_analysis)
   target_link_libraries(test_geometry PRIVATE mitcad_geometry mitcad_warnings)
   add_test(NAME geometry COMMAND test_geometry)

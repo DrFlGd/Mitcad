@@ -3,6 +3,7 @@
 
 #include <QCoreApplication>
 #include <QDir>
+#include <QStringList>
 #include <QUrl>
 #include <QUrlQuery>
 
@@ -57,6 +58,19 @@ QString repositoryPath(QString path) {
     path.chop(4);
   }
   return path;
+}
+
+// The owner as the address's path holds it: without spaces and slashes
+// around it ("group/sub" of " /group/sub/ ").
+QString ownerPath(const QString& owner) {
+  QString path = owner.trimmed();
+  while (path.startsWith(QLatin1Char('/'))) {
+    path.remove(0, 1);
+  }
+  while (path.endsWith(QLatin1Char('/'))) {
+    path.chop(1);
+  }
+  return path.trimmed();
 }
 
 bool isLocalPath(const QString& text) {
@@ -118,13 +132,13 @@ QString CloudAddress::url() const {
   case CloudService::GitLab:
   case CloudService::Forgejo: {
     const QString host = cloudServiceHost(service, server);
-    const QString owner = account.trimmed();
+    const QString path = ownerPath(owner);
     const QString name = repository.trimmed();
-    if (host.isEmpty() || owner.isEmpty() || name.isEmpty()) {
+    if (host.isEmpty() || path.isEmpty() || name.isEmpty()) {
       return {};
     }
-    return connect == CloudConnect::Ssh ? QStringLiteral("git@%1:%2/%3.git").arg(host, owner, name)
-                                        : QStringLiteral("https://%1/%2/%3.git").arg(host, owner, name);
+    return connect == CloudConnect::Ssh ? QStringLiteral("git@%1:%2/%3.git").arg(host, path, name)
+                                        : QStringLiteral("https://%1/%2/%3.git").arg(host, path, name);
   }
   case CloudService::SharedFolder:
     // A Windows path typed anywhere ('\'), as git takes it ('/').
@@ -141,10 +155,11 @@ QString CloudAddress::webPage() const {
   case CloudService::GitLab:
   case CloudService::Forgejo: {
     const QString host = cloudServiceHost(service, server);
-    if (host.isEmpty() || account.trimmed().isEmpty() || repository.trimmed().isEmpty()) {
+    const QString path = ownerPath(owner);
+    if (host.isEmpty() || path.isEmpty() || repository.trimmed().isEmpty()) {
       return {};
     }
-    return QStringLiteral("https://%1/%2/%3").arg(host, account.trimmed(), repository.trimmed());
+    return QStringLiteral("https://%1/%2/%3").arg(host, path, repository.trimmed());
   }
   case CloudService::SharedFolder:
     return {};
@@ -157,11 +172,12 @@ QString CloudAddress::webPage() const {
 QString CloudAddress::newRepositoryPage() const {
   switch (service) {
   case CloudService::GitHub: {
-    // GitHub's form takes the owner, the name and the visibility.
+    // GitHub's form takes the owner (a user or an organisation), the name
+    // and the visibility.
     QUrl page(QStringLiteral("https://github.com/new"));
     QUrlQuery query;
-    if (!account.trimmed().isEmpty()) {
-      query.addQueryItem(QStringLiteral("owner"), account.trimmed());
+    if (!ownerPath(owner).isEmpty()) {
+      query.addQueryItem(QStringLiteral("owner"), ownerPath(owner));
     }
     if (!repository.trimmed().isEmpty()) {
       query.addQueryItem(QStringLiteral("name"), repository.trimmed());
@@ -171,6 +187,8 @@ QString CloudAddress::newRepositoryPage() const {
     return page.toString();
   }
   case CloudService::GitLab:
+    // GitLab's and Forgejo's forms take the owner as a numeric namespace id:
+    // it is chosen on the page.
     return QStringLiteral("https://gitlab.com/projects/new#blank_project");
   case CloudService::Forgejo: {
     const QString host = cloudServiceHost(service, server);
@@ -222,11 +240,17 @@ CloudAddress parseCloudAddress(const QString& url, const QString& forgejoServer)
   }
   const QString path = repositoryPath(parsed->path);
   const QStringList parts = path.split(QLatin1Char('/'));
-  // Known services' addresses are <account>/<repository> (GitLab's groups
-  // can nest: those stay another address).
-  if (parts.size() != 2 || parts.at(0).isEmpty() || parts.at(1).isEmpty() ||
-      parts.at(0).startsWith(QLatin1Char('~'))) {
+  // Known services' addresses are <owner>/<repository>; on GitLab the owner
+  // can be a group with subgroups (group/sub/repository). An empty part, or
+  // one starting with '~' (a user's home on a server), stays another
+  // address.
+  if (parts.size() < 2) {
     return address;
+  }
+  for (const QString& part : parts) {
+    if (part.isEmpty() || part.startsWith(QLatin1Char('~'))) {
+      return address;
+    }
   }
   // An https:// address with a port or a user, or ssh:// with a port, is
   // not one the fields compose.
@@ -239,21 +263,29 @@ CloudAddress parseCloudAddress(const QString& url, const QString& forgejoServer)
     return address;
   }
   const QString host = parsed->host;
+  CloudService service = CloudService::Other;
   if (host == QLatin1String("github.com")) {
-    address.service = CloudService::GitHub;
+    service = CloudService::GitHub;
   } else if (host == QLatin1String("gitlab.com")) {
-    address.service = CloudService::GitLab;
+    service = CloudService::GitLab;
   } else if (host == QLatin1String("codeberg.org") ||
              (!forgejoServer.trimmed().isEmpty() && host == forgejoServer.trimmed().toLower())) {
-    address.service = CloudService::Forgejo;
-    address.server = host;
+    service = CloudService::Forgejo;
   } else {
     return address;
   }
+  // GitHub and Forgejo have one owner level (no nested organisations).
+  if (service != CloudService::GitLab && parts.size() != 2) {
+    return address;
+  }
+  address.service = service;
+  if (service == CloudService::Forgejo) {
+    address.server = host;
+  }
   address.other.clear();
   address.connect = parsed->ssh ? CloudConnect::Ssh : CloudConnect::Https;
-  address.account = parts.at(0);
-  address.repository = parts.at(1);
+  address.owner = parts.mid(0, parts.size() - 1).join(QLatin1Char('/'));
+  address.repository = parts.constLast();
   return address;
 }
 
@@ -284,6 +316,23 @@ QString repositoryNameOf(const QString& url) {
     path = QUrl(path).toLocalFile();
   }
   return repositoryPath(path).section(QLatin1Char('/'), -1);
+}
+
+QString ownerAndRepositoryOf(const QString& url) {
+  const CloudAddress address = parseCloudAddress(url);
+  const bool known = address.service == CloudService::GitHub || address.service == CloudService::GitLab ||
+                     address.service == CloudService::Forgejo;
+  if (known && !address.owner.isEmpty() && !address.repository.isEmpty()) {
+    return QStringLiteral("%1/%2").arg(address.owner, address.repository);
+  }
+  if (const std::optional<HostPath> parsed = hostPath(url)) {
+    // Another server: the last two parts of the path.
+    const QStringList parts = repositoryPath(parsed->path).split(QLatin1Char('/'), Qt::SkipEmptyParts);
+    if (parts.size() >= 2) {
+      return QStringLiteral("%1/%2").arg(parts.at(parts.size() - 2), parts.last());
+    }
+  }
+  return repositoryNameOf(url);
 }
 
 QString addressHost(const QString& url) {

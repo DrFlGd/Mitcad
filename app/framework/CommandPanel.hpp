@@ -10,7 +10,7 @@
 #include <QString>
 #include <QWidget>
 
-#include "Command.hpp"
+#include "CommandPresenter.hpp"
 
 class QAbstractButton;
 class QComboBox;
@@ -34,7 +34,7 @@ namespace mitcad {
 // "<list>.<row>.<id>" for the inputs of a list's rows (fillet sets, hole
 // positions), whose rows the panel adds and removes as the state's count
 // of rows changes.
-class CommandPanel : public QWidget {
+class CommandPanel : public QWidget, public CommandPresenter {
   Q_OBJECT
 
 public:
@@ -43,24 +43,24 @@ public:
   ~CommandPanel() override;
 
   // Counts, checks, choices, list rows and which rows are shown.
-  void refresh(const CommandState& state);
-  void setActiveSelection(const QString& key);
+  void refresh(const CommandState& state) override;
+  void setActiveSelection(const QString& key) override;
   // A problem with one input, under it; empty clears it.
-  void setInputError(const QString& key, const QString& message);
+  void setInputError(const QString& key, const QString& message) override;
   // The value an expression evaluates to, under its field.
-  void setValueHint(const QString& key, const QString& hint);
+  void setValueHint(const QString& key, const QString& hint) override;
   // The command's status line: an error, or a hint when `error` is false.
-  void setMessage(const QString& message, bool error);
+  void setMessage(const QString& message, bool error) override;
   // An inspection's answer (Measure, Interference).
-  void setResult(const QString& text);
-  void setOkEnabled(bool enabled);
-  QColor colorOf(const QString& key) const;
+  void setResult(const QString& text) override;
+  void setOkEnabled(bool enabled) override;
+  QColor colorOf(const QString& key) const override;
   // Puts the keyboard into the first value field shown; false if none.
-  bool focusFirstValue();
+  bool focusFirstValue() override;
   // Puts the keyboard into a value field by its key; false if not shown.
-  bool focusValue(const QString& key);
+  bool focusValue(const QString& key) override;
   // Logs where the inputs are, for UI tests.
-  void logLayout() const;
+  void logLayout() const override;
 
 signals:
   void textEdited(const QString& key, const QString& text);

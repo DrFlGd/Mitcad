@@ -1,7 +1,7 @@
 # Mitcad user guide
 
 The window has the toolbar at the top with tabs (SOLID; SKETCH while
-sketching) and groups (CREATE, MODIFY, CONSTRUCT, INSPECT, INSERT,
+sketching) and groups (CREATE, MODIFY, ASSEMBLE, CONSTRUCT, INSPECT, INSERT,
 SELECT; a group's name opens a menu of all its commands), the model tree
 (Browser) on the left, the timeline at the bottom, the command panel on
 the right and the orientation cube in the view's top right corner. **S**
@@ -48,14 +48,14 @@ which partly (for example a sketch without unsupported constraints),
 which as the file's bodies and which were left out (for example assembly
 relationships),
 and how well the final bodies match those stored in the file. Save the
-result as a `.mitcad` project. More in [.f3d import](#f3d-import).
+result as a `.mitcad` design. More in [.f3d import](#f3d-import).
 
 ### Import and export
 
 - **File › Import** (also the INSERT group): STEP, IGES and BRep come in
   as a base feature, STL and OBJ as mesh bodies (Insert Mesh asks for the
   unit), DXF into a new sketch on a chosen plane (Insert DXF; in sketch
-  mode into the sketch being edited), another Mitcad project as a
+  mode into the sketch being edited), another Mitcad design as a
   component, linked or as a copy (Insert Component). FreeCAD documents
   and `.f3d` designs open as new documents with their history
   ([FreeCAD import](#freecad-import), [.f3d import](#f3d-import)), `.ipt`
@@ -64,7 +64,8 @@ result as a `.mitcad` project. More in [.f3d import](#f3d-import).
   formats Mitcad reads and writes, and which keep their design history:
   [Support for multiple CAD formats](../README.md#support-for-multiple-cad-formats).
 - **File › Export:** STEP (AP214 or AP242), IGES, STL (refinement,
-  binary or text), OBJ, BRep and 3MF of all or the selected bodies, and a
+  binary or text), OBJ, BRep, 3MF and USDZ ([USDZ for AR and 3D
+  viewers](#usdz-for-ar-and-3d-viewers)) of all or the selected bodies, and a
   sketch as DXF (also Save As DXF in the sketch's context menu). Bodies
   are written where the design shows them, also those of moved components
   (a STEP file is then an assembly with the parts placed as the
@@ -94,6 +95,7 @@ sets ("autosave", "slicer", "git"), as *Preferences: Cache* and so on.
 | Command Search | S | Find a command by name or keyword |
 | New, Open, Close | Ctrl+N, Ctrl+O, Ctrl+W | New part; open a design or a file to import as a new document; close |
 | New Project, Open Project, Open from Cloud, Project Settings | | A Local or Cloud project: make, open, clone, set up ([Versions](#versions)) |
+| New Design, Projects | | A design in the selected folder of a project, named in the Projects panel; show or hide the panel ([Versions](#versions)) |
 | Save, Save As | Ctrl+S, Ctrl+Shift+S | Save a `.mitcad` design (in a project also a version) |
 | Save Version | Ctrl+Alt+S | Save and record a version with a description |
 | Version History | Ctrl+Shift+H | The design's versions: compare, open, restore or save a copy of one |
@@ -121,7 +123,7 @@ sets ("autosave", "slicer", "git"), as *Preferences: Cache* and so on.
 
 Other commands of the SOLID tab, in menu order:
 
-- **CREATE:** New Component, Create Sketch, Extrude, Revolve, Sweep, Loft,
+- **CREATE:** Create Sketch, Extrude, Revolve, Sweep, Loft,
   Rib, Web, Hole, Thread, Box, Cylinder, Sphere, Torus, Coil, Helix, Pipe,
   Rectangular/Circular Pattern, Pattern on Path, Mirror. Helix turns
   sketch profiles about an axis while they rise along it, as a screw
@@ -142,6 +144,25 @@ Other commands of the SOLID tab, in menu order:
   where its values can be changed; Assign gives the bodies it was opened
   for the selected appearance. The shaded view shows an appearance's base
   colour; the rendered view uses all of its values.
+- **ASSEMBLE:** New Component, Joint, As-Built Joint, Joint Origin,
+  Rigid Group, Drive Joint, Constraint, Animate Joint, Insert Component,
+  Insert from Library: everything that builds an assembly. Once Joint's origin A (or
+  As-Built Joint's component A) is picked, A's component turns
+  see-through and lets clicks through, so that origin B can be picked
+  behind it; once B is picked the preview shows A where the joint puts
+  it. Clicking Origin A's button again shows A normally for another pick.
+  **Constraint** holds components against each other in rows, each
+  taking away only some motions: pick geometry 1 on the component that
+  moves, then geometry 2 on another; the row's type follows the picks
+  (Automatic: two circles an Insert, a circle and a hole's face Insert
+  (Axis), a cylinder or sphere on a plane Tangent, else Align) and can be
+  chosen: Align (faces flush or facing, points together, axes
+  concentric, with an offset or limits), Angle, Center (between two
+  faces), Tangent, Insert (a pin into a hole; Lock Rotation keeps its
+  turn) and Insert (Axis) (the depth stays free). Add Constraint adds
+  rows without closing the panel; the rows are solved with the joints,
+  and the set is one timeline feature with its rows under it in the
+  Joints folder.
 - **CONSTRUCT:** Offset Plane, Plane at Angle, Tangent Plane, Midplane,
   Plane Through Two Edges / Three Points / Edge and Point, Plane Tangent
   to Face at Point, Plane Along Path, Plane Normal to Path at Point, axes
@@ -152,7 +173,7 @@ Other commands of the SOLID tab, in menu order:
   path).
 - **INSPECT:** Measure, Interference, Section Analysis, Physical
   Properties.
-- **INSERT:** Insert Mesh, Insert DXF, Insert Component, Import.
+- **INSERT:** Insert Mesh, Insert DXF, Import.
 
 On macOS the keys that say Ctrl are Cmd keys (Cmd+N, Cmd+S, Cmd+Z, ...),
 and Redo is Shift+Cmd+Z (elsewhere Ctrl+Y and Ctrl+Shift+Z). Fit is also
@@ -185,7 +206,7 @@ application menu.
   (Shaded, Shaded with Visible Edges Only, Shaded with Hidden Edges,
   Wireframe, Wireframe with Hidden Edges), background, Grid and Snaps, and
   named views (stored in the document). The settings are remembered.
-- **Rendered view** (builds with the renderer): View > Visual Style >
+- **Rendered view**: View > Visual Style >
   Rendered shows the bodies path traced. View > Render Environment (also
   in Visual Style and Environment) sets how: the light (Studio, White
   Studio, Dark Studio, Outdoor with the sun's height and direction, or an
@@ -194,7 +215,7 @@ application menu.
   itself), the ground (shadows, reflections, its height) and the film
   (exposure, Standard, Filmic or Neutral). These settings are kept in the
   design and saved with it; each change is a step of Undo.
-- **Render Image** (builds with the renderer): File > Render Image
+- **Render Image**: File > Render Image
   renders the current view, or a named view, to an image file in these
   settings. Choose the size (a preset such as 1920 × 1080, or width and
   height; the aspect from the view, or fixed, when the view shows the
@@ -208,9 +229,15 @@ application menu.
   too.
 - **Selection:** a click selects, Ctrl or Shift adds or removes; a drag
   from left to right selects what lies inside the window, from right to
-  left also what the window crosses. The filters of the SELECT group limit
+  left also what the window crosses (in a design with components, a drag
+  that starts on a body drags the component or says why it does not:
+  see [Components](#components)). The filters of the SELECT group limit
   what can be selected. A selection made before a command goes into the
-  command's input.
+  command's input. What a click would pick is highlighted under the
+  pointer: a face see-through in light blue (in a command, its input's
+  colour) with its boundary drawn, so that its shading still shows, an
+  edge or vertex in the same colour; geometry in front of it hides the
+  highlight.
 - The right mouse button opens the commands that fit the selection, Edit
   (of a feature) and Repeat (the last command).
 
@@ -241,8 +268,9 @@ brings back the layout of the other systems.
   opens a menu of all its commands.
 - **Cards:** the Browser (upper left, collapsible), the Command panel
   (upper right, only while it has something to show) and the Timeline
-  (along the bottom) float over the 3D view. View › Browser and › Timeline
-  show and hide them. Fit and Home place the model in the area the cards
+  (along the bottom) float over the 3D view; the Projects panel, when
+  shown, is a card above the Browser. View › Browser, › Timeline and ›
+  Projects show and hide them. Fit and Home place the model in the area the cards
   leave free; a click beside a card reaches the view.
 - **Messages** appear for a few seconds in a capsule above the Timeline;
   update and remote notices appear under the ribbon. The remote's state is
@@ -348,7 +376,21 @@ and Create Components from Bodies make components; Paste makes an
 occurrence and Paste New a new component. Activating a component (the
 radio button) directs new features into it. Ground fixes an occurrence;
 Move/Copy moves components as a timeline feature. Insert Component
-inserts another project linked (updated when opened) or as a copy.
+inserts another design linked (updated when opened) or as a copy.
+
+**Dragging components:** a component that its joints and constraints
+leave free to move can be dragged in the view with the left mouse
+button; the joints and constraints hold while it moves, and the drag is one undo step. Over such a body the
+pointer turns into the move cursor and the status bar says what the drag
+moves, for example "Drag to move Pin:1 (Joint1: rz)". A drag on a body
+that cannot be dragged moves nothing and says why in the status bar: the
+component is grounded or in a rigid group with a grounded one, its joints
+hold it fixed (a rigid joint), it has no joints (components move only
+through their joints; Create Components from Bodies makes a component of
+each body of a component), the body belongs to the root component, a
+command is open, or the design is read-only. In a design with
+components, a window selection starts from empty space or with Shift
+held.
 
 A sketch of the active component can lie on a face or a construction
 plane of another component: Create Sketch on it where an occurrence
@@ -369,20 +411,34 @@ command, parameter change, Undo or Redo leaves the design as it was (a
 command's panel stays open, and OK tries again). While the progress
 dialog shows, the window takes no other input.
 
+## Terms
+
+Each of these words has one meaning in Mitcad, its menus and this guide:
+
+| Term | Meaning |
+|---|---|
+| **Design** | One `.mitcad` file: a part or an assembly |
+| **Project** | A folder that is one git repository and holds designs and folders; **Local** or **Cloud** ([Versions](#versions), [Sharing a project](#sharing-a-project)) |
+| **Folder** | A folder inside a project |
+| **Version** | A recorded state of a design (one commit of the project's repository) |
+| **Owner** | A user or an organisation on a git service: the first part of a Cloud project's address |
+| **Projects panel** | The panel of projects, folders and designs; the **Browser** stays the design's feature tree |
+| **Projects folder** | Where new projects go by default (Documents/Mitcad) |
+
 ## Files
 
 ### Saving and recovery
 
-A design is saved as a `.mitcad` project file. Imported bodies are stored
-inside it, so a project is a single file (in a project folder with
-version history they are stored in the folder instead; see
+A design is saved as a `.mitcad` file. Outside projects it is a
+single-file design: its imported bodies are stored inside it (in a
+project they are stored in the project's folder instead; see
 [Versions](#versions)). A `*` in the window title marks unsaved changes;
 New, Open and closing ask first. If another program changed the file
 after you opened it, Save asks before writing over it. Opening a file
-that is not a valid project names the place of the error.
+that is not a valid design names the place of the error.
 
 **Autosave** writes unsaved changes every 5 minutes to a recovery folder
-in your user data, never next to your project (Tools › Preferences,
+in your user data, never next to your design (Tools › Preferences,
 General: on or off, 1 to 60 minutes, the folder with Open Folder).
 Saving, closing and ending Mitcad normally remove it. After a crash,
 Mitcad offers it at the next start: **Recover Unsaved Work** lists the
@@ -416,32 +472,97 @@ Isolate), records none, and autosave never does.
   project's repository; the email address is part of every version.
 
 **Create** makes the folder, its repository and the project's first
-version, which holds its first design, named after the folder; the design
-opens. A cancel leaves the folder as it was.
+version. The project starts empty (or with the designs its folder had)
+and shows in the **Projects panel**, ready for **New Design**. A cancel
+leaves the folder as it was.
 
-**File › Open Project…** opens a folder: a project opens with its design
-(the only one, a new one named after it when it has none, or the one you
-pick in the design chooser, which shows each design's latest preview and
-selects the one opened last; **New Design** starts another). An older
-project without versions gets them at once. A git repository, a folder of
-designs and an empty folder go to New Project with the folder filled in. A
-project inside another git repository opens without versions. **Open…**
-and **Open Recent** (designs listed with their project, `bracket.mitcad —
-Robot arm`) recognise the project of a design the same way.
+**The Projects panel** (View › Projects; on the left above the Browser,
+on a Mac a card above it) lists your projects, their folders and designs:
+
+```
+Local
+  Robot arm                    Local
+    parts
+      bracket                  v3 · Changed
+    base                       v12
+github.com/acme
+  acme/gripper                 Cloud · ↑2
+    finger                     v4 · Locked: Alex
+```
+
+The panel starts shown when you have a project (made, opened or cloned
+here, or in the projects folder) and hidden when you have none, until you
+show or hide it yourself (View › Projects); Mitcad then remembers your
+choice.
+
+- **Which projects:** those made, opened or cloned on this computer,
+  newest first, and those in the projects folder (Documents/Mitcad).
+  **Add Existing Project Folder…** adds one from elsewhere; **Remove from
+  List** takes one out of the panel and deletes nothing.
+- **Rows:** a Cloud project is listed under its service and owner
+  (`github.com/acme`, `gitlab.com/group/sub`, a shared folder's path) as
+  `owner/repository` (a Local project by its folder's name, unless you
+  gave it a display name in Project Settings), with
+  its sync state as the project indicator shows it (`✓`, `↑2` to send,
+  `↓1` newer, `Offline`). A design shows its latest version, **Changed**
+  when it differs from that version, and its edit lock (`Editing`,
+  `Locked: Alex`); the open design is in bold. The panel reads the
+  projects again after a save or a sync and when Mitcad gets the focus
+  back (changes made with other programs show then).
+- **Open** a design with a double-click (or Enter); unsaved changes are
+  asked about as with Open.
+- **New Design** (the toolbar, the context menu, or **File › New
+  Design…**, also in the project indicator's menu) adds a design to the
+  selected folder of the project: type its name in the panel and press
+  Enter. It is recorded as a version (`Add parts/bracket.mitcad`) and
+  opens. **New Folder** adds a folder the same way (`Add folder parts`).
+- **Rename** (F2) and a **drag** onto another folder or the project move
+  a design or a folder within its project, as one version (`Move
+  parts/a.mitcad to old/a.mitcad`); a design that is open follows its new
+  name. Moving between projects is not possible.
+- **Delete** (Del) asks first and removes a design or a folder as a new
+  version: the project's history keeps it. A design that is open closes;
+  changes that no version holds are lost (the question says so).
+- **Project Settings…** (the toolbar's settings button) opens the settings
+  of the selected project, or of the project of the selected folder or
+  design; a double-click on a Cloud project, or on its service and owner
+  above it, opens them too. Another project's settings open without
+  opening the project.
+- **Version History…**, **Show in Folder** and **Sync Now** work on the
+  selected design or project; for another project it opens first. **New
+  Project…** and **Open from Cloud…** are there too.
+- **Save** of a new, untitled design in a project starts in the panel's
+  selected folder.
+
+A design locked by someone else cannot be moved or deleted; a name that is
+taken is refused. Each change is sent as a saved version is.
+
+**File › Open Project…** opens a folder: a project shows in the Projects
+panel and opens the design you opened last there, else the newest; an
+empty project opens none. An older project without versions gets them at
+once. A git repository, a folder of designs and an empty folder go to New
+Project with the folder filled in. A project inside another git repository
+opens without versions. **Open…** and **Open Recent** (designs listed with
+their project, `bracket.mitcad — Robot arm`) recognise the project of a
+design the same way.
 
 **The project indicator** shows the current project where the version was
 in the status bar (on a Mac beside the document's name in the title bar
 row): `Robot arm · Local · v14`, `Robot arm · Cloud · ✓` (with `↑2` to
 send, `↓1` newer, `Offline, ↑2 waiting`), or `Not in a project`. A click
 opens its menu: Sync Now, Check for Newer Versions, Version History,
-Project Settings and Open in Browser; for a design in no project **Move to
-a Project…**, which moves the design into a new project (its own folder by
-default) or one you have, and records it.
+Project Settings, Open in Browser and New Design; for a design in no
+project **Move to a Project…**, which moves the design into a new project
+(its own folder by default) or one you have, and records it.
 
-**File › Project Settings…** has the project's folder, its storage
-(Local or Cloud), and on this computer its author, whether each version is
-sent at once and how often the remote is checked (Preferences › Cloud gives
-the defaults).
+**File › Project Settings…** has the project's display name, its folder,
+its storage (Local or Cloud), and on this computer its author, whether
+each version is sent at once and how often the remote is checked
+(Preferences › Cloud gives the defaults). The **Display name** is the
+name the Projects panel shows for the project on this computer; it never
+renames the folder or the repository, and clearing it brings back the
+default (a Cloud project's `owner/repository`, a Local project's folder
+name).
 
 When the file changed outside Mitcad since you opened it (another
 program, another Mitcad, git), Save asks first: **Save as New Version**
@@ -456,7 +577,7 @@ records the rename.
 
 A project is an ordinary git repository, so git tools work on it. A
 design file moved out of its project folder lacks its imported bodies;
-`mitcad-cli convert` makes a single file of it again
+`mitcad-cli convert` makes a single-file design of it again
 ([Command line](#command-line)). Internals:
 [architecture.md](architecture.md).
 
@@ -493,12 +614,18 @@ folder. This needs the git program (Git for Windows on Windows).
   history; the dialog lists the authors whose names and email addresses
   the versions carry), or **File › Open from Cloud…** to open one.
 - **The Cloud section:** the **Service** (GitHub, GitLab, Forgejo / Gitea
-  with its server, Shared folder, Other address), the **Account** and the
-  **Repository** (named after the project's folder until you type one) and
-  **HTTPS** or **SSH** make the **Address**; an address can also be typed
-  or pasted, and fills the fields it can. **Create Repository in
-  Browser…** opens the service's page for a new repository (GitHub's form
-  filled in). A shared folder that is empty is made a repository.
+  with its server, Shared folder, Other address), the **Owner** (you or an
+  organisation; on GitLab also a group with its subgroups, `group/sub`)
+  and the **Repository** (named after the project's folder until you type
+  one) and **HTTPS** or **SSH** make the **Address**; an address can also
+  be typed or pasted, and fills the fields it can
+  (`https://gitlab.com/group/sub/robot-arm.git` gives the owner
+  `group/sub`). GitHub and Forgejo / Gitea have one owner level; an
+  address with a part starting with `~` stays an Other address. **Create
+  Repository in Browser…** opens the service's page for a new repository
+  (GitHub's form filled in, also for an organisation; on GitLab and
+  Forgejo choose the owner on the page). A shared folder that is empty is
+  made a repository.
 - The address is checked as you type, and again when the dialog gets the
   focus back (after making the repository in the browser): empty and
   ready; files but no project (a README: the project goes beside them, its
@@ -509,14 +636,17 @@ folder. This needs the git program (Git for Windows on Windows).
 - **Open from Cloud** clones a project into a new or empty folder (by
   default Documents/Mitcad/<repository>), with a summary of what is there
   (`Project "robot-arm": 14 versions, latest 2026-10-07 by Your Name`). An
-  empty repository gets a new project (**Create Project Here**), one with
-  files but no project gets one beside them (**Make It a Project**), and a
-  folder that holds a clone of the repository opens as it is (**Open It**).
+  empty repository gets a new, empty project (**Create Project Here**), one
+  with files but no project gets one beside them (**Make It a Project**),
+  and a folder that holds a clone of the repository opens as it is (**Open
+  It**). The project shows in the Projects panel under its service and
+  owner, and opens its design opened last, else the newest.
 
 **Signing in** is git's: Mitcad never asks for, keeps or passes a password
 or a token, and refuses addresses with one in them. Over SSH it uses your
 SSH key (and its agent); when the server refuses it, **Copy Public Key**
-puts your key on the clipboard for the service's **SSH Keys Page**. Over
+puts your key on the clipboard for the service's **SSH Keys Page**: the key
+goes to your own user account, also for an organisation's repository. Over
 HTTPS git uses a credential helper (Git Credential Manager comes with Git
 for Windows). A server whose identity this computer does not know yet
 shows **Trust This Server…**: its keys' fingerprints, checked against the
@@ -693,7 +823,7 @@ program to be fetched; parts already in a design need nothing.
    index to start with). Add a library by its URL or a folder, turn one
    off, and **Fetch** to get it or its newer versions. Nothing is fetched
    unless you ask.
-2. **Insert from Library** (the INSERT group, or Tools › Libraries):
+2. **Insert from Library** (the ASSEMBLE group, or Tools › Libraries):
    search by name, standard or tag (`4762`, `washer`), choose the version
    (the newest first) and the size (Size, then Length), and insert the part
    **linked** (read only) or as a **copy** (editable, with its history).
@@ -785,7 +915,7 @@ are masked before you see it (`<path>/<file>.f3d`, `<user>`, `<host>`);
 names of program and source files stay, so that a stack stays readable.
 Your design and its files are never attached.
 
-**Send** opens the project's issue form in your web browser with the
+**Send** opens Mitcad's issue form in your web browser with the
 title and the report filled in; nothing is sent until you submit it
 there, and Mitcad holds no account or token. A report too long for the
 form's link is on the clipboard: paste it over the shortened text. A
@@ -854,6 +984,34 @@ Slicers are found in their usual install folders and the list of
 installed programs (Windows), in the Applications folders (macOS; an
 application gets the files through `open -a`), and on `PATH`, as
 Flatpaks and in desktop files (Linux).
+
+### USDZ for AR and 3D viewers
+
+File › Export with the type *USDZ for AR and 3D viewers* (or a file name
+ending in `.usdz`) writes a Universal Scene Description package: one file
+that phones' and tablets' AR viewers, web viewers, renderers and other 3D
+programs open with the design's look.
+
+- **What goes in:** the visible bodies (with *Selected bodies*, those
+  selected), where the view shows them; hidden bodies and hidden
+  component occurrences are left out. Components stay a hierarchy: each
+  occurrence is a group with its placement holding its bodies, so a
+  viewer can move them apart. With Coordinates set to the components'
+  coordinates, each body is written once as its component has it.
+- **How it looks:** each body's appearance becomes a material (colour,
+  metal or not, roughness, clear coat, emission, see-through for glass;
+  a body without an appearance keeps its colour or the default grey), and
+  faces with appearances of their own keep theirs. A texture's image goes
+  into the file with the projection the rendered view uses; an image
+  that cannot be found is written as its base colour and the log says
+  so. Curved faces are smooth and edges sharp; Refinement chooses how
+  finely the faces are divided into triangles.
+- **Size and orientation:** the file is in millimetres and says so, and
+  it stands Y up as viewers expect, so the design appears in AR at its
+  real size and upright.
+- The file is written with Mitcad's own code; nothing else needs to be
+  installed. `mitcad-cli export design.mitcad design.usdz` writes the
+  same file from the command line.
 
 ### .f3d import
 
@@ -944,8 +1102,8 @@ the ASM format are not read.
 
 The application (`mitcad`, on Windows `mitcad.exe`):
 
-- `--open file`: open a project or a file to import at start-up (an
-  invalid project: exit code 2)
+- `--open file`: open a design or a file to import at start-up (an
+  invalid design: exit code 2)
 - `--set d3=35`: set a parameter's value (a number: mm or radians), as
   Change Parameters does (can be repeated)
 - `--demo`: start with a 60 × 40 × 20 mm block
@@ -969,7 +1127,7 @@ Variables for tests: [development.md](development.md).
 `mitcad-cli` works without a UI; `mitcad-cli --help` lists all commands
 and options.
 
-- `info part.mitcad [--json] [--properties]`: computes the project and
+- `info part.mitcad [--json] [--properties]`: computes the design and
   prints the timeline with its states and the bodies with their volumes,
   areas, centres of mass and bounding boxes.
 - `run script.json [--open part.mitcad] [--save result.mitcad]`: runs
@@ -996,11 +1154,13 @@ and options.
   when they differ).
 - `export part.mitcad result.step [--bodies …] [--schema ap214|ap242]
   [--unit mm|in|…] [--refinement low|medium|high] [--ascii]`; a `.3mf`
-  file holds the solid and mesh bodies as the parts of one object.
+  file holds the solid and mesh bodies as the parts of one object, a
+  `.usdz` file the shown bodies with their appearances (textures relative
+  to the design's folder).
 - `export-sketch part.mitcad Sketch1 sketch.dxf [--r12]`.
 - `render part.mitcad -o image.png [--view Front] [--size 1920x1080]
   [--samples 128] [--time-limit 60] [--format png|png16|jpeg|exr]
-  [--transparent] [--no-denoise]` (builds with the renderer): renders the
+  [--transparent] [--no-denoise]`: renders the
   visible bodies as File > Render Image does, with the design's render
   settings; `--view` is a named view or front, back, left, right, top,
   bottom or iso (the default: the design's Home view, else iso).
@@ -1009,7 +1169,8 @@ and options.
   git's `user.name` and `user.email`); `--no-history` makes the folder
   only.
 - `convert part.mitcad out.mitcad [--format v2|v3|auto]`: writes a
-  project file as a single file (`v2`) or into a project folder (`v3`).
+  design as a single-file design (`v2`) or as a design in a project
+  (`v3`, its imported bodies in the project's folder).
 - `library fetch|list|show|search|diff|init|add|check|index-entry`:
   component libraries (`mitcad-cli --help`); `parts part.mitcad`: the
   parts list with the library parts' designations, versions and licences.
@@ -1021,7 +1182,7 @@ and options.
   [<version>]` lists the files that differ, and `version restore
   part.mitcad <version>` makes an older version the newest.
 - `diff part.mitcad <version> [<version>]` compares two versions of a
-  project file (without the second: the file as saved); `diff a.mitcad
+  design (without the second: the file as saved); `diff a.mitcad
   b.mitcad` two files. The result is in the model's terms: parameters
   (`d3 (Extrude1 distance): 10 mm -> 15 mm`), features added, deleted,
   moved and changed, sketches, components, placements and bodies.

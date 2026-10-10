@@ -1,0 +1,255 @@
+# SPDX-License-Identifier: MIT
+# Native horizontal CAD timeline: real AppKit controls, actual OCCT bodies,
+# shared feature artwork, multi-selection and one undo step for a marker drag.
+# Run on macOS with an empty document, the result store off, MITCAD_TEST_WORK
+# set and MITCAD_TEST_RECOMPUTE_DELAY_MS=0,set_marker=800.
+expect-ever 'Native UI: AppKit shell with embedded OCCT viewport'
+expect-ever 'View area'
+sleep 800
+native-resize 1280 820
+native-appearance light
+
+# Independent features make rollback and non-contiguous Cmd selection
+# observable without dependencies between their bodies.
+mark
+native-action solid.box
+expect-log 'Command Box started'
+click-logged 'Datum xy'
+native-type input_x '0 mm'
+native-type input_y '0 mm'
+native-type input_length '10 mm'
+native-type input_width '10 mm'
+native-type input_height '10 mm'
+native-click commandOk
+expect-log 'Added box \(New Body\)' 30
+expect-model-bodies 1 1000
+
+mark
+native-action solid.box
+expect-log 'Command Box started'
+click-logged 'Datum xy'
+native-type input_x '20 mm'
+native-type input_y '0 mm'
+native-type input_length '10 mm'
+native-type input_width '10 mm'
+native-type input_height '20 mm'
+native-click commandOk
+expect-log 'Added box \(New Body\)' 30
+expect-model-bodies 2 3000
+
+mark
+native-action solid.box
+expect-log 'Command Box started'
+click-logged 'Datum xy'
+native-type input_x '40 mm'
+native-type input_y '0 mm'
+native-type input_length '10 mm'
+native-type input_width '10 mm'
+native-type input_height '30 mm'
+native-click commandOk
+expect-log 'Added box \(New Body\)' 30
+expect-model-bodies 3 6000
+menu 'View/Show History'
+expect-native-visible native.historyCard true
+expect-native-visible native.history.F1 true
+expect-native-visible native.history.F2 true
+expect-native-visible native.history.F3 true
+expect-native-layout
+expect-native-history
+
+# Selection must reach the shared CAD timeline and return to the actual
+# native buttons intact, including a Cmd set with an unselected middle icon.
+native-select native.history.F1
+expect-native-history F1
+native-select native.history.F3 shift
+expect-native-history F1 F2 F3
+native-select native.history.F1
+native-select native.history.F3 ctrl
+expect-native-history F1 F3
+native-appearance dark
+expect-native-history F1 F3
+screenshot '${MITCAD_TEST_WORK}/native-macos-history-dark.png'
+native-appearance light
+expect-native-history F1 F3
+native-resize 900 640
+expect-native-layout
+expect-native-history F1 F3
+native-resize 1280 820
+
+# A genuine AppKit double-click opens the same persisted feature form as
+# the shared timeline. Cancelling a preview leaves every actual volume intact.
+mark
+native-activate native.history.F2
+expect-log 'Editing F2 with Box'
+expect-native-text input_height '^20(?:\.0*)?(?: mm)?$'
+native-type input_height '45 mm'
+native-click commandCancel
+expect-log 'Command Box cancelled' 30
+expect-model-bodies 3 6000
+expect-native-history
+
+# Native playback buttons step the real document marker. The in-row marker
+# must sit between icons, and icons after it must visibly dim.
+mark
+native-click native.history.back
+expect-log 'Marker at 2 of 3' 30
+expect-model-bodies 2 3000
+expect-native-history
+screenshot '${MITCAD_TEST_WORK}/native-macos-history-middle.png'
+menu 'View/Hide History'
+expect-native-visible native.historyCard false
+expect-native-layout
+menu 'View/Show History'
+expect-native-visible native.historyCard true
+expect-model-bodies 2 3000
+expect-native-history
+native-resize 900 640
+expect-native-layout
+expect-native-history
+screenshot '${MITCAD_TEST_WORK}/native-macos-history-compact.png'
+native-resize 1280 820
+mark
+native-click native.history.start
+expect-log 'Marker at 0 of 3' 30
+expect-model-bodies 0 0
+expect-native-history
+mark
+native-click native.history.forward
+expect-log 'Marker at 1 of 3' 30
+expect-model-bodies 1 1000
+expect-native-history
+mark
+native-click native.history.end
+expect-log 'Marker at 3 of 3' 30
+expect-model-bodies 3 6000
+expect-native-history
+
+# Real mouse handlers span several separately settled worker recomputes in
+# one drag. A single undo must restore the original marker and all bodies,
+# rather than just undoing the final intermediate pointer position.
+capture-undo-depth before_drag
+native-history-drag begin
+native-history-drag to 0
+expect-model-bodies 0 0
+expect-native-history
+native-history-drag to 2
+expect-model-bodies 2 3000
+expect-native-history
+mark
+native-history-drag end
+expect-log 'Marker at 2 of 3' 30
+expect-undo-depth ${before_drag} 1
+mark
+native-action edit.undo
+expect-log 'Undo: Move Timeline Marker' 30
+expect-undo-depth ${before_drag} 0
+expect-model-bodies 3 6000
+expect-native-history
+mark
+native-action edit.redo
+expect-log 'Redo: Move Timeline Marker' 30
+expect-undo-depth ${before_drag} 1
+expect-model-bodies 2 3000
+expect-native-history
+
+# A drag that returns to its starting marker adds no undo entry, even
+# though its intermediate rollback really removed every OCCT body.
+native-click native.history.end
+expect-model-bodies 3 6000
+capture-undo-depth before_return
+native-history-drag begin
+native-history-drag to 0
+expect-model-bodies 0 0
+native-history-drag to 3
+expect-model-bodies 3 6000
+native-history-drag end
+expect-undo-depth ${before_return} 0
+expect-model-bodies 3 6000
+expect-native-history
+
+# Marker jobs usually reuse cached shapes and cannot exercise busy input.
+# Roll back and clear unused results through real Diagnostics, then the
+# existing per-evaluation delay makes the next roll-forward observable.
+native-click native.history.start
+expect-model-bodies 0 0
+native-action help.diagnostics
+focus-dialog '^Diagnostics$'
+button '^Clear Memory$'
+expect-log 'Diagnostics: cleared memory:' 30
+button '^Close$'
+focus-main
+capture-undo-depth before_busy_drag
+native-history-drag begin
+mark
+native-history-drag-now to 1
+wait-log 'Computing set_marker started' 30
+expect-model-busy true
+# Send a new target and mouseUp during that actual worker job. Their
+# callbacks must retain order, finish after recomputes, and merge both
+# changes into one undo step even though the pointer is already released.
+native-history-drag-now to 3
+expect-model-busy true
+native-history-drag-now end
+expect-model-busy true
+expect-log 'Marker at 3 of 3' 30
+expect-model-bodies 3 6000
+expect-undo-depth ${before_busy_drag} 1
+expect-native-history
+mark
+native-action edit.undo
+expect-log 'Undo: Move Timeline Marker' 30
+expect-model-bodies 0 0
+expect-undo-depth ${before_busy_drag} 0
+expect-native-history
+native-click native.history.end
+expect-model-bodies 3 6000
+expect-native-history
+
+# Filtering an empty active component hides a real consecutive feature run.
+# Native playback must cross that run in one step while still rolling back
+# and restoring all of its real OCCT bodies at the full model indices.
+mark
+native-action solid.new_component
+expect-log 'Command New Component started'
+native-type input_name 'EmptyTimeline'
+native-click commandOk
+expect-log 'New component EmptyTimeline' 30
+expect-model-bodies 3 6000
+native-select native.history.F1
+expect-native-history F1
+mark
+native-popup native.history.filter 'Active Component'
+expect-log 'Timeline filter: Active Component \(EmptyTimeline\): 0 of 3 features'
+expect-native-visible native.history.F1 false
+expect-native-visible native.history.F2 false
+expect-native-visible native.history.F3 false
+expect-native-visible native.history.filteredRun.0 true
+expect-native-history -
+native-click native.history.start
+expect-model-bodies 0 0
+expect-native-history -
+mark
+native-click native.history.forward
+expect-log 'Marker at 3 of 3' 30
+expect-model-bodies 3 6000
+expect-native-history -
+mark
+native-click native.history.back
+expect-log 'Marker at 0 of 3' 30
+expect-model-bodies 0 0
+expect-native-history -
+mark
+native-popup native.history.filter 'All Components'
+expect-log 'Timeline filter: all components'
+expect-native-visible native.history.F1 true
+expect-native-visible native.history.F2 true
+expect-native-visible native.history.F3 true
+expect-native-visible native.history.filteredRun.0 false
+expect-native-history -
+native-click native.history.end
+expect-model-bodies 3 6000
+expect-native-history -
+expect-file '${MITCAD_TEST_WORK}/native-macos-history-middle.png'
+expect-file '${MITCAD_TEST_WORK}/native-macos-history-compact.png'
+expect-file '${MITCAD_TEST_WORK}/native-macos-history-dark.png'
+expect-never 'The document was read while a job computes it|Native Mac canvas:|OCCT view event failed|TestDriver: FAIL'

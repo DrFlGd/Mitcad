@@ -11,7 +11,9 @@
 #     the first loft uses them, shown with their light bulbs), edited to
 #     weight 2; and through a rail along one corner.
 #   - Coil: 3 turns of pitch 10 round a 40 mm diameter, placed by a click.
-#   - Rib and Web on the bracket of ui_rib.
+#   - Rib and Web on the bracket of ui_rib; then a 2 mm square swept
+#     along a line on the base's top with that face as its guide surface
+#     (mitcad#157).
 #   - Helix (mitcad#27): a 2 mm square turned about Z, its volume by
 #     Pappus' rule (the turns times 2 pi times the square's distance from
 #     the axis times its area): one made as the FreeCAD import writes a
@@ -71,7 +73,9 @@ EOF
 # The bracket of ui_rib (tools/cli/tests/f3_rib_web.json): a 60 x 40 x 5
 # base and a 5 x 40 x 40 plate, 20000 mm3 (Body1 F2.b0); Plane1 (F5) y = 20
 # with the rib's line (Sketch3 F6, c1); Plane2 (F7) z = 5 with the webs'
-# lines (Sketch4 F8, c1 and c4).
+# lines (Sketch4 F8, c1 and c4) and a line along the base's top at y = 10
+# (Sketch5 F9, c1); Plane3 (F10) x = 10 with a 2 mm square on the base's
+# top at y = 10 (Sketch6 F11).
 cat > "$WORK/bracket.json" << EOF
 [
   {"cmd": "sketch.create"},
@@ -89,7 +93,12 @@ cat > "$WORK/bracket.json" << EOF
   {"cmd": "add_feature", "def": {"type": "construction_plane", "definition": {"type": "offset", "plane": "xy", "distance": 5}}},
   {"cmd": "sketch.create", "plane": "F7"},
   {"cmd": "sketch.add_line", "sketch": "F8", "start": [15, 32], "end": [55, 32]},
-  {"cmd": "sketch.add_line", "sketch": "F8", "start": [45, 25], "end": [45, 39]}
+  {"cmd": "sketch.add_line", "sketch": "F8", "start": [45, 25], "end": [45, 39]},
+  {"cmd": "sketch.create", "plane": "F7"},
+  {"cmd": "sketch.add_line", "sketch": "F9", "start": [10, 10], "end": [50, 10]},
+  {"cmd": "add_feature", "def": {"type": "construction_plane", "definition": {"type": "offset", "plane": "yz", "distance": 10}}},
+  {"cmd": "sketch.create", "plane": "F10"},
+  {"cmd": "sketch.add_rectangle", "sketch": "F11", "corner": [-7, 9], "width": 2, "height": 2}
 ]
 EOF
 # Two 2 mm squares on XZ, 11 and 31 mm from the Z axis (Sketch1 F1,
@@ -261,6 +270,28 @@ ui_step "Depth"                            ui_choose "Panel Web input depth_type
 ui_expect_log "Preview Web: ok" "previewed"
 ui_step "OK (Enter)"                       ui_key Return
 ui_expect_volume "Body Body1 (F2.b0): volume 21800.000 -> \([0-9.]*\) mm3" 22840 "webs 2 thick, 10 deep"
+
+echo "--- Sweep along a guide surface: the 2 mm square along the base's top"
+ui_mark
+ui_step "sweep (search)"                   ui_command "Sweep"
+ui_step "Path + Guide Surface"             ui_choose "Panel Sweep input type" 2
+ui_expect_new "Sweep: Type = Path + Guide Surface" "guide surface type"
+ui_expect_log "Sweep Profiles: 1 profile [profile $RECT of F11]" "the newest profile, the square"
+ui_step "the path input"                   ui_click_logged "Panel Sweep input path"
+ui_step "pick the line on the top"         ui_click_logged "Sketch entity F9/c1"
+ui_expect_log "Sweep Path: 1 sketch curve [sketch curve c1 of F9]" "path picked"
+ui_step "the guide surface input"          ui_click_logged "Panel Sweep input surfaces"
+ui_step "pick the base's top face"         ui_click_pick "face F2.b0/F2:end("
+ui_expect_log "Sweep Guide Surface: 1 face" "guide surface picked"
+ui_expect_log "Preview Sweep: ok" "previewed"
+ui_step "OK (Enter)"                       ui_key Return
+ui_expect_log "Added sweep (New Body) along 1 curve(s)" "sweep added"
+ui_expect_volume "New body Body2 (F14.b0): volume \([0-9.]*\) mm3" 160 "the square along 40 mm" 1e-5
+ui_mark
+ui_step "double-click Sweep1"              ui_double_click_logged "Timeline Sweep1"
+ui_expect_new "Panel Sweep choices: type=surface" "opens with its guide surface"
+ui_step "cancel (Esc)"                     ui_key Escape
+ui_expect_new "Command Sweep cancelled" "nothing changed"
 grep -q "Recompute failed" "$UI_LOG" && ui_fail "a recompute failed"
 ui_stop_app
 

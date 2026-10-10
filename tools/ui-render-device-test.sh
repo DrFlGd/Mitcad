@@ -17,7 +17,6 @@
 #     MITCAD_RENDER_TEST_DEVICE_FAILURE): the CPU takes over, the view says
 #     so, and the render finishes.
 #
-# Skipped (exit 0) when the build has no render worker (MITCAD_RENDER off).
 # The app starts three times.
 # Runs headless on Xvfb (see ui-test-lib.sh).
 # Usage: tools/ui-render-device-test.sh
@@ -25,11 +24,6 @@
 
 UI_APP=${UI_APP:-$(cd "$(dirname "$0")/.." && pwd)/build/dev/app/mitcad}
 BUILD_DIR=$(cd "$(dirname "$UI_APP")/.." 2> /dev/null && pwd)
-if ! grep -qs '^MITCAD_RENDER:BOOL=ON' "$BUILD_DIR/CMakeCache.txt"; then
-  echo "SKIP: $UI_APP is built without the render worker (MITCAD_RENDER=OFF)"
-  exit 0
-fi
-
 source "$(dirname "$0")/ui-test-lib.sh"
 
 CLI=${UI_CLI:-$BUILD_DIR/tools/cli/mitcad-cli}

@@ -83,9 +83,9 @@ fn opened(scratch: &Scratch, cli: &GitCli, url: &str, name: &str) -> ProjectRepo
     repo
 }
 
-/// `d3` of the project file `part` changed and recorded by `who`.
+/// `d3` of the design file `part` changed and recorded by `who`.
 fn version_by(repo: &ProjectRepo, part: &Path, d3: f64, who: &Identity) -> String {
-    let mut doc = Document::load_project(part, MockKernel::default()).unwrap();
+    let mut doc = Document::load_design(part, MockKernel::default()).unwrap();
     set_parameter(&mut doc, "d3", d3);
     doc.save_file(part, FileFormat::Auto).unwrap();
     repo.commit(&[part.to_path_buf()], &format!("d3 = {d3} mm"), who)
@@ -180,6 +180,97 @@ fn check(repo: &ProjectRepo, files: &[&str]) {
         .collect();
         assert_eq!(logged, ids(repo, file), "{file}");
     }
+}
+
+#[test]
+fn remote_versions_outside_the_first_parent_chain_use_the_requested_path() {
+    let Some(p) = pair("remote-version-path") else {
+        return;
+    };
+    let plate_a = p.a.root().join("plate.mitcad");
+    fs::rename(&p.part_a, &plate_a).unwrap();
+    p.a.commit(
+        &[p.part_a.clone(), plate_a.clone()],
+        "Rename local part",
+        &author(),
+    )
+    .unwrap();
+    let local = head(&p.a);
+
+    // The remote still has part under its old name, then adds a distinct
+    // plate. Neither remote commit is on the local first-parent chain.
+    let missing = new_version(&p.b, &p.part_b, 35.0);
+    let plate_b = p.b.root().join("plate.mitcad");
+    let mut remote_doc = design();
+    set_parameter(&mut remote_doc, "d3", 45.0);
+    remote_doc.save_file(&plate_b, FileFormat::Auto).unwrap();
+    let remote =
+        p.b.commit(std::slice::from_ref(&plate_b), "Remote plate", &other())
+            .unwrap()
+            .commit
+            .unwrap();
+    let remote_text = fs::read(&plate_b).unwrap();
+    let remote_json = remote_doc.to_json();
+    let remote_bodies = bodies(&mut remote_doc);
+    assert!(p.b.push(None).unwrap().pushed);
+    p.a.fetch(None).unwrap();
+    assert_eq!(head(&p.a), local);
+
+    let check_version = || {
+        assert!(matches!(
+            p.a.load_version(&missing, &plate_a, MockKernel::default()),
+            Err(VcsError::NotFound(_))
+        ));
+        let mut opened =
+            p.a.load_version(&remote, &plate_a, MockKernel::default())
+                .unwrap();
+        assert!(opened.load_warnings().is_empty());
+        assert_eq!(opened.to_json(), remote_json);
+        assert_eq!(bodies(&mut opened), remote_bodies);
+        let diff = p.a.diff(&plate_a, "HEAD", Some(&remote)).unwrap();
+        assert!(diff.summary.starts_with("d3 20 mm -> 45 mm"));
+        let diff = p.a.diff(&plate_a, &remote, None).unwrap();
+        assert!(diff.summary.starts_with("d3 45 mm -> 20 mm"));
+        assert!(matches!(
+            p.a.diff(&plate_a, &missing, Some("HEAD")),
+            Err(VcsError::NotFound(_))
+        ));
+    };
+    check_version();
+
+    // Reachability through a merge's second parent must not make the
+    // remote commit follow the first parent's rename to part.
+    let local_id = p.a.resolve_id(&local).unwrap();
+    let remote_id = p.a.resolve_id(&remote).unwrap();
+    let tree =
+        p.a.repo
+            .find_commit(local_id)
+            .unwrap()
+            .tree_id()
+            .unwrap()
+            .detach();
+    let signature = gix::actor::Signature {
+        name: "Mitcad Test".into(),
+        email: "test@example.invalid".into(),
+        time: gix::date::Time::now_local_or_utc(),
+    };
+    let (mut a, mut c) = Default::default();
+    p.a.repo
+        .commit_as(
+            signature.to_ref(&mut c),
+            signature.to_ref(&mut a),
+            "HEAD",
+            "Merge keeping local tree",
+            tree,
+            [local_id, remote_id],
+        )
+        .unwrap();
+    check_version();
+
+    let outcome = p.a.restore(&plate_a, &remote, None, &author()).unwrap();
+    assert!(outcome.commit.is_some());
+    assert_eq!(fs::read(&plate_a).unwrap(), remote_text);
+    assert!(!p.part_a.exists());
 }
 
 #[test]
@@ -608,13 +699,13 @@ fn brep_files_are_united_and_follow_the_final_designs() {
     assert!(p.b.push(None).unwrap().pushed);
     // A: a cube, then the same body in place of the cube.
     let first = fs::read(&p.part_a).unwrap();
-    let mut doc = Document::load_project(&p.part_a, MockKernel::default()).unwrap();
+    let mut doc = Document::load_design(&p.part_a, MockKernel::default()).unwrap();
     add_body(&mut doc, "Cube", "8 cube");
     doc.save_file(&p.part_a, FileFormat::Auto).unwrap();
     p.a.commit(std::slice::from_ref(&p.part_a), "Cube", &author())
         .unwrap();
     fs::write(&p.part_a, &first).unwrap();
-    let mut doc = Document::load_project(&p.part_a, MockKernel::default()).unwrap();
+    let mut doc = Document::load_design(&p.part_a, MockKernel::default()).unwrap();
     add_body(&mut doc, "Same", "7 same");
     doc.save_file(&p.part_a, FileFormat::Auto).unwrap();
     p.a.commit(
@@ -650,8 +741,7 @@ fn brep_files_are_united_and_follow_the_final_designs() {
     // Both designs open with their bodies: the block, the bolt and the
     // wedge, and the bodies added.
     for (file, count) in [("part.mitcad", 4), ("other.mitcad", 5)] {
-        let mut doc =
-            Document::load_project(&p.a.root().join(file), MockKernel::default()).unwrap();
+        let mut doc = Document::load_design(&p.a.root().join(file), MockKernel::default()).unwrap();
         assert_eq!(bodies(&mut doc).len(), count, "{file}");
     }
     check(&p.a, &["part.mitcad", "other.mitcad"]);
@@ -668,7 +758,7 @@ fn changes_no_version_holds_stop_a_sync_that_would_overwrite_them() {
     version_by(&p.b, &p.part_b, 25.0, &other());
     assert!(p.b.push(None).unwrap().pushed);
     // A saves a change without recording it.
-    let mut doc = Document::load_project(&p.part_a, MockKernel::default()).unwrap();
+    let mut doc = Document::load_design(&p.part_a, MockKernel::default()).unwrap();
     set_parameter(&mut doc, "d3", 40.0);
     doc.save_file(&p.part_a, FileFormat::Auto).unwrap();
     let unsaved = fs::read(&p.part_a).unwrap();

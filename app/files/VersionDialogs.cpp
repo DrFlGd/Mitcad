@@ -67,7 +67,7 @@ std::optional<VersionSettings> askVersionAuthor(QWidget* parent, const VersionSe
   name->setFocus();
   qInfo().noquote() << QStringLiteral("Version author dialog: git has none");
   prepareModal(&dialog);
-  if (dialog.exec() != QDialog::Accepted) {
+  if (execDialog(&dialog) != QDialog::Accepted) {
     qInfo().noquote() << QStringLiteral("Version author dialog cancelled");
     return std::nullopt;
   }
@@ -102,7 +102,7 @@ std::optional<QString> askVersionDescription(QWidget* parent, const QString& fil
   text->setFocus();
   qInfo().noquote() << QStringLiteral("Save Version dialog: %1").arg(automatic.section(QLatin1Char('\n'), 0, 0));
   prepareModal(&dialog);
-  if (dialog.exec() != QDialog::Accepted) {
+  if (execDialog(&dialog) != QDialog::Accepted) {
     qInfo().noquote() << QStringLiteral("Save Version cancelled");
     return std::nullopt;
   }
@@ -126,7 +126,7 @@ std::optional<ExternalChange> askExternalChange(QWidget* parent, const QString& 
   QPushButton* compare = box.addButton(QObject::tr("C&ompare"), QMessageBox::ActionRole);
   box.setDefaultButton(copy);
   prepareModal(&box);
-  box.exec();
+  execDialog(&box);
   if (box.clickedButton() == version) {
     return ExternalChange::NewVersion;
   }
@@ -152,7 +152,7 @@ void showComparison(QWidget* parent, const QString& title, const QString& text) 
   layout->addWidget(buttons);
   dialog.resize(640, 420);
   prepareModal(&dialog);
-  dialog.exec();
+  execDialog(&dialog);
 }
 
 std::optional<bool> askRestoreVersion(QWidget* parent, const QString& file, const QString& version,
@@ -179,7 +179,7 @@ std::optional<bool> askRestoreVersion(QWidget* parent, const QString& file, cons
   qInfo().noquote() << QStringLiteral("Restore dialog: %1 of %2%3")
                            .arg(version, file, modified ? QStringLiteral(" (unsaved changes)") : QString());
   prepareModal(&box);
-  box.exec();
+  execDialog(&box);
   if (box.clickedButton() == restore) {
     return true;
   }

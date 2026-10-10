@@ -211,6 +211,42 @@ const DECODER_ONLY: &[&str] = &[
     // (mitcad#96), checked against the bodies the history accepted with
     // the import's learning dump.
     ".timeline.items[].detail.participantBodies",
+    // Sketch splines, ellipses and elliptical arcs (mitcad#154), checked
+    // against the reference models' dumps (`design_models.rs`).
+    ".timeline.items[].detail.curves[].type",
+    ".timeline.items[].detail.curves[].geometry",
+    ".timeline.items[].detail.curves[].centerSketchPoint",
+    ".timeline.items[].detail.curves[].startSketchPoint",
+    ".timeline.items[].detail.curves[].endSketchPoint",
+    ".timeline.items[].detail.curves[].majorAxisRadius",
+    ".timeline.items[].detail.curves[].minorAxisRadius",
+    ".timeline.items[].detail.curves[].majorAxis",
+    ".timeline.items[].detail.curves[].degree",
+    // Fillet and chamfer options and the sets of variable, chord length
+    // and asymmetric fillets (mitcad#154), likewise.
+    ".timeline.items[].detail.edgeSets",
+    ".timeline.items[].detail.edgeSets[]._type",
+    ".timeline.items[].detail.edgeSets[].continuity",
+    ".timeline.items[].detail.edgeSets[].isTangentChain",
+    ".timeline.items[].detail.edgeSets[].isFlipped",
+    ".timeline.items[].detail.edgeSets[].tangencyWeight",
+    ".timeline.items[].detail.isRollingBallCorner",
+    ".timeline.items[].detail.cornerType",
+    // A shell's faces or body and outside thickness, offset faces' faces
+    // (mitcad#154).
+    ".timeline.items[].detail.outsideThickness",
+    ".timeline.items[].detail.inputFaces",
+    // Cylinder and sphere primitives' sizes (mitcad#154).
+    ".timeline.items[].detail.height",
+    ".timeline.items[].detail.diameter",
+    // An extrusion's solid or surface, start and sides (mitcad#154).
+    ".timeline.items[].detail.isSolid",
+    ".timeline.items[]._f3d.extrude.solid",
+    ".timeline.items[]._f3d.extrude.start",
+    ".timeline.items[]._f3d.extrude.sides",
+    // The operation of a component made from bodies in the new component's
+    // history (mitcad#156), checked against the history by the import.
+    ".timeline.items[]._f3d.made_result_no",
 ];
 
 /// Fields this decoder fills where the reference decoder has an empty

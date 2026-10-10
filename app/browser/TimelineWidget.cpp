@@ -29,6 +29,7 @@
 #include <QtLogging>
 
 #include "../framework/ChromeStyle.hpp"
+#include "../framework/Dialogs.hpp"
 #include "../framework/GlassCard.hpp"
 #include "../framework/Icons.hpp"
 #include "../framework/Theme.hpp"
@@ -181,6 +182,9 @@ public:
     m_items = std::move(items);
     m_groups = std::move(groups);
     m_marker = std::clamp(marker, 0, static_cast<int>(m_items.size()));
+    if (m_hasExternalSelection) {
+      pruneExternalSelection();
+    }
     // A group the marker is inside of shows open.
     for (Group& group : m_groups) {
       group.collapsed = group.collapsed && !(m_marker > group.first && m_marker <= group.last);
@@ -276,13 +280,30 @@ public:
 
   QString selected() const { return m_selected; }
   void select(const QString& uid) {
+    m_hasExternalSelection = false;
+    m_externalSelected.clear();
     m_selected = uid;
     m_selectedTo = uid;
     update();
   }
-  // The selected run: from the anchor to the last Shift+click, without the
-  // features the filter hides.
+  void selectFeatures(const QStringList& uids) {
+    m_externalSelected = QSet<QString>(uids.begin(), uids.end());
+    m_hasExternalSelection = true;
+    pruneExternalSelection();
+    update();
+  }
+  // An external selection is exact; Qt Shift+click selects an anchor-to-end
+  // run without the features the filter hides.
   QStringList selectedRun() const {
+    if (m_hasExternalSelection) {
+      QStringList selected;
+      for (const Item& item : m_items) {
+        if (m_externalSelected.contains(item.feature.uid)) {
+          selected.append(item.feature.uid);
+        }
+      }
+      return selected;
+    }
     const int a = indexOf(m_selected);
     const int b = indexOf(m_selectedTo);
     QStringList run;
@@ -322,6 +343,22 @@ public:
   QRect groupRect(const Group& group) const { return group.collapsed ? cell(group.first) : bandRect(group); }
 
 private:
+  void pruneExternalSelection() {
+    QSet<QString> retained;
+    QString first;
+    for (const Item& item : m_items) {
+      if (m_externalSelected.contains(item.feature.uid)) {
+        retained.insert(item.feature.uid);
+        if (first.isEmpty()) {
+          first = item.feature.uid;
+        }
+      }
+    }
+    m_externalSelected = std::move(retained);
+    m_selected = first;
+    m_selectedTo = first;
+  }
+
   // Where the boundary before feature g is (g = count(): after the last).
   double boundary(int g) const {
     if (g == m_marker) {
@@ -603,6 +640,8 @@ protected:
     if (itemAt(event->position().toPoint()) == pressed) {
       if (m_shift && !m_selected.isEmpty()) {
         // Shift+click: a run of features from the one selected.
+        m_hasExternalSelection = false;
+        m_externalSelected.clear();
         m_selectedTo = uid;
         update();
         const QStringList run = selectedRun();
@@ -738,6 +777,8 @@ private:
   int m_marker = 0;
   QString m_selected;   // the anchor of the selection
   QString m_selectedTo; // the other end of a run (Shift+click)
+  QSet<QString> m_externalSelected; // exact selection mirrored by another presentation
+  bool m_hasExternalSelection = false;
   int m_hover = -1;
   int m_pressGroup = -1; // a press on a group's band or folded cell
   bool m_shift = false;
@@ -958,6 +999,17 @@ void TimelineWidget::setFilter(const QString& filter, bool subcomponents) {
   m_subcomponents = subcomponents;
   updateFilterButton();
   rebuild(DocumentSnapshot(m_snapshot));
+  emit filterChanged();
+}
+
+QSet<QString> TimelineWidget::filteredFeatures() const {
+  QSet<QString> hidden;
+  for (int index = 0; index < m_strip->count(); ++index) {
+    if (m_strip->filtered(index)) {
+      hidden.insert(m_strip->item(index)->feature.uid);
+    }
+  }
+  return hidden;
 }
 
 QSet<QString> TimelineWidget::filteredComponents() const {
@@ -1037,6 +1089,10 @@ void TimelineWidget::updateFilterButton() {
 }
 
 void TimelineWidget::showFilterMenu() {
+  showFilterMenu(m_filterButton->mapToGlobal(QPoint(0, m_filterButton->height())));
+}
+
+void TimelineWidget::showFilterMenu(const QPoint& globalPosition) {
   QMenu menu(this);
   QStringList entries;
   const auto add = [&](const QString& text, bool checked, std::function<void()> call) {
@@ -1056,7 +1112,7 @@ void TimelineWidget::showFilterMenu() {
   menu.addSeparator();
   add(tr("Include Subcomponents"), m_subcomponents, [this] { setFilter(m_filter, !m_subcomponents); });
   qDebug().noquote() << QStringLiteral("Context menu: %1").arg(entries.join(QStringLiteral(" | ")));
-  menu.exec(m_filterButton->mapToGlobal(QPoint(0, m_filterButton->height())));
+  execMenu(&menu, globalPosition);
 }
 
 void TimelineWidget::setGroupCollapsed(const QString& name, bool collapsed) {
@@ -1080,6 +1136,8 @@ void TimelineWidget::groupRenamed(const QString& name, const QString& newName) {
 }
 
 QStringList TimelineWidget::selectedFeatures() const { return m_strip->selectedRun(); }
+
+void TimelineWidget::setSelectedFeatures(const QStringList& uids) { m_strip->selectFeatures(uids); }
 
 void TimelineWidget::selectFeature(const QString& uid) {
   // A feature the filter hides shows everything again (mitcad#98).

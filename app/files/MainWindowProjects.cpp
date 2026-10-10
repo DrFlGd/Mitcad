@@ -122,6 +122,8 @@ void MainWindow::registerProjectCommands() {
   move.keywords = {QStringLiteral("start version history"), QStringLiteral("version history"),
                    QStringLiteral("versions"), QStringLiteral("project"), QStringLiteral("git")};
   m_registry->add(move);
+  // The Projects panel and File > New Design (mitcad#145).
+  registerProjectsPanelCommands();
 }
 
 // ---------------------------------------------------------------------------
@@ -136,6 +138,12 @@ void MainWindow::setCurrentProject(const ProjectState& project, bool check) {
     qInfo().noquote() << QStringLiteral("Project: %1").arg(project.describe());
   }
   m_indicator->setProject(m_project);
+  if (changed && project.isProject()) {
+    // A project made, opened or cloned here: in the Projects panel's list
+    // (mitcad#145).
+    ProjectsSettings::remember(project.root);
+    refreshProjectsPanel();
+  }
   if (changed) {
     m_remote->projectChanged(check);
     m_locks->projectChanged();
@@ -219,10 +227,16 @@ bool MainWindow::handleNewProject(const std::optional<NewProjectResult>& result,
   setCurrentProject(state, false);
   qInfo().noquote() << QStringLiteral("New project %1").arg(root);
   const QString cls = errorClassOf(result->answer);
+  // The project in the Projects panel (mitcad#145).
+  showProjectInPanel(root);
   if (!moving.isEmpty()) {
     return moveIntoProject(root);
   }
-  openProjectDesign(root, result->design);
+  // The project is empty, or holds the designs its folder had: the one
+  // there is opens, else the panel offers them and New Design.
+  if (!openProjectDesign(root, QString())) {
+    return false;
+  }
   if (state.kind == ProjectState::Kind::Cloud) {
     if (!cls.isEmpty()) {
       // Versions that wait: sent when the repository can be reached.
@@ -234,9 +248,10 @@ bool MainWindow::handleNewProject(const std::optional<NewProjectResult>& result,
     }
   }
   showHint(state.kind == ProjectState::Kind::Cloud
-               ? tr("Cloud project %1 is in %2: every save records a version and sends it.")
+               ? tr("Cloud project %1 is in %2: New Design adds a design; every save records a version and sends "
+                    "it.")
                      .arg(state.name(), QDir::toNativeSeparators(root))
-               : tr("Local project %1 is in %2: every save records a version.")
+               : tr("Local project %1 is in %2: New Design adds a design; every save records a version.")
                      .arg(state.name(), QDir::toNativeSeparators(root)));
   return true;
 }
@@ -250,7 +265,7 @@ void MainWindow::openProjectFolder(const QString& given, bool ask) {
   }
   QString folder = given;
   if (folder.isEmpty()) {
-    folder = QFileDialog::getExistingDirectory(this, tr("Open Project"), projectsDirectory());
+    folder = dialogDirectory(this, tr("Open Project"), projectsDirectory());
     if (folder.isEmpty()) {
       qInfo().noquote() << QStringLiteral("Open Project cancelled");
       return;
@@ -333,55 +348,36 @@ bool MainWindow::startProjectHistory(const QString& root) {
 }
 
 bool MainWindow::openProjectDesign(const QString& root, const QString& preferred) {
+  // The Projects panel shows the project's designs (mitcad#145); the one
+  // opened last there opens (.mitcad/local/recent.json), else the newest.
+  showProjectInPanel(root);
   QString design = preferred;
-  const QJsonObject inspection = inspectFolder(root);
-  const QStringList designs = designsOf(inspection);
   if (design.isEmpty()) {
-    if (designs.isEmpty()) {
-      // A new design named after the project, saved as its first version.
-      const QString name = QFileInfo(root).fileName();
-      installEmptyDocument(name);
-      const QString path = QDir(root).filePath(name + QStringLiteral(".mitcad"));
-      qInfo().noquote() << QStringLiteral("Open Project: no designs in %1: a new one, %2").arg(root, path);
-      return writeFile(path);
-    }
-    if (designs.size() == 1) {
+    const QJsonObject inspection = inspectFolder(root);
+    const QStringList designs = designsOf(inspection);
+    const QString last = inspection.value(QStringLiteral("last_design")).toString();
+    if (!last.isEmpty() && designs.contains(last)) {
+      design = last;
+    } else if (!designs.isEmpty()) {
       design = designs.first();
-    } else {
-      const QString last = inspection.value(QStringLiteral("last_design")).toString();
-      std::optional<rust::Box<Project>> project = versionedProject(root);
-      const auto preview = [&](const QString& relative) -> QString {
-        if (!project) {
-          return {};
-        }
-        try {
-          const QJsonObject status = parseObject((*project)->command(rustStr(compactJson(
-              {{QStringLiteral("cmd"), QStringLiteral("status")},
-               {QStringLiteral("path"), QDir(root).filePath(relative)}}))));
-          const QString path = versionThumbnailPath(status.value(QStringLiteral("head")).toString());
-          return QFileInfo::exists(path) ? path : QString();
-        } catch (const std::exception&) {
-          return {};
-        }
-      };
-      const std::optional<QString> chosen = askChooseDesign(this, QFileInfo(root).fileName(), designs,
-                                                            last.isEmpty() ? designs.first() : last, preview);
-      if (!chosen) {
+    }
+    if (design.isEmpty()) {
+      // An empty project: an untitled design, which keeps the project as the
+      // window's; New Design adds the project's first one.
+      if (!installEmptyDocument(QString())) {
         return false;
       }
-      if (chosen->isEmpty()) {
-        // New Design: untitled, Save puts it in the project.
-        installEmptyDocument(QString());
-        m_projectDir = root;
-        showHint(tr("A new design of %1: Save (Ctrl+S) puts it in the project.").arg(QFileInfo(root).fileName()));
-        return true;
-      }
-      design = *chosen;
+      qInfo().noquote() << QStringLiteral("Open Project: no designs in %1").arg(root);
+      showHint(tr("%1 has no designs yet: New Design (File menu or the Projects panel) adds one.")
+                   .arg(QFileInfo(root).fileName()));
+      return true;
     }
+    qInfo().noquote() << QStringLiteral("Open Project: %1 (%2)")
+                             .arg(design, design == last ? QStringLiteral("opened last") : QStringLiteral("newest"));
   }
   const QString path = QDir(root).filePath(design);
   QString error;
-  if (!loadProject(path, error)) {
+  if (!loadDesign(path, error)) {
     if (!error.isEmpty()) {
       const QString message = tr("Could not open %1:\n%2").arg(QDir::toNativeSeparators(path), error);
       qWarning().noquote() << message;
@@ -405,7 +401,9 @@ void MainWindow::openFromCloud(const OpenFromCloudOptions& options, bool ask) {
   setCurrentProject(state, false);
   qInfo().noquote() << QStringLiteral("Open from Cloud: opened %1 (%2): %3")
                            .arg(root, result->action, designsOf(inspectFolder(root)).join(QStringLiteral(", ")));
-  openProjectDesign(root, result->design);
+  if (!openProjectDesign(root, QString())) {
+    return;
+  }
   const QString cls = errorClassOf(result->answer);
   if (!cls.isEmpty()) {
     m_remote->retryLater();
@@ -419,7 +417,7 @@ void MainWindow::openReadOnly() {
   if (!maybeSave()) {
     return;
   }
-  const QString path = QFileDialog::getOpenFileName(this, tr("Open Read-Only"), fileDialogDirectory(),
+  const QString path = dialogOpenFileName(this, tr("Open Read-Only"), fileDialogDirectory(),
                                                     tr("Mitcad designs (*.mitcad)"));
   if (path.isEmpty()) {
     return;
@@ -452,7 +450,7 @@ void MainWindow::showProjectSettings() {
     box.setInformativeText(tr("Move to a Project puts the design in a project that keeps its versions."));
     QPushButton* move = box.addButton(tr("&Move to a Project..."), QMessageBox::AcceptRole);
     prepareModal(&box);
-    box.exec();
+    execDialog(&box);
     if (box.clickedButton() == move) {
       moveToProject();
     }
@@ -473,6 +471,7 @@ void MainWindow::showProjectSettings() {
     m_remote->settingsChanged();
     m_live->projectSettingsChanged(m_project.root);
     m_locks->settingsChanged();
+    refreshProjectsPanel(); // the display name (mitcad#152)
   };
   // Edit locks and live updates (mitcad#89): before the project stops
   // syncing, this session's locks are released (published while the live
@@ -514,7 +513,7 @@ void MainWindow::moveToProject() {
     return;
   }
   if (*target == MoveTarget::ExistingProject) {
-    const QString folder = QFileDialog::getExistingDirectory(this, tr("Choose a Project"), projectsDirectory());
+    const QString folder = dialogDirectory(this, tr("Choose a Project"), projectsDirectory());
     if (folder.isEmpty()) {
       qInfo().noquote() << QStringLiteral("Move to a Project cancelled");
       return;
@@ -535,7 +534,6 @@ void MainWindow::moveToProject() {
   // repository or a project, then a new folder named after the design.
   NewProjectOptions options;
   options.title = tr("Move to a Project");
-  options.firstDesign = false;
   const QString base = path.isEmpty() ? documentName() : QFileInfo(path).completeBaseName();
   options.folder = QDir(projectsDirectory()).filePath(base);
   if (!path.isEmpty() && m_project.kind == ProjectState::Kind::None) {
@@ -564,11 +562,11 @@ bool MainWindow::moveIntoProject(const QString& root) {
   if (!from.isEmpty() && QFileInfo(target).absoluteFilePath() != QFileInfo(from).absoluteFilePath() &&
       QFileInfo::exists(target)) {
     // Another design of that name there: a name of its own.
-    QFileDialog dialog(this, tr("Move to a Project"), root, tr("Mitcad projects (*.mitcad)"));
+    QFileDialog dialog(this, tr("Move to a Project"), root, tr("Mitcad designs (*.mitcad)"));
     dialog.setAcceptMode(QFileDialog::AcceptSave);
     dialog.setDefaultSuffix(QStringLiteral("mitcad"));
     dialog.selectFile(name);
-    if (dialog.exec() != QDialog::Accepted || dialog.selectedFiles().isEmpty()) {
+    if (execDialog(&dialog) != QDialog::Accepted || dialog.selectedFiles().isEmpty()) {
       qInfo().noquote() << QStringLiteral("Move to a Project cancelled");
       return false;
     }

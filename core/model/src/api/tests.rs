@@ -23,6 +23,173 @@ fn query(doc: &Document<MockKernel>, query: Value) -> Value {
 
 const REGION: &str = "r{c1[c4,c2],c2[c1,c3],c3[c2,c4],c4[c3,c1]}";
 
+#[test]
+fn command_checkpoints_restore_late_commits_and_the_original_redo() {
+    let mut doc = block();
+    doc.mark_saved();
+    command(
+        &mut doc,
+        json!({"cmd": "set_parameter", "name": "d3", "value": 35}),
+    );
+    command(&mut doc, json!({"cmd": "undo"}));
+    let original = doc.to_json();
+    let (revision, depth) = (doc.revision(), doc.undo_depth());
+    let undo = doc.undo_label().unwrap().to_owned();
+    let token = command(&mut doc, json!({"cmd": "begin_command"}))["token"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    assert_eq!(doc.to_json(), original);
+    assert_eq!(doc.redo_label(), Some("Change d3"));
+    assert!(doc.command(r#"{"cmd":"begin_command"}"#).is_err());
+
+    // A cancelled edit may already have committed more than one part and
+    // cleared redo before the UI observes the cancellation request.
+    command(
+        &mut doc,
+        json!({"cmd": "set_marker", "position": 1, "temporary": true}),
+    );
+    command(
+        &mut doc,
+        json!({"cmd": "set_parameter", "name": "d1", "value": 75}),
+    );
+    command(
+        &mut doc,
+        json!({"cmd": "rename_feature", "uid": "F1", "name": "Changed"}),
+    );
+    let discarded_revision = doc.revision();
+    doc.mark_saved();
+    assert_eq!(doc.redo_label(), None);
+    command(&mut doc, json!({"cmd": "restore_command", "token": token}));
+    assert_eq!(doc.to_json(), original);
+    assert_eq!((doc.revision(), doc.undo_depth()), (revision, depth));
+    assert_eq!(doc.undo_label(), Some(undo.as_str()));
+    assert_eq!(doc.redo_label(), Some("Change d3"));
+    assert!(!doc.is_modified());
+
+    // The checkpoint stays available while a failed commit is corrected,
+    // but revision numbers consumed by its discarded commands stay used.
+    command(
+        &mut doc,
+        json!({"cmd": "set_parameter", "name": "d3", "value": 45}),
+    );
+    assert!(doc.revision() > discarded_revision);
+    command(&mut doc, json!({"cmd": "restore_command", "token": token}));
+    command(&mut doc, json!({"cmd": "discard_command", "token": token}));
+    command(&mut doc, json!({"cmd": "redo"}));
+    assert_eq!(
+        query(&doc, json!({"query": "parameters"}))[2]["value"],
+        35.0
+    );
+    command(&mut doc, json!({"cmd": "undo"}));
+    assert_eq!(doc.to_json(), original);
+    assert!(!doc.is_modified());
+
+    let next = command(&mut doc, json!({"cmd": "begin_command"}))["token"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    assert_ne!(next, token);
+    for cmd in ["restore_command", "discard_command"] {
+        assert!(
+            doc.command(&json!({"cmd": cmd, "token": token}).to_string())
+                .is_err()
+        );
+        assert_eq!(doc.to_json(), original);
+    }
+    command(&mut doc, json!({"cmd": "discard_command", "token": next}));
+}
+
+#[test]
+fn accepting_a_command_checkpoint_keeps_its_new_definition_and_history() {
+    let mut doc = block();
+    let depth = doc.undo_depth();
+    let token = command(&mut doc, json!({"cmd": "begin_command"}))["token"].clone();
+    command(
+        &mut doc,
+        json!({"cmd": "set_parameter", "name": "d3", "value": 25}),
+    );
+    let accepted = doc.to_json();
+    let revision = doc.revision();
+    command(&mut doc, json!({"cmd": "discard_command", "token": token}));
+    assert_eq!(doc.to_json(), accepted);
+    assert_eq!(doc.revision(), revision);
+    assert_eq!(doc.undo_depth(), depth + 1);
+    assert_eq!(doc.undo_label(), Some("Change d3"));
+    assert_eq!(doc.redo_label(), None);
+    command(&mut doc, json!({"cmd": "undo"}));
+    assert_eq!(
+        query(&doc, json!({"query": "parameters"}))[2]["value"],
+        20.0
+    );
+}
+
+#[test]
+fn temporary_markers_preserve_redo_and_accepted_edits_make_one_undo_step() {
+    let mut doc = block();
+    doc.mark_saved();
+    let (revision, depth) = (doc.revision(), doc.undo_depth());
+    let undo = doc.undo_label().unwrap().to_owned();
+    command(
+        &mut doc,
+        json!({"cmd": "set_parameter", "name": "d3", "value": 35}),
+    );
+    command(&mut doc, json!({"cmd": "undo"}));
+    let original = doc.to_json();
+    assert_eq!(doc.redo_label(), Some("Change d3"));
+
+    // Opening and cancelling an editor must preserve the user's redo.
+    command(
+        &mut doc,
+        json!({"cmd": "set_marker", "position": 1, "temporary": true}),
+    );
+    assert_eq!(doc.marker(), 1);
+    assert!(doc.bodies().is_empty());
+    assert_eq!((doc.revision(), doc.undo_depth()), (revision, depth));
+    assert_eq!(doc.undo_label(), Some(undo.as_str()));
+    assert_eq!(doc.redo_label(), Some("Change d3"));
+    assert!(!doc.is_modified());
+    command(
+        &mut doc,
+        json!({"cmd": "set_marker", "position": 2, "temporary": true}),
+    );
+    assert_eq!(doc.to_json(), original);
+    command(&mut doc, json!({"cmd": "redo"}));
+    assert_eq!(
+        query(&doc, json!({"query": "parameters"}))[2]["value"],
+        35.0
+    );
+    command(&mut doc, json!({"cmd": "undo"}));
+
+    // The frontend restores its temporary marker before accepting the edit.
+    for position in [1, 2] {
+        command(
+            &mut doc,
+            json!({"cmd": "set_marker", "position": position, "temporary": true}),
+        );
+    }
+    command(
+        &mut doc,
+        json!({"cmd": "edit_feature", "uid": "F2", "def": {
+            "type": "extrude", "profiles": [{"sketch": "F1", "region": REGION}],
+            "extent": {"type": "distance", "distance": 30}, "operation": "new_body"}}),
+    );
+    assert_eq!(doc.undo_depth(), depth + 1);
+    assert_eq!(doc.undo_label(), Some("Edit Extrude1"));
+    assert_eq!(doc.redo_label(), None);
+    command(&mut doc, json!({"cmd": "undo"}));
+    assert_eq!(doc.to_json(), original);
+    assert_eq!((doc.revision(), doc.undo_depth()), (revision, depth));
+    assert!(!doc.is_modified());
+
+    // A normal user marker move retains the original history semantics.
+    command(&mut doc, json!({"cmd": "set_marker", "position": 1}));
+    assert_eq!(doc.undo_label(), Some("Move Timeline Marker"));
+    assert_eq!(doc.redo_label(), None);
+    assert_eq!(doc.undo_depth(), depth + 1);
+    assert_ne!(doc.revision(), revision);
+}
+
 /// Sketch1 with a 60 x 40 rectangle, extruded 20 mm.
 fn block() -> Document<MockKernel> {
     let mut doc = doc();
@@ -232,6 +399,102 @@ fn parameters_take_expressions_and_units() {
     );
     let params = query(&doc, json!({"query": "parameters"}));
     assert_eq!(params[6]["expression"], "1 in");
+}
+
+#[test]
+fn conflicting_parameter_inputs_preserve_the_document_and_undo_history() {
+    for unit in [None, Some("cm")] {
+        let mut doc = doc();
+        command(
+            &mut doc,
+            json!({"cmd": "add_parameter", "name": "a", "expression": "1", "unit": "mm",
+                   "comment": "original"}),
+        );
+        command(
+            &mut doc,
+            json!({"cmd": "set_parameter", "name": "a", "expression": "2"}),
+        );
+        command(&mut doc, json!({"cmd": "undo"}));
+        command(&mut doc, json!({"cmd": "mark_saved"}));
+        let parameters = query(&doc, json!({"query": "parameters"}));
+        let document = query(&doc, json!({"query": "document"}));
+        let saved = doc.to_json();
+
+        for value in [json!(20), json!("20 mm")] {
+            let mut cmd = json!({"cmd": "set_parameter", "name": "a", "value": value,
+                                 "expression": "30 mm", "comment": "changed", "favorite": true});
+            if let Some(unit) = unit {
+                cmd["unit"] = json!(unit);
+            }
+            let error = doc.command(&cmd.to_string()).unwrap_err();
+            assert_eq!(
+                error.to_string(),
+                "give either \"value\" or \"expression\", not both"
+            );
+            assert_eq!(query(&doc, json!({"query": "parameters"})), parameters);
+            assert_eq!(query(&doc, json!({"query": "document"})), document);
+            assert_eq!(doc.to_json(), saved);
+        }
+
+        // Rejection also keeps the pending redo and the earlier undo steps.
+        assert_eq!(
+            command(&mut doc, json!({"cmd": "redo"}))["label"],
+            "Change a"
+        );
+        assert_eq!(query(&doc, json!({"query": "parameters"}))[0]["value"], 2.0);
+        assert_eq!(
+            command(&mut doc, json!({"cmd": "undo"}))["label"],
+            "Change a"
+        );
+        assert_eq!(query(&doc, json!({"query": "parameters"})), parameters);
+        assert_eq!(query(&doc, json!({"query": "document"})), document);
+        assert_eq!(
+            command(&mut doc, json!({"cmd": "undo"}))["label"],
+            "Add Parameter a"
+        );
+        assert_eq!(query(&doc, json!({"query": "parameters"})), json!([]));
+    }
+}
+
+#[test]
+fn parameter_edits_accept_a_single_input_or_only_metadata() {
+    let mut doc = doc();
+    command(
+        &mut doc,
+        json!({"cmd": "add_parameter", "name": "a", "expression": "1", "unit": "mm"}),
+    );
+    for (edit, expression, unit, value) in [
+        (json!({"unit": "cm"}), "1", "cm", 10.0),
+        (json!({"value": 20}), "2 cm", "cm", 20.0),
+        (json!({"value": 30, "unit": "mm"}), "30 mm", "mm", 30.0),
+        (json!({"expression": "40 mm"}), "40 mm", "mm", 40.0),
+        (json!({"expression": "5", "unit": "cm"}), "5", "cm", 50.0),
+        (json!({"value": "60 mm"}), "60 mm", "cm", 60.0),
+    ] {
+        let mut cmd = edit;
+        cmd["cmd"] = json!("set_parameter");
+        cmd["name"] = json!("a");
+        assert_eq!(command(&mut doc, cmd)["changed"], json!(["a"]));
+        let parameter = query(&doc, json!({"query": "parameters"}));
+        assert_eq!(parameter[0]["expression"], expression);
+        assert_eq!(parameter[0]["unit"], unit);
+        assert_eq!(parameter[0]["value"], value);
+    }
+    let mut parameters = query(&doc, json!({"query": "parameters"}));
+    for edit in [json!({"comment": "note"}), json!({"favorite": true})] {
+        let mut cmd = edit.clone();
+        cmd["cmd"] = json!("set_parameter");
+        cmd["name"] = json!("a");
+        assert_eq!(command(&mut doc, cmd)["changed"], json!([]));
+        for (field, value) in edit.as_object().unwrap() {
+            parameters[0][field] = value.clone();
+        }
+        assert_eq!(query(&doc, json!({"query": "parameters"})), parameters);
+    }
+    let document = query(&doc, json!({"query": "document"}));
+    command(&mut doc, json!({"cmd": "set_parameter", "name": "a"}));
+    assert_eq!(query(&doc, json!({"query": "document"})), document);
+    assert_eq!(query(&doc, json!({"query": "parameters"})), parameters);
 }
 
 #[test]
@@ -530,7 +793,7 @@ fn mark_saved_and_the_document_query_tell_unsaved_changes() {
         .unwrap();
     assert_eq!(state(&doc), (json!(3), json!(false)));
 
-    // A project file read is modified until marked saved: the application
+    // A design file read is modified until marked saved: the application
     // marks a file it opens, not an imported design.
     let mut opened = Document::from_json(&doc.to_json(), MockKernel::default()).unwrap();
     assert_eq!(

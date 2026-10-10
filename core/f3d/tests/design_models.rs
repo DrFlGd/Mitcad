@@ -237,6 +237,265 @@ fn construction_curves_match_the_reference_dumps() {
     assert!(differ.is_empty(), "{differ:#?}");
 }
 
+/// Sketch splines, ellipses and elliptical arcs (mitcad#154): every such
+/// curve of the dumps is decoded with its type family, end and centre
+/// points, and geometry (a spline's degree, knots, weights and control
+/// points; an ellipse's centre, normal, major axis, radii and angles).
+#[test]
+fn splines_and_ellipses_match_the_reference_dumps() {
+    let Some(dir) = models_dir() else {
+        eprintln!("reference models not found; skipped");
+        return;
+    };
+    let close = |a: &[f64], b: &[f64]| {
+        a.len() == b.len() && a.iter().zip(b).all(|(x, y)| (x - y).abs() < 1e-9)
+    };
+    let (mut agree, mut differ) = (0usize, Vec::new());
+    for (id, f3d, json) in models(&dir) {
+        let text = std::fs::read_to_string(&json).unwrap();
+        let reference = ir::Dump::from_json(&text).unwrap_or_else(|e| panic!("{id}: {e}"));
+        let designs = design::decode_path(&f3d).unwrap_or_else(|e| panic!("{id}: {e}"));
+        let Some(decoded) = designs.into_iter().find_map(|d| d.dump) else {
+            panic!("{id}: no design decoded");
+        };
+        let twins = of_kind(&decoded, "Sketch");
+        for item in of_kind(&reference, "Sketch") {
+            let Some(twin) = twins
+                .iter()
+                .find(|d| d.index == item.index && d.index.is_some())
+            else {
+                continue;
+            };
+            let curves = |i: &ir::TimelineItem| match &i.detail {
+                Some(ir::Detail::Sketch(s)) => s.curves.clone().unwrap_or_default(),
+                _ => Vec::new(),
+            };
+            let mine = curves(twin);
+            for c in curves(item) {
+                let kind = c.curve_type.clone().unwrap_or_default();
+                let spline = kind.contains("Spline");
+                if !spline && !kind.starts_with("SketchEllip") {
+                    continue;
+                }
+                let what = format!("{id}: {} {:?} {kind}", item.name().unwrap_or("?"), c.id);
+                let Some(m) = mine.iter().find(|m| m.id == c.id) else {
+                    differ.push(format!("{what}: not decoded"));
+                    continue;
+                };
+                let (g, h) = (
+                    c.geometry.clone().unwrap_or_default(),
+                    m.geometry.clone().unwrap_or_default(),
+                );
+                let mut bad = Vec::new();
+                let points = |x: &ir::SketchCurve| {
+                    (
+                        x.start_sketch_point.clone().flatten(),
+                        x.end_sketch_point.clone().flatten(),
+                        x.center_sketch_point.clone().flatten(),
+                    )
+                };
+                if points(m) != points(&c) {
+                    bad.push(format!("points {:?} / {:?}", points(m), points(&c)));
+                }
+                if spline {
+                    let n = |g: &ir::Geometry, key: &str| -> Vec<f64> {
+                        let v = g.nurbs.as_ref().map(|n| n[key].clone()).unwrap_or_default();
+                        match v {
+                            serde_json::Value::Array(a) => a
+                                .iter()
+                                .flat_map(|x| match x {
+                                    serde_json::Value::Array(p) => p
+                                        .iter()
+                                        .filter_map(serde_json::Value::as_f64)
+                                        .collect::<Vec<f64>>(),
+                                    _ => x.as_f64().into_iter().collect::<Vec<f64>>(),
+                                })
+                                .collect(),
+                            _ => v.as_f64().into_iter().collect(),
+                        }
+                    };
+                    for key in ["degree", "knots", "controlPoints", "weights"] {
+                        if !close(&n(&h, key), &n(&g, key)) {
+                            bad.push(key.to_string());
+                        }
+                    }
+                } else {
+                    if m.curve_type != c.curve_type {
+                        bad.push(format!("type {:?}", m.curve_type));
+                    }
+                    let v = |x: Option<ir::Vec3>| x.map(|v| v.to_vec()).unwrap_or_default();
+                    let s = |x: Option<f64>| x.into_iter().collect::<Vec<f64>>();
+                    for (key, a, b) in [
+                        ("center", v(h.center), v(g.center)),
+                        ("normal", v(h.normal), v(g.normal)),
+                        ("majorAxis", v(h.major_axis), v(g.major_axis)),
+                        (
+                            "radii",
+                            [s(h.major_radius), s(h.minor_radius)].concat(),
+                            [s(g.major_radius), s(g.minor_radius)].concat(),
+                        ),
+                        (
+                            "angles",
+                            [s(h.start_angle), s(h.end_angle)].concat(),
+                            [s(g.start_angle), s(g.end_angle)].concat(),
+                        ),
+                    ] {
+                        if !close(&a, &b) {
+                            bad.push(format!("{key} {a:?} / {b:?}"));
+                        }
+                    }
+                }
+                if bad.is_empty() {
+                    agree += 1;
+                } else {
+                    differ.push(format!("{what}: {}", bad.join(", ")));
+                }
+            }
+        }
+    }
+    println!(
+        "splines and ellipses: {agree} agree, {} differ",
+        differ.len()
+    );
+    for d in &differ {
+        println!("  {d}");
+    }
+    assert!(differ.is_empty(), "{differ:#?}");
+}
+
+/// Fillet and chamfer options (mitcad#154): a fillet's corners, each
+/// set's kind, continuity, tangent chain, tangency weight, an asymmetric
+/// set's flip, a variable set's radii, and a chamfer's corners are the
+/// dump's (a chamfer set's tangent chain is not decoded).
+#[test]
+fn fillet_and_chamfer_options_match_the_reference_dumps() {
+    let Some(dir) = models_dir() else {
+        eprintln!("reference models not found; skipped");
+        return;
+    };
+    let name = |r: &Option<ir::Reference>| {
+        r.as_ref()
+            .and_then(ir::Reference::parameter)
+            .and_then(|p| p.name.clone())
+    };
+    let names = |r: &Option<Vec<ir::Reference>>| -> Vec<Option<String>> {
+        r.iter()
+            .flatten()
+            .map(|x| x.parameter().and_then(|p| p.name.clone()))
+            .collect()
+    };
+    let (mut agree, mut differ) = (0usize, Vec::new());
+    for (id, f3d, json) in models(&dir) {
+        let text = std::fs::read_to_string(&json).unwrap();
+        let reference = ir::Dump::from_json(&text).unwrap_or_else(|e| panic!("{id}: {e}"));
+        let designs = design::decode_path(&f3d).unwrap_or_else(|e| panic!("{id}: {e}"));
+        let Some(decoded) = designs.into_iter().find_map(|d| d.dump) else {
+            panic!("{id}: no design decoded");
+        };
+        for item in reference.timeline_items() {
+            let Some(twin) = decoded
+                .timeline_items()
+                .iter()
+                .find(|d| d.index == item.index && d.index.is_some())
+            else {
+                continue;
+            };
+            let what = format!("{id}: {}", item.name().unwrap_or("?"));
+            let mut check = |key: &str, mine: String, theirs: String| {
+                if mine == theirs {
+                    agree += 1;
+                } else {
+                    differ.push(format!("{what} {key}: decoded {mine}, dump {theirs}"));
+                }
+            };
+            match (&item.detail, &twin.detail) {
+                // A fillet inside a timeline group has no sets decoded (its
+                // input list is not found), as before mitcad#154.
+                (Some(ir::Detail::Fillet(_)), Some(ir::Detail::Fillet(m)))
+                    if m.edge_sets.as_ref().is_none_or(Vec::is_empty) => {}
+                (Some(ir::Detail::Fillet(t)), Some(ir::Detail::Fillet(m))) => {
+                    check(
+                        "isRollingBallCorner",
+                        format!("{:?}", m.is_rolling_ball_corner),
+                        format!("{:?}", t.is_rolling_ball_corner),
+                    );
+                    let (ts, ms) = (
+                        t.edge_sets.clone().unwrap_or_default(),
+                        m.edge_sets.clone().unwrap_or_default(),
+                    );
+                    check("sets", ms.len().to_string(), ts.len().to_string());
+                    for (k, (a, b)) in ms.iter().zip(&ts).enumerate() {
+                        let mut set =
+                            |key: &str, x: String, y: String| check(&format!("{k}.{key}"), x, y);
+                        set(
+                            "_type",
+                            format!("{:?}", a.edge_set_type),
+                            format!("{:?}", b.edge_set_type),
+                        );
+                        set(
+                            "continuity",
+                            format!("{:?}", a.continuity),
+                            format!("{:?}", b.continuity),
+                        );
+                        set(
+                            "isTangentChain",
+                            format!("{:?}", a.is_tangent_chain),
+                            format!("{:?}", b.is_tangent_chain),
+                        );
+                        if a.offset_one.is_some() {
+                            set(
+                                "isFlipped",
+                                format!("{:?}", a.is_flipped),
+                                format!("{:?}", b.is_flipped),
+                            );
+                        }
+                        for (key, x, y) in [
+                            ("radius", name(&a.radius), name(&b.radius)),
+                            (
+                                "tangencyWeight",
+                                name(&a.tangency_weight),
+                                name(&b.tangency_weight),
+                            ),
+                            ("startRadius", name(&a.start_radius), name(&b.start_radius)),
+                            ("endRadius", name(&a.end_radius), name(&b.end_radius)),
+                            ("offsetOne", name(&a.offset_one), name(&b.offset_one)),
+                            ("offsetTwo", name(&a.offset_two), name(&b.offset_two)),
+                        ] {
+                            set(key, format!("{x:?}"), format!("{y:?}"));
+                        }
+                        set(
+                            "midRadii",
+                            format!("{:?}", names(&a.mid_radii)),
+                            format!("{:?}", names(&b.mid_radii)),
+                        );
+                        set(
+                            "midPositions",
+                            format!("{:?}", names(&a.mid_positions)),
+                            format!("{:?}", names(&b.mid_positions)),
+                        );
+                    }
+                }
+                (Some(ir::Detail::Chamfer(t)), Some(ir::Detail::Chamfer(m))) => {
+                    check(
+                        "cornerType",
+                        format!("{:?}", m.corner_type),
+                        format!("{:?}", t.corner_type),
+                    );
+                }
+                _ => {}
+            }
+        }
+    }
+    println!(
+        "fillet and chamfer options: {agree} agree, {} differ",
+        differ.len()
+    );
+    for d in &differ {
+        println!("  {d}");
+    }
+    assert!(differ.is_empty(), "{differ:#?}");
+}
+
 /// Moves (mitcad#33): the decoded transform is the dump's, and the moved
 /// bodies are found (by their names) in the history.
 #[test]
@@ -1038,5 +1297,112 @@ fn extrusion_extents_match_the_reference_dumps() {
     for d in &differ {
         println!("  {d}");
     }
+    assert!(differ.is_empty(), "{differ:#?}");
+}
+
+/// Solid and surface extrusions (mitcad#154): every decoded `isSolid` is
+/// the dump's.
+#[test]
+fn extrusion_solids_match_the_reference_dumps() {
+    let Some(dir) = models_dir() else {
+        eprintln!("reference models not found; skipped");
+        return;
+    };
+    let (mut agree, mut surfaces, mut differ) = (0usize, 0usize, Vec::new());
+    for (id, f3d, json) in models(&dir) {
+        let text = std::fs::read_to_string(&json).unwrap();
+        let reference = ir::Dump::from_json(&text).unwrap_or_else(|e| panic!("{id}: {e}"));
+        let designs = design::decode_path(&f3d).unwrap_or_else(|e| panic!("{id}: {e}"));
+        let Some(decoded) = designs.into_iter().find_map(|d| d.dump) else {
+            panic!("{id}: no design decoded");
+        };
+        let twins = of_kind(&decoded, "ExtrudeFeature");
+        for item in of_kind(&reference, "ExtrudeFeature") {
+            let solid = |i: &ir::TimelineItem| match &i.detail {
+                Some(ir::Detail::Extrude(x)) => x.is_solid,
+                _ => None,
+            };
+            let Some(mine) = twins
+                .iter()
+                .find(|d| d.index == item.index && d.index.is_some())
+                .and_then(|d| solid(d))
+            else {
+                continue;
+            };
+            match solid(item) {
+                Some(theirs) if theirs == mine => {
+                    agree += 1;
+                    surfaces += usize::from(!mine);
+                }
+                theirs => differ.push(format!(
+                    "{id}: {}: decoded {mine}, dump {theirs:?}",
+                    item.name().unwrap_or("?")
+                )),
+            }
+        }
+    }
+    println!(
+        "extrusions' solid flag: {agree} agree ({surfaces} surfaces), {} differ",
+        differ.len()
+    );
+    assert!(differ.is_empty(), "{differ:#?}");
+}
+
+/// Construction axes (mitcad#154): every decoded axis line is the dump's
+/// (the same line; its direction either way).
+#[test]
+fn construction_axes_match_the_reference_dumps() {
+    let Some(dir) = models_dir() else {
+        eprintln!("reference models not found; skipped");
+        return;
+    };
+    let line = |d: &Option<ir::Detail>| -> Option<(ir::Vec3, ir::Vec3)> {
+        let v = serde_json::to_value(d.as_ref()?).ok()?;
+        let g = v.get("geometry").cloned().or_else(|| {
+            v.pointer("/definition/parentConstructionAxis/geometry")
+                .cloned()
+        })?;
+        Some((
+            serde_json::from_value(g.get("origin")?.clone()).ok()?,
+            serde_json::from_value(g.get("direction")?.clone()).ok()?,
+        ))
+    };
+    let (mut agree, mut differ) = (0usize, Vec::new());
+    for (id, f3d, json) in models(&dir) {
+        let text = std::fs::read_to_string(&json).unwrap();
+        let reference = ir::Dump::from_json(&text).unwrap_or_else(|e| panic!("{id}: {e}"));
+        let designs = design::decode_path(&f3d).unwrap_or_else(|e| panic!("{id}: {e}"));
+        let Some(decoded) = designs.into_iter().find_map(|d| d.dump) else {
+            panic!("{id}: no design decoded");
+        };
+        let twins = of_kind(&decoded, "ConstructionAxis");
+        for item in of_kind(&reference, "ConstructionAxis") {
+            let Some((o, d)) = line(&item.detail) else {
+                continue;
+            };
+            let what = format!("{id}: {}", item.name().unwrap_or("?"));
+            let Some((p, e)) = twins
+                .iter()
+                .find(|t| t.index == item.index && t.index.is_some())
+                .and_then(|t| line(&t.detail))
+            else {
+                differ.push(format!("{what}: not decoded"));
+                continue;
+            };
+            let dot = d[0] * e[0] + d[1] * e[1] + d[2] * e[2];
+            let w = [p[0] - o[0], p[1] - o[1], p[2] - o[2]];
+            let off = [
+                w[1] * d[2] - w[2] * d[1],
+                w[2] * d[0] - w[0] * d[2],
+                w[0] * d[1] - w[1] * d[0],
+            ];
+            if (dot.abs() - 1.0).abs() < 1e-9 && off.iter().all(|x| x.abs() < 1e-9) {
+                agree += 1;
+            } else {
+                differ.push(format!("{what}: decoded {p:?} {e:?}, dump {o:?} {d:?}"));
+            }
+        }
+    }
+    println!("construction axes: {agree} agree, {} differ", differ.len());
     assert!(differ.is_empty(), "{differ:#?}");
 }

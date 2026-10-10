@@ -667,7 +667,7 @@ pub trait Kernel {
 
     /// A profile turned about an axis as it moves along it (see
     /// [`HelixSpec`]).
-    fn helix(&self, _spec: &HelixSpec<'_>) -> Result<Self::Shape, KernelError> {
+    fn helix(&self, _spec: &HelixSpec<'_, Self::Shape>) -> Result<Self::Shape, KernelError> {
         Err(KernelError::Unsupported("helices"))
     }
 
@@ -803,6 +803,35 @@ pub trait Kernel {
     /// the centre of the solids by volume, else of the faces by area.
     fn fixed_point_properties(&self, _shape: &Self::Shape) -> Result<MassProperties, KernelError> {
         Err(KernelError::Unsupported("fixed-point measures"))
+    }
+
+    // Sweeps along guide surfaces (mitcad#157; the input in `crate::sweeps`).
+
+    /// A sweep whose profile turns with the normal of the faces its path
+    /// lies on (see [`crate::sweeps::GuideSurface`]); `spec.guide` is None
+    /// and its twist and taper are not used.
+    fn surface_sweep(
+        &self,
+        _spec: &SweepSpec<'_>,
+        _surfaces: &[crate::sweeps::GuideSurface<'_, Self::Shape>],
+    ) -> Result<Self::Shape, KernelError> {
+        Err(KernelError::Unsupported("sweeps along guide surfaces"))
+    }
+
+    // Shaded meshes of faces (USDZ export, mitcad#123).
+
+    /// The body's faces triangulated within the tolerance without changing
+    /// the shape, for display: each face its own vertices with unit normals
+    /// out of the body (the surface's), so edges stay sharp and curved
+    /// faces smooth; triangles counter-clockwise seen from outside, face by
+    /// face in the order [`Kernel::faces`] lists the faces. A mesh body's
+    /// triangles faceted, each with its own vertices.
+    fn face_meshes(
+        &self,
+        _shape: &Self::Shape,
+        _tolerance: &MeshTolerance,
+    ) -> Result<crate::exchange::FaceMeshes, KernelError> {
+        Err(KernelError::Unsupported("face meshes"))
     }
 }
 

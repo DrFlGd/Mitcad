@@ -1,0 +1,360 @@
+Mitcad's patch to OCCT 8.0.1, under OCCT's licence:
+SPDX-License-Identifier: LGPL-2.1-only WITH OCCT-exception-1.0
+
+Fillets: more gaps of an analytic blend run over holes and cut by the face
+beyond (0055, mitcad#121): e.g. the rim of a cylinder whose top is crossed
+by blind holes or by notches open to a bore, or a circle on a cone's base
+whose contact on a ledge crosses round notches.
+
+- ChFi3d_FillKPartGaps: the pieces of a closed spine are taken in the
+  order of their starts. SplitKPart cuts the piece across the spine's
+  start in two and lists them first, so the gaps next to that start were
+  not between consecutive pieces and were left to the walking.
+- ChFi3d_KPartCutPiece: of the face beyond's vertices, only those on its
+  boundary with the face the contact leaves count as lying under the blend
+  (an edge of the face beyond ending there would have to be prolonged).
+  Before, the vertex at the bottom of a blind hole refused the cut.
+- ChFi3d_KPartCutCurve: on an intersection line that closes on itself
+  without being periodic, the arc from one end of the cut to the other
+  that runs across the line's ends is tried too (joined into one B-spline),
+  and a point at an end of a line counts as on it; the arcs are checked to
+  lie across the blend by their 3d points.
+- ChFi3d_FillKPartGaps: where the cut is no single line from one end to
+  the other but two lines that meet (the intersection is split where a
+  surface's parameter wraps), the gap is filled with two pieces split at
+  the section through the point where the lines meet
+  (ChFi3d_KPartCutJunction), not at the gap's middle.
+diff --git a/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_2.cxx b/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_2.cxx
+index 3b60828..48fd090 100644
+--- a/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_2.cxx
++++ b/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_2.cxx
+@@ -54,6 +54,7 @@
+ #include <GeomAPI_ProjectPointOnSurf.hxx>
+ #include <GeomInt_IntSS.hxx>
+ #include <GeomLib.hxx>
++#include <GeomConvert_CompCurveToBSplineCurve.hxx>
+ #include <GeomProjLib.hxx>
+ #include <Geom_TrimmedCurve.hxx>
+ #include <GeomFill_ConstrainedFilling.hxx>
+@@ -3924,48 +3925,99 @@ static bool ChFi3d_KPartCutCurve(const occ::handle<Geom_Surface>& S,
+     {
+       continue;
+     }
+-    const occ::handle<Geom_Curve>   C  = anInter.Line(i);
+-    const occ::handle<Geom2d_Curve> p1 = anInter.LineOnS1(i);
+-    const occ::handle<Geom2d_Curve> p2 = anInter.LineOnS2(i);
+-    GeomAPI_ProjectPointOnCurve     aPr1(P1, C), aPr2(P2, C);
+-    if (aPr1.NbPoints() == 0 || aPr2.NbPoints() == 0 || aPr1.LowerDistance() > aTolP
+-        || aPr2.LowerDistance() > aTolP)
++    const occ::handle<Geom_Curve> C = anInter.Line(i);
++    // The parameter of a point on the line: its projection, or an end of
++    // the line (the intersection may be split into lines meeting there).
++    const auto paramOn = [&](const gp_Pnt& P, double& t) {
++      GeomAPI_ProjectPointOnCurve aPr(P, C);
++      double                      d = RealLast();
++      if (aPr.NbPoints() > 0)
++      {
++        d = aPr.LowerDistance();
++        t = aPr.LowerDistanceParameter();
++      }
++      if (!C->IsPeriodic())
++      {
++        for (const double te : {C->FirstParameter(), C->LastParameter()})
++        {
++          if (C->Value(te).Distance(P) < d)
++          {
++            d = C->Value(te).Distance(P);
++            t = te;
++          }
++        }
++      }
++      return d <= aTolP;
++    };
++    double     t1 = 0., t2 = 0.;
++    const bool on1 = paramOn(P1, t1), on2 = paramOn(P2, t2);
++    if (!on1 || !on2)
+     {
+       continue;
+     }
+-    const double t1 = aPr1.LowerDistanceParameter(), t2 = aPr2.LowerDistanceParameter();
+     if (std::abs(t2 - t1) <= Precision::PConfusion())
+     {
+       continue;
+     }
+     // The arcs from P1 to P2: the direct one, and on a closed line the one
+-    // round the other way.
+-    double aFrom[2] = {t1, t1}, aTo[2] = {t2, t2};
+-    int    nbArcs   = 1;
++    // round the other way (on a line closed without being periodic, the
++    // rest of the line joined across its ends).
++    NCollection_Sequence<occ::handle<Geom_Curve>> anArcs;
++    {
++      occ::handle<Geom_Curve> aDirect = new Geom_TrimmedCurve(C, std::min(t1, t2), std::max(t1, t2));
++      if (t2 < t1)
++      {
++        aDirect->Reverse();
++      }
++      anArcs.Append(aDirect);
++    }
+     if (C->IsPeriodic())
+     {
+-      const double T = C->Period();
+-      nbArcs         = 2;
+-      aTo[1]         = t2 > t1 ? t2 - T : t2 + T;
++      const double            T     = C->Period();
++      const double            to    = t2 > t1 ? t2 - T : t2 + T;
++      occ::handle<Geom_Curve> aRound = new Geom_TrimmedCurve(C, std::min(t1, to), std::max(t1, to));
++      if (to < t1)
++      {
++        aRound->Reverse();
++      }
++      anArcs.Append(aRound);
++    }
++    else if (C->Value(C->FirstParameter()).Distance(C->Value(C->LastParameter())) <= tol3d)
++    {
++      // From the later point to the line's end, on from its start to the
++      // earlier point; reversed where it should run from P2 to P1.
++      const double            tLo = std::min(t1, t2), tHi = std::max(t1, t2);
++      GeomConvert_CompCurveToBSplineCurve aJoin(
++        new Geom_TrimmedCurve(C, tHi, C->LastParameter()));
++      if (tHi < C->LastParameter() - Precision::PConfusion()
++          && tLo > C->FirstParameter() + Precision::PConfusion()
++          && aJoin.Add(new Geom_TrimmedCurve(C, C->FirstParameter(), tLo), tol3d, true))
++      {
++        occ::handle<Geom_Curve> aRound = aJoin.BSplineCurve();
++        if (t1 < t2)
++        {
++          aRound->Reverse();
++        }
++        anArcs.Append(aRound);
++      }
+     }
+-    for (int a = 0; a < nbArcs; a++)
++    for (int a = 1; a <= anArcs.Length(); a++)
+     {
++      occ::handle<Geom_Curve> aC = anArcs.Value(a);
++      const double            uf = aC->FirstParameter(), ul = aC->LastParameter();
+       // Across the blend all along (a few points between the ends).
+       bool inBand = true;
+       for (int k = 1; k <= 3 && inBand; k++)
+       {
+-        const double   t  = aFrom[a] + (aTo[a] - aFrom[a]) * k / 4.;
+-        const gp_Pnt2d uv = p1->Value(t);
+-        // (The p-curve may lie in another period of a periodic surface.)
+-        gp_Pnt2d uvn = uv;
+-        GeomAPI_ProjectPointOnSurf aPS(C->Value(t), S);
+-        if (aPS.NbPoints() > 0)
++        GeomAPI_ProjectPointOnSurf aPS(aC->Value(uf + (ul - uf) * k / 4.), S);
++        if (aPS.NbPoints() == 0)
+         {
+-          double u = 0., v = 0.;
+-          aPS.LowerDistanceParameters(u, v);
+-          uvn.SetCoord(u, v);
++          inBand = false;
++          break;
+         }
+-        double c = across == 1 ? uvn.X() : uvn.Y();
++        double u = 0., v = 0.;
++        aPS.LowerDistanceParameters(u, v);
++        double     c   = across == 1 ? u : v;
+         const bool per = across == 1 ? S->IsUPeriodic() : S->IsVPeriodic();
+         if (per)
+         {
+@@ -3978,26 +4030,10 @@ static bool ChFi3d_KPartCutCurve(const occ::handle<Geom_Surface>& S,
+       {
+         continue;
+       }
+-      double f = aFrom[a], l = aTo[a];
+-      const bool reversed = l < f;
+-      if (reversed)
+-      {
+-        std::swap(f, l);
+-      }
+-      occ::handle<Geom_Curve>   aC  = new Geom_TrimmedCurve(C, f, l);
+-      occ::handle<Geom2d_Curve> aP1 = new Geom2d_TrimmedCurve(p1, f, l);
+-      occ::handle<Geom2d_Curve> aP2 = new Geom2d_TrimmedCurve(p2, f, l);
+-      if (reversed)
+-      {
+-        aC->Reverse();
+-        aP1->Reverse();
+-        aP2->Reverse();
+-      }
+-      const double uf = aC->FirstParameter(), ul = aC->LastParameter();
+       // The p-curves: the curve's projections on both surfaces, in the
+       // periods of the parameters given at its start.
+-      aP1 = GeomProjLib::Curve2d(aC, uf, ul, S);
+-      aP2 = GeomProjLib::Curve2d(aC, uf, ul, SB);
++      occ::handle<Geom2d_Curve> aP1 = GeomProjLib::Curve2d(aC, uf, ul, S);
++      occ::handle<Geom2d_Curve> aP2 = GeomProjLib::Curve2d(aC, uf, ul, SB);
+       if (aP1.IsNull() || aP2.IsNull())
+       {
+         continue;
+@@ -4236,6 +4272,105 @@ static bool ChFi3d_KPartLineParam(const TopOpeBRepDS_DataStructure&   DStr,
+   return true;
+ }
+ 
++// Where the cut of the analytic blend SD by the face beyond B, from P1 to
++// P2, is not one line of the surfaces' intersection but two that meet (the
++// intersection's lines are split at the surfaces' parametric seams): the
++// spine parameter Wm, between W1 and W2, of the section through the point
++// where they meet.
++static bool ChFi3d_KPartCutJunction(const TopOpeBRepDS_DataStructure&   DStr,
++                                    const occ::handle<ChFiDS_Spine>&    Spine,
++                                    const occ::handle<ChFiDS_SurfData>& SD,
++                                    const int                           ons,
++                                    const TopoDS_Face&                  B,
++                                    const gp_Pnt&                       P1,
++                                    const gp_Pnt&                       P2,
++                                    const double                        W1,
++                                    const double                        W2,
++                                    const double                        tol3d,
++                                    double&                             Wm)
++{
++  const occ::handle<Geom_Surface>& S  = DStr.Surface(SD->Surf()).Surface();
++  const occ::handle<Geom_Surface>  SB = BRep_Tool::Surface(B);
++  if (S.IsNull() || SB.IsNull())
++  {
++    return false;
++  }
++  GeomInt_IntSS anInter;
++  anInter.Perform(S, SB, 2.e-7, true, false, false);
++  if (!anInter.IsDone())
++  {
++    return false;
++  }
++  const double aTolP = std::max(100. * tol3d, 1.e-4);
++  const auto   onLine = [&](const occ::handle<Geom_Curve>& C, const gp_Pnt& P) {
++    GeomAPI_ProjectPointOnCurve aPr(P, C);
++    double                      d = aPr.NbPoints() > 0 ? aPr.LowerDistance() : RealLast();
++    if (!C->IsPeriodic())
++    {
++      d = std::min(d, std::min(C->Value(C->FirstParameter()).Distance(P), C->Value(C->LastParameter()).Distance(P)));
++    }
++    return d <= aTolP;
++  };
++  for (int i = 1; i <= anInter.NbLines(); i++)
++  {
++    const occ::handle<Geom_Curve> Ci = anInter.Line(i);
++    if (Ci->IsPeriodic() || !onLine(Ci, P1))
++    {
++      continue;
++    }
++    for (int j = 1; j <= anInter.NbLines(); j++)
++    {
++      const occ::handle<Geom_Curve> Cj = anInter.Line(j);
++      if (j == i || Cj->IsPeriodic() || !onLine(Cj, P2))
++      {
++        continue;
++      }
++      for (const double ti : {Ci->FirstParameter(), Ci->LastParameter()})
++      {
++        for (const double tj : {Cj->FirstParameter(), Cj->LastParameter()})
++        {
++          const gp_Pnt E = Ci->Value(ti);
++          if (E.Distance(Cj->Value(tj)) > aTolP)
++          {
++            continue;
++          }
++          // The section through E: where the other contact's line comes
++          // nearest to E, as for the spine's points.
++          double tE = 0., t1 = 0., t2 = 0.;
++          if (!ChFi3d_KPartLineParam(DStr, SD, 3 - ons, E, tE)
++              || !ChFi3d_KPartLineParam(DStr, SD, 3 - ons, Spine->Value(W1), t1)
++              || !ChFi3d_KPartLineParam(DStr, SD, 3 - ons, Spine->Value(W2), t2)
++              || (tE - t1) * (tE - t2) > 0.)
++          {
++            continue;
++          }
++          double a = W1, b = W2;
++          for (int it = 0; it < 60; it++)
++          {
++            const double m  = 0.5 * (a + b);
++            double       tm = 0.;
++            if (!ChFi3d_KPartLineParam(DStr, SD, 3 - ons, Spine->Value(m), tm))
++            {
++              return false;
++            }
++            if ((tm - t1) * (tE - t1) >= 0. && std::abs(tm - t1) < std::abs(tE - t1))
++            {
++              a = m;
++            }
++            else
++            {
++              b = m;
++            }
++          }
++          Wm = 0.5 * (a + b);
++          return Wm > W1 && Wm < W2;
++        }
++      }
++    }
++  }
++  return false;
++}
++
+ // The point where the face beyond B cuts the section of the analytic blend
+ // SD at spine point P: on the blend's surface between its contacts (an
+ // isoline of its parameters); its parameters on the blend and on B.
+@@ -4446,10 +4581,18 @@ static occ::handle<ChFiDS_SurfData> ChFi3d_KPartCutPiece(TopOpeBRepDS_DataStruct
+     }
+     const occ::handle<Geom_Curve>& CN = DStr.Curve(Full->Interference(ons).LineIndex()).Curve();
+     const occ::handle<Geom_Curve>& CO = DStr.Curve(Full->Interference(opp).LineIndex()).Curve();
++    // (The vertices on B's boundary with N: the others, e.g. at the bottom
++    // of a blind hole, lie far from the blend.)
++    NCollection_IndexedMap<TopoDS_Shape, TopTools_ShapeMapHasher> aNVertices;
++    TopExp::MapShapes(N, TopAbs_VERTEX, aNVertices);
+     for (TopExp_Explorer ex(B, TopAbs_VERTEX); ex.More(); ex.Next())
+     {
+       const gp_Pnt V = BRep_Tool::Pnt(TopoDS::Vertex(ex.Current()));
+       double       t = 0.;
++      if (!aNVertices.Contains(ex.Current()))
++      {
++        continue;
++      }
+       // (Not the points where the contact leaves and comes back.)
+       if ((Start != nullptr && V.Distance(Pend[0]) <= 10. * tol3d)
+           || (End != nullptr && V.Distance(Pend[1]) <= 10. * tol3d)
+@@ -4612,6 +4755,25 @@ static void ChFi3d_FillKPartGaps(TopOpeBRepDS_DataStructure&
+                                  const ChFiDS_Map&                                   EFMap,
+                                  const double                                        tol3d)
+ {
++  if (Spine->IsPeriodic())
++  {
++    // The pieces of a closed spine come in no order (SplitKPart cuts the
++    // piece across the spine's start in two): in order of their starts.
++    const double w0 = Spine->FirstParameter(), w1 = w0 + Spine->Period();
++    for (int j = 1; j < LSD.Length(); j++)
++    {
++      for (int k = j + 1; k <= LSD.Length(); k++)
++      {
++        const occ::handle<ChFiDS_SurfData> jSD = LSD.Value(j), kSD = LSD.Value(k);
++        if (ElCLib::InPeriod(kSD->FirstSpineParam(), w0, w1)
++            < ElCLib::InPeriod(jSD->FirstSpineParam(), w0, w1))
++        {
++          LSD.SetValue(j, kSD);
++          LSD.SetValue(k, jSD);
++        }
++      }
++    }
++  }
+   for (int j = 1; j < LSD.Length(); j++)
+   {
+     const occ::handle<ChFiDS_SurfData> A = LSD.Value(j);
+@@ -4678,8 +4840,15 @@ static void ChFi3d_FillKPartGaps(TopOpeBRepDS_DataStructure&
+       }
+       // Where the cut is not found as one curve between its ends (both
+       // ends on a line of the intersection that does not cross the blend
+-      // between them), two pieces, cut from each end to the middle.
+-      const double Wm = 0.5 * (A->LastSpineParam() + C->FirstSpineParam());
++      // between them, or on two lines that meet), two pieces, cut from
++      // each end to the middle (to where the two lines meet).
++      double Wm = 0.5 * (A->LastSpineParam() + C->FirstSpineParam());
++      double Wj = Wm;
++      if (ChFi3d_KPartCutJunction(DStr, Spine, A, ons, B, CPa.Point(), CPc.Point(), A->LastSpineParam(),
++                                  C->FirstSpineParam(), tol3d, Wj))
++      {
++        Wm = Wj;
++      }
+       const occ::handle<ChFiDS_SurfData> aNone;
+       const occ::handle<ChFiDS_SurfData> G1 =
+         ChFi3d_KPartCutPiece(DStr, Spine, A, ons, N, B, A->LastSpineParam(), Wm, A, aNone, tol3d);

@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: MIT
 # Installs the Mitcad Windows toolchain with pinned versions, ccache too
-# (setup-ccache-windows.ps1), and writes CMakeUserPresets.json for a
-# checkout. Meant for the isolated Windows build VM; run as an
+# (setup-ccache-windows.ps1), builds the render worker's libraries
+# (build-cycles.ps1) and writes CMakeUserPresets.json for a checkout. Meant for the isolated Windows build VM; run as an
 # administrator. Visual Studio 2022 or newer with the C++ desktop tools
 # must already be installed.
 #
@@ -94,6 +94,12 @@ if (-not (Test-Path $qtDir)) {
     Invoke-Checked { & (Join-Path $aqt 'Scripts\aqt.exe') install-qt windows desktop $QtVersion win64_msvc2022_64 -O (Join-Path $Root 'Qt') }
   } finally { Pop-Location }
 }
+
+# Every build has the render worker (docs/rendering.md "Building"): Cycles
+# and Open Image Denoise, built once outside the build folders, in the
+# MSVC environment; re-running skips what is done.
+Write-Host "== The render worker's libraries (build-cycles.ps1)"
+Invoke-Checked { & (Join-Path $PSScriptRoot 'msvc.cmd') powershell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot 'build-cycles.ps1') }
 
 Write-Host '== CMakeUserPresets.json'
 New-Item -ItemType Directory -Force $Repo | Out-Null

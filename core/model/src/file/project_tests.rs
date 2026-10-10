@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-//! Project files of version 3 and the B-rep store (P12a), with the mock
+//! Design files of version 3 and the B-rep store (P12a), with the mock
 //! kernel.
 
 use std::io;
@@ -255,7 +255,7 @@ fn saving_in_and_outside_a_project() {
     );
 
     // Opened, from the project's store.
-    let mut back = Document::load_project(&path, MockKernel::default()).unwrap();
+    let mut back = Document::load_design(&path, MockKernel::default()).unwrap();
     assert!(
         back.load_warnings().is_empty(),
         "{:?}",
@@ -265,7 +265,7 @@ fn saving_in_and_outside_a_project() {
     // Moved out of the project, the data is not found.
     let moved = dir.join("moved.mitcad");
     std::fs::copy(&path, &moved).unwrap();
-    let lost = Document::load_project(&moved, MockKernel::default()).unwrap();
+    let lost = Document::load_design(&moved, MockKernel::default()).unwrap();
     assert!(
         lost.load_warnings()[0].contains("is not in a Mitcad project"),
         "{:?}",
@@ -273,7 +273,7 @@ fn saving_in_and_outside_a_project() {
     );
     // Converted back to a single file, it opens anywhere.
     back.save_file(&moved, FileFormat::Single).unwrap();
-    let mut single = Document::load_project(&moved, MockKernel::default()).unwrap();
+    let mut single = Document::load_design(&moved, MockKernel::default()).unwrap();
     assert_eq!(bodies(&mut single), expected);
     assert_eq!(single.to_json(), doc.to_json());
     // No temporary files are left.
@@ -323,7 +323,7 @@ fn init_keeps_what_is_there() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// A project made before project files were merged as whole files (P12
+/// A project made before design files were merged as whole files (P12
 /// remote) gets `merge=binary` in place of its older line; the user's own
 /// lines stay.
 #[test]
@@ -437,11 +437,11 @@ fn the_display_state_is_kept_apart_in_a_project() {
     assert_eq!(value(&doc.to_json())["display"]["origin"], true);
 
     // Opened, the display state comes back.
-    let back = Document::load_project(&path, MockKernel::default()).unwrap();
+    let back = Document::load_design(&path, MockKernel::default()).unwrap();
     assert_eq!(back.display(), doc.display());
     // A damaged one is left out with a warning.
     std::fs::write(&local, "{").unwrap();
-    let back = Document::load_project(&path, MockKernel::default()).unwrap();
+    let back = Document::load_design(&path, MockKernel::default()).unwrap();
     assert!(back.display().is_default());
     assert!(
         back.load_warnings()[0].contains("the display state in"),
@@ -470,14 +470,14 @@ fn the_display_state_follows_a_renamed_file() {
     std::fs::rename(&old, &new).unwrap();
     // Before it follows, the renamed file opens without it.
     assert!(
-        Document::load_project(&new, MockKernel::default())
+        Document::load_design(&new, MockKernel::default())
             .unwrap()
             .display()
             .is_default()
     );
     assert!(project.move_local_state(&old, &new).unwrap());
     assert!(!project.local_state_path(&old).unwrap().exists());
-    let back = Document::load_project(&new, MockKernel::default()).unwrap();
+    let back = Document::load_design(&new, MockKernel::default()).unwrap();
     assert!(back.display().origin);
     // Nothing to move the second time; a file's own state stays.
     assert!(!project.move_local_state(&old, &new).unwrap());
@@ -555,7 +555,7 @@ fn references_are_read_without_loading() {
     assert_eq!(brep_references(&v3).unwrap(), expected);
     // Data inside the file is no reference.
     assert!(brep_references(&doc.to_json()).unwrap().is_empty());
-    assert!(matches!(brep_references("{}"), Err(FileError::NotAProject)));
+    assert!(matches!(brep_references("{}"), Err(FileError::NotADesign)));
     assert!(matches!(brep_references("[1"), Err(FileError::Syntax(_))));
     let newer = v3.replacen("\"version\": 3", "\"version\": 9", 1);
     assert!(matches!(

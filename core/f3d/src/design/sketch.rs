@@ -225,6 +225,238 @@ pub fn arcs(seg: &Segment) -> HashMap<u64, ArcGeom> {
     out
 }
 
+/// A sketch spline [`SKETCH_SPLINE`] (mitcad#154): a B-spline in sketch
+/// space (cm) and the sketch points at its ends.
+#[derive(Clone, Debug, PartialEq)]
+pub struct SplineGeom {
+    pub degree: u32,
+    /// Non-decreasing, `control.len() + degree + 1` of them.
+    pub knots: Vec<f64>,
+    /// Empty for a non-rational curve, else one per control point.
+    pub weights: Vec<f64>,
+    pub control: Vec<Vec3>,
+    pub start_point: Option<u64>,
+    pub end_point: Option<u64>,
+}
+
+impl SplineGeom {
+    /// The knot vector is clamped at both ends (the first and last knots
+    /// repeated `degree + 1` times): the curve starts at its first control
+    /// point and ends at its last. An unclamped vector is taken for a
+    /// periodic curve.
+    pub fn is_clamped(&self) -> bool {
+        let k = self.degree as usize + 1;
+        let n = self.knots.len();
+        n >= 2 * k
+            && self.knots[..k].iter().all(|&x| x == self.knots[0])
+            && self.knots[n - k..].iter().all(|&x| x == self.knots[n - 1])
+    }
+}
+
+/// `u32 count | u32 capacity | u32 8 | count × width f64` at `p`: the
+/// values and the end. The capacity is at least the count.
+fn counted_f64s(d: &[u8], p: usize, width: usize) -> Option<(Vec<f64>, usize)> {
+    let n = u32_at(d, p)? as usize;
+    let cap = u32_at(d, p + 4)? as usize;
+    if cap < n || u32_at(d, p + 8)? != 8 || n > 100_000 {
+        return None;
+    }
+    let v = f64s_at(d, p + 12, n * width)?;
+    v.iter()
+        .all(|x| x.is_finite())
+        .then_some((v, p + 12 + 8 * n * width))
+}
+
+/// The NURBS data of a spline record: `u32 degree | f64 fit tolerance |
+/// knots | weights | control points`, each array counted as
+/// [`counted_f64s`] (control points three values each), found as the first
+/// place after `from` where the counts agree (knots = control points +
+/// degree + 1, weights none or one per control point) and the knots do not
+/// decrease. Layout as the cadmpeg format description (CC-BY-4.0) gives
+/// the sketch NURBS payload; checked against the reference models' dumps.
+/// (Where it starts, degree, knots, weights, control points.)
+#[allow(clippy::type_complexity)]
+fn nurbs_at(d: &[u8], from: usize) -> Option<(usize, u32, Vec<f64>, Vec<f64>, Vec<Vec3>)> {
+    let mut p = from;
+    while p + 12 + 36 <= d.len() {
+        let found = (|| {
+            let degree = u32_at(d, p)?;
+            if !(1..=25).contains(&degree) || !f64_at(d, p + 4)?.is_finite() {
+                return None;
+            }
+            let (knots, q) = counted_f64s(d, p + 12, 1)?;
+            let (weights, q) = counted_f64s(d, q, 1)?;
+            let (poles, _) = counted_f64s(d, q, 3)?;
+            let n = poles.len() / 3;
+            let ok = n >= 2
+                && knots.len() == n + degree as usize + 1
+                && (weights.is_empty() || (weights.len() == n && weights.iter().all(|&w| w > 0.0)))
+                && knots.windows(2).all(|w| w[0] <= w[1])
+                && knots[0] < knots[knots.len() - 1];
+            ok.then(|| (degree, knots, weights, poles.chunks(3).map(vec3).collect()))
+        })();
+        if let Some((degree, knots, weights, control)) = found {
+            return Some((p, degree, knots, weights, control));
+        }
+        p += 1;
+    }
+    None
+}
+
+/// Sketch splines by object id (mitcad#154). The end points are the
+/// sketch points the record refers to before its NURBS data, matched to
+/// the curve's first and last control points (a clamped curve passes
+/// through them) within 1e-6 cm.
+pub fn splines(seg: &Segment, pts: &HashMap<u64, PointGeom>) -> HashMap<u64, SplineGeom> {
+    let mut out = HashMap::new();
+    for o in seg.objects_of_kind(SKETCH_SPLINE) {
+        let d = seg.data(o);
+        let Some(root) = seg.root_part(d) else {
+            continue;
+        };
+        let Some((at, degree, knots, weights, control)) = nurbs_at(d, root.end) else {
+            continue;
+        };
+        let mut s = SplineGeom {
+            degree,
+            knots,
+            weights,
+            control,
+            start_point: None,
+            end_point: None,
+        };
+        if s.is_clamped() {
+            let ends: Vec<u64> = seg
+                .refs_in(d, root.end, at)
+                .into_iter()
+                .map(|(_, r)| r.id)
+                .filter(|&id| classes::is_point_class(seg.guid_of(id)))
+                .collect();
+            let near = |id: u64, to: Vec3| {
+                pts.get(&id)
+                    .is_some_and(|p| (0..3).all(|i| (p.xyz[i] - to[i]).abs() < 1e-6))
+            };
+            let first = s.control[0];
+            let last = s.control[s.control.len() - 1];
+            s.start_point = ends.iter().copied().find(|&id| near(id, first));
+            s.end_point = ends
+                .iter()
+                .copied()
+                .find(|&id| near(id, last) && Some(id) != s.start_point);
+        }
+        out.insert(o.id, s);
+    }
+    out
+}
+
+/// A sketch ellipse or elliptical arc [`SKETCH_ELLIPSE`] (mitcad#154):
+/// after the root part `f64 center[3] | major[3] | minor[3] | major
+/// radius | minor radius | start angle | end angle`, then `ref center
+/// point | ref end point | ref | ref | ref start point`, each reference or
+/// a null byte (a full ellipse has no end points; the two in between name
+/// its axis lines). `major` and `minor` are unit directions; a point at
+/// angle `t` is `center + a cos t major + b sin t minor`, so the arc runs
+/// counter-clockwise about `major × minor`. Read on the reference models
+/// against their dumps (the format descriptions we have do not give this
+/// record).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct EllipseGeom {
+    pub center: Vec3,
+    pub major: Vec3,
+    pub minor: Vec3,
+    pub major_radius: f64,
+    pub minor_radius: f64,
+    pub start_angle: f64,
+    pub end_angle: f64,
+    pub center_point: Option<u64>,
+    pub end_point: Option<u64>,
+    pub start_point: Option<u64>,
+}
+
+impl EllipseGeom {
+    /// The normal the angles turn about: `major × minor`.
+    pub fn normal(&self) -> Vec3 {
+        let (a, b) = (self.major, self.minor);
+        [
+            a[1] * b[2] - a[2] * b[1],
+            a[2] * b[0] - a[0] * b[2],
+            a[0] * b[1] - a[1] * b[0],
+        ]
+    }
+
+    /// A whole ellipse: no end points.
+    pub fn is_closed(&self) -> bool {
+        self.start_point.is_none() && self.end_point.is_none()
+    }
+}
+
+/// Sketch ellipses and elliptical arcs by object id (mitcad#154).
+pub fn ellipses(seg: &Segment) -> HashMap<u64, EllipseGeom> {
+    let mut out = HashMap::new();
+    for o in seg.objects_of_kind(SKETCH_ELLIPSE) {
+        let d = seg.data(o);
+        let Some(root) = seg.root_part(d) else {
+            continue;
+        };
+        let p = root.end;
+        let Some(v) = f64s_at(d, p, 13) else { continue };
+        let (major, minor) = (vec3(&v[3..6]), vec3(&v[6..9]));
+        let dot = |a: Vec3, b: Vec3| a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+        let valid = v.iter().all(|x| x.is_finite())
+            && (dot(major, major) - 1.0).abs() < 1e-9
+            && (dot(minor, minor) - 1.0).abs() < 1e-9
+            && dot(major, minor).abs() < 1e-9
+            && v[9] > 0.0
+            && v[10] > 0.0;
+        if !valid {
+            continue;
+        }
+        // Five slots, each a reference or a null byte.
+        let mut q = p + 104;
+        let mut slots = Vec::new();
+        for _ in 0..5 {
+            if d.get(q) == Some(&0) {
+                slots.push(None);
+                q += 1;
+            } else if let Some(r) = seg.ref_at(d, q) {
+                slots.push(Some(r.id));
+                q = r.end;
+            } else {
+                break;
+            }
+        }
+        if slots.len() < 5 {
+            continue;
+        }
+        let point = |i: usize| {
+            slots
+                .get(i)
+                .copied()
+                .flatten()
+                .filter(|&id| classes::is_point_class(seg.guid_of(id)))
+        };
+        let Some(center_point) = point(0) else {
+            continue;
+        };
+        out.insert(
+            o.id,
+            EllipseGeom {
+                center: vec3(&v[0..3]),
+                major,
+                minor,
+                major_radius: v[9],
+                minor_radius: v[10],
+                start_angle: v[11],
+                end_angle: v[12],
+                center_point: Some(center_point),
+                end_point: point(1),
+                start_point: point(4),
+            },
+        );
+    }
+    out
+}
+
 /// Sketch object id -> transform, from the first `F47A46FB` object the
 /// sketch references: after its root part (`u8 0, u8 0`), `u8 identity`
 /// and, when it is 0, `f64 m[16]`.
@@ -751,6 +983,8 @@ pub fn sketch_details(seg: &Segment) -> (Vec<SketchInfo>, HashMap<u64, (u64, Str
     let pts = points(seg);
     let lns = lines(seg);
     let arcs = arcs(seg);
+    let splines = splines(seg, &pts);
+    let ellipses = ellipses(seg);
     let tfs = transforms(seg);
     let offsets = offsets(seg);
     let offset_dimensions: std::collections::HashSet<u64> =
@@ -855,6 +1089,56 @@ pub fn sketch_details(seg: &Segment) -> (Vec<SketchInfo>, HashMap<u64, (u64, Str
                         connected.entry(p).or_default().push(c.clone());
                     }
                 }
+            } else if let Some(s) = splines.get(&e) {
+                // mitcad#154. Fitted and control-point splines are not told
+                // apart: the curve is kept as stored, a fixed spline.
+                let pt = |p: Option<u64>| Some(p.and_then(|p| pid.get(p).cloned()));
+                rec.curve_type = Some("SketchFixedSpline".into());
+                rec.start_sketch_point = pt(s.start_point);
+                rec.end_sketch_point = pt(s.end_point);
+                rec.degree = Some(s.degree as i64);
+                rec.f3d_class = seg.guid_of(e).map(str::to_string);
+                rec.geometry = Some(Geometry {
+                    geometry_type: Some("NurbsCurve3D".into()),
+                    nurbs: Some(serde_json::json!({
+                        "degree": s.degree,
+                        "isRational": !s.weights.is_empty(),
+                        "isPeriodic": !s.is_clamped(),
+                        "controlPointCount": s.control.len(),
+                        "knots": s.knots,
+                        "controlPoints": s.control,
+                        "weights": s.weights,
+                    })),
+                    ..Geometry::default()
+                });
+            } else if let Some(el) = ellipses.get(&e) {
+                // mitcad#154.
+                let pt = |p: Option<u64>| Some(p.and_then(|p| pid.get(p).cloned()));
+                rec.center_sketch_point = pt(el.center_point);
+                rec.major_axis_radius = Some(el.major_radius);
+                rec.minor_axis_radius = Some(el.minor_radius);
+                rec.major_axis = Some(el.major.map(|x| x * el.major_radius));
+                rec.f3d_class = seg.guid_of(e).map(str::to_string);
+                let mut g = Geometry {
+                    geometry_type: Some("Ellipse3D".into()),
+                    center: Some(el.center),
+                    normal: Some(el.normal()),
+                    major_axis: Some(el.major),
+                    major_radius: Some(el.major_radius),
+                    minor_radius: Some(el.minor_radius),
+                    ..Geometry::default()
+                };
+                if el.is_closed() {
+                    rec.curve_type = Some("SketchEllipse".into());
+                } else {
+                    rec.curve_type = Some("SketchEllipticalArc".into());
+                    rec.start_sketch_point = pt(el.start_point);
+                    rec.end_sketch_point = pt(el.end_point);
+                    g.geometry_type = Some("EllipticalArc3D".into());
+                    g.start_angle = Some(el.start_angle);
+                    g.end_angle = Some(el.end_angle);
+                }
+                rec.geometry = Some(g);
             } else {
                 rec.f3d_class = seg.guid_of(e).map(str::to_string);
             }
@@ -1169,4 +1453,77 @@ fn external_ref(seg: &Segment, id: u64) -> Reference {
         error: Some("not decoded".into()),
         ..ErrorRef::default()
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn counted(out: &mut Vec<u8>, values: &[f64], count: usize) {
+        out.extend((count as u32).to_le_bytes());
+        out.extend((count as u32).to_le_bytes());
+        out.extend(8u32.to_le_bytes());
+        for v in values {
+            out.extend(v.to_le_bytes());
+        }
+    }
+
+    /// A NURBS payload behind other bytes: degree, tolerance and the three
+    /// counted arrays are found, the knots counted against the poles.
+    #[test]
+    fn finds_the_nurbs_payload() {
+        let mut d = vec![1u8, 0, 7, 0, 0, 0, 1];
+        d.extend(3u32.to_le_bytes());
+        d.extend(1e-9f64.to_le_bytes());
+        counted(&mut d, &[0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0], 8);
+        counted(&mut d, &[], 0);
+        let poles = [0.0, 0.0, 0.0, 1.0, 2.0, 0.0, 3.0, 2.0, 0.0, 4.0, 0.0, 0.0];
+        counted(&mut d, &poles, 4);
+        d.extend([0x11, 0xea]);
+        let (at, degree, knots, weights, control) = nurbs_at(&d, 0).expect("found");
+        assert_eq!((at, degree), (7, 3));
+        assert_eq!(knots.len(), 8);
+        assert!(weights.is_empty());
+        assert_eq!(
+            control,
+            vec![
+                [0.0, 0.0, 0.0],
+                [1.0, 2.0, 0.0],
+                [3.0, 2.0, 0.0],
+                [4.0, 0.0, 0.0]
+            ]
+        );
+        let s = SplineGeom {
+            degree,
+            knots,
+            weights,
+            control,
+            start_point: None,
+            end_point: None,
+        };
+        assert!(s.is_clamped());
+        // Knots that do not count up to the poles: not a payload.
+        let mut bad = d.clone();
+        bad[7 + 12] = 7;
+        assert!(nurbs_at(&bad, 0).is_none());
+    }
+
+    /// An ellipse's normal is its major direction across its minor one.
+    #[test]
+    fn ellipse_normal() {
+        let e = EllipseGeom {
+            center: [0.0; 3],
+            major: [1.0, 0.0, 0.0],
+            minor: [0.0, -1.0, 0.0],
+            major_radius: 2.0,
+            minor_radius: 1.0,
+            start_angle: 0.0,
+            end_angle: std::f64::consts::TAU,
+            center_point: None,
+            end_point: None,
+            start_point: None,
+        };
+        assert_eq!(e.normal(), [0.0, 0.0, -1.0]);
+        assert!(e.is_closed());
+    }
 }

@@ -1161,7 +1161,7 @@ impl ProjectRepo {
             let mut editor = self.repo.edit_tree(tree)?;
             let mut touched = false;
             for difference in self.differences(parent_tree, Some(own_tree))? {
-                // The store follows the project files below.
+                // The store follows the design files below.
                 if in_store(&difference.path) {
                     continue;
                 }
@@ -1249,10 +1249,10 @@ impl ProjectRepo {
         Ok(replay)
     }
 
-    /// A tree whose B-rep store holds what its project files refer to, as a
+    /// A tree whose B-rep store holds what its design files refer to, as a
     /// recorded version's does: the missing files taken from the first of
     /// `sources` (trees) that has them, the files none refers to removed
-    /// (unless a project file cannot be read).
+    /// (unless a design file cannot be read).
     fn reconcile_tree(
         &self,
         tree: ObjectId,
@@ -1261,7 +1261,7 @@ impl ProjectRepo {
     ) -> Result<ObjectId, VcsError> {
         let mut referenced = BTreeSet::new();
         let mut unreadable = Vec::new();
-        for (path, id) in self.project_files(tree)? {
+        for (path, id) in self.design_files(tree)? {
             match self.references_with(id, || Ok(self.repo.find_blob(id)?.take_data())) {
                 Some(references) => referenced.extend(references),
                 None => unreadable.push(path),
@@ -1303,7 +1303,7 @@ impl ProjectRepo {
             }
         } else {
             warn(format!(
-                "{} could not be read as a project file, so no B-rep file is removed",
+                "{} could not be read as a design file, so no B-rep file is removed",
                 unreadable.join(", ")
             ));
         }

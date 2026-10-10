@@ -9,14 +9,16 @@
 # PATH. Its cache is the user's (%LOCALAPPDATA%\ccache), shared by every
 # checkout folder: CMake hashes the paths inside a checkout relative to it,
 # so a new checkout builds its C++ mostly from the cache. The cache's size
-# limit is set in the user's ccache configuration; `ccache -s` shows the
-# hits, `ccache -C` empties it.
+# limit is set in the user's ccache configuration: 4G, since every build
+# has the render worker (mitcad#141; with 2G the full cache was cleaned 41
+# times during one fresh build); `ccache -s` shows the hits, `ccache -C`
+# empties it.
 #
-# Usage: powershell -ExecutionPolicy Bypass -File setup-ccache-windows.ps1 [-Dir C:\dev\ccache] [-MaxSize 2G]
+# Usage: powershell -ExecutionPolicy Bypass -File setup-ccache-windows.ps1 [-Dir C:\dev\ccache] [-MaxSize 4G]
 # Run as an administrator (the machine's PATH), as the user who builds.
 param(
   [string]$Dir = 'C:\dev\ccache',
-  [string]$MaxSize = '2G')
+  [string]$MaxSize = '4G')
 
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'

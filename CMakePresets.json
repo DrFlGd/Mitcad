@@ -71,12 +71,6 @@
       "condition": { "type": "equals", "lhs": "${hostSystemName}", "rhs": "Windows" }
     },
     {
-      "name": "windows-debug",
-      "displayName": "Windows Debug",
-      "inherits": "windows",
-      "cacheVariables": { "CMAKE_BUILD_TYPE": "Debug" }
-    },
-    {
       "name": "windows-release",
       "displayName": "Windows Release",
       "inherits": "windows",
@@ -88,7 +82,6 @@
     { "name": "linux-release", "configurePreset": "linux-release" },
     { "name": "macos-debug", "configurePreset": "macos-debug" },
     { "name": "macos-release", "configurePreset": "macos-release" },
-    { "name": "windows-debug", "configurePreset": "windows-debug" },
     { "name": "windows-release", "configurePreset": "windows-release" }
   ],
   "testPresets": [
@@ -110,11 +103,6 @@
     {
       "name": "macos-release",
       "configurePreset": "macos-release",
-      "output": { "outputOnFailure": true }
-    },
-    {
-      "name": "windows-debug",
-      "configurePreset": "windows-debug",
       "output": { "outputOnFailure": true }
     },
     {

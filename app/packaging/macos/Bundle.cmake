@@ -103,12 +103,14 @@ endif()
 
 # --- Install: the bundle, its libraries, the licence texts ----------------------
 install(TARGETS mitcad BUNDLE DESTINATION .)
-if(TARGET mitcad-render)
-  install(TARGETS mitcad-render RUNTIME DESTINATION "${MITCAD_BUNDLE_DIR}/Contents/MacOS")
-  # Save the complete build paths for runtime discovery before install
-  # rewrites the worker's rpath to the bundle's Frameworks directory.
-  install(CODE "set(MITCAD_BUILD_RENDER_EXECUTABLE [[$<TARGET_FILE:mitcad-render>]])")
-endif()
+install(TARGETS mitcad-render RUNTIME DESTINATION "${MITCAD_BUNDLE_DIR}/Contents/MacOS")
+# The CLI target is declared after this directory. Its generated path is
+# resolved at generation time; DeployDeps below relocates this copy too.
+install(PROGRAMS "$<TARGET_FILE:mitcad-cli>" DESTINATION "${MITCAD_BUNDLE_DIR}/Contents/MacOS")
+install(CODE "set(MITCAD_BUILD_CLI_EXECUTABLE [[$<TARGET_FILE:mitcad-cli>]])")
+# Save the complete build paths for runtime discovery before install
+# rewrites the worker's rpath to the bundle's Frameworks directory.
+install(CODE "set(MITCAD_BUILD_RENDER_EXECUTABLE [[$<TARGET_FILE:mitcad-render>]])")
 
 set(MITCAD_LICENSES_DIR "${MITCAD_BUNDLE_DIR}/Contents/Resources/licenses")
 
@@ -120,14 +122,12 @@ install(FILES "${PROJECT_SOURCE_DIR}/third_party/fonts/droid-sans/LICENSE.txt"
 install(FILES "${MITCAD_QTKEYCHAIN_LICENSE}"
   DESTINATION "${MITCAD_LICENSES_DIR}" RENAME QtKeychain-BSD-3-Clause.txt)
 
-set(MITCAD_RENDER_THIRD_PARTY_NOTES "")
-if(TARGET mitcad-render)
-  install(FILES "${MITCAD_CYCLES_ROOT}/LICENSE" DESTINATION "${MITCAD_LICENSES_DIR}/cycles")
-  install(DIRECTORY "${MITCAD_CYCLES_ROOT}/licenses/" DESTINATION "${MITCAD_LICENSES_DIR}/cycles")
-  install(FILES "${MITCAD_OIDN_ROOT}/share/doc/OpenImageDenoise/LICENSE.txt"
-                "${MITCAD_OIDN_ROOT}/share/doc/OpenImageDenoise/third-party-programs.txt"
-          DESTINATION "${MITCAD_LICENSES_DIR}/openimagedenoise")
-  set(MITCAD_RENDER_THIRD_PARTY_NOTES
+install(FILES "${MITCAD_CYCLES_ROOT}/LICENSE" DESTINATION "${MITCAD_LICENSES_DIR}/cycles")
+install(DIRECTORY "${MITCAD_CYCLES_ROOT}/licenses/" DESTINATION "${MITCAD_LICENSES_DIR}/cycles")
+install(FILES "${MITCAD_OIDN_ROOT}/share/doc/OpenImageDenoise/LICENSE.txt"
+              "${MITCAD_OIDN_ROOT}/share/doc/OpenImageDenoise/third-party-programs.txt"
+        DESTINATION "${MITCAD_LICENSES_DIR}/openimagedenoise")
+set(MITCAD_RENDER_THIRD_PARTY_NOTES
 "The CPU render worker (mitcad-render, Contents/MacOS):
   Cycles (https://projects.blender.org/blender/cycles): Apache-2.0, linked
   statically into the worker (cycles/LICENSE). Its bundled sky model, atomic
@@ -144,7 +144,6 @@ if(TARGET mitcad-render)
   other GPU devices are disabled in this build.
 
 ")
-endif()
 
 # What vcpkg installed has its licence texts in share/<port>/copyright: OCCT
 # (LGPL-2.1 with the OCCT exception), FreeType (the FreeType Licence or the
@@ -246,42 +245,28 @@ if(MITCAD_MACOS_DEPLOY)
   if(QT6_INSTALL_PREFIX AND IS_DIRECTORY "${QT6_INSTALL_PREFIX}/${QT6_INSTALL_LIBS}")
     list(APPEND mitcad_deploy_options "-libpath=${QT6_INSTALL_PREFIX}/${QT6_INSTALL_LIBS}")
   endif()
-  if(TARGET mitcad-render)
-    list(APPEND mitcad_deploy_options "-libpath=${MITCAD_OIDN_ROOT}/lib")
-  endif()
-  if(mitcad_deploy_options)
-    set(mitcad_deploy_tool_options DEPLOY_TOOL_OPTIONS ${mitcad_deploy_options})
-  else()
-    set(mitcad_deploy_tool_options "")
-  endif()
-  if(TARGET mitcad-render)
-    # Qt turns each additional binary into macdeployqt's -executable option,
-    # including the runtime-loaded module, and rewrites its Qt references.
-    # Paths here are relative to the install prefix, macdeployqt's cwd.
-    set(mitcad_render_deploy_modules "")
-    foreach(mitcad_oidn_module IN LISTS MITCAD_OIDN_MODULES)
-      get_filename_component(mitcad_module_name "${mitcad_oidn_module}" NAME)
-      string(APPEND mitcad_render_deploy_modules
-        " \"${MITCAD_BUNDLE_DIR}/Contents/Frameworks/${mitcad_module_name}\"")
-    endforeach()
-    set(mitcad_render_deploy_options "")
-    foreach(mitcad_deploy_option IN LISTS mitcad_deploy_options)
-      string(APPEND mitcad_render_deploy_options " \"${mitcad_deploy_option}\"")
-    endforeach()
-    qt_generate_deploy_script(
-      TARGET mitcad
-      OUTPUT_SCRIPT MITCAD_QT_DEPLOY_SCRIPT
-      CONTENT "qt_deploy_runtime_dependencies(
-        EXECUTABLE \"${MITCAD_BUNDLE_DIR}\"
-        ADDITIONAL_EXECUTABLES \"${MITCAD_BUNDLE_DIR}/Contents/MacOS/$<TARGET_FILE_NAME:mitcad-render>\"
-        ADDITIONAL_LIBRARIES ${mitcad_render_deploy_modules}
-        DEPLOY_TOOL_OPTIONS ${mitcad_render_deploy_options})")
-  else()
-    qt_generate_deploy_app_script(
-      TARGET mitcad
-      OUTPUT_SCRIPT MITCAD_QT_DEPLOY_SCRIPT
-      NO_UNSUPPORTED_PLATFORM_ERROR
-      ${mitcad_deploy_tool_options})
-  endif()
+  list(APPEND mitcad_deploy_options "-libpath=${MITCAD_OIDN_ROOT}/lib")
+  # Qt turns each additional binary into macdeployqt's -executable option,
+  # including the runtime-loaded module, and rewrites its Qt references.
+  # Paths here are relative to the install prefix, macdeployqt's cwd.
+  set(mitcad_render_deploy_modules "")
+  foreach(mitcad_oidn_module IN LISTS MITCAD_OIDN_MODULES)
+    get_filename_component(mitcad_module_name "${mitcad_oidn_module}" NAME)
+    string(APPEND mitcad_render_deploy_modules
+      " \"${MITCAD_BUNDLE_DIR}/Contents/Frameworks/${mitcad_module_name}\"")
+  endforeach()
+  set(mitcad_render_deploy_options "")
+  foreach(mitcad_deploy_option IN LISTS mitcad_deploy_options)
+    string(APPEND mitcad_render_deploy_options " \"${mitcad_deploy_option}\"")
+  endforeach()
+  qt_generate_deploy_script(
+    TARGET mitcad
+    OUTPUT_SCRIPT MITCAD_QT_DEPLOY_SCRIPT
+    CONTENT "qt_deploy_runtime_dependencies(
+      EXECUTABLE \"${MITCAD_BUNDLE_DIR}\"
+      ADDITIONAL_EXECUTABLES \"${MITCAD_BUNDLE_DIR}/Contents/MacOS/$<TARGET_FILE_NAME:mitcad-render>\"
+                            \"${MITCAD_BUNDLE_DIR}/Contents/MacOS/$<TARGET_FILE_NAME:mitcad-cli>\"
+      ADDITIONAL_LIBRARIES ${mitcad_render_deploy_modules}
+      DEPLOY_TOOL_OPTIONS ${mitcad_render_deploy_options})")
   install(SCRIPT "${MITCAD_QT_DEPLOY_SCRIPT}")
 endif()

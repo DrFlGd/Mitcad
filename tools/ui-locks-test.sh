@@ -44,6 +44,9 @@
 #      once (the remote is read every 2 minutes of the lock clock while
 #      live); the holder's Mitcad killed, its connection's will offers the
 #      lock, which is taken.
+#  11. Resolve Sync refuses replacing a design during exchange-file Open,
+#      New and Close. Its geometry, revision, filename and recovery data
+#      stay; allowing the next Open imports into a new untitled design.
 #
 # git's configuration and HOME are the test's own. Runs headless on Xvfb
 # (see ui-test-lib.sh); Qt's own file dialogs (--no-native-dialogs).
@@ -652,5 +655,130 @@ else
   kill "$BROKER" 2> /dev/null
   wait "$BROKER" 2> /dev/null
 fi
+
+echo "--- 11. Resolve Sync cancels document replacement (mitcad#131)"
+REPLACE=$WORK/replace.git
+make_project "$REPLACE" 60 60
+CA=$WORK/ada/replace
+CB=$WORK/sam/replace
+clone "$REPLACE" "$CA" "Ada Tester" ada@example.invalid
+cp "$SOURCE" "$CA/other.mitcad"
+in_git "$CA" add other.mitcad
+in_git "$CA" commit -qm "Add the other design"
+in_git "$CA" push -q origin main || ui_fail "publish the other design"
+clone "$REPLACE" "$CB" "Sam Other" sam@example.invalid
+mkdir -p "$CA/.mitcad/local"
+printf '{"send_at_once": false}\n' > "$CA/.mitcad/local/sync.json"
+# Earlier idle-time checks disabled autosave. This case uses a separate
+# recovery folder and an unsaved change, so the metadata includes its
+# revision and original filename while the lock is held.
+printf '\n[autosave]\nenabled=true\n' >> "$XDG_CONFIG_HOME/Mitcad/Mitcad.conf"
+export MITCAD_AUTOSAVE_DIR=$WORK/replacement-autosave
+export MITCAD_TEST_AUTOSAVE_SECONDS=2
+start ada 1 "$CA/part.mitcad" --set d3=27
+ui_expect_new "Edit lock taken: part.mitcad" "the original design holds its lock" 20
+ui_expect_new "Autosaved part.mitcad:" "its unsaved geometry has recovery data" 20
+python3 - "$MITCAD_AUTOSAVE_DIR" "$CA/part.mitcad" << 'EOF'
+import glob, json, os, sys
+
+folder, path = sys.argv[1:]
+metadata = glob.glob(os.path.join(folder, '*.json'))
+assert len(metadata) == 1, metadata
+meta = json.load(open(metadata[0]))
+assert meta['path'] == path and meta['document'] == 'part.mitcad', meta
+assert meta['revision'] > 0, meta
+doc = json.load(open(os.path.join(folder, meta['project'])))
+assert next(p for p in doc['parameters'] if p['name'] == 'd3')['value'] == 27, doc['parameters']
+assert len(doc['features']) == 6, doc['features']
+EOF
+[ "$?" = 0 ] || ui_fail "the original design's recovery state is incomplete"
+cp -a "$MITCAD_AUTOSAVE_DIR" "$WORK/replacement-before"
+cp "$CA/part.mitcad" "$WORK/replacement-file-before.mitcad"
+ui_step "export the exchange file"       ui_command "Export"
+ui_step "the STEP filename"              ui_type_path "Export" "$WORK/exchange.step"
+ui_focus_main
+ui_expect_new "Exported $WORK/exchange.step: step, 1 body(ies)" "a valid exchange file"
+
+# Diverge in a different design: the original remains editable and its
+# held lock remains valid, but sending the project now needs resolution.
+for folder in "$CA" "$CB"; do
+  python3 - "$folder/other.mitcad" "$folder" "$CA" << 'EOF'
+import json, sys
+
+path, folder, local = sys.argv[1:]
+doc = json.load(open(path))
+next(p for p in doc['parameters'] if p['name'] == 'd3')['value'] = 31 if folder == local else 32
+with open(path, 'w') as f:
+    f.write(json.dumps(doc, indent=2) + '\n')
+EOF
+  in_git "$folder" add other.mitcad
+  in_git "$folder" commit -qm "Change the other design" || ui_fail "record a divergent version"
+done
+in_git "$CB" push -q origin main || ui_fail "push the other user's version"
+
+for action in Open New Close; do
+  ui_mark
+  case "$action" in
+    Open) ui_step "open the exchange file" ui_key ctrl+o ;;
+    New)  ui_step "new design"             ui_key ctrl+n ;;
+    Close) ui_step "close the design"      ui_key ctrl+w ;;
+  esac
+  ui_focus_dialog '^Mitcad$'
+  ui_step "don't save"                    ui_key alt+d
+  if [ "$action" = Open ]; then
+    ui_step "the exchange filename"       ui_type_path "Open" "$WORK/exchange.step"
+  fi
+  ui_expect_new "needs a choice before the release: asked" "$action reaches the real closing refusal" 30
+  ui_focus_dialog '^Edit Lock$'
+  ui_step "resolve sync"                  ui_key alt+r
+  ui_expect_new "Edit lock: Resolve Sync" "$action refuses replacement"
+  # The scheduled Sync asks to save the still-modified original design.
+  # Cancel it so no subsequent sync can obscure the replacement result.
+  ui_focus_dialog '^Sync$'
+  ui_step "cancel the scheduled sync"     ui_key Escape
+  ui_focus_main
+  ui_expect_new "Sync cancelled" "the original design stays for inspection"
+  # Wait through an autosave tick: an unintended import would change its
+  # revision and publish a new snapshot, even if the filename survived.
+  sleep 3
+  ui_sync
+  title=$(xdotool getwindowname "$UI_WINDOW")
+  [ "$title" = 'part.mitcad* - Mitcad' ] || ui_fail "$action changed the design's name: $title"
+  tail -n +$((UI_MARK + 1)) "$UI_LOG" | grep -qE 'Imported exchange.step|New document|Document closed|Autosave removed' &&
+    ui_fail "$action continued after refused replacement"
+  diff -r "$WORK/replacement-before" "$MITCAD_AUTOSAVE_DIR" > "$WORK/replacement.diff" ||
+    { cat "$WORK/replacement.diff"; ui_fail "$action changed recovery metadata, revision or geometry"; }
+  cmp -s "$WORK/replacement-file-before.mitcad" "$CA/part.mitcad" || ui_fail "$action changed the saved design"
+  expect_holder "$REPLACE" ada@example.invalid "$action keeps the original edit lock"
+done
+
+ui_mark
+ui_step "open again"                     ui_key ctrl+o
+ui_focus_dialog '^Mitcad$'
+ui_step "don't save"                     ui_key alt+d
+ui_step "the exchange filename"          ui_type_path "Open" "$WORK/exchange.step"
+ui_expect_new "needs a choice before the release: asked" "closing asks again" 30
+ui_focus_dialog '^Edit Lock$'
+ui_step "release without sending"        ui_key alt+w
+ui_focus_main
+ui_expect_new "Imported exchange.step as" "successful Open imports into the new design" 30
+ui_expect_new "Autosaved exchange:" "the untitled import has recovery data" 20
+title=$(xdotool getwindowname "$UI_WINDOW")
+[ "$title" = 'exchange* - Mitcad' ] || ui_fail "the imported design's name is $title"
+python3 - "$MITCAD_AUTOSAVE_DIR" << 'EOF'
+import glob, json, os, sys
+
+folder = sys.argv[1]
+metadata = glob.glob(os.path.join(folder, '*.json'))
+assert len(metadata) == 1, metadata
+meta = json.load(open(metadata[0]))
+assert meta['path'] == '' and meta['document'] == 'exchange', meta
+doc = json.load(open(os.path.join(folder, meta['project'])))
+assert [feature['type'] for feature in doc['features']] == ['base'], doc['features']
+EOF
+[ "$?" = 0 ] || ui_fail "successful Open did not create a separate untitled import"
+cmp -s "$WORK/replacement-file-before.mitcad" "$CA/part.mitcad" || ui_fail "successful Open changed the original file"
+ui_stop_app
+unset MITCAD_AUTOSAVE_DIR MITCAD_TEST_AUTOSAVE_SECONDS
 
 ui_finish "UI locks test"

@@ -32,7 +32,9 @@
 #include <TopoDS_Compound.hxx>
 
 #include "../framework/CommandRegistry.hpp"
+#include "../framework/CommandSession.hpp"
 #include "../framework/Dialogs.hpp"
+#include "../framework/Json.hpp"
 #include "../framework/ModelShapes.hpp"
 #include "CommandSupport.hpp"
 
@@ -435,27 +437,7 @@ CommandDef sectionCommand() {
 // ---------------------------------------------------------------------------
 // Physical Properties
 
-void showProperties(const CommandContext& context, QWidget* window, const Selection& selection) {
-  QJsonObject request{{QStringLiteral("query"), QStringLiteral("properties")}};
-  QJsonArray uids;
-  for (const SelectionItem& item : selection) {
-    // A face, edge or vertex stands for its body.
-    const bool onBody = item.kind == SelectKind::Body || item.kind == SelectKind::Face ||
-                        item.kind == SelectKind::Edge || item.kind == SelectKind::Vertex;
-    if (onBody && !uids.contains(item.owner)) {
-      uids.append(item.owner);
-    }
-  }
-  if (!uids.isEmpty()) {
-    request.insert(QStringLiteral("bodies"), uids);
-  }
-  QJsonObject answer;
-  try {
-    answer = context.queryObject(request);
-  } catch (const std::exception& e) {
-    qWarning().noquote() << "Physical properties:" << e.what();
-    return;
-  }
+Inspection propertiesInspection(const QJsonObject& answer) {
   QString html = QStringLiteral("<table cellspacing='4'>");
   const auto row = [&html](const QString& label, const QString& value) {
     html += QStringLiteral("<tr><td>%1</td><td>%2</td></tr>").arg(label, value);
@@ -488,12 +470,18 @@ void showProperties(const CommandContext& context, QWidget* window, const Select
   row(QObject::tr("Volume"), QStringLiteral("%1 mm³").arg(n(total.value(QStringLiteral("volume")).toDouble())));
   row(QObject::tr("Center of Mass"), xyz(total.value(QStringLiteral("center_of_mass"))) + QStringLiteral(" mm"));
   html += QStringLiteral("</table>");
-  qDebug().noquote() << QStringLiteral("Physical properties: %1").arg(log.join(QStringLiteral("; ")));
+  Inspection result;
+  result.text = html;
+  result.log = log.join(QStringLiteral("; "));
+  return result;
+}
 
+void presentProperties(const Inspection& result, QWidget* window) {
+  qDebug().noquote() << QStringLiteral("Physical properties: %1").arg(result.log);
   QDialog dialog(window);
   dialog.setWindowTitle(QObject::tr("Properties"));
   auto* layout = new QVBoxLayout(&dialog);
-  auto* label = new QLabel(html);
+  auto* label = new QLabel(result.text);
   label->setTextInteractionFlags(Qt::TextSelectableByMouse);
   auto* scroll = new QScrollArea;
   scroll->setWidget(label);
@@ -504,7 +492,41 @@ void showProperties(const CommandContext& context, QWidget* window, const Select
   layout->addWidget(buttons);
   dialog.resize(420, 380);
   prepareModal(&dialog);
-  dialog.exec();
+  execDialog(&dialog);
+}
+
+void showProperties(const CommandContext& context, QWidget* window, const Selection& selection) {
+  QJsonObject request{{QStringLiteral("query"), QStringLiteral("properties")}};
+  QJsonArray uids;
+  for (const SelectionItem& item : selection) {
+    const bool onBody = item.kind == SelectKind::Body || item.kind == SelectKind::Face ||
+                        item.kind == SelectKind::Edge || item.kind == SelectKind::Vertex;
+    if (onBody && !uids.contains(item.owner)) {
+      uids.append(item.owner);
+    }
+  }
+  if (!uids.isEmpty()) {
+    request.insert(QStringLiteral("bodies"), uids);
+  }
+  auto* host = dynamic_cast<CommandHost*>(const_cast<CommandContext*>(&context));
+  if (host && host->asynchronousCommands()) {
+    host->modelInspectionAsync(QObject::tr("Physical Properties"), window,
+        [request](const Document& document) {
+          return propertiesInspection(parseObject(document.query(rustStr(compactJson(request)))));
+        }, [window](const Inspection& result, const CommandHost::AsyncResult& outcome) {
+          if (outcome.succeeded()) {
+            presentProperties(result, window);
+          } else if (!outcome.cancelled) {
+            qWarning().noquote() << "Physical properties:" << outcome.error;
+          }
+        });
+    return;
+  }
+  try {
+    presentProperties(propertiesInspection(context.queryObject(request)), window);
+  } catch (const std::exception& e) {
+    qWarning().noquote() << "Physical properties:" << e.what();
+  }
 }
 
 } // namespace

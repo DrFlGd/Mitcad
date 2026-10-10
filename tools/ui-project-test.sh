@@ -1,15 +1,15 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: MIT
-# check-all sources: app/files
+# check-all sources: app/files app/projects
 # check-all sources: core/vcs core/ffi/src/vcs.rs core/ffi/src/remote.rs core/ffi/src/diff.rs tools/cli
 # Local and Cloud projects (mitcad#89) through the real UI, with bare
 # repositories in folders standing in for the cloud (no network), checked
 # with the system's git:
 #   1. New Project, Local: Documents/Mitcad/Project1 offered, the folder
-#      typed, the author git's; the project's first version holds its first
-#      design, named after the folder, which opens; the indicator says
-#      "Robot arm, local, v1" and its menu has Version History and Project
-#      Settings.
+#      typed, the author git's; the project starts empty (mitcad#145), its
+#      first design is made with File > New Design, named in the Projects
+#      panel, and opens; the indicator says "Robot arm, local, v1" and its
+#      menu has Version History and Project Settings.
 #   2. The regression of mitcad#89: right after New Project, Project
 #      Settings > Cloud > Share sends the whole history to an empty
 #      repository, with no other step; the indicator is Cloud and synced,
@@ -27,8 +27,10 @@
 #      older one without versions (its history starts), a folder inside a
 #      project, a git repository and a folder of designs and an empty
 #      folder (New Project with the folder fixed), a project inside another
-#      git repository (no versions); the design chooser of a project with
-#      several designs; Open... and Open Recent of a design in a project.
+#      git repository (no versions); a project with several designs opens
+#      the newest, then the one opened last (no design chooser: the
+#      Projects panel lists them); Open... and Open Recent of a design in a
+#      project.
 #   5. Move to a Project for a loose file: its own folder made a project,
 #      and another loose file moved into an existing project.
 #
@@ -112,6 +114,18 @@ opened() {
   ui_focus_main
 }
 
+# new_design name: a new project's first design (mitcad#145: New Project
+# makes an empty project), File > New Design named in the Projects panel;
+# it is recorded as a version and opens.
+new_design() {
+  ui_focus_main
+  ui_step "new design (search)"          ui_command "New Design"
+  ui_expect_new "Projects panel: naming a new design in " "named in the Projects panel" 20
+  ui_step "type its name"                xdotool type --delay 40 "$1"
+  ui_step "take it (Enter)"              ui_key Return
+  ui_expect_new "New Design: made " "made as a version" 20
+}
+
 expect_exit() {
   for _ in $(seq 1 50); do
     kill -0 "$UI_RUNNER" 2> /dev/null || break
@@ -176,10 +190,12 @@ ui_expect_new "New Project: creating $ROBOT (local)" "created as Local"
 ui_expect_new "New Project: created $ROBOT: version " "made" 20
 ui_expect_new "Project: local Robot arm at $ROBOT" "the current project"
 ui_expect_new "New project $ROBOT" "the window has the new project"
+ui_expect_new "Open Project: no designs in $ROBOT" "an empty project: no design named after it" 20
+new_design "Robot arm"
 opened "$ROBOT/Robot arm.mitcad" "its first design opened" 20
 ui_expect_new "Project indicator: Robot arm, local, v1" "the indicator: Local, v1"
-expect_git "$ROBOT" "log --format=%s|%an|%ae" "Create project Robot arm|Ada Tester|ada@example.invalid" \
-  "one version, by git's author"
+expect_git "$ROBOT" "log --format=%s|%an|%ae" "Add Robot arm.mitcad|Ada Tester|ada@example.invalid
+Create project Robot arm|Ada Tester|ada@example.invalid" "two versions, by git's author"
 expect_git "$ROBOT" "ls-files" ".gitattributes
 .gitignore
 .mitcad/project.json
@@ -306,6 +322,8 @@ ui_expect_new "Reachable and empty: ready." "empty: ready"
 ui_step "create (Enter)"                 ui_key Return
 ui_expect_new "New Project: creating $GEAR (cloud $EMPTY)" "created as Cloud"
 ui_expect_new "New Project: created $GEAR: version " "made and sent" 30
+ui_expect_new "Open Project: no designs in $GEAR" "an empty project" 20
+new_design "gear"
 opened "$GEAR/gear.mitcad" "its first design opened" 20
 ui_expect_new "Project indicator: gear, cloud, synced" "the indicator: Cloud, synced" 20
 expect_sent "$GEAR" "$EMPTY" "the remote has the project"
@@ -326,9 +344,12 @@ ui_step "type the repository's folder"   type_text "$README_REMOTE"
 ui_expect_new "Mitcad adds the project beside the repository's files (README.md)." "the README stays" 20
 ui_step "create (Enter)"                 ui_key Return
 ui_expect_new "New Project: created $PLATE: version " "made beside the README" 30
+ui_expect_new "Open Project: no designs in $PLATE" "no designs beside the README" 20
+new_design "plate"
 opened "$PLATE/plate.mitcad" "its first design opened" 20
 expect_git "$PLATE" "log --reverse --format=%s" "Add a README
-Create project plate" "the project's version after the README's"
+Create project plate
+Add plate.mitcad" "the project's versions after the README's"
 [ -f "$PLATE/README.md" ] || ui_fail "no README.md in the project"
 echo "ok   the README is in the project's folder"
 expect_sent "$PLATE" "$README_REMOTE" "the remote has the project"
@@ -382,7 +403,7 @@ ui_expect_new "Cloud check $UNREACHABLE: network" "it cannot be reached" 30
 ui_step "create as local for now (Alt+N)" ui_key alt+n
 ui_expect_new "New Project: Create as Local for Now" "Create as Local for Now"
 ui_expect_new "New Project: creating $LATER (local)" "made Local"
-ui_expect_new "Project indicator: later, local, v1" "the indicator: Local" 20
+ui_expect_new "Project indicator: later, local" "the indicator: Local" 20
 ui_focus_main
 expect_git "$LATER" "remote" "" "no remote"
 ui_key ctrl+q
@@ -421,12 +442,12 @@ opened "$ROBOT/Robot arm.mitcad" "its design opened" 20
 ui_expect_new "Project indicator: Robot arm, local, v1" "Local"
 open_project "$OLD" project "an older project without versions"
 ui_expect_new "Version history started in $OLD: version " "its history starts"
-ui_expect_new "Open Project: no designs in $OLD: a new one, $OLD/old.mitcad" "a design named after it"
-ui_expect_new "Version recorded: old.mitcad " "saved as a version" 20
-ui_expect_new "Project indicator: old, local, v1" "Local"
+ui_expect_new "Open Project: no designs in $OLD" "no design named after it (mitcad#145)"
+ui_expect_new "Project indicator: old, local" "Local"
 ui_focus_main
 open_project "$OLD/parts" inside_project "a folder inside a project"
-opened "$OLD/old.mitcad" "the project's design opened" 20
+ui_expect_new "Open Project: no designs in $OLD" "the project opened" 20
+ui_focus_main
 open_project "$OUTER/inner" project "a project inside another repository"
 ui_expect_new "Project: no versions inner at $OUTER/inner (inside $OUTER)" "a project without versions"
 ui_expect_new "Project indicator: inner, no versions (inside $OUTER)" "the indicator says so"
@@ -437,25 +458,27 @@ ui_expect_new "New Project dialog: $EMPTY_FOLDER" "New Project with the folder"
 ui_focus_dialog '^New Project$'
 ui_expect_new "New Project dialog: folder $EMPTY_FOLDER: empty" "an empty folder"
 ui_step "create (Enter)"                 ui_key Return
-opened "$EMPTY_FOLDER/empty-folder.mitcad" "made a project with a design" 20
+ui_expect_new "Open Project: no designs in $EMPTY_FOLDER" "made an empty project" 20
+ui_focus_main
 open_project "$REPO" repository "a git repository"
 ui_expect_new "New Project dialog: storage cloud" "Storage preset to Cloud: the repository has a remote"
 ui_focus_dialog '^New Project$'
 ui_expect_new "New Project dialog: folder $REPO: repository" "a repository"
 ui_step "local (Alt+L)"                  ui_key alt+l
 ui_step "create (Enter)"                 ui_key Return
-opened "$REPO/repo.mitcad" "made a project in the repository" 20
+ui_expect_new "Open Project: no designs in $REPO" "made a project in the repository" 20
+ui_focus_main
 open_project "$DESIGNS" designs "a folder of designs"
 ui_focus_dialog '^New Project$'
 ui_expect_new "New Project dialog: folder $DESIGNS: designs" "designs"
 ui_step "create (Enter)"                 ui_key Return
-ui_expect_new "Design chooser: designs: " "several designs: the chooser" 20
-ui_focus_dialog '^Open Project$'
-ui_step "the second (Down, Enter)"       ui_key Down Return
-ui_focus_main
-ui_expect_new "Design chooser: chose " "chosen"
-chosen=$(grep "Design chooser: chose " "$UI_LOG" | tail -1 | sed 's/.*Design chooser: chose //')
-opened "$DESIGNS/$chosen" "the design chosen opened"
+# No design chooser (mitcad#145): the newest design opens, the Projects
+# panel lists the others.
+ui_expect_new "(newest)" "several designs: the newest opens" 20
+chosen=$(grep -o "Open Project: [ab]\.mitcad (newest)" "$UI_LOG" | tail -1 | sed 's/Open Project: //; s/ (newest)//')
+[ -n "$chosen" ] || ui_fail "no design opened"
+opened "$DESIGNS/$chosen" "the newest design opened"
+ui_expect_new "Projects tree: Local/designs (local, current): a.mitcad v1" "the Projects panel lists the designs" 20
 expect_git "$DESIGNS" "ls-files" ".gitattributes
 .gitignore
 .mitcad/project.json
@@ -464,13 +487,10 @@ b.mitcad" "the designs are in the first version"
 ui_key ctrl+q
 expect_exit "exited"
 
-echo "--- Open Project: the design chooser selects the design opened last"
+echo "--- Open Project: the design opened last opens"
 ui_start_app --no-native-dialogs
 open_project "$DESIGNS" project "the folder of designs is a project now"
-ui_expect_new "Design chooser: designs: " "the chooser" 20
-ui_expect_new "(selected $chosen)" "the design opened last selected"
-ui_focus_dialog '^Open Project$'
-ui_step "open the one selected (Enter)"  ui_key Return
+ui_expect_new "Open Project: $chosen (opened last)" "the design opened last" 20
 opened "$DESIGNS/$chosen" "opened"
 
 echo "--- Open... and Open Recent of a design in a project"

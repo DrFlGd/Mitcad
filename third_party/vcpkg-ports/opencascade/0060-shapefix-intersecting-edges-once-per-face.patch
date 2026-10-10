@@ -1,0 +1,212 @@
+Mitcad's patch to OCCT 8.0.1, under OCCT's licence:
+SPDX-License-Identifier: LGPL-2.1-only WITH OCCT-exception-1.0
+
+ShapeFix: the repair of a wire's non-adjacent intersecting edges
+(ShapeFix_IntersectionTool::FixSelfIntersectWire, run for each wire of a
+face by ShapeFix_Wire::FixSelfIntersection) applied the context to the whole
+face (ShapeBuild_ReShape::Apply) and went through all the vertices of the
+face for their largest tolerance, once for each wire: quadratic in the wires
+of a face (a face with thousands of holes). The face is applied with
+ShapeBuild_ReShape::ApplyAgain, which returns the result and the status of
+the previous call for the same shape when no request has been recorded or
+cleared since and that call recorded none itself (Apply would find the same
+requests in the same shape and rebuild nothing); ShapeBuild_ReShape counts
+the requests for it (replace, Clear). The largest tolerance is found only
+for a wire with two edges that may intersect, before anything is changed,
+so it is the same value. The repair of intersecting wires of a face
+(FixIntersectingWires) made the edge list of the second wire of every pair
+of wires before the test of their boxes; it is made only for the pairs whose
+boxes meet. The results, the requests recorded and the statuses are
+unchanged. ShapeBuild_ReShape gets members (code built against the port's
+headers must be rebuilt with them).
+diff --git a/src/ModelingAlgorithms/TKShHealing/ShapeBuild/ShapeBuild_ReShape.cxx b/src/ModelingAlgorithms/TKShHealing/ShapeBuild/ShapeBuild_ReShape.cxx
+index dc170a79..a4787b08 100644
+--- a/src/ModelingAlgorithms/TKShHealing/ShapeBuild/ShapeBuild_ReShape.cxx
++++ b/src/ModelingAlgorithms/TKShHealing/ShapeBuild/ShapeBuild_ReShape.cxx
+@@ -337,3 +337,62 @@ bool ShapeBuild_ReShape::Status(const ShapeExtend_Status theStatus) const
+ {
+   return ShapeExtend::DecodeStatus(myStatus, theStatus);
+ }
++
++//=================================================================================================
++
++void ShapeBuild_ReShape::Clear()
++{
++  ++myNbChanges;
++  BRepTools_ReShape::Clear();
++}
++
++//=================================================================================================
++
++void ShapeBuild_ReShape::replace(const TopoDS_Shape&    theShape,
++                                 const TopoDS_Shape&    theNewShape,
++                                 const TReplacementKind theKind)
++{
++  ++myNbChanges;
++  BRepTools_ReShape::replace(theShape, theNewShape, theKind);
++}
++
++//=================================================================================================
++
++TopoDS_Shape ShapeBuild_ReShape::ApplyAgain(const TopoDS_Shape& theShape)
++{
++  if (DynamicType() != STANDARD_TYPE(ShapeBuild_ReShape))
++  {
++    // a derived class may find or apply its requests otherwise
++    return Apply(theShape);
++  }
++
++  // The result of Apply depends on the requests (unchanged since the last call
++  // here if none has been recorded or cleared), the mode of locations and the
++  // shape. A call that recorded no request rebuilt nothing: it would give the
++  // same result and status again.
++  const bool aConsiderLocation = ModeConsiderLocation();
++  if (myHasAgain && myAgainNbChanges == myNbChanges
++      && myAgainConsiderLocation == aConsiderLocation && myAgainShape.IsEqual(theShape))
++  {
++    myStatus = myAgainStatus;
++    return myAgainResult;
++  }
++
++  const size_t       aNbChanges = myNbChanges;
++  const TopoDS_Shape aResult    = Apply(theShape);
++  myHasAgain                    = (myNbChanges == aNbChanges);
++  if (myHasAgain)
++  {
++    myAgainShape            = theShape;
++    myAgainResult           = aResult;
++    myAgainStatus           = myStatus;
++    myAgainNbChanges        = myNbChanges;
++    myAgainConsiderLocation = aConsiderLocation;
++  }
++  else
++  {
++    myAgainShape.Nullify();
++    myAgainResult.Nullify();
++  }
++  return aResult;
++}
+diff --git a/src/ModelingAlgorithms/TKShHealing/ShapeBuild/ShapeBuild_ReShape.hxx b/src/ModelingAlgorithms/TKShHealing/ShapeBuild/ShapeBuild_ReShape.hxx
+index f012d424..907bdfb5 100644
+--- a/src/ModelingAlgorithms/TKShHealing/ShapeBuild/ShapeBuild_ReShape.hxx
++++ b/src/ModelingAlgorithms/TKShHealing/ShapeBuild/ShapeBuild_ReShape.hxx
+@@ -105,8 +105,28 @@ public:
+   //! FAIL1: some replacements not done because of bad type of subshape
+   Standard_EXPORT virtual bool Status(const ShapeExtend_Status status) const;
+ 
++  //! Clears all substitutions requests
++  Standard_EXPORT void Clear() override;
++
++  //! Applies the substitution requests to a shape as Apply(theShape) does, for a
++  //! caller that applies the same shape again and again (once for each wire of a
++  //! face). When no request has been recorded or cleared since the previous call
++  //! for the same shape, and that call recorded none itself (it rebuilt nothing),
++  //! returns the result and sets the status of that call without exploring the
++  //! shape again: Apply would find the same requests in the same shape. Otherwise
++  //! it is Apply(theShape). A class derived from this one always gets Apply.
++  //! The shape and its sub-shapes must not be changed in place in between (shapes
++  //! added to or removed from them): the requests are the only changes seen.
++  Standard_EXPORT TopoDS_Shape ApplyAgain(const TopoDS_Shape& theShape);
++
+   DEFINE_STANDARD_RTTIEXT(ShapeBuild_ReShape, BRepTools_ReShape)
+ 
++protected:
++  //! Records a request (BRepTools_ReShape::replace) and counts it for ApplyAgain.
++  Standard_EXPORT void replace(const TopoDS_Shape&    theShape,
++                               const TopoDS_Shape&    theNewShape,
++                               const TReplacementKind theKind) override;
++
+ private:
+   //! Recursive worker for Apply with a DFS in-flight set keyed by TShape handle.
+   //! Prevents unbounded descent when a replacement is a compound that transitively
+@@ -115,6 +135,18 @@ private:
+   TopoDS_Shape applyImpl(const TopoDS_Shape&                          theShape,
+                          const TopAbs_ShapeEnum                       theUntil,
+                          NCollection_Map<occ::handle<TopoDS_TShape>>& theInFlight);
++
++  //! The number of requests recorded or cleared so far.
++  size_t myNbChanges = 0;
++
++  //! The last call of ApplyAgain that recorded no request: its shape, result and
++  //! status, the number of changes then and the mode of locations.
++  bool         myHasAgain = false;
++  TopoDS_Shape myAgainShape;
++  TopoDS_Shape myAgainResult;
++  int          myAgainStatus           = 0;
++  size_t       myAgainNbChanges        = 0;
++  bool         myAgainConsiderLocation = false;
+ };
+ 
+ #endif // _ShapeBuild_ReShape_HeaderFile
+diff --git a/src/ModelingAlgorithms/TKShHealing/ShapeFix/ShapeFix_IntersectionTool.cxx b/src/ModelingAlgorithms/TKShHealing/ShapeFix/ShapeFix_IntersectionTool.cxx
+index ab216499..120d423e 100644
+--- a/src/ModelingAlgorithms/TKShHealing/ShapeFix/ShapeFix_IntersectionTool.cxx
++++ b/src/ModelingAlgorithms/TKShHealing/ShapeFix/ShapeFix_IntersectionTool.cxx
+@@ -1041,14 +1041,26 @@ bool ShapeFix_IntersectionTool::FixSelfIntersectWire(occ::handle<ShapeExtend_Wir
+   // if(area2d<Precision::PConfusion()*Precision::PConfusion()) return false; //gka
+   // 06.09.04 BUG 6555
+ 
+-  TopoDS_Shape SF         = Context()->Apply(face);
+-  double       MaxTolVert = 0.0;
+-  for (TopExp_Explorer exp(SF, TopAbs_VERTEX); exp.More(); exp.Next())
+-  {
+-    double tolV = BRep_Tool::Tolerance(TopoDS::Vertex(exp.Current()));
+-    MaxTolVert  = std::max(MaxTolVert, tolV);
+-  }
+-  MaxTolVert = std::min(MaxTolVert, myMaxTol);
++  // The face with the requests of the context applied. A face with many holes
++  // is applied once for each of its wires: ApplyAgain does not explore it again
++  // while no request has been recorded since.
++  const TopoDS_Shape SF = Context()->ApplyAgain(face);
++
++  // The largest tolerance of its vertices (at most myMaxTol) is needed only where
++  // two edges of the wire may intersect. It is found there, before anything is
++  // changed, so it is the one of the vertices as they are here; a wire without
++  // such edges no longer goes through all the vertices of the face.
++  double MaxTolVert        = 0.0;
++  bool   isMaxTolVertFound = false;
++  auto   findMaxTolVert    = [&]() {
++    for (TopExp_Explorer exp(SF, TopAbs_VERTEX); exp.More(); exp.Next())
++    {
++      double tolV = BRep_Tool::Tolerance(TopoDS::Vertex(exp.Current()));
++      MaxTolVert  = std::max(MaxTolVert, tolV);
++    }
++    MaxTolVert        = std::min(MaxTolVert, myMaxTol);
++    isMaxTolVertFound = true;
++  };
+   ShapeAnalysis_Edge sae;
+ 
+   // step 1 : intersection of adjacent edges
+@@ -1111,6 +1123,12 @@ bool ShapeFix_IntersectionTool::FixSelfIntersectWire(occ::handle<ShapeExtend_Wir
+         {
+           continue;
+         }
++        // the fixes below read MaxTolVert and change edges and vertices
++        if (!isMaxTolVertFound
++            && ((Inter.NbPoints() > 0 && Inter.NbPoints() < 3) || Inter.NbSegments() == 1))
++        {
++          findMaxTolVert();
++        }
+         // intersection is point
+         if (Inter.NbPoints() > 0 && Inter.NbPoints() < 3)
+         {
+@@ -1894,8 +1912,7 @@ bool ShapeFix_IntersectionTool::FixIntersectingWires(TopoDS_Face& face) const
+     Bnd_Box2d aBox1 = aSeqWirBoxes(n1);
+     for (int n2 = n1 + 1; n2 <= SeqWir.Length(); n2++)
+     {
+-      TopoDS_Wire                       wire2 = TopoDS::Wire(SeqWir.Value(n2));
+-      occ::handle<ShapeExtend_WireData> sewd2 = new ShapeExtend_WireData(wire2);
++      TopoDS_Wire wire2 = TopoDS::Wire(SeqWir.Value(n2));
+       NCollection_DataMap<TopoDS_Shape, Bnd_Box2d, TopTools_ShapeMapHasher>& boxes2 =
+         aSeqWirEdgeBoxes.ChangeValue(n2);
+       Bnd_Box2d aBox2 = aSeqWirBoxes(n2);
+@@ -1903,6 +1920,9 @@ bool ShapeFix_IntersectionTool::FixIntersectingWires(TopoDS_Face& face) const
+       {
+         continue;
+       }
++      // the edges of the second wire, only for a pair of wires whose boxes meet
++      // (in a face with many holes most pairs do not)
++      occ::handle<ShapeExtend_WireData> sewd2 = new ShapeExtend_WireData(wire2);
+       // detect possible intersections:
+       int  NbModif      = 0;
+       int  nbReplaced   = 0;     // gka 06.09.04

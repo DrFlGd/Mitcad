@@ -572,7 +572,7 @@ pub(crate) fn describe_clone(answer: &Value) -> String {
         .flatten()
         .filter_map(Value::as_str)
         .collect();
-    let _ = writeln!(out, "Project files: {}", files.join(", "));
+    let _ = writeln!(out, "Designs: {}", files.join(", "));
     out
 }
 

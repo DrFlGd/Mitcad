@@ -1,0 +1,150 @@
+Mitcad's patch to OCCT 8.0.1, under OCCT's licence:
+SPDX-License-Identifier: LGPL-2.1-only WITH OCCT-exception-1.0
+
+Fillets: a rounding whose contact runs off the face of its edge across a
+sharp convex edge rolls on that edge (mitcad#121): e.g. the edge between a
+bevel and a slot's wall rounded wider than the bevel, or the foot of a
+wall whose lowest strip is lower than the rounding, the wall leaning back
+above it.
+
+ChFi3d_Builder::StartSolOverflow (0011, 0013): where the contact on one
+side lies beyond the far edge of its face (the face of the spine's edge),
+the side moved on across that edge, and where a ball touched the face
+beyond (and the other side's face) clear of the face passed, the blend
+ran onto the face beyond; only where no ball touched it did the side roll
+on the edge. Where that edge is a sharp convex edge of the solid, the
+blend now rolls on it whether or not a ball touches the face beyond: it
+stays tangent to the other side's face and runs through the edge, which
+is the rounding that consumes the narrow face and leaves the face beyond
+as it is. The ball touching the face beyond rounded the corner as if the
+narrow face were not there (a larger rounding that cuts into the face
+beyond, and whose corners at the spine's ends found no face at the end:
+IntersectionAtEnd, the max number of faces reached). Not where the edge
+is tangent or concave (the face beyond rises into the ball's way: it
+runs onto that face as before), not where the edge is rounded by the same
+fillet (its rounding takes the edge away: the two blends overlap, 0013),
+and not where the contact passes more faces before it reaches one it
+touches (OCCT's handling of several narrow faces is kept).
+diff --git a/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_2.cxx b/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_2.cxx
+index 48fd090..4bb35ec 100644
+--- a/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_2.cxx
++++ b/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_2.cxx
+@@ -1343,6 +1343,61 @@ static TopoDS_Face otherFace(const ChFiDS_Map& EFMap, const TopoDS_Edge& E, cons
+   return Fn;
+ }
+ 
++// Whether edge E is a sharp convex edge of the solid between faces F1 and
++// F2 at its parameter W (as ChFi3d::DefineConnectType at the middle).
++static bool convexAt(const TopoDS_Edge& E, const TopoDS_Face& F1, const TopoDS_Face& F2, const double W)
++{
++  double                          f, l;
++  const occ::handle<Geom2d_Curve> C1 = BRep_Tool::CurveOnSurface(E, F1, f, l);
++  const occ::handle<Geom2d_Curve> C2 = BRep_Tool::CurveOnSurface(E, F2, f, l);
++  if (C1.IsNull() || C2.IsNull() || F1.IsSame(F2))
++  {
++    return false;
++  }
++  BRepAdaptor_Curve C(E);
++  gp_Pnt            P;
++  gp_Vec            T;
++  C.D1(W, P, T);
++  if (T.SquareMagnitude() <= gp::Resolution())
++  {
++    return false;
++  }
++  T.Normalize();
++  if (BRepTools::OriEdgeInFace(E, F1) == TopAbs_REVERSED)
++  {
++    T.Reverse();
++  }
++  if (F1.Orientation() == TopAbs_REVERSED)
++  {
++    T.Reverse();
++  }
++  gp_Vec N[2];
++  for (int k = 0; k < 2; k++)
++  {
++    const TopoDS_Face&              F  = k == 0 ? F1 : F2;
++    const gp_Pnt2d                  uv = (k == 0 ? C1 : C2)->Value(W);
++    const occ::handle<Geom_Surface> S  = BRep_Tool::Surface(F);
++    gp_Vec                          DU, DV;
++    S->D1(uv.X(), uv.Y(), P, DU, DV);
++    N[k] = DU.Crossed(DV);
++    if (N[k].SquareMagnitude() <= gp::Resolution())
++    {
++      return false;
++    }
++    N[k].Normalize();
++    if (F.Orientation() == TopAbs_REVERSED)
++    {
++      N[k].Reverse();
++    }
++  }
++  const gp_Vec Pro = N[0].Crossed(N[1]);
++  if (Pro.Magnitude() < 1.e-4)
++  {
++    return false; // tangent (or folded back)
++  }
++  return T.Dot(Pro) > 0.;
++}
++
+ //=================================================================================================
+ 
+ bool ChFi3d_Builder::ObstacleAtSpineEnd(const occ::handle<ChFiDS_SurfData>& SD,
+@@ -1526,7 +1581,9 @@ int ChFi3d_Builder::StartSolOverflow(const occ::handle<ChFiDS_Stripe>&      Stri
+     NCollection_List<TopoDS_Shape> passed;
+     int                            lastMoved   = -1;
+     bool                           movedNow[2] = {false, false};
+-    bool                           failed      = false;
++    // Whether the last edge a side crossed is a sharp convex edge.
++    bool                           convex[2] = {false, false};
++    bool                           failed    = false;
+     math_Vector                    Sol(1, 4);
+     TopAbs_State                   pos[2] = {TopAbs_UNKNOWN, TopAbs_UNKNOWN};
+     gp_Pnt                         C;
+@@ -1585,6 +1642,7 @@ int ChFi3d_Builder::StartSolOverflow(const occ::handle<ChFiDS_Stripe>&      Stri
+       uv[k]       = pc->Value(wn);
+       lastMoved   = k;
+       movedNow[k] = true;
++      convex[k]   = false;
+       return true;
+     };
+     // Where side k rolls if the faces beyond a face its ball touches at no
+@@ -1732,6 +1790,15 @@ int ChFi3d_Builder::StartSolOverflow(const occ::handle<ChFiDS_Stripe>&      Stri
+           elsewhere = true;
+           break;
+         }
++        // A side whose ball would touch the face just beyond a sharp convex
++        // edge rolls on that edge instead (a cliff: the blend stays tangent
++        // to the other side's face and runs through the edge).
++        if (touches && (convex[0] != convex[1]))
++        {
++          const int k = convex[0] ? 0 : 1;
++          roll(k);
++          break;
++        }
+         if (touches)
+         {
+           HS1 = S[0];
+@@ -1787,6 +1854,21 @@ int ChFi3d_Builder::StartSolOverflow(const occ::handle<ChFiDS_Stripe>&      Stri
+         if (!en[k].IsNull() && moveOn(k, en[k], wn[k]))
+         {
+           moved = true;
++          // (An edge rounded too is no cliff: its rounding takes it away.)
++          bool rounded = false;
++          for (NCollection_List<occ::handle<ChFiDS_Stripe>>::Iterator itS(myListStripe);
++               itS.More() && !rounded;
++               itS.Next())
++          {
++            const occ::handle<ChFiDS_Spine>& aSp = itS.Value()->Spine();
++            for (int ie = 1; !aSp.IsNull() && ie <= aSp->NbEdges() && !rounded; ie++)
++            {
++              rounded = aSp->Edges(ie).IsSame(en[k]);
++            }
++          }
++          // (Only the far edge of the edge's own face counts.)
++          convex[k] = !rounded && before[k].IsSame(k == 0 ? f1 : f2)
++                      && convexAt(en[k], before[k], face[k], wn[k]);
+         }
+       }
+       // (A side outside its face at the spine with no edge crossed may come

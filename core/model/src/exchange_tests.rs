@@ -111,7 +111,7 @@ fn base_features_make_new_bodies_with_faces_named_by_index() {
 }
 
 #[test]
-fn base_features_round_trip_through_project_files() {
+fn base_features_round_trip_through_design_files() {
     let mut doc = Document::new(MockKernel::default());
     let mut part = body(Some("Part"), "box", 6);
     part.color = Some([0.8, 0.1, 0.25]);
@@ -1016,4 +1016,315 @@ fn kernel_formats_place_bodies_where_the_design_shows_them() {
     )
     .unwrap();
     assert_eq!(last(&b.doc), vec![Vec::new()]);
+}
+
+/// A field's value in a USDZ file's layer (mitcad#123).
+fn usd_field(layer: &mitcad_usdz::Layer, path: &str, field: &str) -> mitcad_usdz::sdf::Value {
+    layer
+        .field(path, field)
+        .unwrap_or_else(|| panic!("{path} has no {field}"))
+        .clone()
+}
+
+fn usd_target(layer: &mitcad_usdz::Layer, path: &str) -> String {
+    match usd_field(layer, path, "targetPaths") {
+        mitcad_usdz::sdf::Value::PathListOp(op) => op.explicit_items[0].to_string(),
+        other => panic!("{path}: {other:?}"),
+    }
+}
+
+/// The prims (not properties) of a layer, as paths.
+fn usd_prims(layer: &mitcad_usdz::Layer) -> Vec<String> {
+    layer
+        .specs
+        .iter()
+        .filter(|s| s.spec_type == mitcad_usdz::sdf::SpecType::Prim)
+        .map(|s| s.path.to_string())
+        .collect()
+}
+
+#[test]
+fn export_usdz_keeps_components_and_appearances() {
+    use crate::transform::Transform;
+    use mitcad_usdz::sdf::Value as Usd;
+    let mut b = block();
+    b.doc
+        .add_base_feature(BaseInput::new(vec![
+            body(Some("Part"), "part", 6),
+            body(Some("Surface"), "sheet", 4),
+            body(Some("Hidden"), "part", 6),
+        ]))
+        .unwrap();
+    let hidden = b
+        .doc
+        .bodies()
+        .iter()
+        .find(|v| v.name == "Hidden")
+        .unwrap()
+        .uid;
+    b.doc.set_body_visible(hidden, false).unwrap();
+    // Body1 in a component placed twice: at its place and 100 mm along x;
+    // red paint, one face labelled with an embedded image.
+    b.doc.components_from_bodies(&[b.body]).unwrap();
+    let first = b.doc.assembly().occurrences[0].uid;
+    let copy = b
+        .doc
+        .copy_occurrence(first, Some(Transform::translation([100.0, 0.0, 0.0])))
+        .unwrap();
+    b.doc
+        .set_body_appearance(b.body, Some("paint_red"))
+        .unwrap();
+    let png = b"\x89PNG\r\n\x1a\nlabel".to_vec();
+    command(
+        &mut b.doc,
+        json!({"cmd": "create_appearance", "id": "label", "name": "Label",
+               "texture": {"path": "label.png", "size": [20, 10], "projection": "planar",
+                           "data": crate::base64::encode(&png)}}),
+    )
+    .unwrap();
+    let faces = b
+        .doc
+        .kernel()
+        .faces(b.doc.body_shape(b.body).unwrap())
+        .unwrap();
+    let top = faces[1].names[0].clone();
+    b.doc
+        .set_face_appearance(b.body, std::slice::from_ref(&top), Some("label"))
+        .unwrap();
+    let dir = std::env::temp_dir().join(format!("mitcad-usdz-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("design.usdz").to_str().unwrap().to_owned();
+    let read = |path: &str| mitcad_usdz::read_package(&std::fs::read(path).unwrap()).unwrap();
+
+    // All bodies: the hidden one is left out, the sheet is two-sided.
+    let result = command(
+        &mut b.doc,
+        json!({"cmd": "export", "path": path, "refinement": "high", "colors": {"Part": [0, 0.5, 1]}}),
+    )
+    .unwrap();
+    assert_eq!(result["format"], "usdz");
+    assert_eq!(result["bodies"], json!(["F2.b0", "F3.b0", "F3.b1"]));
+    assert_eq!(
+        result["skipped"],
+        json!([{"body": "F3.b2", "name": "Hidden", "reason": "hidden"}])
+    );
+    assert_eq!(
+        result["materials"],
+        json!(["paint_red", "label", "color 0080ff", "default look"])
+    );
+    assert_eq!(result["warnings"], json!([]));
+    assert_eq!(
+        b.doc.kernel().mesh_tolerances.borrow()[0],
+        Refinement::Preset(RefinementPreset::High).tolerance()
+    );
+    let package = read(&path);
+    let names: Vec<&str> = package.files.iter().map(|f| f.name.as_str()).collect();
+    assert_eq!(names, ["design.usdc", "textures/label.png"]);
+    assert_eq!(package.files[1].data, png);
+    let layer = &package.layer;
+    let prims = usd_prims(layer);
+    for expected in [
+        "/design",
+        "/design/Materials/paint_red",
+        "/design/Materials/label/Texture",
+        "/design/Materials/color_0080ff",
+        "/design/Materials/default_look",
+        "/design/Part",
+        "/design/Surface",
+        "/design/Body1_1/Body1",
+        "/design/Body1_1/Body1/Faces_label",
+        "/design/Body1_2/Body1",
+    ] {
+        assert!(
+            prims.iter().any(|p| p == expected),
+            "{expected} in {prims:?}"
+        );
+    }
+    assert!(!prims.iter().any(|p| p.contains("Hidden")));
+    // The copy's placement; the root turned Z up to Y up.
+    match usd_field(layer, "/design/Body1_2.xformOp:transform", "default") {
+        Usd::Matrix4d(m) => assert_eq!(m[3], [100.0, 0.0, 0.0, 1.0]),
+        other => panic!("{other:?}"),
+    }
+    assert_eq!(
+        usd_field(layer, "/design.xformOp:rotateX", "default"),
+        Usd::Float(-90.0)
+    );
+    // The body's box: 24 points, its normals, 12 triangles.
+    match usd_field(layer, "/design/Body1_1/Body1.points", "default") {
+        Usd::Vec3fArray(points) => {
+            assert_eq!(points.len(), 24);
+            let bounds = b.doc.body_shape(b.body).unwrap().bounds.unwrap();
+            assert!(points.iter().all(|p| {
+                (0..3).all(|k| p[k] as f64 >= bounds.min[k] && p[k] as f64 <= bounds.max[k])
+            }));
+        }
+        other => panic!("{other:?}"),
+    }
+    assert_eq!(
+        usd_field(layer, "/design/Body1_1/Body1.faceVertexCounts", "default"),
+        Usd::IntArray(vec![3; 12])
+    );
+    // Materials: the body's paint, the label's two triangles (the second
+    // face's), the colour given, the default look.
+    assert_eq!(
+        usd_target(layer, "/design/Body1_1/Body1.material:binding"),
+        "/design/Materials/paint_red"
+    );
+    assert_eq!(
+        usd_target(layer, "/design/Body1_1/Body1/Faces_label.material:binding"),
+        "/design/Materials/label"
+    );
+    assert_eq!(
+        usd_field(
+            layer,
+            "/design/Body1_1/Body1/Faces_label.indices",
+            "default"
+        ),
+        Usd::IntArray(vec![2, 3])
+    );
+    assert_eq!(
+        usd_target(layer, "/design/Part.material:binding"),
+        "/design/Materials/color_0080ff"
+    );
+    assert_eq!(
+        usd_target(layer, "/design/Surface.material:binding"),
+        "/design/Materials/default_look"
+    );
+    assert_eq!(
+        usd_field(layer, "/design/Surface.doubleSided", "default"),
+        Usd::Bool(true)
+    );
+    assert!(layer.field("/design/Part.doubleSided", "default").is_none());
+    // Red paint in linear light; texture coordinates by the label's planar
+    // projection on its triangles, none on the others.
+    let red = crate::appearance::library_appearance("paint_red").unwrap();
+    match usd_field(
+        layer,
+        "/design/Materials/paint_red/Surface.inputs:diffuseColor",
+        "default",
+    ) {
+        Usd::Vec3f(c) => {
+            assert!((f64::from(c[0]) - super::usdz::linear(red.base_color[0])).abs() < 1e-6);
+            assert!(c[0] < red.base_color[0] as f32 || red.base_color[0] >= 1.0);
+        }
+        other => panic!("{other:?}"),
+    }
+    match usd_field(layer, "/design/Body1_1/Body1.primvars:st", "default") {
+        Usd::Vec2fArray(st) => {
+            assert_eq!(st.len(), 36);
+            let label = &st[6..12];
+            let points = match usd_field(layer, "/design/Body1_1/Body1.points", "default") {
+                Usd::Vec3fArray(p) => p,
+                other => panic!("{other:?}"),
+            };
+            let corners =
+                match usd_field(layer, "/design/Body1_1/Body1.faceVertexIndices", "default") {
+                    Usd::IntArray(i) => i,
+                    other => panic!("{other:?}"),
+                };
+            for (k, uv) in label.iter().enumerate() {
+                let p = points[corners[6 + k] as usize];
+                assert!((uv[0] - p[0] / 20.0).abs() < 1e-5 && (uv[1] - p[1] / 10.0).abs() < 1e-5);
+            }
+            assert!(st[..6].iter().all(|uv| *uv == [0.0, 0.0]));
+        }
+        other => panic!("{other:?}"),
+    }
+    assert_eq!(
+        usd_field(
+            layer,
+            "/design/Materials/label/Texture.inputs:file",
+            "default"
+        ),
+        Usd::Asset("textures/label.png".to_owned())
+    );
+
+    // A hidden occurrence is left out; listed bodies are written where
+    // they are shown.
+    b.doc.set_occurrence_visible(copy, false).unwrap();
+    command(&mut b.doc, json!({"cmd": "export", "path": path})).unwrap();
+    let prims = usd_prims(&read(&path).layer);
+    assert!(prims.iter().any(|p| p == "/design/Body1_1/Body1"));
+    assert!(!prims.iter().any(|p| p.starts_with("/design/Body1_2")));
+    // The hidden occurrence asked for is written, alone.
+    let result = command(
+        &mut b.doc,
+        json!({"cmd": "export", "path": path, "occurrence": "Body1:2"}),
+    )
+    .unwrap();
+    assert_eq!(result["bodies"], json!(["F2.b0"]));
+    let prims = usd_prims(&read(&path).layer);
+    assert!(prims.iter().any(|p| p == "/design/Body1_2/Body1"));
+    assert!(
+        !prims
+            .iter()
+            .any(|p| p.starts_with("/design/Body1_1") || p == "/design/Part")
+    );
+    // A hidden body listed is written.
+    command(
+        &mut b.doc,
+        json!({"cmd": "export", "path": path, "bodies": ["Hidden"]}),
+    )
+    .unwrap();
+    assert!(
+        usd_prims(&read(&path).layer)
+            .iter()
+            .any(|p| p == "/design/Hidden")
+    );
+    // The components' coordinates: each body once, in the root.
+    command(
+        &mut b.doc,
+        json!({"cmd": "export", "path": path, "bodies": ["Body1"], "coordinates": "component"}),
+    )
+    .unwrap();
+    let prims = usd_prims(&read(&path).layer);
+    assert!(prims.iter().any(|p| p == "/design/Body1"));
+    assert!(!prims.iter().any(|p| p.starts_with("/design/Body1_1")));
+
+    // A texture file relative to the design's folder: found with the
+    // folder, else the base colour is written with a warning.
+    std::fs::write(dir.join("wood.png"), &png).unwrap();
+    command(
+        &mut b.doc,
+        json!({"cmd": "create_appearance", "id": "wood", "texture": {"path": "wood.png"}}),
+    )
+    .unwrap();
+    b.doc.set_body_appearance(b.body, Some("wood")).unwrap();
+    let result = command(
+        &mut b.doc,
+        json!({"cmd": "export", "path": path, "bodies": ["Body1"]}),
+    )
+    .unwrap();
+    assert!(
+        result["warnings"][0]
+            .as_str()
+            .unwrap()
+            .contains("not known"),
+        "{result}"
+    );
+    let result = command(
+        &mut b.doc,
+        json!({"cmd": "export", "path": path, "bodies": ["Body1"],
+               "design_folder": dir.to_str().unwrap()}),
+    )
+    .unwrap();
+    assert_eq!(result["warnings"], json!([]));
+    let names: Vec<String> = read(&path).files.iter().map(|f| f.name.clone()).collect();
+    assert!(names.contains(&"textures/wood.png".to_owned()), "{names:?}");
+    std::fs::remove_dir_all(&dir).unwrap();
+
+    for (bad, expected) in [
+        (
+            json!({"cmd": "export", "path": "a.usdz", "bodies": ["Nope"]}),
+            "named 'Nope'",
+        ),
+        (
+            json!({"cmd": "export", "path": dir.join("missing/a.usdz").to_str().unwrap(), "bodies": ["Part"]}),
+            "cannot write",
+        ),
+    ] {
+        let error = command(&mut b.doc, bad.clone()).unwrap_err();
+        assert!(error.contains(expected), "{bad}: {error}");
+    }
 }

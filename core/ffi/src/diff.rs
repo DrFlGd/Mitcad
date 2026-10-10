@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT
 //! Comparison of two documents for C++ (P12c, `mitcad_model::diff`): two
-//! project files, two versions, or a version and the open document.
+//! design files, two versions, or a version and the open document.
 
 use mitcad_model::api::ApiError;
 use serde::Deserialize;
@@ -19,7 +19,7 @@ struct Options {
     #[serde(default)]
     geometry: bool,
     /// Names of the two designs (files, versions) for the answer, and the
-    /// project file whose versions they are; `to` None with `path`: the
+    /// design file whose versions they are; `to` None with `path`: the
     /// file as saved.
     #[serde(default)]
     from: Option<String>,

@@ -3,21 +3,37 @@
 //! in `assembly.rs`): new components, Component from Bodies, activation,
 //! grounding, visibility, names, placements, copies of occurrences (a new
 //! occurrence of the same component, or Paste New: a new component), and
-//! external components linked from or copied out of other project files.
+//! external components linked from or copied out of other design files.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
+use std::str::FromStr;
 
-use super::{Added, DocState, Document, ModelError, invalid};
+use super::bodies::faces_named;
+use super::copy::CopySource;
+use super::{Added, BodyAttributes, DocState, Document, ModelError, invalid};
 use crate::assembly::{ExternalLink, Occurrence, is_rigid};
 use crate::exchange::ImportBody;
 use crate::features::{
-    BaseDef, CapturePositionDef, ComponentFromBodiesDef, FeatureDef, Position, ValueInput,
+    BaseBody, BaseDef, CapturePositionDef, ComponentFromBodiesDef, FeatureDef, Position, ValueInput,
 };
 use crate::ids::{BodyUid, ComponentUid, FeatureUid, OccurrenceUid};
 use crate::kernel::Kernel;
 use crate::recompute::{Cache, recompute};
+use crate::topo::{FaceName, RoleKey};
 use crate::transform::Transform;
+
+/// Attributes paired with a snapshot body. Face indices are in the
+/// snapshot's B-rep order, across all bodies of its future base feature.
+struct SnapshotAttributes {
+    body: BodyAttributes,
+    faces: BTreeMap<u32, String>,
+}
+
+struct ComponentSnapshot {
+    bodies: Vec<BaseBody>,
+    attributes: Vec<SnapshotAttributes>,
+}
 
 /// A body as placed in the design (see
 /// [`crate::assembly::Assembly::instances`]).
@@ -354,6 +370,57 @@ impl<K: Kernel> Document<K> {
         })
     }
 
+    /// The component a new-component feature made becomes `component`
+    /// instead: an existing component with nothing in it yet (no features,
+    /// no occurrences placed in it, not linked, made by no feature), which
+    /// keeps its name and occurrences. The component the feature made goes,
+    /// with its occurrence; the feature's bodies go into `component` from
+    /// then on. For an import that places a file's components before the
+    /// timeline item that made one (a component from bodies, mitcad#156).
+    pub fn move_made_component(
+        &mut self,
+        feature: FeatureUid,
+        component: ComponentUid,
+    ) -> Result<(), ModelError> {
+        let a = &self.state.assembly;
+        let made = a
+            .created_by(feature)
+            .ok_or_else(|| invalid(format!("{feature} made no component")))?;
+        if made == component {
+            return Ok(());
+        }
+        let empty = |c: ComponentUid| {
+            !self.state.features.iter().any(|f| f.component == c) && a.children(c).next().is_none()
+        };
+        let free = a
+            .component(component)
+            .is_some_and(|c| c.created_by.is_none() && c.link.is_none() && c.library.is_none());
+        if !free || !empty(component) {
+            return Err(invalid(format!(
+                "{} is not an empty component of this design",
+                a.name(component)
+            )));
+        }
+        if !empty(made) {
+            return Err(invalid(format!(
+                "{} has features or occurrences of its own",
+                a.name(made)
+            )));
+        }
+        self.apply(|state| {
+            let label = format!(
+                "Move {} into {}",
+                state.assembly.name(made),
+                state.assembly.name(component)
+            );
+            state.assembly.remove(made);
+            if let Some(c) = state.assembly.component_mut(component) {
+                c.created_by = Some(feature);
+            }
+            Ok((label, ()))
+        })
+    }
+
     /// Makes a component active: new features, components and occurrences
     /// go into it.
     pub fn activate_component(&mut self, uid: ComponentUid) -> Result<(), ModelError> {
@@ -567,14 +634,36 @@ impl<K: Kernel> Document<K> {
         self.apply(|state| {
             let name = state.free_component_name(&def.name);
             let (made, occurrence) = match (snapshot, made_by) {
-                (Some(bodies), _) => {
+                (Some(snapshot), _) => {
                     let made = state.assembly.create(Some(&name), None);
-                    if !bodies.is_empty() {
+                    if !snapshot.bodies.is_empty() {
                         let base = BaseDef {
                             source: Some(format!("copy of {}", def.name)),
-                            ..BaseDef::new(bodies)
+                            ..BaseDef::new(snapshot.bodies)
                         };
-                        state.add_feature_in(&FeatureDef::Base(base), None, made)?;
+                        let added = state.add_feature_in(&FeatureDef::Base(base), None, made)?;
+                        for (i, attributes) in snapshot.attributes.into_iter().enumerate() {
+                            let index = u32::try_from(i)
+                                .map_err(|_| invalid("too many snapshot bodies"))?;
+                            let mut body = attributes.body;
+                            body.face_appearances = attributes
+                                .faces
+                                .into_iter()
+                                .map(|(index, appearance)| {
+                                    let face = FaceName::new(
+                                        added.uid,
+                                        "import",
+                                        Some(RoleKey::Index(index)),
+                                    );
+                                    (face.to_string(), appearance)
+                                })
+                                .collect();
+                            if !body.is_default() {
+                                state
+                                    .body_attributes
+                                    .insert(BodyUid::new(added.uid, index), body);
+                            }
+                        }
                     }
                     // The components placed in it are shared.
                     let children: Vec<Occurrence> =
@@ -593,13 +682,25 @@ impl<K: Kernel> Document<K> {
                     // component, and makes the copy.
                     let made = state.assembly.create(Some(&name), None);
                     let occurrence = state.assembly.place(made, parent, transform);
-                    state.copy_component(&source_state, &source_path, made, Some(feature), true)?;
+                    state.copy_component(
+                        &source_state,
+                        &source_path,
+                        made,
+                        Some(feature),
+                        CopySource::SameDocument,
+                    )?;
                     (made, occurrence)
                 }
                 (None, None) => {
                     let made = state.assembly.create(Some(&name), None);
                     let occurrence = state.assembly.place(made, parent, transform);
-                    state.copy_component(&source_state, &source_path, made, None, true)?;
+                    state.copy_component(
+                        &source_state,
+                        &source_path,
+                        made,
+                        None,
+                        CopySource::SameDocument,
+                    )?;
                     (made, occurrence)
                 }
             };
@@ -608,23 +709,77 @@ impl<K: Kernel> Document<K> {
         })
     }
 
-    /// A component's bodies at the marker as base-feature bodies.
-    fn component_snapshot(
-        &self,
-        component: ComponentUid,
-    ) -> Result<Vec<crate::features::BaseBody>, ModelError> {
-        let bodies: Vec<ImportBody<K::Shape>> = self
-            .component_bodies(component)
-            .into_iter()
-            .filter_map(|uid| {
-                Some(ImportBody {
-                    name: Some(self.body_name(uid)),
-                    color: None,
-                    shape: self.body_shape(uid)?.clone(),
-                })
-            })
-            .collect();
-        self.base_bodies(&bodies)
+    /// A component's bodies at the marker with their attributes. The base
+    /// feature gives faces new import names, so resolve current overrides
+    /// to the B-rep's face order before their old names are lost.
+    fn component_snapshot(&self, component: ComponentUid) -> Result<ComponentSnapshot, ModelError> {
+        let source = self.component_bodies(component);
+        let map_faces = source
+            .iter()
+            .any(|uid| !self.body_attributes(*uid).face_appearances.is_empty());
+        let mut bodies = Vec::with_capacity(source.len());
+        let mut attributes = Vec::with_capacity(source.len());
+        let mut first_face = 0u32;
+        for uid in source {
+            let Some(shape) = self.body_shape(uid) else {
+                continue;
+            };
+            let mut body = self.body_attributes(uid);
+            let mut mapped = BTreeMap::new();
+            if map_faces {
+                let faces = self.kernel().faces(shape).map_err(|e| {
+                    invalid(format!(
+                        "cannot copy appearances of {}: {e}",
+                        self.body_name(uid)
+                    ))
+                })?;
+                let names: Vec<Vec<FaceName>> = faces
+                    .iter()
+                    .map(|face| {
+                        face.names
+                            .iter()
+                            .filter_map(|name| FaceName::from_str(name).ok())
+                            .collect()
+                    })
+                    .collect();
+                for (reference, appearance) in &body.face_appearances {
+                    let reference =
+                        FaceName::from_str(reference).map_err(|e| invalid(e.to_string()))?;
+                    let resolved: BTreeSet<String> =
+                        faces_named(&names, &reference).into_iter().collect();
+                    for (i, names) in names.iter().enumerate() {
+                        if names
+                            .iter()
+                            .any(|name| resolved.contains(&name.to_string()))
+                        {
+                            let index = u32::try_from(i)
+                                .ok()
+                                .and_then(|i| first_face.checked_add(i))
+                                .ok_or_else(|| invalid("too many snapshot faces"))?;
+                            mapped.insert(index, appearance.clone());
+                        }
+                    }
+                }
+                first_face = u32::try_from(faces.len())
+                    .ok()
+                    .and_then(|count| first_face.checked_add(count))
+                    .ok_or_else(|| invalid("too many snapshot faces"))?;
+            }
+            body.face_appearances.clear();
+            attributes.push(SnapshotAttributes {
+                body,
+                faces: mapped,
+            });
+            bodies.push(ImportBody {
+                name: Some(self.body_name(uid)),
+                color: None,
+                shape: shape.clone(),
+            });
+        }
+        Ok(ComponentSnapshot {
+            bodies: self.base_bodies(&bodies)?,
+            attributes,
+        })
     }
 
     /// Deletes an occurrence. The last occurrence of a component takes the
@@ -658,7 +813,7 @@ impl<K: Kernel> Document<K> {
         })
     }
 
-    /// Inserts another project file as a component placed in the active
+    /// Inserts another design file as a component placed in the active
     /// component (Insert Component): linked (read only,
     /// its bodies as a base feature, read again when the file changes) or
     /// a copy of its design with its history.
@@ -670,7 +825,8 @@ impl<K: Kernel> Document<K> {
         check_transform(&options.transform)?;
         let parent = self.state.assembly.active;
         self.state.editable(parent)?;
-        let resolved = resolve_path(path, options.base.as_deref());
+        let resolved = std::path::absolute(resolve_path(path, options.base.as_deref()))
+            .map_err(|e| invalid(format!("cannot resolve {path}: {e}")))?;
         let text = std::fs::read_to_string(&resolved)
             .map_err(|e| invalid(format!("cannot read {path}: {e}")))?;
         let (source, _) = crate::file::load_state_at(&text, &resolved)
@@ -712,7 +868,13 @@ impl<K: Kernel> Document<K> {
                     });
                 }
                 None => {
-                    state.copy_component(&source, &[], made, None, false)?;
+                    state.copy_component(
+                        &source,
+                        &[],
+                        made,
+                        None,
+                        CopySource::Document(resolved.parent()),
+                    )?;
                 }
             }
             Ok((label, (made, occurrence)))
@@ -733,6 +895,7 @@ impl<K: Kernel> Document<K> {
     ) -> Result<(ComponentUid, OccurrenceUid), ModelError> {
         check_transform(&transform)?;
         self.state.editable(parent)?;
+        let directory = source.source_directory();
         let source = &source.state;
         self.apply(|state| {
             let name = name
@@ -740,7 +903,13 @@ impl<K: Kernel> Document<K> {
                 .map(|n| state.free_component_name(n));
             let made = state.assembly.create(name.as_deref(), None);
             let occurrence = state.assembly.place(made, parent, transform);
-            state.copy_component(source, &[], made, None, false)?;
+            state.copy_component(
+                source,
+                &[],
+                made,
+                None,
+                CopySource::Document(directory.as_deref()),
+            )?;
             let label = format!("Copy into {}", state.assembly.name(made));
             Ok((label, (made, occurrence)))
         })
@@ -806,7 +975,7 @@ impl<K: Kernel> Document<K> {
     }
 
     /// Reads linked components' files again and takes their bodies when a
-    /// file has changed; `base` is the directory of the project file.
+    /// file has changed; `base` is the directory of the design file.
     /// Returns what happened, one line per link that changed or could not
     /// be read (a component whose file is missing keeps the bodies saved
     /// with the project).

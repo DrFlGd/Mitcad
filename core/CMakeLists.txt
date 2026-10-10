@@ -47,7 +47,9 @@ corrosion_add_cxxbridge(mitcad_bridge CRATE mitcad_ffi FILES
   # Triangle meshes for 3D printing (3MF export, mitcad#13).
   kernel/mesh.rs
   # The process's memory against its limits (mitcad#80).
-  memory.rs)
+  memory.rs
+  # Shaded meshes of faces (USDZ export, mitcad#123).
+  kernel/face_mesh.rs)
 target_sources(mitcad_bridge PRIVATE
   cpp/bridge/boolean.cpp
   cpp/bridge/boolean.hpp
@@ -105,6 +107,10 @@ target_sources(mitcad_bridge PRIVATE
 target_sources(mitcad_bridge PRIVATE
   cpp/bridge/memory.cpp
   cpp/bridge/memory.hpp)
+# Shaded meshes of faces (USDZ export, mitcad#123).
+target_sources(mitcad_bridge PRIVATE
+  cpp/bridge/face_mesh.cpp
+  cpp/bridge/face_mesh.hpp)
 target_include_directories(mitcad_bridge PUBLIC cpp)
 target_link_libraries(mitcad_bridge PUBLIC mitcad_geometry)
 # The bridge and the Rust library call each other, and a single-pass
@@ -291,6 +297,9 @@ if(BUILD_TESTING)
 
   # MCP stdio framing and discovery, with a mock document backend (mitcad#124).
   mitcad_cargo_test(core.mcp mitcad-mcp)
+
+  # The USDZ writer and its checking reader (mitcad#123; no OCCT).
+  mitcad_cargo_test(core.usdz mitcad-usdz)
 
   # The fixtures that build the test binaries, and the documentation tests
   # (cargo with the fixture's packages, so that it builds nothing again).

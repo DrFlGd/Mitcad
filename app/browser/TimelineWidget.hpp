@@ -49,10 +49,17 @@ public:
   QString filter() const { return m_filter; }
   bool filterSubcomponents() const { return m_subcomponents; }
   static const QString kActiveFilter;
+  // Shared presentation metadata and menu for native timeline adapters.
+  QSet<QString> filteredFeatures() const;
+  QString filterLabel() const;
+  void showFilterMenu(const QPoint& globalPosition);
   // Selects a feature and scrolls to it (Find in Timeline).
   void selectFeature(const QString& uid);
+  // Mirrors an external selection exactly, without emitting a selection signal.
+  // Missing features are ignored; the selection stays in timeline order.
+  void setSelectedFeatures(const QStringList& uids);
   QString selectedFeature() const;
-  // The selected run of features (Shift+click), in timeline order.
+  // The selected features (a Shift+click run or an external set), in timeline order.
   QStringList selectedFeatures() const;
   // Folds a timeline group into one cell or opens it (this window's view
   // of it, P9); a renamed group keeps how it was shown.
@@ -67,6 +74,7 @@ public:
   void logLayout();
 
 signals:
+  void filterChanged();
   // A click selected a feature, a Shift+click a run of them (in timeline
   // order).
   void featuresClicked(const QStringList& uids);
@@ -98,7 +106,6 @@ private:
   QSet<QString> filteredComponents() const;
   bool passesFilter(const DocumentSnapshot::Feature& feature, const QSet<QString>& components,
                     const QHash<QString, QString>& occurrenceComponents) const;
-  QString filterLabel() const;
   void showFilterMenu();
   void updateFilterButton();
 

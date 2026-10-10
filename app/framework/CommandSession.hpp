@@ -36,6 +36,22 @@ class ManipulatorOverlay;
 // comes from a timer or a queued signal then waits (whenIdle).
 class CommandHost : public CommandContext {
 public:
+  struct AsyncResult {
+    QJsonObject answer;
+    QString error;
+    bool cancelled = false;
+    bool succeeded() const { return error.isEmpty() && !cancelled; }
+  };
+  using AsyncCompletion = std::function<void(const AsyncResult&)>;
+  using InspectionTask = std::function<Inspection(const Document&)>;
+  using InspectionCompletion = std::function<void(const Inspection&, const AsyncResult&)>;
+  // Native presentation starts worker jobs and resumes on the UI thread.
+  // Legacy hosts keep their existing synchronous command path.
+  virtual bool asynchronousCommands() const { return false; }
+  virtual bool modelCommandAsync(const QJsonObject&, QObject*, AsyncCompletion) { return false; }
+  virtual bool modelPreviewAsync(const QByteArray&, const QString&, QObject*, AsyncCompletion) { return false; }
+  virtual bool modelInspectionAsync(const QString&, QObject*, InspectionTask, InspectionCompletion) { return false; }
+  virtual void cancelModelJob() {}
   virtual OcctViewer& viewer() = 0;
   // Runs a model command as it is and returns its result; throws
   // rust::Error when the model rejects it, ComputationCancelled when it was
@@ -115,7 +131,13 @@ public:
   // the selection made before) and shows the panel's state. False when the
   // command cannot run, with the reason in `error`.
   bool start(const Selection& preselection, QString& error);
+  // Native edit startup rolls the marker back without a nested event loop.
+  void startAsync(const Selection& preselection, std::function<void(bool, const QString&)> completion);
   CommandPanel* createPanel(QWidget* parent);
+  // Attaches a frontend once after start(). The presenter may be destroyed
+  // before the session; destruction automatically detaches its callbacks.
+  void setPresenter(CommandPresenter& presenter);
+  const CommandState& state() const { return m_state; }
   // Whether everything to pick was there when the panel opened: the
   // keyboard then goes to the first value, else the view keeps it.
   bool startsWithValues() const { return m_selectionsComplete; }
@@ -176,6 +198,24 @@ private:
   void setDefaults(const InputDef& input, const QString& key);
   void setRowDefaults();
   void inputsChanged();
+  void inputAction(std::function<void()> action, bool invalidatesPreview = true,
+                   std::function<void()> rejected = {});
+  void structuralInputAction(const QString& key, std::function<void()> action);
+  void presenterDetached();
+  bool asyncPresenterAvailable();
+  void resumePendingCommit();
+  Preview previewFromReport(const QJsonObject& report);
+  void acceptFeaturePreview(const QByteArray& key, const Built& built, const Preview& preview, bool cache);
+  void commandSequenceAsync(const QJsonArray& commands, CommandHost::AsyncCompletion completion,
+                            int index = 0, std::function<bool()> aborted = {});
+  void undoToDepthAsync(int depth, CommandHost::AsyncCompletion completion, int guard = -1);
+  void restoreCheckpointAsync(CommandHost::AsyncCompletion completion);
+  void rollForwardAsync(CommandHost::AsyncCompletion completion);
+  void showSketchPreviewAsync(const Built& built);
+  bool commitAsync();
+  void recoverFailedCommit(const CommandHost::AsyncResult& result);
+  void cancelAsync();
+  void finishAsyncCancel();
   void updateManipulators();
   void manipulatorDragged(const QString& key, double value);
   // A toggle in the view was clicked: its element's number goes in or out
@@ -189,8 +229,12 @@ private:
   // computes the command itself; a change of an input previews again.
   void showCancelledPreview(const QByteArray& key);
   void runInspection();
+  void acceptInspection(const Inspection& result);
   void clearPreview();
   void updateHighlights();
+  // The occurrences the inputs' items name as ghosts (InputDef::ghosts),
+  // those of the active input left out, to the view (mitcad#147).
+  void updateGhosts();
   bool isReferable(const SelectionItem& item) const;
   void finish(bool committed);
   // False when the roll-back stays (its computation was cancelled).
@@ -208,11 +252,14 @@ private:
   const CommandDef& m_def;
   CommandHost& m_host;
   QString m_editUid;
+  bool m_deferStartRollback = false;
+  QJsonObject m_startRollback;
   bool m_markerMoved = false; // the edit rolled the marker back
   int m_markerPosition = 0;   // where the edited feature is
   int m_originalMarker = 0;   // where the marker was before
   CommandState m_state;
-  QPointer<CommandPanel> m_panel;
+  QPointer<CommandPanel> m_panel; // only the legacy Qt frontend
+  CommandPresenter* m_presenter = nullptr;
   QPointer<ManipulatorOverlay> m_manipulators;
   QString m_active; // the key of the active selection input
   QSet<QString> m_shownSelections; // the selection inputs shown at the last change
@@ -226,6 +273,13 @@ private:
   QHash<QByteArray, Preview> m_cache;
   QList<QByteArray> m_cacheOrder;
   bool m_done = false;
+  quint64 m_generation = 0;
+  bool m_asyncPending = false;
+  bool m_commitRequested = false;
+  bool m_committing = false;
+  bool m_cancelRequested = false;
+  QJsonValue m_checkpoint;
+  bool m_finalizing = false;
   int m_appliedDepth = -1; // undo depth before an applied sketch preview
   QJsonValue m_sectionBefore; // the section shown before an inspection
   QJsonObject m_analysis; // the analysis edited (mitcad#41), else empty

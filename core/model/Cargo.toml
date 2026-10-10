@@ -17,6 +17,8 @@ miniz_oxide = { version = "0.8.9", default-features = false, features = ["with-a
 mitcad-dxf = { path = "../dxf" }
 # 3MF export for slicers (mitcad#13).
 mitcad-3mf = { path = "../3mf" }
+# USDZ export for AR viewers and other programs (mitcad#123).
+mitcad-usdz = { path = "../usdz" }
 
 [features]
 # The mock geometry kernel (`mitcad_model::testing`) for other crates' tests.

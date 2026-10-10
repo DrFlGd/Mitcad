@@ -5,27 +5,23 @@
 # "Materials"), through the real UI:
 #   - The Appearance panel gives the box's top face Paint - Red (its Faces
 #     input): the shaded view draws only that face red.
-#   - With the renderer (MITCAD_RENDER builds): the rendered view sends the
-#     face's material and renders red where the shaded view is red, and
+#   - The rendered view sends the face's material and renders red where the shaded view is red, and
 #     nowhere else.
 #   - Edit Appearances lists the face, Clear gives it the body's grey
 #     again, and Undo brings the red back.
 #   - An appearance whose image is missing says so in Edit Appearances.
-#   - With the renderer: a checker image made by the test (black and white
+#   - A checker image made by the test (black and white
 #     squares of 10 mm: the image's two cells per 20 mm repeat), assigned
 #     to the box in Edit Appearances and embedded there, renders from the
 #     top with squares of 10 mm (the period within 15 %) after its file
 #     is gone.
 #
-# Without the renderer, the parts that need it are skipped.
 # Runs headless on Xvfb (see ui-test-lib.sh).
 # Usage: tools/ui-render-faces-test.sh [directory for screenshots]
 # check-all sources: tools/cli
 
 UI_APP=${UI_APP:-$(cd "$(dirname "$0")/.." && pwd)/build/dev/app/mitcad}
 BUILD_DIR=$(cd "$(dirname "$UI_APP")/.." 2> /dev/null && pwd)
-RENDER=0
-grep -qs '^MITCAD_RENDER:BOOL=ON' "$BUILD_DIR/CMakeCache.txt" && RENDER=1
 
 source "$(dirname "$0")/ui-test-lib.sh"
 
@@ -165,26 +161,22 @@ shot redface
 json=$(red redface)
 expect_red "$json" 0.15 0.75 "the shaded view draws only the top face red"
 
-if [ "$RENDER" = 1 ]; then
-  echo "--- Rendered"
-  ui_mark
-  ui_step "View > Rendered"              ui_command "Rendered"
-  ui_expect_new "Render worker ready: Cycles" "the worker runs Cycles" 30
-  ui_expect_new "Render body F1.b0: appearance default, 1 faces paint_red" "the face's material goes to the worker"
-  expect_done "the view rendered"
-  shot rendered
-  json=$(red rendered redface)
-  python3 -c '
+echo "--- Rendered"
+ui_mark
+ui_step "View > Rendered"              ui_command "Rendered"
+ui_expect_new "Render worker ready: Cycles" "the worker runs Cycles" 30
+ui_expect_new "Render body F1.b0: appearance default, 1 faces paint_red" "the face's material goes to the worker"
+expect_done "the view rendered"
+shot rendered
+json=$(red rendered redface)
+python3 -c '
 import json, sys
 d = json.loads(sys.argv[1])
 iou = d["both"] / d["either"] if d["either"] else 0.0
 ok = d["red"] > 2000 and iou > 0.75 and d["object"] > 1.5 * d["red"]
 sys.exit(0 if ok else 1)' "$json" || ui_fail "the render is red only where the shaded view is: $json"
-  echo "ok   red where the shaded view is red, grey elsewhere ($json)"
-  ui_step "leave the rendered view"      ui_command "Rendered"
-else
-  echo "skip the rendered view (built without MITCAD_RENDER)"
-fi
+echo "ok   red where the shaded view is red, grey elsewhere ($json)"
+ui_step "leave the rendered view"      ui_command "Rendered"
 
 echo "--- Edit Appearances: the face listed, cleared, and undone"
 ui_mark
@@ -227,30 +219,29 @@ ui_step "the list"                       ui_click_logged "Appearances item steel
 ui_step "the appearance with a lost image (End)" ui_key End
 ui_expect_new "Appearance lost texture missing: the image $WORK/nowhere/lost.png is missing" \
   "the dialog says the image is missing"
-if [ "$RENDER" = 1 ]; then
-  ui_mark
-  ui_step "the checker (Up)"             ui_key Up
-  ui_expect_new "Appearance selected: checker" "the checker is selected"
-  ui_step "Assign to Body1"              ui_click_logged "Appearances assign"
-  ui_expect_new "Assigned appearance checker to F1.b0" "the box gets the checker"
-  ui_step "embed the image"              ui_click_logged "Appearances field texture_embed"
-  ui_expect_new "Appearance checker texture embedded" "the image is embedded"
-  ui_step "Close"                        ui_click_logged "Appearances close"
-  ui_focus_main
-  rm "$WORK/checker.png"
-  ui_step "Escape (clear the selection)" ui_key Escape
-  ui_step "the view from the top"        ui_command "Top"
-  sleep 1
-  ui_wait_idle
-  shot top
-  ui_mark
-  ui_step "View > Rendered"              ui_command "Rendered"
-  ui_expect_new "Render body F1.b0: appearance checker" "the box goes with its checker" 30
-  expect_done "the view rendered"
-  shot checker
-  # The box's width in the shaded view is 60 mm; the squares along the
-  # row through the top face's middle are 10 mm.
-  python3 - "$TOOLS" "$WORK/top.xwd" "$WORK/checker.xwd" $(view_region) << 'EOF' || ui_fail "the checker's squares"
+ui_mark
+ui_step "the checker (Up)"             ui_key Up
+ui_expect_new "Appearance selected: checker" "the checker is selected"
+ui_step "Assign to Body1"              ui_click_logged "Appearances assign"
+ui_expect_new "Assigned appearance checker to F1.b0" "the box gets the checker"
+ui_step "embed the image"              ui_click_logged "Appearances field texture_embed"
+ui_expect_new "Appearance checker texture embedded" "the image is embedded"
+ui_step "Close"                        ui_click_logged "Appearances close"
+ui_focus_main
+rm "$WORK/checker.png"
+ui_step "Escape (clear the selection)" ui_key Escape
+ui_step "the view from the top"        ui_command "Top"
+sleep 1
+ui_wait_idle
+shot top
+ui_mark
+ui_step "View > Rendered"              ui_command "Rendered"
+ui_expect_new "Render body F1.b0: appearance checker" "the box goes with its checker" 30
+expect_done "the view rendered"
+shot checker
+# The box's width in the shaded view is 60 mm; the squares along the
+# row through the top face's middle are 10 mm.
+python3 - "$TOOLS" "$WORK/top.xwd" "$WORK/checker.xwd" $(view_region) << 'EOF' || ui_fail "the checker's squares"
 import importlib.util, statistics, sys
 spec = importlib.util.spec_from_file_location("stats", sys.argv[1] + "/ui-image-stats.py")
 stats = importlib.util.module_from_spec(spec)
@@ -279,9 +270,6 @@ measured = statistics.median(along_x) if along_x else 0.0
 print("     squares: %.1f px measured, %.1f px expected (%s)" % (measured, expected, along_x))
 sys.exit(0 if len(along_x) >= 3 and abs(measured - expected) <= 0.15 * expected else 1)
 EOF
-  echo "ok   the checker's squares are 10 mm"
-else
-  echo "skip the texture's render (built without MITCAD_RENDER)"
-fi
+echo "ok   the checker's squares are 10 mm"
 
 ui_finish "appearances of faces and textures"

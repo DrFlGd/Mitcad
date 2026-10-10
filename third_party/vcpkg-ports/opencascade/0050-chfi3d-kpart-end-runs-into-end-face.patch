@@ -1,0 +1,121 @@
+Mitcad's patch to OCCT 8.0.1, under OCCT's licence:
+SPDX-License-Identifier: LGPL-2.1-only WITH OCCT-exception-1.0
+
+Fillets and chamfers whose contact on one face leaves it near an end of
+the spine, across an edge of the face at that end, while the other
+contact runs on to the end where its face continues tangentially into
+the face at the end (mitcad#121): e.g. the rim of a round slot end
+through a plate, rounded where a pocket's floor meets the slot; near the
+ends of the half circle the contact on the floor runs into the pocket's
+side walls, and the slot's wall continues tangentially into those walls.
+
+ChFi3d_Builder::SplitKPart: an analytic blend (plane, cylinder, cone,
+torus) is cut into the domains of its faces by hatching. At an end of
+the spine, where one contact's domain ends on an arc no face continues
+tangentially (the contact runs into the face at the end), the other
+contact is extended to the end of its domain. When that end lies on an
+arc across which its face continues tangentially, OCCT dropped the
+extension and cut the blend where the first contact left its face; the
+rest of the stripe was walked, the face that the first contact left was
+replaced by its tangent plane (ChFi3d_BuildPlane), and the walked piece,
+reduced to a point on that side (ChFi3d_Purge), went to
+PerformMoreSurfdata, which found no intersection with the face at the
+end through the expected points (the vertex failed), or to
+PerformOneCorner, which drops such pieces and cut the blend that ends
+before the face at the end (an invalid shape). Now, when the face across
+that tangent arc is the face at the end that the first contact runs
+into, and that face is a plane (RunsIntoEndFace), the extension is kept,
+as it is for an arc without a tangent face: the blend ends with both
+contacts on arcs of the face at the end, and PerformOneCorner cuts it
+there (OnDiff), from the point where the first contact leaves its face
+to the end of the other contact. The blend stays one analytic surface.
+(Where the face at the end is curved, as at a round boss whose side
+continues tangentially into another cylinder, keeping the extension gave
+a rounding unlike the original design's and a corner that failed; OCCT's
+handling is kept there.)
+diff --git a/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_SpKP.cxx b/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_SpKP.cxx
+index b80b06d..c4a0d7b 100644
+--- a/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_SpKP.cxx
++++ b/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_SpKP.cxx
+@@ -334,6 +334,37 @@ static double ParamOnSpine(const TopOpeBRepDS_DataStructure&   DStr,
+   }
+ }
+ 
++//=======================================================================
++// function : RunsIntoEndFace
++// purpose  : At an end of the spine, the contact on face Fon ends at CPon,
++//           on an arc no face continues tangentially: it runs into the
++//           face at the end across that arc. The other contact, extended
++//           to the end of its domain, ends on an arc across which its face
++//           continues tangentially into FBID. True when FBID is that face
++//           at the end and a plane: the blend ends on it with both
++//           contacts, and the face at the end cuts it.
++//=======================================================================
++
++static bool RunsIntoEndFace(const ChFiDS_Map&         EFMap,
++                            const ChFiDS_CommonPoint& CPon,
++                            const TopoDS_Face&        Fon,
++                            const TopoDS_Face&        FBID)
++{
++  if (!CPon.IsOnArc() || FBID.IsNull() || !EFMap.Contains(CPon.Arc())
++      || BRepAdaptor_Surface(FBID, false).GetType() != GeomAbs_Plane)
++  {
++    return false;
++  }
++  for (NCollection_List<TopoDS_Shape>::Iterator It(EFMap(CPon.Arc())); It.More(); It.Next())
++  {
++    if (!It.Value().IsSame(Fon) && It.Value().IsSame(FBID))
++    {
++      return true;
++    }
++  }
++  return false;
++}
++
+ //=================================================================================================
+ 
+ static bool YaUnVoisin(const occ::handle<ChFiDS_Spine>& Spine,
+@@ -1304,7 +1335,9 @@ bool ChFi3d_Builder::SplitKPart(const occ::handle<ChFiDS_SurfData>&
+                  pitol,
+                  bout1,
+                  snap2);
+-          if (!CP2.IsOnArc() || (CP2.IsOnArc() && SearchFace(Spine, CP2, F2, FBID)))
++          if (!CP2.IsOnArc()
++              || (CP2.IsOnArc() && SearchFace(Spine, CP2, F2, FBID)
++                  && !RunsIntoEndFace(myEFMap, CP1, F1, FBID)))
+           {
+             CP2 = sov;
+             if (Spine->FirstStatus() != ChFiDS_OnSame)
+@@ -1334,7 +1367,9 @@ bool ChFi3d_Builder::SplitKPart(const occ::handle<ChFiDS_SurfData>&
+                  pitol,
+                  bout1,
+                  snap1);
+-          if (!CP1.IsOnArc() || (CP1.IsOnArc() && SearchFace(Spine, CP1, F1, FBID)))
++          if (!CP1.IsOnArc()
++              || (CP1.IsOnArc() && SearchFace(Spine, CP1, F1, FBID)
++                  && !RunsIntoEndFace(myEFMap, CP2, F2, FBID)))
+           {
+             CP1 = sov;
+             if (Spine->FirstStatus() != ChFiDS_OnSame)
+@@ -1442,7 +1477,9 @@ bool ChFi3d_Builder::SplitKPart(const occ::handle<ChFiDS_SurfData>&
+                  pitol,
+                  bout2,
+                  snap2);
+-          if (!CP2.IsOnArc() || (CP2.IsOnArc() && SearchFace(Spine, CP2, F2, FBID)))
++          if (!CP2.IsOnArc()
++              || (CP2.IsOnArc() && SearchFace(Spine, CP2, F2, FBID)
++                  && !RunsIntoEndFace(myEFMap, CP1, F1, FBID)))
+           {
+             CP2 = sov;
+             if (Spine->LastStatus() != ChFiDS_OnSame)
+@@ -1472,7 +1509,9 @@ bool ChFi3d_Builder::SplitKPart(const occ::handle<ChFiDS_SurfData>&
+                  pitol,
+                  bout2,
+                  snap1);
+-          if (!CP1.IsOnArc() || (CP1.IsOnArc() && SearchFace(Spine, CP1, F1, FBID)))
++          if (!CP1.IsOnArc()
++              || (CP1.IsOnArc() && SearchFace(Spine, CP1, F1, FBID)
++                  && !RunsIntoEndFace(myEFMap, CP2, F2, FBID)))
+           {
+             CP1 = sov;
+             if (Spine->LastStatus() != ChFiDS_OnSame)

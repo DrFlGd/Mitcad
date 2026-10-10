@@ -10,7 +10,10 @@
 //! - **This computer** ([`LocalSettings`]): live updates for this project
 //!   (the project's broker, off, or another broker: `mqtt.json`) and sync
 //!   (send each version at once, how often to check the remote:
-//!   `sync.json`), each value unset meaning the application's default.
+//!   `sync.json`), each value unset meaning the application's default, and
+//!   the project's display name in the Projects panel (`name.json`,
+//!   mitcad#152: shown instead of the default name, never renaming the
+//!   folder or the repository; unset: the default).
 //!
 //! The marker of a cloned project is written by anyone who can push to its
 //! remote, so reading is defensive: at most [`MAX_SETTINGS_SIZE`] bytes,
@@ -33,6 +36,11 @@ pub const LOCAL_LIVE: &str = ".mitcad/local/mqtt.json";
 /// The file of the sync settings of this computer, relative to the
 /// project's folder.
 pub const LOCAL_SYNC: &str = ".mitcad/local/sync.json";
+/// The file of the project's display name on this computer, relative to the
+/// project's folder.
+pub const LOCAL_NAME: &str = ".mitcad/local/name.json";
+/// The longest display name, in characters.
+pub const MAX_DISPLAY_NAME: usize = 200;
 /// Settings files larger than this are not read.
 pub const MAX_SETTINGS_SIZE: u64 = 64 * 1024;
 
@@ -338,11 +346,15 @@ pub struct SyncHere {
 pub struct LocalSettings {
     pub live: LiveHere,
     pub sync: SyncHere,
+    /// The name the Projects panel shows for the project (trimmed, not
+    /// empty); None: the default (the folder's name, a Cloud project's
+    /// owner/repository).
+    pub name: Option<String>,
 }
 
 impl LocalSettings {
     /// `{"live": {"mode": "project" | "off" | "broker", "broker",
-    /// "prefix"}, "sync": {"send_at_once", "check_minutes"}}`.
+    /// "prefix"}, "sync": {"send_at_once", "check_minutes"}, "name"}`.
     pub fn to_json(&self) -> Value {
         let live = match &self.live {
             LiveHere::Project => json!({"mode": "project"}),
@@ -359,6 +371,7 @@ impl LocalSettings {
                 "send_at_once": self.sync.send_at_once,
                 "check_minutes": self.sync.check_minutes,
             },
+            "name": self.name,
         })
     }
 
@@ -373,8 +386,49 @@ impl LocalSettings {
         if let Some(sync) = value.get("sync").filter(|v| !v.is_null()) {
             settings.sync = sync_here(sync, strict, &mut problems)?;
         }
+        if let Some(name) = value.get("name").filter(|v| !v.is_null()) {
+            settings.name = display_name(name, strict, &mut problems)?;
+        }
         Ok((settings, problems))
     }
+}
+
+/// A display name: a string, trimmed (empty: none), without control
+/// characters, at most [`MAX_DISPLAY_NAME`] characters (cut to that when
+/// not `strict`).
+fn display_name(
+    value: &Value,
+    strict: bool,
+    problems: &mut Vec<String>,
+) -> Result<Option<String>, String> {
+    let Some(name) = value.as_str().map(str::trim) else {
+        let problem = "\"name\" must be a string or null".to_owned();
+        if strict {
+            return Err(problem);
+        }
+        problems.push(format!("{problem}: it is not used"));
+        return Ok(None);
+    };
+    if name.chars().any(char::is_control) {
+        let problem = "the display name holds control characters".to_owned();
+        if strict {
+            return Err(problem);
+        }
+        problems.push(format!("{problem}: it is not used"));
+        return Ok(None);
+    }
+    let count = name.chars().count();
+    if count > MAX_DISPLAY_NAME {
+        let problem =
+            format!("the display name has {count} characters, more than {MAX_DISPLAY_NAME}");
+        if strict {
+            return Err(problem);
+        }
+        problems.push(format!("{problem}: it is cut"));
+        let cut: String = name.chars().take(MAX_DISPLAY_NAME).collect();
+        return Ok(Some(cut.trim_end().to_owned()));
+    }
+    Ok((!name.is_empty()).then(|| name.to_owned()))
 }
 
 fn live_here(value: &Value, strict: bool, problems: &mut Vec<String>) -> Result<LiveHere, String> {
@@ -446,7 +500,9 @@ impl ProjectSettings {
         }
         let live = read_object(&root.join(LOCAL_LIVE), &mut problems);
         let sync = read_object(&root.join(LOCAL_SYNC), &mut problems);
-        let local = json!({"live": live, "sync": sync});
+        let name = read_object(&root.join(LOCAL_NAME), &mut problems)
+            .and_then(|file| file.get("name").cloned());
+        let local = json!({"live": live, "sync": sync, "name": name});
         match LocalSettings::from_json(&local, false) {
             Ok((local, more)) => {
                 settings.local = local;
@@ -537,9 +593,11 @@ pub fn write_shared(root: &Path, settings: &SharedSettings) -> io::Result<bool> 
 }
 
 /// Writes this computer's settings of the project in folder `root`
-/// (`mqtt.json` and `sync.json`; a default setting removes its file).
+/// (`mqtt.json`, `sync.json` and `name.json`; a default setting removes its
+/// file).
 pub fn write_local(root: &Path, settings: &LocalSettings) -> io::Result<()> {
     let value = settings.to_json();
+    let name = json!({"name": settings.name});
     let files = [
         (
             LOCAL_LIVE,
@@ -551,6 +609,7 @@ pub fn write_local(root: &Path, settings: &LocalSettings) -> io::Result<()> {
             &value["sync"],
             settings.sync == SyncHere::default(),
         ),
+        (LOCAL_NAME, &name, settings.name.is_none()),
     ];
     for (name, content, default) in files {
         let path = root.join(name);
@@ -672,10 +731,33 @@ mod tests {
                 send_at_once: Some(false),
                 check_minutes: Some(0),
             },
+            name: Some("acme/gripper (old)".to_owned()),
         };
         let (read, problems) = LocalSettings::from_json(&local.to_json(), true).unwrap();
         assert_eq!(read, local);
         assert!(problems.is_empty());
+        // Display names: trimmed, empty is none, control characters and
+        // overlong ones refused (cut or dropped when read).
+        let name = |value: Value, strict: bool| {
+            LocalSettings::from_json(&json!({ "name": value }), strict)
+                .map(|(s, p)| (s.name, p.len()))
+        };
+        assert_eq!(
+            name(json!("  Gripper  "), true),
+            Ok((Some("Gripper".to_owned()), 0))
+        );
+        assert_eq!(name(json!("   "), true), Ok((None, 0)));
+        assert_eq!(name(Value::Null, true), Ok((None, 0)));
+        assert!(name(json!(3), true).is_err());
+        assert_eq!(name(json!(3), false), Ok((None, 1)));
+        assert!(name(json!("a\nb"), true).is_err());
+        assert_eq!(name(json!("a\nb"), false), Ok((None, 1)));
+        let long = "x".repeat(MAX_DISPLAY_NAME + 5);
+        assert!(name(json!(long), true).is_err());
+        assert_eq!(
+            name(json!(long), false),
+            Ok((Some("x".repeat(MAX_DISPLAY_NAME)), 1))
+        );
         let (read, problems) =
             LocalSettings::from_json(&json!({"sync": {"check_minutes": 99999}}), false).unwrap();
         assert_eq!(read.sync.check_minutes, Some(CHECK_MINUTES.1));
@@ -720,10 +802,14 @@ mod tests {
         let local = LocalSettings {
             live: LiveHere::Off,
             sync: SyncHere::default(),
+            name: Some("Robot arm, old".to_owned()),
         };
         write_local(root, &local).unwrap();
         assert!(root.join(LOCAL_LIVE).is_file());
         assert!(!root.join(LOCAL_SYNC).exists());
+        let name_file: Value =
+            serde_json::from_slice(&fs::read(root.join(LOCAL_NAME)).unwrap()).unwrap();
+        assert_eq!(name_file, json!({"name": "Robot arm, old"}));
         let (settings, problems) = ProjectSettings::read(root);
         assert!(problems.is_empty(), "{problems:?}");
         assert_eq!(settings.shared, shared);
@@ -732,6 +818,7 @@ mod tests {
 
         write_local(root, &LocalSettings::default()).unwrap();
         assert!(!root.join(LOCAL_LIVE).exists());
+        assert!(!root.join(LOCAL_NAME).exists(), "no display name: no file");
         let (settings, _) = ProjectSettings::read(root);
         assert_eq!(settings.live_updates(), shared.live_updates.as_ref());
 

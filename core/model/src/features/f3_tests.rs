@@ -245,6 +245,84 @@ fn sweep_paths_of_edges_come_from_the_kernel() {
     );
 }
 
+/// Guide surfaces (mitcad#157): faces of a body reach the kernel's
+/// `surface_sweep`; twist and taper do not, a rail and the parallel
+/// orientation are refused.
+#[test]
+fn sweeps_along_guide_surfaces() {
+    let (mut b, _) = with_path();
+    let block = b.doc.body_shape(BodyUid::new(b.extrude, 0)).unwrap();
+    let top = block.faces[1].to_string();
+    let side = block.faces[2].to_string();
+    let uid = add(
+        &mut b.doc,
+        sweep(
+            &["c1"],
+            json!({"guide_surfaces": [{"body": "F2.b0", "face": top},
+                                      {"body": "F2.b0", "face": side}],
+                   "twist_angle": 1.0}),
+        ),
+    )
+    .unwrap();
+    assert_eq!(status(&b.doc, uid), FeatureStatus::Ok);
+    assert_eq!(
+        last_spec(&b.doc),
+        format!(
+            "sweep F5 path c1 extents 1 1 Perpendicular twist 0 taper 0 rail none surfaces {top},{side}"
+        )
+    );
+    // The sweep refers to the faces' body and its creator.
+    let feature = b.doc.feature(uid).unwrap();
+    assert!(feature.def.references().features.contains(&b.extrude));
+    match &feature.def {
+        crate::FeatureDef::Sweep(s) => assert_eq!(s.guide_surfaces[1].face.to_string(), side),
+        other => panic!("not a sweep: {other:?}"),
+    }
+
+    for (extra, expected) in [
+        (
+            json!({"guide_surfaces": [{"body": "F2.b0", "face": top}],
+                   "guide_rail": {"sketch": "F3", "curves": ["c7"]}}),
+            "a guide rail or guide surfaces, not both",
+        ),
+        (
+            json!({"guide_surfaces": [{"body": "F2.b0", "face": top}],
+                   "orientation": "parallel"}),
+            "perpendicular orientation",
+        ),
+        (
+            json!({"guide_surfaces": [{"body": "F2.b0", "face": top},
+                                      {"body": "F2.b0", "face": top}]}),
+            "selected twice",
+        ),
+        (
+            json!({"guide_surfaces": [{"body": "F9.b0", "face": top}]}),
+            "guide surface",
+        ),
+    ] {
+        match add(&mut b.doc, sweep(&["c1"], extra)) {
+            Err(e) => assert!(e.to_string().contains(expected), "{e}"),
+            Ok(uid) => panic!("{uid} was added; expected {expected}"),
+        }
+    }
+
+    // A face the body does not have fails the feature.
+    b.doc
+        .edit_feature(
+            uid,
+            &def(sweep(
+                &["c1"],
+                json!({"guide_surfaces": [{"body": "F2.b0", "face": "F2:side(c99)"}]}),
+            )),
+        )
+        .unwrap();
+    assert!(
+        error(&b.doc, uid).contains("F2:side(c99)"),
+        "{}",
+        error(&b.doc, uid)
+    );
+}
+
 #[test]
 fn lofts_check_sections_conditions_and_rails() {
     let (mut b, _) = with_path();

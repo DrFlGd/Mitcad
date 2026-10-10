@@ -2,20 +2,20 @@
 //! Projects and their B-rep store (P12a).
 //!
 //! A project is a folder with the marker file `.mitcad/project.json`; its
-//! project files (`.mitcad`, in the folder or below it) are written in
+//! designs (`.mitcad` files, in the folder or below it) are written in
 //! version 3, which keeps the B-rep data of base features out of the JSON
 //! in files of the project's store, `.mitcad/brep/<aa>/<sha256>.brep.zlib`:
 //! the data zlib-compressed, named by the SHA-256 of the uncompressed data
 //! (`aa` its first two digits). A file is written once and never changed, so
 //! a body that does not change is stored once however often the project is
-//! saved, and bodies with the same data share a file. The project files stay
+//! saved, and bodies with the same data share a file. The design files stay
 //! small and diff line by line, which is what the local version history
-//! (P12, git) needs. Outside projects a project file is one file (version
+//! (P12, git) needs. Outside projects a design is a single file (version
 //! 2, the data inside).
 //!
 //! The display state (the Origin folder shown, Isolate) is per user and not
 //! versioned: in a project it goes to `.mitcad/local/display/<path in the
-//! project>.json` instead of the project file (`.gitignore` leaves out
+//! project>.json` instead of the design file (`.gitignore` leaves out
 //! `.mitcad/local/`).
 //!
 //! The store is a trait ([`BlobStore`]) so that an older version can be read
@@ -43,14 +43,14 @@ pub const LOCAL_DIR: &str = ".mitcad/local";
 /// What [`Project::init`] writes into the marker file.
 const MARKER_TEXT: &str = "{\"format\": \"mitcad-project\", \"version\": 1}\n";
 
-/// The recommended `.gitattributes` of a project: project files are text
+/// The recommended `.gitattributes` of a project: design files are text
 /// with LF line ends on every platform (Mitcad writes LF, and a checkout on
 /// Windows with `core.autocrlf` must not change them) that git merges only
 /// as whole files (`merge=binary`: a line-by-line merge could make valid
 /// JSON of a broken design; Mitcad's sync lets the user choose a file's
 /// version instead), B-rep files are binary.
 pub const GITATTRIBUTES: &str = "\
-# Mitcad project files are text with LF line ends on every platform; git
+# Mitcad design files are text with LF line ends on every platform; git
 # merges them only as whole files.
 *.mitcad text eol=lf merge=binary
 # B-rep data of base features: content-addressed, never changed.
@@ -67,7 +67,7 @@ pub const GITIGNORE: &str = "\
 .*.tmp
 ";
 
-/// Where the B-rep files of version 3 project files are kept, by the
+/// Where the B-rep files of version 3 design files are kept, by the
 /// SHA-256 of their uncompressed data. A store keeps a file's content as it
 /// is given (zlib-compressed data); compressing, decompressing and checking
 /// the data is the model's.
@@ -269,7 +269,7 @@ impl Project {
         FsStore::new(self.root.join(BREP_DIR))
     }
 
-    /// The file of a project file's per-user state, which the project does
+    /// The file of a design's per-user state, which the project does
     /// not version: `.mitcad/local/display/<path in the project>.json`.
     /// None for a file outside the project.
     pub fn local_state_path(&self, file: &Path) -> Option<PathBuf> {
@@ -282,7 +282,7 @@ impl Project {
         Some(path)
     }
 
-    /// A project file of this project was renamed or moved from `from` to
+    /// A design of this project was renamed or moved from `from` to
     /// `to` (both in the project): its per-user state follows, unless `to`
     /// has one of its own already (then `from`'s goes). True when a state
     /// was moved.
@@ -305,7 +305,7 @@ impl Project {
         Ok(true)
     }
 
-    /// A project file of this project is gone: its per-user state goes too.
+    /// A design of this project is gone: its per-user state goes too.
     /// True when there was one.
     pub fn remove_local_state(&self, file: &Path) -> io::Result<bool> {
         let Some(local) = self.local_state_path(file) else {

@@ -59,9 +59,10 @@ pub struct ExtrudeFields {
     /// The first ±1.0 after the extent fields.
     pub direction: Option<f64>,
     /// The extrusion's direction in the component's coordinates (a unit
-    /// vector), stored after the extent fields: `u8 flag | u8 1 | u32 (0, or
-    /// 1 on a few items) | f64 x | f64 y | f64 z` (mitcad#96: valid on every
-    /// extrusion of the corpus, whatever that `u32`).
+    /// vector), stored after the extent fields: `u8 flag | u8 solid | u32
+    /// start | f64 x | f64 y | f64 z` (mitcad#96: valid on every extrusion
+    /// of the corpus, whatever that `u32`; mitcad#154: [`Self::solid`] and
+    /// [`Self::start`]).
     pub vector: Option<[f64; 3]>,
     /// The byte after the extent codes (mitcad#96): 1 only on one-sided
     /// extrusions through all or up to an object, which then go against
@@ -74,6 +75,20 @@ pub struct ExtrudeFields {
     /// on every whole length, 2 on the half one; the corpus' settled ones
     /// agree but for three cuts, where either length cuts the same)*.
     pub full_length: Option<bool>,
+    /// The byte after [`Self::flag`]: 1 a solid, 0 a surface extrusion
+    /// (mitcad#154; the cadmpeg format description's geometry kind).
+    pub solid: Option<bool>,
+    /// The byte after that: where the profile starts, 0 on the profile's
+    /// plane, 1 on a plane offset from it, 2 on a selected face (mitcad#154;
+    /// the description's start support).
+    pub start: Option<u8>,
+    /// Each side's extent kind (mitcad#154; the description's per-side
+    /// extent values): 0 none, 1 a distance, 2 up to an object, 3 up to the
+    /// next face, 4 through all. Read after the direction vector and seven
+    /// optional references, `u32 side one`, and, unless side one is up to
+    /// an object, nine zero bytes and `u32 side two`; only the
+    /// combinations the description lists for the extent codes are taken.
+    pub sides: Option<[u32; 2]>,
 }
 
 impl ExtrudeFields {
@@ -438,7 +453,9 @@ pub fn extrude_fields(seg: &Segment, o: &Object) -> Option<ExtrudeFields> {
         }
         q += 1;
     }
-    let vector = (d.get(p + 13) == Some(&1))
+    // The byte before the `u32` is 1 for a solid, 0 for a surface
+    // extrusion (mitcad#154).
+    let vector = matches!(d.get(p + 13), Some(0 | 1))
         .then(|| f64s_at(d, p + 18, 3))
         .flatten()
         .map(|v| [v[0], v[1], v[2]])
@@ -453,7 +470,36 @@ pub fn extrude_fields(seg: &Segment, o: &Object) -> Option<ExtrudeFields> {
         full_length: (extent_a == 3)
             .then(|| symmetric_full_length(seg, d, p + 42))
             .flatten(),
+        solid: vector.and(d.get(p + 13)).map(|&b| b == 1),
+        start: vector.and(d.get(p + 14)).copied().filter(|&b| b <= 2),
+        sides: vector.and_then(|_| extent_sides(seg, d, p + 42, extent_a)),
     })
+}
+
+/// [`ExtrudeFields::sides`]: `from` is the end of the direction vector.
+fn extent_sides(seg: &Segment, d: &[u8], from: usize, direction: u32) -> Option<[u32; 2]> {
+    let mut q = from;
+    for _ in 0..7 {
+        if *d.get(q)? == 0 {
+            q += 1;
+        } else {
+            q = seg.ref_at(d, q)?.end;
+        }
+    }
+    let one = u32_at(d, q)?;
+    let two = if one == 2 {
+        0
+    } else {
+        if slice(d, q + 4, q + 13) != [0u8; 9] {
+            return None;
+        }
+        u32_at(d, q + 13)?
+    };
+    let listed = matches!(
+        (direction, one, two),
+        (1, 1..=4, 0) | (2, 1..=4, 0..=4) | (3, 1, 0) | (3, 1, 1) | (3, 4, 4)
+    );
+    listed.then_some([one, two])
 }
 
 /// See [`ExtrudeFields::full_length`]; `from` is the end of the direction

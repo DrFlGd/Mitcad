@@ -1,0 +1,55 @@
+# SPDX-License-Identifier: MIT
+# Trackpad pinch regression. AppKit magnify events enter the actual document
+# NSWindow; read-only OCCT camera heights verify rendered zoom state.
+expect-ever 'Native UI: AppKit shell with embedded OCCT viewport'
+expect-ever 'View area'
+native-resize 1280 820
+sleep 800
+
+# The shared viewer handles native Qt gestures independently of navigation
+# scheme. This control proves the camera works before testing AppKit routing.
+capture-view-height qt_before
+qt-pinch 50 50 0.25
+expect-view-zoom ${qt_before} in
+capture-view-height qt_after
+
+# Pinching the native canvas must zoom in and out through AppKit dispatch.
+capture-view-height before_in
+native-pinch 50 50 0.25
+expect-view-zoom ${before_in} in ${qt_before} ${qt_after}
+capture-view-height qt_out_before
+qt-pinch 50 50 -0.25
+expect-view-zoom ${qt_out_before} out
+capture-view-height qt_out_after
+capture-view-height before_out
+native-pinch 50 50 -0.25
+expect-view-zoom ${before_out} out ${qt_out_before} ${qt_out_after}
+
+# A pinch over the floating browser must leave the canvas camera unchanged.
+expect-native-visible native.sidebar true
+capture-view-height before_overlay
+native-pinch 5 20 0.25
+expect-view-zoom ${before_overlay} unchanged
+
+# Pinching also works during sketching and leaves precision input intact.
+mark
+native-action sketch.create
+expect-log 'Create Sketch: select a plane'
+click-logged 'Datum xy'
+expect-log 'Sketch started on xy'
+capture-view-height before_sketch
+native-pinch 55 45 0.25
+expect-view-zoom ${before_sketch} in
+native-click native.ribbon.sketch.rectangle
+sketch-click 0 0
+native-type sketchField_width '20 mm'
+capture-view-height before_field
+native-pinch 55 45 -0.25
+expect-view-zoom ${before_field} out
+expect-native-text sketchField_width '^20 mm$'
+native-type sketchField_height '10 mm'
+key Return
+expect-log 'Added rectangle 20 x 10 mm at \(0, 0\)' 30
+native-click native.ribbon.sketch.finish
+expect-log 'Sketch finished' 30
+expect-never 'OCCT view event failed|Native Mac canvas:|TestDriver: FAIL'

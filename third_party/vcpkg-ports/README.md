@@ -29,7 +29,10 @@ OCCT's rolling ball fillet build roundings it failed on (mitcad#121), and
 0020 to 0026 fix other failures and crashes of it (mitcad#122,
 mitcad#133). Patches 0030 to 0032 make an allocation that fails throw
 instead of crashing, let a caller learn of it and leave the collections
-valid (mitcad#132).
+valid (mitcad#132). Patch 0060 changes no result either: it removes repeated
+work that made ShapeFix's repair of intersecting edges quadratic in the
+wires of a face (mitcad#60). Patches 0090 and 0091 fix a heap overflow of
+OCCT's chamfer and fillet (mitcad#160).
 
 - `0006-shapeupgrade-unifysamedomain-seam-search-by-vertex.patch`: the face
   merge after booleans (`ShapeUpgrade_UnifySameDomain`) looks up the edges
@@ -112,6 +115,28 @@ valid (mitcad#132).
   open roundings meet where the line ends) and the face vanishes. Both
   roundings convex or both concave only. The builder class gets members
   for this (code built against the port's headers must be rebuilt).
+- `0017-chfi3d-contact-along-face-edge-ends-at-vertices.patch`: 0014's
+  ends at the vertices also where the other face's contact ends first (a
+  stripe ending on slanted or curved faces): those ends are filled in the
+  processing of the spine's extensions, which did not put them at the
+  vertex; the arc was cut a hatching shift from it, which left a tiny edge
+  in the face at the end and an invalid shell (`SplitKPart`).
+- `0018-chfi3d-corner-where-the-end-face-is-split-in-one-plane.patch`: a
+  fillet or chamfer ending at a vertex where the face at the end is split
+  in two faces of one plane (a tab fused onto a support): the edge between
+  them is no longer counted where `PerformIntersectionAtEnd` chooses, by
+  the number of edges, between walking round the vertex (which failed
+  with "Failed to find edge" there) and `IntersectMoreCorner`,
+  and `IntersectMoreCorner` continues the prolonged edge on the opposite
+  face by that face's own edge (before, any other edge of the vertex,
+  which oriented the face inconsistently).
+- `0019-chfi3d-undone-moresurfdata-corner-fails.patch`: where
+  `PerformMoreSurfdata` returns without computing the corner (its
+  surfdatas at the end are not as it expects), the vertex now fails with
+  an exception. Before, the stripe's end kept no points, the data
+  structure referred to point 0, and the topological build threw
+  `TopOpeBRepDS_DataStructure::Point` or, without range checks, wrote out
+  of bounds (heap corruption).
 
 The patches 0020 to 0026 fix OCCT's fillet (`TKFillet`, `ChFi3d`) where
 it crashed, threw or built a wrong shape on fillets of the `.f3d` corpora
@@ -167,7 +192,7 @@ shapes with OCCT alone.
   spine's edge is cut at the vertex, and the ends on a periodic face are
   taken into its domain (mitcad#133).
 
-The patches 0030 and later make OCCT handle an allocation that fails
+The patches 0030 to 0032 make OCCT handle an allocation that fails
 (mitcad#132).
 
 - `0030-standard-failed-allocation-throws.patch`:
@@ -198,14 +223,168 @@ The patches 0030 and later make OCCT handle an allocation that fails
   under a memory limit). `NCollection_BaseMap::BeginResize` leaked its
   first bucket array when the second failed.
 
+- `0060-shapefix-intersecting-edges-once-per-face.patch`: the repair of
+  a wire's intersecting edges (`ShapeFix_IntersectionTool::FixSelfIntersectWire`,
+  once for each wire of a face) applied the healing context to the whole
+  face and went through all its vertices for their largest tolerance. The
+  face is applied with `ShapeBuild_ReShape::ApplyAgain`, which gives the
+  previous call's result and status back while no replacement has been
+  recorded since (that call recorded none either: it rebuilt nothing), and
+  the largest tolerance is looked up only for a wire with edges that may
+  cross, before anything changes. The repair of intersecting wires
+  (`FixIntersectingWires`) lists the edges of the second wire of a pair only
+  when the boxes of the two wires meet. The healing context's class gets
+  members (code built against the port's headers must be rebuilt with them).
+
+The patches 0050 and later continue 0010 to 0019 (mitcad#121): roundings
+whose contacts leave their faces near the ends of the spine or part of the
+way along it.
+
+- `0050-chfi3d-kpart-end-runs-into-end-face.patch`: an analytic blend
+  (`SplitKPart`) whose contact on one face runs into the face at the end
+  of the spine, a plane, while the other contact runs on to the end where
+  its face continues tangentially into that face at the end (a round slot
+  end rounded under a pocket as wide as the slot), keeps the second
+  contact up to the end, so that the face at the end cuts the one
+  analytic blend (`PerformOneCorner`). Before, the rest was walked on the
+  first face's tangent plane and the vertex failed or gave an invalid
+  shape.
+- `0051-chfi3d-rolling-on-across-surfdatas.patch`: a blend rolling on an
+  edge whose other contact changes faces while the ball rolls on along the
+  same edge (a bevel narrower than the rounding along the bottom of a
+  plate with round corners: the ball's centre stays put at the corners) no
+  longer cuts the edge where its pieces meet (`ChFi3d_FilDS`); the cut
+  left the edge's piece twice in the face across it, an invalid face.
+- `0052-chfi3d-rolling-start-beside-tangent-face.patch`: the start of a
+  blend that rolls on the far edge of a narrow face on one side and
+  touches, on the other, a face that continues the edge's face
+  tangentially (a notch whose straight side runs on into a round corner):
+  `StartSolOverflow` lets the side that crossed a sharp edge roll and keeps
+  the tangent side's face, and `BRepBlend_SurfRstLineBuilder` solves a
+  start that touches the surface outside its face again from points
+  across the face (the ball on the far side of a cylinder). Before, no
+  start was found or the walk failed at once.
+- `0053-chfi3d-corner-after-overflow-onto-face-beyond.patch`: the corner
+  at the end of such a blend when the faces beside it run on past the end
+  (the notch with a tab under its straight side and round corner).
+  `PerformOneCorner` takes the face at the corner's vertex for the face at
+  the end, not the face the blend consumes, and, where the far contact's
+  face does not reach the corner's vertex, prolongs the face at the end
+  to the cork across the face beyond the face of the spine's edge,
+  cutting the edge between them where it crosses the face at the end.
+  Before, the cap was not built (`OneCorner : bouchon non ecrit`).
+- `0054-chfi3d-contact-along-a-part-of-a-face-edge.patch`: a contact that
+  runs along a part of an edge of its face (a channel wall exactly as high
+  as the rounding at its foot, the floor rounded down at the ends, where
+  the contact lies inside the wall) is taken as running along the edge,
+  as 0014 does for a whole edge, and the edge is cut at its inner ends
+  (`ChFi3d_ContactsAlongFaceEdges`). Before, the contact stayed on the
+  face along its boundary and the face's wire intersected itself.
+- `0055-chfi3d-kpart-blend-cut-by-face-beyond.patch`: an analytic blend
+  whose contact passes over a hole or a cut-out of its face (a hole
+  through a plate in front of a wall whose foot is rounded, a hole's rim
+  near the part's side) runs on over it, and the face beyond cuts it: a
+  piece of the blend whose side on that face is its intersection with the
+  face beyond fills the gap between the pieces of `SplitKPart`
+  (`PerformSetOfKPart`). Gaps where the face beyond reaches over the
+  neighbouring pieces too, or where one of its edges (a seam) ends under
+  the blend, keep OCCT's handling. Before, the blend failed, or rolled on
+  the hole's edge.
+- `0056-chfi3d-corner-cutting-the-last-two-walked-pieces.patch`: the
+  corner where the face at the end cuts the last two walked pieces of a
+  blend (`PerformMoreSurfdata`): one contact has left its face across an
+  edge of the face at the end, the other runs on to another edge of it
+  after crossing a face boundary (a rounding round a rod where it meets a
+  pipe whose top is flush with the rod's, the rod's side ending in a
+  narrow bevel). `MoreSurfdata` recognises the corner whichever order the
+  vertex's two edges come in (before, in the other order the corner went
+  to `PerformOneCorner`, which drops the last piece and fails). Where the
+  face's cut leaves the last piece through its end section instead of
+  reaching the point on the edge (next to the contact the piece dips under
+  the face, its faces' normals being more than a right angle apart), the
+  piece's surface is extended beyond its end and cut again; a cut that
+  only touches the piece at that point is not taken. The pieces' ends,
+  which meet within their tolerance only, are matched to the nearer
+  points and the curves' orientations follow from the nearer ends (before,
+  an unorientable shell); the section gets a p-curve on the previous
+  piece where its projection fails; a last piece prolonged beyond the
+  point keeps its contact edge only up to that point.
+- `0057-chfi3d-kpart-gaps-in-order-across-closed-lines.patch`: more of
+  the gaps of 0055 are filled (the rim of a cylinder whose top is crossed
+  by blind holes or by notches open to a bore; a circle whose contact on a
+  ledge crosses round notches). The pieces of a closed spine are taken in
+  the order of their starts (SplitKPart lists the two halves of the piece
+  across the spine's start first, so the gaps next to it were missed);
+  only the face beyond's vertices on its boundary with the contact's face
+  count as under the blend (the bottom of a blind hole refused the cut);
+  on an intersection line that closes on itself the arc across the line's
+  ends is tried too; and where the cut runs along two lines that meet, the
+  gap's two pieces are split at the section through that point rather
+  than at the gap's middle.
+- `0058-chfi3d-rounding-rolls-on-a-convex-far-edge.patch`: a rounding
+  whose contact runs off the face of its edge across that face's far edge,
+  where that edge is sharp and convex, rolls on the edge (it stays tangent
+  to the other side's face and runs through the edge: a bevel narrower
+  than the rounding of its edge with a slot's wall, a wall's foot strip
+  lower than the rounding with the wall leaning back above it). Before,
+  where a ball could touch the face beyond, the rounding ran onto it: a
+  larger rounding that cut into the face beyond and whose corners at the
+  spine's ends found no face at the end. Tangent and concave far edges,
+  edges rounded by the same fillet, and contacts that pass several faces
+  keep the earlier handling.
+- `0059-chfi3d-kpart-blend-cut-by-the-face-at-the-end.patch`: an analytic
+  blend whose contact on one face runs into the face at an end of the
+  spine before that end (the foot of a groove's end wall where the floor
+  rounds up into the part's side, the wall lower than the rounding there)
+  runs on to the end and that face cuts it all along, as over a hole
+  (0055), up to where its other contact reaches that face; there the blend
+  ends in a point, the stripe's end is a singular free end and no corner
+  is made at the spine's end vertex. Before, the rest was walked rolling
+  on the wall's top edge and the corner failed.
+- `0070-chfi3d-kpart-cut-to-end-where-the-narrow-face-vanishes.patch`: 0059
+  where the wall vanishes (a groove's bottom exactly as deep as the
+  rounding at its end wall's foot): along the middle of the chain the
+  contact runs along the wall's top edge, towards the ends past it. A line
+  on its face's boundary that leaves the hatching undone is hatched on the
+  boundary (as 0014 does where no domain is found); the cut pieces start
+  from such a piece's end on the wall's edge; and the inner ends of that
+  piece's contact along a part of the edge (0054) cut the edge with no part
+  of it kept for the wall, whose other pieces are gone too. Before, the
+  walk got stuck (Path failed), or the edge's parts stayed with the face at
+  the end.
+
+The patches 0090 and later fix memory errors (mitcad#160).
+
+- `0090-chfi3d-double-interference-at-vertex-kind.patch`: where two
+  consecutive pieces of a chamfer or rounding meet on an edge they reach
+  with opposite transitions, `ChFi3d_FilDS` adds a second interference on
+  that edge. When the pieces meet at a vertex of the edge, the index it
+  used is the vertex's, but the interference was made of kind point (the
+  other calls there pass the kind); `TopOpeBRepBuild_Builder::BuildEdges`
+  then counted that point past the end of its array of points and
+  overwrote the heap (`free(): invalid next size` later; a debug build of
+  OCCT throws `Standard_OutOfRange`). The interference now takes the
+  index's kind, and the existing one is looked up with it. The case: a
+  counterbore's circle on its floor chamfered by the floor's width, the
+  circle in two arcs whose radii differ by rounding, so that the chamfer
+  runs a hair inside the hole along one arc and on the floor along the
+  other, the two meeting at the hole circle's vertex.
+- `0091-topopebrepbuild-point-uses-within-array.patch`: `BuildEdges`
+  counts the uses of a point only for indices within its array, as one of
+  its four counts already did: an interference with a wrong index can no
+  longer write outside it.
+
 Each patch has a report for OCCT, with a reproduction that uses OCCT alone
 and measurements: mitcad#84 (0006), mitcad#90 (0007), mitcad#91 (0008) and
-mitcad#92 (0009); for 0010 to 0019, mitcad#121 and the tests in
+mitcad#92 (0009); for 0010 to 0019 and 0050 and later, mitcad#121 and the tests in
 `geometry/tests/test_fillet_overflow.cpp`, which use OCCT's fillet alone
 where they can; for 0020 to 0023, mitcad#122 and
 `geometry/tests/test_fillet_kernel.cpp`; for 0024 to 0026, mitcad#133
 and `geometry/tests/test_fillet_ends.cpp`; for 0030 to 0032, mitcad#132
-and `geometry/tests/test_allocation.cpp`. Sending them upstream is the
+and `geometry/tests/test_allocation.cpp`; for 0060, mitcad#60 and
+`geometry/tests/test_shapefix.cpp`, whose expected results are OCCT's
+without the patch; for 0090 and 0091, mitcad#160 and
+`geometry/tests/test_chamfer_kernel.cpp`, which aborts without them. Sending them upstream is the
 maintainers' step. When the
 baseline moves to a newer OCCT, check which of the changes OCCT has made;
 update the port from vcpkg's and apply the remaining patches again

@@ -36,13 +36,13 @@ QString unknownDocument() { return QObject::tr("Unknown document"); }
 // its damage.
 void readSession(RecoverableSession& found) {
   const QString metadata = QDir(found.directory).filePath(found.session + QLatin1String(".json"));
-  const QFileInfo project(found.projectFile());
+  const QFileInfo design(found.designFile());
   found.document = unknownDocument();
   if (!QFileInfo::exists(metadata)) {
-    // The project file is written first: the session's first write ended
+    // The design file is written first: the session's first write ended
     // before its metadata.
-    found.savedAt = project.lastModified().toUTC();
-    found.size = project.size();
+    found.savedAt = design.lastModified().toUTC();
+    found.size = design.size();
     found.damage = QObject::tr("no metadata, the first autosave did not finish");
     return;
   }
@@ -75,25 +75,26 @@ void readSession(RecoverableSession& found) {
     found.damage = QObject::tr("written by another version of Mitcad");
     return;
   }
+  // The design file's name; the key keeps its old name.
   const QString snapshot = about.value(QStringLiteral("project")).toString();
   if (about.value(QStringLiteral("session")).toString() != found.session ||
-      !validAutosaveProject(found.session, snapshot, version)) {
-    found.damage = QObject::tr("the metadata names another project file");
+      !validAutosaveDesign(found.session, snapshot, version)) {
+    found.damage = QObject::tr("the metadata names another design file");
     return;
   }
-  found.project = snapshot;
-  if (QFileInfo(found.projectFile()).isSymLink()) {
-    found.damage = QObject::tr("the project file is a symbolic link");
+  found.design = snapshot;
+  if (QFileInfo(found.designFile()).isSymLink()) {
+    found.damage = QObject::tr("the design file is a symbolic link");
     return;
   }
-  QFile data(found.projectFile());
+  QFile data(found.designFile());
   if (!data.open(QIODevice::ReadOnly)) {
-    found.damage = QObject::tr("the project file is missing");
+    found.damage = QObject::tr("the design file is missing");
     return;
   }
   const QByteArray bytes = data.readAll();
   if (bytes.size() != found.size || fileDigest(bytes) != found.digest) {
-    found.damage = QObject::tr("the project file is not the one its metadata describes");
+    found.damage = QObject::tr("the design file is not the one its metadata describes");
   }
 }
 
@@ -132,8 +133,8 @@ RecoverableSession::~RecoverableSession() = default;
 RecoverableSession::RecoverableSession(RecoverableSession&&) noexcept = default;
 RecoverableSession& RecoverableSession::operator=(RecoverableSession&&) noexcept = default;
 
-QString RecoverableSession::projectFile() const {
-  return QDir(directory).filePath(project.isEmpty() ? session + QLatin1String(".mitcad") : project);
+QString RecoverableSession::designFile() const {
+  return QDir(directory).filePath(design.isEmpty() ? session + QLatin1String(".mitcad") : design);
 }
 
 QString RecoverableSession::describe() const {
@@ -182,7 +183,7 @@ std::vector<RecoverableSession> findRecoverable(const QString& directory, const 
     session.session = id;
     session.lock = std::move(lock);
     if (!QFileInfo::exists(dir.filePath(id + QLatin1String(".json"))) &&
-        !QFileInfo::exists(session.projectFile())) {
+        !QFileInfo::exists(session.designFile())) {
       // No published snapshot. Remove any abandoned generation safely.
       removeSessionFiles(directory, id);
       session.lock->unlock();
@@ -295,7 +296,7 @@ std::optional<std::size_t> askRecovery(QWidget* parent, std::vector<RecoverableS
     box.button(QMessageBox::Discard)->setText(QObject::tr("&Discard"));
     box.setDefaultButton(QMessageBox::Cancel);
     prepareModal(&box);
-    if (box.exec() != QMessageBox::Discard) {
+    if (execDialog(&box) != QMessageBox::Discard) {
       return;
     }
     for (auto row = rows.rbegin(); row != rows.rend(); ++row) {
@@ -314,7 +315,7 @@ std::optional<std::size_t> askRecovery(QWidget* parent, std::vector<RecoverableS
   table->setFocus();
   dialog.resize(820, 340);
   prepareModal(&dialog);
-  if (dialog.exec() != QDialog::Accepted) {
+  if (execDialog(&dialog) != QDialog::Accepted) {
     return std::nullopt;
   }
   return chosen;

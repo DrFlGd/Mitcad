@@ -10,7 +10,9 @@
 //! remaining declared output and 8 MiB, and must not exceed 100 MiB;
 //! unnecessarily large windows are rejected before decoding. Single-segment
 //! frames must fit the remaining output. The [`Writer`] writes stored and
-//! deflated entries (test files, and files Mitcad writes).
+//! deflated entries (test files, and files Mitcad writes), stored ones
+//! also aligned (USDZ packages: each file's data at a multiple of 64
+//! bytes, padded in the local header's extra field).
 
 use std::fmt;
 
@@ -170,8 +172,9 @@ impl Archive {
         self.read(entry)
     }
 
-    /// The entry's stored (possibly compressed) bytes.
-    pub fn raw(&self, entry: &Entry) -> Result<&[u8], ZipError> {
+    /// Where the entry's stored bytes start in the archive (after its local
+    /// header, name and extra field).
+    pub fn data_offset(&self, entry: &Entry) -> Result<usize, ZipError> {
         let pos = usize::try_from(entry.local_header_offset)
             .map_err(|_| corrupt("local header offset"))?;
         if u32_at(&self.data, pos) != Some(LOCAL_SIG) {
@@ -181,7 +184,12 @@ impl Archive {
             u16_at(&self.data, pos + 26).ok_or_else(|| corrupt("local header"))? as usize;
         let extra_len =
             u16_at(&self.data, pos + 28).ok_or_else(|| corrupt("local header"))? as usize;
-        let start = pos + 30 + name_len + extra_len;
+        Ok(pos + 30 + name_len + extra_len)
+    }
+
+    /// The entry's stored (possibly compressed) bytes.
+    pub fn raw(&self, entry: &Entry) -> Result<&[u8], ZipError> {
+        let start = self.data_offset(entry)?;
         let len = usize::try_from(entry.compressed_size).map_err(|_| corrupt("entry size"))?;
         self.data
             .get(
@@ -488,6 +496,29 @@ impl Writer {
     /// Adds an entry, stored or compressed with deflate (`Method::Stored`
     /// or `Method::Deflate`).
     pub fn add(&mut self, name: &str, data: &[u8], method: Method) -> Result<(), ZipError> {
+        self.add_entry(name, data, method, 1)
+    }
+
+    /// Adds a stored entry whose data starts at a multiple of `alignment`
+    /// bytes from the archive's start (a USDZ package's files are 64-byte
+    /// aligned): the local header's extra field pads it, as one field of
+    /// the unreserved id 0x1986 (the central directory has no padding).
+    pub fn add_aligned(
+        &mut self,
+        name: &str,
+        data: &[u8],
+        alignment: usize,
+    ) -> Result<(), ZipError> {
+        self.add_entry(name, data, Method::Stored, alignment.max(1))
+    }
+
+    fn add_entry(
+        &mut self,
+        name: &str,
+        data: &[u8],
+        method: Method,
+        alignment: usize,
+    ) -> Result<(), ZipError> {
         let too_large = || ZipError::Unsupported(format!("{name}: too large without ZIP64"));
         let packed = match method {
             Method::Stored => data.to_vec(),
@@ -505,6 +536,14 @@ impl Writer {
         // Bit 11: the name is UTF-8.
         let flags: u16 = if name.is_ascii() { 0 } else { 1 << 11 };
         let crc = crc32(data);
+        // Padding of the data to the alignment: an extra field of at least
+        // its 4-byte header.
+        let unpadded = self.out.len() + 30 + name.len();
+        let mut padding = (alignment - unpadded % alignment) % alignment;
+        if padding > 0 && padding < 4 {
+            padding += alignment;
+        }
+        let padding = u16::try_from(padding).map_err(|_| too_large())?;
         let header = |buf: &mut Vec<u8>, central: bool| {
             buf.extend_from_slice(&(if central { CENTRAL_SIG } else { LOCAL_SIG }).to_le_bytes());
             if central {
@@ -519,13 +558,19 @@ impl Writer {
             buf.extend_from_slice(&packed_size.to_le_bytes());
             buf.extend_from_slice(&size.to_le_bytes());
             buf.extend_from_slice(&name_len.to_le_bytes());
-            buf.extend_from_slice(&0u16.to_le_bytes()); // extra field length
+            let extra = if central { 0 } else { padding };
+            buf.extend_from_slice(&extra.to_le_bytes()); // extra field length
             if central {
                 buf.extend_from_slice(&[0u8; 6]); // comment length, disk, internal attributes
                 buf.extend_from_slice(&0u32.to_le_bytes()); // external attributes
                 buf.extend_from_slice(&offset.to_le_bytes());
             }
             buf.extend_from_slice(name.as_bytes());
+            if extra > 0 {
+                buf.extend_from_slice(&0x1986u16.to_le_bytes());
+                buf.extend_from_slice(&(extra - 4).to_le_bytes());
+                buf.resize(buf.len() + usize::from(extra) - 4, 0);
+            }
         };
         header(&mut self.out, false);
         self.out.extend_from_slice(&packed);
@@ -779,6 +824,34 @@ mod tests {
         assert_eq!(archive.read(entry).unwrap(), text);
         assert_eq!(archive.read_by_name("caf\u{e9}.bin").unwrap(), [7, 8]);
         assert!(Writer::new().add("x", b"", Method::Zstd).is_err());
+    }
+
+    /// Aligned entries (USDZ packages): each one's data at a multiple of 64
+    /// bytes, whatever the names' lengths, padded by an extra field that
+    /// other readers skip.
+    #[test]
+    fn aligns_stored_entries() {
+        let mut writer = Writer::new();
+        let names = [
+            "a.usdc",
+            "textures/b.png",
+            "c",
+            "a-longer-name-of-sixty-bytes-or-so.jpg",
+        ];
+        for (i, name) in names.iter().enumerate() {
+            writer
+                .add_aligned(name, &vec![i as u8; 61 + i], 64)
+                .unwrap();
+        }
+        let archive = Archive::new(writer.finish().unwrap()).unwrap();
+        for (i, name) in names.iter().enumerate() {
+            let entry = archive.find(name).unwrap();
+            assert_eq!(entry.method, Method::Stored);
+            assert_eq!(archive.data_offset(entry).unwrap() % 64, 0, "{name}");
+            assert_eq!(archive.read(entry).unwrap(), vec![i as u8; 61 + i]);
+        }
+        let first = archive.find("a.usdc").unwrap();
+        assert_eq!(archive.data_offset(first).unwrap(), 64);
     }
 
     #[test]

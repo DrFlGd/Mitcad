@@ -21,7 +21,7 @@ Other libraries from vcpkg (for example FreeType, libpng, zlib, bzip2,
 Brotli)
   Their licence texts are in licenses\vcpkg\<library>\copyright.
 
-The renderer, in a build with it (mitcad-render.exe)
+The renderer (mitcad-render.exe)
   Cycles (https://projects.blender.org/blender/cycles), linked statically
   into mitcad-render.exe: Apache License 2.0, with the code it bundles
   under Apache-2.0, BSD and MIT licences; see licenses\cycles.

@@ -8,12 +8,12 @@
 #include <QAction>
 #include <QCoreApplication>
 #include <QDir>
-#include <QEventLoop>
 #include <QFileInfo>
 #include <QHBoxLayout>
 #include <QLabel>
 #include <QMainWindow>
 #include <QMessageBox>
+#include <QPointer>
 #include <QProgressDialog>
 #include <QPushButton>
 #include <QTimer>
@@ -23,6 +23,7 @@
 
 #include "../framework/AppSettings.hpp"
 #include "../framework/CommandRegistry.hpp"
+#include "../framework/Dialogs.hpp"
 #include "../framework/Icons.hpp"
 #include "../framework/Json.hpp"
 #include "../framework/TestSync.hpp"
@@ -115,7 +116,7 @@ void warn(QWidget* parent, const QString& title, const QString& text, const QStr
   if (!detail.isEmpty()) {
     box.setDetailedText(detail);
   }
-  box.exec();
+  execDialog(&box);
 }
 
 } // namespace
@@ -534,10 +535,13 @@ QJsonObject RemoteController::runModal(RemoteTask* task, const QString& label) {
   QProgressDialog dialog(label, tr("Cancel"), 0, 0, &m_window);
   dialog.setWindowTitle(tr("Remote Repository"));
   dialog.setWindowModality(Qt::WindowModal);
+  prepareProgressDialog(&dialog);
   dialog.setMinimumDuration(400);
   dialog.setAutoReset(false);
   dialog.setAutoClose(false);
-  QEventLoop loop;
+  QObject waiting;
+  bool finished = false;
+  const QPointer<RemoteTask> pending = task;
   connect(task, &RemoteTask::progressed, &dialog, [&dialog, label](const QString& text, int percent) {
     if (percent >= 0) {
       dialog.setRange(0, 100);
@@ -546,12 +550,13 @@ QJsonObject RemoteController::runModal(RemoteTask* task, const QString& label) {
     dialog.setLabelText(text.isEmpty() ? label : QStringLiteral("%1\n%2").arg(label, text));
   });
   connect(&dialog, &QProgressDialog::canceled, task, &RemoteTask::cancel);
-  connect(task, &RemoteTask::finished, &loop, &QEventLoop::quit);
+  connect(task, &RemoteTask::finished, &waiting, [&finished] { finished = true; });
   m_task = task;
   qInfo().noquote() << QStringLiteral("Remote task %1 started").arg(task->name());
   task->start();
   publishState();
-  loop.exec();
+  waitDialogUntil([&] { return finished || pending == nullptr; });
+  if (pending == nullptr) { m_task = nullptr; return {}; }
   disconnect(&dialog, nullptr, task, nullptr);
   dialog.reset();
   m_task = nullptr;
@@ -576,10 +581,12 @@ bool RemoteController::settle(const QString& why) {
   // A check or a push of the open project: stopped (the versions wait).
   m_holding = true;
   m_pushWaiting = m_checkWaiting = false;
-  QEventLoop loop;
-  connect(m_task, &RemoteTask::finished, &loop, &QEventLoop::quit);
+  QObject waiting;
+  bool finished = false;
+  const QPointer<RemoteTask> pending = m_task;
+  connect(m_task, &RemoteTask::finished, &waiting, [&finished] { finished = true; });
   m_task->cancel();
-  loop.exec();
+  waitDialogUntil([&] { return finished || pending == nullptr; });
   m_holding = false;
   return m_task == nullptr;
 }
@@ -591,16 +598,19 @@ void RemoteController::waitForBranch() {
   QProgressDialog dialog(tr("Waiting for the sync to finish..."), tr("Stop the Sync"), 0, 0, &m_window);
   dialog.setWindowTitle(tr("Sync"));
   dialog.setWindowModality(Qt::WindowModal);
+  prepareProgressDialog(&dialog);
   dialog.setMinimumDuration(300);
-  QEventLoop loop;
+  QObject waiting;
+  bool finished = false;
   RemoteTask* task = m_task;
+  const QPointer<RemoteTask> pending = task;
   connect(&dialog, &QProgressDialog::canceled, task, &RemoteTask::cancel);
-  connect(task, &RemoteTask::finished, &loop, &QEventLoop::quit);
+  connect(task, &RemoteTask::finished, &waiting, [&finished] { finished = true; });
   qInfo().noquote() << QStringLiteral("Remote: waiting for the sync before saving");
   m_branchWait = true;
-  loop.exec();
+  waitDialogUntil([&] { return finished || pending == nullptr; });
   m_branchWait = false;
-  disconnect(&dialog, nullptr, task, nullptr);
+  if (pending != nullptr) { disconnect(&dialog, nullptr, pending.data(), nullptr); }
   dialog.reset();
   // A push or check that waited goes after the save.
   m_host.whenIdle([this] { runWaiting(); });
@@ -686,7 +696,7 @@ void RemoteController::check() {
     QPushButton* settings = m_host.projectRoot().isEmpty()
                                 ? nullptr
                                 : box.addButton(tr("Project &Settings..."), QMessageBox::AcceptRole);
-    box.exec();
+    execDialog(&box);
     if (settings != nullptr && box.clickedButton() == settings && m_host.projectSettings) {
       m_host.projectSettings();
     }
@@ -894,7 +904,7 @@ void RemoteController::sync() {
   const std::optional<rust::Box<Project>> repo = project();
   if (!repo) {
     qInfo().noquote() << QStringLiteral("Sync: no project with versions");
-    QMessageBox::information(&m_window, tr("Sync"),
+    sheetInformation(&m_window, tr("Sync"),
                              tr("Sync shares the versions of a Cloud project's designs: make one with File > New "
                                 "Project, or share a Local project in File > Project Settings."));
     return;
@@ -909,7 +919,7 @@ void RemoteController::sync() {
     box.setInformativeText(tr("Project Settings shares it through a git repository."));
     QPushButton* settingsButton = box.addButton(tr("Project &Settings..."), QMessageBox::AcceptRole);
     box.setDefaultButton(settingsButton);
-    box.exec();
+    execDialog(&box);
     if (box.clickedButton() == settingsButton && m_host.projectSettings) {
       m_host.projectSettings();
     }
@@ -934,7 +944,7 @@ void RemoteController::sync() {
                               "first."));
     QPushButton* save = box.addButton(tr("&Save and Sync"), QMessageBox::AcceptRole);
     box.setDefaultButton(save);
-    box.exec();
+    execDialog(&box);
     if (box.clickedButton() != save || !m_host.save()) {
       qInfo().noquote() << QStringLiteral("Sync cancelled");
       return;
@@ -980,10 +990,12 @@ QJsonObject RemoteController::syncNow(const QString& label) {
   // The running work first: a sync is waited for, a check or a push stops
   // (this sync sends what the push would have).
   if (m_task != nullptr && m_task->name() == QLatin1String("sync")) {
-    QEventLoop loop;
-    connect(m_task, &RemoteTask::finished, &loop, &QEventLoop::quit);
+    QObject waiting;
+    bool finished = false;
+    const QPointer<RemoteTask> pending = m_task;
+    connect(m_task, &RemoteTask::finished, &waiting, [&finished] { finished = true; });
     m_branchWait = true;
-    loop.exec();
+    waitDialogUntil([&] { return finished || pending == nullptr; });
     m_branchWait = false;
     m_host.whenIdle([this] { runWaiting(); });
   } else if (m_task != nullptr && !settle(label)) {
@@ -1189,7 +1201,7 @@ void RemoteController::afterSync(const QJsonObject& answer) {
 }
 
 bool RemoteController::recordBeforeSync(const QString& author, const QJsonObject& answer) {
-  // The project's files with changes no version holds: project files, and
+  // The project's files with changes no version holds: design files, and
   // files the project's versions have (another program's new files stay
   // out).
   QStringList paths;
@@ -1217,7 +1229,7 @@ bool RemoteController::recordBeforeSync(const QString& author, const QJsonObject
   box.setInformativeText(tr("Record %1 as a version and sync again?").arg(names.join(QStringLiteral(", "))));
   QPushButton* record = box.addButton(tr("&Record and Sync"), QMessageBox::AcceptRole);
   box.setDefaultButton(record);
-  box.exec();
+  execDialog(&box);
   if (box.clickedButton() != record) {
     return false;
   }

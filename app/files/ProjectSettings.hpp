@@ -4,6 +4,9 @@
 // File > Project Settings (mitcad#89, section 6): everything about a Local
 // or Cloud project in one place. Changes apply at once.
 //
+// - The display name the Projects panel shows on this computer (mitcad#152;
+//   `local.name`, .mitcad/local/name.json; empty: a Cloud project's
+//   owner/repository, else the folder's name; never renames anything).
 // - The folder, the storage (Local -> Cloud: the Cloud section and Share,
 //   which sends the whole history; Cloud -> Local: Stop Syncing, the remote
 //   removed), the address with Change... and Open in Browser, the state
@@ -57,7 +60,9 @@ struct ProjectSettingsHost {
   std::function<void(QObject* context, std::function<void(bool accepted, const QString& message)> done)> probeLocks;
 };
 
-// The dialog for the project in `root` (a project with versions).
+// The dialog for the project in `root` (a project with versions): the
+// window's current project, or another one of the Projects panel, whose
+// host then refreshes the panel.
 void showProjectSettings(QWidget* parent, const QString& root, const ProjectSettingsHost& host);
 
 // What a project's check_minutes setting means: the interval in minutes (0:

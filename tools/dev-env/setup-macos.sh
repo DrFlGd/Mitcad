@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: MIT
 # Installs the per-user Mitcad toolchain with pinned versions on macOS:
-# CMake, Ninja, Rust, cargo-deny, vcpkg and Qt, and writes
-# CMakeUserPresets.json for this checkout. Meant for the isolated macOS
+# CMake, Ninja, Rust, cargo-deny, vcpkg and Qt, builds the render worker's
+# libraries (build-cycles-macos.sh) and writes CMakeUserPresets.json for
+# this checkout. Meant for the isolated macOS
 # arm64 build VM (UTM or lume on Apple's Virtualization.framework); never run
 # it on the host. Run as the developer, not as root, after
 # tools/dev-env/sync-to-mac.sh has copied the working tree.
@@ -197,6 +198,12 @@ elif command -v brew > /dev/null 2>&1; then
 else
   echo "Homebrew is missing: the tests against mosquitto are skipped (brew install mosquitto)"
 fi
+
+# Every build has the render worker (docs/rendering.md "macOS"): Cycles
+# and Open Image Denoise, built once outside the build folders; re-running
+# skips what is done.
+echo "== The render worker's libraries (build-cycles-macos.sh)"
+"$SCRIPT_DIR/build-cycles-macos.sh"
 
 echo "== CMakeUserPresets.json"
 if [ ! -f "$REPO/CMakeUserPresets.json" ]; then

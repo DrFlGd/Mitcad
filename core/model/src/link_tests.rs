@@ -2,7 +2,7 @@
 //! Geometry of other components in sketches (mitcad#100) with the mock
 //! kernel: a sketch on a face of a sibling component and a projection of
 //! it follow both occurrences' placements; links are checked, refused
-//! without them, and kept in the project file.
+//! without them, and kept in the design file.
 
 use serde_json::{Value, json};
 
@@ -138,7 +138,7 @@ fn a_sketch_on_a_face_of_a_sibling_component_follows_both_placements() {
     // The sketch cannot go before the block that makes its face.
     assert!(doc.move_feature(uid, 0).is_err());
 
-    // The project file keeps the link.
+    // The design file keeps the link.
     let saved = doc.to_json();
     let mut loaded = Document::from_json(&saved, MockKernel::default()).unwrap();
     assert_eq!(loaded.to_json(), saved);

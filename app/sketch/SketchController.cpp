@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: MIT
 #include "SketchController.hpp"
+#include "platform/NativeInlineEditor.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -1177,19 +1178,26 @@ void SketchController::setFields(const QVector<FieldSpec>& fields) {
   }
   placeFields();
   for (const Field& field : m_fields) {
-    field.edit->show();
+    if (!showNativeInlineEditor(field.edit)) {
+      field.edit->show();
+    }
   }
   if (!m_fields.isEmpty()) {
-    m_fields.first().edit->setFocus();
+    if (!focusNativeInlineEditor(m_fields.first().edit)) {
+      m_fields.first().edit->setFocus();
+    }
     m_fields.first().edit->selectAll();
   }
 }
 
 void SketchController::clearFields() {
   const bool hadFocus =
-      std::any_of(m_fields.begin(), m_fields.end(), [](const Field& f) { return f.edit && f.edit->hasFocus(); });
+      std::any_of(m_fields.begin(), m_fields.end(), [](const Field& f) {
+        return f.edit && (f.edit->hasFocus() || nativeInlineEditorFocused(f.edit));
+      });
   for (Field& field : m_fields) {
     if (field.edit) {
+      hideNativeInlineEditor(field.edit);
       field.edit->hide();
       field.edit->deleteLater();
     }
@@ -1231,6 +1239,7 @@ void SketchController::fieldEdited(int index) {
   }
   if (field.edit) {
     field.edit->setStyleSheet(field.typed && !field.valid ? kInvalidFieldStyle : kFieldStyle);
+    field.edit->setProperty("nativeInlineInvalid", field.typed && !field.valid);
     field.edit->setToolTip(problem);
   }
   qDebug().noquote() << QStringLiteral("Sketch value %1: %2%3")
@@ -1265,7 +1274,9 @@ bool SketchController::fieldEvent(QLineEdit* edit, QEvent* event) {
   const int step = key->key() == Qt::Key_Backtab ? -1 : 1;
   const int next = (index + step + static_cast<int>(m_fields.size())) % static_cast<int>(m_fields.size());
   if (QLineEdit* target = m_fields[next].edit) {
-    target->setFocus();
+    if (!focusNativeInlineEditor(target)) {
+      target->setFocus();
+    }
     target->selectAll();
   }
   return true;
@@ -1316,7 +1327,7 @@ void SketchController::setLive(const QString& id, double value) {
   QLineEdit* edit = m_fields[i].edit;
   if (edit->text() != text) {
     edit->setText(text);
-    if (edit->hasFocus()) {
+    if (edit->hasFocus() || nativeInlineEditorFocused(edit)) {
       edit->selectAll();
     }
   }
@@ -1333,9 +1344,13 @@ void SketchController::openValueEditor(const QPointF& at, const QString& text, F
   edit->setToolTip(tr("A value or an expression, such as 20, 2 in or d1 * 2; Enter accepts"));
   const QSize size = edit->sizeHint();
   edit->move(static_cast<int>(at.x() - 55.0), static_cast<int>(at.y() - size.height() / 2.0));
-  edit->show();
-  edit->raise();
-  edit->setFocus();
+  if (!showNativeInlineEditor(edit)) {
+    edit->show();
+    edit->raise();
+    edit->setFocus();
+  } else {
+    focusNativeInlineEditor(edit);
+  }
   edit->selectAll();
   m_editor = edit;
   m_editorKind = kind;
@@ -1357,6 +1372,7 @@ void SketchController::acceptEditor() {
   QString problem;
   if (!evaluate(text, m_editorKind, expression, value, problem)) {
     m_editor->setStyleSheet(kInvalidFieldStyle);
+    m_editor->setProperty("nativeInlineInvalid", true);
     error(tr("%1: %2").arg(text, problem));
     return;
   }
@@ -1369,6 +1385,7 @@ void SketchController::acceptEditor() {
 
 void SketchController::closeEditor() {
   if (m_editor) {
+    hideNativeInlineEditor(m_editor);
     m_editor->hide();
     m_editor->deleteLater();
     m_editor = nullptr;

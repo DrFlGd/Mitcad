@@ -1,18 +1,19 @@
 // SPDX-License-Identifier: MIT
 //! Data exchange: base features from imported files and from bodies an
-//! importer built, export of bodies (STEP, IGES, STL, OBJ, BRep, 3MF) and
-//! of a sketch's geometry (DXF).
+//! importer built, export of bodies (STEP, IGES, STL, OBJ, BRep, 3MF,
+//! USDZ) and of a sketch's geometry (DXF).
 //!
 //! File formats are the kernel's business ([`Kernel::read_file`],
 //! [`Kernel::write_file`], which takes each body's placements, mitcad#19);
 //! DXF is written by `mitcad-dxf` from the evaluated sketch, and 3MF by
 //! `mitcad-3mf` and STL by the model (`stl`) from the kernel's triangle
-//! meshes ([`Kernel::triangle_mesh`], mitcad#13, mitcad#17). Every format
-//! has the bodies where the design shows them unless the components'
-//! coordinates are asked for.
+//! meshes ([`Kernel::triangle_mesh`], mitcad#13, mitcad#17); USDZ by
+//! `mitcad-usdz` from the kernel's face meshes ([`Kernel::face_meshes`],
+//! `usdz`, mitcad#123). Every format has the bodies where the design shows
+//! them unless the components' coordinates are asked for.
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
@@ -24,6 +25,7 @@ use crate::profile::SegmentGeometry;
 use crate::transform::Transform;
 
 mod stl;
+mod usdz;
 
 /// What a body is made of.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -108,11 +110,15 @@ pub enum ExportFormat {
     /// part per body.
     #[serde(rename = "3mf")]
     ThreeMf,
+    /// Universal Scene Description package for AR viewers and other
+    /// programs (mitcad#123): the bodies as shaded meshes in the component
+    /// hierarchy, with their appearances.
+    Usdz,
 }
 
 impl ExportFormat {
     /// The format of a file name's extension (`.step`/`.stp`, `.iges`/`.igs`,
-    /// `.stl`, `.obj`, `.brep`/`.brp`, `.3mf`), ignoring case.
+    /// `.stl`, `.obj`, `.brep`/`.brp`, `.3mf`, `.usdz`), ignoring case.
     pub fn of_path(path: &str) -> Option<Self> {
         let extension = Path::new(path).extension()?.to_str()?.to_ascii_lowercase();
         Some(match extension.as_str() {
@@ -122,6 +128,7 @@ impl ExportFormat {
             "obj" => Self::Obj,
             "brep" | "brp" => Self::Brep,
             "3mf" => Self::ThreeMf,
+            "usdz" => Self::Usdz,
             _ => return None,
         })
     }
@@ -134,12 +141,16 @@ impl ExportFormat {
             Self::Obj => "obj",
             Self::Brep => "brep",
             Self::ThreeMf => "3mf",
+            Self::Usdz => "usdz",
         }
     }
 
     /// Formats that write triangles, which mesh bodies can go to.
     pub fn takes_meshes(self) -> bool {
-        matches!(self, Self::Stl | Self::Obj | Self::Brep | Self::ThreeMf)
+        matches!(
+            self,
+            Self::Stl | Self::Obj | Self::Brep | Self::ThreeMf | Self::Usdz
+        )
     }
 }
 
@@ -172,15 +183,36 @@ pub struct TriangleMesh {
     pub triangles: Vec<[u32; 3]>,
 }
 
+/// A body's faces as triangles for display ([`Kernel::face_meshes`],
+/// mitcad#123), millimetres.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct FaceMeshes {
+    pub vertices: Vec<[f64; 3]>,
+    /// A unit normal per vertex, out of the body.
+    pub normals: Vec<[f64; 3]>,
+    /// Counter-clockwise seen from outside, face by face.
+    pub triangles: Vec<[u32; 3]>,
+    /// Each face's number of triangles, in the order [`Kernel::faces`]
+    /// lists the faces.
+    pub face_triangles: Vec<u32>,
+}
+
 /// What [`Document::export_bodies`] wrote.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Exported {
     /// The bodies written, in order.
     pub bodies: Vec<BodyUid>,
-    /// Bodies left out and why (3MF of all bodies: sheet and empty bodies).
+    /// Bodies left out and why (3MF of all bodies: sheet and empty bodies;
+    /// USDZ of all bodies: hidden and empty bodies).
     pub skipped: Vec<(BodyUid, String)>,
     /// 3MF: the mesh of each written body, in `bodies` order.
     pub meshes: Vec<MeshSummary>,
+    /// USDZ: the materials written (appearance ids, `color rrggbb`,
+    /// `default look`).
+    pub materials: Vec<String>,
+    /// USDZ: what was written otherwise than the design has it (a texture
+    /// whose image cannot be read).
+    pub warnings: Vec<String>,
 }
 
 /// A body's mesh in a 3MF file: its triangles and the volume they enclose
@@ -270,7 +302,7 @@ impl Refinement {
 }
 
 /// Options of [`Kernel::write_file`]; each format uses its own.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct ExportOptions {
     pub format: ExportFormat,
     pub step_schema: StepSchema,
@@ -280,6 +312,9 @@ pub struct ExportOptions {
     pub refinement: Refinement,
     /// STL: text instead of binary.
     pub ascii: bool,
+    /// USDZ: the design file's folder, which relative texture paths are
+    /// relative to.
+    pub design_folder: Option<PathBuf>,
 }
 
 impl ExportOptions {
@@ -290,6 +325,7 @@ impl ExportOptions {
             unit: LengthUnit::default(),
             refinement: Refinement::default(),
             ascii: false,
+            design_folder: None,
         }
     }
 }
@@ -506,14 +542,16 @@ impl<K: Kernel> Document<K> {
 
     /// Writes bodies at the marker to a file; all bodies when `bodies` is
     /// empty. Bodies keep their display names, and `colors` or else the
-    /// colours of imported bodies. Mesh bodies go only to STL, OBJ, BRep and
-    /// 3MF files. Every format has the bodies where the design shows them
-    /// (mitcad#17, mitcad#19), unless `placement` asks for the components'
+    /// colours of imported bodies. Mesh bodies go only to STL, OBJ, BRep,
+    /// 3MF and USDZ files. Every format has the bodies where the design
+    /// shows them (mitcad#17, mitcad#19), unless `placement` asks for the components'
     /// coordinates; with an occurrence, only its placements (all bodies:
     /// those it places). A 3MF file holds the solids and meshes (of all
     /// bodies, sheet and empty bodies are left out) as the parts of one
     /// object, each placed where its component's occurrences place it; a
-    /// STEP file of moved bodies is an assembly of their parts.
+    /// STEP file of moved bodies is an assembly of their parts; a USDZ file
+    /// keeps the occurrences as a hierarchy and the bodies' appearances (of
+    /// all bodies, hidden ones are left out; `usdz`).
     pub fn export_bodies(
         &self,
         path: &str,
@@ -614,6 +652,21 @@ impl<K: Kernel> Document<K> {
         }
         if format == ExportFormat::Stl {
             return self.export_stl(path, &chosen, &tolerance, options.ascii, placements);
+        }
+        if format == ExportFormat::Usdz {
+            // The placements with their occurrence paths (mitcad#123).
+            let inside: Vec<InstanceView> =
+                instances.iter().filter(|i| inside(i)).cloned().collect();
+            return self.export_usdz(
+                path,
+                &chosen,
+                bodies.is_empty(),
+                &tolerance,
+                color,
+                design.then_some(inside.as_slice()),
+                within.map_or(0, <[OccurrenceUid]>::len),
+                options.design_folder.as_deref(),
+            );
         }
         // The kernel's formats (mitcad#19): each body with its placements in
         // the design's coordinates, without any in the components'.

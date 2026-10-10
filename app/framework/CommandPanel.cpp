@@ -123,6 +123,81 @@ CommandPanel::CommandPanel(const CommandDef& def, const CommandState& state, boo
                            QWidget* parent)
     : QWidget(parent), m_def(def) {
   setObjectName(QStringLiteral("commandPanel"));
+  // Keep the widget signals for existing test and UI callers, and forward
+  // them through the same presenter actions the native inspector uses.
+  connect(this, &CommandPanel::textEdited, this, [this](const QString& key, const QString& value) {
+    auto call = CommandPresenter::actions().textEdited;
+    if (call) {
+      call(key, value);
+    }
+  });
+  connect(this, &CommandPanel::valueCommitted, this, [this](const QString& key) {
+    auto call = CommandPresenter::actions().valueCommitted;
+    if (call) {
+      call(key);
+    }
+  });
+  connect(this, &CommandPanel::choiceChanged, this, [this](const QString& key, const QString& value) {
+    auto call = CommandPresenter::actions().choiceChanged;
+    if (call) {
+      call(key, value);
+    }
+  });
+  connect(this, &CommandPanel::checkChanged, this, [this](const QString& key, bool value) {
+    auto call = CommandPresenter::actions().checkChanged;
+    if (call) {
+      call(key, value);
+    }
+  });
+  connect(this, &CommandPanel::selectionActivated, this, [this](const QString& key) {
+    auto call = CommandPresenter::actions().selectionActivated;
+    if (call) {
+      call(key);
+    }
+  });
+  connect(this, &CommandPanel::selectionCleared, this, [this](const QString& key) {
+    auto call = CommandPresenter::actions().selectionCleared;
+    if (call) {
+      call(key);
+    }
+  });
+  connect(this, &CommandPanel::itemMoved, this, [this](const QString& key, int from, int to) {
+    auto call = CommandPresenter::actions().itemMoved;
+    if (call) {
+      call(key, from, to);
+    }
+  });
+  connect(this, &CommandPanel::itemRemoved, this, [this](const QString& key, int index) {
+    auto call = CommandPresenter::actions().itemRemoved;
+    if (call) {
+      call(key, index);
+    }
+  });
+  connect(this, &CommandPanel::rowAdded, this, [this](const QString& key) {
+    auto call = CommandPresenter::actions().rowAdded;
+    if (call) {
+      call(key);
+    }
+  });
+  connect(this, &CommandPanel::rowRemoved, this, [this](const QString& key, int index) {
+    auto call = CommandPresenter::actions().rowRemoved;
+    if (call) {
+      call(key, index);
+    }
+  });
+  connect(this, &CommandPanel::accepted, this, [this] {
+    auto call = CommandPresenter::actions().accepted;
+    if (call) {
+      call();
+    }
+  });
+  connect(this, &CommandPanel::rejected, this, [this] {
+    auto call = CommandPresenter::actions().rejected;
+    if (call) {
+      call();
+    }
+  });
+
   auto* layout = new QVBoxLayout(this);
   if (chromeStyle() == ChromeStyle::Floating) {
     layout->setContentsMargins(4, 4, 4, 4); // the card has its own margins

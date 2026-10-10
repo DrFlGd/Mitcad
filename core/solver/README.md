@@ -227,6 +227,47 @@ let a = s.analyze();                           // a.dof, a.body_dof, a.redundant
   (the ball joint's); at ±90° about y they lose a direction, and the
   analysis there counts one more degree of freedom.
 
+### Assembly constraints
+
+`add_constraint(RigidConstraint)` (mitcad#148) adds some of a joint's
+equations only, between a frame on `a` and one on `b`, numbered with the
+joints (`JointId`) and solved, dragged and analysed with them
+(`tests/rigid_constraints.rs`). Each `ConstraintPart` is written in frame
+`b`'s coordinates (`d` frame a's origin, `z` and `x` its axes):
+
+| Part | Rows | Holds |
+|---|---|---|
+| `OriginX`, `OriginY` | 1 | `d.x = 0`, `d.y = 0` |
+| `OriginZ(amount)` | 1 | `d.z` at the amount |
+| `Distance(amount)` | 1 | `|d|` at the amount (not zero: the three origin parts) |
+| `Radial(amount)` | 1 | the distance from b's z axis at the amount (not zero: `OriginX` and `OriginY`) |
+| `Parallel(sense)` | 2 | `z.x = z.y = 0`, z the same way, opposite or either |
+| `Perpendicular` | 1 | `z.z = 0` |
+| `Angle(amount)` | 1 | the angle between the z axes (0 to π; not 0 or π: `Parallel`) |
+| `Twist(angle)` | 1 | a's x axis at `angle` about b's z: `x.y cos − x.x sin = 0` |
+
+Rows of directions are scaled by the system's size, as a joint's turn
+rows are. An amount is `Fixed(v)` or `Value`: the constraint's one value
+(`value: Option<JointMotion>`, labelled `Tz` for a length, `Rz` for an
+angle), an unknown within its limits and driven to its target like a
+joint's motion; its target is a target row, named in dependencies.
+
+- **Placing first.** Before iterating, a constraint between a fixed side
+  and a free one moves the free side's bodies (a's between two free
+  sides) by the smallest motion that makes each part hold on its own:
+  the z axis turned onto b's (or across it, or to the angle) about a's
+  origin, then x turned to the twist, then a's origin moved to the
+  coordinates the parts ask for. It joins nothing: what it leaves free
+  is left to the iteration.
+- **Turning over.** `Parallel` and `Twist` hold both ways; a run that
+  ends with z (or x) the wrong way turns the side's body half a turn about
+  b's x axis (z for a twist) through a's origin and iterates again.
+- **Errors.** `joint_error` of a constraint gives its largest length
+  residual and direction error (half a turn when an axis points the
+  wrong way); `RigidConstraint::error` and `measured` give them, and the
+  measure its value holds, for frames where they are (the model checks
+  constraints whose sides cannot move with them).
+
 ## Performance
 
 Benchmark (release build):

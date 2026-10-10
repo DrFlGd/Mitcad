@@ -4,9 +4,9 @@
 #include <exception>
 
 #include <QDir>
-#include <QEventLoop>
 #include <QJsonArray>
 #include <QProgressDialog>
+#include <QPointer>
 #include <QSettings>
 #include <QStandardPaths>
 #include <QtLogging>
@@ -113,10 +113,11 @@ QList<QJsonObject> fetchLibraries(QWidget* parent, const QStringList& urls) {
   QList<QJsonObject> answers;
   QProgressDialog progress(QObject::tr("Fetching libraries..."), QObject::tr("Cancel"), 0, int(urls.size()), parent);
   progress.setWindowTitle(QObject::tr("Fetch Libraries"));
+  prepareModal(&progress);
+  prepareProgressDialog(&progress);
   progress.setMinimumDuration(300);
   progress.setAutoClose(false);
   progress.setAutoReset(false);
-  prepareModal(&progress);
   bool cancelled = false;
   for (int i = 0; i < urls.size() && !cancelled; ++i) {
     const QString& url = urls[i];
@@ -124,8 +125,10 @@ QList<QJsonObject> fetchLibraries(QWidget* parent, const QStringList& urls) {
     progress.setLabelText(QObject::tr("Fetching %1").arg(url));
     RemoteTask* task = RemoteTask::library(
         {{QStringLiteral("cmd"), QStringLiteral("library_fetch")}, {QStringLiteral("url"), url}}, nullptr);
-    QEventLoop loop;
-    QObject::connect(task, &RemoteTask::finished, &loop, &QEventLoop::quit);
+    QObject waiting;
+    bool finished = false;
+    const QPointer<RemoteTask> pending = task;
+    QObject::connect(task, &RemoteTask::finished, &waiting, [&finished] { finished = true; });
     QObject::connect(task, &RemoteTask::progressed, &progress, [&progress, url](const QString& text, int percent) {
       progress.setLabelText(percent >= 0 ? QObject::tr("Fetching %1\n%2 %3%").arg(url, text).arg(percent)
                                          : QObject::tr("Fetching %1\n%2").arg(url, text));
@@ -135,7 +138,8 @@ QList<QJsonObject> fetchLibraries(QWidget* parent, const QStringList& urls) {
       task->cancel();
     });
     task->start();
-    loop.exec();
+    waitDialogUntil([&] { return finished || pending == nullptr; });
+    if (pending == nullptr) { cancelled = true; break; }
     const QJsonObject answer = task->answer();
     delete task;
     const QJsonObject error = answer.value(QStringLiteral("error")).toObject();

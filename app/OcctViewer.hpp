@@ -17,6 +17,7 @@
 #include <QOpenGLWidget>
 #include <QPoint>
 #include <QString>
+#include <QStringList>
 #include <QSurfaceFormat>
 #include <QtGlobal>
 
@@ -70,6 +71,9 @@ struct BodyDisplay {
   enum class Style {
     Normal,
     New, // a body the previewed command makes: see-through blue, not pickable
+    // A body a command picks through (mitcad#147): see-through in its own
+    // colour, not pickable. setGhosts() draws whole occurrences so.
+    Ghost,
   };
   std::string uid;
   std::shared_ptr<geometry::Shape> shape;
@@ -165,13 +169,20 @@ struct NavigationSettings {
   bool animate = true;         // view changes (standard views, named views) move smoothly
 };
 
+// What a left drag without keys that starts on a body does (mitcad#150):
+// the view's window selection, the owner's drag, or neither (refused: the
+// owner says why).
+enum class OccurrenceDragStart { Select, Drag, Refuse };
+
 // Dragging components in the view (mitcad#55): a left drag without keys
 // that starts on a body `accepts` takes is the owner's instead of a window
-// selection (a click there still picks). Points are in the design's
-// coordinates: where the press hit the body, and where the pointer is on
-// the plane through it that faces the viewer.
+// selection (a click there still picks); one it refuses is neither, and
+// `refused` is called once the pointer has moved. Points are in the
+// design's coordinates: where the press hit the body, and where the
+// pointer is on the plane through it that faces the viewer.
 struct OccurrenceDrag {
-  std::function<bool(const SelectionItem&)> accepts;
+  std::function<OccurrenceDragStart(const SelectionItem&)> accepts;
+  std::function<void(const SelectionItem&)> refused;
   std::function<void(const SelectionItem&, const gp_Pnt&)> started;
   std::function<void(const gp_Pnt&)> moved;
   // `cancelled`: a dialog took the mouse (P7), or the pointer left the plane.
@@ -259,6 +270,8 @@ public:
   // from under them; the picking of the cube follows. Logs "View overlay
   // insets" when it changes.
   void setOverlayInsets(const QMargins& insets);
+  // AppKit provides the general view controls in its native toolbar.
+  void setNativeControls(bool native);
   QMargins overlayInsets() const { return m_overlayInsets; }
   // The width that the sketch's badge takes at the bottom left, margin
   // included (0: none), so that the floating status pill keeps clear of it.
@@ -282,8 +295,17 @@ public:
 
   // Replaces the bodies, keyed by their uids (F2.b0).
   void setBodies(const std::vector<BodyDisplay>& bodies);
-  // The bodies shown (setBodies), without command previews.
+  // The bodies shown (setBodies), without command previews; bodies that
+  // setGhosts() draws as ghosts are among them, as given.
   std::vector<BodyDisplay> shownBodies() const;
+  // Occurrences (paths of uids from the root, `O1/O4`) whose bodies, and
+  // the bodies of the occurrences inside them, are drawn as ghosts
+  // (BodyDisplay::Style::Ghost) instead of normally, now and by later
+  // setBodies() calls, until the list changes (mitcad#147: a command picks
+  // through them). Highlights of items in them are not pickable either, so
+  // a click goes to what lies behind. Logs "View ghosts: ..." when the
+  // list changes.
+  void setGhosts(const QStringList& occurrences);
 
   // The rendered view (docs/rendering.md): the image fills the view
   // (stretched; a frame that refines is smaller) over the bodies, which
@@ -316,11 +338,15 @@ public:
   void setPickFilter(SelectFilter filter, std::function<bool(const SelectionItem&)> test = {});
   // Dragging components (mitcad#55).
   void setOccurrenceDrag(OccurrenceDrag drag) { m_occurrenceDrag = std::move(drag); }
+  // The move cursor over a body a drag would move (mitcad#150).
+  void setDragCursor(bool shown);
   // The point under a widget position on the plane through `through` that
   // faces the viewer; none when the view looks along it.
   std::optional<gp_Pnt> viewPlanePoint(const QPointF& position, const gp_Pnt& through) const;
   SelectFilter pickFilter() const { return m_filter; }
-  // Colour of the highlight under the mouse.
+  // Colour of the highlight under the mouse: see-through and unlit, with
+  // the face's boundary, edges and vertices opaque, hidden by nearer
+  // geometry (mitcad#149; as the selections of setHighlights()).
   void setHoverColor(const QColor& color);
 
   // While a sketch tool draws, the left button is the tool's (sketch mode
@@ -369,6 +395,10 @@ public:
   // The OpenGL version string (with the driver's version), once the view
   // is initialised; for error reports (mitcad#61).
   QString glVersion() const { return m_glVersion; }
+
+  // A popup or native control can consume the pointer's release. End its
+  // interaction without turning the interrupted drag into a selection.
+  void cancelPointerInteraction();
 
 signals:
   void badgeWidthChanged();
@@ -437,6 +467,8 @@ private:
     QColor color;
     Appearance appearance;
     std::vector<BodyDisplay::FaceLook> faceLooks;
+    // A normal body drawn as a ghost by setGhosts() (`style` is Ghost).
+    bool ghosted = false;
     // The hidden-edge styles' edges: dashed through faces, solid in sight.
     occ::handle<AIS_Shape> hiddenEdges;
     occ::handle<AIS_Shape> visibleEdges;
@@ -451,6 +483,8 @@ private:
   // Shows a body in the visual style; the entry's objects are made here.
   void showBody(BodyEntry& entry);
   void removeBody(BodyEntry& entry);
+  // Whether setGhosts() names an occurrence or one it lies in.
+  bool isGhosted(const QString& occurrence) const;
   // The rendered mode's layer for a body, and its edges hidden under a
   // rendered image.
   void applyRenderedVisibility(BodyEntry& entry);
@@ -533,6 +567,7 @@ private:
   occ::handle<AIS_ViewCube> m_orientationCube;
   occ::handle<SelectMgr_Filter> m_pickFilter;
   std::map<std::string, BodyEntry> m_bodies;
+  QStringList m_ghosts; // setGhosts()
   std::map<ProfileKey, occ::handle<AIS_Shape>> m_profiles;
   std::vector<occ::handle<AIS_Shape>> m_sketchEntities;
   // The shown sketch entities by "<sketch>/<id>@<occurrence>", with their
@@ -570,6 +605,8 @@ private:
   std::optional<SelectionItem> m_dragItem;
   gp_Pnt m_dragGrab;
   bool m_dragging = false;
+  bool m_dragRefused = false; // the press is neither a drag nor a window selection
+  bool m_dragCursor = false;
   // What the scrolling of a trackpad does until it pauses; a pan or an orbit
   // is a drag of the left button that is passed to the view in steps, so
   // that it goes the way of a mouse drag (m_scrollPoint: device pixels).
@@ -595,6 +632,7 @@ private:
   Graphic3d_ZLayerId m_gridLayer = Graphic3d_ZLayerId_UNKNOWN;
   std::optional<CameraState> m_home;
   QToolButton* m_homeButton = nullptr;
+  bool m_nativeControls = false;
   bool m_backgroundDark = false; // the view's background is dark
   QColor m_backgroundTop = QColor(237, 240, 245);
   QColor m_backgroundBottom = QColor(189, 196, 209);

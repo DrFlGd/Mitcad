@@ -53,14 +53,18 @@ use std::fmt;
 use std::sync::Arc;
 
 use mitcad_solver::{
-    BodyId, Freedom, JointId, JointMotion, Pose, RigidJoint, RigidOptions, RigidResult,
-    RigidSystem, SolveStatus,
+    BodyId, ConstraintPart, Freedom, JointId, JointMotion, Pose, RigidJoint, RigidOptions,
+    RigidResult, RigidSystem, SolveStatus,
 };
 use serde::{Deserialize, Serialize};
 
 use crate::assembly::{Assembly, inverse};
+use crate::constraints::{
+    self, ConstraintSetResult, Geo, RowResult, RowValues, resolve_geo, row_spec,
+};
 use crate::datum::{Datum, Vec3, canonical_axis, default_x_axis, unit};
 use crate::document::DocState;
+use crate::features::constraint_set::row_label;
 use crate::features::geom_ref::{self, GeomRef, Resolver};
 use crate::features::joint::{FrameOverride, JointOrigin};
 use crate::features::{FeatureDef, FeatureEntry, PlacementChange, SketchOutput};
@@ -559,6 +563,11 @@ pub(crate) fn check_components(
             None => Ok(()),
         },
         FeatureDef::RigidGroup(_) => Ok(()),
+        FeatureDef::ConstraintSet(set) => set.rows.iter().enumerate().try_for_each(|(i, row)| {
+            row.origins().try_for_each(|(key, origin)| {
+                check_origin(&format!("{}: {key}", row_label(i, row.kind)), origin)
+            })
+        }),
         _ => return None,
     })
 }
@@ -588,6 +597,12 @@ pub(crate) fn occurrences_used(def: &FeatureDef) -> Vec<OccurrenceUid> {
             used
         }
         FeatureDef::RigidGroup(g) => g.occurrences.clone(),
+        FeatureDef::ConstraintSet(set) => set
+            .rows
+            .iter()
+            .flat_map(|row| row.origins().map(|(_, o)| o.occurrence.0.clone()))
+            .flatten()
+            .collect(),
         _ => Vec::new(),
     }
 }
@@ -616,6 +631,17 @@ pub(crate) fn remap_occurrences(
             }
         }
         FeatureDef::RigidGroup(g) => path(&mut g.occurrences),
+        FeatureDef::ConstraintSet(set) => {
+            for row in &mut set.rows {
+                for origin in [&mut row.a, &mut row.b]
+                    .into_iter()
+                    .chain(row.a2.as_mut())
+                    .chain(row.b2.as_mut())
+                {
+                    path(&mut origin.occurrence.0);
+                }
+            }
+        }
         _ => return false,
     }
     true
@@ -694,15 +720,33 @@ pub(crate) struct ActiveJoint {
     pub local_b: Transform,
     pub alignment: Transform,
     pub motions: Vec<MotionSpec>,
+    /// A row of a constraint set (mitcad#148): its index and equations
+    /// (`motions` is then its value, `kind` and `alignment` unused).
+    pub row: Option<usize>,
+    pub parts: Option<Vec<ConstraintPart>>,
 }
 
 impl ActiveJoint {
     /// The two frames with these placements.
-    fn frames(&self, placements: &BTreeMap<OccurrenceUid, Transform>) -> (Transform, Transform) {
+    pub(crate) fn frames(
+        &self,
+        placements: &BTreeMap<OccurrenceUid, Transform>,
+    ) -> (Transform, Transform) {
         (
             path_placement(placements, &self.a).after(&self.local_a),
             path_placement(placements, &self.b).after(&self.local_b),
         )
+    }
+
+    /// A constraint row's: whether it holds with these placements, and its
+    /// value there.
+    pub(crate) fn holds(
+        &self,
+        placements: &BTreeMap<OccurrenceUid, Transform>,
+    ) -> (bool, Option<f64>) {
+        let (fa, fb) = self.frames(placements);
+        let parts = self.parts.as_deref().unwrap_or_default();
+        constraints::check(&fa, &fb, parts, self.motions.first())
     }
 
     /// The free motions' values with these placements (turns unwrapped
@@ -742,27 +786,32 @@ pub(crate) struct JointsState {
     /// Rigid groups in effect, in timeline order: the feature, its
     /// component and the occurrences.
     pub groups: Vec<(FeatureUid, ComponentUid, Vec<OccurrenceUid>)>,
-    /// Joints in effect, in timeline order.
+    /// Joints and constraint rows in effect, in timeline order.
     pub active: Vec<ActiveJoint>,
+    /// Constraint sets (mitcad#148).
+    pub constraints: BTreeMap<FeatureUid, ConstraintSetResult>,
 }
 
 /// Whether recompute applies the feature with [`apply`].
 pub(crate) fn applies(def: &FeatureDef) -> bool {
     matches!(
         def,
-        FeatureDef::Joint(_) | FeatureDef::AsBuiltJoint(_) | FeatureDef::RigidGroup(_)
+        FeatureDef::Joint(_)
+            | FeatureDef::AsBuiltJoint(_)
+            | FeatureDef::RigidGroup(_)
+            | FeatureDef::ConstraintSet(_)
     )
 }
 
 /// Resolves references in one component at a point of a recompute.
-struct StepResolver<'a, K: Kernel> {
-    kernel: &'a K,
-    assembly: &'a Assembly,
-    component: ComponentUid,
-    bodies: Option<&'a BodyState<K::Shape>>,
-    datums: &'a BTreeMap<FeatureUid, Versioned<Datum>>,
-    sketches: &'a BTreeMap<FeatureUid, Versioned<Arc<SketchOutput>>>,
-    features: &'a [Arc<FeatureEntry>],
+pub(crate) struct StepResolver<'a, K: Kernel> {
+    pub kernel: &'a K,
+    pub assembly: &'a Assembly,
+    pub component: ComponentUid,
+    pub bodies: Option<&'a BodyState<K::Shape>>,
+    pub datums: &'a BTreeMap<FeatureUid, Versioned<Datum>>,
+    pub sketches: &'a BTreeMap<FeatureUid, Versioned<Arc<SketchOutput>>>,
+    pub features: &'a [Arc<FeatureEntry>],
 }
 
 impl<K: Kernel> Resolver for StepResolver<'_, K> {
@@ -894,6 +943,81 @@ pub(crate) fn apply<K: Kernel>(
         }
         Ok(local)
     };
+    if let FeatureDef::ConstraintSet(set) = &entry.def {
+        // Each row's references in the components their paths end in.
+        let mut rows = Vec::with_capacity(set.rows.len());
+        for (i, row) in set.rows.iter().enumerate() {
+            let label = row_label(i, row.kind);
+            let geo = |key: &str, origin: &JointOrigin| -> Result<Geo, String> {
+                let at = path_component(assembly, component, &origin.occurrence.0)
+                    .map_err(|e| format!("{label}: {key}: {e}"))?;
+                let mut resolver = StepResolver {
+                    kernel,
+                    assembly,
+                    component: at,
+                    bodies: components.get(&at).map(|b| &**b),
+                    datums: &done.datums,
+                    sketches: &done.sketches,
+                    features: &state.features,
+                };
+                resolve_geo(&mut resolver, origin).map_err(|e| format!("{label}: {key}: {e}"))
+            };
+            let a = geo("a", &row.a)?;
+            let a2 = row.a2.as_ref().map(|o| geo("a2", o)).transpose()?;
+            let b = geo("b", &row.b)?;
+            let b2 = row.b2.as_ref().map(|o| geo("b2", o)).transpose()?;
+            let values = RowValues::of(row, params).map_err(|e| format!("{label}: {e}"))?;
+            let spec = row_spec(row.kind, &a, a2.as_ref(), &b, b2.as_ref(), &values)
+                .map_err(|e| format!("{label}: {e}"))?;
+            let (pa, pb) = (&row.a.occurrence.0, &row.b.occurrence.0);
+            let (a_path, b_path) = if spec.swap { (pb, pa) } else { (pa, pb) };
+            rows.push(ActiveJoint {
+                uid: entry.uid,
+                component,
+                kind: JointKind::Rigid,
+                slide: SlideAxis::Z,
+                a: a_path.clone(),
+                b: b_path.clone(),
+                local_a: spec.local_a,
+                local_b: spec.local_b,
+                alignment: Transform::IDENTITY,
+                motions: spec.value.into_iter().collect(),
+                row: Some(i),
+                parts: Some(spec.parts),
+            });
+        }
+        let (state_now, changes) = solve_new(state, entry, &rows, done)?;
+        let results = set
+            .rows
+            .iter()
+            .zip(&rows)
+            .map(|(row, active)| {
+                let (holds, value) = active.holds(&done.placements);
+                RowResult {
+                    kind: row.kind,
+                    a: row.a.occurrence.0.clone(),
+                    b: row.b.occurrence.0.clone(),
+                    holds,
+                    value: if active.motions.is_empty() {
+                        None
+                    } else {
+                        value
+                    },
+                }
+            })
+            .collect();
+        done.joints.active.extend(rows);
+        done.joints.constraints.insert(
+            entry.uid,
+            ConstraintSetResult {
+                component,
+                state: state_now,
+                rows: results,
+                placements: changes,
+            },
+        );
+        return Ok(());
+    }
 
     let (kind, slide, limits, position, a_path, b_path) = match &entry.def {
         FeatureDef::Joint(j) => (
@@ -966,8 +1090,10 @@ pub(crate) fn apply<K: Kernel>(
         local_b,
         alignment,
         motions,
+        row: None,
+        parts: None,
     };
-    let (state_now, changes) = solve_joint(state, entry, &joint, done)?;
+    let (state_now, changes) = solve_new(state, entry, std::slice::from_ref(&joint), done)?;
     let (frame_a, frame_b) = joint.frames(&done.placements);
     let values = joint.values(&done.placements);
     done.joints.active.push(joint);
@@ -994,6 +1120,21 @@ pub(crate) fn apply<K: Kernel>(
 /// are at the marker.
 pub(crate) fn finish(joints: &mut JointsState, placements: &BTreeMap<OccurrenceUid, Transform>) {
     for joint in &joints.active {
+        if let Some(i) = joint.row {
+            // A constraint row: whether it holds there, and its value.
+            if let Some(row) = joints
+                .constraints
+                .get_mut(&joint.uid)
+                .and_then(|set| set.rows.get_mut(i))
+            {
+                let (holds, value) = joint.holds(placements);
+                row.holds = holds;
+                if !joint.motions.is_empty() {
+                    row.value = value;
+                }
+            }
+            continue;
+        }
         let Some(result) = joints.joints.get_mut(&joint.uid) else {
             continue;
         };
@@ -1015,18 +1156,33 @@ pub(crate) fn finish(joints: &mut JointsState, placements: &BTreeMap<OccurrenceU
     }
 }
 
-/// Solves a new joint with the joints in effect that share moving
-/// occurrences with it (through each other) and places the occurrences
-/// that move, as placement changes of the joint feature applied like
-/// other features' (`recompute::place`).
-fn solve_joint<S>(
+/// The name of a joint, or of a constraint set's row
+/// (`Constraint1 row 2 (insert)`), in messages.
+pub(crate) fn relation_name(state: &DocState, uid: FeatureUid, row: Option<usize>) -> String {
+    let Some(entry) = state.features.iter().find(|f| f.uid == uid) else {
+        return uid.to_string();
+    };
+    match (row, &entry.def) {
+        (Some(i), FeatureDef::ConstraintSet(set)) => match set.rows.get(i) {
+            Some(r) => format!("{} {}", entry.name, row_label(i, r.kind)),
+            None => entry.name.clone(),
+        },
+        _ => entry.name.clone(),
+    }
+}
+
+/// Solves new joints or constraint rows (a feature's) with the joints and
+/// constraints in effect that share moving occurrences with them (through
+/// each other) and places the occurrences that move, as placement changes
+/// of the feature applied like other features' (`recompute::place`).
+fn solve_new<S>(
     state: &DocState,
     entry: &FeatureEntry,
-    joint: &ActiveJoint,
+    new: &[ActiveJoint],
     done: &mut Recomputed<S>,
 ) -> Result<(JointState, Vec<PlacementChange>), String> {
     let assembly = &state.assembly;
-    let component = joint.component;
+    let component = entry.component;
     let groups = &done.joints.groups;
     let unit = |path: &[OccurrenceUid]| path.first().map(|o| group_of(groups, component, *o));
     let fixed = |u: &Option<BTreeSet<OccurrenceUid>>| {
@@ -1036,49 +1192,45 @@ fn solve_joint<S>(
                 .any(|o| assembly.occurrence(*o).is_some_and(|o| o.grounded))
         })
     };
-    let (ua, ub) = (unit(&joint.a), unit(&joint.b));
-    // Nothing the solver can move: the joint holds or fails.
-    let still = match (&ua, &ub) {
-        (Some(x), Some(y)) if x == y => {
-            Some(format!("both sides move with {}", names(assembly, x)))
-        }
-        _ if fixed(&ua) && fixed(&ub) => Some(format!(
-            "both sides are fixed ({} and {})",
-            side_name(assembly, component, &joint.a),
-            side_name(assembly, component, &joint.b)
-        )),
-        _ => None,
-    };
-    if let Some(why) = still {
-        let Some(values) = joint.values(&done.placements) else {
-            return Err(format!("{why} and the joint does not hold"));
+    let mut moving: Vec<BTreeSet<OccurrenceUid>> = Vec::new();
+    let mut solving: Vec<&ActiveJoint> = Vec::new();
+    for joint in new {
+        let (ua, ub) = (unit(&joint.a), unit(&joint.b));
+        // Nothing the solver can move: it holds or fails.
+        let still = match (&ua, &ub) {
+            (Some(x), Some(y)) if x == y => {
+                Some(format!("both sides move with {}", names(assembly, x)))
+            }
+            _ if fixed(&ua) && fixed(&ub) => Some(format!(
+                "both sides are fixed ({} and {})",
+                side_name(assembly, component, &joint.a),
+                side_name(assembly, component, &joint.b)
+            )),
+            _ => None,
         };
-        for spec in &joint.motions {
-            if let (Some(target), Some(v)) = (spec.target, values.get(&spec.motion))
-                && (target - v).abs() > 1e-9 * (1.0 + target.abs())
-            {
-                return Err(format!(
-                    "{why} and the joint is not at its position ({} {v} instead of {target})",
-                    spec.motion
-                ));
+        if let Some(why) = still {
+            check_still(state, joint, &why, &done.placements)?;
+            continue;
+        }
+        for u in [ua, ub].into_iter().filter(|u| !fixed(u)).flatten() {
+            if !moving.contains(&u) {
+                moving.push(u);
             }
         }
+        solving.push(joint);
+    }
+    if solving.is_empty() {
         return Ok((JointState::Satisfied, Vec::new()));
     }
 
-    // The joints in effect that share moving units with this one, through
-    // each other.
+    // The joints and constraints in effect that share moving units with
+    // these, through each other.
     let mine: Vec<&ActiveJoint> = done
         .joints
         .active
         .iter()
         .filter(|j| j.component == component)
-        .chain(std::iter::once(joint))
-        .collect();
-    let mut moving: Vec<BTreeSet<OccurrenceUid>> = [ua, ub]
-        .into_iter()
-        .filter(|u| !fixed(u))
-        .flatten()
+        .chain(solving)
         .collect();
     let mut taken = vec![false; mine.len()];
     loop {
@@ -1140,14 +1292,50 @@ fn solve_joint<S>(
     Ok((joint_state, changes))
 }
 
-/// Why a solve failed, by the joints' names.
-fn solve_error(state: &DocState, mechanism: &Mechanism, result: &RigidResult) -> String {
-    let name = |uid: FeatureUid| {
-        state
+/// A joint or constraint row whose sides cannot move: it holds (a joint
+/// at its driven values) or fails with `why`.
+fn check_still(
+    state: &DocState,
+    joint: &ActiveJoint,
+    why: &str,
+    placements: &BTreeMap<OccurrenceUid, Transform>,
+) -> Result<(), String> {
+    if let Some(i) = joint.row {
+        if joint.holds(placements).0 {
+            return Ok(());
+        }
+        let label = state
             .features
             .iter()
-            .find(|f| f.uid == uid)
-            .map_or_else(|| uid.to_string(), |f| f.name.clone())
+            .find(|f| f.uid == joint.uid)
+            .and_then(|f| match &f.def {
+                FeatureDef::ConstraintSet(set) => set.rows.get(i).map(|r| row_label(i, r.kind)),
+                _ => None,
+            })
+            .unwrap_or_else(|| format!("row {}", i + 1));
+        return Err(format!("{label}: {why} and the constraint does not hold"));
+    }
+    let Some(values) = joint.values(placements) else {
+        return Err(format!("{why} and the joint does not hold"));
+    };
+    for spec in &joint.motions {
+        if let (Some(target), Some(v)) = (spec.target, values.get(&spec.motion))
+            && (target - v).abs() > 1e-9 * (1.0 + target.abs())
+        {
+            return Err(format!(
+                "{why} and the joint is not at its position ({} {v} instead of {target})",
+                spec.motion
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// Why a solve failed, by the joints' and constraint rows' names.
+fn solve_error(state: &DocState, mechanism: &Mechanism, result: &RigidResult) -> String {
+    let name = |j: JointId| {
+        let (uid, row) = mechanism.relation(j);
+        relation_name(state, uid, row)
     };
     let list = |names: Vec<String>| match names.as_slice() {
         [] => String::new(),
@@ -1164,24 +1352,43 @@ fn solve_error(state: &DocState, mechanism: &Mechanism, result: &RigidResult) ->
         let involved = joints
             .iter()
             .map(|j| {
-                let text = name(mechanism.feature(*j));
-                let driven: Vec<&str> = targets
+                let text = name(*j);
+                let driven: Vec<Freedom> = targets
                     .iter()
                     .filter(|(t, _)| t == j)
-                    .map(|(_, f)| motion_of(*f).as_str())
+                    .map(|(_, f)| *f)
                     .collect();
-                if driven.is_empty() {
-                    text
-                } else {
-                    format!("{text} (at its {} position)", driven.join(", "))
+                match (driven.as_slice(), mechanism.relation(*j).1) {
+                    ([], _) => text,
+                    // A constraint's value held at its rest value.
+                    ([f, ..], Some(_)) => format!(
+                        "{text} (at its {})",
+                        if f.is_rotation() { "angle" } else { "offset" }
+                    ),
+                    (_, None) => {
+                        let motions: Vec<&str> =
+                            driven.iter().map(|f| motion_of(*f).as_str()).collect();
+                        format!("{text} (at its {} position)", motions.join(", "))
+                    }
                 }
             })
             .collect();
         format!("over-constrained: {} cannot all hold", list(involved))
     } else {
-        let all = mechanism.joints.iter().map(|(uid, _)| name(*uid)).collect();
+        let mut all: Vec<String> = Vec::new();
+        for (_, _, id) in &mechanism.joints {
+            let text = name(*id);
+            if !all.contains(&text) {
+                all.push(text);
+            }
+        }
+        let what = if mechanism.joints.iter().any(|(_, row, _)| row.is_some()) {
+            "the joints and constraints"
+        } else {
+            "the joints"
+        };
         format!(
-            "the joints cannot all hold ({}) from where the occurrences are: their limits or \
+            "{what} cannot all hold ({}) from where the occurrences are: their limits or \
              sizes keep them apart",
             list(all)
         )
@@ -1232,8 +1439,8 @@ pub(crate) struct Mechanism {
     pub system: RigidSystem,
     /// Each body's occurrences and whether it is grounded.
     pub units: Vec<(BTreeSet<OccurrenceUid>, bool)>,
-    /// The solver's joints and their features.
-    pub joints: Vec<(FeatureUid, JointId)>,
+    /// The solver's joints and constraint rows: their features and rows.
+    pub joints: Vec<(FeatureUid, Option<usize>, JointId)>,
 }
 
 impl Mechanism {
@@ -1270,6 +1477,16 @@ impl Mechanism {
                 continue;
             }
             let (fa, fb) = joint.frames(placements);
+            if let Some(parts) = &joint.parts {
+                let mut c = constraints::rigid_constraint(&fa, &fb, parts, joint.motions.first());
+                (c.a, c.b) = (a, b);
+                let id = mechanism
+                    .system
+                    .add_constraint(c)
+                    .map_err(|e| e.to_string())?;
+                mechanism.joints.push((joint.uid, joint.row, id));
+                continue;
+            }
             let id = mechanism
                 .system
                 .add_joint(RigidJoint {
@@ -1290,7 +1507,7 @@ impl Mechanism {
                     alignment: pose(&joint.alignment),
                 })
                 .map_err(|e| e.to_string())?;
-            mechanism.joints.push((joint.uid, id));
+            mechanism.joints.push((joint.uid, None, id));
         }
         Ok(mechanism)
     }
@@ -1322,10 +1539,15 @@ impl Mechanism {
     }
 
     pub(crate) fn feature(&self, joint: JointId) -> FeatureUid {
+        self.relation(joint).0
+    }
+
+    /// The feature of a solver's joint, and its row for a constraint row.
+    pub(crate) fn relation(&self, joint: JointId) -> (FeatureUid, Option<usize>) {
         self.joints
             .iter()
-            .find(|(_, j)| *j == joint)
-            .map(|(uid, _)| *uid)
+            .find(|(_, _, j)| *j == joint)
+            .map(|(uid, row, _)| (*uid, *row))
             .expect("a joint of the mechanism")
     }
 
@@ -1350,14 +1572,16 @@ impl Mechanism {
         changes
     }
 
-    /// Each joint's values after a solve or drag.
+    /// Each joint's values after a solve or drag (constraint rows have
+    /// none to drive).
     pub(crate) fn values(
         &self,
         active: &[&ActiveJoint],
     ) -> BTreeMap<FeatureUid, BTreeMap<Motion, f64>> {
         self.joints
             .iter()
-            .filter_map(|(uid, id)| {
+            .filter(|(_, row, _)| row.is_none())
+            .filter_map(|(uid, _, id)| {
                 let joint = active.iter().find(|j| j.uid == *uid)?;
                 let values = joint
                     .motions
@@ -1514,6 +1738,10 @@ pub struct DofUnit {
     /// The motions it can make with the other units held where they are
     /// (the rank of the joint equations); 0 when grounded.
     pub dof: u32,
+    /// Whether it moves when the other units may move too (a link of a
+    /// four-bar linkage: `dof` 0, but it moves); false when grounded or
+    /// when the joints hold it fixed.
+    pub mobile: bool,
     /// The joints between it and other units or the component.
     pub joints: Vec<FeatureUid>,
 }
@@ -1578,15 +1806,18 @@ pub(crate) fn dof_report(
         .enumerate()
         .map(|(b, (members, grounded))| {
             let mine = |path: &[OccurrenceUid]| path.first().is_some_and(|o| members.contains(o));
-            let unit_joints = active
+            let mut unit_joints: Vec<FeatureUid> = active
                 .iter()
                 .filter(|j| mine(&j.a) != mine(&j.b))
                 .map(|j| j.uid)
                 .collect();
+            // A constraint set's rows once.
+            unit_joints.dedup();
             DofUnit {
                 occurrences: members.iter().copied().collect(),
                 grounded: *grounded,
                 dof: analysis.body_dof[b] as u32,
+                mobile: analysis.body_mobile[b],
                 joints: unit_joints,
             }
         })

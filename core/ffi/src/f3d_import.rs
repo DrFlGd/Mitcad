@@ -97,6 +97,12 @@ pub struct StoredFile {
     /// The components (object ids) whose blobs each item's operation
     /// changed, by item index (F6).
     item_components: HashMap<i64, Vec<u64>>,
+    /// The items whose operation changed no body of the blobs that hold it
+    /// (mitcad#156).
+    unchanged_items: HashSet<i64>,
+    /// The global state before the operations no item names that came
+    /// right before each item's own in its blob (mitcad#156), by item index.
+    item_starts: HashMap<i64, usize>,
     /// Component names by object id, from the file's design streams.
     component_names: HashMap<u64, String>,
     /// The bodies a try is building, and those a try the watchdog gave up
@@ -230,6 +236,8 @@ impl StoredFile {
             plain: Vec::new(),
             item_states: HashMap::new(),
             item_components: HashMap::new(),
+            unchanged_items: HashSet::new(),
+            item_starts: HashMap::new(),
             component_names,
             builds: Mutex::new(HashMap::new()),
             build_ended: Condvar::new(),
@@ -376,27 +384,52 @@ impl StoredFile {
             .flatten()
             .filter_map(|item| {
                 let f3d = item.f3d.as_ref()?;
+                // A component made from bodies: the operation that put its
+                // bodies into the new component (mitcad#156).
+                let result = f3d.result_no.filter(|&n| n > 0).or(f3d.made_result_no)?;
                 Some(ItemResult {
                     index: item.index?,
-                    result: i64::from(f3d.result_no?),
+                    result: i64::from(result),
                     owner: f3d.component,
                 })
             })
             .filter(|r| r.result > 0)
             .collect();
-        geometry.link_histories();
+        geometry.link_histories(&results);
         if !geometry.merge_by_timeline(&results) {
             geometry.merge();
         }
+        geometry.trace_histories();
         Ok(geometry)
     }
 
-    /// The components of the history blobs (F6). The design streams link
-    /// only the `.smb` blobs to components, but every component has its
-    /// own `.smb`/`.smbh` pair, and most `.smbh` bodies are also in the
-    /// `.smb`, as they are or as they were earlier in the history
-    /// (ASM_FORMAT.md): a history blob belongs to the component of the
-    /// `.smb` blob that holds most of its bodies of any state.
+    /// Traces each history blob's component and operations, and the state
+    /// each item made (`MITCAD_IMPORT_TRACE`).
+    fn trace_histories(&self) {
+        if std::env::var_os("MITCAD_IMPORT_TRACE").is_none() {
+            return;
+        }
+        for &h in &self.history {
+            let blob = &self.blobs[h];
+            let mut ops: Vec<i64> = blob.ops.keys().copied().collect();
+            ops.sort_unstable();
+            eprintln!(
+                "import: history {}: component {:?}, {} body sets, operations {ops:?}",
+                blob.entry,
+                blob.component,
+                blob.states.len()
+            );
+        }
+        let mut items: Vec<(&i64, &usize)> = self.item_states.iter().collect();
+        items.sort_unstable();
+        let mut unchanged: Vec<i64> = self.unchanged_items.iter().copied().collect();
+        unchanged.sort_unstable();
+        eprintln!(
+            "import: {} history states; item states {items:?}; items that changed no body {unchanged:?}",
+            self.states.len()
+        );
+    }
+
     /// What tells a body of a blob from the others: its numbers of faces,
     /// edges and vertices and the sum of its vertices.
     fn body_key(&self, v: usize) -> BodyKey {
@@ -439,7 +472,75 @@ impl StoredFile {
             .collect()
     }
 
-    fn link_histories(&mut self) {
+    /// The components of the history blobs (F6). The design streams link
+    /// only the `.smb` blobs to components, but every component has its
+    /// own `.smb`/`.smbh` pair.
+    ///
+    /// The items say it first (mitcad#156): an item's result number names
+    /// an operation of its owner's history (`ItemResult::owner`), so a
+    /// history blob belongs to the component whose items name most of its
+    /// operations, where they name more of its operations than another
+    /// component's items do and more than of another blob's (the numbers
+    /// count per component: inserted parts' base features are all their
+    /// component's operation 3). The bodies settle the other blobs
+    /// ([`StoredFile::link_by_bodies`]). By the bodies alone, a body moved
+    /// into another component (a new component from bodies), which is in
+    /// that component's `.smb` too, linked the history of the root, where
+    /// the body was made, to the component it went to; then neither history
+    /// was its component's, and every item of the design went into one
+    /// component.
+    fn link_histories(&mut self, items: &[ItemResult]) {
+        let mut taken: HashSet<u64> = self
+            .history
+            .iter()
+            .filter_map(|&h| self.blobs[h].component)
+            .collect();
+        let mut named: Vec<(usize, usize, u64)> = Vec::new();
+        for &h in &self.history {
+            if self.blobs[h].component.is_some() {
+                continue;
+            }
+            let mut by_owner: HashMap<u64, usize> = HashMap::new();
+            for item in items {
+                if let Some(owner) = item.owner
+                    && self.blobs[h].ops.contains_key(&item.result)
+                {
+                    *by_owner.entry(owner).or_default() += 1;
+                }
+            }
+            named.extend(by_owner.into_iter().map(|(c, n)| (n, h, c)));
+        }
+        named.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)).then(a.2.cmp(&b.2)));
+        // Only where the items tell one blob from the others: the numbers
+        // count per component, so components whose items name the same
+        // numbers (every inserted part's base feature is its operation 3)
+        // name every blob that has them alike, and the bodies settle those.
+        for &(n, h, component) in &named {
+            if self.blobs[h].component.is_some() || taken.contains(&component) {
+                continue;
+            }
+            let rival_blob = named.iter().any(|&(m, hh, cc)| {
+                cc == component && hh != h && m >= n && self.blobs[hh].component.is_none()
+            });
+            let rival_component = named
+                .iter()
+                .any(|&(m, hh, cc)| hh == h && cc != component && m >= n && !taken.contains(&cc));
+            if rival_blob || rival_component {
+                continue;
+            }
+            taken.insert(component);
+            self.blobs[h].component = Some(component);
+        }
+        self.link_by_bodies();
+    }
+
+    /// [`StoredFile::link_histories`] by the bodies, for the blobs no
+    /// owned item names (external dumps give no owners): most `.smbh`
+    /// bodies are also in the `.smb`, as they are or as they were earlier
+    /// in the history (ASM_FORMAT.md), so a history blob belongs to the
+    /// component of the `.smb` blob that holds most of its bodies of any
+    /// state.
+    fn link_by_bodies(&mut self) {
         let key = |v: usize| self.body_key(v);
         type Key = BodyKey;
         let plain: Vec<(u64, std::collections::HashSet<Key>)> = self
@@ -569,8 +670,15 @@ impl StoredFile {
             components.sort_unstable();
             components.dedup();
             self.item_components.insert(index, components);
+            if !targets
+                .iter()
+                .any(|&(h, _)| blob_of(h).changed.contains(&result))
+            {
+                self.unchanged_items.insert(index);
+            }
             let mut moved = false;
             let mut back = false;
+            let begun = self.states.len() - 1;
             for &(h, s) in &targets {
                 while current[h] + 1 < s {
                     current[h] += 1;
@@ -587,6 +695,11 @@ impl StoredFile {
             }
             if !back {
                 self.item_states.insert(index, self.states.len() - 1);
+                // Operations of its blob no item names right before its
+                // own: maybe its own (mitcad#156).
+                if targets.len() == 1 && self.states.len() - 1 > begun + 1 {
+                    self.item_starts.insert(index, begun);
+                }
             }
         }
         for h in 0..self.history.len() {
@@ -1061,6 +1174,14 @@ impl StoredGeometry<SharedPtr<Shape>> for F3dGeometry {
 
     fn component_names(&mut self) -> HashMap<u64, String> {
         self.file.component_names.clone()
+    }
+
+    fn item_unchanged(&mut self, index: i64) -> bool {
+        self.file.unchanged_items.contains(&index)
+    }
+
+    fn item_start(&mut self, index: i64) -> Option<usize> {
+        self.file.item_starts.get(&index).copied()
     }
 
     fn history_components(&mut self) -> Option<HashSet<u64>> {

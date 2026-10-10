@@ -60,8 +60,9 @@ mod system;
 mod types;
 
 pub use rigid::{
-    BodyId, Freedom, JointId, JointMotion, Pose, RigidAnalysis, RigidDependency, RigidError,
-    RigidJoint, RigidOptions, RigidResult, RigidSystem, motion_pose,
+    Amount, BodyId, ConstraintPart, Freedom, JointId, JointMotion, Pose, RigidAnalysis,
+    RigidConstraint, RigidDependency, RigidError, RigidJoint, RigidOptions, RigidResult,
+    RigidSystem, Sense, motion_pose,
 };
 pub use system::{SplineGeometry, System};
 pub use types::{

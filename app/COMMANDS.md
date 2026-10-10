@@ -112,6 +112,20 @@ Modifiers:
   patterns' Suppressed input.
 - `showsOrigin = false`: the input takes construction geometry without
   showing the origin's planes and axes (Measure).
+- `withGhosts(named)`: a selection whose picks let later picks through
+  (mitcad#147). `named(item, state, context)` gives the occurrences (paths
+  from the root, `O1/O4`) to draw as ghosts for an item of the input:
+  their bodies, and those of the occurrences inside them, see-through in
+  their own colour and not pickable (`BodyDisplay::Style::Ghost`,
+  `OcctViewer::setGhosts`), and the highlights on them let clicks through
+  too. The session asks every shown input's items whenever the selections
+  or the active input change, and leaves out the active input's own (its
+  next pick may lie on them: re-picking shows them normally); deselecting
+  the item, OK and Esc take the ghosts away. A list row's input gets its
+  row's state. Joint and As-Built Joint ghost side A's occurrence until B
+  is picked (`ghostUntilPicked`); the same hook serves other commands that
+  pick one component and then another behind it (Rigid Group, assembly
+  constraints, mitcad#148).
 
 Values:
 
@@ -490,6 +504,27 @@ build with a message.
   Joint1`. Choosing another motion or joint takes its value where it is
   (a choice's `onChange` may set values; those it leaves NaN are evaluated
   again).
+- **Constraint** (`assemble.constraint`, mitcad#148; the model's side in
+  commands.md, "Assembly constraints"): a `constraint_set` in the active
+  component, its rows a `listInput` (`rows`, Add Constraint): Geometry 1
+  and Geometry 2 (as Joint's origins: `givesFrame`), Type, and per type
+  Second Face (center), Offset (align, insert), Angle (angle), Flip,
+  Lock Rotation (inserts), Limits with Minimum, Maximum and Rest (align:
+  lengths, angle: angles). Type's first option is Automatic, labelled
+  with the type the picks fit best (`Automatic (Insert)`), from the
+  model's `constraint_row` query (remembered per pair of picks), which
+  `build` writes; the other options set it. Geometry 1's occurrence is a
+  ghost until the row's Geometry 2 is picked (`ghostUntilPicked`, the
+  row's state). A locked insert records the turn where the picks are (the
+  query's `twist`); an edit keeps the recorded one (hidden
+  `lock_angle`). The preview solves the rows with the joints and
+  constraints before them and shows the moved components; OK logs
+  `Added constraint Constraint1: insert placed, moved O2; DOF 1`. In the
+  browser a set is a row of the Joints folder (icon `constraint`) with
+  its rows under it (`Insert (Pin:1, Plate:1)`, red when a row does not
+  hold at the marker); the folder's menu has New Constraint.
+  `DocumentSnapshot::joint` gives a set as a joint of the kind
+  `constraint`, so drags name it. Test: `tools/ui-constraint-test.sh`.
 - **Animate Joint** (`assemble.animate_joint`, `MainWindowJoints.cpp`): the
   joint selected in the timeline, else the newest with free motions, its
   first motion through its limits (from where it is to one end, the other
@@ -497,20 +532,55 @@ build with a message.
   the `preview` of an `edit_feature` with the joint's `position` there,
   shown through the preview's `placements`; the preview is cleared at the
   end and nothing changes. Starting a command stops it.
+- **Ghost of side A** (mitcad#147): once Joint's origin A or As-Built
+  Joint's component A is picked, and while B is not, the occurrence placed
+  directly in the joint's component that A lies in is drawn as a ghost
+  (`withGhosts`), so that B can be picked behind it; A's highlight stays
+  shown but takes no clicks (A is deselected by activating its input, which
+  shows A normally again, or with the input's clear button). Once B is
+  picked the preview shows A where the joint puts it, normally. Logged as
+  `View ghosts: O2 (1 body)` and `View ghosts: none`.
 - **Previews of placements:** a feature command's preview shows the
   bodies of the occurrences it places elsewhere where the preview's
   `placements` put them (joints, Move/Copy of components; `Preview <name>
   moves O2`).
 - **Dragging components** (`OcctViewer::setOccurrenceDrag`,
   `MainWindowJoints.cpp`): in idle mode, a left drag without keys that
-  starts on a body moves the innermost occurrence of its path whose parent
-  component has joints and whose unit is not grounded
-  (`dragOccurrenceOf`); elsewhere a drag still selects with a window, and
-  a click on such a body still picks. The pointer's point is on the plane
-  through the grabbed point facing the viewer; per move the `joint_drag`
-  query gives the occurrences' placements, which move the shown bodies;
-  the release runs `drag_occurrence` (one undo step `Drag Pin:1`, after
-  the mouse event: `whenIdle`). A dialog that takes the mouse cancels it.
+  starts on a body moves the innermost occurrence of its path whose unit
+  in its parent component has joints, is not grounded and can move (the
+  `joints` query's unit: `dof` above 0, or `mobile`, as a link of a
+  four-bar linkage); a click on such a body still picks. The pointer's
+  point is on the plane through the grabbed point facing the viewer; per
+  move the `joint_drag` query gives the occurrences' placements, which
+  move the shown bodies; the release runs `drag_occurrence` (one undo
+  step `Drag Pin:1`, after the mouse event: `whenIdle`). A dialog that
+  takes the mouse cancels it.
+  One function decides what a drag on an item does (`dragAnswer`,
+  mitcad#150), so the hint and the refusal agree:
+  - **Hint:** the pointer over a body that would drag shows the move
+    cursor (`OcctViewer::setDragCursor`) and the status bar hint `Drag to
+    move Pin:1 (Joint1: rz)` (its unit's joints and their free motions;
+    log `Drag hint: …`, `Drag hint: none` when it goes).
+  - **Refusal:** in a design with components, a left drag without keys
+    that starts on a body that does not drag is neither a drag nor a
+    window selection: the status bar says why (log `Drag refused: …`).
+    The reasons, the innermost occurrence's first: `Base:1 is grounded`;
+    `Clip:1 is in a rigid group with Base:1, which is grounded`; held
+    fixed by its joints (`dof` 0 and not `mobile`): `Fixed:1 cannot move:
+    Joint2 is rigid` (several: `Joint2 and Joint3 are rigid`, other kinds
+    `Joint2 (revolute) and Joint3 (slider) hold it`); no joints of its own
+    in its parent component (components do not drag freely): `Plate:1 has
+    no joints in its parent component`, for a body of a component with
+    several bodies `Body3 is a body of Plate: bodies move only with their
+    component, and Plate:1 has no joints in its parent component; Create
+    Components from Bodies makes one component per body`; a body of the
+    root: `Bodies of the root component do not move`. A body that would
+    drag but not now: the read-only window's reason, `Finish the sketch to
+    drag components`, `Close the command to drag components`, `Wait for
+    the computation to finish to drag components`. In a command or a
+    sketch, a drag on a body that would not drag anyway selects with a
+    window as before; so does a drag with keys (Shift), and every drag in
+    a design without components. The test: `tools/ui-drag-test.sh`.
 - **Browser:** each component's **Joints** folder lists its joints,
   as-built joints, rigid groups and joint origins before the marker
   (joint origins are datum rows with light bulbs; their datum is a plane).
@@ -580,9 +650,9 @@ settings in the user's settings (`ViewSettings`, group `view`);
   the caps toward the removed side so that they are drawn over them); the
   clip is the model's `analysis_shape {"shape": "clip"}`.
 
-- **Rendered** (`view.rendered`, in View > Visual Style; only in builds
-  with `MITCAD_RENDER` and only when the render worker `mitcad-render` is
-  next to the application, [docs/rendering.md](../docs/rendering.md)): a
+- **Rendered** (`view.rendered`, in View > Visual Style; only when the
+  render worker `mitcad-render`, which every build has, is next to the
+  application, [docs/rendering.md](../docs/rendering.md)): a
   toggle beside the visual styles, an ordinary entry, not a developer
   setting. `RenderMode` (`render/`) starts the render worker, sends it the shown bodies as a scene update whenever
   `OcctViewer::bodiesChanged` (once the model is idle: every body with
@@ -757,7 +827,7 @@ UI thread.
 | `commands/MoveCommands.cpp` | Scale, Combine, Move/Copy, Align, Physical Material, Appearance |
 | `commands/ConstructCommands.cpp` | `registerConstructCommands`: every construction plane, axis and point, from a table |
 | `commands/InspectCommands.cpp` | `registerInspectCommands`: Measure, Interference, Section Analysis, Physical Properties |
-| `commands/JointCommands.cpp` | `registerAssembleCommands`: the ASSEMBLE group: Joint, As-Built Joint, Joint Origin, Rigid Group, Drive Joint (mitcad#55) |
+| `commands/JointCommands.cpp` | `registerAssembleCommands`: the ASSEMBLE group: Joint, As-Built Joint, Joint Origin, Rigid Group, Drive Joint (mitcad#55); New Component (`PrimitiveCommands.cpp`) leads the group, Animate Joint, Insert Component and Insert from Library (the main window) end it |
 | `MainWindowJoints.cpp` | dragging components the joints move, Animate Joint |
 | `commands/SketchCommands.cpp` | the SKETCH tab: drawing tools, Sketch Dimension, constraints, Offset, Mirror, patterns, Project, sketch Fillet and Chamfer, Move/Copy, Trim, Extend, Construction, Delete |
 | `sketch/SketchController.*` | sketch mode: mouse and keys, typed values, drags, `SketchOp` |
@@ -773,7 +843,7 @@ UI thread.
 | `browser/BrowserController.*` | what the browser, timeline, parameters dialog and failed-features summary do |
 | `browser/DocumentHost.hpp` | what they ask of the main window |
 | `view/ViewController.*` | the View menu: standard views, Look At, camera, visual styles, grid and snaps, environment, named views, the cube's menu, Preferences, the keyboard and mouse overview; `ViewSettings` |
-| `render/` | `MITCAD_RENDER` only ([docs/rendering.md](../docs/rendering.md)): View > Rendered (`RenderMode`, `RenderClient`, `FrameMemory`), Render Environment, Render Image (`RenderImageDialog`, `RenderBatch`: the final render's scene, camera, job and worker process); the worker `mitcad-render` (`RenderWorker`, `CyclesRenderer`, `RenderOutput`) |
+| `render/` | [docs/rendering.md](../docs/rendering.md): View > Rendered (`RenderMode`, `RenderClient`, `FrameMemory`), Render Environment, Render Image (`RenderImageDialog`, `RenderBatch`: the final render's scene, camera, job and worker process); the worker `mitcad-render` (`RenderWorker`, `CyclesRenderer`, `RenderOutput`) |
 | `LayoutGrid.*` | the layout grid |
 | `files/MainWindowFiles.cpp` | the File menu: open, recent files, close, import, export, Insert Component, drops |
 | `files/FileFormats.*`, `files/FileDialogs.*` | file kinds by extension and dialog filters; Export, Insert DXF, Insert Mesh, linked or copy, the import report |
@@ -782,8 +852,9 @@ UI thread.
 | `files/MainWindowVersions.cpp`, `files/VersionDialogs.*` | saving versions: Save and Save Version in a versioned project, the author, changes and renames made outside Mitcad, the indicator's version |
 | `files/VersionHistory.*` | the Version History window |
 | `files/MainWindowProjects.cpp`, `files/Projects.*` | Local and Cloud projects (mitcad#89): the window's current project (`ProjectState`), New Project, Open Project, Open from Cloud, Open Read-Only, Project Settings, Move to a Project |
-| `files/ProjectDialogs.*`, `files/ProjectSettings.*`, `files/CloudSection.*`, `files/CloudAddress.*` | their dialogs: New Project, Open from Cloud, the design chooser, Change Address, Project Settings; the shared Cloud section (service, address, the check, Trust This Server); addresses composed and read back (Qt Core, `app.unit`) |
+| `files/ProjectDialogs.*`, `files/ProjectSettings.*`, `files/CloudSection.*`, `files/CloudAddress.*` | their dialogs: New Project, Open from Cloud, Change Address, Project Settings; the shared Cloud section (service, address, the check, Trust This Server); addresses composed and read back (Qt Core, `app.unit`) |
 | `files/ProjectIndicator.*` | the project indicator and its menu |
+| `projects/` | the Projects panel (mitcad#145, [below](#projects-panel)): `ProjectsPanel` (the tree, names typed in place, drags), `ProjectsTree` (the projects read with `project_tree`, their locations), `MainWindowProjectsPanel.cpp` (its dock or card, View › Projects, File › New Design, what the panel asks for) |
 | `files/Remote*.*` | the current Cloud project's remote: sync, check for newer versions, open in browser, sending versions, Resolve Sync Conflicts, Preferences' Cloud page; `RemoteTask` runs one operation (a project's or a projects command) on a thread of its own |
 | `files/Print3d.*`, `files/MainWindowPrint.cpp` | 3D Print: slicers found, settings, file names, the dialog and Preferences group; the command |
 | `update/` | automatic updates ([docs/updates.md](../docs/updates.md)) |
@@ -809,10 +880,10 @@ same ways without questions (mm, the XY plane, linked).
 | `.mitcad` | Insert Component, linked or as a copy (`insert_component`) |
 
 **The `.f3d` worker** (`files/F3dImport`): the application runs itself as
-`mitcad --import-worker <file> --output <project> --result <json>` (no
+`mitcad --import-worker <file> --output <design> --result <json>` (no
 window; `main.cpp`), which runs `import_f3d` with `hang_limit` 90 s and
 no time limit on a new document under a job (`attach_job`) and writes the
-project file and result; it also gets `--result-store` and
+design file and result; it also gets `--result-store` and
 `--persist-min-ms` and stores the design's results. A kernel crash or
 hang ends only the worker. While import threads the hang watchdog gave
 up still run, the worker ends with `std::_Exit` after writing its result
@@ -825,7 +896,7 @@ when done; core/import) are counted against the timeline's length
 **Stop and Keep What Is Imported** writes `stop` to the worker's stdin;
 the worker cancels its job, which `import_f3d` takes as a stop request
 (`core/import/README.md`, *Stop*). **Cancel Import** kills the worker;
-nothing of it is kept. The window then loads the project unsaved (`*`)
+nothing of it is kept. The window then loads the design unsaved (`*`)
 and shows the import report. For tests,
 `MITCAD_TEST_RECOMPUTE_DELAY_MS=import_f3d=<ms>` slows every definition
 the worker tries.
@@ -833,12 +904,16 @@ the worker tries.
 ### Export and 3D Print
 
 **Export:** STEP AP214/AP242, IGES, STL, OBJ, BRep, 3MF (appearance
-colours as `colors`) for all or the selected bodies (faces, edges and
+colours as `colors`), USDZ for all or the selected bodies (faces, edges and
 vertices stand for their bodies), and a sketch to DXF (`export_sketch`).
 STEP and IGES are written in millimetres unless the Unit row says
 otherwise. Bodies are where the design shows them (the model's default;
 a STEP of moved bodies is an assembly); with occurrences, Coordinates can
-give `coordinates: component`.
+give `coordinates: component`. USDZ (mitcad#123) takes the Refinement
+row; the model writes the bodies' appearances itself, and a saved design
+passes its folder as `design_folder` for relative texture paths; the log
+line adds the materials (`…, 2 material(s)`) and each texture written in
+its base colour is a warning (`Export: Wood: the texture image …`).
 
 **3D Print** (`make.print3d`; `files/MainWindowPrint.cpp`,
 `files/Print3d`): the selected bodies (an occurrence: the bodies shown in
@@ -891,14 +966,15 @@ Each run is a session with a UUID. Its files:
 
 - `<id>.lock`: a `QLockFile` from the first write to the end; stale only
   when the process is gone.
-- `<id>.<generation UUID>.mitcad`: an immutable project snapshot.
+- `<id>.<generation UUID>.mitcad`: an immutable design snapshot.
 - `<id>.json`, atomically published last: `"format": "mitcad-autosave"`, `version` 2,
   `session`, `pid`, `application`, `application_version`, `document`,
   `path` and `base_digest` of the file it was opened from or saved to,
-  `saved_at`, `revision`, `project`, and the project file's `size` and
-  `digest`. Digests are FNV-1a 64 in 16 hex digits.
+  `saved_at`, `revision`, `project` (the snapshot's name; the key keeps
+  its old name), and the design file's `size` and `digest`. Digests are
+  FNV-1a 64 in 16 hex digits.
 
-The project file is made on the UI thread, never while a job has the
+The design file is made on the UI thread, never while a job has the
 model (`Autosave skipped: busy`, retried in 5 s) or while a sketch
 command's preview is applied; an edit that rolled the timeline back is
 written with the marker it restores (`to_json_with_marker`). Both files
@@ -920,11 +996,11 @@ given with `--open` has come in) and by File › Recover Documents
 (`file.recover`), sessions whose lock `QLockFile::tryLock(0)` takes are
 found and held until the user decides (a running instance's sessions are
 never offered). A lock without files is removed. A session whose metadata
-is missing, unreadable or of another version, or whose project file is
+is missing, unreadable or of another version, or whose design file is
 missing or does not match `size` and `digest`, is damaged and can only be
 discarded.
 
-Restore reads the project file, follows links relative to it and
+Restore reads the design file, follows links relative to it and
 computes it as a job (`installDocument`), not marked saved (modified, no
 undo history), with the file's path or its untitled name. Autosave writes
 it into this session at once, and only then removes the earlier
@@ -1003,7 +1079,7 @@ open design `load_version` and `diff_documents`; Compare Geometry is a job
 `compare` (`compareVersionGeometry`). Open reads the version as an
 untitled document `part v3` (`openVersion`, marked saved). Restore records
 unsaved changes or a change in the folder first, then `restore` and
-`loadProject`. Save Copy As: `load_version` and `save_project` `auto`,
+`loadDesign`. Save Copy As: `load_version` and `save_design` `auto`,
 plus a version in a versioned project. Previews: after `writeFile`,
 `openVersion` and `restoreVersion`, the view is grabbed
 (`QOpenGLWidget::grabFramebuffer`) and scaled to 256 px when the blob has
@@ -1049,11 +1125,11 @@ remote and Project Settings use its root.
 
 | Command | What |
 |---|---|
-| `file.new_project` New Project... | the New Project dialog: folder, Local or Cloud, author, the Cloud section; Create, Open It, Open It Instead, Create as Local for Now |
-| `file.open_project` Open Project... | a folder (Qt's folder dialog) recognised with `inspect_folder`: a project opens with its design (the chooser for several), an older one gets its history (`init_project_history`), anything else goes to New Project with the folder fixed |
+| `file.new_project` New Project... | the New Project dialog: folder, Local or Cloud, author, the Cloud section; Create (an empty project, or one of the designs its folder has, shown in the Projects panel), Open It, Open It Instead, Create as Local for Now |
+| `file.open_project` Open Project... | a folder (Qt's folder dialog) recognised with `inspect_folder`: a project shows in the Projects panel and opens its design opened last (`last_design`), else the newest, none when it has none; an older one gets its history (`init_project_history`), anything else goes to New Project with the folder fixed |
 | `file.open_read_only` Open Read-Only... | a design opened without an edit lock (`m_openingReadOnly` for the lock controller) |
 | `file.open_remote` Open from Cloud... | the Open from Cloud dialog: clone, Create Project Here, Make It a Project, Open It |
-| `file.project_settings` Project Settings... | the current project's settings (a loose design: Move to a Project offered) |
+| `file.project_settings` Project Settings... | the current project's settings (a loose design: Move to a Project offered); a **Display name** first, the name the Projects panel shows on this computer (`set_project_settings`' `local.name`; empty: the default; never renames the folder or the repository) |
 | `file.move_to_project` Move to a Project... | a loose design into a new project (New Project, its own folder by default) or an existing one; not in the File menu: the indicator's menu, Save Version's and Version History's questions |
 
 | Model command | Used by |
@@ -1061,18 +1137,87 @@ remote and Project Settings use its root.
 | `inspect_folder` | the current project of a design opened or saved (`projectOfFile`); Open Project; the folder checks of New Project and Open from Cloud (a thread of their own, after a pause while typing) |
 | `check_remote` | the Cloud section of New Project and Open from Cloud (a thread of its own, after a pause, and when the dialog gets the focus back) |
 | `remote_check` (a project's) | the Cloud section of Project Settings' Share and of Change Address (`related`) |
-| `create_project` (`design`: an empty document named after the folder; `url` for Cloud; `shared` with New Project's live updates) | New Project's Create, Create as Local for Now, Open from Cloud's Create Project Here; with `init_bare` first for a new shared folder |
+| `create_project` (no `design`: the project starts empty, mitcad#145; `url` for Cloud; `shared` with New Project's live updates) | New Project's Create, Create as Local for Now, Open from Cloud's Create Project Here; with `init_bare` first for a new shared folder |
 | `clone_project` (`adopt` for Make It a Project) | Open from Cloud |
 | `connect` with `onto_files` | Project Settings' Share (conflicts in Resolve Sync Conflicts) |
 | `remote_set`, `remote_remove` | Change Address, Stop Syncing |
 | `project_settings`, `set_project_settings`, `set_identity`, `identity` | Project Settings (a change for everyone is a version, sent as a saved one is); the sending and checking of the remote |
-| `remember_design` | each design opened in a project (the chooser selects it next time) |
+| `remember_design` | each design opened in a project (Open Project opens it next time) |
 | `project_settings`' `authors` | Share lists the authors of the versions to publish |
 | `git_info` (`credential_helper`, `author`) | HTTPS or SSH by default; the author New Project offers; Cloud off without git |
 | `ssh_public_key`, `host_keys`, `trust_host_key` | Copy Public Key; Trust This Server |
 
 Tests: `tools/ui-project-test.sh`, `tools/ui-cloud-test.sh`, `tools/ui-sync-test.sh`,
 `tools/ui-version-test.sh`, the Windows and macOS workflow tests.
+
+### Projects panel
+
+The projects, their folders and designs in one panel (mitcad#145;
+`projects/ProjectsPanel`, `projects/ProjectsTree`,
+`projects/MainWindowProjectsPanel.cpp`): a dock above the browser's in the
+Docked layout, a card above the browser's in the Floating one (none in the
+AppKit frontend). The tree is location → project → folders → designs; a
+project row has Local or Cloud and its sync state as the indicator shows
+it, a design row its version, Changed and its edit lock, the open design in
+bold. The projects are the known ones (`ProjectsSettings`: made, opened or
+cloned here, newest first; `projects/known`) and those of the projects
+folder (`projectsDirectory()`) that Remove from List did not take out
+(`projects/hidden`). Whether the panel shows is `projects/panel`, the
+user's last show or hide (View › Projects, the dock's close button, New
+Project and Open Project showing a project); before the first one it is
+never written, and the panel starts shown when a project is configured (a
+known project whose folder is there, or one of the projects folder's that
+was not removed from the list; `anyProjectConfigured`, folder entries
+only), hidden otherwise (mitcad#151), in both layouts. The
+trees are read on a thread (`project_tree` per project, a `RemoteTask`),
+again after a save, a sync, versions sent, the window's focus back and
+each change made in the panel; while a name is typed or a row dragged the
+rows wait.
+
+A project row shows its name (mitcad#152): the display name set in
+Project Settings (`project_tree`'s `display_name`, `local.name` of the
+project's settings, kept in `.mitcad/local/name.json` on this computer),
+else a Cloud project's `owner/repository` from its remote's address
+(`ownerAndRepositoryOf`: GitHub, GitLab with its subgroups, Forgejo;
+another server's last two path parts; a shared folder's repository name),
+else the folder's name. The rows' keys (the logs, the expanded rows) keep
+the folder's name.
+
+| Command | What |
+|---|---|
+| `view.projects` Projects | shows or hides the panel (View menu, checkable; the dock's close button too) |
+| `file.new_design` New Design... | File menu and the indicator's menu: a design named in place in the panel's selected folder of the current project (else of the selected project; without either, New Project or Open Project offered); recorded (`new_design`) and opened |
+
+In the panel (toolbar, context menu, keys): **Open** (double-click, Enter;
+unsaved changes asked as with Open), **New Design** and **New Folder**
+(named in place), **Rename** (F2), **Delete** (Del; confirmed, with the
+designs it holds, changes no version holds and whether it is open), a
+**drag** onto a folder, a project or a design (its folder) of the same
+project (`move`), **Version History...** (the design opened first),
+**Show in Folder**, **Project Settings...** (mitcad#152, #153: the
+toolbar's button for the selected project, folder or design's project, or
+a location's only project; a double-click on a Cloud project, or on its
+host and owner when it holds only that project; the current project's as
+File › Project Settings, another's without opening it, through a
+`ProjectSettingsHost` that refreshes the panel, sends a recorded version
+in the background and has no lock probe), **Sync Now** (another
+project opened first, as Open Project), **Remove from List** (nothing is
+deleted), **New Project...**, **Open from Cloud...**, **Add Existing
+Project Folder...** (a folder that is no project: Make It a Project). An
+open design that is moved or renamed follows its new path (its version
+base and edit lock: `openDesignMoved`); a deleted open design closes. Save
+of an untitled design starts in the panel's selected folder of the current
+project (`fileDialogDirectory`).
+
+| Model command | Used by |
+|---|---|
+| `project_tree` (with this run's `session`) | the panel's rows, on a thread of their own |
+| `new_design`, `create_folder`, `move`, `delete` (`author`, `session`, `push: false`) | New Design, New Folder, Rename and drags, Delete (`force` only after a second question when the core answers `local_changes`); a refusal (`exists`, `locked`, `invalid_path`, `not_found`, `unsupported`) is shown and changes nothing. Each is a version, sent as Save's are: the current project's by `RemoteController::versionRecorded`, another Cloud project's by a `push` task |
+
+Tests: `tools/ui-projects-test.sh`, `tools/ui-projects-settings-test.sh`
+(the default shown or hidden, the remembered choice, owner/repository,
+the double-click, the display name, the settings button; mitcad#151–#153)
+and the project tests above.
 
 ### Edit locks
 
@@ -1204,7 +1349,7 @@ makes a kernel crash for an internal error. `tools/ui-report-test.sh`.
 [docs/libraries.md](../docs/libraries.md), the model's side in
 commands.md, "Component libraries"). The commands are in Tools ›
 Libraries and the command search; Insert from Library is also in the
-SOLID tab's INSERT group.
+SOLID tab's ASSEMBLE group.
 
 | Command | What it does | Model command / bridge |
 |---|---|---|
@@ -1245,6 +1390,20 @@ keeps one kind (profiles, bodies, edges, faces, vertices, sketch curves,
 points, datums, in that order of preference). Faces win over bodies, so
 the bodies filter is off by default.
 
+The highlights look alike (mitcad#149): the hover (`setHoverColor`,
+OCCT's dynamic highlight styles, set up by `setHighlightStyle`) and the
+selections (`setHighlights`) cover a face half see-through (the hover;
+selections 35 %, whole bodies 55 %) in a colour that light does not
+change (`flatMaterial`: emission only, no specular), so the face's own
+shading shows through and the highlight does not wash out to white
+where the light falls on the face head-on. The face's boundary, edges and
+vertices are drawn opaque in the colour, edges 3 px wide. The highlights
+are in the top layer, which keeps the scene's depth: nearer geometry
+hides them (OCCT's own default put the hover of a face, edge or vertex in
+the topmost layer, which clears the depth), and a polygon offset brings a
+face's highlight just in front of the face. Test:
+`tools/ui-hover-test.sh`.
+
 ## Icons
 
 24 x 24 SVG, drawn for Mitcad (MIT, SPDX line first): dark outline
@@ -1266,6 +1425,12 @@ SVG at several sizes (`themeIcon`).
   construction, and an edited one keeps its `construction` (FreeCAD's for
   the FreeCAD import's growing helices, mitcad#83). A fixed axis (the
   importer's) is not editable.
+- **Sweep** (`solid.sweep`, `SweepCommands.cpp`): Type is Single Path,
+  Path + Guide Rail (`guide_rail`, Profile Scaling) or Path + Guide
+  Surface (mitcad#157): faces picked in Guide Surface go into
+  `guide_surfaces`, the path must lie on them, and Orientation, Taper
+  and Twist are hidden. A definition with guide surfaces and a twist or
+  taper (which the model ignores) is not editable.
 - **Hole**: Counterdrill is `kind` `counterdrill` with `cd_diameter`,
   `cd_depth`, `cd_angle` (the cone's full angle); Taper Angle is `taper`
   (the wall's angle to the axis), left out when 0 and hidden for tapped
@@ -1344,12 +1509,13 @@ SVG at several sizes (`themeIcon`).
 | `Feature warnings: Fillet1: <warning>` / `none`, `Preview Fillet: ok, warning: <warning>` | features that succeeded with warnings, when they change; a preview's warning |
 | `Browser sketch DOF: Sketch1 0, Sketch2 4` | the sketches' degrees of freedom the browser shows, when they change |
 | `Browser joints: Joint1 placed, AsBuiltJoint1 satisfied, DOF Root 1` | the joints' states and each component's degrees of freedom (mitcad#55), when they change |
-| `Added joint Joint1 (revolute): placed, rz 30 deg, moved O2; DOF 7` (a failure: `failed: <error>`), `Added as-built joint …`, `Added joint origin JointOrigin1: origin (5, 5, 10), normal (0, 0, 1)`, `Added rigid group RigidGroup1: Pin:1, Cap:1`, `Drove joint Joint1 (revolute): placed, rz 45 deg, …`, `Preview Joint moves O2` | the ASSEMBLE group's commands (mitcad#55; the joint as the `joints` query has it after OK) and a preview that places occurrences elsewhere |
+| `Added joint Joint1 (revolute): placed, rz 30 deg, moved O2; DOF 7` (a failure: `failed: <error>`), `Added as-built joint …`, `Added joint origin JointOrigin1: origin (5, 5, 10), normal (0, 0, 1)`, `Added rigid group RigidGroup1: Pin:1, Cap:1`, `Drove joint Joint1 (revolute): placed, rz 45 deg, …`, `Added constraint Constraint1: insert placed, moved O2; DOF 1` (each row's type, `(does not hold)` after one that does not), `Preview Joint moves O2` | the ASSEMBLE group's commands (mitcad#55, mitcad#148; the joint as the `joints` query has it after OK) and a preview that places occurrences elsewhere |
 | `Drag of Pin:1 started at (x, y, z)`, `Dragged Pin:1 to (x, y, z): Joint1 rz 63.2 deg`, `Drag of Pin:1 cancelled`, `Animating Joint1 rz: 36 frames from 45 deg to 45 deg`, `Animated Joint1: 36 frames`, `Animation of Joint1 stopped: <why>` | dragging a component the joints move (points in its parent's coordinates) and Animate Joint |
 | `Parameters favorites: width` / `none`, `Parameters width favorite at x,y`, `Parameter width favorite: on = 30 mm` | favourites |
 | `Parameters dialog opened`, `Parameters: d1 = width + 5 mm (35 mm); …`, `Parameters d1 expression at x,y` (name, unit, expression, comment), `Parameters add/delete/OK at x,y`, `Added parameter width = 30 mm`, `Parameter d1 expression: width + 5 mm = 35 mm`, `Parameter width expression: d2 / 2 refused: <reason>`, `Delete parameter w refused: <reason>` | Change Parameters (places in the main window's coordinates) |
 | `Panel Fillet input sets.1.radius at x,y`, `Panel Fillet input add sets at x,y`, `… input remove sets.1 at x,y`, `… input up_sections.2 at x,y`, `… input down_sections.0 at x,y` | a list's rows and buttons, an ordered selection's buttons |
 | `Pick places:` then `Pick face F2.b0/F2:end(…) at x,y`, `Pick edge …`, `Pick vertex …`, `Pick profile F1/r{…} at x,y` | an input became active (with `MITCAD_LOG_PICKS=1`, which the tests set): where a click picks each item it takes (`ui_click_pick`) |
+| `View ghosts: O2 (1 body)`, `View ghosts: none` | the occurrences a command draws as ghosts changed (`withGhosts`, mitcad#147); logged before the pick places of the input that picks through them |
 | `Manipulator <command> <input> at x,y`, `Manipulator <command> <input> dragged to <value>` | a handle's knob, a drag ended |
 | `Manipulator Circular Pattern suppressed.2 at x,y` (`… (off) at` when suppressed), `Manipulator Circular Pattern suppressed.2 toggled`, `Circular Pattern Suppressed: 2` | a pattern's instance dots |
 | `Inspect <command>: <log>`, `Closed <command>` | an inspection's result (Measure: `area 2400, distance 45, angle 90 deg`; Interference: `Body1 x Body2: <volume>` or `none`; Section Analysis: `area …, length …`) |
@@ -1363,11 +1529,11 @@ SVG at several sizes (`themeIcon`).
 | `Orientation cube arrow up at x,y` (up, down, left, right, cw, ccw), `Orientation cube arrow cw`, `Orientation cube arrows hidden` | the cube's arrows: where they are when the view comes to rest face on, a click |
 | `Visual style Shaded with Hidden Edges`, `Camera perspective`, `Background #525761 #1f2126`, `Layout grid off`, `Snap to grid on`, `Grid spacing 10 mm` | display settings |
 | `Saved named view NamedView1`, `View NamedView1`, `Deleted named view …` | named views |
-| `Rendered view on`/`off`, `No render worker (mitcad-render) next to the application: no rendered view`, `Render worker started (pid <n>): <path of mitcad-render>`, `Render frame memory 1: 910 x 735` (debug; the frame memory's id and capacity), `Render worker ready: Cycles 5.3.0 on <CPU>`, `Render scene 1: 2 bodies, 1 meshes sent (F4.b0), 1 meshed, 0 released`, `Render scene 1 applied in 2.1 ms: received F4.b0; added -; changed F4.b0; moved -; removed -; kept 1; meshes 3; instanced 0`, `Render view 3: orthographic 728 x 588` (debug), `Render view 3: first frame (145 x 117) after 26 ms`, `Render view 3: first denoised frame (145 x 117, 1 samples) after 60 ms`, `Render frame view 3 728x588 samples 4 denoised covers x0,y0 x1,y1` (debug; what the frame's alpha covers, in view pixels; `denoised` for a denoised frame), `Render view 3: 64 samples in 2.91 s`, `Render worker stopped: <reason>`, `View message: <text>`, `Render worker ended` | View > Rendered (`MITCAD_RENDER` builds; `tools/ui-render-test.sh`) |
+| `Rendered view on`/`off`, `No render worker (mitcad-render) next to the application: no rendered view`, `Render worker started (pid <n>): <path of mitcad-render>`, `Render frame memory 1: 910 x 735` (debug; the frame memory's id and capacity), `Render worker ready: Cycles 5.3.0 on <CPU>`, `Render scene 1: 2 bodies, 1 meshes sent (F4.b0), 1 meshed, 0 released`, `Render scene 1 applied in 2.1 ms: received F4.b0; added -; changed F4.b0; moved -; removed -; kept 1; meshes 3; instanced 0`, `Render view 3: orthographic 728 x 588` (debug), `Render view 3: first frame (145 x 117) after 26 ms`, `Render view 3: first denoised frame (145 x 117, 1 samples) after 60 ms`, `Render frame view 3 728x588 samples 4 denoised covers x0,y0 x1,y1` (debug; what the frame's alpha covers, in view pixels; `denoised` for a denoised frame), `Render view 3: 64 samples in 2.91 s`, `Render worker stopped: <reason>`, `View message: <text>`, `Render worker ended` | View > Rendered (`tools/ui-render-test.sh`) |
 | `Preferences opened: General, 640 x 330` (the page shown and the size the window asks for), `Preferences: navigation middle-orbit, zoom to cursor on, …, autosave every 5 min` (or `…, autosave off`), `Shortcut overview: 23 command shortcuts` | the dialogs |
 | `Section caps: 2 face(s) at {"normal":[1,0,0],"origin":[30,…]}` | the caps of Section Analysis or Hide Above Sketch drawn (when they change) |
 | `Hide Above Sketch on`/`off`, `In front of the sketch plane: F2.b0 5.0, F5.b0 10.0` | the sketch palette's option; in sketch mode, how far each shown body reaches in front of the sketch plane (mm, when it changes; 0 or less once cut, a body cut away entirely is left out) |
-| `Export dialog: STEP AP214 (*.step) to <path>`, `Exported <path>: step, 1 body(ies), mm` (with occurrences `…, mm, design coordinates` or `component coordinates`), `Exported <path>: dxf, 4 entities` | export |
+| `Export dialog: STEP AP214 (*.step) to <path>`, `Exported <path>: step, 1 body(ies), mm` (with occurrences `…, mm, design coordinates` or `component coordinates`), `Exported <path>: usdz, 1 body(ies), 1 material(s)`, `Exported <path>: dxf, 4 entities` | export |
 | `3D Print dialog: 3 visible: Plate, Cube, Pin; format stl, refinement high, slicer Fake slicer (/path <files>); slicers None: … \| …`, `3D Print: left out Surface1 (a surface body)`, `3D Print: 3 bodies as stl (high) to <folder>: Plate.stl, Cube.stl, Pin.stl` (a body shown twice: `Pin (Pin_1).stl, Pin (Pin_2).stl`; 3MF: `parts.3mf`… per body `Plate 12 triangles, 1000.000 mm3`), `3D Print: started <program> <arguments>`, `3D Print: <slicer> did not start`, `3D Print: opened <folder>`, `3D Print cancelled`, `Preferences: slicer <slicer>` (or `automatic`) | 3D Print |
 | `Export dialog opened: unit mm (mm \| cm \| m \| in \| ft)` (with occurrences also `, coordinates design (design \| component)`), `Insert Mesh dialog opened: unit …`, `Insert DXF dialog opened: unit …`, `Units dialog opened: mm (…)`, `Add User Parameter dialog opened: unit mm`, `Grid settings dialog opened: automatic, fixed spacing 10 mm` | a dialog that offers units opened, with its default first |
 | `Panel Hole choices: placement=face, …, standard=iso_metric, size=6, designation=M6x1, class=6H`, `Panel Hole options size: 1 \| 1.1 \| …` | a panel's choices when it starts; the options of a `withChoices` input when they change |
@@ -1376,7 +1542,7 @@ SVG at several sizes (`themeIcon`).
 | `Import of part.f3d started`, `Import item 3: Extrude2 parametric`, `Import of part.f3d: stop requested after 12 s`, `Import of part.f3d stopping: the remaining items take the file's bodies`, `Import of part.f3d cancelled`, `Import of part.f3d failed: …`, `Imported part.f3d: 2 bodies; items …[; stopped at Extrude3 (item 5)]`, `Import report: part.f3d: 28 items (25 parametric, …), 2 bodies, 2 of the file's 2 solids match[, stopped at Extrude3 (item 5)]`, `Import report summary: <the report's text above its list>`, `Import report kept: Pad.Length = Sheet.w * 2: <why>` | an `.f3d` or FreeCAD import (`stopped after the last item` when only the final comparison was left; `kept`: a FreeCAD expression kept as its value) |
 | `Recent files: a.mitcad \| b.step`, `Dropped <paths>`, `Document closed` | the File menu |
 | `Remote status: synced` (`ahead N`, `behind N`, `push`, `fetch`, `sync`, `conflict`, `offline`, `sign-in needed`, `remote not found`), `Remote task <command> started\|done\|failed (<class>): <message>`, `Remote push: sent N version(s) to origin/main`, `Remote check: ahead N, behind M`, `Remote notice: <text> [Sync Now, Dismiss]`, `Sync: <case>[ (<class>)], N replayed, sent\|nothing sent`, `Sync conflict: <path> (<kind>): <choice>`, `Sync done: <text>` | the current Cloud project's remote: its state (the indicator shows it), a remote task, a push, a check, the notice, a sync and its conflicts |
-| `Computing part.mitcad started`, `Computing part.mitcad: 57 of 196, Extrude6` (when the feature changes, at most 5 a second, after the first 50 ms), `Progress dialog shown: part.mitcad`, `Computing part.mitcad: cancel requested after <ms> ms`, `Computing part.mitcad cancelled after <ms> ms`, `Computing part.mitcad done in <ms> ms (<n> evaluated)`, `Opening part.mitcad cancelled` | a job on the model's worker thread (opening a project, an imported design, New, Close) |
+| `Computing part.mitcad started`, `Computing part.mitcad: 57 of 196, Extrude6` (when the feature changes, at most 5 a second, after the first 50 ms), `Progress dialog shown: part.mitcad`, `Computing part.mitcad: cancel requested after <ms> ms`, `Computing part.mitcad cancelled after <ms> ms`, `Computing part.mitcad done in <ms> ms (<n> evaluated)`, `Opening part.mitcad cancelled` | a job on the model's worker thread (opening a design, an imported design, New, Close) |
 | `Computing set_parameter started` … `Computing set_parameter done in <ms> ms (<n> evaluated)` (a model command's job is named by its `cmd` and logged only when it takes over 50 ms; `Computing preview …` for a panel's preview), `Command set_parameter cancelled`, `Command undo refused: the model is busy computing`, `Preview Extrude: cancelled`, `Extrude: OK cancelled`, `Extrude: OK not done`, `Parameter d1 expression: 70 cancelled`, `Finish Sketch cancelled: Sketch1 stays open`, `Command Extrude: the timeline stays rolled back`, `Drag of p3 ended by a dialog`, `Manipulator Extrude distance dragged to 25 (ended by a dialog)`, `Context menu dropped: the model is computing` | commands and previews as jobs: a cancel, a call that came while a job ran (refused, or waiting until it is done), a drag the progress dialog ended |
 | `Autosave every 300 s to <folder>`, `Autosave off`, `Autosaved block.mitcad: 2865 bytes to <folder>`, `Autosave removed for block.mitcad`, `Autosave skipped: busy` (or `previewing`), `Autosave of block.mitcad failed: <reason>` | autosave: the timer set at start and by Preferences, a write, the session's files removed, a write put off (`MITCAD_TEST_AUTOSAVE_SECONDS` for tests; `tools/ui-autosave-test.sh`) |
 | `Recovery: none`, `Recovery: 2 document(s) found`, `Recoverable block.mitcad: /path/block.mitcad, autosaved 2026-10-05T03:12:00Z, 2865 bytes` (`never saved`; `, the file has changed since`, `, the file is gone`, `, damaged: <why>`), `Recovery: removed the lock of session <id>`, `Recovery: later, 1 document(s) kept`, `Discarded recovery of block.mitcad`, `Recovered block.mitcad from autosave of 2026-10-05T03:12:00Z`, `Recovered session <id> removed`, `Recovering block.mitcad cancelled`, `Recovery of block.mitcad failed: <reason>`, `Save conflict: <path> changed since it was opened`, `Save conflict: overwrite` (`save as`, `cancelled`) | recovery: what was found, each session, the dialog's choices, the earlier session's files removed once this session wrote the document, and Save over a recovered document's changed file |
@@ -1394,7 +1560,8 @@ SVG at several sizes (`themeIcon`).
 | `New Project dialog: <folder offered>`, `New Project dialog: folder <folder>: <kind>[ (inside <repository>)]` (the kinds of `inspect_folder`), `New Project dialog: storage cloud` (`local`), `New Project: creating <folder> (local)` (`(cloud <url>)`), `New Project: created <root>: version abc1234 on main[, sent \| , not sent (<class>)]`, `New Project failed (<class>): <message>`, `New Project: Open It <folder>`, `New Project: Open It Instead <url> into <folder>`, `New Project: Create as Local for Now`, `New Project cancelled`, `New project <root>` | New Project (also with the folder fixed by Open Project, and as Move to a Project's new project) |
 | `Cloud check started: <url>`, `Cloud check <url>: <what was found>` (`<class>: <message>` for a failure), `Cloud check again: <url>`, `Cloud section: open the new repository page <url>` (`SSH keys page`), `Copied the public key <path>`, `Trust This Server dialog: host: SHA256:… (verified \| mismatch \| not published)`, `Trust This Server cancelled`, `Trusted the keys of <host> in <known_hosts>`, `Trust This Server: <host> refused: <why>` | the Cloud section of New Project, Open from Cloud, Project Settings and Change Address |
 | `Open from Cloud dialog: <location>`, `Open from Cloud dialog: clone, enabled` (`create`, `adopt`, `open`, `none`; `disabled: <why>`), `Open from Cloud: <action> <url> into <folder>`, `Open from Cloud: <action> done into <root>[, not sent (<class>)]`, `Open from Cloud failed (<class>): <message>`, `Open from Cloud cancelled`, `Open from Cloud: opened <root> (<action>): <designs>` | Open from Cloud |
-| `Open Project: <folder>: <kind>`, `Open Project cancelled`, `Open Project: no designs in <root>: a new one, <path>`, `Version history started in <root>: version abc1234 on main`, `Design chooser: <project>: a.mitcad \| b.mitcad (selected b.mitcad)`, `Design chooser selected <design>`, `Design chooser: chose <design>` (`new design`), `Design chooser cancelled`, `Open Read-Only: <path>` | Open Project, its design chooser, Open Read-Only |
+| `Open Project: <folder>: <kind>`, `Open Project cancelled`, `Open Project: no designs in <root>`, `Open Project: parts/a.mitcad (opened last)` (`(newest)`), `Version history started in <root>: version abc1234 on main`, `Open Read-Only: <path>` | Open Project and the design it opens, Open Read-Only |
+| `Projects panel: shown` (`hidden`), `Projects panel: hidden at the next start` (`shown`; the user's choice written), `Projects panel at the start: shown (no choice yet, projects configured)` (`hidden (no choice yet, no projects)`, `shown (as chosen)`, `hidden (as chosen)`), `Projects panel: 2 projects: Local/Shop \| github.com/acme/gripper` (when it changed), `Projects names: Local/Shop = Shop \| github.com/acme/gripper = acme/gripper` (the names shown, `(set)` for a display name; when they changed), `Projects panel: settings of <root> (<key> selected)` (the settings button; `no project`), `Projects panel: settings of <root> (double-click on <key>)`, `Projects panel: Project Settings of the current project <root>` (`of <root> (not the current project)`, `no Project Settings for <root>`), `Project Settings: display name <name>` (`display name cleared: <default>`, `display name refused: <why>`), `Projects tree: Local/Shop (local, current): parts/ \| parts/plate.mitcad v3, changed, open \| base.mitcad v1, locked by Alex` (per project when it changed; states `local`, `cloud, synced` / `ahead 2` / `behind 1` / `offline` / `not synced` / `conflict` / `sign-in needed`, `cloud, no remote chosen`, `no versions`, `missing`, `unreadable`; designs `vN` or `not recorded`, `changed`, `editing`, `editing elsewhere`, `locked by <name>`, `open`; `no designs`), `Projects row <key> at x,y` (rows in sight: `Local`, `Local/Shop`, `Local/Shop/parts/`, `Local/Shop/parts/plate.mitcad`), `Projects button <name> at x,y`, `Projects panel selected <key>`, `Projects panel: naming a new design in <key>` (`folder`; logged once the editor is open), `Projects panel: renaming <key>`, `Projects panel: new design parts/a.mitcad in <root>` (`new folder`), `Projects panel: rename <from> to <to>`, `Projects panel: <what> cancelled`, `Projects panel: <what> refused: the name "<name>"`, `Projects panel: dragging <key>`, `Projects panel: drag <from> to <to>`, `Projects panel: drop of <key> refused[ on <key>]`, `Projects panel: open <key>`, `Projects panel: delete <key>`, `Delete dialog: <path> (<n> designs[, open][, changes no version holds])`, `Delete cancelled`, `Delete: changes no version holds: deleted all the same` (`cancelled`), `Projects panel: <command> recorded as abc1234` (`(no new version)`), `Projects panel: <command> refused (<class>): <message>`, `Projects panel: the open design follows: <from> -> <to>`, `Projects panel: closed the deleted design <path>`, `Projects panel: sent the versions of <root>` (`the versions of <root> wait (<class>): <message>`), `Projects panel: show in folder <folder>`, `Projects panel: added <root>`, `Projects panel: removed <root> from the list`, `New Design: in <root>[, folder <folder>]`, `New Design: no project`, `New Design: made <path>`, `New Design cancelled` | the Projects panel (mitcad#145, `tools/ui-projects-test.sh`); places in the main window's coordinates |
 | `Project Settings dialog: <name>, local; edit locks on, idle 10 min, poll 10 s; live updates none; author Name <email>; send at once on; check <choice>; live here project` (`cloud <url>`), `Project Settings: storage cloud (share)`, `Project Settings: authors to publish: …`, `Project Settings: share to <url>`, `Project Settings: shared <name> to <url>: versions sent` (`nothing sent`; ` (<class>)`), `Project Settings: share failed (<class>): <message>`, `Project Settings: stop syncing asked` (`cancelled`), `Project Settings: stopped syncing <root> (was <url>)`, `Change Address dialog: <url>`, `Change Address refused: <why>`, `Change Address cancelled`, `Project Settings: address changed to <url>`, `Project Settings: several remotes, none followed: first, second`, `Project Settings: following <name> (<url>), <name>/main` (`follow <name> failed: <message>`), `Project Settings: shared settings recorded: abc1234` (`no change`; `… refused: <why>`), `Project Settings: here: send at once on, check <choice>, live project`, `Project Settings: author Name <email>`, `Project Settings: Sync Now`, `Project Settings closed` | Project Settings |
 | `Edit lock: taking part.mitcad[ over]`, `Edit lock taken: part.mitcad[ from Alex (unchanged \| no_receipt \| unanswered \| take_over)]`, `Edit lock granted: part.mitcad by Alex`, `Edit lock held: part.mitcad by Alex[, another session] (since <time>)`, `Edit lock not confirmed (<class>): part.mitcad: <message>`, `Edit locks: part.mitcad: <message>` (a remote that refuses lock refs), `Edit lock: none for part.mitcad (<why>)`, `Edit lock: part.mitcad opened read-only, without an edit lock`, `Edit lock state: editing, part.mitcad` (`editing, idle`, `read-only`, `not confirmed`, `taking`, `none`), `Read-only: on (<reason>)`, `Read-only: off`, `Read-only: refused <command or what>`, `Read-only: unsaved changes of part.mitcad asked about`, `Lock banner: <text> [Request Edit Access..., Edit, Save as Copy..., Save as New Version]`, `Lock banner <button> at x,y`, `Lock banner: <button>` (clicked), `Lock banner: hidden` | the open design's edit lock (mitcad#89, `tools/ui-locks-test.sh`): taken, held by someone else, not confirmed, the window's read-only mode and its banner |
 | `Edit lock dialog: <text> [Continue Read-Only, Request Edit Access...]` (`[Take Over, Open Read-Only]`, `[Take the Edit Lock, Not Now]`), `Edit lock dialog: <button>`, `Request Edit Access dialog: part.mitcad, Alex`, `Request Edit Access cancelled`, `Edit lock request sent: part.mitcad to Alex[: "<message>"]`, `Edit lock request seen by Alex`, `Edit lock request declined by Alex[: <message>]`, `Edit lock request: Alex keeps the edit lock until <time>`, `Edit lock request: Alex did not answer (no_receipt): taking the lock`, `Edit lock of part.mitcad is free: taking it`, `Edit lock of part.mitcad released by its holder`, `Edit lock request refreshed: part.mitcad` (a poll kept the waiting request alive) | opening a design someone else holds, Take Over, a holder's offline will (live updates), the requester's side of a request |

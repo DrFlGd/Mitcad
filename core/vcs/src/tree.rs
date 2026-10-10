@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-//! Reading trees: entries by path, the project files and B-rep files of a
+//! Reading trees: entries by path, the design files and B-rep files of a
 //! version, and the paths that differ between two trees.
 
 use std::collections::BTreeMap;
@@ -10,7 +10,7 @@ use gix::objs::tree::EntryMode;
 use mitcad_model::Sha256;
 use mitcad_model::file::BREP_DIR;
 
-use crate::{ProjectRepo, VcsError, is_project_file};
+use crate::{ProjectRepo, VcsError, is_design_file};
 
 /// A path that differs between two trees, with its blobs before and after
 /// (None where it is not a file) and the mode of the one after.
@@ -99,12 +99,9 @@ impl ProjectRepo {
         })
     }
 
-    /// The project files (`*.mitcad`) of a tree with their blobs, leaving
+    /// The design files (`*.mitcad`) of a tree with their blobs, leaving
     /// out the `.mitcad` folder.
-    pub(crate) fn project_files(
-        &self,
-        tree: ObjectId,
-    ) -> Result<Vec<(String, ObjectId)>, VcsError> {
+    pub(crate) fn design_files(&self, tree: ObjectId) -> Result<Vec<(String, ObjectId)>, VcsError> {
         let mut out = Vec::new();
         let mut folders = vec![(String::new(), tree)];
         while let Some((prefix, folder)) = folders.pop() {
@@ -114,7 +111,7 @@ impl ProjectRepo {
                     if path != ".mitcad" && path != ".git" {
                         folders.push((format!("{path}/"), id));
                     }
-                } else if mode.is_blob() && is_project_file(&path) {
+                } else if mode.is_blob() && is_design_file(&path) {
                     out.push((path, id));
                 }
             }

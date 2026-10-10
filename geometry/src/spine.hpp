@@ -101,13 +101,21 @@ struct NamedWire {
 std::vector<NamedWire> face_loops(const TopoDS_Face& face,
                                   const std::vector<std::pair<TopoDS_Edge, std::string>>& names);
 
-// How a pipe shell turns its section along the spine.
+// How a pipe shell turns its section along the spine. `Support`: with the
+// normal of the faces of `support` the spine's edges lie on (each edge
+// carries its curve on one of them; see `on_faces`).
 struct PipeMode {
-  enum class Kind { CorrectedFrenet, Binormal, Fixed };
+  enum class Kind { CorrectedFrenet, Binormal, Fixed, Support };
   Kind kind = Kind::CorrectedFrenet;
   gp_Dir binormal;
   gp_Ax2 fixed;
+  TopoDS_Shape support;
 };
+
+// A copy of the wire whose edges each carry their curve on the first of
+// the faces they lie on, within `tolerance` (a pipe shell's `Support`
+// mode). Throws when an edge lies on none of them.
+TopoDS_Wire on_faces(const TopoDS_Wire& wire, const std::vector<TopoDS_Face>& faces, double tolerance);
 
 // Keeps a section at its angle to the spine: a fixed binormal along the
 // normal of a planar spine, else the corrected Frenet frame.

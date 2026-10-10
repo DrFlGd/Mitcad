@@ -413,6 +413,84 @@ fn set_selects(seg: &Segment, input: u64) -> Option<u32> {
         .flatten()
 }
 
+/// One edge set's options of a fillet (mitcad#154): the set's
+/// [`FILLET_SET`] object holds, after its root part, `u8
+/// asymmetric | u8 0 | u8 constant radius | u8 flipped | u8 curvature
+/// continuity (G2) | u8 tangent chain | u8 0 | u8 0 | ref set input`
+/// (neither size byte: a variable radius). Read on the reference models
+/// against their dumps' `edgeSets` (continuity, `isFlipped`,
+/// `isTangentChain`); the format descriptions we have do not give this
+/// record.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct FilletSetOptions {
+    pub asymmetric: bool,
+    pub constant: bool,
+    pub flipped: bool,
+    pub curvature: bool,
+    pub tangent_chain: bool,
+}
+
+fn fillet_set_options(seg: &Segment, id: u64) -> Option<FilletSetOptions> {
+    let d = seg.data_of(id);
+    let r = seg.root_part(d)?.end;
+    let b = |k: usize| d.get(r + k).copied().filter(|&v| v <= 1);
+    if b(1)? != 0 || b(6)? != 0 || b(7)? != 0 {
+        return None;
+    }
+    let set = seg.ref_at(d, r + 8)?;
+    if seg.guid_of(set.id) != Some(BODY_INPUT) {
+        return None;
+    }
+    Some(FilletSetOptions {
+        asymmetric: b(0)? == 1,
+        constant: b(2)? == 1,
+        flipped: b(3)? == 1,
+        curvature: b(4)? == 1,
+        tangent_chain: b(5)? == 1,
+    })
+}
+
+/// A fillet's set options in set order and whether its corners are
+/// rolling-ball corners (mitcad#154): the fillet object starts after its
+/// root part with `u32 n | n refs` [`FILLET_SET`] `| u32 0 | u8
+/// rolling ball corners` (0: setback corners). Read on the reference
+/// models against their dumps' `isRollingBallCorner`.
+fn fillet_options(seg: &Segment, fid: u64) -> Option<(Vec<FilletSetOptions>, Option<bool>)> {
+    let d = seg.data_of(fid);
+    let r = seg.root_part(d)?.end;
+    let (sets, end) = seg.ref_list_at(d, r)?;
+    if sets.is_empty() || sets.iter().any(|&s| seg.guid_of(s) != Some(FILLET_SET)) {
+        return None;
+    }
+    let options: Vec<FilletSetOptions> = sets
+        .iter()
+        .map(|&s| fillet_set_options(seg, s))
+        .collect::<Option<_>>()?;
+    let rolling = (u32_at(d, end) == Some(0)
+        && seg
+            .ref_at(d, end + 4)
+            .is_none_or(|x| seg.guid_of(x.id) != Some(HEALTH)))
+    .then(|| d.get(end + 4).copied())
+    .flatten()
+    .filter(|&v| v <= 1)
+    .map(|v| v == 1);
+    Some((options, rolling))
+}
+
+/// A chamfer's corner type (mitcad#154): the `u32` right after its root
+/// part: 1 chamfer, 2 miter, 3 blend corners. Read on the reference
+/// models against their dumps' `cornerType`.
+fn chamfer_corner(seg: &Segment, fid: u64) -> Option<&'static str> {
+    let d = seg.data_of(fid);
+    let r = seg.root_part(d)?.end;
+    match u32_at(d, r)? {
+        1 => Some("ChamferCornerType"),
+        2 => Some("MiterCornerType"),
+        3 => Some("BlendCornertype"),
+        _ => None,
+    }
+}
+
 /// A construction plane's light bulb (mitcad#6): in its plane object
 /// (`8D424E29`), the reference back to the feature is followed by `u8 0 |
 /// u8 1 | str16 name (empty when not renamed) | u32 0 | u8 light bulb` (1
@@ -665,6 +743,21 @@ fn item_owners(seg: &Segment) -> HashMap<u64, u64> {
     owners
 }
 
+/// The result number of the base feature with which a component made from
+/// bodies put its bodies into the new component (mitcad#156): the base
+/// feature its main part refers to, whose item tail numbers that
+/// component's history operation.
+fn made_result(seg: &Segment, id: u64) -> Option<i32> {
+    let o = seg.object(id)?;
+    seg.refs_in(seg.data(o), 0, seg.main_end(o))
+        .into_iter()
+        .filter(|(_, r)| seg.guid_of(r.id) == Some(BASE_FEATURE))
+        .find_map(|(_, r)| {
+            let tail = decode::feature_tail(seg, seg.object(r.id)?)?;
+            (tail.result_no > 0).then_some(tail.result_no)
+        })
+}
+
 /// Names of parameters whose expression mentions `p` (as a name token).
 fn dependents(p: &ParameterEntry, params: &[ParameterEntry]) -> Vec<String> {
     params
@@ -890,6 +983,101 @@ impl Builder<'_> {
             .collect()
     }
 
+    /// A fillet's edge sets from its input groups, each set's size by the
+    /// roles of the parameters its holders hold (mitcad#154; the roles as
+    /// the cadmpeg format description names them): `Radius` a constant
+    /// radius, `StartRadius`, `EndRadius` and the pairs `MidRadius`,
+    /// `MidParams` a variable one, `ChordLen` a chord length,
+    /// `EdgeOffset1`, `EdgeOffset2` an asymmetric one; `TangencyWeight`
+    /// goes with any. `None` unless every group has holders and a size, so
+    /// that the sets by `Radius` parameters stay as they were.
+    fn fillet_sets(
+        &self,
+        it: &TimelineEntry,
+        rl: &BTreeMap<&str, Vec<&ParameterEntry>>,
+    ) -> Option<Vec<EdgeSet>> {
+        let tail = it.tail.as_ref()?;
+        let inputs = tail_inputs(self.seg, self.seg.data_of(it.id), tail.start)?;
+        let groups = edge_groups(self.seg, &inputs);
+        if groups.is_empty() {
+            return None;
+        }
+        // Only where a set is not a constant radius: those keep their
+        // older path.
+        if !["StartRadius", "ChordLen", "EdgeOffset1"]
+            .iter()
+            .any(|r| rl.contains_key(r))
+        {
+            return None;
+        }
+        let mut sets = Vec::new();
+        for (edges, holders) in groups {
+            let of = |role: &str| -> Vec<&ParameterEntry> {
+                rl.get(role)
+                    .map(|v| {
+                        v.iter()
+                            .copied()
+                            .filter(|p| p.holder.is_some_and(|h| holders.contains(&h)))
+                            .collect()
+                    })
+                    .unwrap_or_default()
+            };
+            let one = |role: &str| -> Option<Reference> {
+                let v = of(role);
+                (v.len() == 1).then(|| paramref(v[0]))
+            };
+            let mut s = EdgeSet {
+                edges: edges.filter(|e| !e.is_empty()),
+                tangency_weight: one("TangencyWeight"),
+                ..EdgeSet::default()
+            };
+            if let Some(r) = one("Radius") {
+                s.edge_set_type = Some("ConstantRadiusFilletEdgeSet".into());
+                s.radius = Some(r);
+            } else if let (Some(a), Some(b)) = (one("StartRadius"), one("EndRadius")) {
+                s.edge_set_type = Some("VariableRadiusFilletEdgeSet".into());
+                s.start_radius = Some(a);
+                s.end_radius = Some(b);
+                let (radii, positions) = (of("MidRadius"), of("MidParams"));
+                if radii.len() != positions.len() {
+                    return None;
+                }
+                if !radii.is_empty() {
+                    s.mid_radii = Some(radii.into_iter().map(paramref).collect());
+                    s.mid_positions = Some(positions.into_iter().map(paramref).collect());
+                }
+            } else if let Some(c) = one("ChordLen") {
+                s.edge_set_type = Some("ChordLengthFilletEdgeSet".into());
+                s.other.insert(
+                    "chordLength".into(),
+                    serde_json::to_value(&c).expect("serializes"),
+                );
+            } else if let (Some(a), Some(b)) = (one("EdgeOffset1"), one("EdgeOffset2")) {
+                s.edge_set_type = Some("AsymmetricFilletEdgeSet".into());
+                s.offset_one = Some(a);
+                s.offset_two = Some(b);
+            } else {
+                return None;
+            }
+            sets.push(s);
+        }
+        Some(sets)
+    }
+
+    /// The faces an item's face inputs name (mitcad#154), in input order;
+    /// `None` unless there are some and every one decodes.
+    fn face_inputs(&self, it: &TimelineEntry) -> Option<Vec<Reference>> {
+        let ids: Vec<u64> = self
+            .item_inputs(it)
+            .into_iter()
+            .filter(|&i| self.seg.guid_of(i) == Some(FACE_REF))
+            .collect();
+        if ids.is_empty() {
+            return None;
+        }
+        ids.into_iter().map(|i| face_input(self.seg, i)).collect()
+    }
+
     /// An item's input list (the common tail's).
     fn item_inputs(&self, it: &TimelineEntry) -> Vec<u64> {
         it.tail
@@ -1054,6 +1242,8 @@ impl Builder<'_> {
                         2 => Some("TwoSidesFeatureExtentType".into()),
                         _ => None,
                     };
+                    // A surface extrusion (mitcad#154).
+                    x.is_solid = ex.solid;
                 }
                 if let Some(p) = pr("AlongDistance") {
                     x.extent_one = Some(def("DistanceExtentDefinition", distance, p));
@@ -1119,7 +1309,10 @@ impl Builder<'_> {
             }
             Some("FilletFeature") => {
                 let mut x = FilletDetail::default();
-                if let Some(radii) = rl.get("Radius").filter(|r| !r.is_empty()) {
+                let options = fillet_options(seg, fid);
+                if let Some(sets) = self.fillet_sets(it, &rl) {
+                    x.edge_sets = Some(sets);
+                } else if let Some(radii) = rl.get("Radius").filter(|r| !r.is_empty()) {
                     let mut edges = self.set_edges(it, radii).map(Vec::into_iter);
                     x.edge_sets = Some(
                         radii
@@ -1131,6 +1324,39 @@ impl Builder<'_> {
                             })
                             .collect(),
                     );
+                }
+                // The options of each set and the corners (mitcad#154).
+                if let Some(sets) = x.edge_sets.as_mut() {
+                    // One tangency weight a set, in the sets' order.
+                    let weights = rl.get("TangencyWeight").cloned().unwrap_or_default();
+                    let paired = weights.len() == sets.len();
+                    for (k, s) in sets.iter_mut().enumerate() {
+                        if s.radius.is_some() && s.edge_set_type.is_none() {
+                            s.edge_set_type = Some("ConstantRadiusFilletEdgeSet".into());
+                        }
+                        if s.tangency_weight.is_none() && paired {
+                            s.tangency_weight = Some(paramref(weights[k]));
+                        }
+                    }
+                }
+                if let Some((opts, rolling)) = options {
+                    x.is_rolling_ball_corner = rolling;
+                    if let Some(sets) = x.edge_sets.as_mut().filter(|s| s.len() == opts.len()) {
+                        for (s, o) in sets.iter_mut().zip(&opts) {
+                            s.continuity = Some(
+                                if o.curvature {
+                                    "CurvatureSurfaceContinuityType"
+                                } else {
+                                    "TangentSurfaceContinuityType"
+                                }
+                                .into(),
+                            );
+                            s.is_tangent_chain = Some(o.tangent_chain);
+                            if o.asymmetric {
+                                s.is_flipped = Some(o.flipped);
+                            }
+                        }
+                    }
                 }
                 Detail::Fillet(Box::new(x))
             }
@@ -1180,6 +1406,8 @@ impl Builder<'_> {
                         s.edges = Some(e);
                     }
                 }
+                // Its corners (mitcad#154).
+                x.corner_type = chamfer_corner(seg, fid).map(Into::into);
                 Detail::Chamfer(Box::new(x))
             }
             Some("HoleFeature") => {
@@ -1435,12 +1663,20 @@ impl Builder<'_> {
             }
             // Operation, target and tools (mitcad#67).
             Some("CombineFeature") => self.combine(it),
+            // The removed faces by their names, else the shelled body, and
+            // the thickness inside or outside (mitcad#154: the cadmpeg
+            // format description's face group and outward flag; the outward
+            // flag is the parameter's role here).
             Some("ShellFeature") => Detail::Shell(Box::new(ShellDetail {
                 inside_thickness: pr("innerThickness"),
+                outside_thickness: pr("outerThickness"),
+                input_entities: self.face_inputs(it).or_else(|| self.body_inputs(it)),
                 ..ShellDetail::default()
             })),
             Some("OffsetFacesFeature") => Detail::OffsetFaces(Box::new(OffsetFacesDetail {
                 distance: pr("distance"),
+                // Its faces by their names (mitcad#154).
+                input_faces: self.face_inputs(it),
                 ..OffsetFacesDetail::default()
             })),
             Some("CoilFeature") => Detail::Coil(Box::new(CoilDetail {
@@ -1477,6 +1713,54 @@ impl Builder<'_> {
             }
             // Sections, conditions, centre line or rails (mitcad#34).
             None if it.class == LOFT => self.loft(it),
+            // A construction axis' line (mitcad#154): its direction input
+            // holds the solved axis as a point and a displacement, the
+            // cadmpeg format description's solved-axis carrier; the import
+            // makes it a fixed axis.
+            Some("ConstructionAxis") => {
+                let mut map = serde_json::Map::new();
+                if let Some((_, Some(direction), Some(origin))) =
+                    self.directions(it).into_iter().next()
+                {
+                    map.insert(
+                        "geometry".to_owned(),
+                        serde_json::json!({"type": "InfiniteLine3D", "origin": origin,
+                                           "direction": direction}),
+                    );
+                }
+                Detail::Other(map)
+            }
+            // Cylinder and sphere primitives: operation and sizes (mitcad#154;
+            // as the cadmpeg format description gives them). The rigid
+            // matrix their records hold is not where the corpus' primitives
+            // are (the cylinders' and spheres' bodies in the history lie
+            // elsewhere, not by one transform), so it is not given: the
+            // primitives stay untranslated.
+            None if it.class == CYLINDER || it.class == SPHERE => {
+                let mut map = serde_json::Map::new();
+                let d = seg.data_of(fid);
+                if let Some(r) = seg.root_part(d) {
+                    let op = [r.end, r.end + 1].into_iter().find_map(|q| {
+                        u32_at(d, q).filter(|c| (1..=4).contains(c) && d.get(q + 4) == Some(&1))
+                    });
+                    let operation = match op {
+                        Some(1) => Some("JoinFeatureOperation"),
+                        Some(2) => Some("CutFeatureOperation"),
+                        Some(3) => Some("IntersectFeatureOperation"),
+                        Some(4) => Some("NewBodyFeatureOperation"),
+                        _ => None,
+                    };
+                    if let Some(o) = operation {
+                        map.insert("operation".to_owned(), serde_json::json!(o));
+                    }
+                }
+                for (key, role) in [("height", "Height"), ("diameter", "Diameter")] {
+                    if let Some(p) = pr(role) {
+                        map.insert(key.to_owned(), json_value(&p));
+                    }
+                }
+                Detail::Other(map)
+            }
             Some("ConstructionPlane") => {
                 let mut x = ConstructionPlaneDetail::default();
                 if let Some(p) = pr("AlongDistance") {
@@ -1659,6 +1943,9 @@ pub fn build(seg: &Segment, dec: &Decoded, file: &str, segment_dir: &str) -> Dum
             f3d.flags = Some(super::stream::hex(&t.flags));
             f3d.sub_features = Some(t.sub_features.clone());
         }
+        if it.class == COMPONENT_FROM_BODIES {
+            f3d.made_result_no = made_result(seg, it.id);
+        }
         if let Some(ex) = &it.extrude {
             f3d.extrude = Some(ExtrudeF3d {
                 operation_code: Some(ex.operation_code),
@@ -1669,6 +1956,9 @@ pub fn build(seg: &Segment, dec: &Decoded, file: &str, segment_dir: &str) -> Dum
                 direction_vector: ex.vector,
                 flag: ex.flag.map(u32::from),
                 full_length: ex.full_length,
+                solid: ex.solid,
+                start: ex.start.map(u32::from),
+                sides: ex.sides.map(|s| s.to_vec()),
                 slot_roles: Some(
                     decode::extent_slots(seg, it.id)
                         .iter()

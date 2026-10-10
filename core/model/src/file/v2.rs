@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT
-//! Project file versions 2 and 3 (see the module documentation of `file`):
-//! version 3 is version 2 with B-rep data in a project's store.
+//! Design file versions 2 (a single-file design) and 3 (a design in a
+//! project; see the module documentation of `file`): version 3 is version 2
+//! with B-rep data in a project's store.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::sync::Arc;
@@ -114,6 +115,8 @@ struct ParameterOut<'a> {
     name: &'a str,
     expression: &'a str,
     unit: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    expression_units: Option<UnitsOut>,
     /// The value when saved (mm, rad), for readers; loading evaluates the
     /// expression.
     value: f64,
@@ -178,6 +181,10 @@ pub(super) fn save(state: &DocState) -> String {
                 name: p.name(),
                 expression: p.expression(),
                 unit: p.unit().to_string(),
+                expression_units: p.expression_context().map(|context| UnitsOut {
+                    length: context.default_length_unit.symbol(),
+                    angle: context.default_angle_unit.symbol(),
+                }),
                 value: p.value(),
                 comment: p.comment(),
                 owner: parameters.owner(p.id()),
@@ -252,7 +259,7 @@ pub(super) fn save(state: &DocState) -> String {
         marker: (state.marker < state.features.len()).then_some(state.marker),
     };
     let mut json =
-        serde_json::to_string_pretty(&file).expect("the project file schema always serializes");
+        serde_json::to_string_pretty(&file).expect("the design file schema always serializes");
     json.push('\n');
     json
 }
@@ -269,6 +276,8 @@ struct ParameterIn {
     expression: Option<String>,
     #[serde(default)]
     unit: Option<String>,
+    #[serde(default)]
+    expression_units: Option<UnitsIn>,
     #[serde(default)]
     value: Option<f64>,
     #[serde(default)]
@@ -514,7 +523,7 @@ fn assembly_in(top: &mut Map<String, Value>) -> Result<Assembly, FileError> {
 
 pub(super) fn load(value: Value) -> Result<(DocState, Vec<String>), FileError> {
     let Value::Object(mut top) = value else {
-        return Err(FileError::NotAProject);
+        return Err(FileError::NotADesign);
     };
     if let Some(field) = top.keys().find(|k| !TOP_FIELDS.contains(&k.as_str())) {
         return Err(schema(format!(
@@ -937,7 +946,17 @@ fn load_parameters(
                 )));
             }
         };
-        specs.push((spec.with_comment(&p.comment), p.owner));
+        let expression_context = p
+            .expression_units
+            .as_ref()
+            .map(units_context)
+            .transpose()
+            .map_err(|e| at(format!("expression_units: {e}")))?;
+        specs.push((
+            spec.with_comment(&p.comment)
+                .with_expression_context(expression_context),
+            p.owner,
+        ));
     }
     let index_of = |name: &str| {
         parameters

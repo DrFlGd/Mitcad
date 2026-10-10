@@ -757,7 +757,7 @@ fn cosmetic_threads_are_data_and_modelled_ones_geometry() {
 }
 
 #[test]
-fn profile_features_round_trip_through_the_project_file() {
+fn profile_features_round_trip_through_the_design_file() {
     let mut b = block();
     let commands = [
         extrude_def(

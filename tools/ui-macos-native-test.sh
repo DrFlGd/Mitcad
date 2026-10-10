@@ -1,0 +1,107 @@
+#!/usr/bin/env bash
+# SPDX-License-Identifier: MIT
+# AppKit workflow test, driven in process without Accessibility permission.
+# Usage: tools/ui-macos-native-test.sh <app> [out directory] [workflow|cancel|secondary|sketch|panels|gestures|history|context-menus|replacement]
+# Requires MITCAD_MACOS_NATIVE_UI=ON and a logged-in macOS window server.
+set -u
+here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+# shellcheck source=tools/ui-macos-lib.sh
+. "$here/ui-macos-lib.sh"
+
+if [ $# -lt 1 ] || [ $# -gt 3 ]; then
+  echo "usage: $0 <app> [out directory] [workflow|cancel|secondary|sketch|panels|gestures|history|context-menus|replacement]" >&2
+  exit 2
+fi
+ui_init "$1" "${2:-ui-macos-native}"
+scenario=${3:-workflow}
+case "$scenario" in
+  workflow) script=native-macos.mitcad-ui ;;
+  cancel)
+    script=native-macos-cancel.mitcad-ui
+    export MITCAD_TEST_RECOMPUTE_DELAY_MS=0,preview=1500,add_feature=1500,edit_feature=1500
+    ;;
+  secondary)
+    script=native-macos-secondary.mitcad-ui
+    # A failed smoke may already have created its Local project. Remove
+    # only this scenario's fixture so the Create action is rerunnable.
+    rm -rf "$UI_OUT/files/NativeProject"
+    ;;
+  sketch) script=native-macos-sketch.mitcad-ui ;;
+  panels) script=native-macos-panels.mitcad-ui ;;
+  gestures) script=native-macos-gestures.mitcad-ui ;;
+  context-menus)
+    script=native-macos-context-menus.mitcad-ui
+    export MITCAD_LOG_ORIENTATION_CUBE=1
+    ;;
+  history)
+    script=native-macos-history.mitcad-ui
+    export MITCAD_TEST_RECOMPUTE_DELAY_MS=0,set_marker=800
+    ;;
+  replacement) script=native-macos-replacement.mitcad-ui ;;
+  *) echo "unknown native scenario: $scenario" >&2; exit 2 ;;
+esac
+UI_TIMEOUT=${UI_NATIVE_TIMEOUT:-240}
+export MITCAD_TEST_WORK=$UI_OUT/files
+mkdir -p "$MITCAD_TEST_WORK"
+
+if command -v launchctl > /dev/null; then
+  session=$(launchctl managername 2> /dev/null || true)
+  if [ "$session" = System ] && [ "${MITCAD_UI_REQUIRE_GUI:-0}" != 1 ]; then
+    echo "SKIP: no window server in the System session"
+    exit 77
+  fi
+fi
+
+if [ "$scenario" = replacement ]; then
+  # shellcheck source=tools/ui-macos-replacement-fixture.sh
+  . "$here/ui-macos-replacement-fixture.sh"
+  if ! ui_replacement_prepare; then
+    cat "$UI_OUT/replacement-setup.log" 2> /dev/null || true
+    exit 1
+  fi
+  # The coordinator must not inherit the parent test's cleanup trap.
+  (trap - EXIT INT TERM; ui_replacement_coordinate) > "$UI_OUT/replacement-fixture.log" 2>&1 &
+  UI_REPLACEMENT_PID=$!
+  trap 'ui_replacement_cleanup; ui_cleanup' EXIT
+  MITCAD_TEST_INPUT=$here/ui-scripts/$script \
+    ui_run_app native --ui=native --no-recovery --open "$MITCAD_TEST_REPLACEMENT/ada/part.mitcad" --set d3=27
+  touch "$MITCAD_TEST_REPLACEMENT/app-finished"
+  if ! wait "$UI_REPLACEMENT_PID"; then
+    cat "$UI_OUT/replacement-fixture.log"
+    ui_fail 'replacement fixture or retained recovery state verification failed'
+  fi
+  UI_REPLACEMENT_PID=""
+else
+  MITCAD_TEST_INPUT=$here/ui-scripts/$script \
+    ui_run_app native --ui=native --no-recovery
+fi
+ui_expect_log 'Native UI: AppKit shell with embedded OCCT viewport' 'native AppKit shell was used'
+ui_expect_log 'TestDriver: done' 'native workflow reached its end'
+if [ "$scenario" = workflow ]; then
+  ui_expect_log 'New body .*volume 20000\.000 mm3' 'native form created the expected box'
+  ui_expect_log 'volume 20000\.000 -> 10000\.000 mm3' 'native history edit changed the model'
+  if [ ! -s "$MITCAD_TEST_WORK/native-macos.png" ]; then
+    ui_fail 'native composed screenshot was not saved'
+  fi
+elif [ "$scenario" = cancel ]; then
+  ui_expect_log 'volume 12000\.000 -> 13000\.000 mm3' 'latest async definition was committed'
+elif [ "$scenario" = sketch ]; then
+  ui_expect_log 'volume 20250\.000 mm3' 'native precision fields created the expected extrusion'
+elif [ "$scenario" = secondary ]; then
+  ui_expect_log 'Added parameter nativeWidth = 30 mm' 'native parameter sheet changed the document'
+  if grep -Eq '^Report sent:|^Report on the clipboard:' "$UI_LOG_FILE"; then
+    ui_fail 'report preview did not stay local'
+  fi
+elif [ "$scenario" = replacement ]; then
+  ui_expect_log 'Imported exchange.step as' 'a successful native Open imported into a separate document'
+  ui_expect_log 'Autosaved exchange:' 'the untitled imported document has its own recovery data'
+fi
+if grep -Eq '^TestDriver: FAIL|^Native Mac canvas:|^OCCT view event failed' "$UI_LOG_FILE"; then
+  ui_fail 'native input or rendering failed'
+fi
+echo "Logs and files: $UI_OUT"
+if [ "$UI_FAILURES" -gt 0 ]; then
+  echo "FAIL: native macOS UI workflow ($UI_FAILURES failures)"
+  exit 1
+fi
+echo 'PASS: native macOS UI workflow'

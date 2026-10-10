@@ -280,6 +280,16 @@ QString itemKey(const SelectionItem& item) {
 // A joint's row (mitcad#55): its kind, whether it holds and its values
 // ("Joint1: revolute, placed, rz 30 deg"); a rigid group's members.
 QString jointTooltip(const DocumentSnapshot& snapshot, const DocumentSnapshot::Feature& feature) {
+  if (feature.type == QStringLiteral("constraint_set")) {
+    for (const QJsonValue& value : snapshot.joints.value(QStringLiteral("constraints")).toArray()) {
+      const QJsonObject set = value.toObject();
+      if (set.value(QStringLiteral("uid")).toString() == feature.uid) {
+        return QObject::tr("%1: %n row(s), %2", nullptr, set.value(QStringLiteral("rows")).toArray().size())
+            .arg(feature.name, set.value(QStringLiteral("state")).toString());
+      }
+    }
+    return feature.name;
+  }
   if (feature.type == QStringLiteral("rigid_group")) {
     for (const QJsonValue& value : snapshot.joints.value(QStringLiteral("rigid_groups")).toArray()) {
       const QJsonObject group = value.toObject();
@@ -502,6 +512,23 @@ BrowserNode BrowserPanel::nodeOf(const QTreeWidgetItem* item) const {
   return m_nodes.value(const_cast<QTreeWidgetItem*>(item));
 }
 
+QVector<BrowserPanel::PresentationRow> BrowserPanel::presentationRows() const {
+  QVector<PresentationRow> rows;
+  const auto append = [this, &rows](const auto& self, const QTreeWidgetItem* item,
+                                  const QString& parent) -> void {
+    const BrowserNode node = nodeOf(item);
+    const QString key = keyOf(node);
+    rows.append({key, parent, node, item->toolTip(0)});
+    for (int index = 0; index < item->childCount(); ++index) {
+      self(self, item->child(index), key);
+    }
+  };
+  for (int index = 0; index < m_tree->topLevelItemCount(); ++index) {
+    append(append, m_tree->topLevelItem(index), QString());
+  }
+  return rows;
+}
+
 QString BrowserPanel::keyOf(const BrowserNode& node) const {
   const QString at = QLatin1Char('@') + node.occurrence;
   switch (node.type) {
@@ -717,6 +744,44 @@ void BrowserPanel::addComponentRows(QTreeWidgetItem* parent, const DocumentSnaps
       row->setForeground(kName, kFailedText);
     } else {
       gray(row, shown && node.visible);
+    }
+    // A constraint set's rows nested under it (mitcad#148).
+    if (feature->type == QStringLiteral("constraint_set")) {
+      addConstraintRows(snapshot, *feature, row, shown && !failed);
+    }
+  }
+}
+
+void BrowserPanel::addConstraintRows(const DocumentSnapshot& snapshot, const DocumentSnapshot::Feature& feature,
+                                     QTreeWidgetItem* parent, bool shown) {
+  for (const QJsonValue& value : snapshot.joints.value(QStringLiteral("constraints")).toArray()) {
+    const QJsonObject set = value.toObject();
+    if (set.value(QStringLiteral("uid")).toString() != feature.uid) {
+      continue;
+    }
+    for (const QJsonValue& rowValue : set.value(QStringLiteral("rows")).toArray()) {
+      const QJsonObject row = rowValue.toObject();
+      QString type = row.value(QStringLiteral("type")).toString();
+      type = type == QStringLiteral("insert_axis") ? tr("Insert (Axis)") : type.left(1).toUpper() + type.mid(1);
+      const auto side = [&row](const char* key) {
+        return row.value(QLatin1String(key)).toObject().value(QStringLiteral("occurrence")).toString();
+      };
+      BrowserNode node;
+      node.type = BrowserNode::Type::None;
+      node.component = feature.component;
+      node.name = tr("%1 (%2, %3)").arg(type, side("a"), side("b"));
+      const bool holds = row.value(QStringLiteral("holds")).toBool(true);
+      QTreeWidgetItem* item =
+          addRow(parent, node, QStringLiteral("constraint"),
+                 holds ? tr("Row %1 of %2").arg(row.value(QStringLiteral("row")).toInt()).arg(feature.name)
+                       : tr("Row %1 of %2: does not hold at the marker")
+                             .arg(row.value(QStringLiteral("row")).toInt())
+                             .arg(feature.name));
+      if (!holds) {
+        item->setForeground(kName, kFailedText);
+      } else if (!shown) {
+        item->setForeground(kName, kHiddenText);
+      }
     }
   }
 }

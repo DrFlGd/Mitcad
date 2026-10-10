@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: MIT
-// New Component and the primitives Box, Cylinder, Sphere and Torus (U4;
+// New Component (the ASSEMBLE group) and the primitives Box, Cylinder,
+// Sphere and Torus (the CREATE group; U4;
 // commands.md, "box, cylinder, sphere, torus" and "Components and
 // occurrences (F6)"). A primitive is placed on a plane or planar face, at
 // the point clicked on it or typed in its coordinates.
@@ -203,7 +204,8 @@ CommandDef newComponentCommand(const CommandContext& context) {
   def.name = QObject::tr("New Component");
   def.icon = QStringLiteral("component");
   def.tooltip = QObject::tr("An empty component in the active one, or components made of bodies");
-  def.group = QStringLiteral("CREATE");
+  // Registered with CREATE, so that it leads the ASSEMBLE group.
+  def.group = QStringLiteral("ASSEMBLE");
   def.pinned = true;
   def.keywords = {QStringLiteral("part"), QStringLiteral("assembly"), QStringLiteral("occurrence")};
   def.modelCommand = true;

@@ -1,0 +1,58 @@
+Mitcad's patch to OCCT 8.0.1, under OCCT's licence:
+SPDX-License-Identifier: LGPL-2.1-only WITH OCCT-exception-1.0
+
+Fillets and chamfers: the second interference of a contour's end on an
+edge (mitcad#160). ChFi3d_FilDS adds a second interference on an obstacle
+edge where two consecutive pieces of a blend meet on it with different
+transitions ("double interferences"). The index of the meeting point,
+Ipoin1 / Ipoin2, is a vertex of the data structure when the previous
+piece ended at a vertex of the edge (isVertex1 / isVertex2), but the
+interference was always made of kind POINT. TopOpeBRepBuild_Builder::
+BuildEdges then counted the uses of a point by that vertex's index, past
+the end of its array of the points: a heap overflow that corrupted memory
+(a chamfer whose two pieces meet at a vertex of the edge they cut ended
+the process with "free(): invalid next size"; a debug build of OCCT
+throws Standard_OutOfRange there). The interference now takes the kind of
+the index, as every other interference made from Ipoin1 / Ipoin2 in
+ChFi3d_FilDS does, and the existing interference is looked up with that
+kind.
+diff --git a/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_0.cxx b/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_0.cxx
+index 7c756731..6ffc6a5b 100644
+--- a/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_0.cxx
++++ b/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_0.cxx
+@@ -3358,10 +3358,16 @@ void ChFi3d_FilDS(const int                         SolidIndex,
+       {
+         // Iarc1 is initialized
+         // Iarc1 = DStr.AddShape(V1.Arc());
+-        if (ChFi3d_Contains(DStr.ShapeInterferences(Iarc1), Iarc1, Ipoin1)
++        // Ipoin1 is a vertex of the DS when isVertex1 (the previous piece
++        // ended at a vertex), not a point: the interference takes its kind.
++        if (ChFi3d_Contains(DStr.ShapeInterferences(Iarc1), Iarc1, Ipoin1, isVertex1, true)
+             && (V1.TransitionOnArc() != V3.TransitionOnArc()))
+         {
+-          Interfp1 = ChFi3d_FilPointInDS(V1.TransitionOnArc(), Iarc1, Ipoin1, V1.ParameterOnArc());
++          Interfp1 = ChFi3d_FilPointInDS(V1.TransitionOnArc(),
++                                         Iarc1,
++                                         Ipoin1,
++                                         V1.ParameterOnArc(),
++                                         isVertex1);
+           DStr.ChangeShapeInterferences(V1.Arc()).Append(Interfp1);
+         }
+       }
+@@ -3370,10 +3376,14 @@ void ChFi3d_FilDS(const int                         SolidIndex,
+       {
+         // Iarc2 is initialized
+         // Iarc2 = DStr.AddShape(V2.Arc());
+-        if (ChFi3d_Contains(DStr.ShapeInterferences(Iarc2), Iarc2, Ipoin2)
++        if (ChFi3d_Contains(DStr.ShapeInterferences(Iarc2), Iarc2, Ipoin2, isVertex2, true)
+             && (V2.TransitionOnArc() != V4.TransitionOnArc()))
+         {
+-          Interfp2 = ChFi3d_FilPointInDS(V2.TransitionOnArc(), Iarc2, Ipoin2, V2.ParameterOnArc());
++          Interfp2 = ChFi3d_FilPointInDS(V2.TransitionOnArc(),
++                                         Iarc2,
++                                         Ipoin2,
++                                         V2.ParameterOnArc(),
++                                         isVertex2);
+           DStr.ChangeShapeInterferences(V2.Arc()).Append(Interfp2);
+         }
+       }

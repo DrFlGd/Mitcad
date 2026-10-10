@@ -226,6 +226,18 @@ impl Parameters {
         Ok(self.table.set_expression(id, expression)?)
     }
 
+    /// Changes expressions atomically, keeping their units and owners;
+    /// returns the parameters whose final values changed.
+    pub fn set_expressions(
+        &mut self,
+        expressions: &[(ParamId, &str)],
+    ) -> Result<ChangeSet, ParameterError> {
+        for &(id, _) in expressions {
+            self.require(id)?;
+        }
+        Ok(self.table.set_expressions(expressions)?)
+    }
+
     /// Sets the expression to a plain value in millimetres or radians,
     /// written in the parameter's unit.
     pub fn set_value(&mut self, id: ParamId, value: f64) -> Result<ChangeSet, ParameterError> {

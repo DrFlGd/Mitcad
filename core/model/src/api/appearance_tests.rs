@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 //! Appearances (mitcad#46): the library's physically based parameters, the
 //! document's own appearances created, edited, assigned and deleted as
-//! undo steps, saved in the project file, and older files.
+//! undo steps, saved in the design file, and older files.
 
 use serde_json::{Value, json};
 
@@ -663,7 +663,7 @@ fn texture_images_are_embedded_kept_and_saved() {
         sha
     );
 
-    // Saved in the project file, and read back.
+    // Saved in the design file, and read back.
     let saved = doc.to_json();
     let file: Value = serde_json::from_str(&saved).unwrap();
     assert_eq!(file["appearances"][0]["texture"]["data"], data);

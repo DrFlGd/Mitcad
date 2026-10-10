@@ -27,6 +27,7 @@
 #include "../framework/Icons.hpp"
 #include "../framework/Numbers.hpp"
 #include "../framework/Theme.hpp"
+#include "../platform/NativeDialogs.hpp"
 #include "DocumentHost.hpp"
 
 namespace mitcad {
@@ -215,6 +216,11 @@ QTreeWidgetItem* ParametersDialog::addRow(QTreeWidgetItem* parent, const QJsonOb
   row->setData(kName, kNameRole, name);
   row->setData(kName, kKindRole, user ? QStringLiteral("user") : QStringLiteral("model"));
   row->setFlags(row->flags() | Qt::ItemIsEditable | Qt::ItemIsUserCheckable);
+  for (const int column : {kName, kUnit, kExpression, kValue, kComment, kFavorite}) {
+    const bool editable = column == kName || column == kExpression || column == kComment ||
+                          (column == kUnit && user);
+    row->setData(column, NativeEditableRole, editable);
+  }
   row->setCheckState(kFavorite, parameter.value(QStringLiteral("favorite")).toBool() ? Qt::Checked : Qt::Unchecked);
   row->setToolTip(kFavorite, tr("Favorite"));
   const QStringList uses = parameter.value(QStringLiteral("dependencies")).toVariant().toStringList();
@@ -421,7 +427,7 @@ void ParametersDialog::addParameter() {
   AddParameterDialog dialog(m_host, this);
   qDebug().noquote() << QStringLiteral("Add User Parameter dialog opened: unit %1").arg(dialog.unit());
   prepareModal(&dialog);
-  dialog.exec();
+  execDialog(&dialog);
   refresh();
 }
 

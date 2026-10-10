@@ -558,3 +558,244 @@ fn stdio_oversized_frames_are_drained_before_processing_the_next_request() {
     assert_eq!(responses[1]["id"], 1);
     assert_eq!(responses[1]["result"], json!({}));
 }
+
+fn live_response(prepared: PreparedMessage) -> Option<Value> {
+    match prepared {
+        PreparedMessage::Response(response) => response,
+        PreparedMessage::Tool { .. } => panic!("expected a protocol response, not a tool call"),
+    }
+}
+
+fn ready_live() -> LiveSession {
+    let mut session = LiveSession::new();
+    assert!(
+        live_response(session.prepare(initialize()).unwrap())
+            .unwrap()
+            .get("result")
+            .is_some()
+    );
+    assert!(live_response(session.prepare(initialized()).unwrap()).is_none());
+    session
+}
+
+#[test]
+fn live_profile_requires_initialization_and_describes_application_ownership() {
+    let mut session = LiveSession::new();
+    let response =
+        live_response(session.prepare(call("document_list", json!({}))).unwrap()).unwrap();
+    assert_eq!(response["error"]["code"], -32600);
+    assert!(session.finish(json!({}), false).is_err());
+    let response = live_response(session.prepare(initialize()).unwrap()).unwrap();
+    let instructions = response["result"]["instructions"].as_str().unwrap();
+    assert!(instructions.contains("document already open"));
+    assert!(instructions.contains("document_list"));
+    assert!(instructions.contains("Disconnecting leaves"));
+    assert!(!instructions.contains("headless"));
+    assert!(live_response(session.prepare(initialized()).unwrap()).is_none());
+    assert!(matches!(
+        session.prepare(call("document_list", json!({}))).unwrap(),
+        PreparedMessage::Tool { name, arguments }
+            if name == "document_list" && arguments == json!({})
+    ));
+}
+
+#[test]
+fn live_catalog_has_only_supported_tools_and_live_handles() {
+    let mut session = ready_live();
+    let response = live_response(
+        session
+            .prepare(request(json!(3), "tools/list", json!({})))
+            .unwrap(),
+    )
+    .unwrap();
+    let tools = response["result"]["tools"].as_array().unwrap();
+    let names: Vec<_> = tools
+        .iter()
+        .map(|tool| tool["name"].as_str().unwrap())
+        .collect();
+    assert_eq!(names, ["document_list", "model_query", "model_command"]);
+    for tool in tools.iter().filter(|tool| tool["name"] != "document_list") {
+        let description = tool["inputSchema"]["properties"]["document"]["description"]
+            .as_str()
+            .unwrap();
+        assert!(description.contains("document_list"));
+        assert!(!description.contains("document_create"));
+    }
+    for name in [
+        "document_create",
+        "document_open",
+        "document_close",
+        "document_save",
+        "model_export",
+    ] {
+        let response = live_response(session.prepare(call(name, json!({}))).unwrap()).unwrap();
+        assert_eq!(response["error"]["code"], -32602);
+        assert!(session.finish(json!({}), false).is_err());
+    }
+}
+
+#[test]
+fn live_pending_call_blocks_reentry_and_preserves_its_exact_request_id() {
+    let mut session = ready_live();
+    let id = json!(u64::MAX);
+    let arguments = json!({"document": "live-7", "query": {"query": "bodies"}});
+    assert!(matches!(
+        session.prepare(request(id.clone(), "tools/call", json!({
+            "name": "model_query", "arguments": arguments.clone()
+        }))).unwrap(),
+        PreparedMessage::Tool { name, arguments: prepared }
+            if name == "model_query" && prepared == arguments
+    ));
+    assert!(
+        session
+            .prepare(request(json!(99), "ping", json!({})))
+            .is_err()
+    );
+    assert!(session.prepare_text("not JSON").is_err());
+    let value = json!({"document": "live-7", "result": [{"uid": "F1.b0"}]});
+    let response = session.finish(value.clone(), false).unwrap();
+    assert_eq!(response["id"], id);
+    assert_eq!(response["result"]["structuredContent"], value);
+    assert_eq!(response["result"]["isError"], false);
+    assert!(session.finish(json!({}), false).is_err());
+    let response = live_response(
+        session
+            .prepare(request(json!(99), "ping", json!({})))
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(response["id"], 99);
+}
+
+#[test]
+fn live_failure_result_retains_applied_state_and_releases_pending_call() {
+    let mut session = ready_live();
+    let mut message = call(
+        "model_command",
+        json!({
+            "document": "live-1", "command": {"cmd": "recompute"}
+        }),
+    );
+    message["id"] = json!("geometry-failed");
+    assert!(matches!(
+        session.prepare(message).unwrap(),
+        PreparedMessage::Tool { .. }
+    ));
+    let value = json!({"document": "live-1", "applied": true, "error": "failed feature"});
+    let response = session.finish(value.clone(), true).unwrap();
+    assert_eq!(response["id"], "geometry-failed");
+    assert_eq!(response["result"]["structuredContent"], value);
+    assert_eq!(response["result"]["isError"], true);
+    assert!(matches!(
+        session.prepare(call("document_list", json!({}))).unwrap(),
+        PreparedMessage::Tool { .. }
+    ));
+}
+
+#[test]
+fn live_notifications_and_invalid_tool_arguments_never_become_pending() {
+    let mut session = ready_live();
+    for arguments in [
+        json!({"command": {"cmd": "undo"}}),
+        json!({"document": "live-1", "command": []}),
+        json!({"document": "live-1", "command": {}, "extra": true}),
+    ] {
+        let response =
+            live_response(session.prepare(call("model_command", arguments)).unwrap()).unwrap();
+        assert_eq!(response["error"]["code"], -32602);
+        assert!(session.finish(json!({}), false).is_err());
+    }
+    let mut notification = call(
+        "model_command",
+        json!({
+            "document": "live-1", "command": {"cmd": "undo"}
+        }),
+    );
+    notification.as_object_mut().unwrap().remove("id");
+    assert!(live_response(session.prepare(notification).unwrap()).is_none());
+    assert!(session.finish(json!({}), false).is_err());
+}
+
+#[test]
+fn live_sessions_keep_lifecycle_and_pending_requests_independent() {
+    let mut first = ready_live();
+    let mut second = LiveSession::new();
+    first.prepare(call("document_list", json!({}))).unwrap();
+    let response =
+        live_response(second.prepare(call("document_list", json!({}))).unwrap()).unwrap();
+    assert_eq!(response["error"]["code"], -32600);
+    assert!(second.finish(json!({}), false).is_err());
+    assert_eq!(
+        first.finish(json!({"documents": []}), false).unwrap()["id"],
+        2
+    );
+}
+
+#[test]
+fn live_text_errors_recover_without_advancing_lifecycle_or_pending_state() {
+    let mut session = LiveSession::new();
+    let malformed = live_response(session.prepare_text("not JSON").unwrap()).unwrap();
+    assert_eq!(malformed["error"]["code"], -32700);
+    let oversized = live_response(
+        session
+            .prepare_text(&" ".repeat(MAX_FRAME_BYTES + 1))
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(oversized["error"]["code"], -32600);
+    assert!(malformed.get("id").is_none());
+    assert!(oversized.get("id").is_none());
+    assert!(session.finish(json!({}), false).is_err());
+    let response = live_response(session.prepare_text(&initialize().to_string()).unwrap()).unwrap();
+    assert!(response.get("result").is_some());
+}
+
+#[test]
+fn live_resources_reuse_the_model_reference() {
+    let mut session = ready_live();
+    let response = live_response(
+        session
+            .prepare(request(
+                json!(8),
+                "resources/read",
+                json!({
+                    "uri": COMMANDS_URI
+                }),
+            ))
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        response["result"]["contents"][0]["text"],
+        COMMANDS_REFERENCE
+    );
+    assert!(session.finish(json!({}), false).is_err());
+}
+
+#[test]
+fn live_dispatch_plans_keep_protocol_responses_as_exact_json_text() {
+    let mut session = LiveSession::new();
+    let plan = session
+        .prepare(request(json!(u64::MAX), "ping", json!({})))
+        .unwrap()
+        .into_plan();
+    let response = plan["response"].as_str().unwrap();
+    assert_eq!(
+        serde_json::from_str::<Value>(response).unwrap(),
+        json!({"jsonrpc": "2.0", "id": u64::MAX, "result": {}})
+    );
+    assert!(response.contains("18446744073709551615"));
+    assert!(plan.get("tool").is_none());
+    assert_eq!(
+        session.prepare(initialized()).unwrap().into_plan(),
+        json!({"response": null})
+    );
+    let mut session = ready_live();
+    assert_eq!(
+        session
+            .prepare(call("document_list", json!({})))
+            .unwrap()
+            .into_plan(),
+        json!({"tool": "document_list", "arguments": {}})
+    );
+}

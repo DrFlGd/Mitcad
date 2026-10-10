@@ -71,6 +71,16 @@ class BrowserPanel : public QWidget {
 public:
   explicit BrowserPanel(QWidget* parent = nullptr);
 
+  // Toolkit-independent row identities and hierarchy for other
+  // presentations of the same browser actions.
+  struct PresentationRow {
+    QString key;
+    QString parent;
+    BrowserNode node;
+    QString tooltip;
+  };
+  QVector<PresentationRow> presentationRows() const;
+
   // Rebuilds the rows, keeping what was expanded, selected and scrolled to.
   void rebuild(const DocumentSnapshot& snapshot, bool originShown);
   // Selects the rows of these items (from the view); others are deselected.
@@ -113,6 +123,9 @@ private:
                           const QString& tooltip = QString());
   void addComponentRows(QTreeWidgetItem* parent, const DocumentSnapshot& snapshot,
                         const QString& component, const QString& occurrence, bool shown);
+  // A constraint set's rows under its row (mitcad#148).
+  void addConstraintRows(const DocumentSnapshot& snapshot, const DocumentSnapshot::Feature& feature,
+                         QTreeWidgetItem* parent, bool shown);
   BrowserNode nodeOf(const QTreeWidgetItem* item) const;
   QString keyOf(const BrowserNode& node) const;
   bool revealKeys(const QSet<QString>& keys);

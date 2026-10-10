@@ -39,9 +39,7 @@
 #include "framework/TestSync.hpp"
 #include "report/CrashHandler.hpp"
 #include "report/ReportDialogs.hpp"
-#ifdef MITCAD_RENDER
 #include "render/RenderDevice.hpp"
-#endif
 
 // The Rust panic hook's sink (core/ffi/src/panic_note.rs).
 extern "C" void mitcad_set_panic_sink(void (*sink)(const char* message, std::size_t length));
@@ -191,11 +189,7 @@ QString ReportCenter::diagnostics() const {
   lines << QStringLiteral("Graphics: %1%2")
                .arg(m_renderer.isEmpty() ? QStringLiteral("not known yet") : m_renderer,
                     m_glVersion.isEmpty() ? QString() : QStringLiteral(", OpenGL ") + m_glVersion);
-#ifdef MITCAD_RENDER
   lines << QStringLiteral("Rendered view: render device setting %1").arg(render::renderDeviceChoice());
-#else
-  lines << QStringLiteral("Rendered view: not in this build");
-#endif
   const QScreen* screen = m_window.screen();
   lines << QStringLiteral("Window: %1 layout, %2 x %3, device pixel ratio %4")
                .arg(chromeStyle() == ChromeStyle::Floating ? QStringLiteral("floating") : QStringLiteral("docked"))
@@ -237,7 +231,7 @@ void ReportCenter::sendFeedback() {
   form = &dialog;
   prepareModal(&dialog);
   qInfo().noquote() << QStringLiteral("Send Feedback: the form shows");
-  if (dialog.exec() != QDialog::Accepted) {
+  if (execDialog(&dialog) != QDialog::Accepted) {
     qInfo().noquote() << QStringLiteral("Send Feedback cancelled");
   }
 }
@@ -260,7 +254,7 @@ bool ReportCenter::previewAndSend(const report::Report& report, const QImage& sc
   const QString destination = trackerUrl.host().isEmpty() ? tracker : trackerUrl.host();
   report::ReportPreviewDialog dialog(masked, screenshot, destination, parent);
   prepareModal(&dialog);
-  if (dialog.exec() != QDialog::Accepted) {
+  if (execDialog(&dialog) != QDialog::Accepted) {
     qInfo().noquote() << QStringLiteral("Report not sent: the preview was cancelled");
     return false;
   }
@@ -525,7 +519,7 @@ bool ReportCenter::showOffer(const Offer& offer) {
   });
   qInfo().noquote() << QStringLiteral("Error report offered (%1): %2; key mitcad-%3")
                            .arg(offer.kind, oneLine(offer.message), offer.report.key);
-  box.exec();
+  execDialog(&box);
   if (never->isChecked()) {
     QSettings().setValue(QStringLiteral("reports/offerErrors"), false);
     qInfo().noquote() << QStringLiteral("Error reports: no more offers");

@@ -1,11 +1,12 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: MIT
 # Fetches and builds the Cycles render worker's libraries that vcpkg has no
-# port for (MITCAD_RENDER, docs/rendering.md): Cycles itself (Blender's path
+# port for (docs/rendering.md "Building"): Cycles itself (Blender's path
 # tracer, Apache-2.0) and Open Image Denoise (Apache-2.0, built with Intel's
 # ISPC compiler, BSD-3-Clause, which is only a build tool). Everything else
 # (Embree, TBB, OpenImageIO, OpenColorIO, OpenEXR, pugixml, zstd, cgltf)
-# comes from vcpkg through the manifest's "render" feature.
+# comes from vcpkg through the manifest's dependencies. Every Mitcad build
+# has the render worker and needs this prefix: setup-user.sh runs this once.
 #
 # Usage: tools/dev-env/build-cycles.sh [options] [prefix]
 #
@@ -32,13 +33,14 @@
 #
 # The prefix (default: MITCAD_RENDER_DEPS, else ~/mitcad-render-deps) gets
 #   downloads/  src/  build/       the pinned sources and their builds
-#   vcpkg_installed/               the render feature's vcpkg libraries
+#   vcpkg_installed/               the manifest's vcpkg libraries
 #   install/oidn/                  Open Image Denoise (shared libraries)
 #   install/cycles/                Cycles' headers, static libraries, GPU
 #                                  kernels (kernels/lib) and
 #                                  mitcad-cycles.cmake for Mitcad's build
 #   cuda-<version>/, gcc-<n>/      with --cuda, when fetched
-# Configure Mitcad with -DMITCAD_RENDER=ON -DMITCAD_RENDER_DEPS=<prefix>.
+# Mitcad's configure finds the default prefix itself; another one is given
+# with -DMITCAD_RENDER_DEPS=<prefix> or the environment variable.
 #
 # Linux only for now. Pins: tools/dev-env/versions.sh. Re-running it is
 # cheap: finished steps are skipped, and Cycles and Open Image Denoise are
@@ -109,10 +111,10 @@ fetch() {
   fi
 }
 
-echo "== vcpkg: the manifest's render feature ($TRIPLET)"
+echo "== vcpkg: the manifest's libraries ($TRIPLET)"
 # The same manifest and baseline as Mitcad's own build, so the libraries
 # Cycles is compiled against are the ones Mitcad links.
-"$VCPKG_ROOT/vcpkg" install --x-manifest-root="$REPO" --x-feature=render \
+"$VCPKG_ROOT/vcpkg" install --x-manifest-root="$REPO" \
   --x-install-root="$VCPKG_INSTALLED" --triplet "$TRIPLET" --no-print-usage > "$PREFIX/vcpkg.log" 2>&1 || {
   tail -40 "$PREFIX/vcpkg.log" >&2
   exit 1
@@ -411,4 +413,4 @@ mkdir -p "$BUILD/check"
 "$BUILD/cycles/bin/cycles" --background --quiet --samples 4 --width 64 --height 48 \
   --output "$BUILD/check/scene.png" "$CYCLES_SRC/examples/scene_cube_surface.xml"
 test -s "$BUILD/check/scene.png"
-echo "Done: configure Mitcad with -DMITCAD_RENDER=ON -DMITCAD_RENDER_DEPS=$PREFIX"
+echo "Done: Mitcad's configure takes the renderer's libraries from $PREFIX (MITCAD_RENDER_DEPS)"

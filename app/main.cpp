@@ -12,6 +12,7 @@
 #include <QTimer>
 #include <QtGlobal>
 #include <QtLogging>
+#include <memory>
 
 #include "MainWindow.hpp"
 #include "OcctViewer.hpp"
@@ -25,6 +26,7 @@
 #include "framework/TestSync.hpp"
 #include "framework/TypedTextLog.hpp"
 #include "mitcad/geometry/guard.hpp"
+#include "mcp/LiveServer.hpp"
 #include "report/CrashHandler.hpp"
 #include "report/ReportCenter.hpp"
 
@@ -71,6 +73,24 @@ int main(int argc, char* argv[]) {
   QSurfaceFormat::setDefaultFormat(mitcad::macSurfaceFormat());
 #endif
 
+#ifdef MITCAD_MACOS_NATIVE_UI
+  bool nativeUiRequested = true;
+  // The Cocoa integration must know who owns the menus before the
+  // QApplication exists. The full parser below validates these options.
+  for (int index = 1; index < argc; ++index) {
+    const QString argument = QString::fromLocal8Bit(argv[index]);
+    if (argument.startsWith(QStringLiteral("--ui="))) {
+      nativeUiRequested = argument.mid(5) == QStringLiteral("native");
+    } else if (argument == QStringLiteral("--ui") && index + 1 < argc) {
+      nativeUiRequested = QString::fromLocal8Bit(argv[++index]) == QStringLiteral("native");
+    } else if (argument.startsWith(QStringLiteral("--chrome"))) {
+      nativeUiRequested = false;
+    }
+  }
+  QCoreApplication::setAttribute(Qt::AA_PluginApplication, nativeUiRequested);
+#else
+  bool nativeUiRequested = false;
+#endif
   QApplication app(argc, argv);
   // UI tests' sync key (MITCAD_TEST_SYNC), before the window's timers exist.
   mitcad::TestSync::installIfRequested();
@@ -118,6 +138,10 @@ int main(int argc, char* argv[]) {
   QCommandLineParser parser;
   parser.addHelpOption();
   parser.addVersionOption();
+  const QCommandLineOption uiOption(QStringLiteral("ui"),
+                                    QStringLiteral("User interface: native (AppKit, when built) or qt."),
+                                    QStringLiteral("native|qt"));
+  parser.addOption(uiOption);
   const QCommandLineOption screenshotOption(
       QStringLiteral("screenshot"),
       QStringLiteral("Save an image of the 3D view to <file> after start-up and exit."),
@@ -130,7 +154,7 @@ int main(int argc, char* argv[]) {
       QStringLiteral("demo"), QStringLiteral("Start with a dimensioned demo block."));
   const QCommandLineOption openOption(
       QStringLiteral("open"),
-      QStringLiteral("Open <file> at start-up: a project (.mitcad), an .f3d or .f3z design, "
+      QStringLiteral("Open <file> at start-up: a Mitcad design (.mitcad), an .f3d or .f3z design, "
                      "a FreeCAD document (.FCStd), an .ipt part, an .iam assembly, STEP, IGES, BRep, STL, OBJ or DXF as a "
                      "new document."),
       QStringLiteral("file"));
@@ -151,6 +175,9 @@ int main(int argc, char* argv[]) {
       QStringLiteral("Floating panels paint their own material instead of the system's Liquid Glass "
                      "(macOS 26 and later; elsewhere there is none)."));
   parser.addOption(noGlassOption);
+  const QCommandLineOption noMcpOption(QStringLiteral("no-mcp"),
+                                      QStringLiteral("Disable the local MCP connection to this application."));
+  parser.addOption(noMcpOption);
   parser.addOption(screenshotOption);
   parser.addOption(setOption);
   parser.addOption(demoOption);
@@ -163,6 +190,25 @@ int main(int argc, char* argv[]) {
       QStringLiteral("Open <file> at start-up, like --open (as a file association passes it)."),
       QStringLiteral("[file]"));
   parser.process(app);
+
+  if (parser.isSet(uiOption)) {
+    const QString ui = parser.value(uiOption);
+    if (ui != QStringLiteral("native") && ui != QStringLiteral("qt")) {
+      qCritical() << "Invalid --ui argument (native or qt)";
+      return 2;
+    }
+#ifndef MITCAD_MACOS_NATIVE_UI
+    if (ui == QStringLiteral("native")) {
+      qCritical() << "Native UI was not built (MITCAD_MACOS_NATIVE_UI=ON is required on macOS)";
+      return 2;
+    }
+#endif
+    nativeUiRequested = ui == QStringLiteral("native");
+    if (nativeUiRequested && parser.isSet(chromeOption)) {
+      qCritical() << "--chrome selects a Qt layout; use --ui=qt with it";
+      return 2;
+    }
+  }
 
   if (parser.isSet(chromeOption)) {
     const QString chrome = parser.value(chromeOption);
@@ -204,7 +250,14 @@ int main(int argc, char* argv[]) {
 
   // A screenshot run offers no crash reports either (mitcad#62).
   mitcad::ReportCenter::setOfferEarlierCrashes(!parser.isSet(screenshotOption));
-  mitcad::MainWindow window(parser.isSet(demoOption));
+  std::unique_ptr<mitcad::MainWindow> ownedWindow;
+  try {
+    ownedWindow = std::make_unique<mitcad::MainWindow>(parser.isSet(demoOption), nullptr, nativeUiRequested);
+  } catch (const std::exception& error) {
+    qCritical().noquote() << "Could not create the application window:" << error.what();
+    return 2;
+  }
+  mitcad::MainWindow& window = *ownedWindow;
   window.resize(1280, 800);
   if (hasStartFile) {
     const QString& path = startFile;
@@ -215,7 +268,15 @@ int main(int argc, char* argv[]) {
       return 2;
     }
   }
-  window.show();
+  window.present();
+
+  mitcad::mcp::LiveServer mcpServer(&window);
+  if (!parser.isSet(noMcpOption)) {
+    QString error;
+    if (!mcpServer.start(&error)) {
+      qWarning().noquote() << "Local MCP connection unavailable:" << error;
+    }
+  }
 
   // For tests (framework/Diagnostics.hpp): the theme switched while the
   // window shows.

@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT
-//! Headless CAD tools for the local MCP transport. Document IO stays in
-//! the chosen workspace; imports and external-link refresh are not tools.
+//! Headless CAD tools and live GUI protocol state for local MCP transports.
+//! Document IO stays in the chosen headless workspace; live tools have no IO.
 
 use std::collections::BTreeMap;
 use std::fs;
@@ -8,7 +8,7 @@ use std::io::{self, Read, Write};
 use std::path::{Component, Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use mitcad_mcp::{Backend, ToolResult};
+use mitcad_mcp::{Backend, LiveSession, ToolResult};
 use mitcad_model::{BlobStore, Sha256};
 use serde_json::{Value, json};
 
@@ -24,6 +24,78 @@ pub fn run_mcp(workspace: &str, read_only: bool) -> Result<(), crate::ApiError> 
     let backend = CadBackend::new(workspace, read_only).map_err(crate::ApiError)?;
     mitcad_mcp::serve(io::stdin().lock(), io::stdout().lock(), backend)
         .map_err(|error| crate::ApiError(error.to_string()))
+}
+
+/// Protocol state only; the GUI retains its document and model worker.
+pub struct LiveMcpSession(LiveSession);
+
+pub fn new_live_mcp_session() -> Box<LiveMcpSession> {
+    Box::new(LiveMcpSession(LiveSession::new()))
+}
+
+impl LiveMcpSession {
+    pub fn prepare_mcp(&mut self, message: &str) -> Result<String, crate::ApiError> {
+        let prepared = self.0.prepare_text(message).map_err(crate::ApiError)?;
+        Ok(prepared.into_plan().to_string())
+    }
+
+    pub fn finish_mcp(&mut self, value: &str, is_error: bool) -> Result<String, crate::ApiError> {
+        // Parse before finishing, so a malformed application result cannot
+        // silently lose the pending request ID.
+        let value = serde_json::from_str(value)
+            .map_err(|error| crate::ApiError(format!("invalid live MCP tool result: {error}")))?;
+        self.0
+            .finish(value, is_error)
+            .map(|response| response.to_string())
+            .map_err(crate::ApiError)
+    }
+}
+
+/// Validate one model command before the GUI submits it to its worker.
+pub fn validate_mcp_command(request: &str) -> Result<(), crate::ApiError> {
+    let request = serde_json::from_str(request)
+        .map_err(|error| crate::ApiError(format!("invalid MCP command JSON: {error}")))?;
+    validate_command(&request).map_err(crate::ApiError)
+}
+
+/// Validate one model query before reading the GUI's idle document.
+pub fn validate_mcp_query(request: &str) -> Result<(), crate::ApiError> {
+    let request = serde_json::from_str(request)
+        .map_err(|error| crate::ApiError(format!("invalid MCP query JSON: {error}")))?;
+    validate_query(&request).map_err(crate::ApiError)
+}
+
+fn validate_command(request: &Value) -> Result<(), String> {
+    if !request.is_object() {
+        return Err("MCP commands must be single JSON objects".to_owned());
+    }
+    let kind = string(request, "cmd")?;
+    if !safe_command(kind) {
+        return Err(format!(
+            "command '{kind}' is not available through MCP; use document_save or model_export for output"
+        ));
+    }
+    if matches!(kind, "add_feature" | "edit_feature") {
+        let definition = object(request, "def")?;
+        let feature = string(definition, "type")?;
+        if !safe_feature(feature) {
+            return Err(format!(
+                "feature type '{feature}' is not available through MCP"
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn validate_query(request: &Value) -> Result<(), String> {
+    if !request.is_object() {
+        return Err("MCP queries must be single JSON objects".to_owned());
+    }
+    let kind = string(request, "query")?;
+    if !safe_query(kind) || (kind == "cache" && request["disk"].as_bool() == Some(true)) {
+        return Err(format!("query '{kind}' is not available through MCP"));
+    }
+    Ok(())
 }
 
 struct OpenDocument {
@@ -102,8 +174,8 @@ impl CadBackend {
         require_extension(&path, "mitcad")?;
         let bytes = read_bounded(&path, MAX_DOCUMENT_BYTES).map_err(|e| e.to_string())?;
         let text =
-            String::from_utf8(bytes).map_err(|e| format!("project file is not UTF-8: {e}"))?;
-        // The model's ordinary load_project also reads per-user display
+            String::from_utf8(bytes).map_err(|e| format!("design file is not UTF-8: {e}"))?;
+        // The model's ordinary load_design also reads per-user display
         // state and finds projects above the workspace. Use only this
         // explicit, read-only store, never refresh links on opening.
         let project = self.workspace.project_for(&path)?;
@@ -182,11 +254,7 @@ impl Backend for CadBackend {
             "model_query" => {
                 let id = string(arguments, "document")?;
                 let request = object(arguments, "query")?;
-                let kind = string(request, "query")?;
-                if !safe_query(kind) || (kind == "cache" && request["disk"].as_bool() == Some(true))
-                {
-                    return Err(format!("query '{kind}' is not available through MCP"));
-                }
+                validate_query(request)?;
                 let result = self
                     .document(id)?
                     .document
@@ -198,21 +266,7 @@ impl Backend for CadBackend {
                 self.require_writable()?;
                 let id = string(arguments, "document")?;
                 let request = object(arguments, "command")?;
-                let kind = string(request, "cmd")?;
-                if !safe_command(kind) {
-                    return Err(format!(
-                        "command '{kind}' is not available through MCP; use document_save or model_export for output"
-                    ));
-                }
-                if matches!(kind, "add_feature" | "edit_feature") {
-                    let definition = object(request, "def")?;
-                    let feature = string(definition, "type")?;
-                    if !safe_feature(feature) {
-                        return Err(format!(
-                            "feature type '{feature}' is not available through MCP"
-                        ));
-                    }
-                }
+                validate_command(request)?;
                 let opened = self.document_mut(id)?;
                 let result = opened
                     .document
@@ -257,7 +311,7 @@ impl Backend for CadBackend {
                 let format = string(arguments, "format")?;
                 if !matches!(
                     format,
-                    "step" | "iges" | "brep" | "stl" | "obj" | "3mf" | "dxf"
+                    "step" | "iges" | "brep" | "stl" | "obj" | "3mf" | "usdz" | "dxf"
                 ) {
                     return Err(format!("unknown export format '{format}'"));
                 }
@@ -299,6 +353,12 @@ impl Backend for CadBackend {
                     command["bodies"] = bodies.clone();
                 }
                 let opened = self.document_mut(id)?;
+                // USDZ: texture paths are relative to the design's folder.
+                if format == "usdz"
+                    && let Some(folder) = opened.path.as_deref().and_then(|p| p.parent())
+                {
+                    command["design_folder"] = json!(path_text(folder)?);
+                }
                 if geometry_failed(&snapshot(&opened.document)?) {
                     return Err(
                         "document has failed features; inspect and fix them before export"

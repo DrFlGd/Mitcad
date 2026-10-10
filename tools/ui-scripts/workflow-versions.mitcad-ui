@@ -11,6 +11,8 @@
 #      each changed, compared; Restore of the second records it as a fourth
 #      version and opens it. (Restore is the dialog's button: macOS has no
 #      Alt+R mnemonics.) The test checks git's log afterwards.
+#  10. The Projects panel (mitcad#145): File > New Design, named in place,
+#      recorded as a fifth version ("Add gear.mitcad") and opened.
 # The test sets MITCAD_TEST_WORK and starts the application as said above.
 
 expect-ever 'View area'
@@ -63,3 +65,16 @@ focus-main
 expect-log 'Version restored: block\.mitcad v2 \(' 20
 expect-log 'Opened ${MITCAD_TEST_WORK:re}/block\.mitcad' 20
 expect-log 'Version status: files, main, v4'
+
+# --- The Projects panel (mitcad#145): File > New Design names a design in
+# the panel's card; it is recorded as a version and opens.
+mark
+command file.new_design
+expect-log 'Projects panel: naming a new design in Local/files' 20
+# A real click activates the floating card before typing into its editor.
+click-logged 'Projects row Local/files \(new\) at '
+key ctrl+a
+type 'gear'
+key Return
+expect-log 'New Design: made ${MITCAD_TEST_WORK:re}/gear\.mitcad' 20
+expect-log 'Opened ${MITCAD_TEST_WORK:re}/gear\.mitcad' 20

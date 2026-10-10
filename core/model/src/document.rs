@@ -12,7 +12,7 @@
 //!
 //! Every state the document takes has a revision number, which undo and
 //! redo take back with the state, so the document can tell whether it is
-//! the state last saved (P8) without comparing project files.
+//! the state last saved (P8) without comparing design files.
 //!
 //! A command computes its new state before it takes it, so a computation
 //! cancelled through the document's monitor (P7, [`Document::set_monitor`])
@@ -45,7 +45,8 @@ pub use library_parts::{LibraryChange, LibraryPart, PartsListRow};
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fmt;
-use std::sync::Arc;
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, RwLock};
 use std::time::{Duration, Instant};
 
 pub use analyses::{Analysis, AnalysisDef, SectionAnalysis, SectionPlane};
@@ -133,7 +134,7 @@ fn invalid(message: impl Into<String>) -> ModelError {
     ModelError::Invalid(message.into())
 }
 
-/// The definition state: everything a project file saves.
+/// The definition state: everything a design file saves.
 #[derive(Debug, Clone, PartialEq)]
 pub struct DocState {
     pub(crate) parameters: Parameters,
@@ -816,10 +817,23 @@ pub(crate) type ResultVersions = (Vec<(FeatureUid, Option<u128>)>, Vec<(BodyUid,
 
 /// An undo or redo step: the command's label and the state on the other
 /// side of it, with that state's revision.
+#[derive(Clone)]
 struct Step {
     label: String,
     state: DocState,
     revision: u64,
+}
+
+/// Definition/history retained while an asynchronous frontend command is
+/// being prepared. Geometry stays in the shared recompute cache rather
+/// than being copied into the checkpoint.
+struct CommandCheckpoint {
+    token: String,
+    state: DocState,
+    revision: u64,
+    saved_revision: Option<u64>,
+    undo: Vec<Step>,
+    redo: Vec<Step>,
 }
 
 /// Parametric part document: definition state, history and results.
@@ -835,18 +849,23 @@ pub struct Document<K: Kernel> {
     saved_revision: Option<u64>,
     undo: Vec<Step>,
     redo: Vec<Step>,
+    command_checkpoint: Option<CommandCheckpoint>,
+    next_command_token: u64,
     cache: Cache<K::Shape>,
     result: Recomputed<K::Shape>,
     /// Recomputes so far, so callers can tell whether a command recomputed;
     /// a cancelled one is not counted.
     recomputes: u64,
     preview: Option<Preview<K::Shape>>,
-    /// What loading the project file changed, such as renamed parameters.
+    /// What loading the design file changed, such as renamed parameters.
     warnings: Vec<String>,
     /// Where recomputes report progress and find cancel requests (P7).
     monitor: Option<Arc<RecomputeMonitor>>,
     /// Reads library components (mitcad#64); the process's when None.
     resolver: Option<Arc<dyn crate::library::LinkResolver>>,
+    /// The last loaded or saved design's folder. Runtime context only:
+    /// copied appearances resolve relative image paths against it.
+    source_directory: RwLock<Option<PathBuf>>,
 }
 
 impl<K: Kernel> Document<K> {
@@ -870,6 +889,8 @@ impl<K: Kernel> Document<K> {
             saved_revision: None,
             undo: Vec::new(),
             redo: Vec::new(),
+            command_checkpoint: None,
+            next_command_token: 1,
             cache: Cache::default(),
             result: Recomputed::default(),
             recomputes: 0,
@@ -877,6 +898,7 @@ impl<K: Kernel> Document<K> {
             warnings: Vec::new(),
             monitor: None,
             resolver: None,
+            source_directory: RwLock::new(None),
         }
     }
 
@@ -885,7 +907,21 @@ impl<K: Kernel> Document<K> {
         self
     }
 
-    /// What loading the project file changed (renamed parameters, ...).
+    pub(crate) fn source_directory(&self) -> Option<PathBuf> {
+        self.source_directory
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
+    }
+
+    pub(crate) fn set_source_directory(&self, directory: &Path) {
+        *self
+            .source_directory
+            .write()
+            .unwrap_or_else(|e| e.into_inner()) = Some(directory.to_path_buf());
+    }
+
+    /// What loading the design file changed (renamed parameters, ...).
     pub fn load_warnings(&self) -> &[String] {
         &self.warnings
     }
@@ -1071,6 +1107,8 @@ impl<K: Kernel> Document<K> {
             saved_revision: self.saved_revision,
             undo: Vec::new(),
             redo: Vec::new(),
+            command_checkpoint: None,
+            next_command_token: 1,
             cache: self.cache.fork(),
             result: self.result.fork(),
             recomputes: self.recomputes,
@@ -1078,6 +1116,7 @@ impl<K: Kernel> Document<K> {
             warnings: Vec::new(),
             monitor: None,
             resolver: self.resolver.clone(),
+            source_directory: RwLock::new(self.source_directory()),
         })
     }
 
@@ -1466,6 +1505,29 @@ impl<K: Kernel> Document<K> {
             state.marker = position;
             Ok(("Move Timeline Marker".to_owned(), ()))
         })
+    }
+
+    /// Moves the marker for a command's preview without adding a history
+    /// step, clearing redo or changing the saved revision. The caller must
+    /// restore the original marker before committing or saving a command.
+    /// A cancelled computation leaves the state and its results unchanged.
+    pub fn set_temporary_marker(&mut self, position: usize) -> Result<(), ModelError> {
+        if position > self.state.features.len() {
+            return Err(invalid(format!(
+                "marker position {position} is past the end of the timeline ({})",
+                self.state.features.len()
+            )));
+        }
+        if position == self.state.marker {
+            return Ok(());
+        }
+        let mut next = self.state.clone();
+        next.marker = position;
+        let result = self.compute(&next)?;
+        self.state = next;
+        self.preview = None;
+        self.set_result(result);
+        Ok(())
     }
 
     pub fn rename_feature(&mut self, uid: FeatureUid, name: &str) -> Result<(), ModelError> {
@@ -1973,6 +2035,69 @@ impl<K: Kernel> Document<K> {
 
     // Undo and redo.
 
+    /// Retains the definition and exact undo/redo history before a
+    /// frontend command. Only one checkpoint may exist per document;
+    /// callers discard it after accepting or restoring the command.
+    pub fn begin_command(&mut self) -> Result<String, ModelError> {
+        if self.command_checkpoint.is_some() {
+            return Err(invalid("a command checkpoint is already active"));
+        }
+        let token = format!("command:{}", self.next_command_token);
+        self.next_command_token = self
+            .next_command_token
+            .checked_add(1)
+            .ok_or_else(|| invalid("command checkpoint tokens are exhausted"))?;
+        self.command_checkpoint = Some(CommandCheckpoint {
+            token: token.clone(),
+            state: self.state.clone(),
+            revision: self.revision,
+            saved_revision: self.saved_revision,
+            undo: self.undo.clone(),
+            redo: self.redo.clone(),
+        });
+        Ok(token)
+    }
+
+    /// Restores a checkpoint only after computing its scene succeeds.
+    /// Cancellation leaves the current definition, history and checkpoint
+    /// intact. The token remains valid for failed-commit retries, and
+    /// revision numbers allocated since it began are never reused.
+    pub fn restore_command(&mut self, token: &str) -> Result<(), ModelError> {
+        let checkpoint = self
+            .command_checkpoint
+            .as_ref()
+            .filter(|checkpoint| checkpoint.token == token)
+            .ok_or_else(|| invalid("the command checkpoint is not active"))?;
+        let state = checkpoint.state.clone();
+        let result = self.compute(&state)?;
+        let checkpoint = self
+            .command_checkpoint
+            .as_ref()
+            .expect("retained checkpoint");
+        self.state = state;
+        self.revision = checkpoint.revision;
+        self.saved_revision = checkpoint.saved_revision;
+        self.undo = checkpoint.undo.clone();
+        self.redo = checkpoint.redo.clone();
+        self.preview = None;
+        self.set_result(result);
+        Ok(())
+    }
+
+    /// Releases a matching checkpoint without changing the document or
+    /// its history. A stale token cannot affect a newer command.
+    pub fn discard_command(&mut self, token: &str) -> Result<(), ModelError> {
+        if !self
+            .command_checkpoint
+            .as_ref()
+            .is_some_and(|checkpoint| checkpoint.token == token)
+        {
+            return Err(invalid("the command checkpoint is not active"));
+        }
+        self.command_checkpoint = None;
+        Ok(())
+    }
+
     /// Restores the state before the last command; returns its label. A
     /// cancelled undo (see [`Document::try_undo`]) gives None.
     pub fn undo(&mut self) -> Option<String> {
@@ -2070,7 +2195,7 @@ impl<K: Kernel> Document<K> {
         self.saved_revision != Some(self.revision)
     }
 
-    /// Marks the definition state as the one in the project file, after
+    /// Marks the definition state as the one in the design file, after
     /// saving or opening it; no undo step.
     pub fn mark_saved(&mut self) {
         self.saved_revision = Some(self.revision);

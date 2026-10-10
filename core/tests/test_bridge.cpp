@@ -379,10 +379,10 @@ void test_rejected_commands() {
         std::string::npos);
 }
 
-// The version 1 project file example of V0: a block with a boss joined
+// The version 1 design file example of V0: a block with a boss joined
 // onto it, a hole cut through it, and a fillet on the block's corner 1 and
 // the boss's corner 1.
-const char* const kProjectFile = R"({
+const char* const kDesignFile = R"({
   "format": "mitcad",
   "version": 1,
   "parameters": [
@@ -424,8 +424,8 @@ double example_volume(double boss) {
          fillet_loss(2.0) * (20.0 + 10.0);
 }
 
-void test_project_file_load_and_recompute() {
-  auto document = mitcad::load_document(kProjectFile);
+void test_design_file_load_and_recompute() {
+  auto document = mitcad::load_document(kDesignFile);
   CHECK(body_count(*document) == 0); // nothing computed yet
   const std::string first = run(*document, R"({"cmd": "recompute"})");
   CHECK(contains(first, R"("recomputed":6)") && contains(first, R"("error":null)"));
@@ -467,15 +467,15 @@ void test_report() {
   CHECK(contains(json, R"("volume": 48000.0)"));
 }
 
-void test_project_file_errors() {
+void test_design_file_errors() {
   CHECK(throws_with([] { mitcad::load_document("{"); }, "not valid JSON"));
   CHECK(throws_with([] { mitcad::load_document(R"({"format": "step"})"); },
-                    "not a Mitcad project file"));
+                    "not a Mitcad design file"));
   CHECK(throws_with([] { mitcad::load_document(R"({"format": "mitcad", "version": 4})"); },
                     "newer than this Mitcad"));
 
   const auto edited = [](const std::string& from, const std::string& to) {
-    std::string json(kProjectFile);
+    std::string json(kDesignFile);
     json.replace(json.find(from), from.size(), to);
     return json;
   };
@@ -582,7 +582,7 @@ private:
 // here stops it with the model's error, and the document stays as it was,
 // ready for the next computation.
 void test_job_cancelled_from_another_thread() {
-  auto document = mitcad::load_document(kProjectFile); // 6 features, none computed
+  auto document = mitcad::load_document(kDesignFile); // 6 features, none computed
   const rust::Box<mitcad::JobControl> control = mitcad::new_job_control();
   control->set_test_delay(200); // each evaluation takes 200 ms longer
   document->attach_job(*control);
@@ -1058,9 +1058,9 @@ int main() {
   test_chamfer_intersect_and_several_profiles();
   test_preview_and_profile_handles();
   test_rejected_commands();
-  test_project_file_load_and_recompute();
+  test_design_file_load_and_recompute();
   test_report();
-  test_project_file_errors();
+  test_design_file_errors();
   test_datums_and_analysis_shapes();
   test_job_cancelled_from_another_thread();
   test_jobs_handed_between_threads();

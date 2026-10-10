@@ -3,7 +3,7 @@
 
 // mitcad-cli import, import-f3d, import-fcstd and import-ipt (import.cpp),
 // and what mitcad-cli's other commands share with them: the arguments, JSON
-// text, and opening and saving project files. The import corpus tests run
+// text, and opening and saving design files. The import corpus tests run
 // these commands; tools/check-all.sh runs the corpus again when this code
 // changes, not when main.cpp does.
 
@@ -57,13 +57,13 @@ struct StoreOptions {
   double min_ms = 100.0;
 };
 
-// Opens a project file, follows its links and recomputes it; with a store,
+// Opens a design file, follows its links and recomputes it; with a store,
 // its line goes to `log`.
 rust::Box<mitcad::Document> open_document(const std::string& path, const StoreOptions& store = {},
                                           std::ostream* log = nullptr);
 
-// Writes the project file whole or not at all: version 3 in a project
-// (P12a; the B-rep data in the project's store), else one file. Throws
+// Writes the design file whole or not at all: version 3 in a project
+// (P12a; the B-rep data in the project's store), else a single file. Throws
 // rust::Error when it cannot be written.
 void save_document(const mitcad::Document& document, const std::string& path);
 

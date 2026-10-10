@@ -64,6 +64,7 @@
 #include <Graphic3d_ArrayOfTriangles.hxx>
 #include <Graphic3d_AspectFillArea3d.hxx>
 #include <Graphic3d_Group.hxx>
+#include <Graphic3d_MaterialAspect.hxx>
 #include <Prs3d_Presentation.hxx>
 #include <gp_Pnt2d.hxx>
 #include <Graphic3d_TextureParams.hxx>
@@ -370,6 +371,66 @@ void setPointStyle(const occ::handle<AIS_Shape>& object, const Quantity_Color& c
   object->Attributes()->SetPointAspect(new Prs3d_PointAspect(marker, color, scale));
 }
 
+// Highlights (mitcad#149): a material that only emits its colour (no
+// ambient, diffuse or specular reflection), so that light does not change
+// it. A lit highlight washed out to white where the light falls on the
+// face head-on, as the face itself does, and could not be told from it.
+Graphic3d_MaterialAspect flatMaterial(float transparency) {
+  Graphic3d_MaterialAspect material(Graphic3d_NameOfMaterial_UserDefined);
+  material.SetMaterialType(Graphic3d_MATERIAL_ASPECT); // the colour is the aspect's
+  material.SetAmbientColor(Quantity_Color(Quantity_NOC_BLACK));
+  material.SetDiffuseColor(Quantity_Color(Quantity_NOC_BLACK));
+  material.SetSpecularColor(Quantity_Color(Quantity_NOC_BLACK));
+  material.SetEmissiveColor(Quantity_Color(Quantity_NOC_WHITE));
+  material.SetTransparency(transparency);
+  return material;
+}
+
+// How much of the face under a highlight shows through it: the hover's
+// and OCCT's own selection's, and the command and idle selections'
+// (setHighlights; a whole body's more, as it covers more).
+constexpr float kHoverTransparency = 0.5f;
+constexpr float kSelectedTransparency = 0.35f;
+constexpr float kWholeTransparency = 0.55f;
+// OCCT's own selection highlight; the selections shown are setHighlights'.
+const Quantity_Color kSelectedColor(0x1f / 255.0, 0x7a / 255.0, 0xff / 255.0, Quantity_TOC_sRGB);
+
+// One of OCCT's highlight styles (the hover and OCCT's own selection) with
+// the look of setHighlights(): faces see-through in a colour that light
+// does not change (flatMaterial), so that the face's own shading shows
+// through; the face's boundary, edges and vertices opaque in the colour,
+// over the faces they lie on. In the top layer, which keeps the scene's
+// depth, so that nearer geometry hides the highlight (OCCT draws the
+// highlight of a face, edge or vertex in the topmost layer, which clears
+// the depth: a face's highlight covered what lay in front of the face). A
+// polygon offset brings a face's highlight just in front of the face.
+void setHighlightStyle(const occ::handle<Prs3d_Drawer>& style, const Quantity_Color& color,
+                       float transparency) {
+  // The colour of lines and marks, and of faces through the fill below;
+  // opaque, the faces' transparency is the fill's.
+  style->SetColor(color);
+  style->SetTransparency(0.0f);
+  style->SetDisplayMode(AIS_Shaded);
+  style->SetZLayer(Graphic3d_ZLayerId_Top);
+  occ::handle<Graphic3d_AspectFillArea3d> fill = new Graphic3d_AspectFillArea3d();
+  fill->SetInteriorStyle(Aspect_IS_SOLID);
+  fill->SetInteriorColor(color);
+  fill->SetFrontMaterial(flatMaterial(transparency));
+  fill->SetBackMaterial(flatMaterial(transparency));
+  fill->SetDistinguishOff();
+  style->SetBasicFillAreaAspect(fill);
+  // The aspects a face's, edge's or vertex's own highlight is drawn with
+  // (the colour above replaces theirs).
+  style->SetupOwnShadingAspect();
+  style->ShadingAspect()->Aspect()->SetPolygonOffsets(Aspect_POM_Fill, 0.0f, -2.0f);
+  style->SetFaceBoundaryDraw(true);
+  style->SetFaceBoundaryAspect(new Prs3d_LineAspect(color, Aspect_TOL_SOLID, 2.0));
+  style->WireAspect()->SetWidth(3.0);
+  style->LineAspect()->SetWidth(3.0);
+  style->FreeBoundaryAspect()->SetWidth(3.0);
+  style->UnFreeBoundaryAspect()->SetWidth(3.0);
+}
+
 // The colour of a body's edges where they are drawn alone (wireframe): its
 // appearance's colour, darker, or the default dark edges.
 Quantity_Color wireColor(const QColor& color) {
@@ -406,6 +467,13 @@ occ::handle<AIS_Shape> makeBody(const geometry::Shape& named, BodyDisplay::Style
     occ::handle<AIS_Shape> body = new AIS_Shape(shape);
     body->SetColor(kPreviewColor);
     body->SetTransparency(0.5);
+    return body;
+  }
+  if (style == BodyDisplay::Style::Ghost) {
+    // Faint enough to see and pick what lies behind (mitcad#147).
+    occ::handle<AIS_Shape> body = new AIS_Shape(shape);
+    body->SetColor(color.isValid() ? occtColor(color) : kBodyColor);
+    body->SetTransparency(0.8);
     return body;
   }
   // Faces with appearances of their own (mitcad#53) in their colours, in
@@ -772,6 +840,12 @@ OcctViewer::OcctViewer(QWidget* parent) : QOpenGLWidget(parent) {
   m_pickFilter = new Filter(this);
   m_context->AddFilter(m_pickFilter);
   setHoverColor(QColor(0x2f, 0x9b, 0xff));
+  // OCCT's own selection is cleared as soon as it is made
+  // (OnSelectionChanged); should it show, it looks as setHighlights' does.
+  for (const Prs3d_TypeOfHighlight type :
+       {Prs3d_TypeOfHighlight_Selected, Prs3d_TypeOfHighlight_LocalSelected}) {
+    setHighlightStyle(m_context->HighlightStyle(type), kSelectedColor, kSelectedTransparency);
+  }
   m_grid = new LayoutGrid();
   m_grid->SetZLayer(m_gridLayer);
   setGridColors(*m_grid, m_paper);
@@ -934,6 +1008,11 @@ void OcctViewer::activatePicking(const occ::handle<AIS_Shape>& object) {
     return;
   }
   m_context->Deactivate(object);
+  // A highlight on a ghost lets a click through to what lies behind
+  // (mitcad#147); its item is deselected in the panel.
+  if (info->second.highlight && isGhosted(info->second.item.occurrence)) {
+    return;
+  }
   // Pick widths in device pixels (PickContext.hpp): edges and vertices
   // wider than faces.
   const qreal ratio = devicePixelRatioF();
@@ -1032,13 +1111,18 @@ void OcctViewer::setBodies(const std::vector<BodyDisplay>& bodies) {
     // A placed body is the body's own shape with the occurrence's
     // transformation on the object, so that picks find its named faces.
     const TopoDS_Shape& shape = body.shape->occt();
+    // A normal body of an occurrence a command picks through: a ghost.
+    const bool ghosted =
+        body.style == BodyDisplay::Style::Normal && isGhosted(QString::fromStdString(body.occurrence));
+    const BodyDisplay::Style style = ghosted ? BodyDisplay::Style::Ghost : body.style;
     auto existing = m_bodies.find(key);
-    if (existing != m_bodies.end() && existing->second.style == body.style &&
+    if (existing != m_bodies.end() && existing->second.style == style &&
         existing->second.object->Shape().IsEqual(shape) &&
         sameTransformation(existing->second.placement.Transformation(), body.placement.Transformation()) &&
         existing->second.color == body.color && sameFaceColors(existing->second.faceLooks, body.faceLooks)) {
       BodyEntry entry = existing->second;
       entry.shape = body.shape; // the same geometry may come with new names
+      entry.ghosted = ghosted;
       if (!entry.appearance.sameLook(body.appearance) || !sameFaceLooks(entry.faceLooks, body.faceLooks)) {
         ++restyled;
       }
@@ -1060,7 +1144,8 @@ void OcctViewer::setBodies(const std::vector<BodyDisplay>& bodies) {
     entry.uid = body.uid;
     entry.occurrence = body.occurrence;
     entry.shape = body.shape;
-    entry.style = body.style;
+    entry.style = style;
+    entry.ghosted = ghosted;
     entry.placement = body.placement;
     entry.color = body.color;
     entry.appearance = body.appearance;
@@ -1087,7 +1172,7 @@ void OcctViewer::setBodies(const std::vector<BodyDisplay>& bodies) {
 std::vector<BodyDisplay> OcctViewer::shownBodies() const {
   std::vector<BodyDisplay> bodies;
   for (const auto& [key, entry] : m_bodies) {
-    if (entry.style != BodyDisplay::Style::Normal) {
+    if (entry.style != BodyDisplay::Style::Normal && !entry.ghosted) {
       continue;
     }
     BodyDisplay body;
@@ -1101,6 +1186,47 @@ std::vector<BodyDisplay> OcctViewer::shownBodies() const {
     bodies.push_back(body);
   }
   return bodies;
+}
+
+bool OcctViewer::isGhosted(const QString& occurrence) const {
+  if (occurrence.isEmpty()) {
+    return false;
+  }
+  return std::any_of(m_ghosts.begin(), m_ghosts.end(), [&occurrence](const QString& ghost) {
+    return !ghost.isEmpty() && (occurrence == ghost || occurrence.startsWith(ghost + QLatin1Char('/')));
+  });
+}
+
+void OcctViewer::setGhosts(const QStringList& occurrences) {
+  if (occurrences == m_ghosts) {
+    return;
+  }
+  m_ghosts = occurrences;
+  int ghosts = 0;
+  for (auto& [key, entry] : m_bodies) {
+    const bool ghosted = (entry.style == BodyDisplay::Style::Normal || entry.ghosted) &&
+                         isGhosted(QString::fromStdString(entry.occurrence));
+    if (ghosted != entry.ghosted) {
+      removeBody(entry);
+      entry.style = ghosted ? BodyDisplay::Style::Ghost : BodyDisplay::Style::Normal;
+      entry.ghosted = ghosted;
+      showBody(entry);
+    }
+    ghosts += ghosted ? 1 : 0;
+  }
+  // The highlights on ghosts let clicks through; the others take them again.
+  for (const occ::handle<AIS_Shape>& highlight : m_highlights) {
+    activatePicking(highlight);
+  }
+  m_context->ClearDetected(false);
+  qDebug().noquote() << QStringLiteral("View ghosts: %1")
+                            .arg(m_ghosts.isEmpty() ? QStringLiteral("none")
+                                                    : QStringLiteral("%1 (%2 %3)")
+                                                          .arg(m_ghosts.join(QStringLiteral(", ")))
+                                                          .arg(ghosts)
+                                                          .arg(ghosts == 1 ? QStringLiteral("body")
+                                                                           : QStringLiteral("bodies")));
+  sceneChanged();
 }
 
 void OcctViewer::applyRenderedVisibility(BodyEntry& entry) {
@@ -1415,9 +1541,12 @@ void OcctViewer::setHighlights(const std::vector<HighlightDisplay>& highlights) 
     case SelectKind::Body:
     case SelectKind::Component: {
       object->SetColor(color);
+      // In a colour light does not change, as the hover's
+      // (setHighlightStyle): lit, a light colour washed out to white.
+      object->SetMaterial(flatMaterial(0.0f));
       const bool whole =
           highlight.item.kind == SelectKind::Body || highlight.item.kind == SelectKind::Component;
-      object->SetTransparency(whole ? 0.55 : 0.35);
+      object->SetTransparency(whole ? kWholeTransparency : kSelectedTransparency);
       // Drawn just in front of the face it covers.
       object->Attributes()->ShadingAspect()->Aspect()->SetPolygonOffsets(Aspect_POM_Fill, -1.0f,
                                                                          -4.0f);
@@ -1497,11 +1626,10 @@ void OcctViewer::setPickFilter(SelectFilter filter, std::function<bool(const Sel
 }
 
 void OcctViewer::setHoverColor(const QColor& color) {
+  // Whole objects (Dynamic) and faces, edges and vertices (LocalDynamic).
   for (const Prs3d_TypeOfHighlight type :
        {Prs3d_TypeOfHighlight_Dynamic, Prs3d_TypeOfHighlight_LocalDynamic}) {
-    const occ::handle<Prs3d_Drawer>& style = m_context->HighlightStyle(type);
-    style->SetColor(occtColor(color));
-    style->SetDisplayMode(AIS_Shaded);
+    setHighlightStyle(m_context->HighlightStyle(type), occtColor(color), kHoverTransparency);
   }
   sceneChanged();
 }
@@ -1958,6 +2086,10 @@ void OcctViewer::setOverlayInsets(const QMargins& insets) {
 }
 
 void OcctViewer::placeHomeButton() {
+  if (m_nativeControls) {
+    m_homeButton->hide();
+    return;
+  }
   // At the cube's upper left.
   m_homeButton->move(width() - m_overlayInsets.right() - kCubeOffset - 70, m_overlayInsets.top() + 6);
   m_homeButton->raise();
@@ -1989,6 +2121,12 @@ void OcctViewer::placeCubeArrows() {
 }
 
 void OcctViewer::updateCubeArrows() {
+  if (m_nativeControls) {
+    for (const auto& arrow : m_cubeArrows) {
+      arrow.second->hide();
+    }
+    return;
+  }
   // Only while the view looks straight at a face.
   const gp_Dir direction = m_view->Camera()->Direction();
   const double along = std::max({std::abs(direction.X()), std::abs(direction.Y()), std::abs(direction.Z())});
@@ -2005,6 +2143,18 @@ void OcctViewer::updateCubeArrows() {
     }
   } else if (changed) {
     qDebug().noquote() << "Orientation cube arrows hidden";
+  }
+}
+
+void OcctViewer::setNativeControls(bool native) {
+  m_nativeControls = native;
+  if (m_homeButton != nullptr) {
+    m_homeButton->setVisible(!native);
+  }
+  for (const auto& arrow : m_cubeArrows) {
+    if (native) {
+      arrow.second->hide();
+    }
   }
 }
 
@@ -2714,9 +2864,16 @@ void OcctViewer::setSketchSnapping(bool snapping) {
   }
 }
 
+void OcctViewer::setDragCursor(bool shown) {
+  if (shown != m_dragCursor) {
+    m_dragCursor = shown;
+    updateCursor(false);
+  }
+}
+
 void OcctViewer::updateCursor(bool log) {
   if (!m_sketchInput) {
-    setCursor(Qt::ArrowCursor);
+    setCursor(m_dragCursor ? Qt::SizeAllCursor : Qt::ArrowCursor);
   } else {
     setCursor(precisionCursor(m_sketchToolIcon, devicePixelRatioF(), m_sketchSnapping));
   }
@@ -2737,6 +2894,37 @@ void OcctViewer::updateCursor(bool log) {
   }
 }
 
+void OcctViewer::cancelPointerInteraction() {
+  endScrollDrag();
+  ResetViewInput();
+  // ResetViewInput leaves pending pointer deltas and selection requests.
+  // Drop those too, while keeping deliberate Fit, orientation and zoom
+  // commands that a menu action may just have queued.
+  for (const auto type : {AIS_ViewInputBufferType_UI, AIS_ViewInputBufferType_GL}) {
+    AIS_ViewInputBuffer& input = ChangeInputBuffer(type);
+    input.IsNewGesture = true;
+    // Keep the tool until the next frame: an empty rubber-band tool
+    // removes its rectangle, while a picking tool would leave it shown.
+    input.Selection.Points.Clear();
+    input.Selection.Scheme = AIS_SelectionScheme_UNKNOWN;
+    input.Selection.ToApplyTool = false;
+    input.Panning = {};
+    input.OrbitRotation = {};
+    input.ViewRotation = {};
+    input.ZRotate = {};
+    input.Dragging = {};
+    input.Dragging.ToAbort = true;
+  }
+  m_cubePress = false;
+  m_cubeClick = false;
+  m_windowPick = false;
+  m_orbitKey = false;
+  if (m_dragItem) {
+    endOccurrenceDrag(QPointF(), true);
+  }
+  requestFrame();
+}
+
 bool OcctViewer::event(QEvent* event) {
   if (event->type() == QEvent::NativeGesture) {
     nativeGesture(static_cast<QNativeGestureEvent*>(event));
@@ -2755,14 +2943,7 @@ bool OcctViewer::event(QEvent* event) {
   if (event->type() == QEvent::WindowBlocked) {
     // The release goes to the dialog: an orbit or a window selection in
     // progress ends here, without a pick.
-    endScrollDrag();
-    ResetViewInput();
-    m_cubePress = false;
-    m_cubeClick = false;
-    m_orbitKey = false;
-    if (m_dragItem) {
-      endOccurrenceDrag(QPointF(), true);
-    }
+    cancelPointerInteraction();
   }
   const bool handled = QOpenGLWidget::event(event);
   if (event->type() == QEvent::DevicePixelRatioChange) {
@@ -2802,17 +2983,21 @@ void OcctViewer::mousePressEvent(QMouseEvent* event) {
     if (m_cubePress && !m_cubeClick) {
       m_cubeClick = true; // F4: an orbit, not a pick
     }
-    // A press on a component the joints move may drag it (mitcad#55): the
-    // button is not the view's then, so no window selection starts; a
-    // release without a drag is passed on as a click.
+    // A press on a component the joints move may drag it (mitcad#55), or
+    // on a body that cannot be dragged say why (mitcad#150): the button is
+    // not the view's then, so no window selection starts; a release
+    // without a drag is passed on as a click.
     if (!m_cubePress && !m_cubeClick && event->modifiers() == Qt::NoModifier && m_occurrenceDrag.accepts) {
       const occ::handle<SelectMgr_EntityOwner> owner = m_context->DetectedOwner();
       const auto item = itemFor(owner);
       const auto grabbed = pickedWorldPoint(owner);
-      if (item && grabbed && m_occurrenceDrag.accepts(*item)) {
+      const OccurrenceDragStart start =
+          item && grabbed ? m_occurrenceDrag.accepts(*item) : OccurrenceDragStart::Select;
+      if (start != OccurrenceDragStart::Select) {
         m_dragItem = item;
         m_dragGrab = *grabbed;
         m_dragging = false;
+        m_dragRefused = start == OccurrenceDragStart::Refuse;
         return;
       }
     }
@@ -2851,9 +3036,10 @@ std::optional<gp_Pnt> OcctViewer::viewPlanePoint(const QPointF& position, const 
 }
 
 void OcctViewer::endOccurrenceDrag(const QPointF& position, bool cancelled) {
-  const bool dragging = m_dragging;
+  const bool dragging = m_dragging && !m_dragRefused;
   m_dragItem.reset();
   m_dragging = false;
+  m_dragRefused = false;
   if (!dragging || !m_occurrenceDrag.finished) {
     return;
   }
@@ -2863,22 +3049,8 @@ void OcctViewer::endOccurrenceDrag(const QPointF& position, bool cancelled) {
 
 void OcctViewer::mouseReleaseEvent(QMouseEvent* event) {
   QOpenGLWidget::mouseReleaseEvent(event);
-  if (event->button() == Qt::RightButton) {
-    const QPointF moved = event->position() - m_rightPressPosition;
-    if (std::hypot(moved.x(), moved.y()) <= kDragPixels) {
-      if (isOnOrientationCube(event->position())) {
-        m_context->ClearDetected(false);
-        emit orientationCubeMenuRequested(event->globalPosition().toPoint());
-      } else {
-        const NCollection_Vec2<int> pixel = toDevicePixels(event->position());
-        m_context->MoveTo(pixel.x(), pixel.y(), m_view, false);
-        const auto item = itemFor(m_context->DetectedOwner());
-        emit contextMenuRequested(event->globalPosition().toPoint(),
-                                  item && accepts(m_context->DetectedOwner()) ? *item
-                                                                              : SelectionItem());
-      }
-    }
-  }
+  const bool rightClick = event->button() == Qt::RightButton &&
+                          (PressedMouseButtons() & Aspect_VKeyMouse_RightButton) != 0;
   const bool cube = m_cubePress && event->button() == Qt::LeftButton;
   if (m_sketchInput && event->button() == Qt::LeftButton && !cube) {
     return;
@@ -2890,6 +3062,7 @@ void OcctViewer::mouseReleaseEvent(QMouseEvent* event) {
     }
     // No drag: the press and its release reach the view as a click.
     m_dragItem.reset();
+    m_dragRefused = false;
     m_windowPick = false;
     const Aspect_VKeyFlags flags = viewFlags(m_pressModifiers);
     UpdateMouseButtons(toDevicePixels(m_pressPosition), Aspect_VKeyMouse_LeftButton, flags, false);
@@ -2915,6 +3088,24 @@ void OcctViewer::mouseReleaseEvent(QMouseEvent* event) {
                          false)) {
     requestFrame();
   }
+  // Release the view's gesture before a context menu can take input,
+  // including when a caller connects directly to these signals.
+  if (rightClick) {
+    const QPointF moved = event->position() - m_rightPressPosition;
+    if (std::hypot(moved.x(), moved.y()) <= kDragPixels) {
+      if (isOnOrientationCube(event->position())) {
+        m_context->ClearDetected(false);
+        emit orientationCubeMenuRequested(event->globalPosition().toPoint());
+      } else {
+        const NCollection_Vec2<int> pixel = toDevicePixels(event->position());
+        m_context->MoveTo(pixel.x(), pixel.y(), m_view, false);
+        const auto item = itemFor(m_context->DetectedOwner());
+        emit contextMenuRequested(event->globalPosition().toPoint(),
+                                  item && accepts(m_context->DetectedOwner()) ? *item
+                                                                              : SelectionItem());
+      }
+    }
+  }
 }
 
 void OcctViewer::mouseMoveEvent(QMouseEvent* event) {
@@ -2922,17 +3113,28 @@ void OcctViewer::mouseMoveEvent(QMouseEvent* event) {
   if (m_scrollDragging) {
     endScrollDrag();
   }
+  // AppKit menu tracking and other controls may receive a release that
+  // never reaches this widget. OCCT does not reconcile buttons on motion;
+  // discard the old gesture before hover motion can continue its orbit.
+  if (event->buttons() == Qt::NoButton &&
+      (PressedMouseButtons() != Aspect_VKeyMouse_NONE || m_cubePress || m_dragItem)) {
+    cancelPointerInteraction();
+  }
   if (m_dragItem) {
     // A component dragged (mitcad#55): the owner moves it, the view only
-    // follows.
+    // follows; a refused one stays, and the owner says why (mitcad#150).
     const QPointF moved = event->position() - m_pressPosition;
     if (!m_dragging && std::hypot(moved.x(), moved.y()) > kDragPixels) {
       m_dragging = true;
-      if (m_occurrenceDrag.started) {
+      if (m_dragRefused) {
+        if (m_occurrenceDrag.refused) {
+          m_occurrenceDrag.refused(*m_dragItem);
+        }
+      } else if (m_occurrenceDrag.started) {
         m_occurrenceDrag.started(*m_dragItem, m_dragGrab);
       }
     }
-    if (m_dragging && m_occurrenceDrag.moved) {
+    if (m_dragging && !m_dragRefused && m_occurrenceDrag.moved) {
       if (const auto target = viewPlanePoint(event->position(), m_dragGrab)) {
         m_occurrenceDrag.moved(*target);
       }

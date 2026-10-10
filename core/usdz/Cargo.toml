@@ -1,0 +1,16 @@
+# SPDX-License-Identifier: MIT
+[package]
+name = "mitcad-usdz"
+description = "USDZ (Universal Scene Description package) writer and checking reader for Mitcad's meshes"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[lib]
+name = "mitcad_usdz"
+
+[dependencies]
+# The package is an uncompressed zip archive with 64-byte aligned files.
+mitcad-zip = { path = "../zip" }

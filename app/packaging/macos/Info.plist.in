@@ -58,7 +58,7 @@
   <array>
     <dict>
       <key>CFBundleTypeName</key>
-      <string>Mitcad Project</string>
+      <string>Mitcad Design</string>
       <key>CFBundleTypeRole</key>
       <string>Editor</string>
       <key>LSHandlerRank</key>
@@ -194,7 +194,7 @@
       <key>UTTypeIdentifier</key>
       <string>@MITCAD_BUNDLE_ID@.project</string>
       <key>UTTypeDescription</key>
-      <string>Mitcad Project</string>
+      <string>Mitcad Design</string>
       <key>UTTypeConformsTo</key>
       <array>
         <string>public.json</string>

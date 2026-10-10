@@ -14,6 +14,8 @@
 
 #include "CommandRegistry.hpp"
 
+#include "Dialogs.hpp"
+
 namespace mitcad {
 
 ShortcutDialog::ShortcutDialog(CommandRegistry& registry, QWidget* parent)
@@ -74,7 +76,7 @@ void ShortcutDialog::accept() {
     const QString text = keys.toString(QKeySequence::NativeText);
     const QString name = m_table->item(row, 0)->text();
     if (used.contains(text)) {
-      QMessageBox::warning(this, windowTitle(),
+      sheetWarning(this, windowTitle(),
                            tr("%1 is the shortcut of both %2 and %3.").arg(text, used.value(text), name));
       return;
     }

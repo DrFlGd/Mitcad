@@ -1,7 +1,10 @@
 // SPDX-License-Identifier: MIT
 #pragma once
 
+#include <optional>
+
 #include <QString>
+#include <QStringList>
 
 namespace mitcad {
 
@@ -75,5 +78,29 @@ struct RemoteSettings {
 // %LOCALAPPDATA%\Mitcad\Mitcad\autosave on Windows), or MITCAD_AUTOSAVE_DIR
 // (tests). Never a project's folder; empty when the system gives no place.
 QString recoveryDirectory();
+
+// The Projects panel (mitcad#145; the settings projects/known,
+// projects/hidden, projects/panel): the projects made, opened or cloned on
+// this computer (their folders, newest first), the projects folder's
+// projects that Remove from List took out of the panel, and whether the
+// panel is shown. Nothing here deletes a project.
+struct ProjectsSettings {
+  static constexpr int kMaxKnown = 100;
+
+  QStringList known;
+  QStringList hidden;
+  // The user's last show or hide of the panel; none before the first
+  // (mitcad#151: the panel then shows when a project is configured).
+  std::optional<bool> panelShown;
+
+  static ProjectsSettings load();
+  void save() const;
+  // A project made, opened or cloned: first in the list (and in the panel
+  // again when it was removed from it).
+  static void remember(const QString& root);
+  // Remove from List: the project leaves the list, and the panel no longer
+  // shows it (also when it is in the projects folder).
+  static void forget(const QString& root);
+};
 
 } // namespace mitcad

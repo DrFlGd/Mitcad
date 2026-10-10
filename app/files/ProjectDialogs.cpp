@@ -17,13 +17,10 @@
 #include <QFormLayout>
 #include <QGroupBox>
 #include <QHBoxLayout>
-#include <QIcon>
 #include <QJsonArray>
 #include <QLabel>
 #include <QLineEdit>
-#include <QListWidget>
 #include <QMessageBox>
-#include <QPixmap>
 #include <QPointer>
 #include <QProgressBar>
 #include <QPushButton>
@@ -34,7 +31,6 @@
 
 #include "../framework/AppSettings.hpp"
 #include "../framework/Dialogs.hpp"
-#include "../framework/Icons.hpp"
 #include "../framework/Json.hpp"
 #include "../framework/TestSync.hpp"
 #include "../framework/Theme.hpp"
@@ -82,13 +78,6 @@ void fillAuthor(QLineEdit* name, QLineEdit* email) {
   const VersionSettings settings = VersionSettings::load();
   name->setText(!git.name.isEmpty() ? git.name : settings.name);
   email->setText(!git.email.isEmpty() ? git.email : settings.email);
-}
-
-// A new design's file text: an empty document (a project's first design).
-QString emptyDesignText() {
-  const rust::Box<Document> document = new_document();
-  const rust::String json = document->to_json();
-  return QString::fromUtf8(json.data(), static_cast<qsizetype>(json.size()));
 }
 
 // The first free Documents/Mitcad/Project<n>.
@@ -333,10 +322,9 @@ private:
   void updateState();
   void createClicked();
   void create(bool asCloud);
-  void finished(RemoteTask* task, bool asCloud, const QString& design);
+  void finished(RemoteTask* task, bool asCloud);
   void setBusy(bool busy);
 
-  NewProjectOptions m_options;
   std::optional<NewProjectResult> m_result;
   std::unique_ptr<FolderCheck> m_check;
   QLineEdit* m_folder = nullptr;
@@ -362,15 +350,16 @@ private:
 };
 
 NewProjectDialog::NewProjectDialog(QWidget* parent, const NewProjectOptions& options)
-    : QDialog(parent), m_options(options) {
+    : QDialog(parent) {
   setWindowTitle(options.title.isEmpty() ? tr("New Project") : options.title);
   auto* layout = new QVBoxLayout(this);
   layout->addWidget(note(tr("A project is a folder whose designs keep their versions: Local on this computer, or "
                             "Cloud in a git repository that others share.")));
   auto* form = new QFormLayout;
   m_folder = new QLineEdit(QDir::toNativeSeparators(options.folder.isEmpty() ? freeProjectFolder() : options.folder));
+  m_folder->setObjectName(QStringLiteral("projectFolder"));
   m_folder->setMinimumWidth(420);
-  m_browse = new QPushButton(tr("Bro&wse..."));
+  m_browse = new QPushButton(tr("Brow&se..."));
   m_browse->setAutoDefault(false);
   auto* folderRow = new QHBoxLayout;
   folderRow->addWidget(m_folder, 1);
@@ -392,8 +381,10 @@ NewProjectDialog::NewProjectDialog(QWidget* parent, const NewProjectOptions& opt
   storageColumn->addWidget(m_cloudChoice);
   form->addRow(tr("Storage:"), storageColumn);
   m_name = new QLineEdit;
+  m_name->setObjectName(QStringLiteral("projectAuthorName"));
   m_name->setPlaceholderText(tr("Your Name"));
   m_email = new QLineEdit;
+  m_email->setObjectName(QStringLiteral("projectAuthorEmail"));
   m_email->setPlaceholderText(tr("you@example.com"));
   auto* authorRow = new QHBoxLayout;
   authorRow->addWidget(m_name, 1);
@@ -466,7 +457,7 @@ NewProjectDialog::NewProjectDialog(QWidget* parent, const NewProjectOptions& opt
   connect(m_folder, &QLineEdit::textChanged, this, [this] { folderChanged(); });
   connect(m_browse, &QPushButton::clicked, this, [this] {
     const QString chosen =
-        QFileDialog::getExistingDirectory(this, tr("Project Folder"), QFileInfo(folder()).absolutePath());
+        dialogDirectory(this, tr("Project Folder"), QFileInfo(folder()).absolutePath());
     if (!chosen.isEmpty()) {
       m_folder->setText(QDir::toNativeSeparators(chosen));
     }
@@ -658,13 +649,8 @@ void NewProjectDialog::create(bool asCloud) {
                       {QStringLiteral("dir"), dir},
                       {QStringLiteral("author"), author},
                       {QStringLiteral("include_designs"), true}};
-  QString design;
-  const bool hasDesigns = !m_check->answer().value(QStringLiteral("designs")).toArray().isEmpty();
-  if (m_options.firstDesign && !hasDesigns) {
-    design = QFileInfo(dir).fileName() + QStringLiteral(".mitcad");
-    command.insert(QStringLiteral("design"),
-                   QJsonObject{{QStringLiteral("path"), design}, {QStringLiteral("text"), emptyDesignText()}});
-  }
+  // No first design (mitcad#145): the project starts empty, or with the
+  // designs its folder has; New Design in the Projects panel adds one.
   const QString url = asCloud ? m_section->url() : QString();
   const bool bare = asCloud && m_section->needsBareRepository();
   if (asCloud) {
@@ -698,13 +684,13 @@ void NewProjectDialog::create(bool asCloud) {
   setBusy(true);
   m_progress->follow(task, asCloud ? tr("Creating the project and sending it to %1...").arg(url)
                                    : tr("Creating the project..."));
-  connect(task, &RemoteTask::finished, this, [this, task, asCloud, design] { finished(task, asCloud, design); });
+  connect(task, &RemoteTask::finished, this, [this, task, asCloud] { finished(task, asCloud); });
   qInfo().noquote() << QStringLiteral("New Project: creating %1 (%2)")
                            .arg(dir, asCloud ? QStringLiteral("cloud %1").arg(url) : QStringLiteral("local"));
   task->start();
 }
 
-void NewProjectDialog::finished(RemoteTask* task, bool asCloud, const QString& design) {
+void NewProjectDialog::finished(RemoteTask* task, bool asCloud) {
   const QJsonObject answer = task->answer();
   m_task = nullptr;
   task->deleteLater();
@@ -717,7 +703,6 @@ void NewProjectDialog::finished(RemoteTask* task, bool asCloud, const QString& d
     }
     result.url = asCloud ? m_section->url() : QString();
     result.answer = answer;
-    result.design = design;
     result.broker = asCloud ? m_live->currentData().toString() : QString();
     m_result = result;
     const QString cls = errorClassOf(answer);
@@ -763,7 +748,7 @@ private:
   void addressChanged();
   void updateState();
   void openClicked();
-  void finished(RemoteTask* task, const QString& action, const QString& design);
+  void finished(RemoteTask* task, const QString& action);
 
   std::optional<OpenFromCloudResult> m_result;
   QString m_location;
@@ -795,7 +780,7 @@ OpenFromCloudDialog::OpenFromCloudDialog(QWidget* parent, const OpenFromCloudOpt
   auto* form = new QFormLayout;
   m_folder = new QLineEdit(QDir::toNativeSeparators(options.folder));
   m_folder->setMinimumWidth(420);
-  m_browse = new QPushButton(tr("Bro&wse..."));
+  m_browse = new QPushButton(tr("Brow&se..."));
   m_browse->setAutoDefault(false);
   auto* folderRow = new QHBoxLayout;
   folderRow->addWidget(m_folder, 1);
@@ -853,7 +838,7 @@ OpenFromCloudDialog::OpenFromCloudDialog(QWidget* parent, const OpenFromCloudOpt
     connect(edit, &QLineEdit::textChanged, this, [this] { updateState(); });
   }
   connect(m_browse, &QPushButton::clicked, this, [this] {
-    const QString chosen = QFileDialog::getExistingDirectory(this, tr("Location"), m_location);
+    const QString chosen = dialogDirectory(this, tr("Location"), m_location);
     if (!chosen.isEmpty()) {
       m_folderTyped = true;
       const QString name = repositoryNameOf(m_section->url());
@@ -992,7 +977,6 @@ void OpenFromCloudDialog::openClicked() {
   }
   const QString author = authorOf(m_name, m_email);
   QJsonObject command;
-  QString design;
   if (what == QLatin1String("clone")) {
     command = {{QStringLiteral("cmd"), QStringLiteral("clone_project")},
                {QStringLiteral("url"), url},
@@ -1004,13 +988,11 @@ void OpenFromCloudDialog::openClicked() {
                {QStringLiteral("adopt"), true},
                {QStringLiteral("author"), author}};
   } else {
-    design = QFileInfo(dir).fileName() + QStringLiteral(".mitcad");
+    // Create Project Here: an empty project (mitcad#145).
     command = {{QStringLiteral("cmd"), QStringLiteral("create_project")},
                {QStringLiteral("dir"), dir},
                {QStringLiteral("author"), author},
-               {QStringLiteral("url"), url},
-               {QStringLiteral("design"),
-                QJsonObject{{QStringLiteral("path"), design}, {QStringLiteral("text"), emptyDesignText()}}}};
+               {QStringLiteral("url"), url}};
   }
   const bool bare = what == QLatin1String("create") && m_section->needsBareRepository();
   const QByteArray json = compactJson(command);
@@ -1035,11 +1017,11 @@ void OpenFromCloudDialog::openClicked() {
   m_problem->clear();
   m_progress->follow(task, what == QLatin1String("clone") ? tr("Opening %1...").arg(url)
                                                           : tr("Making the project in %1...").arg(url));
-  connect(task, &RemoteTask::finished, this, [this, task, what, design] { finished(task, what, design); });
+  connect(task, &RemoteTask::finished, this, [this, task, what] { finished(task, what); });
   task->start();
 }
 
-void OpenFromCloudDialog::finished(RemoteTask* task, const QString& action, const QString& design) {
+void OpenFromCloudDialog::finished(RemoteTask* task, const QString& action) {
   const QJsonObject answer = task->answer();
   m_task = nullptr;
   task->deleteLater();
@@ -1050,7 +1032,6 @@ void OpenFromCloudDialog::finished(RemoteTask* task, const QString& action, cons
     result.action = action;
     result.url = m_section->url();
     result.answer = answer;
-    result.design = design;
     result.root = QDir::cleanPath(answer.value(QStringLiteral("root")).toString());
     if (result.root.isEmpty()) {
       result.root = folder();
@@ -1080,90 +1061,15 @@ void OpenFromCloudDialog::finished(RemoteTask* task, const QString& action, cons
 std::optional<NewProjectResult> askNewProject(QWidget* parent, const NewProjectOptions& options) {
   NewProjectDialog dialog(parent, options);
   prepareModal(&dialog);
-  dialog.exec();
+  execDialog(&dialog);
   return dialog.result();
 }
 
 std::optional<OpenFromCloudResult> askOpenFromCloud(QWidget* parent, const OpenFromCloudOptions& options) {
   OpenFromCloudDialog dialog(parent, options);
   prepareModal(&dialog);
-  dialog.exec();
+  execDialog(&dialog);
   return dialog.result();
-}
-
-// ---------------------------------------------------------------------------
-// The design chooser
-
-std::optional<QString> askChooseDesign(QWidget* parent, const QString& project, const QStringList& designs,
-                                       const QString& last, const std::function<QString(const QString&)>& preview) {
-  QDialog dialog(parent);
-  dialog.setWindowTitle(tr("Open Project"));
-  auto* layout = new QVBoxLayout(&dialog);
-  layout->addWidget(note(tr("The designs of %1:").arg(project)));
-  auto* list = new QListWidget;
-  list->setViewMode(QListView::IconMode);
-  list->setIconSize(QSize(128, 96));
-  list->setGridSize(QSize(176, 140));
-  list->setResizeMode(QListView::Adjust);
-  list->setMovement(QListView::Static);
-  list->setWordWrap(true);
-  list->setMinimumSize(560, 320);
-  const QIcon placeholder = themeIcon(QStringLiteral("new-project"));
-  QListWidgetItem* selected = nullptr;
-  for (const QString& design : designs) {
-    const QString image = preview ? preview(design) : QString();
-    const QPixmap picture = image.isEmpty() ? QPixmap() : QPixmap(image);
-    auto* item = new QListWidgetItem(picture.isNull() ? placeholder : QIcon(picture), design, list);
-    item->setData(Qt::UserRole, design);
-    item->setToolTip(design);
-    if (design == last) {
-      selected = item;
-    }
-  }
-  if (selected == nullptr && list->count() > 0) {
-    selected = list->item(0);
-  }
-  list->setCurrentItem(selected);
-  layout->addWidget(list, 1);
-  auto* buttons = new QDialogButtonBox(QDialogButtonBox::Open | QDialogButtonBox::Cancel);
-  QPushButton* newDesign = buttons->addButton(tr("&New Design"), QDialogButtonBox::ActionRole);
-  newDesign->setAutoDefault(false);
-  buttons->button(QDialogButtonBox::Cancel)->setAutoDefault(false);
-  layout->addWidget(buttons);
-  buttons->button(QDialogButtonBox::Open)->setDefault(true); // once in the dialog
-  std::optional<QString> chosen;
-  QObject::connect(buttons, &QDialogButtonBox::accepted, &dialog, [&] {
-    if (list->currentItem() != nullptr) {
-      chosen = list->currentItem()->data(Qt::UserRole).toString();
-      dialog.accept();
-    }
-  });
-  QObject::connect(list, &QListWidget::itemActivated, &dialog, [&](QListWidgetItem* item) {
-    chosen = item->data(Qt::UserRole).toString();
-    dialog.accept();
-  });
-  QObject::connect(newDesign, &QPushButton::clicked, &dialog, [&] {
-    chosen = QString();
-    dialog.accept();
-  });
-  QObject::connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
-  QObject::connect(list, &QListWidget::currentItemChanged, &dialog, [](QListWidgetItem* item) {
-    if (item != nullptr) {
-      qInfo().noquote() << QStringLiteral("Design chooser selected %1").arg(item->data(Qt::UserRole).toString());
-    }
-  });
-  list->setFocus();
-  qInfo().noquote() << QStringLiteral("Design chooser: %1: %2 (selected %3)")
-                           .arg(project, designs.join(QStringLiteral(" | ")),
-                                selected != nullptr ? selected->data(Qt::UserRole).toString() : QString());
-  prepareModal(&dialog);
-  if (dialog.exec() != QDialog::Accepted || !chosen) {
-    qInfo().noquote() << QStringLiteral("Design chooser cancelled");
-    return std::nullopt;
-  }
-  qInfo().noquote() << (chosen->isEmpty() ? QStringLiteral("Design chooser: new design")
-                                          : QStringLiteral("Design chooser: chose %1").arg(*chosen));
-  return chosen;
 }
 
 // ---------------------------------------------------------------------------
@@ -1180,7 +1086,7 @@ std::optional<MoveTarget> askMoveToProject(QWidget* parent, const QString& desig
   box.setDefaultButton(newProject);
   qInfo().noquote() << QStringLiteral("Move to a Project dialog: %1").arg(design);
   prepareModal(&box);
-  box.exec();
+  execDialog(&box);
   if (box.clickedButton() == newProject) {
     return MoveTarget::NewProject;
   }
@@ -1242,7 +1148,7 @@ std::optional<QString> askChangeAddress(QWidget* parent, const QString& root, co
   }
   qInfo().noquote() << QStringLiteral("Change Address dialog: %1").arg(current);
   prepareModal(&dialog);
-  const bool accepted = dialog.exec() == QDialog::Accepted;
+  const bool accepted = execDialog(&dialog) == QDialog::Accepted;
   section->stopCheck();
   if (!accepted) {
     qInfo().noquote() << QStringLiteral("Change Address cancelled");

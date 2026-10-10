@@ -197,7 +197,7 @@ bool MainWindow::saveVersion() {
     QPushButton* move = box.addButton(tr("&Move to a Project..."), QMessageBox::AcceptRole);
     box.setDefaultButton(move);
     prepareModal(&box);
-    box.exec();
+    execDialog(&box);
     if (box.clickedButton() == move) {
       moveToProject();
     }
@@ -273,7 +273,7 @@ std::optional<bool> MainWindow::askVersionConflict(const Project& project, const
     try {
       const bool inFolder = QFileInfo::exists(path);
       const rust::Box<Document> theirs =
-          inFolder ? load_project(rustStr(path.toUtf8())) : load_version(project, "HEAD", rustStr(path.toUtf8()));
+          inFolder ? load_design(rustStr(path.toUtf8())) : load_version(project, "HEAD", rustStr(path.toUtf8()));
       const QJsonObject options{
           {QStringLiteral("text"), true},
           {QStringLiteral("from"), inFolder ? tr("the file in the folder") : tr("the latest version")},
@@ -413,6 +413,8 @@ void MainWindow::updateVersionStatus() {
   m_remote->refreshStatus();
   // The open design, as live updates tell others (mitcad#89).
   updateLive();
+  // The Projects panel after a save, a sync or another design (mitcad#145).
+  refreshProjectsPanel();
 }
 
 // ---------------------------------------------------------------------------
@@ -474,7 +476,7 @@ void MainWindow::showVersionHistory() {
       box.setDefaultButton(move);
     }
     prepareModal(&box);
-    box.exec();
+    execDialog(&box);
     if (box.clickedButton() != nullptr && box.buttonRole(box.clickedButton()) == QMessageBox::AcceptRole) {
       moveToProject();
     }
@@ -496,7 +498,7 @@ void MainWindow::showVersionHistory() {
     // The window and its thread are gone before the choice is carried out.
     VersionHistoryDialog dialog(this, file, isModified(), host);
     prepareModal(&dialog);
-    dialog.exec();
+    execDialog(&dialog);
     choice = dialog.choice();
     chosen = dialog.chosen();
     count = dialog.versionCount();
@@ -740,7 +742,7 @@ void MainWindow::restoreVersion(const QString& file, const FileVersion& version,
   // The window's design is the restored one now: the file as written, with
   // what Save compares it with (rememberVersionBase) and the status bar.
   QString error;
-  if (loadProject(file, error)) {
+  if (loadDesign(file, error)) {
     saveVersionThumbnail(version.blob);
   } else if (error.isEmpty()) {
     status += QLatin1Char(' ') + tr("Opening it was cancelled: open %1 to see it.").arg(name);
@@ -758,13 +760,13 @@ void MainWindow::restoreVersion(const QString& file, const FileVersion& version,
 
 void MainWindow::saveVersionCopy(QWidget* parent, const QString& file, const FileVersion& version) {
   const QFileInfo info(file);
-  QFileDialog dialog(parent, tr("Save Copy As"), info.absolutePath(), tr("Mitcad projects (*.mitcad)"));
+  QFileDialog dialog(parent, tr("Save Copy As"), info.absolutePath(), tr("Mitcad designs (*.mitcad)"));
   dialog.setAcceptMode(QFileDialog::AcceptSave);
   dialog.setDefaultSuffix(QStringLiteral("mitcad"));
   const QString suggested = QStringLiteral("%1 %2.mitcad").arg(info.completeBaseName(), version.label());
   dialog.selectFile(suggested);
   qInfo().noquote() << QStringLiteral("Save Copy As dialog: %1").arg(suggested);
-  if (dialog.exec() != QDialog::Accepted || dialog.selectedFiles().isEmpty()) {
+  if (execDialog(&dialog) != QDialog::Accepted || dialog.selectedFiles().isEmpty()) {
     qInfo().noquote() << QStringLiteral("Save Copy As cancelled");
     return;
   }
@@ -782,7 +784,7 @@ void MainWindow::saveVersionCopy(QWidget* parent, const QString& file, const Fil
     const rust::Box<Project> project = open_project(rustStr(file.toUtf8()));
     const rust::Box<Document> document =
         load_version(*project, rustStr(version.id.toUtf8()), rustStr(file.toUtf8()));
-    document->save_project(rustStr(target.toUtf8()), "auto");
+    document->save_design(rustStr(target.toUtf8()), "auto");
   } catch (const std::exception& e) {
     const QString failure = tr("Could not save %1 of %2 as %3:\n%4")
                                 .arg(version.label(), name, QDir::toNativeSeparators(target), errorText(e));

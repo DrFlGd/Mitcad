@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: MIT
-# Comparison of versions (P12c) through mitcad-cli: a block's project file
+# Comparison of versions (P12c) through mitcad-cli: a block's design file
 # in a project with history, recorded, edited (a dimension of its sketch,
 # its extrusion's distance, a new parameter and a fillet) and recorded
 # again; then the two versions, a version against the file as saved, and

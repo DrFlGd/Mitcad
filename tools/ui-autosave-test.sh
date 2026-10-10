@@ -343,7 +343,7 @@ ui_start_app --demo --set d3=33
 ui_expect_log "Autosaved Untitled: " "an untitled change was written"
 fourth=$(pair_value "$FOLDER" - 'meta["session"]') || ui_fail "no session: $fourth"
 ui_stop_app
-# A session whose project file is not the one its metadata describes.
+# A session whose design file is not the one its metadata describes.
 broken=$(python3 -c 'import uuid; print(uuid.uuid4())')
 python3 - "$FOLDER" "$broken" << 'EOF'
 import json, os, sys
@@ -361,7 +361,7 @@ UI_RECOVERY=1 ui_start_app
 ui_expect_log "Recovery: removed the lock of session $third" "the lock left without files went"
 ui_expect_log "Recovery: 2 document(s) found" "two sessions found"
 ui_expect_log "Recoverable Untitled: never saved, autosaved " "the untitled one"
-ui_expect_log "Recoverable broken.mitcad: never saved, autosaved 2026-01-01T00:00:00Z, 1 bytes, damaged: the project file is not the one its metadata describes" \
+ui_expect_log "Recoverable broken.mitcad: never saved, autosaved 2026-01-01T00:00:00Z, 1 bytes, damaged: the design file is not the one its metadata describes" \
   "the damaged one, older"
 focus_dialog '^Recover Unsaved Work$'
 ui_step "select the damaged one (Down)"  ui_key Down

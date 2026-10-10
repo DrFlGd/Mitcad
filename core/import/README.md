@@ -55,8 +55,20 @@ the operation of the blob of the component that owns the item
 (`_f3d.component`, *Components*) when that blob has it; else (a feature
 that changes another component's bodies) of the other blobs with that
 number that no item of their own component names, those whose bodies it
-changed first. The states of all blobs are merged in
-timeline order into one sequence, oldest first:
+changed first. A history blob belongs to the component whose items name
+most of its operations (mitcad#156), where they name more of them than
+another component's items do and more than of another blob; the other
+blobs go by the bodies they share with a component's `.smb` blob (the
+numbers count per component, so inserted parts, whose base features are
+all their component's operation 3, name every such blob alike). (By the bodies
+alone, a body moved into a new component, which is in that component's
+`.smb` too, linked the root's history to the new component; then neither
+history was its component's, every item of the design went into one
+component, and the items of the other components missed their states.)
+A component made from bodies has no result number of its own; its
+operation is that of the base feature that put the bodies into the new
+component's history (`_f3d.made_result_no`). The states of all blobs are
+merged in timeline order into one sequence, oldest first:
 
 - an operation no item names gives one state, before the blob's next named
   one;
@@ -71,6 +83,24 @@ Matching rules:
 - An item with a known state must give exactly that state (measures within
   1e-3). First the replay is brought to the state before it, by a base
   feature for what earlier items changed without being replayed.
+- Operations no item names that come right before an item's own in its
+  blob, after the operation of the item before, may be the item's own: a
+  pattern makes one per copy and names the last (mitcad#156). Where the
+  replay is at the state before them, the item is tried from there first,
+  in half its time; else as above, from the state right before its own.
+  Before, a base feature brought every such pattern to its last copy but
+  one (149 base features in the corpora, most before patterns).
+- An item whose operation the history holds but which left every body as
+  it was, and which none of its definitions reproduces (each changes the
+  bodies or fails; an item without a translation, such as a base feature
+  that brings no body, stays as before), failed in the file: an extrusion
+  that found no body to cut. It is
+  skipped as a suppressed item is (`failed in the file: …`), and the bodies
+  stay as the items before left them, with no base feature (mitcad#156).
+  The file stores no failure state of its own for it: the three state
+  bytes of the item tail and its health object are those of a healthy
+  item. An operation that changed a body (a feature that computed with a
+  warning) is replayed as any other.
 - An extrusion, fillet or chamfer that gives its known state only
   approximately (beyond 1e-5) tries up to eight more definitions and
   keeps the closest: a set of regions next to the right one, or the
@@ -289,6 +319,10 @@ just before the item (its `_f3d.result_no`) and finds them there
 Sketch curves carry their kind (construction, centre line) in their
 sketch-curve part; the decoder gives `isConstruction` and `isCenterLine`
 where they are set, so construction curves no longer split profiles.
+Splines (their NURBS data), ellipses and elliptical arcs are decoded
+since mitcad#154 (*The published format descriptions*); splines come in
+as fixed splines, the decoder not telling fitted from control-point
+ones, and a spline out of its sketch's plane is refused.
 
 Parameters of the 2026 writers (class version 8) have their own layout;
 before it was decoded their features had no parameters, and the import
@@ -426,8 +460,14 @@ The decoder reads their inputs (SCHEMA.md, *SweepFeature*, *PipeFeature*,
 
 Not decoded: a sweep's orientation, direction and rail scaling, a pipe's
 section type and whether it is hollow, closed lofts and participant
-bodies. Guide surfaces and edges of other components (through their
-occurrences) are recognised and make the item fall back.
+bodies. Edges of other components (through their occurrences) are
+recognised and make the item fall back. Guide surfaces come as faces
+named by their recipes only; `sweeps.rs` translates them into
+`guide_surfaces` (mitcad#157) when each has its geometry (a point on it,
+as external dumps give faces) and is found among the bodies, so the
+stream decoder's guide-surface sweeps still fall back ("its guide
+surfaces' geometry was not decoded"). A guide rail given beside guide
+surfaces is not used.
 
 `sweeps.rs` translates them with what the history settles: a profile's
 region (a sweep's sets as for extrusions; a loft's one region per
@@ -693,6 +733,9 @@ candidates against the next state:
   changed nothing in the file, and no state could check a definition of
   it (its edges and faces are not in any state either). Before, every
   definition and guess was tried and the history then skipped it.
+- A modelling item whose operation the history holds but which changed no
+  body, and which none of its definitions reproduces, failed in the file
+  and is skipped too (*Matching rules*, mitcad#156).
 - An item with a known state that cannot be translated, fails, or does not
   give its state takes that state at once: one base feature (`base` with
   `replaces`; the changed bodies keep their ids, so later features
@@ -1173,6 +1216,21 @@ component:
   it names are when they agree, else into the item's component; a sketch
   whose owner is known goes on a face of its own component only.
 
+**Components made from bodies** (`ComponentFromBodies`, mitcad#156). The
+component is placed by the occurrence tree before the replay, like any
+other. The item's state is the new component's first one (its
+`_f3d.made_result_no`, *The history as the reference*): the bodies that
+state gives the new component, each the same solid as a body of the
+replay's in the item's own component, move there by a
+`component_from_bodies` feature in that component, whose component is
+then the placed one (`Document::move_made_component`; the one the
+feature made goes). The history of the item's own component keeps the
+moved bodies as they were, though the design no longer has them there:
+they leave its states from the item's on and the stored design
+(`Oracle::retire`). Later features of the new component work on the
+moved bodies. Before, the stored bodies stood in for the item, and the
+moved bodies stayed in the root too (two copies in the design).
+
 New-component operations become new bodies of that component. Fallback
 base features are made per component, and the final comparison wants
 every body in its component (a body left in another one is replaced
@@ -1414,12 +1472,13 @@ their class (`core/f3d/src/design/classes.rs`, `ITEM_TYPES` and
   (`FlangeFeature`), embosses (`EmbossFeature`), electronics boards
   (`PCBFeature`), moved faces (`MoveFaceFeature`) and drafts
   (`DraftFeature`), whose inputs are not decoded; cylinder and sphere
-  primitives (`CylinderFeature`, `SphereFeature`), whose sizes are
-  parameters but whose plane is a face reference not decoded yet;
+  primitives (`CylinderFeature`, `SphereFeature`), whose operation and
+  sizes are decoded (mitcad#154) but whose placement is not;
   components mirrored into new ones (`MirrorComponent`), bodies derived
-  from other designs (`DerivedContext`), bodies moved into a new component
-  (`ComponentFromBodies`) and bodies copied or moved by pasting
-  (`CopyPasteBodies`).
+  from other designs (`DerivedContext`) and bodies copied or moved by
+  pasting (`CopyPasteBodies`). Bodies moved into a new component
+  (`ComponentFromBodies`) come in as Mitcad's where the history settles
+  them (*Components*), else so.
 - Lofts of another class are `LoftFeature`s, translated (*Sweeps, pipes
   and lofts*); points of another class are `ConstructionPoint`s, skipped
   without decoded geometry.
@@ -1516,7 +1575,12 @@ memory cannot be caught: a fillet with a strip 1e-4 wide did, hence the
   Mitcad builds them by its own rules (`commands.md`, `fillet`,
   `chamfer`), so they match the history within the looser conventions
   tolerance (a match is kept with a warning). Which face takes which
-  offset of an asymmetric fillet is not stored: both are tried.
+  offset of an asymmetric fillet is the set's flip (decoded from the
+  streams since mitcad#154, *The published format descriptions*); the
+  other reading is still tried after it. The stream decoder gives these
+  options, a fillet's corners, each set's continuity, tangency weight and
+  tangent chain, and a chamfer's corners since mitcad#154; before, it gave
+  constant radii only and the import built the defaults.
 - Replace face needs the history (for its faces) and its target in the
   replay: a surface body the replay lacks makes it fall back unless the
   target face is planar (then a fixed plane).
@@ -1544,7 +1608,8 @@ memory cannot be caught: a fillet with a strip 1e-4 wide did, hence the
   No design of the corpus has a rib or a web.
 - Surface extrusions, revolutions and sweeps (`isSolid` false) are not
   translated: their sheets come in as stored bodies (*Threads, tapped holes
-  and sheets*).
+  and sheets*). The stream decoder tells surface extrusions since
+  mitcad#154 (none in the corpora).
 - Sketch patterns, offsets and polygons (*Sketch patterns, offsets and
   polygons*) are left out, and their copies and offset curves come in as
   plain curves, where Mitcad has no counterpart: patterns with instances
@@ -1958,6 +2023,37 @@ traces of the import (the backup corpus repeats some designs of
   over the body (2.4 %): no face count or percentage separates them, so
   the tolerance stays 1 %.
 
+  Fourth round (mitcad#121, patches 0017 to 0019): the ends of a contact
+  along a face's far edge are put at the edge's vertices also where the
+  other face's contact ends first (0017: the two-distance chamfer above,
+  whose exact result now is valid and the file's); a fillet or chamfer
+  ending where the face at the end is split in two faces of one plane
+  builds its corner (0018); and a corner that OCCT's
+  `PerformMoreSurfdata` leaves undone fails cleanly instead of leaving
+  point 0 in the data structure (0019, before an exception from the
+  topological build or, without range checks, a write out of bounds).
+  The dressups' naming gives a face that a rounding or chamfer consumed,
+  where the blend runs along the face's far edge, to the blend's face, so
+  that the edges the consumed face had keep their names: the fillet above
+  whose later tangent chain named such an edge resolves again. Of the
+  249, measured the same way: chamfers failing in their end corners
+  0 → 3 NEAR (the file's volume, 1e-12; the file merges the split faces);
+  three crashing specs now fail cleanly; the other classes as before.
+  Still failing, with their causes: a rounding rolling on an edge stops
+  where the ball pivots on a point of it (its contact on the edge stops
+  moving) or at the edge's end, where it would turn onto the next edge,
+  and the walk between the faces from there fails; corners after an
+  overflow onto a face beyond that reaches past the face at the end (the
+  rounding's end lies inside that face, not on an edge both share);
+  starts where the ball leaves the edge it rolls on; and contacts leaving
+  their face near the spine's end, where a walked piece with one side
+  reduced to a point leaves the corner without an arc. Coverage before
+  (main) and after, both corpora at the same time (three files at a time
+  each): items parametric 1060 → 1061 and 4908 → 4914, fillets
+  245 → 246 and 1095 → 1100, chamfers 56 → 56 and 236 → 237; final
+  bodies the same (529 exact and 6 within 0.1 %; 3182 exact, 52 within
+  0.1 %, 1 off). No item was lost.
+
   The other classes were traced inside OCCT's fillet (mitcad#122, patches
   0020 to 0023 of [the port](../../third_party/vcpkg-ports/README.md)).
   Measured the same way, on OCCT with the edge overflow, before and after:
@@ -2028,6 +2124,218 @@ traces of the import (the backup corpus repeats some designs of
   times (6 gave the state, 57 s), after another state 14 times (1). No
   failure kind, chain count or whether the chains meet at a vertex
   separates the 6 from the 212, so it stays after every failure.
+
+### The published format descriptions (mitcad#154)
+
+Two public descriptions of the `.f3d` streams were compared with what
+`core/f3d/src/design/` reads: the cadmpeg project's format description
+and its offset tables (CC BY 4.0, <https://github.com/cadmpeg/cadmpeg>,
+`docs/formats/f3d.md`, `docs/layouts/f3d.md`, `docs/formats/asm.md`) and
+the ezf3d project's format notes (MIT licence, copyright its authors,
+<https://github.com/AlexSabaka/ezf3d>, `docs/format/`). They were used as
+information only: the layouts below are written in our own words, no
+text or code was taken over, and nothing depends on either project. Each
+decode taken over was checked on the reference models' dumps
+(`MITCAD_F3D_MODELS`, `core/f3d/tests/design_models.rs`) and, where the
+history settles the input, on the corpora (the learning dump, *Learning
+the undecoded inputs*). Where a layout below was found by comparing the
+reference models' records with their dumps and neither description gives
+it, the table says so.
+
+Status: **read** (and verified as the last column says), **read
+differently** (we read the same bytes with another meaning or another
+layout), **not read**. "Ref. models" means checked on every reference
+model that has the input; "history" means the corpora's history settled
+it (*What the history settles*).
+
+#### From the descriptions to the decoder
+
+| What the descriptions give (source) | Decoder | Notes |
+|---|---|---|
+| Container: ZIP with stored, deflated and zstd entries, `.f3z` packages (both) | read | `core/f3d/src/container.rs`; `.f3z` members as separate designs |
+| Segment registry `Manifest.dat`, external references `RedirectionsStream.dat`, component reference slot (cadmpeg) | not read | the import names inserted documents' occurrences from the design stream only |
+| `MetaStream.dat`: header, type table (GUID, base GUID, version, module, ids), primary and secondary record index, named ids, version contexts, property block (both) | read | the whole stream (`MetaStream::parse`); the secondary index is our sub-chunk table, the version contexts our external references, the property block our feature versions; the two `u32` after the module name, which we called a segment version, are a segment type code by cadmpeg (1 design) |
+| Reference encoding: present flag, id, same/other segment, cross-document form with link name and version; the inline type GUID of one writer generation (cadmpeg) | read | `stream::ref_at`; the cross-document form as an assembly context (`Ref::context`) |
+| Members written one class level at a time in name order; leading block and property block flags (cadmpeg) | read differently | we read the root part (references, attributes) and then fixed layouts per class and version found on the files; the name ordering explains why a member added in a later version shifts a layout, which matches the version-keyed layouts we keep |
+| Property block keys (`EntityGenesis`, `pt_tag`, `crv_primary_id`, `crv_secondary_id`, operation id flags) (both) | read | the root part's attributes |
+| Timeline record: context reference and ordered items; items without a scope; order = authored order (both) | read | the only non-empty timeline is the design's (mitcad#37 reads each component's list) |
+| Parameter records: expression, role, unit, name, value in cm/rad, owner; the three header forms; owner frames and companions with time stamps (both) | read differently | we read every class version found (including the 2026 writers' version 8) by locating the strings; the owner frames and companions are not read, the holder object gives the owner (section 7 of the format study) |
+| Sketch points (versions 0, 8, 10, 11), their companion with incident curves (cadmpeg) | read | coordinates and the curves that use each point |
+| Sketch lines: start, displacement, direction, auxiliary normal (both) | read | |
+| Sketch arcs and circles (ezf3d: by their point count) | read | |
+| Sketch NURBS curves: nullable carrier, nested header, degree, fit tolerance, counted knots, weights, control points (cadmpeg) | **read now** (mitcad#154) | `sketch::splines`; ref. models' fitted and control-point splines exact; fitted and control-point splines are not told apart (both come in as fixed splines) |
+| Sketch ellipses and elliptical arcs (neither) | **read now** (mitcad#154) | `sketch::ellipses`, read on the reference model and the corpus' arcs; centre, unit major and minor directions, radii, angles |
+| Sketch texts (`textex_tag`, `txt_tag`): font, height, width factor, colour, string, frame transform or path (cadmpeg) | not read | 21 texts in 7 corpus files; texts come in from external dumps only |
+| Sketch relations: member runs, relation ordinals, constraint bits (cadmpeg) | read | constraint types by bit (format study); the ordinal meaning is new to us and not needed |
+| Dimension frames (paired, counted, null-locus, annotated) and the rules that bind a parameter to geometry by measurement (cadmpeg) | read differently | we read each dimension object's entities and holder directly; the measurement rules are the description's way to recover what we read |
+| Sketch container, member runs, placement matrix, visibility flag (cadmpeg) | read | the transform object; the light bulb (mitcad#6) |
+| Profile regions: loops by endpoint incidence, containment, arrangement (both) | read differently | Mitcad computes the regions itself; the decoder reads the selected loops (`_f3d_profile_loops`, mitcad#96) |
+| Construction recipes (body, face, bounded face, edge, vertex), generic tag attributes on the B-rep, recipe resolution against the history (cadmpeg) | read | `recipe.rs`, `names.rs`, `inputs.rs`; vertex recipes not read |
+| Parameter scopes: state identities, ordered reference table, family name and ordinal (cadmpeg) | read differently | our item tail (result number, base name, index, sub-items, state bytes) |
+| Extrude: operation, direction (one side, two sides, symmetric), face-extend option, direction reversal, geometry kind, start support, profile normal, per-side extent kinds (both; ezf3d the first three) | read; **solid and per-side kinds now** | the reversal is our flag (mitcad#96), the normal our stored vector; `_f3d.extrude.solid`, `start`, `sides` (mitcad#154): every corpus extrusion where read is a solid, sides agree with the parameters and slots; corpora have no "up to next"; `isSolid` checked on 243 ref. model extrusions (4 surfaces) |
+| Extrude: groups by role (profile 0x41, existing bodies 0x04/0x08, termination 0x11/0x12, start face, shape target 0x05) (cadmpeg) | read differently | our input slots and their role numbers (65, 8, 5, 17, 18) are these roles' high words |
+| Extrude profile selection by points and history transitions (cadmpeg) | read differently | we read the loops directly (mitcad#96) |
+| Revolve: operation, extent kind, direction kind, profile and axis groups, angle scalars (cadmpeg) | read (operation, profile, sketch-line axis) | axes that are faces or edges stay history guesses |
+| Fillet and chamfer sizes, fixed scalar lanes, full round, variable law, chamfer forms (cadmpeg) | **read now** except fixed lanes and full round | see the next table |
+| Hole: point and direction carrier, support face selection, parameters (cadmpeg) | read (points, type, sizes) | the direction and the support face are not read; two corpus holes, both parametric |
+| Thread: designation, size, profile, pitch, modelled flag (cadmpeg) | read | mitcad#35 |
+| Loft: section groups, rails, centre line, operation (cadmpeg) | read | mitcad#34 |
+| Sweep: profile, path, guide rail, guide surface group, operation (cadmpeg) | read; guide surfaces recognised | orientation, direction and scaling are not given by the descriptions either |
+| Pipe: path group and four scalars, settings (cadmpeg) | read (path, operation, sizes) | section type and hollow are in the settings record, not read |
+| Combine: operation, keep tools, target and tool pairs (cadmpeg) | read | mitcad#67 |
+| Move, Scale: transform record, body group; scale factor and centre (cadmpeg) | read (move) | no corpus scale |
+| Shell: thickness, outward flag, removed faces or target bodies (cadmpeg) | **faces, bodies, outside thickness now** | inside or outside is the parameter's role; faces checked on the ref. models; tangent chain not read |
+| Offset faces: signed distance, face group (cadmpeg) | **faces now** | |
+| Thicken, surface patch, extend, offset, stitch, trim, ruled, boundary fill, delete face (cadmpeg) | not read | not translated by the import |
+| Draft: angle, drafted faces, neutral plane or parting tool (cadmpeg) | not read | one corpus draft |
+| Split body, split face: tool and target groups (cadmpeg) | read (split body) | |
+| Cylinder, sphere, box, torus primitives: operation, placement matrix, sizes (cadmpeg) | **operation and sizes now**; placement not | the rigid matrix the records hold does not place the corpus' six cylinders and two spheres (one design: their bodies in the history lie elsewhere, and not by one transform), so they stay untranslated; box and torus not in the corpora |
+| Coil: operation, clockwise, extent kind, section, position, placement (cadmpeg) | not read | three corpus coils; Mitcad's coil exists, the import does not translate it yet |
+| Base feature: result bodies by entity suffix, state pair (cadmpeg) | read differently | the history's states stand in for base features |
+| Component insert, local occurrences, copy-paste, derived instances, occurrence patterns (cadmpeg) | read | occurrence placements (mitcad#75, mitcad#81) |
+| Work planes, axes, points: placement frames, solved axis, point data (cadmpeg) | read (planes: frame and definition; axes partly) | construction axes without decoded geometry are skipped |
+| Joint origins, joints, as-built joints, assembly operand frames, alignment owners (cadmpeg) | read | mitcad#66; the description's alignment lanes agree with our owner order |
+| Mirror and patterns: seed groups, counts, angle, axis record (origin and displacement), plane group (cadmpeg) | read | the axis record is our `_f3d_axis` (mitcad#96) |
+| Sheet metal base flange, edge flange, hem (cadmpeg) | not read | Mitcad has no sheet metal |
+| Canvas, decal, mesh bodies, body visibility and appearance, materials, unit systems, bounding box caches, display meshes (both) | not read (display meshes: read) | not needed by the timeline import |
+| ACT segment, browser segment (both) | not read | |
+
+#### Fillets and chamfers against the descriptions
+
+The descriptions name a fillet's and a chamfer's sizes by the roles of
+the parameters a set's holders hold (`Radius`, `StartRadius`,
+`EndRadius`, `MidRadius` with `MidParams`, `ChordLen`, `EdgeOffset1`
+with `EdgeOffset2`, `TangencyWeight`; `Distance`, `Distance 1`,
+`Distance 2`, `Rotate Angle` and older spellings), sizes stored without
+parameters as fixed values in the item, a full round as a face group, and
+how edge recipes resolve against the history. They do not give the
+options a fillet or chamfer stores beside its sizes; those were read on
+the reference models (one model per option, against their dumps):
+
+| Input | Where the file keeps it | Decoder before | Now |
+|---|---|---|---|
+| constant radius per set | `Radius` parameters | read | read |
+| variable radius (start, end, mid radii and positions) | parameter roles | not read (the item fell back: no sets) | read, verified on the reference models |
+| chord length | `ChordLen` | not read | read (no reference model, no corpus item) |
+| asymmetric offsets | `EdgeOffset1`, `EdgeOffset2` | not read (fell back) | read, verified |
+| which face takes which asymmetric offset | the set's options object (`4A557CE2`): flipped byte | not read (both tried) | read, verified (flipped and not) |
+| G2 continuity | the set's options object: curvature byte | not read (built G1) | read, verified |
+| tangency weight | `TangencyWeight` parameter, one per set | not given to the import | read, verified |
+| tangent chain | the set's options object: tangent chain byte | not read (the import chained) | read, verified (on and off) |
+| rolling-ball or setback corners | the fillet object: the byte after its set list | not read (built rolling) | read, verified |
+| what a set selects (edges, faces, a face's edges) | the set input (mitcad#96) | read | read |
+| full round, rule fillet | face groups (description) | not read | not read (no corpus item) |
+| chamfer corners (chamfer, miter, blend) | the chamfer object: the `u32` after its root part | not read (built with chamfer corners) | read, verified |
+| chamfer tangent chain and flip | the chamfer set object (`0D383DB2`) | not read | not read (every reference model's chamfer has both off, so nothing tells the bytes) |
+| options of the older set records (class version 9 and earlier) | another layout | not read | not read (no reference model) |
+
+Over both private corpora every fillet set is a constant radius with G1
+continuity and every chamfer has chamfer corners; 12 fillet sets have
+their tangent chain off (the import chained them before), and the
+options of 92 sets in older records are not read. Of the 249 dressups
+classified in mitcad#107 and rebuilt in mitcad#121 (the latest round: 50
+MATCH, 38 NEAR, 1 OFF, 160 failing), every one is a constant-radius G1
+fillet with rolling-ball corners and its tangent chain on, or an equal or
+two-distance chamfer with chamfer corners, as the import built them (15
+of them in records whose options are read only in part, none of the
+corpus' options differing from the defaults there): their inputs are
+complete and honoured, and what remains of them is the geometry
+kernel's.
+
+#### Our other problems against the descriptions
+
+| Problem (where it is described here) | Answered by the descriptions? | Done |
+|---|---|---|
+| Sketches left partial by curves not decoded (96 + 25 partial sketches; *Corpus test*) | NURBS curves: yes (cadmpeg); ellipses: no | both read now: 125 sketches of the backup corpus and 25 of the main corpus had splines (`D82E012F`) or ellipses (`FF23079A`) |
+| Extrusions whose regions are wrong (*What the history settles*) | the descriptions infer the selection from points and the history as we did before mitcad#96; our stored loops are more direct | — |
+| Left-out sketch constraints and dimensions (*Corpus test*) | partly: relation bits and dimension frames | not done |
+| One-sided cuts through all whose flag byte is 0 go either way (*What the file does not settle yet*) | no: the description's direction reversal is our flag and its profile normal our vector; nothing else | — |
+| Two-sided extrusions up to objects (mitcad#104) | the termination groups in reference order, as we read them | — |
+| Surface extrusions tried as solids | yes: the geometry kind | read now |
+| Extents up to the next face | yes: per-side kind 3 | read now (none in the corpora) |
+| Rectangular patterns: spacing or whole extent | the description takes the stored distance for the extent; our reference models (spacing) store the spacing: see *Where the descriptions and our reading disagree* | not done |
+| Patterns and revolves about edges or faces | yes: the analytic carrier's axis in the history | not done (the history settles them) |
+| Revolves about construction axes not imported (5 in the backup corpus) | yes: the solved axis carrier | read now: construction axes come in as fixed axes |
+| A hole's direction and extent up to an object | direction yes (point-and-direction carrier), extent by parameters | not done (two corpus holes, both parametric) |
+| Sweeps' orientation, direction and scaling; a pipe's section and hollow | no | — |
+| Closed lofts, participant bodies of lofts and sweeps | no | — |
+| Sketch texts | yes (`textex_tag`) | not done (21 texts) |
+| Shells whose body or faces were not found (5 + 1) | yes (face group, outward flag) | read now |
+| Offset faces whose faces were not decoded (2 + 2) | yes | read now |
+| Cylinder and sphere primitives (6 + 2) | operation and sizes yes; the placement matrix does not place the corpus' primitives | sizes read; still not translated |
+| Coils (3) | yes (operation, handedness, extent kind, section) | not done |
+| Drafts (1), moved faces, embosses, sheet metal | drafts yes; sheet metal yes; the others no | not done (Mitcad's draft exists; one corpus item) |
+| Unknown item classes (`?…`) | — | none in the corpora |
+
+#### Coverage before and after
+
+Both private corpora with the release build before and after the change
+(the same base, three files at a time, *Coverage runs in parallel*;
+items parametric / partial / fallback / skipped):
+
+| Type | `MITCAD_F3D_CORPUS` before → after | backup corpus before → after (one design left out, below) |
+|---|---|---|
+| all items | 1066 / 61 / 237 / 270 → 1095 / 34 / 236 / 269 | 4798 / 269 / 1031 / 1149 → 4948 / 168 / 992 / 1139 |
+| sketches | 335 / 46 → 363 / 18 | 1632 / 161 → 1740 / 53 |
+| extrusions | 295 / 76 fallback → 295 / 76 (one gained, one lost) | 1354 / 325 → 1373 / 307 |
+| fillets | 248 / 77 → 248 / 77 | 1084 / 312 → 1088 / 308 |
+| revolutions | 20 / 7 → 21 / 6 | 81 / 20 → 87 / 14 |
+| circular patterns | 14 / 13 → 14 / 13 | 80 / 50 → 84 / 46 |
+| mirrors | 6 / 2 → 6 / 2 | 18 / 9 → 22 / 5 |
+| moves | 6 / 0 → 6 / 0 | 11 / 8 → 15 / 6 |
+| shells | 0 / 1 → 0 / 1 | 0 / 5 → 1 / 4 |
+| construction axes | 1 skipped → 1 partial (fixed) | 7 skipped → 7 partial (fixed) |
+
+Final bodies: `MITCAD_F3D_CORPUS` 529 exact and 6 within 0.1 % before and
+after; backup corpus without the design below 3182 exact and 52 within
+0.1 % after (3187 and 52 with it before). The sketches with splines and
+ellipses account for most of the gain (and the items after them that now
+replay instead of following a fallback, among them items that reached
+the import's time limit before); two revolves of the backup corpus come
+in about construction axes. Extrusions: 23 gained and 5 lost in the
+backup corpus, 1 and 1 in the other. The lost ones come after items
+that now replay differently: a boolean giving `BadOrientationOfSubshape`
+on a profile with an elliptical arc (the same design in both corpora),
+a cut of one design (stored twice) whose first reading leaves out a body
+of its state and whose other reading OCCT fails ("Courbes non
+jointives"), and a cut whose target no longer lies across the whole
+profile. One revolution of the backup corpus no longer gives its state.
+
+One design of the backup corpus (140 items) now ends the import process:
+OCCT corrupts its heap (`free(): invalid next size`) in a chamfer's
+second definition on bodies that a fallback before it brought in; the
+items before it come in differently now that their sketches are
+complete. It is left out of the backup numbers above; it is a kernel
+crash, not decoding (open).
+
+#### Where the descriptions and our reading disagree
+
+- **Symmetric extrusions' side kinds.** The cadmpeg description gives
+  `(3, 1, 0)` for a symmetric distance and `(3, 1, 1)` only for two
+  class-keyed forms; every symmetric extrusion of the corpora whose sides
+  are read stores `(3, 1, 1)`.
+- **Two-sided extrusions with a side through all.** The description lists
+  two-sided distances and two-sided faces only; the corpora have `(2, 1,
+  4)`, `(2, 4, 1)` and `(2, 4, 4)`, which our input slots already read as
+  a side through all.
+- **Rectangular pattern distances.** The description takes the stored
+  direction distances for the seed-to-last extent (spacing = extent / (n
+  - 1)); the reference models' patterns, of the spacing type, store the
+  spacing. The file's choice between the two is not read.
+- **Primitive placement.** The description reads the cylinder's and
+  sphere's matrix as their placement; it is not where the corpus'
+  primitives are.
+- **The bytes after a spline's degree.** One paragraph of the cadmpeg
+  description calls them a constant token, another a fit tolerance: they
+  are an `f64` (1e-9 in the records looked at).
+- **The two `u32` after the meta stream's module name**: a segment type
+  code by the description; we had called them a segment version (they are
+  read, not used).
+- **ezf3d**: the sketch's placement is in the design stream (the sketch's
+  transform object, and the cadmpeg description agrees), and an extrusion
+  names its profile's sketch (its profile source input, mitcad#96); ezf3d
+  finds neither. ezf3d gives a parameter to the feature before it by
+  position; we follow the parameter's holder, which names it.
 
 ## FreeCAD import (.FCStd)
 

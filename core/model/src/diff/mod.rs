@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT
 //! Comparison of two designs (P12c): what differs between two documents or
-//! project files, in the model's terms rather than as lines of JSON, for
+//! design files, in the model's terms rather than as lines of JSON, for
 //! the version history (`mitcad-cli diff`, the Version History window).
 //! The two designs are snapshots of whole documents (two files, or two
 //! versions of one); nothing is computed unless the geometry is asked for.
@@ -307,18 +307,18 @@ pub struct DesignDiff {
     pub geometry: Option<GeometryDiff>,
 }
 
-/// The definition state of a project file (version 1, 2 or 3) for
+/// The definition state of a design file (version 1, 2 or 3) for
 /// [`diff_states`]; B-rep references are not resolved (they need not be).
 pub fn read_design(json: &str) -> Result<DocState, FileError> {
     load_state(json).map(|(state, _)| state)
 }
 
-/// Compares two project files' texts without computing them.
+/// Compares two design files' texts without computing them.
 pub fn diff_files(from: &str, to: &str) -> Result<DesignDiff, FileError> {
     Ok(diff_states(&read_design(from)?, &read_design(to)?))
 }
 
-/// Compares two documents' definitions (what their project files save,
+/// Compares two documents' definitions (what their design files save,
 /// without the display state). Nothing is computed; see
 /// [`DesignDiff::add_geometry`] for the bodies.
 pub fn diff_documents<K: Kernel>(from: &Document<K>, to: &Document<K>) -> DesignDiff {

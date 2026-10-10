@@ -77,14 +77,18 @@ endif()
 # device that is not there renders on the CPU with a warning.
 execute_process(COMMAND "${CLI}" render --list-devices --worker "${WORKER}" RESULT_VARIABLE result
                 OUTPUT_VARIABLE out ERROR_VARIABLE err)
-if(NOT result EQUAL 0 OR NOT out MATCHES "^CPU\tCPU\t")
+if(NOT result EQUAL 0 OR NOT out MATCHES "^CPU\tCPU\t([^\r\n]+)")
   message(FATAL_ERROR "--list-devices (${result}): ${out}${err}")
 endif()
+set(cpu_name "${CMAKE_MATCH_1}")
 message(STATUS "${out}")
 execute_process(COMMAND ${render} --size 80x60 --samples 2 --device NO_SUCH_DEVICE -o "${WORK}/fallback.png"
                 RESULT_VARIABLE result OUTPUT_VARIABLE out ERROR_VARIABLE err)
+# CPU descriptions can contain parentheses and need not contain "CPU".
+# Compare the report with the actual CPU device instead of guessing its name.
+string(FIND "${out}" ", on ${cpu_name})" rendered_on_cpu)
 if(NOT result EQUAL 0 OR NOT err MATCHES "Warning: There is no render device \"NO_SUCH_DEVICE\"; rendering on the CPU"
-   OR NOT out MATCHES "Rendered .*, on [^(]+[)]")
+   OR NOT out MATCHES "^Rendered " OR rendered_on_cpu LESS 0)
   message(FATAL_ERROR "a missing device did not render on the CPU (${result}): ${out}${err}")
 endif()
 png_header("${WORK}/fallback.png" 80 60 8 2)

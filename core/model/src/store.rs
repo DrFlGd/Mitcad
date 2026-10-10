@@ -314,6 +314,8 @@ pub(crate) fn storable(def: &FeatureDef) -> bool {
         | FeatureDef::AsBuiltJoint(_)
         | FeatureDef::JointOrigin(_)
         | FeatureDef::RigidGroup(_) => false,
+        // Assembly constraints (mitcad#148).
+        FeatureDef::ConstraintSet(_) => false,
         FeatureDef::Base(base) => {
             !matches!(base.operation, Operation::NewBody | Operation::NewComponent)
         }

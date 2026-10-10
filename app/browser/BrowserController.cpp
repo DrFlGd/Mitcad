@@ -48,7 +48,7 @@ public:
   bool isEmpty() const { return m_entries.isEmpty(); }
   void exec(const QPoint& at) {
     qDebug().noquote() << QStringLiteral("Context menu: %1").arg(m_entries.join(QStringLiteral(" | ")));
-    m_menu.exec(at);
+    execMenu(&m_menu, at);
   }
 
 private:
@@ -565,9 +565,9 @@ void BrowserController::changeUnits() {
   bool ok = false;
   qDebug().noquote() << QStringLiteral("Units dialog opened: %1 (%2)")
                             .arg(m_snapshot.lengthUnit, kLengthUnits.join(QStringLiteral(" | ")));
-  const QString unit = QInputDialog::getItem(m_window, tr("Units"), tr("Document length unit:"), kLengthUnits,
+  const QString unit = dialogItem(m_window, tr("Units"), tr("Document length unit:"), kLengthUnits,
                                              std::max(0, static_cast<int>(kLengthUnits.indexOf(m_snapshot.lengthUnit))),
-                                             false, &ok);
+                                             &ok);
   if (ok && unit != m_snapshot.lengthUnit &&
       m_host.runModelCommand(cmd("set_units", {{QStringLiteral("length"), unit}}))) {
     qDebug().noquote() << QStringLiteral("Units: %1").arg(unit);
@@ -763,7 +763,8 @@ void BrowserController::browserMenu(const BrowserNode& node, const QPoint& at) {
     // Joints (mitcad#55): in the component the folder is in, when active.
     for (const auto& [id, icon, text] : {std::tuple{"assemble.joint", "joint", tr("New Joint")},
                                          std::tuple{"assemble.as_built_joint", "as-built-joint", tr("New As-Built Joint")},
-                                         std::tuple{"assemble.rigid_group", "rigid-group", tr("New Rigid Group")}}) {
+                                         std::tuple{"assemble.rigid_group", "rigid-group", tr("New Rigid Group")},
+                                         std::tuple{"assemble.constraint", "constraint", tr("New Constraint")}}) {
       const QString command = QString::fromLatin1(id);
       menu.add(QString::fromLatin1(icon), text, [this, command] {
         if (canChange()) {
@@ -883,7 +884,7 @@ void BrowserController::deleteFeature(const QString& uid) {
     QPushButton* all = box.addButton(tr("Delete &All"), QMessageBox::AcceptRole);
     box.setDefaultButton(all);
     prepareModal(&box);
-    box.exec();
+    execDialog(&box);
     if (box.clickedButton() != all) {
       qDebug().noquote() << QStringLiteral("Delete %1 cancelled").arg(name);
       return;
@@ -1048,8 +1049,7 @@ void BrowserController::groupMenu(const QString& name, const QPoint& at) {
       return;
     }
     bool ok = false;
-    const QString renamed = QInputDialog::getText(m_window, tr("Rename Group"), tr("Group name:"),
-                                                  QLineEdit::Normal, name, &ok)
+    const QString renamed = dialogText(m_window, tr("Rename Group"), tr("Group name:"), name, &ok)
                                 .trimmed();
     if (ok && !renamed.isEmpty() && renamed != name &&
         m_host.runModelCommand(cmd("rename_group", {{QStringLiteral("name"), name},
@@ -1078,9 +1078,11 @@ void BrowserController::openParameters() {
   if (!m_parameters) {
     m_parameters = new ParametersDialog(m_host, m_window);
   }
-  m_parameters->show();
-  m_parameters->raise();
-  m_parameters->activateWindow();
+  showDialog(m_parameters);
+  if (!m_parameters->testAttribute(Qt::WA_DontShowOnScreen)) {
+    m_parameters->raise();
+    m_parameters->activateWindow();
+  }
   qDebug().noquote() << "Parameters dialog opened";
   m_parameters->refresh();
 }
@@ -1089,9 +1091,11 @@ void BrowserController::openAppearances(const Selection& targets) {
   if (!m_appearances) {
     m_appearances = new AppearanceDialog(m_host, m_window);
   }
-  m_appearances->show();
-  m_appearances->raise();
-  m_appearances->activateWindow();
+  showDialog(m_appearances);
+  if (!m_appearances->testAttribute(Qt::WA_DontShowOnScreen)) {
+    m_appearances->raise();
+    m_appearances->activateWindow();
+  }
   qDebug().noquote() << "Appearances dialog opened";
   m_appearances->refresh();
   m_appearances->setTargets(targets);

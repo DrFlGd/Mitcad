@@ -225,6 +225,18 @@ QJsonObject DocumentSnapshot::joint(const QString& uid) const {
       return value.toObject();
     }
   }
+  // A constraint set (mitcad#148) as a joint of the kind "constraint", with
+  // its first row's sides.
+  for (const QJsonValue& value : joints.value(QStringLiteral("constraints")).toArray()) {
+    QJsonObject set = value.toObject();
+    if (set.value(QStringLiteral("uid")).toString() == uid) {
+      const QJsonObject row = set.value(QStringLiteral("rows")).toArray().first().toObject();
+      set.insert(QStringLiteral("kind"), QStringLiteral("constraint"));
+      set.insert(QStringLiteral("a"), row.value(QStringLiteral("a")));
+      set.insert(QStringLiteral("b"), row.value(QStringLiteral("b")));
+      return set;
+    }
+  }
   return QJsonObject();
 }
 
@@ -295,6 +307,8 @@ QString featureIcon(const QString& type) {
       {QStringLiteral("as_built_joint"), QStringLiteral("as-built-joint")},
       {QStringLiteral("joint_origin"), QStringLiteral("joint-origin")},
       {QStringLiteral("rigid_group"), QStringLiteral("rigid-group")},
+      // Assembly constraints (mitcad#148).
+      {QStringLiteral("constraint_set"), QStringLiteral("constraint")},
   };
   return icons.value(type, QStringLiteral("feature"));
 }

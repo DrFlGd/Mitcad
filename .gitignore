@@ -12,6 +12,9 @@ CMakeUserPresets.json
 .vscode/
 *.user
 
+# macOS Finder metadata
+.DS_Store
+
 # Office and LibreOffice lock files
 ~$*
 .~lock.*#

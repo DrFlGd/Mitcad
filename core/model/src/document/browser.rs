@@ -118,7 +118,7 @@ impl DocState {
 
 impl<K: Kernel> Document<K> {
     /// The light bulb set for a sketch or construction feature, by
-    /// [`Document::set_feature_visible`] or a project file; None when it
+    /// [`Document::set_feature_visible`] or a design file; None when it
     /// follows the default (see [`Document::feature_shown`]). Only a
     /// setting that differs from the default is kept, and a sketch's is
     /// forgotten when it gets its first consumer or loses its last one.

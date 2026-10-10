@@ -29,7 +29,8 @@ const char* const kProjectsUsage = R"(  mitcad-cli project inspect <folder> [--j
       project made beside its files; a remote with a project is refused.
   mitcad-cli project settings <folder> [--set <json>] [--author "Name <email>"] [--json]
       The project's settings: shared (edit locks, live updates; a change is
-      recorded as a version) and this computer's (live updates, sync).
+      recorded as a version) and this computer's (live updates, sync, the
+      display name in the Projects panel).
       --set takes {"shared": {...}, "local": {...}}, merged into them.
   mitcad-cli remote check <url> [--json]
       What a remote holds, without a project: reachable, empty, a Mitcad
@@ -50,6 +51,20 @@ const char* const kProjectsUsage = R"(  mitcad-cli project inspect <folder> [--j
       with those GitHub, GitLab and Codeberg publish and with
       ~/.ssh/known_hosts; --trust adds them to known_hosts (never a key that
       differs from what the service publishes).
+  mitcad-cli project tree <folder> [--json]
+      A project's folders and designs: each design's latest version, edit
+      lock (as the last poll saw it) and whether it changed since; the
+      project's kind and the versions to send and to fetch. No network.
+  mitcad-cli project mkdir|new-design <folder> <path> [--author A] [--message M] [--no-push] [--json]
+  mitcad-cli project move <folder> <from> <to> [--author A] [--message M] [--no-push] [--json]
+  mitcad-cli project delete <folder> <path> [--force] [--author A] [--message M] [--no-push] [--json]
+      A new folder, a new empty design, a design or folder moved, or one
+      deleted, each recorded as one version (the history keeps deleted
+      ones) and in a Cloud project sent at once (unless --no-push or the
+      project's setting). Paths are relative to the project's folder.
+      Refused, nothing changed: a target that is there, a path outside the
+      project or hidden, a design locked by someone else; a delete of
+      files the latest version lacks or holds otherwise without --force.
 )";
 
 namespace {
@@ -183,9 +198,79 @@ bool port_of(const std::string& text, std::string& port) {
   return true;
 }
 
+// A project's folders and designs (mitcad#144): tree, mkdir, new-design,
+// move and delete; paths relative to the project's folder.
+bool is_folder_command(const std::string& what) {
+  return what == "tree" || what == "mkdir" || what == "new-design" || what == "move" || what == "delete";
+}
+
+int project_folders(const std::vector<std::string>& args) {
+  Parsed a;
+  std::string error;
+  if (!parse(args, {"--author", "--message"}, {"--json", "--no-push", "--force"}, a, error)) {
+    return problem(error);
+  }
+  const std::string what = a.positional.empty() ? std::string() : a.positional[0];
+  const bool json = a.flag("--json");
+  const std::size_t paths = what == "tree" ? 0U : what == "move" ? 2U : 1U;
+  if (a.positional.size() != 2U + paths) {
+    return problem("project " + what + " needs a project's folder" +
+                   (paths == 0U   ? std::string()
+                    : paths == 1U ? std::string(" and a path in it")
+                                  : std::string(", a design or folder in it and its new path")));
+  }
+  const std::string& folder = a.positional[1];
+  if (what == "tree") {
+    if (a.options.size() != (json ? 1U : 0U)) {
+      return problem("project tree takes only --json");
+    }
+    return run_in(folder, R"({"cmd": "project_tree"})", json);
+  }
+  if (a.flag("--force") && what != "delete") {
+    return problem("--force goes with project delete");
+  }
+  std::string command;
+  if (what == "mkdir") {
+    command = R"({"cmd": "create_folder", "path": )" + json_text(a.positional[2]);
+  } else if (what == "new-design") {
+    command = R"({"cmd": "new_design", "path": )" + json_text(a.positional[2]);
+  } else if (what == "move") {
+    command = R"({"cmd": "move", "from": )" + json_text(a.positional[2]) + R"(, "to": )" +
+              json_text(a.positional[3]);
+  } else {
+    command = R"({"cmd": "delete", "path": )" + json_text(a.positional[2]);
+    if (a.flag("--force")) {
+      command += R"(, "force": true)";
+    }
+  }
+  if (const std::string* author = a.one("--author")) {
+    command += R"(, "author": )" + json_text(*author);
+  }
+  if (const std::string* message = a.one("--message")) {
+    command += R"(, "message": )" + json_text(*message);
+  }
+  if (a.flag("--no-push")) {
+    command += R"(, "push": false)";
+  }
+  command += "}";
+  const rust::Box<mitcad::Project> project = mitcad::open_project(folder);
+  if (json) {
+    const std::string answer(project->command(command));
+    std::cout << answer << "\n";
+    return failed(answer) ? 1 : 0;
+  }
+  // A refusal or a failed push is an error (exit status 1).
+  std::cout << std::string(project->command_text(command));
+  return 0;
+}
+
 } // namespace
 
 int project(const std::vector<std::string>& args) {
+  // A project's folders and designs (mitcad#144).
+  if (args.size() > 1 && is_folder_command(args[1])) {
+    return project_folders(args);
+  }
   Parsed a;
   std::string error;
   if (!parse(args, {"--author", "--url", "--design", "--set"}, {"--json", "--no-push"}, a, error)) {

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 //! Recording a version: a commit of the saved paths built straight from
 //! HEAD's tree, with the project's B-rep store kept to what the version's
-//! project files refer to, and the index entries of those paths updated.
+//! design files refer to, and the index entries of those paths updated.
 
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::fs;
@@ -17,15 +17,15 @@ use mitcad_model::file::brep_path;
 use serde::Serialize;
 
 use crate::tree::brep_sha256;
-use crate::{Identity, MITCAD_VERSION, ProjectRepo, VcsError, chain, io_error, is_project_file};
+use crate::{Identity, MITCAD_VERSION, ProjectRepo, VcsError, chain, io_error, is_design_file};
 
 /// How often a commit is tried: another commit may move the branch
 /// between building the tree and moving the branch, or hold its lock.
 const ATTEMPTS: u32 = 5;
 /// How long to wait for another program's lock of the index.
 const INDEX_LOCK_WAIT: Duration = Duration::from_secs(10);
-/// The project file version a project writes (a commit trailer).
-const PROJECT_FORMAT: u32 = 3;
+/// The design file version a project writes (a commit trailer).
+const DESIGN_FORMAT: u32 = 3;
 
 /// What recording a version did.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
@@ -39,7 +39,7 @@ pub struct CommitOutcome {
     /// Paths the version adds or changes, relative to the project.
     pub written: Vec<String>,
     /// Paths the version no longer has: deleted files, and B-rep files no
-    /// project file of the version refers to.
+    /// design file of the version refers to.
     pub removed: Vec<String>,
     /// Those B-rep files, deleted from the project's folder too.
     pub deleted: Vec<String>,
@@ -66,7 +66,7 @@ impl ProjectRepo {
     /// folder; a file that no longer exists is removed) as a new version
     /// with `message` (empty: `Save <paths>`) by `author`, on the branch
     /// HEAD is on. Only these paths change, with the B-rep files of the
-    /// project's store: those the version's project files refer to are
+    /// project's store: those the version's design files refer to are
     /// added where missing, and those none refers to are removed from the
     /// version and from the folder. The index entries of the changed paths
     /// follow; other staged changes stay. Nothing changed: no commit.
@@ -75,6 +75,19 @@ impl ProjectRepo {
         files: &[PathBuf],
         message: &str,
         author: &Identity,
+    ) -> Result<CommitOutcome, VcsError> {
+        self.commit_with_renames(files, message, author, &[])
+    }
+
+    /// Records known moves as well as content changes. A moved design may
+    /// have new bytes because its relative links were updated for its new
+    /// location, so content alone cannot always identify its old path.
+    pub(crate) fn commit_with_renames(
+        &self,
+        files: &[PathBuf],
+        message: &str,
+        author: &Identity,
+        renames: &[(String, String)],
     ) -> Result<CommitOutcome, VcsError> {
         let mut paths: Vec<String> = Vec::new();
         for file in files {
@@ -104,7 +117,7 @@ impl ProjectRepo {
                 index_path.display()
             ))
         })?;
-        let message = full_message(message, &paths);
+        let message = full_message(message, &paths, renames);
         let mut last_error = String::new();
         for attempt in 0..ATTEMPTS {
             if attempt > 0 {
@@ -140,7 +153,7 @@ impl ProjectRepo {
                 head,
             );
             match committed {
-                Ok(id) => return Ok(self.finish(id.detach(), prepared, lock)),
+                Ok(id) => return Ok(self.finish(id.detach(), prepared, lock, renames)),
                 // The branch moved (or its lock was taken): build again.
                 Err(error) => last_error = chain(&error),
             }
@@ -195,7 +208,7 @@ impl ProjectRepo {
             unreferenced: Vec::new(),
             warnings: Vec::new(),
         };
-        // The references of the saved project files (None: unreadable).
+        // The references of the saved design files (None: unreadable).
         let mut saved = BTreeMap::new();
         for path in paths {
             let full = self.root.join(path);
@@ -208,7 +221,7 @@ impl ProjectRepo {
                         prepared.written.push(path.clone());
                     }
                     prepared.entries.push((path.clone(), Some(id)));
-                    if is_project_file(path) {
+                    if is_design_file(path) {
                         saved.insert(path.clone(), self.references_with(id, || Ok(data)));
                     }
                 }
@@ -228,9 +241,9 @@ impl ProjectRepo {
         Ok(prepared)
     }
 
-    /// Adds the B-rep files the version's project files refer to that its
+    /// Adds the B-rep files the version's design files refer to that its
     /// tree lacks (from the project's store), and removes those none
-    /// refers to, unless a project file could not be read.
+    /// refers to, unless a design file could not be read.
     fn reconcile_store(
         &self,
         saved: &BTreeMap<String, Option<BTreeSet<Sha256>>>,
@@ -245,7 +258,7 @@ impl ProjectRepo {
                 None => unreadable.push(path.clone()),
             }
         }
-        for (path, id) in self.project_files(prepared.base)? {
+        for (path, id) in self.design_files(prepared.base)? {
             if saved.contains_key(&path) {
                 continue;
             }
@@ -277,7 +290,7 @@ impl ProjectRepo {
         }
         if !unreadable.is_empty() {
             prepared.warnings.push(format!(
-                "{} could not be read as a project file, so no B-rep file is removed",
+                "{} could not be read as a design file, so no B-rep file is removed",
                 unreadable.join(", ")
             ));
             return Ok(());
@@ -297,8 +310,8 @@ impl ProjectRepo {
         Ok(())
     }
 
-    /// The B-rep data a project file (blob `id`, its content from `read`)
-    /// refers to; None when it is not a project file this build reads. Kept
+    /// The B-rep data a design file (blob `id`, its content from `read`)
+    /// refers to; None when it is not a design file this build reads. Kept
     /// in memory and in `.mitcad/cache/refs/<id>`, as a blob never changes.
     pub(crate) fn references_with(
         &self,
@@ -327,7 +340,13 @@ impl ProjectRepo {
     }
 
     /// The commit is made: the index entries and the folder follow.
-    fn finish(&self, commit: ObjectId, prepared: Prepared, lock: gix::lock::File) -> CommitOutcome {
+    fn finish(
+        &self,
+        commit: ObjectId,
+        prepared: Prepared,
+        lock: gix::lock::File,
+        renames: &[(String, String)],
+    ) -> CommitOutcome {
         let mut outcome = CommitOutcome {
             commit: Some(commit.to_string()),
             skipped: None,
@@ -344,10 +363,20 @@ impl ProjectRepo {
         }
         outcome.deleted =
             self.delete_unreferenced(&prepared.unreferenced, prepared.tree, &mut outcome.warnings);
-        // A project file the version removed (deleted, or renamed: the new
-        // path is saved with it) leaves no per-user display state behind.
+        // A removed design leaves no per-user display state behind.
+        // An explicit move migrates that state after this commit succeeds.
         if let Some(project) = mitcad_model::Project::open(&self.root) {
-            for path in outcome.removed.iter().filter(|p| is_project_file(p)) {
+            for path in outcome.removed.iter().filter(|p| is_design_file(p)) {
+                if renames.iter().any(|(from, to)| {
+                    from == path
+                        && is_design_file(to)
+                        && prepared
+                            .entries
+                            .iter()
+                            .any(|(path, blob)| path == to && blob.is_some())
+                }) {
+                    continue;
+                }
                 let file = self.root.join(path);
                 if !file.exists() {
                     let _ = project.remove_local_state(&file);
@@ -414,7 +443,7 @@ impl ProjectRepo {
     }
 
     /// Deletes the B-rep files the version dropped from the folder, unless
-    /// a project file there that differs from the version (not saved, or
+    /// a design file there that differs from the version (not saved, or
     /// saved without a version) refers to them.
     fn delete_unreferenced(
         &self,
@@ -425,30 +454,38 @@ impl ProjectRepo {
         if unreferenced.is_empty() {
             return Vec::new();
         }
-        let mut kept = BTreeSet::new();
-        for file in project_files_in(&self.root) {
-            let (Ok(relative), Ok(data)) = (self.relative(&file), fs::read(&file)) else {
-                continue;
-            };
-            let Ok(id) =
-                gix::objs::compute_hash(self.repo.object_hash(), gix::objs::Kind::Blob, &data)
-            else {
-                continue;
-            };
-            if self.blob_entry(tree, &relative).ok().flatten() == Some(id) {
-                continue;
+        let inspected = (|| -> Result<BTreeSet<Sha256>, VcsError> {
+            let (files, error) = scan_design_files(&self.root);
+            if let Some(error) = error {
+                return Err(error);
             }
-            match self.references_with(id, || Ok(data)) {
-                Some(references) => kept.extend(references),
-                None => {
-                    warnings.push(format!(
-                        "{relative} could not be read as a project file, so the B-rep files the \
-                         version dropped stay in the folder"
-                    ));
-                    return Vec::new();
+            let mut kept = BTreeSet::new();
+            for file in files {
+                let relative = self.relative(&file)?;
+                let data = fs::read(&file).map_err(|e| io_error("read", &file, e))?;
+                let id =
+                    gix::objs::compute_hash(self.repo.object_hash(), gix::objs::Kind::Blob, &data)
+                        .map_err(|e| VcsError::Git(e.to_string()))?;
+                if self.blob_entry(tree, &relative)? == Some(id) {
+                    continue;
                 }
+                let references = self.references_with(id, || Ok(data)).ok_or_else(|| {
+                    VcsError::File(format!("{relative} could not be read as a design file"))
+                })?;
+                kept.extend(references);
             }
-        }
+            Ok(kept)
+        })();
+        let kept = match inspected {
+            Ok(kept) => kept,
+            Err(error) => {
+                warnings.push(format!(
+                    "{error}; the working designs could not all be inspected, so the B-rep \
+                     files the version dropped stay in the folder"
+                ));
+                return Vec::new();
+            }
+        };
         let mut deleted = Vec::new();
         for path in unreferenced {
             if brep_sha256(path).is_some_and(|sha256| kept.contains(&sha256)) {
@@ -471,41 +508,99 @@ impl ProjectRepo {
     }
 }
 
-/// The project files under `root`, leaving out folders whose names start
+/// The design files under `root`, leaving out folders whose names start
 /// with a dot (`.git`, `.mitcad`) and links.
-pub(crate) fn project_files_in(root: &Path) -> Vec<PathBuf> {
+pub(crate) fn design_files_in(root: &Path) -> Vec<PathBuf> {
+    scan_design_files(root).0
+}
+
+/// Discovery may use a partial list, but deleting geometry requires a
+/// complete one. Keep the first inspection failure for that caller.
+fn scan_design_files(root: &Path) -> (Vec<PathBuf>, Option<VcsError>) {
     let mut out = Vec::new();
+    let mut error = None;
     let mut folders = vec![root.to_path_buf()];
     while let Some(folder) = folders.pop() {
-        let Ok(entries) = fs::read_dir(&folder) else {
-            continue;
+        let entries = match fs::read_dir(&folder) {
+            Ok(entries) => entries,
+            Err(e) => {
+                error.get_or_insert_with(|| io_error("read", &folder, e));
+                continue;
+            }
         };
-        for entry in entries.flatten() {
+        for entry in entries {
+            let entry = match entry {
+                Ok(entry) => entry,
+                Err(e) => {
+                    error.get_or_insert_with(|| io_error("read", &folder, e));
+                    continue;
+                }
+            };
             let name = entry.file_name();
             let Some(name) = name.to_str() else {
+                error.get_or_insert_with(|| {
+                    VcsError::InvalidPath(format!(
+                        "{} has a filename that is not UTF-8",
+                        entry.path().display()
+                    ))
+                });
                 continue;
             };
             match entry.file_type() {
                 Ok(kind) if kind.is_dir() && !name.starts_with('.') => folders.push(entry.path()),
-                Ok(kind) if kind.is_file() && is_project_file(name) => out.push(entry.path()),
-                _ => {}
+                Ok(kind) if kind.is_file() && is_design_file(name) => out.push(entry.path()),
+                Err(e) => {
+                    error.get_or_insert_with(|| io_error("inspect", &entry.path(), e));
+                }
+                Ok(_) => {}
             }
         }
     }
     out.sort();
-    out
+    (out, error)
 }
 
 /// The commit message: the given one (or `Save <paths>`) and trailers
-/// with Mitcad's version and the project file version.
-fn full_message(message: &str, paths: &[String]) -> String {
+/// with Mitcad's version, the design file version and any known moves.
+fn full_message(message: &str, paths: &[String], renames: &[(String, String)]) -> String {
     let message = message.trim();
     let message = if message.is_empty() {
         format!("Save {}", paths.join(", "))
     } else {
         message.to_owned()
     };
-    format!("{message}\n\nMitcad-Version: {MITCAD_VERSION}\nMitcad-Format: {PROJECT_FORMAT}\n")
+    let mut message =
+        format!("{message}\n\nMitcad-Version: {MITCAD_VERSION}\nMitcad-Format: {DESIGN_FORMAT}\n");
+    for (from, to) in renames {
+        // JSON keeps filenames containing newlines or quotes in one trailer.
+        let pair = serde_json::to_string(&[from, to]).expect("two paths serialize");
+        message.push_str(&format!("Mitcad-Rename: {pair}\n"));
+    }
+    message
+}
+
+/// Known moves from only the final trailer block generated by Mitcad.
+/// Text in the user's message is never interpreted as a move.
+pub(crate) fn rename_trailers(message: &str) -> Vec<(String, String)> {
+    let Some((_, trailers)) = message.trim_end().rsplit_once("\n\n") else {
+        return Vec::new();
+    };
+    let mut lines = trailers.lines();
+    if !lines
+        .next()
+        .is_some_and(|line| line.starts_with("Mitcad-Version: "))
+        || !lines
+            .next()
+            .is_some_and(|line| line.starts_with("Mitcad-Format: "))
+        || !trailers.lines().all(|line| line.starts_with("Mitcad-"))
+    {
+        return Vec::new();
+    }
+    lines
+        .filter_map(|line| line.strip_prefix("Mitcad-Rename: "))
+        .filter_map(|pair| serde_json::from_str::<[String; 2]>(pair).ok())
+        .map(|[from, to]| (from, to))
+        .collect()
 }
 
 /// A commit message without the trailers [`full_message`] adds.

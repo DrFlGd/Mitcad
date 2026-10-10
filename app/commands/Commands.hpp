@@ -22,11 +22,11 @@ namespace sketch {
 class SketchController;
 }
 
-// The SOLID tab's CREATE group (U4), in menu order: New Component,
-// Create Sketch (the main window's, given here), Extrude, Revolve, Sweep,
-// Loft, Rib, Web, Hole, Thread, the primitives, Coil, Pipe, the patterns
-// and Mirror. `context` answers the definitions' questions about the model
-// while the application runs.
+// The SOLID tab's CREATE group (U4), in menu order: Create Sketch (the
+// main window's, given here), Extrude, Revolve, Sweep, Loft, Rib, Web,
+// Hole, Thread, the primitives, Coil, Pipe, the patterns and Mirror; also
+// New Component, which leads the ASSEMBLE group. `context` answers the
+// definitions' questions about the model while the application runs.
 void registerCreateCommands(CommandRegistry& registry, const CommandContext& context,
                             const CommandDef& createSketch);
 // MODIFY: Press Pull, Fillet, Chamfer, Shell, Draft, Scale, Combine,
@@ -36,7 +36,8 @@ void registerModifyCommands(CommandRegistry& registry, const CommandContext& con
 // CONSTRUCT: every construction plane, axis and point.
 void registerConstructCommands(CommandRegistry& registry, const CommandContext& context);
 // ASSEMBLE (mitcad#55): Joint, As-Built Joint, Joint Origin, Rigid Group,
-// Drive Joint.
+// Drive Joint. New Component comes first (registerCreateCommands); Animate
+// Joint, Insert Component and Insert from Library last (the main window).
 void registerAssembleCommands(CommandRegistry& registry, const CommandContext& context);
 // INSPECT: Measure, Interference, Section Analysis and Physical
 // Properties (a dialog over `window` for the bodies `selection` gives).

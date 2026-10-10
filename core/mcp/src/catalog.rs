@@ -74,7 +74,7 @@ pub(crate) fn tools() -> Vec<Value> {
             json!({
                 "document": document,
                 "path": path,
-                "format": {"type": "string", "enum": ["step", "iges", "brep", "stl", "obj", "3mf", "dxf"]},
+                "format": {"type": "string", "enum": ["step", "iges", "brep", "stl", "obj", "3mf", "usdz", "dxf"]},
                 "bodies": {"type": "array", "items": {"type": "string", "minLength": 1}, "description": "Optional body identities, for example F7.b0"},
                 "sketch": {"type": "string", "minLength": 1, "description": "Sketch feature identity for DXF, for example F2"}
             }),
@@ -83,6 +83,25 @@ pub(crate) fn tools() -> Vec<Value> {
             false,
         ),
     ]
+}
+
+pub(crate) fn live_tools() -> Vec<Value> {
+    let mut tools: Vec<Value> = tools()
+        .into_iter()
+        .filter(|tool| {
+            matches!(
+                tool["name"].as_str(),
+                Some("document_list" | "model_query" | "model_command")
+            )
+        })
+        .collect();
+    for tool in &mut tools {
+        if let Some(document) = tool["inputSchema"]["properties"].get_mut("document") {
+            document["description"] =
+                json!("Explicit live document handle returned by document_list");
+        }
+    }
+    tools
 }
 
 fn tool(

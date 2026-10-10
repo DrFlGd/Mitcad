@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: MIT
 #include "mcp.hpp"
+#include "mcp-connect.hpp"
 
 #include <filesystem>
 #include <iostream>
@@ -15,6 +16,11 @@ const char* const kMcpUsage = R"(  mitcad-cli mcp --workspace DIR [--read-only]
       DIR must be an existing directory; document and export paths stay
       inside it. --read-only permits opening, querying and closing designs.
       stdout holds only JSON-RPC messages; diagnostics go to stderr.
+  mitcad-cli mcp --list-instances
+      Lists running desktop instances as JSON, without authentication tokens.
+  mitcad-cli mcp --connect [--instance ID]
+      Bridges MCP stdin/stdout to an already-open desktop document.
+      Select an ID when several desktop instances are running.
       See docs/mcp.md for client configuration and modelling examples.
 )";
 
@@ -33,7 +39,10 @@ int mcp(const std::vector<std::string>& args) {
     return 0;
   }
   std::string workspace;
+  std::string instance;
   bool read_only = false;
+  bool connect = false;
+  bool list_instances = false;
   for (std::size_t i = 1; i < args.size(); ++i) {
     if (args[i] == "--workspace") {
       if (!workspace.empty()) {
@@ -48,9 +57,33 @@ int mcp(const std::vector<std::string>& args) {
         return argument_error("--read-only may be specified only once");
       }
       read_only = true;
+    } else if (args[i] == "--connect") {
+      if (connect) {
+        return argument_error("--connect may be specified only once");
+      }
+      connect = true;
+    } else if (args[i] == "--list-instances") {
+      if (list_instances) {
+        return argument_error("--list-instances may be specified only once");
+      }
+      list_instances = true;
+    } else if (args[i] == "--instance") {
+      if (!instance.empty()) {
+        return argument_error("--instance may be specified only once");
+      }
+      if (i + 1 == args.size() || args[i + 1].empty() || args[i + 1].rfind("--", 0) == 0) {
+        return argument_error("--instance requires an ID");
+      }
+      instance = args[++i];
     } else {
       return argument_error("unknown argument '" + args[i] + "'");
     }
+  }
+  if (connect || list_instances || !instance.empty()) {
+    if (!workspace.empty() || read_only || (connect && list_instances) || (!connect && !instance.empty())) {
+      return argument_error("--connect [--instance ID] and --list-instances are exclusive with headless options");
+    }
+    return connect ? mcpConnect(instance) : mcpListInstances();
   }
   if (workspace.empty()) {
     return argument_error("--workspace is required");

@@ -6,10 +6,10 @@
 #   1. the installer's files: executables, Qt and OCCT DLLs, the Qt platform
 #      plugin, the Visual C++ runtime, the licences; no Mesa, no PDB files.
 #   2. mitcad-cli runs a script of the repository.
-#   3. mitcad.exe --version loads Qt with its plugins. With the render
-#      worker in the build (MITCAD_RENDER, mitcad#51): mitcad-render.exe,
-#      Open Image Denoise's DLLs and the renderer's licences are installed,
-#      and the worker renders its test scene headless.
+#   3. mitcad.exe --version loads Qt with its plugins. The render worker
+#      (mitcad#51): mitcad-render.exe, Open Image Denoise's DLLs and the
+#      renderer's licences are installed, and the worker renders its test
+#      scene headless.
 #   4. with -MesaDir: mitcad.exe --demo --screenshot renders the demo block
 #      (Mesa is copied next to the installed copy, as a VM has no GPU).
 #   5. with -MesaDir, the automatic update (mitcad#9): the installed Mitcad,
@@ -97,13 +97,11 @@ foreach ($file in 'LICENSE', 'THIRD-PARTY-NOTICES.txt', 'Uninstall.exe', 'licens
                   'licenses\qtkeychain\COPYING') {
   if (Test-Path (Join-Path $install $file)) { Pass $file } else { Fail "$file is missing" }
 }
-$render = [bool](Find-Built 'mitcad-render.exe', 'app\mitcad-render.exe')
-if ($render) {
-  foreach ($file in 'bin\mitcad-render.exe', 'bin\OpenImageDenoise.dll', 'bin\OpenImageDenoise_core.dll',
-                    'bin\OpenImageDenoise_device_cpu.dll', 'licenses\cycles\LICENSE',
-                    'licenses\openimagedenoise\LICENSE.txt') {
-    if (Test-Path (Join-Path $install $file)) { Pass $file } else { Fail "$file is missing" }
-  }
+# The render worker (every build has it) with its libraries and licences.
+foreach ($file in 'bin\mitcad-render.exe', 'bin\OpenImageDenoise.dll', 'bin\OpenImageDenoise_core.dll',
+                  'bin\OpenImageDenoise_device_cpu.dll', 'licenses\cycles\LICENSE',
+                  'licenses\openimagedenoise\LICENSE.txt') {
+  if (Test-Path (Join-Path $install $file)) { Pass $file } else { Fail "$file is missing" }
 }
 $licenseFiles = @(Get-ChildItem (Join-Path $install 'licenses\vcpkg') -Recurse -Filter copyright -ErrorAction SilentlyContinue)
 if ($licenseFiles.Count -gt 0) { Pass "$($licenseFiles.Count) vcpkg licence texts" } else { Fail 'no vcpkg licence texts' }
@@ -141,16 +139,14 @@ $proc = Start-Process -FilePath (Join-Path $bin 'mitcad.exe') -ArgumentList '--v
 $versionText = if (Test-Path $versionOut) { (Get-Content $versionOut -Raw) } else { '' }
 if ($proc.ExitCode -eq 0 -and $versionText -match 'Mitcad') { Pass "mitcad.exe --version: $($versionText.Trim())" }
 else { Fail "mitcad.exe --version exit code $($proc.ExitCode), output '$versionText'" }
-if ($render) {
-  # The render worker with the installation's libraries only (no OpenGL).
-  $renderLog = Join-Path $Out 'render.log'
-  $proc = Start-Process -FilePath (Join-Path $bin 'mitcad-render.exe') `
-    -ArgumentList '--bench', '64x48', '--samples', '2', '--output', "`"$(Join-Path $Out 'render.png')`"" `
-    -RedirectStandardOutput $renderLog -RedirectStandardError (Join-Path $Out 'render-err.log') -Wait -PassThru
-  $renderText = (Get-Content $renderLog, (Join-Path $Out 'render-err.log') -Raw -ErrorAction SilentlyContinue) -join ''
-  if ($proc.ExitCode -eq 0 -and $renderText -match 'render-bench 64x48 samples 2') { Pass 'mitcad-render.exe --bench 64x48' }
-  else { Fail "mitcad-render.exe exit code $($proc.ExitCode) (see $renderLog)" }
-}
+# The render worker with the installation's libraries only (no OpenGL).
+$renderLog = Join-Path $Out 'render.log'
+$proc = Start-Process -FilePath (Join-Path $bin 'mitcad-render.exe') `
+  -ArgumentList '--bench', '64x48', '--samples', '2', '--output', "`"$(Join-Path $Out 'render.png')`"" `
+  -RedirectStandardOutput $renderLog -RedirectStandardError (Join-Path $Out 'render-err.log') -Wait -PassThru
+$renderText = (Get-Content $renderLog, (Join-Path $Out 'render-err.log') -Raw -ErrorAction SilentlyContinue) -join ''
+if ($proc.ExitCode -eq 0 -and $renderText -match 'render-bench 64x48 samples 2') { Pass 'mitcad-render.exe --bench 64x48' }
+else { Fail "mitcad-render.exe exit code $($proc.ExitCode) (see $renderLog)" }
 
 # 4. Rendering, when a software OpenGL is given.
 if ($MesaDir) {

@@ -703,9 +703,26 @@ of faces, through all both ways, and closed splines (release build,
 partial, 2,257 fallback and 392 skipped (7,183, 94, 2,294 and 392
 before): extrusions 2,220 parametric and 111 fallbacks (2,184 and 147;
 those whose result was not in the history 20, from 47). The extrusions
-up to the next face left fall back where their profile starts inside
-the body they reach (Mitcad's extent up to a body does not take that
+up to the next face left fell back where their profile starts inside
+the body they reach (Mitcad's extent up to a body did not take that
 case).
+
+With Mitcad's extent up to a body or a curved face taking a profile that
+starts inside the body or on its faces (each part of the profile up to
+the first face beyond it) (release build, 2026-10-10, mitcad#60), three
+more extrusions (up to the next face and up to a cylinder) come in
+parametric.
+
+With Mitcad's helix built of faces of at most a third of a turn where a
+side of its profile lies on a cylinder of the bodies it is cut from or
+joined to (OCCT's booleans failed on faces winding several turns round
+the axis against such a cylinder), and a side as long as the pitch moved
+0.1 µm off the cylinder so that the turns do not touch in an edge on it
+(release build, 2026-10-10, mitcad#60), coils are 61 parametric and 12
+fallbacks (30 and 43), in 35 files. Of the coils left, one is tapered,
+two run out of memory, one out of time, two do not cut into the bodies
+the import offers and six have no definition whose result is in the
+history.
 
 ### What the files do not tell (feasibility)
 

@@ -9,6 +9,7 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use super::components::{design_digest, file_label};
+use super::copy::CopySource;
 use super::{DocState, Document, ModelError, invalid};
 use crate::assembly::ExternalLink;
 use crate::configurations::{ConfigurationRow, Configurations, apply_values};
@@ -134,7 +135,15 @@ impl<K: Kernel> Document<K> {
             rev: part.rev.clone(),
             component: part.component.clone(),
         };
-        let source = self.library_source(&request).map_err(invalid)?;
+        let resolver = self
+            .link_resolver()
+            .ok_or_else(|| invalid("no component libraries are set up here"))?;
+        let source = resolver.library_source(&request).map_err(invalid)?;
+        // Textures come from the same commit even if a tag or HEAD moves.
+        let texture_request = LibraryRequest {
+            rev: source.rev.clone(),
+            ..request
+        };
         let configured = Self::configured(&source, part.config.as_deref())?;
         let designation = designation(&source, configured.row.as_ref());
         let reference = library_ref(&source, configured.row.as_ref(), &designation);
@@ -185,7 +194,16 @@ impl<K: Kernel> Document<K> {
                     });
                 }
                 None => {
-                    state.copy_component(&configured.state, &[], made, None, false)?;
+                    state.copy_component(
+                        &configured.state,
+                        &[],
+                        made,
+                        None,
+                        CopySource::Library {
+                            resolver: &*resolver,
+                            request: &texture_request,
+                        },
+                    )?;
                 }
             }
             state.assembly.component_mut(made).expect("made").library = Some(reference);

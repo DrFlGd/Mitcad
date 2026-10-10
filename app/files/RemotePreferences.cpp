@@ -22,6 +22,8 @@
 #include "LiveBrokers.hpp"
 #include "mitcad_bridge/lib.h"
 
+#include "../framework/Dialogs.hpp"
+
 namespace mitcad {
 
 RemotePreferencesBox::RemotePreferencesBox(QWidget* parent)
@@ -124,7 +126,7 @@ RemotePreferencesBox::RemotePreferencesBox(QWidget* parent)
   });
   listBrokers();
   connect(browse, &QPushButton::clicked, this, [this] {
-    const QString chosen = QFileDialog::getOpenFileName(this, tr("Git Program"), QFileInfo(m_git->text()).path());
+    const QString chosen = dialogOpenFileName(this, tr("Git Program"), QFileInfo(m_git->text()).path());
     if (!chosen.isEmpty()) {
       m_git->setText(QDir::toNativeSeparators(chosen));
       detect();

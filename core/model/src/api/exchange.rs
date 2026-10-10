@@ -56,6 +56,10 @@ pub(super) struct ExportCommand {
     /// Only the placements by this occurrence (`O1/O4` or `Arm:1/Pin:2`).
     #[serde(default)]
     occurrence: Option<String>,
+    /// USDZ: the design file's folder, which relative texture paths are
+    /// relative to (mitcad#123).
+    #[serde(default)]
+    design_folder: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -95,7 +99,7 @@ impl<K: Kernel> Document<K> {
             Some(format) => format,
             None => ExportFormat::of_path(&command.path).ok_or_else(|| {
                 ApiError(format!(
-                    "{}: unknown file type; use .step, .iges, .stl, .obj, .brep or .3mf, or give \"format\"",
+                    "{}: unknown file type; use .step, .iges, .stl, .obj, .brep, .3mf or .usdz, or give \"format\"",
                     command.path
                 ))
             })?,
@@ -106,6 +110,7 @@ impl<K: Kernel> Document<K> {
             unit: command.unit,
             refinement: command.refinement,
             ascii: command.ascii,
+            design_folder: command.design_folder.map(std::path::PathBuf::from),
         };
         let bodies = command
             .bodies
@@ -152,6 +157,17 @@ impl<K: Kernel> Document<K> {
                 .iter()
                 .map(|(uid, why)| json!({"body": uid, "name": self.body_name(*uid), "reason": why}))
                 .collect();
+        }
+        if format == ExportFormat::Usdz {
+            // The materials, the bodies left out and what was written
+            // otherwise (mitcad#123).
+            result["materials"] = json!(exported.materials);
+            result["skipped"] = exported
+                .skipped
+                .iter()
+                .map(|(uid, why)| json!({"body": uid, "name": self.body_name(*uid), "reason": why}))
+                .collect();
+            result["warnings"] = json!(exported.warnings);
         }
         Ok(result)
     }

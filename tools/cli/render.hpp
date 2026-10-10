@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 #pragma once
 
-// mitcad-cli render (render.cpp; only in builds with MITCAD_RENDER).
+// mitcad-cli render (render.cpp).
 
 #include <functional>
 #include <string>
@@ -11,7 +11,7 @@
 
 namespace mitcad::cli {
 
-// Opens a project file or runs a script on a new document (main.cpp).
+// Opens a design file or runs a script on a new document (main.cpp).
 using OpenPart = std::function<rust::Box<mitcad::Document>(const std::string&)>;
 
 // `mitcad-cli render ...` with the whole command line; the exit status.

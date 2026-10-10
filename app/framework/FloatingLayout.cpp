@@ -244,14 +244,18 @@ void FloatingLayout::layoutCards() {
   int insetTop = 0;
   const QRect cubeCorner(view.right() + 1 - OcctViewer::kCubeArea, view.top(), OcctViewer::kCubeArea,
                          OcctViewer::kCubeArea);
+  // Several upper left cards (the Projects card and the Browser) stack in
+  // the order they were added.
+  int leftTop = topLimit;
   for (const Entry& entry : m_entries) {
     if (!visible(entry) || entry.anchor != Anchor::TopLeft) {
       continue;
     }
     const int limit = std::min(static_cast<int>((view.height() - 2 * kMargin) * entry.sizing.maxHeightShare),
-                               cardsBottom - topLimit);
+                               cardsBottom - leftTop);
     const QSize size = sized(entry, entry.sizing.width > 0 ? entry.sizing.width : 260, limit);
-    entry.card->setSlot(QRect(view.left() + kMargin, topLimit, size.width(), size.height()));
+    entry.card->setSlot(QRect(view.left() + kMargin, leftTop, size.width(), size.height()));
+    leftTop = entry.card->slot().bottom() + 1 + kGap;
     if (entry.card->slot().intersects(cubeCorner)) {
       insetTop = std::max(insetTop, entry.card->slot().bottom() + 1 + kGap - view.top());
     }

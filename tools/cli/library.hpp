@@ -20,7 +20,7 @@ extern const char* const kLibraryUsage;
 // `mitcad-cli library <what> ...` (args[0] is "library"); the exit status.
 int library(const std::vector<std::string>& args);
 
-// Opens a project file, following its links (main.cpp).
+// Opens a design file, following its links (main.cpp).
 using OpenDocument = std::function<rust::Box<mitcad::Document>(const std::string&)>;
 
 // `mitcad-cli parts <file.mitcad> [--json]`: the parts list.

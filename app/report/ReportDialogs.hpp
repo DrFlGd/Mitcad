@@ -36,6 +36,9 @@ public:
   void setImage(const QImage& image);
   // The image as cropped (the whole one without a crop).
   QImage image() const;
+  const QImage& sourceImage() const { return m_image; }
+  QRect cropRect() const { return m_crop; }
+  void setCropRect(const QRect& crop);
   void reset();
   // Logs where the image is, for UI tests ("<name> image at x,y w h").
   void logPlace(const QString& name) const;

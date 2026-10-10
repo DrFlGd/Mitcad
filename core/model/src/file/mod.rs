@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-//! Project file (`.mitcad`): the definition state as human-readable JSON.
+//! Design file (`.mitcad`): the definition state as human-readable JSON.
 //! Geometry is not stored; it is recomputed on open.
 //!
 //! Version 2 (written by this build, see `v2.rs`) saves the parameters, the
@@ -70,6 +70,13 @@
 //! `in`, `PI`) is renamed (`m_1`) with a warning
 //! ([`crate::Document::load_warnings`]).
 //!
+//! A parameter copied from another document may also store
+//! `expression_units` (`length`, `angle`): the source defaults for implicit
+//! units inside its expression. These stay with the parameter through
+//! edits, configuration changes and further copies; its declared `unit`
+//! takes precedence for that unit's dimensions. Without this field,
+//! expressions follow the document's defaults as before.
+//!
 //! Optional fields: `units` (millimetres and degrees), a parameter's
 //! `comment` and `owner` (the feature whose dimension it is), a feature's
 //! `"suppressed": true`, `"marker": n` (the number of features before the
@@ -124,13 +131,13 @@
 //! converted to entities, constraints and dimensions with the same curve
 //! ids and parameters, so region keys and face names keep resolving.
 //!
-//! Version 3 (P12a) is version 2 whose base features refer to their B-rep
-//! data in the store of the project the file is in by its SHA-256
-//! (`{"format": "occt", "compression": "zlib", "size": n, "sha256": "…"}`,
-//! see [`crate::features::Brep`] and [`project`]); a file is version 3 only
-//! when it has such references. Files in a project (a folder with
-//! `.mitcad/project.json` above them) are written so, others as version 2
-//! with the data inside ([`FileFormat`]). Opening resolves the references
+//! Version 3 (P12a, a design in a project) is version 2 whose base features
+//! refer to their B-rep data in the store of the project the file is in by
+//! its SHA-256 (`{"format": "occt", "compression": "zlib", "size": n,
+//! "sha256": "…"}`, see [`crate::features::Brep`] and [`project`]); a file
+//! is version 3 only when it has such references. Designs in a project (a
+//! folder with `.mitcad/project.json` above them) are written so, others as
+//! version 2 (a single-file design) with the data inside ([`FileFormat`]). Opening resolves the references
 //! from the store; data the store lacks leaves the base feature failing
 //! with a message, and opening says so in a warning. In a project the
 //! display state (`display`: the Origin folder, Isolate) is per user and
@@ -167,12 +174,12 @@ pub(crate) const VERSION: u64 = 3;
 /// The version of files with all their data inside.
 pub(crate) const SINGLE_VERSION: u64 = 2;
 
-/// How [`Document::save_file`] writes a project file.
+/// How [`Document::save_file`] writes a design file.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FileFormat {
-    /// Version 3 in a project, else a single file.
+    /// Version 3 in a project, else a single-file design.
     Auto,
-    /// A single file with the B-rep data inside (version 2): outside
+    /// A single-file design with the B-rep data inside (version 2): outside
     /// projects, for sharing one file, autosave and the import's process.
     Single,
     /// The B-rep data in the project's store (version 3); the file must be
@@ -180,18 +187,18 @@ pub enum FileFormat {
     Project,
 }
 
-/// A project file that could not be read or written.
+/// A design file that could not be read or written.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum ProjectError {
+pub enum DesignError {
     /// Reading or writing a file failed.
     Io(String),
-    /// The project file is rejected.
+    /// The design file is rejected.
     File(FileError),
     /// A version 3 file was asked for outside a project.
     NotInProject(String),
 }
 
-impl fmt::Display for ProjectError {
+impl fmt::Display for DesignError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Io(message) => f.write_str(message),
@@ -205,21 +212,21 @@ impl fmt::Display for ProjectError {
     }
 }
 
-impl std::error::Error for ProjectError {}
+impl std::error::Error for DesignError {}
 
-impl From<FileError> for ProjectError {
+impl From<FileError> for DesignError {
     fn from(error: FileError) -> Self {
         Self::File(error)
     }
 }
 
-/// Rejected project file.
+/// Rejected design file.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum FileError {
     /// The text is not valid JSON.
     Syntax(String),
     /// Valid JSON without the Mitcad format marker.
-    NotAProject,
+    NotADesign,
     /// Missing, malformed or unsupported file version.
     Version(String),
     /// The JSON does not match the schema of its version.
@@ -232,13 +239,13 @@ impl fmt::Display for FileError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Syntax(message) => write!(f, "not valid JSON: {message}"),
-            Self::NotAProject => write!(
+            Self::NotADesign => write!(
                 f,
-                "not a Mitcad project file (\"format\": \"{FORMAT}\" is missing)"
+                "not a Mitcad design file (\"format\": \"{FORMAT}\" is missing)"
             ),
             Self::Version(message) => f.write_str(message),
             Self::Schema(message) | Self::Invalid(message) => {
-                write!(f, "invalid project file: {message}")
+                write!(f, "invalid design file: {message}")
             }
         }
     }
@@ -247,7 +254,7 @@ impl fmt::Display for FileError {
 impl std::error::Error for FileError {}
 
 impl<K: Kernel> Document<K> {
-    /// The project file of this document as a single file, pretty-printed
+    /// The design file of this document as a single file, pretty-printed
     /// (see [`crate::file`]): version 2 with the B-rep data inside, unless a
     /// base feature's data is missing (a reference that was not resolved),
     /// which keeps its reference and makes the file version 3.
@@ -255,7 +262,7 @@ impl<K: Kernel> Document<K> {
         v2::save(self.state())
     }
 
-    /// The project file of this document as a project versions it (version
+    /// The design file of this document as a project versions it (version
     /// 3): base features' B-rep data goes into `store` (what it has already
     /// is not written again) and the file refers to it; the display state
     /// (the Origin folder, Isolate) is left out, being per user
@@ -298,25 +305,27 @@ impl<K: Kernel> Document<K> {
         Ok(v2::save(&referring))
     }
 
-    /// Writes the project file to `path`, whole or not at all (a temporary
+    /// Writes the design file to `path`, whole or not at all (a temporary
     /// file renamed over it), in `format`; returns the text written. In a
-    /// project the B-rep files are written before the project file, so an
+    /// project the B-rep files are written before the design file, so an
     /// interruption leaves at most files nothing refers to, and the display
     /// state goes to the project's per-user state
     /// ([`Project::local_state_path`]; as far as it can be written: it is
     /// no part of the design).
-    pub fn save_file(&self, path: &Path, format: FileFormat) -> Result<String, ProjectError> {
+    pub fn save_file(&self, path: &Path, format: FileFormat) -> Result<String, DesignError> {
+        let absolute = std::path::absolute(path)
+            .map_err(|e| DesignError::Io(format!("cannot resolve {}: {e}", path.display())))?;
         let project = match format {
             FileFormat::Single => None,
             FileFormat::Auto => Project::find(path),
             FileFormat::Project => Some(
                 Project::find(path)
-                    .ok_or_else(|| ProjectError::NotInProject(path.display().to_string()))?,
+                    .ok_or_else(|| DesignError::NotInProject(path.display().to_string()))?,
             ),
         };
         let json = match &project {
             Some(project) => self.to_project_json(&project.store()).map_err(|e| {
-                ProjectError::Io(format!(
+                DesignError::Io(format!(
                     "cannot write the B-rep data of {} to {}: {e}",
                     path.display(),
                     project.store().dir().display()
@@ -325,7 +334,7 @@ impl<K: Kernel> Document<K> {
             None => self.to_json(),
         };
         write_atomically(path, json.as_bytes())
-            .map_err(|e| ProjectError::Io(format!("cannot write {}: {e}", path.display())))?;
+            .map_err(|e| DesignError::Io(format!("cannot write {}: {e}", path.display())))?;
         if let Some(local) = project.and_then(|p| p.local_state_path(path)) {
             let display = &self.state().display;
             let _ = if display.is_default() {
@@ -337,25 +346,34 @@ impl<K: Kernel> Document<K> {
                 write_atomically(&local, format!("{text:#}\n").as_bytes())
             };
         }
+        if let Some(directory) = absolute.parent() {
+            self.set_source_directory(directory);
+        }
         Ok(json)
     }
 
-    /// Reads a project file of any version from `path`, its B-rep data
+    /// Reads a design file of any version from `path`, its B-rep data
     /// from the store of the project it is in. Nothing is evaluated yet.
-    pub fn load_project(path: &Path, kernel: K) -> Result<Self, ProjectError> {
+    pub fn load_design(path: &Path, kernel: K) -> Result<Self, DesignError> {
         let json = std::fs::read_to_string(path)
-            .map_err(|e| ProjectError::Io(format!("cannot read {}: {e}", path.display())))?;
+            .map_err(|e| DesignError::Io(format!("cannot read {}: {e}", path.display())))?;
         Ok(Self::from_json_at(&json, path, kernel)?)
     }
 
-    /// Reads the text of the project file at `path` (read by the caller),
+    /// Reads the text of the design file at `path` (read by the caller),
     /// its B-rep data from the store of the project the path is in.
     pub fn from_json_at(json: &str, path: &Path, kernel: K) -> Result<Self, FileError> {
+        let absolute = std::path::absolute(path)
+            .map_err(|e| FileError::Invalid(format!("cannot resolve {}: {e}", path.display())))?;
         let (state, warnings) = load_state_at(json, path)?;
-        Ok(Document::from_state(kernel, state).with_warnings(warnings))
+        let document = Document::from_state(kernel, state).with_warnings(warnings);
+        if let Some(directory) = absolute.parent() {
+            document.set_source_directory(directory);
+        }
+        Ok(document)
     }
 
-    /// Reads a project file, its B-rep data from `store` (e.g. an older
+    /// Reads a design file, its B-rep data from `store` (e.g. an older
     /// version's, P12b).
     pub fn from_json_in(json: &str, store: &dyn BlobStore, kernel: K) -> Result<Self, FileError> {
         let (mut state, mut warnings) = load_state(json)?;
@@ -363,7 +381,7 @@ impl<K: Kernel> Document<K> {
         Ok(Document::from_state(kernel, state).with_warnings(warnings))
     }
 
-    /// The project file of this document with the timeline marker at
+    /// The design file of this document with the timeline marker at
     /// `marker` (clamped to the timeline). An edit rolls the marker back
     /// while it is open; the application's autosave writes the marker the
     /// edit restores (P8). The document does not change.
@@ -377,12 +395,12 @@ impl<K: Kernel> Document<K> {
         v2::save(&moved)
     }
 
-    /// Reads a project file of version 1, 2 or 3. Nothing is evaluated yet;
+    /// Reads a design file of version 1, 2 or 3. Nothing is evaluated yet;
     /// call [`Document::recompute`] to build the geometry. Values the
     /// timeline accepts but recompute rejects, like a zero width, load and
     /// are then reported by recompute, as after a parameter change. The
     /// B-rep references of a version 3 file stay unresolved (their base
-    /// features fail); [`Document::load_project`] and
+    /// features fail); [`Document::load_design`] and
     /// [`Document::from_json_at`] find the project's store.
     pub fn from_json(json: &str, kernel: K) -> Result<Self, FileError> {
         let (state, warnings) = load_state(json)?;
@@ -390,7 +408,7 @@ impl<K: Kernel> Document<K> {
     }
 }
 
-/// The definition state of a project file (version 1, 2 or 3) and what
+/// The definition state of a design file (version 1, 2 or 3) and what
 /// loading changed. B-rep references stay unresolved.
 pub(crate) fn load_state(json: &str) -> Result<(DocState, Vec<String>), FileError> {
     // Some Windows editors start UTF-8 text with a byte order mark.
@@ -403,7 +421,7 @@ pub(crate) fn load_state(json: &str) -> Result<(DocState, Vec<String>), FileErro
     }
 }
 
-/// The definition state of the project file at `path` (its text read by
+/// The definition state of the design file at `path` (its text read by
 /// the caller), its B-rep references resolved from the store of the
 /// project the path is in; inserted components read other files with it.
 pub(crate) fn load_state_at(json: &str, path: &Path) -> Result<(DocState, Vec<String>), FileError> {
@@ -427,7 +445,7 @@ pub(crate) fn load_state_at(json: &str, path: &Path) -> Result<(DocState, Vec<St
     Ok((state, warnings))
 }
 
-/// The definition state of a project file whose B-rep data is in `store`
+/// The definition state of a design file whose B-rep data is in `store`
 /// (a library component read from a commit, mitcad#64).
 pub(crate) fn load_state_in(
     json: &str,
@@ -443,7 +461,7 @@ pub(crate) fn load_state_in(
 /// The `"format"` of a project's per-user state files.
 const LOCAL_FORMAT: &str = "mitcad-local";
 
-/// The display state kept for the project file at `path` in the project's
+/// The display state kept for the design file at `path` in the project's
 /// per-user state, if there is one; one that cannot be read is left out
 /// with a warning.
 fn local_display(
@@ -472,10 +490,10 @@ fn local_display(
     }
 }
 
-/// The B-rep data that a project file's base features refer to by SHA-256
+/// The B-rep data that a design file's base features refer to by SHA-256
 /// (version 3), read without loading the file: what a project's store must
 /// keep for it (the version history's clean-up, P12b). Data inside the
-/// file (version 2) is no reference. Text that is not a project file this
+/// file (version 2) is no reference. Text that is not a design file this
 /// build reads is an error, so a caller does not take it for a file that
 /// refers to nothing.
 pub fn brep_references(json: &str) -> Result<BTreeSet<Sha256>, FileError> {
@@ -525,6 +543,12 @@ pub(crate) fn has_references(state: &DocState) -> bool {
         FeatureDef::Base(base) => base.bodies.iter().any(|b| b.brep.is_reference()),
         _ => false,
     })
+}
+
+/// The design file of a new, empty design (what `Document::new(..).to_json()`
+/// writes), without a geometry kernel: the projects' `new_design` (mitcad#144).
+pub fn empty_design() -> String {
+    v2::save(&DocState::default())
 }
 
 /// Gives the base features' B-rep references their data from `store`.
@@ -590,7 +614,7 @@ pub(crate) fn legacy_name(name: &str, taken: &HashSet<String>) -> Option<String>
 /// from another program or a newer Mitcad gets a clear message.
 fn check_header(value: &serde_json::Value) -> Result<u64, FileError> {
     if value.get("format").and_then(serde_json::Value::as_str) != Some(FORMAT) {
-        return Err(FileError::NotAProject);
+        return Err(FileError::NotADesign);
     }
     match value.get("version") {
         Some(version) if matches!(version.as_u64(), Some(1..=VERSION)) => {
@@ -603,10 +627,10 @@ fn check_header(value: &serde_json::Value) -> Result<u64, FileError> {
             )))
         }
         Some(version) => Err(FileError::Version(format!(
-            "unsupported project file version {version}"
+            "unsupported design file version {version}"
         ))),
         None => Err(FileError::Version(
-            "the project file has no \"version\"".to_owned(),
+            "the design file has no \"version\"".to_owned(),
         )),
     }
 }

@@ -38,7 +38,7 @@ void MainWindow::registerLibraryCommands() {
                           [this] { insertFromLibrary(false); });
   insert.mode = CommandDef::Mode::Model;
   insert.tab = QStringLiteral("SOLID");
-  insert.group = QStringLiteral("INSERT");
+  insert.group = QStringLiteral("ASSEMBLE");
   insert.keywords = {QStringLiteral("library"), QStringLiteral("fastener"), QStringLiteral("screw"),
                      QStringLiteral("bolt"), QStringLiteral("nut"), QStringLiteral("washer"),
                      QStringLiteral("standard part"), QStringLiteral("iso")};
@@ -93,7 +93,7 @@ void MainWindow::insertFromLibrary(bool community) {
   }
   LibraryBrowser browser(community, this);
   prepareModal(&browser);
-  if (browser.exec() != QDialog::Accepted || !browser.choice()) {
+  if (execDialog(&browser) != QDialog::Accepted || !browser.choice()) {
     return;
   }
   const LibraryChoice choice = *browser.choice();
@@ -126,7 +126,7 @@ void MainWindow::showLibraryParts() {
       queryObject({{QStringLiteral("query"), QStringLiteral("parts_list")}}).value(QStringLiteral("rows")).toArray();
   LibraryPartsDialog dialog(parts, list, this);
   prepareModal(&dialog);
-  if (dialog.exec() != QDialog::Accepted || !canChangeModel()) {
+  if (execDialog(&dialog) != QDialog::Accepted || !canChangeModel()) {
     return;
   }
   QJsonArray changes;
@@ -159,7 +159,7 @@ void MainWindow::showLibraryParts() {
 void MainWindow::manageLibraries() {
   LibrariesDialog dialog(this);
   prepareModal(&dialog);
-  dialog.exec();
+  execDialog(&dialog);
 }
 
 void MainWindow::publishToLibrary() {
@@ -171,7 +171,7 @@ void MainWindow::publishToLibrary() {
       },
       [this] { return m_viewer->grabFramebuffer(); }, author.complete() ? author.author() : QString(), this);
   prepareModal(&dialog);
-  dialog.exec();
+  execDialog(&dialog);
 }
 
 } // namespace mitcad

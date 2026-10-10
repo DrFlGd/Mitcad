@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 // Autosave (P8, Autosave.hpp): what the main window tells its autosave
 // manager about the document. The window's own hooks are short: a new
-// document (installDocument), one opened or saved (loadProject,
+// document (installDocument), one opened or saved (loadDesign,
 // afterSaved), an imported design (startF3dImport) and Preferences.
 //
 // Recovery (P8c, Recovery.hpp): at start-up (main.cpp) and by File >
@@ -42,6 +42,9 @@ void MainWindow::createAutosave() {
   m_autosave->blocked = [this] {
     if (modelBusy()) {
       return QStringLiteral("busy");
+    }
+    if (m_nativeUi && m_session) {
+      return QStringLiteral("command");
     }
     if (m_session && m_session->previewApplied()) {
       return QStringLiteral("previewing");
@@ -126,7 +129,7 @@ bool MainWindow::restoreRecovered(RecoverableSession& session) {
     qInfo().noquote() << QStringLiteral("Recovery of %1 cancelled").arg(name);
     return false;
   }
-  QFile file(session.projectFile());
+  QFile file(session.designFile());
   QByteArray json;
   if (file.open(QIODevice::ReadOnly)) {
     json = file.readAll();
@@ -137,7 +140,7 @@ bool MainWindow::restoreRecovered(RecoverableSession& session) {
   }
   const QString path = session.path;
   QJsonArray messages;
-  // On the worker, as a project file is opened: read, its links followed
+  // On the worker, as a design file is opened: read, its links followed
   // when it has a file (relative to it), computed by installDocument. Not
   // marked saved: its changes are in no file yet.
   const DocumentMaker read = [&](ModelJob& job) {
@@ -202,7 +205,7 @@ std::optional<bool> MainWindow::askOverwriteChanged() {
   box.addButton(QMessageBox::Cancel);
   box.setDefaultButton(another);
   prepareModal(&box);
-  box.exec();
+  execDialog(&box);
   if (box.clickedButton() == overwrite) {
     qInfo().noquote() << QStringLiteral("Save conflict: overwrite");
     return true;

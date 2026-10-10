@@ -1,0 +1,123 @@
+# SPDX-License-Identifier: MIT
+# Context menus must release OCCT's held-button and gesture state. Real
+# AppKit menu tracking is cancelled or invokes an actual enabled menu item;
+# camera direction/up readback checks the rendered navigation afterward.
+expect-ever 'Native UI: AppKit shell with embedded OCCT viewport'
+expect-ever 'View area'
+native-resize 1280 820
+sleep 800
+
+# A real right drag establishes that orbiting works. Omit its release to
+# model a release consumed by native menu tracking, then hover with no buttons.
+capture-view-orientation before_drag
+view-pointer press 50 50 right
+view-pointer move 57 44 right
+expect-view-buttons right
+sleep 350
+expect-view-orientation ${before_drag} changed
+capture-view-orientation before_lost_release
+view-pointer move 65 58 none
+sleep 350
+expect-view-buttons none
+expect-view-orientation ${before_lost_release} unchanged
+view-pointer move 55 48 none
+sleep 250
+expect-view-orientation ${before_lost_release} unchanged
+
+# Recovery must preserve intentional navigation, not disable right dragging.
+capture-view-orientation before_next_drag
+drag 50 50 58 46 right
+sleep 350
+expect-view-buttons none
+expect-view-orientation ${before_next_drag} changed
+
+# Both the empty canvas menu and the orientation cube go through the real
+# viewport release signal and AppKit popup. Cube coordinates come from hit
+# testing the rendered OCCT cube, rather than guessing a screen location.
+capture-view-orientation before_canvas_menu
+view-context-menu 75 75 cancel
+expect-view-buttons none
+view-pointer move 60 60 none
+sleep 250
+expect-view-orientation ${before_canvas_menu} unchanged
+capture-view-orientation before_cube_menu
+view-context-menu-logged 'Orientation cube .* at' cancel
+expect-view-buttons none
+view-pointer move 60 55 none
+sleep 250
+expect-view-orientation ${before_cube_menu} unchanged
+mark
+view-context-menu-logged 'Orientation cube .* at' Perspective
+expect-view-buttons none
+expect-log 'Camera direction .*\(perspective\)' 30
+native-action view.orthographic
+
+# A body supplies real native browser and history menu targets and makes
+# action dispatch observable in the actual document, independently of input.
+mark
+native-action solid.box
+expect-log 'Command Box started'
+click-logged 'Datum xy'
+native-type input_x '0 mm'
+native-type input_y '0 mm'
+native-type input_length '10 mm'
+native-type input_width '10 mm'
+native-type input_height '10 mm'
+native-click commandOk
+expect-log 'Added box \(New Body\)' 30
+expect-model-bodies 1 1000
+native-expand native.modelTree
+menu 'View/Show History'
+expect-native-visible native.history.F1 true
+sleep 350
+
+# Seed a stale press but never deliver its release to the viewport. Assert
+# the controller is already released when the native menu closes, before
+# any hover could conceal the problem by recovering on mouse movement.
+capture-view-orientation before_browser_menu
+view-pointer press 50 50 right
+expect-view-buttons right
+native-context-menu native.model.body:F1.b0@ cancel
+expect-view-buttons none
+view-pointer move 65 55 none
+sleep 250
+expect-view-orientation ${before_browser_menu} unchanged
+mark
+view-pointer press 50 50 right
+native-context-menu native.model.body:F1.b0@ Hide
+expect-view-buttons none
+expect-log 'Visibility .*Body1: hidden' 30
+view-pointer move 65 50 none
+sleep 250
+expect-view-orientation ${before_browser_menu} unchanged
+mark
+native-context-menu native.model.body:F1.b0@ Show
+expect-log 'Visibility .*Body1: shown' 30
+
+capture-view-orientation before_history_menu
+view-pointer press 50 50 right
+native-context-menu native.history.F1 cancel
+expect-view-buttons none
+view-pointer move 60 50 none
+sleep 250
+expect-view-orientation ${before_history_menu} unchanged
+mark
+view-pointer press 50 50 right
+native-context-menu native.history.F1 'Suppress Features'
+expect-view-buttons none
+expect-log 'Suppressed Box1' 30
+expect-model-bodies 0 0
+view-pointer move 60 55 none
+sleep 250
+expect-view-orientation ${before_history_menu} unchanged
+mark
+native-context-menu native.history.F1 'Unsuppress Features'
+expect-log 'Unsuppressed Box1' 30
+expect-model-bodies 1 1000
+
+capture-view-orientation before_final_drag
+drag 50 50 58 46 right
+sleep 350
+expect-view-buttons none
+expect-view-orientation ${before_final_drag} changed
+expect-never 'OCCT view event failed|Native Mac canvas:|TestDriver: FAIL'

@@ -10,7 +10,6 @@
 #include <QDialog>
 #include <QDialogButtonBox>
 #include <QDir>
-#include <QEventLoop>
 #include <QFileDialog>
 #include <QFileInfo>
 #include <QFont>
@@ -19,6 +18,7 @@
 #include <QJsonArray>
 #include <QLabel>
 #include <QLineEdit>
+#include <QPointer>
 #include <QPushButton>
 #include <QRadioButton>
 #include <QTimer>
@@ -105,21 +105,23 @@ void CloudSection::build() {
   m_serverLabel = new QLabel(tr("Serve&r:"));
   m_serverLabel->setBuddy(m_server);
   m_form->addRow(m_serverLabel, m_server);
-  m_account = new QLineEdit;
-  m_account->setPlaceholderText(tr("you"));
+  // The owner: a user or an organisation; on GitLab also a group with its
+  // subgroups (group/sub), so the field takes slashes.
+  m_owner = new QLineEdit;
+  m_owner->setPlaceholderText(tr("you or an organisation"));
   m_repository = new QLineEdit;
   m_repository->setPlaceholderText(tr("repository"));
-  m_accountRow = new QWidget;
-  auto* accountLayout = new QHBoxLayout(m_accountRow);
-  accountLayout->setContentsMargins(0, 0, 0, 0);
-  accountLayout->addWidget(m_account, 1);
+  m_ownerRow = new QWidget;
+  auto* ownerLayout = new QHBoxLayout(m_ownerRow);
+  ownerLayout->setContentsMargins(0, 0, 0, 0);
+  ownerLayout->addWidget(m_owner, 1);
   auto* repositoryLabel = new QLabel(tr("Repositor&y:"));
   repositoryLabel->setBuddy(m_repository);
-  accountLayout->addWidget(repositoryLabel);
-  accountLayout->addWidget(m_repository, 1);
-  m_accountLabel = new QLabel(tr("Acco&unt:"));
-  m_accountLabel->setBuddy(m_account);
-  m_form->addRow(m_accountLabel, m_accountRow);
+  ownerLayout->addWidget(repositoryLabel);
+  ownerLayout->addWidget(m_repository, 1);
+  m_ownerLabel = new QLabel(tr("O&wner:"));
+  m_ownerLabel->setBuddy(m_owner);
+  m_form->addRow(m_ownerLabel, m_ownerRow);
   m_https = new QRadioButton(QStringLiteral("HTTPS"));
   m_ssh = new QRadioButton(QStringLiteral("SSH"));
   m_https->setChecked(true);
@@ -191,7 +193,7 @@ void CloudSection::build() {
       fieldsChanged();
     }
   });
-  for (QLineEdit* edit : {m_server, m_account, m_folder}) {
+  for (QLineEdit* edit : {m_server, m_owner, m_folder}) {
     connect(edit, &QLineEdit::textEdited, this, [this] { fieldsChanged(); });
   }
   connect(m_repository, &QLineEdit::textEdited, this, [this] {
@@ -205,7 +207,7 @@ void CloudSection::build() {
   });
   connect(m_url, &QLineEdit::textEdited, this, &CloudSection::addressEdited);
   connect(browse, &QPushButton::clicked, this, [this] {
-    const QString chosen = QFileDialog::getExistingDirectory(this, tr("Repository Folder"), m_folder->text());
+    const QString chosen = dialogDirectory(this, tr("Repository Folder"), m_folder->text());
     if (!chosen.isEmpty()) {
       m_folder->setText(QDir::toNativeSeparators(chosen));
       fieldsChanged();
@@ -224,9 +226,9 @@ QWidget* CloudSection::firstField() const {
   switch (m_address.service) {
   case CloudService::GitHub:
   case CloudService::GitLab:
-    return m_account;
+    return m_owner;
   case CloudService::Forgejo:
-    return m_server->text().isEmpty() ? m_server : m_account;
+    return m_server->text().isEmpty() ? m_server : m_owner;
   case CloudService::SharedFolder:
     return m_folder;
   case CloudService::Other:
@@ -239,7 +241,7 @@ void CloudSection::showFields() {
   const CloudService service = m_address.service;
   const bool known = knownService(service);
   m_form->setRowVisible(m_serverLabel, service == CloudService::Forgejo);
-  m_form->setRowVisible(m_accountLabel, known);
+  m_form->setRowVisible(m_ownerLabel, known);
   m_form->setRowVisible(m_connectLabel, known);
   m_form->setRowVisible(m_folderLabel, service == CloudService::SharedFolder);
   m_create->setVisible(known);
@@ -271,7 +273,7 @@ void CloudSection::setAddress(const QString& url) {
   m_service->setCurrentIndex(m_service->findData(static_cast<int>(m_address.service)));
   if (knownService(m_address.service)) {
     m_server->setText(m_address.server);
-    m_account->setText(m_address.account);
+    m_owner->setText(m_address.owner);
     m_repository->setText(m_address.repository);
     m_https->setChecked(m_address.connect == CloudConnect::Https);
     m_ssh->setChecked(m_address.connect == CloudConnect::Ssh);
@@ -293,7 +295,7 @@ void CloudSection::fieldsChanged() {
     return;
   }
   m_address.server = m_server->text().trimmed();
-  m_address.account = m_account->text().trimmed();
+  m_address.owner = m_owner->text().trimmed();
   m_address.repository = m_repository->text().trimmed();
   m_address.folder = m_folder->text().trimmed();
   m_address.connect = m_ssh->isChecked() ? CloudConnect::Ssh : CloudConnect::Https;
@@ -316,7 +318,7 @@ void CloudSection::addressEdited(const QString& text) {
   m_service->setCurrentIndex(m_service->findData(static_cast<int>(parsed.service)));
   if (knownService(parsed.service)) {
     m_server->setText(parsed.server);
-    m_account->setText(parsed.account);
+    m_owner->setText(parsed.owner);
     m_repository->setText(parsed.repository);
     m_https->setChecked(parsed.connect == CloudConnect::Https);
     m_ssh->setChecked(parsed.connect == CloudConnect::Ssh);
@@ -473,10 +475,11 @@ void CloudSection::showFixes(const QString& cls) {
     if (isSshAddress(address)) {
       const QJsonObject key = projectsCommand({{QStringLiteral("cmd"), QStringLiteral("ssh_public_key")}});
       const bool hasKey = !key.value(QStringLiteral("text")).toString().isEmpty();
-      text = hasKey ? tr("Mitcad signs in with your SSH key: add its public key to your account on the service, then "
-                         "come back.")
+      text = hasKey ? tr("Mitcad signs in with your SSH key: add its public key to your own user account on the "
+                         "service (also for an organisation's repository), then come back.")
                     : tr("Mitcad signs in with an SSH key, and this computer has none: make one (ssh-keygen -t "
-                         "ed25519), add its public key to your account, then come back.");
+                         "ed25519), add its public key to your own user account on the service (also for an "
+                         "organisation's repository), then come back.");
       m_copyKey->setVisible(hasKey);
       m_keysPage->show();
     } else {
@@ -618,20 +621,25 @@ bool askTrustServer(QWidget* parent, const QString& host, int port) {
   });
   task->start();
   prepareModal(&dialog);
-  const bool accepted = dialog.exec() == QDialog::Accepted;
+  const bool accepted = execDialog(&dialog) == QDialog::Accepted;
   if (!accepted) {
     qInfo().noquote() << QStringLiteral("Trust This Server cancelled");
     return false;
   }
   // Every key a new scan still gives (a short wait, on a thread).
-  QEventLoop loop;
+  QObject waiting;
+  bool finished = false;
   RemoteTask* trustTask = RemoteTask::projects({{QStringLiteral("cmd"), QStringLiteral("trust_host_key")},
                                                 {QStringLiteral("host"), host},
                                                 {QStringLiteral("port"), port}},
                                                nullptr);
-  QObject::connect(trustTask, &RemoteTask::finished, &loop, &QEventLoop::quit);
+  const QPointer<RemoteTask> pending = trustTask;
+  QObject::connect(trustTask, &RemoteTask::finished, &waiting, [&finished] { finished = true; });
   trustTask->start();
-  loop.exec();
+  waitDialogUntil([&] { return finished || pending == nullptr; });
+  if (pending == nullptr) {
+    return false;
+  }
   const QJsonObject answer = trustTask->answer();
   delete trustTask;
   if (!errorClassOf(answer).isEmpty()) {

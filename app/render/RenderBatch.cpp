@@ -312,7 +312,7 @@ bool FinalRender::start(const QString& worker, const QJsonObject& job, const QSt
   m_process->setProcessChannelMode(QProcess::SeparateChannels);
   QProcess* process = m_process;
   connect(m_process, &QProcess::readyReadStandardOutput, this, &FinalRender::readOutput);
-  connect(m_process, &QProcess::readyReadStandardError, this, [this, process] {
+  connect(m_process, &QProcess::readyReadStandardError, this, [process] {
     for (const QByteArray& line : process->readAllStandardError().split('\n')) {
       if (!line.trimmed().isEmpty()) {
         qDebug().noquote() << QStringLiteral("Render worker: %1").arg(QString::fromUtf8(line.trimmed()));

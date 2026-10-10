@@ -55,14 +55,14 @@ QString fileDigest(QByteArrayView data) {
   return QStringLiteral("%1").arg(hash, 16, 16, QLatin1Char('0'));
 }
 
-bool validAutosaveProject(const QString& session, const QString& project, int version) {
+bool validAutosaveDesign(const QString& session, const QString& design, int version) {
   if (!validId(session)) {
     return false;
   }
   if (version == 1) {
-    return project == session + QLatin1String(".mitcad");
+    return design == session + QLatin1String(".mitcad");
   }
-  const QStringList parts = project.split(QLatin1Char('.'));
+  const QStringList parts = design.split(QLatin1Char('.'));
   return version == 2 && parts.size() == 3 && parts[0] == session && validId(parts[1]) &&
          parts[2] == QLatin1String("mitcad");
 }
@@ -74,16 +74,16 @@ bool publishAutosave(const QString& directory, const QString& session, const QBy
     return false;
   }
   const QDir dir(directory);
-  const QString project = session + QLatin1Char('.') + QUuid::createUuid().toString(QUuid::WithoutBraces) +
-                          QLatin1String(".mitcad");
+  const QString design = session + QLatin1Char('.') + QUuid::createUuid().toString(QUuid::WithoutBraces) +
+                         QLatin1String(".mitcad");
   const AutosaveWriter write = writer ? writer : AutosaveWriter(writeAtomically);
-  if (!write(dir.filePath(project), data, error)) {
+  if (!write(dir.filePath(design), data, error)) {
     return false;
   }
   about.insert(QStringLiteral("format"), QStringLiteral("mitcad-autosave"));
   about.insert(QStringLiteral("session"), session);
   about.insert(QStringLiteral("version"), 2);
-  about.insert(QStringLiteral("project"), project);
+  about.insert(QStringLiteral("project"), design); // the key's name stays
   about.insert(QStringLiteral("size"), static_cast<qint64>(data.size()));
   about.insert(QStringLiteral("digest"), fileDigest(data));
   if (!write(dir.filePath(session + QLatin1String(".json")), QJsonDocument(about).toJson(), error)) {
@@ -98,7 +98,7 @@ bool publishAutosave(const QString& directory, const QString& session, const QBy
     const bool owned = (parts.size() >= 2 && parts[0] == session && parts[1] == QLatin1String("mitcad")) ||
                        (parts.size() >= 3 && parts[0] == session && validId(parts[1]) &&
                         parts[2] == QLatin1String("mitcad"));
-    if (owned && name != project) {
+    if (owned && name != design) {
       QFile::remove(dir.filePath(name));
     }
   }

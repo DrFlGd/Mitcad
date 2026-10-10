@@ -150,6 +150,10 @@ impl ProjectRepo {
         if let Some((answer, error)) = self.lock_command(&name, &command, control)? {
             return Ok((name, answer, error));
         }
+        // A project's folders and designs (mitcad#144).
+        if let Some((answer, error)) = self.folder_command(&name, &command, control)? {
+            return Ok((name, answer, error));
+        }
         // Live updates in the application (mitcad#89): the project's id
         // under a broker's prefix.
         if name == "project_id" {

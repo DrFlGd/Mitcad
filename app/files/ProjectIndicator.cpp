@@ -198,6 +198,7 @@ void ProjectIndicator::refresh() {
     qInfo().noquote() << QStringLiteral("Project indicator: %1").arg(line);
   }
   logPlace();
+  emit presentationChanged();
 }
 
 void ProjectIndicator::moveEvent(QMoveEvent* event) {
@@ -250,10 +251,12 @@ void ProjectIndicator::fillMenu() {
     add(tr("Version &History..."), "file.version_history");
     add(tr("Project &Settings..."), "file.project_settings");
     add(tr("Open in &Browser"), "file.remote_browser");
+    add(tr("New &Design..."), "file.new_design"); // mitcad#145
     break;
   case ProjectState::Kind::Local:
     add(tr("Version &History..."), "file.version_history");
     add(tr("Project &Settings..."), "file.project_settings");
+    add(tr("New &Design..."), "file.new_design"); // mitcad#145
     break;
   case ProjectState::Kind::None:
   case ProjectState::Kind::NoHistory:

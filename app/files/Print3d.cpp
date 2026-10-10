@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: MIT
+#include "../framework/Dialogs.hpp"
 #include "Print3d.hpp"
 
 #include <algorithm>
@@ -471,7 +472,7 @@ QComboBox* slicerComboBox(const QVector<Slicer>& found, const Slicer& current, c
     }
     // Another program: an AppImage, a slicer installed elsewhere, an
     // application bundle.
-    const QString program = QFileDialog::getOpenFileName(combo->window(), QObject::tr("Slicer Program"));
+    const QString program = dialogOpenFileName(combo->window(), QObject::tr("Slicer Program"));
     if (program.isEmpty()) {
       combo->setCurrentIndex(combo->property("previous").toInt());
       return;
@@ -557,7 +558,7 @@ std::optional<PrintChoice> askPrint(QWidget* parent, const QString& bodies, cons
   qDebug().noquote() << QStringLiteral("3D Print dialog: %1; format %2, refinement %3, slicer %4; slicers %5")
                             .arg(bodies, settings.format, settings.refinement, slicerOf(slicer).describe(),
                                  slicers.join(QStringLiteral(" | ")));
-  if (dialog.exec() != QDialog::Accepted) {
+  if (execDialog(&dialog) != QDialog::Accepted) {
     return std::nullopt;
   }
   PrintChoice choice;

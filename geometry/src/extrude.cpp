@@ -95,7 +95,7 @@ ShapePtr parallel_side(const std::string& feature, const detail::SweepFace& face
     solid = detail::tapered(*solid, neutral, along, side.taper, caps);
   }
   const TopoDS_Shape tool = detail::target_tool(*side.target, along, detail::bounds_of(solid->occt()));
-  return detail::trimmed(*solid, *side.target, tool, along, near.front(), far, unreached);
+  return detail::trimmed(*solid, *side.target, tool, along, near.front(), far, unreached, true);
 }
 
 // One side swept from a start plane that is not parallel to the sketch: the
@@ -140,7 +140,7 @@ ShapePtr oblique_side(const std::string& feature, const detail::SweepFace& face,
       "the extrusion from its start plane");
   if (side.target) {
     const TopoDS_Shape tool = detail::target_tool(*side.target, along, around);
-    return detail::trimmed(*past, *side.target, tool, along, near.front(), far, unreached);
+    return detail::trimmed(*past, *side.target, tool, along, near.front(), far, unreached, true);
   }
   // The far cap is the start plane moved by the distance.
   Target end;

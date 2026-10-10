@@ -14,7 +14,7 @@ in [docs/architecture.md](../../../../docs/architecture.md).
 
 | What | Form | Notes |
 |---|---|---|
-| feature | `"F7"` | assigned when created and saved in the project file; its timeline position is separate |
+| feature | `"F7"` | assigned when created and saved in the design file; its timeline position is separate |
 | body | `"F7.b0"` | the creating feature and a number; its display name (`Body1`) is separate and can be renamed |
 | component, occurrence | `"C2"`, `"O3"` | `C0` is the root component; names `Plate` and `Plate:2` are separate (see [Components and occurrences](#components-and-occurrences)) |
 | sketch point, curve | `"p4"`, `"c3"` | one id space per sketch; `sketch.add_rectangle` makes lines `c<k>`..`c<k+3>` (line i from corner i to i + 1, corners counter-clockwise from the anchor) and then their corner points, a circle a curve and its centre |
@@ -56,7 +56,7 @@ expression (`"d1 / 2 + 5 mm"`, `"30 deg"`; syntax and unit rules in
   always does. `max(1,5)` is therefore `max(1.5)`, and its error says to
   write `max(1; 5)`. No thousands separators: `1,000` is 1 and `1 000` an
   error. Parameters keep their expressions with decimal points, in the
-  project file and in the `parameters` query.
+  design file and in the `parameters` query.
 - Parameters are evaluated in dependency order. Cycles, unknown names,
   syntax errors and unit mismatches reject the command. Renaming a
   parameter rewrites the expressions that use it (features refer to
@@ -67,7 +67,7 @@ expression (`"d1 / 2 + 5 mm"`, `"30 deg"`; syntax and unit rules in
 
 Defaults are metric ([docs/architecture.md](../../../../docs/architecture.md#units)):
 leaving out a unit means millimetres (degrees for angles). A new document
-and a project file without `units` are in mm and degrees, and bare numbers
+and a design file without `units` are in mm and degrees, and bare numbers
 in expressions take the document's unit. `export` writes STEP and IGES in
 mm (`unit`), `import_file` reads STL and OBJ in mm (`unit_mm` 1),
 `sketch.import_dxf` reads a drawing that names no unit in mm; a file's own
@@ -135,7 +135,7 @@ sketch line, arc or circle, or a fixed line (not edges).
 ## Feature definitions
 
 The `def` of `add_feature`, `edit_feature` and `preview`, and the `def`
-the `feature` query returns. Project files store the same fields with
+the `feature` query returns. Design files store the same fields with
 parameter names. Each type is a module `core/model/src/features/<type>.rs`.
 Lengths in millimetres, angles in radians; every length, angle, quantity,
 fraction and factor is a value ([Values](#values)).
@@ -322,7 +322,11 @@ same curve ids and parameters.
   fixed plane), `{"type": "face", "body": b, "face": f, "chained": false}`
   (the face's surface continued past its edges; with `chained` the face
   and the faces next to it) or `{"type": "body", "body": b, "through":
-  false}` (to its first face reached, or through it).
+  false}` (to its first face reached, or through it). Up to a body's
+  first face or a curved face, a profile may start inside the body or on
+  its faces: each part of the profile then runs to the first face beyond
+  it (a part inside the body to where it leaves it); a plane that crosses
+  the profile is an error.
 - `thin` (optional): `{"location": "side1" | "center" | "side2",
   "thickness": t, "side2": {"location": …, "thickness": …}}`: walls along
   the profile curves instead of the regions. Side 1 lies away from the
@@ -763,6 +767,16 @@ revolutions and loft weights are unitless values. Examples:
   from the path, `stretch` only towards the rail, `none` not at all. The
   rail point is the one at the same fraction of the rail's length. Twist
   and taper are ignored with a rail.
+- `guide_surfaces` (mitcad#157): faces the path lies on, `[{"body":
+  "F2.b0", "face": "F2:side(c1)"}, …]` (every piece of a split face),
+  instead of a rail. The profile keeps its place in the frame of the
+  path's tangent and the surface's normal where the path runs, so it turns
+  with the surface (a thread's profile swept along a helical edge of the
+  thread's flank keeps its angle to the flank). Each path curve must lie
+  on one of the faces within 1e-4 mm (else `the path must lie on the guide
+  surface`); the orientation must be perpendicular; twist and taper are
+  ignored. The path is usually an edge of the faces, or sketch curves on
+  them.
 - `extent`: `{"type": "full"}` (default: the whole path both ways from the
   profile, once round a closed path) or `{"type": "partial", "fraction":
   f1, "fraction2": f2}`: f1 of the path's part beyond the profile, f2 of
@@ -1325,7 +1339,7 @@ by hand.
   `compression` may be `"none"`) with an optional `name` and `color`
   (sRGB, 0..1); `mesh` marks a mesh body (triangles only, from STL or
   OBJ). In a project the data is a reference into the project's store
-  (`sha256` instead of `data`, see [Project files](#project-files)).
+  (`sha256` instead of `data`, see [Design files](#design-files)).
 - `operation`: `new_body` (default; body i is `<feature>.b<i>`, named
   after its `name`, made unique with ` (2)`, …), or `join`, `cut`,
   `intersect` with `participants` (all bodies when empty), with the same
@@ -1380,7 +1394,7 @@ command: it is skipped, and the `timeline` query shows its error.
 | `reorder_feature` | `uid`, `index` (new timeline index) | |
 | `rename_feature` | `uid`, `name` | |
 | `rename_body` | `uid` (body), `name` | |
-| `set_marker` | `position`: the number of features before the marker | |
+| `set_marker` | `position`: the number of features before the marker; `temporary` (default false) | |
 | `add_parameter` | `name`, `value` (number in mm, or an expression) or `expression`, `unit` (optional), `comment` | |
 | `set_parameter` | `name`, and any of: `value` (number in mm or rad, written in the parameter's unit, or an expression) or `expression`, `unit`, `comment`, `favorite` | `changed`: parameters whose values changed |
 | `rename_parameter` | `name`, `new_name` | |
@@ -1393,6 +1407,16 @@ command: it is skipped, and the `timeline` query shows its error.
 | `sketch.*` | see [Sketch commands](#sketch-commands) | |
 
 - New features go in at the timeline marker, which moves after them.
+- `add_parameter` and `set_parameter` reject commands containing both
+  `value` and `expression`. `set_parameter` also accepts only `unit`,
+  `comment` or `favorite`; a unit-only edit keeps the existing expression.
+- Parameters copied from another document retain that document's default
+  units for implicit units inside expressions. The `parameters` query and
+  saved parameter record expose them as `expression_units` (`length`,
+  `angle`). Editing the expression or applying a configuration keeps these
+  defaults; the parameter's own `unit` still takes precedence for its
+  dimensions. Changing the destination document's units does not reinterpret
+  these copied expressions. Their parameter references remain editable.
 - `delete_feature` refuses while other features refer to the feature
   (`Extrude1 is used by Fillet1; …`); with `"dependents": true` they go
   too (the `dependents` query lists them).
@@ -1400,6 +1424,12 @@ command: it is skipped, and the `timeline` query shows its error.
   something it refers to (the `can_reorder` query asks first).
 - Features after the marker are rolled back (not evaluated); suppressed
   features are skipped.
+- `set_marker` with `"temporary": true` evaluates a command editor's
+  rollback without adding an undo step, dropping redo or changing the
+  revision. The editor must restore the original marker with the same flag
+  before committing an edit or saving. Cancellation leaves the marker,
+  history, revision and displayed results unchanged. Ordinary marker moves
+  keep their existing undo behavior.
 - After a command, new bodies get display names (`Body1`, `Body2`, … the
   next free number), which are saved.
 - A timeline group stays a run: deleted features leave it, a feature
@@ -1413,11 +1443,23 @@ command: it is skipped, and the `timeline` query shows its error.
 | Command | Fields | Result |
 |---|---|---|
 | `undo`, `redo` | | `label` of the step, or null |
+| `begin_command` | | `token`: an opaque string identifying a checkpoint of the current definition, revision, saved state and both history stacks |
+| `restore_command` | `token` | restores that checkpoint after its scene recomputes successfully; keeps the token for retries |
+| `discard_command` | `token` | releases the checkpoint without changing the current definition or history |
 | `merge_undo` | `depth`: the undo depth before the action, `label` | merges the undo steps after `depth` into one step named `label` (clears redo); `undo_depth`. Refuses a `depth` past the last step |
-| `mark_saved` | | `revision`; the definition state is the project file's (saved or opened). No undo step, nothing recomputed |
+| `mark_saved` | | `revision`; the definition state is the design file's (saved or opened). No undo step, nothing recomputed |
 
 - Undo and redo restore the whole definition (parameters, timeline,
   marker, body names). Cached results make them fast.
+- An asynchronous frontend begins one command checkpoint before temporary
+  marker moves or applied sketch previews. Cancel restores and then discards
+  it; accept discards it. Restore recovers the exact preexisting redo stack,
+  even when a command completed before cancellation reached the worker.
+  A failed or cancelled restore changes nothing and retains the token for
+  retry. Only one checkpoint may be active per document; stale tokens are
+  rejected. Tokens and newly allocated revision numbers are never reused.
+  Checkpoints are session state, absent from saved designs; finish the
+  command before marking a saved file or replacing the document.
 - One user action is often several commands (a rectangle snapped to the
   origin is `sketch.add_point`, `sketch.rectangle` and a `coincident`
   constraint; a drag a `sketch.drag` per mouse move). The caller reads
@@ -1431,13 +1473,13 @@ command: it is skipped, and the `timeline` query shows its error.
   revision. A new command after undo gets a new revision even when it
   makes the same definition. `update_links` gives a new revision when it
   takes new bodies (no undo step).
-- A new document is not `modified`. A project file read
+- A new document is not `modified`. A design file read
   (`Document::from_json`, the bridge's `load_document`) is modified until
   `mark_saved`, since it need not be the file it will be saved to (an
   imported design, recovered work). Saving (`to_json`) does not mark it
   saved by itself.
 - `Document::to_json_with_marker(marker)` (bridge `to_json_with_marker`)
-  writes the project file with another marker without changing the
+  writes the design file with another marker without changing the
   document (autosave while an edit has rolled the timeline back).
 
 ### Visibility and display
@@ -1453,7 +1495,7 @@ command: it is skipped, and the `timeline` query shows its error.
 
 - Body commands are undo steps (`Hide Body1`, `Show Body1`, `Set Material
   of Body1`, …) unless nothing changes; the body must exist at the
-  marker. The `bodies` query and the project file list `"visible":
+  marker. The `bodies` query and the design file list `"visible":
   false`, `"material"` and `"appearance"` when set. Materials: `steel`
   (7.85 g/cm³, the default), `stainless_steel`, `cast_iron`, `aluminum`,
   `copper`, `brass`, `titanium`, `abs`, `pla`, `nylon`, `polycarbonate`,
@@ -1472,10 +1514,10 @@ command: it is skipped, and the `timeline` query shows its error.
   keeps a light bulb set by hand. Deleting a feature forgets its
   visibility; `paste_new` and copied designs start with the defaults.
   Code: `document/browser.rs`.
-- The display state (Origin folder, isolation) is per user: the project
+- The display state (Origin folder, isolation) is per user: the design
   file keeps it as `"display": {"origin": true, "isolated": [...]}` (left
-  out when nothing is set), and a project keeps it outside the project
-  file ([Project files](#project-files)). Isolation lists only the items
+  out when nothing is set), and a project keeps it outside the design
+  file ([Design files](#design-files)). Isolation lists only the items
   there at the marker; none left isolates nothing.
 - Occurrences have `set_occurrence_visible` ([Components and
   occurrences](#components-and-occurrences)).
@@ -1489,7 +1531,7 @@ command: it is skipped, and the `timeline` query shows its error.
 | `delete_named_view` | `name` | |
 
 Named views change no geometry and recompute nothing; they are saved in
-the project file (`"views"`, left out when there are none). The view
+the design file (`"views"`, left out when there are none). The view
 named `Home` is the document's home view.
 
 ### Analyses
@@ -1525,7 +1567,7 @@ reference follows the model by its topological name, as features' do.
   Showing one hides the others, also in a file read with several shown
   (the first shown stays).
 - Analyses change no geometry and recompute nothing. They are saved in
-  the project file (`"analyses": [{"name", "visible" (only when false),
+  the design file (`"analyses": [{"name", "visible" (only when false),
   "type", "plane", "offset", "flip"}]`, left out when there are none;
   files without it have none), and the comparison of versions lists them
   by name.
@@ -1536,7 +1578,7 @@ How bodies look (mitcad#46, `core/model/src/appearance.rs`,
 `core/model/src/document/appearances.rs`): a physically based parameter
 set, a subset of OpenPBR's and the Principled BSDF's. Mitcad's library is
 built in and read-only; a document keeps appearances of its own, saved in
-the project file. A body names its appearance by id
+the design file. A body names its appearance by id
 (`set_body_appearance`), and single faces can have their own
 ([Appearances of faces](#appearances-of-faces), mitcad#53).
 
@@ -1551,7 +1593,7 @@ the project file. A body names its appearance by id
 | `coat`, `coat_roughness` | 0–1 | 0, 0.03 | a clear coat over the base (lacquer, car paint) |
 | `emission`, `emission_color` | 0–1000, sRGB | 0, [1, 1, 1] | emitted light: 1 is the colour's own radiance |
 | `opacity` | 0–1 | 1 | a cut-out (glass transmits instead) |
-| `texture` | `{"path", "size": [w, h] mm (default 100 x 100), "rotation" rad, "projection": "box" (default) or "planar", "data"}` | none | an image for the base colour (PNG or JPEG), projected in the body's coordinates: `planar` along Z, `box` from the axis each point of the surface faces most; one repeat of the image is `size`, turned by `rotation` about the projection's axis. `path` is relative to the project file's folder or absolute; `data` (base64 of the image file, at most 32 MB) embeds the image in the project file ([Textures](#textures)). The rendered view draws it, the shaded view shows the base colour |
+| `texture` | `{"path", "size": [w, h] mm (default 100 x 100), "rotation" rad, "projection": "box" (default) or "planar", "data"}` | none | an image for the base colour (PNG or JPEG), projected in the body's coordinates: `planar` along Z, `box` from the axis each point of the surface faces most; one repeat of the image is `size`, turned by `rotation` about the projection's axis. `path` is relative to the design file's folder or absolute; `data` (base64 of the image file, at most 32 MB) embeds the image in the design file ([Textures](#textures)). The rendered view draws it, the shaded view shows the base colour |
 
 | Command | Fields | Result |
 |---|---|---|
@@ -1577,7 +1619,7 @@ the project file. A body names its appearance by id
 - A body without an appearance, or with an id in neither list (an
   imported one), has the default look; a body's physical material does
   not choose its appearance.
-- The commands change no geometry and recompute nothing. The project file
+- The commands change no geometry and recompute nothing. The design file
   keeps the document's appearances as `"appearances": [{"id", "name",
   parameters...}]` (left out when there are none; parameters left out of
   a file are the defaults; files without it have none), and the
@@ -1608,7 +1650,7 @@ painted face, a rubber pad.
   (as assigned), "appearance", "faces" (a name of each face it finds at
   the marker; empty when the face is gone)}]`, left out when there are
   none.
-- They recompute nothing. The project file keeps them with the body's
+- They recompute nothing. The design file keeps them with the body's
   other attributes: `"face_appearances": {"F2:side(c1[c4,c2])":
   "paint_red"}` (left out when there are none; files without them have
   none); copied designs rename the feature ids in the names. The
@@ -1617,7 +1659,7 @@ painted face, a rubber pad.
 ### Textures
 
 An appearance's texture is an image file or an image embedded in the
-project file (mitcad#53).
+design file (mitcad#53).
 
 - `"data"` in a `create_appearance` or `edit_appearance` texture embeds the
   image: base64 of a PNG or JPEG file (checked by its first bytes; at most
@@ -1631,7 +1673,7 @@ project file (mitcad#53).
   `embedded` reads its file again.
 - The `appearance_image` query (`id`) gives an embedded image: `data`
   (base64), `format` (`png`, `jpeg`) and `sha256`.
-- The project file keeps the image in the texture's `data`; the
+- The design file keeps the image in the texture's `data`; the
   comparison of versions shows `sha256 <digest>` for it.
 
 ### Render settings
@@ -1651,7 +1693,7 @@ section have its defaults. The user's lights are a list beside them
 | `environment.rotation` | rad, within two turns | 0 | turns the studio's lights or the image about Z (counter-clockwise from above) |
 | `environment.sun_elevation` | 0–pi/2 rad | pi/4 | `outdoor`: the sun's height above the horizon |
 | `environment.sun_azimuth` | rad, within two turns | 5/4 pi | `outdoor`: where the sun is, counter-clockwise from X seen from above (5/4 pi: front left) |
-| `environment.image` | a path | none | `image`: an equirectangular `.hdr` or `.exr` file, relative to the project file's folder or absolute; kept when another preset is chosen |
+| `environment.image` | a path | none | `image`: an equirectangular `.hdr` or `.exr` file, relative to the design file's folder or absolute; kept when another preset is chosen |
 | `background.mode` | `view`, `color`, `environment` | `view` | behind the bodies: the view's own background (View > Environment), `background.color`, or the environment itself |
 | `background.color` | sRGB [r, g, b], 0–1 | [1, 1, 1] | |
 | `ground.shadows` | bool | true | a ground that shows only the bodies' shadows (a shadow catcher); without it there is no ground |
@@ -1670,7 +1712,7 @@ section have its defaults. The user's lights are a list beside them
 - The commands change no geometry and recompute nothing.
 - The `render_settings` query gives every section with every field (`image`
   and `height` only when set), and `lights`.
-- The project file keeps them as `"render": {"environment": {...},
+- The design file keeps them as `"render": {"environment": {...},
   "background": {...}, "ground": {...}, "film": {...}}` when they are not
   the defaults (fields left out of a file are the defaults); the
   comparison of versions lists each changed field as a document change
@@ -1785,7 +1827,7 @@ Other queries: [analysis](#analysis-queries), [components](#component-commands-a
 - `report` as text is `Document::report(false)` (what `mitcad-cli`
   prints).
 - `mitcad-cli info <file> --timings` prints the slowest features after
-  opening a project; the ctests `cli.perf_recompute` and
+  opening a design; the ctests `cli.perf_recompute` and
   `cli.perf_join_recompute` do so for generated models
   (`tools/cli/tests/perf_model.json`, `perf_join_pattern.json`: a pattern
   joined near bodies it does not touch).
@@ -2015,9 +2057,10 @@ Examples: `tools/cli/tests/f6_*.json`.
   expressions; other parameters are shared), the components placed in it
   and, for a component a new-component operation made, that feature. A
   component made from bodies, or linked, is copied as its bodies (a base
-  feature). Both go into the active component, which must not be in the
-  copied one.
-- **External components.** `insert_component` places another project
+  feature), retaining body material, visibility and appearance assignments;
+  face overrides follow the snapshot's new face names. Both go into the
+  active component, which must not be in the copied one.
+- **External components.** `insert_component` places another design
   file in the active component: linked (default) as a read-only
   component whose bodies are a base feature holding the file's visible
   bodies as that design places them (its link: `path`, a digest of the
@@ -2025,9 +2068,9 @@ Examples: `tools/cli/tests/f6_*.json`.
   design with its history (its root becomes the new component; its user
   parameters come along, renamed `name_1` when the name is taken). Linked
   components cannot be activated or edited. `update_links` (with the
-  project file's directory as `base` for relative paths) reads the linked
+  design file's directory as `base` for relative paths) reads the linked
   files again and takes the bodies of those that changed; a missing file
-  keeps the saved bodies. Callers run it when they open a project (no
+  keeps the saved bodies. Callers run it when they open a design (no
   undo step; what changed is a load warning).
 - **Deleting.** `delete_occurrence` deletes an occurrence; the last one
   of a component deletes the component with its features, the feature
@@ -2067,7 +2110,7 @@ Examples: `tools/cli/tests/f6_*.json`.
   part.mitcad`, …); hiding, renaming and activating recompute nothing.
 - The text report (`mitcad-cli info`) lists the components and the placed
   bodies.
-- Project file (version 2 and later), when there are components:
+- Design file (version 2 and later), when there are components:
   `root_component` (the root's name when renamed), `components` (`uid`,
   `name`, `created_by`, `link`), `occurrences` (`uid`, `component`,
   `parent`, `number`, `transform` rows unless the identity, `grounded`,
@@ -2293,8 +2336,8 @@ feature and moves nothing.
 
 | Query | Fields | Result |
 |---|---|---|
-| `joints` | | `joints`: every joint and as-built joint in timeline order: `uid`, `name`, `type`, `kind`, `slide_axis` (sliders), `component`, `a` and `b` {`occurrence` (path name), `path` (uids)}, `motions`, `limits` (per motion `min`, `max`, `rest` as values), `position` (per driven motion its value), `status` and `error` (the feature's), `state` (`placed`, `satisfied`, or the status: `failed`, `suppressed`, `rolled_back`), `solved` (it holds at the marker), `message` (why not), `moved` (occurrences placed), `values` (per free motion, at the marker; null when the joint does not hold there), `within_limits`, `beyond_limits`, `frames` {`a`, `b`: `origin`, `x_axis`, `y_axis`, `z_axis` in the joint's component, at the marker; an as-built joint's motion frame as each side carries it}; `rigid_groups`: `uid`, `name`, `component`, `occurrences`, `names`, `active`, `status`, `error`; `dof`: per component with joint features, `component`, `total`, `overconstrained`, `redundant` and `conflicting` (joint uids), `units` (`occurrences` moving as one, `names`, `grounded`, `dof`, `joints`) |
-| `joint_dof` | `occurrence` (uid, name or path) | in its parent component: `occurrence`, `name`, `component`, `grounded`, `group` (the occurrences moving with it), `dof`, `motions` (none when grounded, all six without joints, its joint's with one, null with more), `joints` (`uid`, `name`, `kind`, `other`, `motions`) |
+| `joints` | | `joints`: every joint and as-built joint in timeline order: `uid`, `name`, `type`, `kind`, `slide_axis` (sliders), `component`, `a` and `b` {`occurrence` (path name), `path` (uids)}, `motions`, `limits` (per motion `min`, `max`, `rest` as values), `position` (per driven motion its value), `status` and `error` (the feature's), `state` (`placed`, `satisfied`, or the status: `failed`, `suppressed`, `rolled_back`), `solved` (it holds at the marker), `message` (why not), `moved` (occurrences placed), `values` (per free motion, at the marker; null when the joint does not hold there), `within_limits`, `beyond_limits`, `frames` {`a`, `b`: `origin`, `x_axis`, `y_axis`, `z_axis` in the joint's component, at the marker; an as-built joint's motion frame as each side carries it}; `rigid_groups`: `uid`, `name`, `component`, `occurrences`, `names`, `active`, `status`, `error`; `dof`: per component with joint features, `component`, `total`, `overconstrained`, `redundant` and `conflicting` (joint uids), `units` (`occurrences` moving as one, `names`, `grounded`, `dof`, `mobile`, `joints`) |
+| `joint_dof` | `occurrence` (uid, name or path) | in its parent component: `occurrence`, `name`, `component`, `grounded`, `group` (the occurrences moving with it), `dof`, `mobile`, `motions` (none when grounded, all six without joints, its joint's with one, null with more), `joints` (`uid`, `name`, `kind`, `other`, `motions`) |
 | `joint_drag` | `occurrence`, `point`, `target` (as `drag_occurrence`) | `placements` (the occurrences that would move: `occurrence`, `name`, `transform` rows in the parent component), `values` (per joint uid of the parent component, its motions' values); changes nothing |
 | `joint_frame` | `occurrence` (a path from `component`, uids or names; empty: its own geometry), `geometry`, `frame_override`, `component` (the root when left out) | the frame the origin gives at the marker, placed by the path into `component`'s coordinates: `origin`, `x_axis`, `y_axis`, `z_axis`; `component` (the one the path ends in) and `local` (the frame in its coordinates); refused for geometry of another component than the path's |
 
@@ -2303,7 +2346,11 @@ feature and moves nothing.
   out). `total` is what all units can do together (6 per unit that is not
   grounded less the rank); a unit's `dof` is what it can do with the
   other units held where they are, 0 when grounded. A four-bar linkage
-  has `total` 1 while each link alone has 0. `redundant` lists joints
+  has `total` 1 while each link alone has 0. A unit is `mobile` when it
+  moves in some motion of all units together (the others free too): each
+  link of the four-bar linkage is; a unit rigidly joined to the
+  component's own geometry or to a grounded one is not (nor is a grounded
+  one), and a drag of it moves nothing. `redundant` lists joints
   whose equations repeat earlier ones (they hold: two hinges on one axis,
   the closing joint of a planar loop), `conflicting` those that
   contradict earlier ones where the occurrences are; `overconstrained`
@@ -2319,8 +2366,104 @@ feature and moves nothing.
   that name an occurrence that is gone, with what depends on them; they
   are in its `deleted`. Copies of components (`paste_new`, an inserted
   copy) take their joints along, naming the copies' occurrences.
-- Joint features are saved as features (project file round trip); files
+- Joint features are saved as features (design file round trip); files
   without them have none.
+
+## Assembly constraints
+
+Assembly constraints (mitcad#148) hold geometry of one occurrence against
+geometry of another, each taking away only some motions, and are solved
+together with the joints. A `constraint_set` feature holds rows, each one
+constraint; one row is a constraint, several are solved together. Code:
+`core/model/src/constraints.rs` (what each type holds, references),
+`features/constraint_set.rs` (the definition), recompute in `joints.rs`
+(`apply`, `solve_new`), the solver's partial equations
+`core/solver/src/rigid.rs` ([README](../../../solver/README.md#assembly-constraints));
+tests `constraint_tests.rs`, `core/solver/tests/rigid_constraints.rs`,
+`tools/cli/tests/constraints.json`, `tools/ui-constraint-test.sh`.
+
+```json
+{"type": "constraint_set", "rows": [
+  {"type": "insert", "offset": -10,
+   "a": {"occurrence": "O2", "geometry": {"body": "F4.b0", "edge": "E{F4:bottom|F4:side0}"}},
+   "b": {"occurrence": "O1", "geometry": {"body": "F2.b0", "edge": "E{F2:end(r{…})|F3:side0}"}}},
+  {"type": "align", "limits": {"min": 0, "max": "10 mm", "rest": 2},
+   "a": {"occurrence": "O3", "geometry": {"body": "F6.b0", "face": "F6:start(r{…})"}},
+   "b": {"occurrence": "O1", "geometry": {"body": "F2.b0", "face": "F2:end(r{…})"}}}]}
+```
+
+- `constraint_set` (named `Constraint<n>`): `rows`, one or more. A row has
+  `type`, `a` and `b` (references as [joint origins](#kinds-and-frames):
+  an occurrence path from the feature's component and geometry of the
+  component it ends in, a `frame_override` allowed), and per type
+  `offset` (a length), `angle`, `flip`, `limits` (`min`, `max`, `rest`),
+  `lock_rotation`, and for a center `a2` and `b2` (on a's and b's
+  occurrence). `a` and `b` must be on different occurrences, at most one
+  the component's own geometry. Fields a type does not take are refused
+  (`row 1 (align): lock_rotation is for insert rows`).
+- **References.** Each resolves to a frame as a joint origin does, and a
+  kind: a point (a vertex, sketch or construction point, a sphere's
+  centre for an align), a plane (a planar face, a plane; z its outward
+  normal), an axis (a straight edge, an axis, a cone or torus), a circle
+  (a circular edge, a sketch circle or arc; z the outward normal of a
+  planar face the edge bounds, else the axis), a cylinder (its axis and
+  radius) or a sphere (centre and radius).
+
+| Type | References | Holds |
+|---|---|---|
+| `align` | plane (or circle) and plane | a's plane `offset` above b's along b's normal, normals facing; `flip`: the same way |
+| `align` | two points | coincident; at a distance with an `offset` |
+| `align` | two axes, cylinders or circles | concentric (axes along each other, either way); `offset` apart |
+| `align` | a point and a plane, a point and an axis, an axis and a plane | the point on the plane or the axis (`offset` off it), the axis in the plane (`offset` above it) |
+| `angle` | planes or axes | the angle between the normals or axes, 0 to 180°; 0 and 180° are parallel; `flip` measures from a's reversed normal |
+| `center` | a (and a2); b, or b and b2 | a's point (the middle of a's and a2's) on the plane midway between b and b2 (parallel planar faces); with b alone on b's normal through its middle (a cylinder: on its axis) |
+| `tangent` | planes, cylinders, spheres | touching from outside: a plane on a plane facing, a cylinder lying on a plane, cylinders side by side (axes the sum of the radii apart), spheres; `flip`: inside (the other side of the plane, the difference of the radii) |
+| `insert` | circle, circle | the centres together, a's plane `offset` along b's normal, the planes facing (a pin's bottom rim into a hole's top rim); `flip`: the same way |
+| `insert_axis` | circle, a cylinder (a hole) or circle | a's centre on b's axis, the axes along each other, the depth free |
+
+- **Values.** An align's offset and an angle's angle are values
+  (parameters and expressions; `rows.0.offset`, `rows.0.angle`). With
+  `limits` (min or max given; an angle row's are angles,
+  `rows.0.limits.min_angle`) the value is free between them, held at
+  `rest` when given, instead of fixed (offset and angle are then
+  refused). Angles are between 0 and 180°; min ≤ rest ≤ max.
+- **Lock rotation.** An insert (either) with `lock_rotation` also holds
+  the turn about the axis: a's x axis at `angle` about b's z axis from
+  b's x axis. The application records the turn where the picks are
+  (the `constraint_row` query's `twist`); without `angle` it is 0.
+- **Recompute.** At its point of the timeline the rows are solved with
+  the joints and constraints in effect before it in the same component
+  that share moving units with them, exactly as a joint is ([What
+  recompute does](#what-recompute-does)): constraints place their free
+  side first by the smallest motion that makes each row hold, join
+  nothing, and leave the rest to the iteration; a row whose sides cannot
+  move only holds or fails (`row 1 (align): both sides are fixed (Pin:1
+  and Plate:1) and the constraint does not hold`). Contradictions name
+  rows: `over-constrained: Joint1 and Constraint2 row 1 (align) cannot
+  all hold`, a value at its rest `(at its offset)`. Constraint rows count
+  in the degrees of freedom, `redundant` and `conflicting` (by the set's
+  uid; an align of faces with an axis insert repeats the axes' direction:
+  redundant, it holds) and hold while dragging (`joint_drag`,
+  `drag_occurrence`: a value between limits moves with the drag and goes
+  back to its rest value at the next recompute).
+- Like joints, sets are never written to the result store, are deleted
+  with an occurrence they name (`delete_occurrence`), follow copies of
+  components and are saved as features.
+
+| Command | Fields | Result |
+|---|---|---|
+| `add_constraint_set` | `rows` (as above; occurrences also by names from the component, `Pin:1`), `name`, `component` (the active one when left out) | `uid`, `name`, `parameters`, `state`, `solved` |
+
+| Query | Fields | Result |
+|---|---|---|
+| `joints` | | also `constraints`: every constraint set in timeline order: `uid`, `name`, `type`, `component`, `rows` (`row` from 1, `type`, `a` and `b` {`occurrence`, `path`}, `holds` at the marker, `value` of a row with limits), `status`, `error`, `state` (`placed`, `satisfied`, or the status), `moved`, `solved` (every row holds) |
+| `constraint_row` | `a`, `b` (references; `occurrence` from `component`, uids or names), `a2`, `b2`, `type` (optional), `component` (the active one when left out) | `kinds` {`a`, `b`: `point`, `plane`, `axis`, `circle`, `cylinder`, `sphere`}, `types` (those the references fit, the likeliest first: two circles an insert, a circle and a cylinder an axis insert, a cylinder or sphere with a plane, or spheres, a tangent, else an align), `type` (the first), `measures` (in the component at the marker: `offset` a's origin above b's plane or a points' distance, `angle` between the z axes, `twist` a's x axis about b's z); with `type`: `fits` and `error` |
+
+Not yet: a tangent's contact passing to the second body's other faces
+("all faces"), cones and tori in tangents, symmetry and motion
+constraints, and the `.f3d` import of the file's stored assembly
+relationships (their items are skipped, *Items without a translation* in
+the [import README](../../../import/README.md)).
 
 ## Import and export
 
@@ -2329,7 +2472,7 @@ feature and moves nothing.
 | Command | Fields | Result |
 |---|---|---|
 | `import_file` | `path` (.step/.stp, .iges/.igs, .brep/.brp, .stl, .obj), `name` (of the feature, optional), `unit_mm` (STL and OBJ: mm per file unit, default 1) | `uid`, `name`, `bodies`: `uid`, `name`, `kind` |
-| `export` | `path`, `bodies` (uids or names; all at the marker when left out), `format` (by extension when left out: `step`, `iges`, `stl`, `obj`, `brep`, `3mf`), `schema` (`ap214` default, `ap242`), `unit` (STEP, IGES: `mm` default, `cm`, `m`, `in`, `ft`), `refinement` (STL, OBJ, 3MF: `low`, `medium` default, `high` or `{"deviation": mm, "angle": radians}`), `ascii` (STL), `colors` (body uid or name: sRGB in [0, 1]), `coordinates` (`design` default, `component`), `occurrence` (a path) | `path`, `format`, `bodies` (uids); 3MF also `meshes`, `skipped` |
+| `export` | `path`, `bodies` (uids or names; all at the marker when left out), `format` (by extension when left out: `step`, `iges`, `stl`, `obj`, `brep`, `3mf`, `usdz`), `schema` (`ap214` default, `ap242`), `unit` (STEP, IGES: `mm` default, `cm`, `m`, `in`, `ft`), `refinement` (STL, OBJ, 3MF, USDZ: `low`, `medium` default, `high` or `{"deviation": mm, "angle": radians}`), `ascii` (STL), `colors` (body uid or name: sRGB in [0, 1]), `coordinates` (`design` default, `component`), `occurrence` (a path), `design_folder` (USDZ: the folder relative texture paths are relative to, the design file's) | `path`, `format`, `bodies` (uids); 3MF also `meshes`, `skipped`; USDZ also `materials`, `skipped`, `warnings` |
 | `export_sketch` | `sketch` (uid or name), `path` (.dxf), `version` (`r2000` default, `r12`) | `path`, `entities` |
 
 - `import_file` adds one base feature: a body per STEP part or solid,
@@ -2338,7 +2481,8 @@ feature and moves nothing.
   One undo step (`Import bracket.step`).
 - `export` writes the bodies with their display names and colours
   (`colors`, else the colours of imported bodies; for STEP, IGES, OBJ,
-  3MF). Mesh bodies go only to STL, OBJ and BRep. It changes nothing (no
+  3MF; USDZ writes the bodies' appearances, [USDZ](#usdz)). Mesh bodies go
+  only to STL, OBJ, BRep, 3MF and USDZ. It changes nothing (no
   undo step, `recomputed` 0).
 - `export_sketch` writes the sketch's curves in sketch coordinates and
   millimetres (`$INSUNITS` mm), each curve segment of its profiles once.
@@ -2421,6 +2565,88 @@ their relative positions.
   mock kernel), `geometry.io` (`indexed_mesh`: closed meshes facing
   outwards within the deviation's volume), `core.exchange` and
   `cli.export_3mf` (with OCCT).
+
+### USDZ
+
+```json
+{"cmd": "export", "path": "assembly.usdz", "refinement": "high",
+ "design_folder": "/home/me/designs"}
+```
+
+`export` with `format` `usdz` (or a `.usdz` path) writes a Universal
+Scene Description package (mitcad#123; `core/usdz`, the
+[USDZ specification](https://openusd.org/release/spec_usdz.html)) for AR
+viewers, renderers and other programs that read USD: the bodies as shaded
+meshes in the design's component hierarchy, with their appearances.
+
+- **Package:** an uncompressed zip whose files start at multiples of 64
+  bytes: first the layer `<file name>.usdc`, then the textures' images
+  (`textures/<appearance>.png` or `.jpg`). The layer is binary (the
+  `.usdc` crate format, version 0.8.0), which AR viewers require of a
+  package's layer; `mitcad-usdz` writes it itself (no USD library).
+- **Units and axes:** the points stay millimetres (`metersPerUnit`
+  0.001). The layer declares `upAxis` "Y", and its root prim (the
+  default prim, an `Xform` named after the file, `kind` component) turns
+  Mitcad's Z-up a quarter about X (`xformOp:rotateX` -90): Z goes to Y,
+  Y to -Z: the design's front (-Y) faces +Z, where Y-up viewers look
+  from. Viewers that read `upAxis` and
+  those that assume Y up show the design upright.
+- **Hierarchy:** each placement of a body is a `Mesh` under an `Xform`
+  per occurrence on the way to it (`Arm_1/Pin_1/Body1`), each with its
+  placement in its parent (`xformOp:transform`); a root body is a mesh of
+  the root prim. With `coordinates: component` each body is one mesh of
+  the root prim, as its component has it. `occurrence` keeps the
+  placements by that occurrence (its parents' `Xform`s around them). A
+  component placed twice is written twice. Prim names are the bodies' and
+  occurrences' names made valid (ASCII letters, digits and `_`; `Pin (2)`
+  becomes `Pin_2`; repeated names get `_2`, `_3`).
+- **Hidden bodies:** without `bodies`, hidden bodies, bodies placed only
+  by hidden occurrences and the placements of hidden occurrences are left
+  out (`skipped`: `hidden`, `in hidden occurrences only`; empty bodies:
+  `an empty body`). Listed bodies are written where they are shown, by
+  all their occurrences when none is shown, as the other formats. An
+  `occurrence` asked for is written even when it is hidden; hidden ones
+  inside it are left out.
+- **Meshes** (`Kernel::face_meshes` within `refinement`): each face its
+  own vertices with the surface's normals (`normals`, vertex
+  interpolation), so edges stay sharp and curved faces smooth; triangles
+  counter-clockwise seen from outside, `subdivisionScheme` none, an
+  `extent`. A mesh body's triangles are faceted; a sheet body is
+  `doubleSided`.
+- **Materials:** one `Material` per appearance under `<root>/Materials`
+  with a `UsdPreviewSurface`: the base colour (linear), metallic,
+  roughness, IOR, clear coat and its roughness, emission (its colour times
+  its strength), and opacity times 1 - 0.9 x transmission (the preview
+  surface has no transmission: clear glass stays faintly visible). A body
+  without an appearance gets its colour from `colors` or its import
+  (material `color_rrggbb`), else the default look (`default_look`).
+  Faces with appearances of their own are a `GeomSubset` each (family
+  `materialBind`, `nonOverlapping`) bound to their material. Specular
+  weight is not written.
+- **Textures:** an appearance's image (embedded, or its file: an absolute
+  path, or relative to `design_folder`) goes into the package, read by a
+  `UsdUVTexture` (sRGB, repeated) at the mesh's `st` (face-varying
+  texture coordinates): the projection the rendered view uses, planar
+  from (x, y), box from the axis each triangle faces most, turned back by
+  the rotation and divided by the size of one repeat, in the body's own
+  coordinates. An image that cannot be read leaves the material in its
+  base colour and adds a `warnings` line (`Wood: the texture image
+  /path/wood.png cannot be read (...); its base colour is written`).
+- The result adds `materials` (their names, in order: appearance ids,
+  `color rrggbb`, `default look`), `skipped` (`body`, `name`, `reason`)
+  and `warnings`.
+- Checked with OpenUSD's validators (`docs/development.md`, *USDZ
+  files*): the package rules (stored, aligned, the file types), stage
+  metadata, material bindings and subsets, shader inputs.
+- Tests: `core.usdz` (the writer, the compression and a reader that
+  checks the package and the layer: alignment, the header and sections,
+  prims, points, indices, normals, materials and subsets read back),
+  `core.model` (`export` with the mock kernel: the hierarchy, hidden
+  bodies and occurrences, appearances, face subsets, texture coordinates,
+  textures relative to the design's folder), `geometry.io`
+  (`face_meshes`: face order, normals out of the body that agree with the
+  triangles), `core.exchange` and `cli.export_usdz` (with OCCT),
+  `tools/ui-import-test.sh` (File > Export's type).
 
 ### DXF into sketches
 
@@ -2564,7 +2790,7 @@ first, then those the file's history suggests without them.
 | Align (not in the API) | `move` (`free`) or `align` | |
 | `ScaleFeature` | `scale` | `inputEntities` (bodies), `point` (origin point → origin, vertex, else fixed), `isUniform`, `scaleFactor`, `xScale`, `yScale`, `zScale` |
 | `Box/Cylinder/Sphere/TorusFeature` | `box`, `cylinder`, `sphere`, `torus` | sizes from `parameters.model` by `createdBy`; the placement (not in the API) from the body: a fixed plane |
-| `SweepFeature` | `sweep` | `profile` → `profiles` (as for extrude), `path` → `path`, `guideRail` → `guide_rail`, `orientation` (Perpendicular/ParallelOrientationType), `twistAngle` → `twist_angle`, `taperAngle` → `taper_angle`, `profileScaling` (SweepProfileScale/Stretch/NoScalingOption) → `profile_scaling`, `distanceOne`/`distanceTwo` → `extent` `partial` unless both 1, `isDirectionFlipped` → `flip` (with a guide rail the other way first; then the other direction where a partial extent or a rail makes it differ), `operation`, `participantBodies`; `guideSurfaces`, `extent` FullExtents and `isSolid` false → fallback. From the stream decoder, which gives a profile's sketch only and neither `orientation`, `profileScaling` nor `isDirectionFlipped`, the history picks among the sketch's regions, `distanceTwo` 0 as none or as given, both directions, perpendicular then parallel (scale, then stretch and none with a rail) |
+| `SweepFeature` | `sweep` | `profile` → `profiles` (as for extrude), `path` → `path`, `guideRail` → `guide_rail`, `orientation` (Perpendicular/ParallelOrientationType), `twistAngle` → `twist_angle`, `taperAngle` → `taper_angle`, `profileScaling` (SweepProfileScale/Stretch/NoScalingOption) → `profile_scaling`, `distanceOne`/`distanceTwo` → `extent` `partial` unless both 1, `isDirectionFlipped` → `flip` (with a guide rail the other way first; then the other direction where a partial extent or a rail makes it differ), `operation`, `participantBodies`; `guideSurfaces` → `guide_surfaces` (mitcad#157: each face found by its fingerprint, as other face inputs; a `guideRail` given with them is not used; perpendicular only; faces without geometry, as the stream decoder gives them, → fallback); `extent` FullExtents and `isSolid` false → fallback. From the stream decoder, which gives a profile's sketch only and neither `orientation`, `profileScaling` nor `isDirectionFlipped`, the history picks among the sketch's regions, `distanceTwo` 0 as none or as given, both directions, perpendicular then parallel (scale, then stretch and none with a rail) |
 | `LoftFeature` | `loft` | `loftSections[]` by `index`: `entity` a profile → `profile`, a face → `face`, a path of a body's edges (`PathEntity` items of `BRepEdge`s, or one edge; the section of tangent and smooth conditions) → `face`, the face of that body the edges go round (each of them borders it and it has no others), a sketch point, a construction point or a vertex → `point`; first and last `endCondition`: `LoftFreeEndCondition` → none, `LoftPointSharpEndCondition` → `point_sharp`, `LoftDirectionEndCondition` → `direction` (`angle`, `weight`), `LoftTangentEndCondition` → `tangent`, `LoftSmoothEndCondition` → `smooth`, `LoftPointTangentEndCondition` → `point_tangent` (`weight`); `centerLineOrRails` with `isCenterLine` → `centerline`, else `rails`; `isClosed` → `closed`; `operation`, `participantBodies` (the IR has no ruled loft). A loft with end conditions or rails is kept when it matches the history within 0.5 % (see [loft](#loft)). A profile without its area (the stream decoder gives its sketch only) is each of the sketch's regions in turn, the history picking, at most twelve choices of all sections |
 | `PipeFeature` | `pipe` | `path`, `sectionType` (Circular/Square/TriangularPipeSectionType) → `section`, `sectionSize` → `size`, `isHollow` with `sectionThickness` → `thickness`, `distanceOne`/`distanceTwo` → `extent`, `operation`, `participantBodies`. Without `sectionType` and `isHollow` (the stream decoder): a solid circle first, then hollow with `sectionThickness`, square and triangular, the history picking |
 | `CoilFeature` | | not translated (fallback): the sizes are known (`parameters.model` by `role`), not the coil type, section, direction and placement ([README](../../../import/README.md), *Limits*) |
@@ -2971,11 +3197,12 @@ every `.iam` under `MITCAD_IPT_CORPUS`).
 
 ## Files and version history
 
-### Project files
+### Design files
 
-The file format (version 2 single files, version 3 in projects, the
-B-rep store, the per-user display state) is in
-[docs/architecture.md](../../../../docs/architecture.md#project-file).
+A design is one `.mitcad` file. The file format (version 2, a
+single-file design; version 3, a design in a project; the B-rep store,
+the per-user display state) is in
+[docs/architecture.md](../../../../docs/architecture.md#design-file).
 What callers see:
 
 - In a project (a folder with `.mitcad/project.json`, the nearest one
@@ -2987,7 +3214,7 @@ What callers see:
   base feature fails (`body 0: its B-rep data … is missing from the
   project store (.mitcad/brep)`) and the `document` query's `warnings`
   say so. Saving a document with an unresolved reference keeps it, so
-  even a single file is then version 3.
+  even a single-file design is then version 3.
 - The display state is written to `.mitcad/local/display/<path in the
   project>.json` in a project, inside the file otherwise.
 
@@ -2995,12 +3222,12 @@ No JSON commands; Rust and the bridge (names in brackets):
 
 | Function | Meaning |
 |---|---|
-| `Document::save_file(path, format)` (`save_project(path, "auto" \| "single" \| "project")`) | auto is version 3 in a project and version 2 elsewhere; returns the text written |
-| `Document::load_project(path)`, `from_json_at(json, path)` (`load_project`, `load_document_at`) | read a file resolving its project's store |
+| `Document::save_file(path, format)` (`save_design(path, "auto" \| "single" \| "project")`) | auto is version 3 in a project and version 2 (a single-file design) elsewhere; "project" is version 3, the path in a project; returns the text written |
+| `Document::load_design(path)`, `from_json_at(json, path)` (`load_design`, `load_document_at`) | read a design file resolving its project's store |
 | `from_json_in(json, store)`, `to_project_json(store)` | with any `BlobStore` |
 | `Project::find`, `open`, `init` (`init_project(dir)`) | `init` writes the marker, `.gitattributes` and `.gitignore` |
 | `load_warnings` (bridge) | what loading changed |
-| `to_json` | always the single file (autosave, the import's process) |
+| `to_json` | always the single-file design (autosave, the import's process) |
 | `find_project(path)` (bridge) | the folder of the project a file is in, or `""` |
 
 `mitcad-cli project init <folder> [--author A] [--no-history]` and
@@ -3032,7 +3259,7 @@ These are not document commands:
   records the first version.
 - `git_repository_root(path)`: the work tree of the git repository a
   folder (which need not exist) is in, or `""`.
-- `load_version(project, rev, path)` reads the project file now at
+- `load_version(project, rev, path)` reads the design file now at
   `path` as it was in a version (under the path it had there, through
   the renames its history follows), its B-rep data from that version's
   tree, as an untitled document (nothing computed, links not followed).
@@ -3050,17 +3277,17 @@ These are not document commands:
 | `restore` | `path`, `rev`, `message` (default `Restore <path> from <id>`), `author`, `fallback_author` | as `commit`; the version is read under the path the file had there and written to its path now |
 | `changes` | `from`, `to` (default HEAD) | `from`, `to` (ids), `changes`: `kind` (`added`, `deleted`, `modified`, `renamed`), `path`, `from` (renamed) |
 | `diff` | `path`, `from`, `to` | see [Comparison of versions](#comparison-of-versions) |
-| `status` | `path` | `path`, `head` and `file` (blob ids or null), `modified`, `renamed_from` (a project file not in HEAD whose content is that of a path of HEAD gone from the folder, renamed or moved outside Mitcad; else null) |
+| `status` | `path` | `path`, `head` and `file` (blob ids or null), `modified`, `renamed_from` (a design file not in HEAD whose content is that of a path of HEAD gone from the folder, renamed or moved outside Mitcad; else null) |
 | `follow_rename` | `path` | such a file takes the display state of the path it had along: `renamed_from` (null when not renamed), `display_moved` |
 | `identity` | `fallback_author` (optional) | `name`, `email`: git's configured author, else the fallback; an error without either |
 | `resolve` | `rev` | `id` |
 | `info` | | `root`, `branch` (null when detached), `head` |
 
 - A version holds only the given paths (as `git commit --only`), with the
-  B-rep files their project files refer to, minus the B-rep files no
-  project file of the version refers to (those leave the folder too
-  unless a changed project file there refers to them; none is removed
-  when a project file of the version cannot be read). The user's staged
+  B-rep files their design files refer to, minus the B-rep files no
+  design file of the version refers to (those leave the folder too
+  unless a changed design file there refers to them; none is removed
+  when a design file of the version cannot be read). The user's staged
   changes stay and `git status` is clean. Nothing changed: no commit.
 - Messages get the trailers `Mitcad-Version` and `Mitcad-Format: 3`; the
   author is also the committer.
@@ -3077,8 +3304,8 @@ These are not document commands:
 
 Rust: `Document::changes_since_saved` (the `changes_since_saved` query),
 `Project::move_local_state(from, to)` and `remove_local_state(file)` (the
-per-user display state follows a renamed project file and goes with a
-deleted one; a commit that removes a project file removes it),
+per-user display state follows a renamed design file and goes with a
+deleted one; a commit that removes a design file removes it),
 `file::rename_retrying` (used by `write_atomically`: on Windows a rename
 that fails with access denied or a sharing or lock violation is tried
 again for up to 2 s, waiting 10 ms to 200 ms), `ProjectRepo::create`,
@@ -3102,7 +3329,7 @@ where installed; `a_project_is_created_before_its_first_version`,
 
 ### Comparison of versions
 
-What differs between two designs, `from` and `to` (two project files, two
+What differs between two designs, `from` and `to` (two design files, two
 versions, or a version and the open document), in the model's terms
 (`core/model/src/diff/`, `mitcad_model::diff`). Both are snapshots of
 whole documents; nothing is computed unless the geometry is asked for.
@@ -3233,7 +3460,7 @@ or text), `git_info_at(program)` (the same for a given git program, `""`
 for the one found) and `clone_project(url, dir, control, text)`: the
 project opened from `url` into folder `dir` (new, or empty) with `git
 clone` of the remote's default branch, the remote named `origin`; JSON
-{`root`, `url`, `branch`, `head`, `files` (the project files of its
+{`root`, `url`, `branch`, `head`, `files` (the design files of its
 latest version), `error`, `log`}. An empty remote, or one whose root
 holds no project, is `not_a_project`, and a failed or cancelled clone
 leaves no folder (an empty one that was there stays, empty).
@@ -3425,8 +3652,9 @@ the only one; null with several and none of these, which Project Settings
 asks about: `remote_follow`), `remotes` (all names, of the project's repository or the
 folder's own), `cloud` (`has_history` and a remote), `designs` ([{`path`
 (relative to the project, else to the folder, with `/`), `modified` (RFC
-3339, UTC)}], newest first, at most 1000, `.git` and `.mitcad` folders and
-links left out, at most 50 000 entries looked at), `designs_truncated`
+3339, UTC)}], newest first, at most 1000, folders whose names start with
+a dot (`.git`, `.mitcad`; as the commit's walk, mitcad#144) and links left
+out, at most 50 000 entries looked at), `designs_truncated`
 (more than listed), `last_design` (from `.mitcad/local/recent.json`
 while that design is there, else null), `settings` (the project's shared
 settings, checked, as `project_settings`' `shared`; null outside
@@ -3487,8 +3715,8 @@ use the network):
 
 | Command | Fields | Result |
 |---|---|---|
-| `project_settings` | | `kind` (`local`, `cloud`: the repository has a remote), `shared` ({`edit_locks`: {`enabled`, `idle_minutes`, `poll_seconds`}, `live_updates`: {`broker`, `prefix`} or null}), `local` ({`live`: {`mode`: `project`, `off` or `broker`, `broker`, `prefix`}, `sync`: {`send_at_once`, `check_minutes`}, null meaning the application's default}), `live_updates` (what this computer uses, or null), `problems` (`mitcad_model::file::settings`), `authors` (who made the versions on HEAD's history, what sharing the project publishes: [{`name` (cleaned), `email`, `versions`}], most versions first, up to 10 000 versions read) |
-| `set_project_settings` | `shared` (optional), `local` (optional), `author`, `fallback_author` | `shared`, `local`, `written_local`, `commit` (null when the shared settings did not change), `skipped` (why no version was recorded: HEAD detached, a merge in progress; else null). `shared` is merged into the settings as they are, object by object (`{"edit_locks": {"enabled": false}}` keeps the times; `live_updates` is replaced whole, null: none); `local`'s `live` is replaced whole and its `sync` merged. Values are checked strictly (an error, nothing written). A change of the shared ones is written into the marker (its other fields kept) and recorded as a version, `Change project settings: <what changed>` (`edit locks off, idle time 15 min, live updates through mqtts://broker.example.com:8883`), by `author`, else git's configured author, else `fallback_author`, which the application then sends as a saved version |
+| `project_settings` | | `kind` (`local`, `cloud`: the repository has a remote), `shared` ({`edit_locks`: {`enabled`, `idle_minutes`, `poll_seconds`}, `live_updates`: {`broker`, `prefix`} or null}), `local` ({`live`: {`mode`: `project`, `off` or `broker`, `broker`, `prefix`}, `sync`: {`send_at_once`, `check_minutes`}, null meaning the application's default, `name`: the project's display name in the Projects panel or null, below}), `live_updates` (what this computer uses, or null), `problems` (`mitcad_model::file::settings`), `authors` (who made the versions on HEAD's history, what sharing the project publishes: [{`name` (cleaned), `email`, `versions`}], most versions first, up to 10 000 versions read) |
+| `set_project_settings` | `shared` (optional), `local` (optional), `author`, `fallback_author` | `shared`, `local`, `written_local`, `commit` (null when the shared settings did not change), `skipped` (why no version was recorded: HEAD detached, a merge in progress; else null). `shared` is merged into the settings as they are, object by object (`{"edit_locks": {"enabled": false}}` keeps the times; `live_updates` is replaced whole, null: none); `local`'s `live` is replaced whole, its `sync` merged and its `name` replaced (null or empty: none). Values are checked strictly (an error, nothing written). A change of the shared ones is written into the marker (its other fields kept) and recorded as a version, `Change project settings: <what changed>` (`edit locks off, idle time 15 min, live updates through mqtts://broker.example.com:8883`), by `author`, else git's configured author, else `fallback_author`, which the application then sends as a saved version |
 | `set_identity` | `name`, `email` (both empty: removed) | `name`, `email` (null when removed): the repository's own `user.name` and `user.email` in `.git/config` (a name and an email address without `<`, `>` or control characters, at most 200 characters each). `identity` and the author of versions then come from them first, before git's other configuration and `GIT_AUTHOR_*` |
 | `remember_design` | `path` | `path` (relative to the project): written to `.mitcad/local/recent.json` as the design opened last (`inspect_folder`'s `last_design`) |
 | `remote_check` | `url` | as before, and `files`, `latest`, `versions` as `check_remote` |
@@ -3497,6 +3725,16 @@ use the network):
 A branch without an upstream follows `origin`'s branch of the same name,
 else (mitcad#89) the only remote's; a push then sets it (all remote
 commands).
+
+**The display name** (mitcad#152) is `local`'s `name`: the name the
+Projects panel shows for the project on this computer instead of its
+default (the folder's name; a Cloud project's `owner/repository`). It is
+kept in `.mitcad/local/name.json` (`{"name": "…"}`, ignored by git like
+the rest of `.mitcad/local/`; no file without a name), so it stays with
+the folder across restarts and moves, and is never recorded as a version
+or sent. It never renames the folder or the repository. Trimmed, at most
+200 characters, no control characters (an error when set; when read, an
+unusable one is a problem and not used, a longer one cut).
 
 `mitcad-cli project inspect <folder>`, `project create <folder> --author A
 [--url U] [--no-push] [--design <name.mitcad>]` (`--design`: a new empty
@@ -3524,6 +3762,127 @@ the user's public key; after each `git fsck` and a clean `git status`),
 `core/vcs/src/projects/` (the services' keys as their servers send them,
 base64, HMAC-SHA1, RFC 3339 times, the cleaning of text) and ctest
 `cli.remote`.
+
+## Folders and designs
+
+A project's folders and designs for the Projects panel (mitcad#144;
+`core/vcs/src/projects/listing.rs` and `operations.rs`). They are commands
+of a project (`Project::command`; `command_with` with a `SyncControl` when
+the core pushes). Paths are relative to the project's folder with `/` (an
+absolute path inside it also does). A name starting with a dot is hidden
+(the listing and the commit's walk leave out every dot-folder), a link on
+the way is not followed, and names some system cannot hold (`<>:"|?*\`, a
+dot or space at the end, `CON`, `NUL`, `COM1` and the like) are refused,
+so a project opens everywhere.
+
+| Command | Fields | Result |
+|---|---|---|
+| `project_tree` | `session` (optional: the application's lock session), `author`, `fallback_author` (optional: who `same_owner` compares with) | below; no network and no writes |
+| `create_folder` | `path` | the folder (and those above it) with an empty placeholder, `.gitkeep` (git records files, not folders; never listed), recorded as `Add folder <path>` |
+| `new_design` | `path` (ends with `.mitcad`), `text` (optional: the design; default an empty design, `mitcad_model::file::empty_design()`) | the design (folders above it made), recorded as `Add <path>` |
+| `move` | `from`, `to` | a design (to a design's name) or a folder with everything in it, recorded as one version, `Move <from> to <to>`; folders above `to` made |
+| `delete` | `path`, `force` (default false) | a design or a folder with everything in it, deleted from the folder and recorded as `Delete <path>`; the history keeps what its versions hold (restoring deleted designs is a later ticket) |
+
+The writes also take `author`, `fallback_author` (as `commit`), `message`
+(instead of the default one), `session` (whose locks are the caller's) and
+`push`. Each follows Save's rules: one version of only its paths (the
+index locked, other staged changes kept), refused with nothing changed
+while HEAD is detached or a merge is in progress. In a Cloud project the
+version is pushed at once when `push` is true (default: the project's
+`sync.send_at_once`, else true); the application passes false and pushes
+as after a Save. Their answer is `commit`'s ({`commit`, `skipped`,
+`written`, `removed`, `deleted` (B-rep files deleted), `warnings`}) with
+`push` (`push`'s answer, or null), `error` and `log`, and:
+
+- `create_folder`, `new_design`: `path`;
+- `move`: `from`, `to`, `moved` ([{`from`, `to`}]: every design that
+  moved, so open designs follow), `display_moved` (how many per-user
+  display states followed: `.mitcad/local/display/`, as `follow_rename`);
+  the design opened last (`.mitcad/local/recent.json`) follows too;
+  `links_updated` lists designs whose component source paths changed;
+- `delete`: `path`, `deleted_designs` (the designs deleted).
+
+A move records the old paths and the new ones in one version: the moved
+designs keep their history (it follows the rename, as `history` does)
+and the B-rep files they refer to stay in the store. Files under a moved
+folder that no version holds move along and stay unrecorded; designs that
+no version holds are recorded at their new path. A move or a delete that
+would leave the source's folder with nothing recorded adds that folder's
+placeholder, so folders never vanish from the versions.
+
+Moves also retarget ordinary component links in visible working designs,
+including unversioned designs, and record those edits in the same version.
+Relative links keep their meaning when the owner moves, including links
+to sources outside the project; library links keep their library identity.
+Unreadable designs or folders prevent the move rather than leaving an
+unknown set of links broken. Link edits and the move are rolled back if
+the version cannot be recorded.
+
+Callers with open documents pass `open_designs` and `modified_designs`
+(arrays of absolute filenames). Unsaved project designs must first be
+saved so the scan sees their current links. A design whose links must
+change must be closed first, including another window's edit-locked
+design, and can be reopened after the move. This prevents its undo states
+or a later save from restoring an old source path. The Projects panel
+supplies every window's state and reports these refusals without moving
+files.
+
+Refusals change nothing and answer `error` ({`class`, `message`,
+`detail`}, `commit` null; in text an error, `mitcad-cli` exits with 1):
+
+- `exists`: the new folder or design, or the move's target, is there
+  (also as another case of the same name on a system that does not tell
+  them apart);
+- `invalid_path`: outside the project, hidden, a link on the way, a name
+  not every system can hold, a design's new name without `.mitcad`, a file
+  that is not a design, a folder moved into itself;
+- `not_found`: nothing to move, or nothing to delete in the folder or the
+  latest version;
+- `locked`: a design in it is locked by someone else (the project's edit
+  locks on; a lock of another session than `session` and another person
+  than the author, as the last lock poll saw it; the message names them);
+- `local_changes`: a delete of files the latest version lacks or holds
+  otherwise, which deleting would lose, unless `force`;
+- `unsupported`: HEAD detached or a merge in progress.
+
+A failed push after a recorded version is `error` too (its class, the
+message starting `The version is recorded but was not sent`), with
+`commit` set. A command without its fields is a failed command.
+
+`project_tree` answers `root`, `name` (the folder's), `display_name` (the
+display name on this computer, `project_settings`' `local.name`, or
+null), `kind` (`local`,
+`cloud`), `branch`, `head`, `remote` (as in `inspect_folder`), `remotes`,
+`ahead` and `behind` (by the remote-tracking reference of the last fetch
+or push, null without), `edit_locks` (the project's edit locks on),
+`folders` (relative paths, sorted, every folder but dot-folders, empty
+ones too), `designs` ([{`path`, `modified` (RFC 3339, UTC), `recorded` (in
+the latest version), `changed` (not recorded, or differs from it),
+`version` ({`number` (as `history` counts the design's versions, through
+renames), `id`, `short_id`, `time`, `date` (RFC 3339, UTC), `author`
+({`name`, `email`}, cleaned)} of its latest version, null when not
+recorded), `lock` ({`owner` ({`name`, `email`}), `session`, `state`
+(`active`, `idle`), `taken_at`, `active_at`, `mine` (the lock's session is
+`session`), `same_owner` (the owner is the author)} or null)}], sorted by
+path, at most 1000), `truncated` (more designs, or more than 50 000
+entries), `history_truncated` (more than 10 000 versions on HEAD's
+history: the numbers count the newest 10 000), `error` (null). The locks
+are the local copies the last lock poll left (`refs/mitcad/remote-locks/`),
+read with the lock reader's limits.
+
+`mitcad-cli project tree <folder>`, `project mkdir <folder> <path>`,
+`project new-design <folder> <path>`, `project move <folder> <from> <to>`
+and `project delete <folder> <path> [--force]`, the writes with
+`[--author A] [--message M] [--no-push]`, each with `--json`
+(`tools/cli/projects.cpp`).
+
+Tests: `core/vcs/src/tests/folders.rs` (nested folders and new designs,
+versions and changes in the tree, the dot-folder rule, a moved folder
+whose designs refer to B-rep files, a rename keeping the display state
+and the design opened last, deleted designs and folders in the history,
+every refusal changing nothing, a detached HEAD, a Cloud project's push
+and a refused push, designs locked by someone else) and ctest
+`cli.project_folders`.
 
 ## Edit locks
 
@@ -3873,7 +4232,7 @@ give a document its own (`Document::set_link_resolver`).
 
 ### Configuration tables
 
-A design's table of sizes (`configurations` in the project file, left out
+A design's table of sizes (`configurations` in the design file, left out
 when empty): `selectors` (the cascaded choices, may be empty),
 `parameters` (names of the design's parameters the rows set), `default`
 (a row's name; the first row when left out) and `rows`: `name` (unique),
@@ -3911,7 +4270,7 @@ version, the row applied to a copy of its parameters, and:
 - a copy (`"link": false`): the design with its history in the row (the
   table is not copied), editable.
 
-Either way the component records `library` (in the project file too):
+Either way the component records `library` (in the design file too):
 `library` (id), `url`, `rev` (the commit, also for a tag), `label` (the
 commit's tag), `component`, `path`, `config`, `license`, `authors` and
 `designation` (`ISO 4762 M5x16`). The component is named after the
@@ -3960,7 +4319,7 @@ with `error` (`class`, `message`, `detail`, as the remote commands') and
 | `library_diff` | `id`, `url`, `from`, `to`, `parts` ([{`component`, `config`}]) | `from`, `to` (commits), `from_labels`, `to_labels`, `library` (licence and version changes), `parts`: `changed`, `missing` (the component or row is not in `to`), `lines` (the row's value changes), `text`, `design` (the comparison of the design without its table) |
 | `library_check` | `dir` (a library folder) | `id`, `components`, `ok`, `errors`, `warnings`: the manifest, the files it names (there, no symbolic links, designs that open and link no other files, PNG previews of at most 512 KB), a licence file |
 | `library_init` | `dir`, `id`, `name`, `description`, `license`, `authors`, `homepage` | `dir`, `id`, `written`: the manifest, a `LICENSE` note naming the licence, a README, and a Mitcad project with a git repository (no version yet) |
-| `library_add` | `dir`, `text` (a design as a single project file), `id`, `name`, `category`, `category_name`, `standard`, `description`, `keywords`, `license`, `designation`, `preview` (a PNG, base64), `path` (default `<category>/<id>.mitcad`) | `component`, `written`, `errors`, `warnings` (a check of the folder); a component of the same id is replaced |
+| `library_add` | `dir`, `text` (a single-file design), `id`, `name`, `category`, `category_name`, `standard`, `description`, `keywords`, `license`, `designation`, `preview` (a PNG, base64), `path` (default `<category>/<id>.mitcad`) | `component`, `written`, `errors`, `warnings` (a check of the folder); a component of the same id is replaced |
 | `index_entry` | `dir`, `url` (where the library is published), `rev` (default HEAD) | `path` (`libraries/<id>.json`), `rev`, `labels`, `entry`, `text` |
 | `licenses` | | `licenses`: the SPDX ids a community index accepts with a `note` for users |
 
@@ -4007,7 +4366,7 @@ application's worker:
 - A cancelled computation rejects what ran it with `the computation was
   cancelled` (`Cancelled::MESSAGE`, `ModelError::Cancelled`): a command
   (`recompute`, `undo` and `redo` too), a `preview`, the `update_links`
-  of an opened project. The document stays as it was: the definition
+  of an opened design. The document stays as it was: the definition
   state, the undo and redo steps, the revision, the results of the last
   recompute and `recompute_count`. The exception is `import_f3d` with the
   timeline, which a cancel stops early with what it imported ([.f3d
@@ -4061,7 +4420,7 @@ in every document and process. Store code and file format:
 
 | Rust | Meaning |
 |---|---|
-| `ResultStore::new(dir, build_id).with_label(name)` | a store folder; results stored by another `build_id` are not used. The label (the project's file name) is kept with the results written |
+| `ResultStore::new(dir, build_id).with_label(name)` | a store folder; results stored by another `build_id` are not used. The label (the design's file name) is kept with the results written |
 | `Document::set_result_store(Some(store))` | recomputes take results from it when the memory cache has none; None (the default) for none |
 | `Document::persist_results(min_time)` | writes the results of the last recompute that are not in the store yet: features that succeeded, took at least `min_time`, and whose results the store takes; returns `PersistReport {results, shapes, bytes, failed, errors, time}`. A preview's results are not written |
 | `store::gc(dir, budget)`, `store::clear(dir)` | `gc` removes the files used longest ago until 80 % of `budget` bytes are used (when more is), and temporary files more than an hour old; `clear` removes all. `GcReport {files, bytes, removed, removed_bytes}` |
@@ -4089,7 +4448,7 @@ in every document and process. Store code and file format:
   with its face names, notes and measured properties; OCCT:
   `geometry::serialize_shape`).
 - `mitcad-cli info <file> --result-store DIR [--persist-min-ms MS]` (also
-  `run --open`) opens the project with the store, writes the results
+  `run --open`) opens the design with the store, writes the results
   that took at least `MS` (default 100) and prints `Result store:
   restored from store: N, evaluated: M; stored: K (B bytes)`.
 - Tests: `core/model/src/store_tests.rs`, `version_tests.rs`;
@@ -4165,7 +4524,7 @@ mitcad#104). Tests: `core/model/src/link_tests.rs`,
   definition struct (generic over the value form `P`), `map_params`,
   `FeatureInfo` and `Evaluate`, and one line in `feature_types!`
   (`features/mod.rs`). Its serde form is then its command and file form;
-  the dispatch, the cache, undo, preview and the project file need no
+  the dispatch, the cache, undo, preview and the design file need no
   change. Add its section under [Feature definitions](#feature-definitions).
 - Patterns and mirrors of features: `FeatureInfo::tool_use()` returns the
   operation and participants of the tool body the feature leaves in

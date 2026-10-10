@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: MIT
 # Installs the per-user Mitcad toolchain with pinned versions: Rust, vcpkg,
-# Qt and cargo-deny, and writes CMakeUserPresets.json for this checkout.
+# Qt and cargo-deny, builds the render worker's libraries (build-cycles.sh)
+# and writes CMakeUserPresets.json for this checkout.
 # Run as the developer, not as root, after install-packages.sh.
 #
 # Optional: MITCAD_GPU_ADAPTER=NVIDIA selects the GPU Mesa uses under WSLg.
@@ -56,6 +57,12 @@ if [ ! -d "$HOME/Qt/$QT_VERSION/gcc_64" ]; then
   (cd /tmp && "$HOME/tools/aqt/bin/aqt" install-qt linux desktop "$QT_VERSION" linux_gcc_64 \
     -O "$HOME/Qt" > /dev/null)
 fi
+
+# Every build has the render worker (docs/rendering.md "Building"): Cycles
+# and Open Image Denoise, built once outside the build folders; re-running
+# skips what is done.
+echo "== The render worker's libraries (build-cycles.sh)"
+"$SCRIPT_DIR/build-cycles.sh"
 
 echo "== WSLg GPU settings"
 if [ -e /dev/dxg ] && ! grep -q GALLIUM_DRIVER "$HOME/.profile"; then

@@ -146,5 +146,10 @@ void fillet_kernel_tests();
 void fillet_end_tests();
 // Allocations that fail inside OCCT, with the port's patch (mitcad#132).
 void allocation_tests();
+// ShapeFix on faces with many holes, with the port's patch 0060 (mitcad#60).
+void shapefix_tests();
+// A chamfer whose pieces meet at a vertex of the edge they reach, with the
+// port's patches 0090 and 0091 (mitcad#160).
+void chamfer_kernel_tests();
 
 } // namespace test

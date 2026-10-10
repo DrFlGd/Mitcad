@@ -5,8 +5,20 @@
 #include <cmath>
 #include <optional>
 #include <stdexcept>
+#include <string>
+#include <utility>
 
 #include <BRepAdaptor_Curve.hxx>
+#include <BRepAdaptor_Surface.hxx>
+#include <BRepClass_FaceClassifier.hxx>
+#include <BRepTools.hxx>
+#include <BRepTools_WireExplorer.hxx>
+#include <GCPnts_AbscissaPoint.hxx>
+#include <TopExp.hxx>
+#include <ElCLib.hxx>
+#include <gp_Cylinder.hxx>
+#include <gp_Lin.hxx>
+#include <gp_Pln.hxx>
 #include <BRepBndLib.hxx>
 #include <BRepFill_Edge3DLaw.hxx>
 #include <BRepFill_ShapeLaw.hxx>
@@ -18,6 +30,7 @@
 #include <NCollection_HArray2.hxx>
 #include <NCollection_Map.hxx>
 #include <TopTools_ShapeMapHasher.hxx>
+#include <TopoDS_Compound.hxx>
 #include <TopoDS_Shell.hxx>
 #include <gp_Mat.hxx>
 #include <Message_ProgressRange.hxx>
@@ -401,6 +414,27 @@ ShapePtr parallel_sweep(const SweepSpec& spec, const std::vector<detail::SweepFa
   return detail::fused(parts, "the sweep");
 }
 
+// How far a path may be from the guide surface it lies on, mm.
+constexpr double kOnGuide = 1.0e-4;
+
+// The faces of a sweep's guide surfaces (every piece of each name).
+std::vector<TopoDS_Face> guide_faces(const std::vector<GuideFace>& guide) {
+  std::vector<TopoDS_Face> faces;
+  for (const GuideFace& g : guide) {
+    if (!g.body) {
+      throw std::invalid_argument("a guide surface's body is missing");
+    }
+    const std::vector<int> found = g.body->find_faces(g.face);
+    if (found.empty()) {
+      throw std::invalid_argument("guide surface " + g.face + " does not exist");
+    }
+    for (const int i : found) {
+      faces.push_back(g.body->face(i));
+    }
+  }
+  return faces;
+}
+
 } // namespace
 
 ShapePtr sweep(const SweepSpec& spec) {
@@ -430,7 +464,14 @@ ShapePtr sweep(const SweepSpec& spec) {
     const Range range = swept_range(path, at, spec.extent1, spec.extent2);
     const TopoDS_Wire part = path.part(range.from, range.to);
     const bool guided = !spec.rail.empty();
-    const bool varied = guided || spec.twist != 0.0 || spec.taper != 0.0;
+    const bool on_surface = !spec.guide.empty();
+    if (on_surface && guided) {
+      throw std::invalid_argument("a sweep takes a guide rail or guide surfaces, not both");
+    }
+    if (on_surface && spec.orientation == SweepOrientation::Parallel) {
+      throw std::invalid_argument("unsupported: guide surfaces with parallel orientation");
+    }
+    const bool varied = !on_surface && (guided || spec.twist != 0.0 || spec.taper != 0.0);
     if (varied && spec.orientation == SweepOrientation::Parallel) {
       throw std::invalid_argument("unsupported: twists, tapers and guide rails with parallel orientation");
     }
@@ -456,16 +497,31 @@ ShapePtr sweep(const SweepSpec& spec) {
       mode.fixed = gp_Ax2(path.point(at), path.tangent(at));
       result = parallel_sweep(spec, faces, part, mode, at, range);
     } else {
-      const PipeMode mode = detail::perpendicular_mode(path);
+      PipeMode mode = detail::perpendicular_mode(path);
+      TopoDS_Wire spine = part;
+      if (on_surface) {
+        // The frames follow the guide faces' normal: the path's curves
+        // carry their curves on the faces they lie on.
+        const std::vector<TopoDS_Face> support = guide_faces(spec.guide);
+        spine = detail::on_faces(part, support, kOnGuide);
+        BRep_Builder builder;
+        TopoDS_Compound compound;
+        builder.MakeCompound(compound);
+        for (const TopoDS_Face& face : support) {
+          builder.Add(compound, face);
+        }
+        mode.kind = PipeMode::Kind::Support;
+        mode.support = compound;
+      }
       std::vector<ShapePtr> parts;
       for (const detail::SweepFace& face : faces) {
         const auto [first, last] = cap_order(range, detail::cap_names(spec.feature, "start", face),
                                              detail::cap_names(spec.feature, "end", face));
         const std::vector<NamedWire> loops = detail::face_loops(face.face, face.edges);
-        const ShapePtr outer = detail::pipe_shell(loops.front(), part, mode, first, last);
+        const ShapePtr outer = detail::pipe_shell(loops.front(), spine, mode, first, last);
         std::vector<ShapePtr> holes;
         for (std::size_t l = 1; l < loops.size(); ++l) {
-          holes.push_back(detail::pipe_shell(loops[l], part, mode, {}, {}));
+          holes.push_back(detail::pipe_shell(loops[l], spine, mode, {}, {}));
         }
         parts.push_back(detail::with_holes(outer, holes, "the sweep"));
       }
@@ -1102,6 +1158,277 @@ ShapePtr growing_helix(const HelixSweepSpec& spec, const std::vector<detail::Swe
   return detail::finished(*detail::fused(parts, "the helix"), "the helix");
 }
 
+// Helices whose profile has a straight side on a cylinder of a body about
+// the axis (mitcad#60). The side sweeps a band on that cylinder, coincident
+// with the body's face but only approximately the same surface, and OCCT's
+// booleans gave invalid results or lost faces. Two things make them work:
+//
+// - The helix is swept along a spine of edges of at most a third of a turn
+//   each, so that every face of the tool winds less than half way round the
+//   axis: the intersections with the body's coaxial faces are then single
+//   arcs, which the booleans find reliably (one face winding several turns
+//   is what they failed on, with or without the coincident band). The
+//   shape is the same.
+// - A side on a cylinder as long as the pitch makes the turns touch along
+//   an edge on the cylinder, which no boolean resolves. Such a side is
+//   moved off the cylinder, away from the profile, by kOffCylinder and
+//   drawn in by as much at each end; its ends are joined by straight lines
+//   to the neighbouring sides where those are kCornerDepth deep into the
+//   profile. The sliver added lies where the boolean changes nothing (in
+//   the void beyond the face a cut's profile lies on, in the material
+//   behind the face a join's profile lies on), and the turns keep a strip of
+//   the cylinder about twice kOffCylinder wide between them.
+constexpr double kOffCylinder = 1.0e-4;
+constexpr double kCornerDepth = 1.0e-3;
+constexpr double kSpineTurns = 1.0 / 3.0;
+
+// A cylinder of a body about the axis: its radius and its extent along
+// the axis (from the axis' location).
+struct AxialCylinder {
+  double radius = 0.0;
+  double from = 0.0;
+  double to = 0.0;
+};
+
+// The cylindrical faces of the bodies about the axis.
+std::vector<AxialCylinder> axial_cylinders(const std::vector<ShapePtr>& bodies, const gp_Ax1& axis) {
+  std::vector<AxialCylinder> cylinders;
+  const gp_Lin line(axis);
+  for (const ShapePtr& body : bodies) {
+    if (!body) {
+      continue;
+    }
+    for (TopExp_Explorer f(body->occt(), TopAbs_FACE); f.More(); f.Next()) {
+      const TopoDS_Face& face = TopoDS::Face(f.Current());
+      const BRepAdaptor_Surface surface(face, false);
+      if (surface.GetType() != GeomAbs_Cylinder) {
+        continue;
+      }
+      const gp_Cylinder cylinder = surface.Cylinder();
+      const gp_Ax1 own = cylinder.Axis();
+      if (!own.Direction().IsParallel(axis.Direction(), 1.0e-6) || line.Distance(own.Location()) > 1.0e-4) {
+        continue;
+      }
+      double u0 = 0, u1 = 0, v0 = 0, v1 = 0;
+      BRepTools::UVBounds(face, u0, u1, v0, v1);
+      const double base = gp_Vec(axis.Location(), own.Location()).Dot(gp_Vec(axis.Direction()));
+      const double way = own.Direction().Dot(axis.Direction());
+      cylinders.push_back({cylinder.Radius(), base + std::min(v0, v1) * way, base + std::max(v0, v1) * way});
+      if (cylinders.back().from > cylinders.back().to) {
+        std::swap(cylinders.back().from, cylinders.back().to);
+      }
+    }
+  }
+  return cylinders;
+}
+
+// An edge of a loop in the loop's order, with its ends in that order.
+struct LoopEdge {
+  TopoDS_Edge edge;
+  std::string name;
+  gp_Pnt first;
+  gp_Pnt last;
+  bool on_cylinder = false;
+  bool touching = false; // on a cylinder and as long as the pitch
+};
+
+// The edge cut back from its end `at_last` (in the loop's order) to where
+// it is kCornerDepth deep beyond the plane through `corner` across `into`
+// (the profile's side of a side on a cylinder), and that point; at most
+// half of it is cut, and nothing comes back when it does not get at least
+// twice kOffCylinder deep in that half.
+std::optional<std::pair<TopoDS_Edge, gp_Pnt>> cut_back(const LoopEdge& e, bool at_last, const gp_Pnt& corner,
+                                                       const gp_Dir& into) {
+  const BRepAdaptor_Curve curve(e.edge);
+  const double first = curve.FirstParameter();
+  const double last = curve.LastParameter();
+  const double length = GCPnts_AbscissaPoint::Length(curve);
+  // The loop runs the edge's way unless the edge is reversed.
+  const bool from_last = at_last != (e.edge.Orientation() == TopAbs_REVERSED);
+  const auto depth = [&](double u) { return gp_Vec(corner, curve.Value(u)).Dot(gp_Vec(into)); };
+  std::optional<double> found;
+  constexpr int kSteps = 40;
+  for (int k = 1; k <= kSteps && !found; ++k) {
+    const double s = 0.5 * length * k / kSteps;
+    GCPnts_AbscissaPoint at(curve, from_last ? -s : s, from_last ? last : first);
+    if (!at.IsDone()) {
+      return std::nullopt;
+    }
+    const double d = depth(at.Parameter());
+    if (d >= kCornerDepth || (k == kSteps && d >= 2.0 * kOffCylinder)) {
+      found = at.Parameter();
+    }
+  }
+  if (!found) {
+    return std::nullopt;
+  }
+  const double u = *found;
+  double curve_first = 0, curve_last = 0;
+  const occ::handle<Geom_Curve> geometry = BRep_Tool::Curve(e.edge, curve_first, curve_last);
+  if (geometry.IsNull()) {
+    return std::nullopt;
+  }
+  BRepBuilderAPI_MakeEdge made(geometry, from_last ? first : u, from_last ? u : last);
+  if (!made.IsDone()) {
+    return std::nullopt;
+  }
+  TopoDS_Edge edge = made.Edge();
+  edge.Orientation(e.edge.Orientation());
+  return std::make_pair(edge, curve.Value(u));
+}
+
+// The loop of `face` with its sides on the cylinders that are as long as
+// the pitch moved off them (see kOffCylinder); the loop itself when there
+// are none. `on_cylinder` is set when any side lies on a cylinder. `rise`
+// is the helix's travel along the axis.
+NamedWire off_cylinders(const NamedWire& loop, const TopoDS_Face& face, const gp_Ax1& axis, double pitch,
+                        double rise, const std::vector<AxialCylinder>& cylinders, bool& on_cylinder) {
+  const gp_Lin line(axis);
+  const gp_Vec along(axis.Direction());
+  std::vector<LoopEdge> edges;
+  bool any = false;
+  for (BRepTools_WireExplorer w(loop.wire); w.More(); w.Next()) {
+    LoopEdge e;
+    e.edge = w.Current();
+    for (const auto& [named, name] : loop.edges) {
+      if (named.IsSame(e.edge)) {
+        e.name = name;
+      }
+    }
+    e.first = BRep_Tool::Pnt(TopExp::FirstVertex(e.edge, true));
+    e.last = BRep_Tool::Pnt(TopExp::LastVertex(e.edge, true));
+    const BRepAdaptor_Curve curve(e.edge);
+    const gp_Vec side(e.first, e.last);
+    const double length = side.Magnitude();
+    if (curve.GetType() == GeomAbs_Line && length > 10.0 * kOffCylinder &&
+        std::abs(std::abs(side.Dot(along)) - length) <= 1.0e-9 * length) {
+      const double radius = line.Distance(e.first);
+      const double t0 = gp_Vec(axis.Location(), e.first).Dot(along);
+      const double t1 = gp_Vec(axis.Location(), e.last).Dot(along);
+      const double low = std::min(t0, t1);
+      const double high = std::max(t0, t1) + rise;
+      for (const AxialCylinder& c : cylinders) {
+        if (std::abs(c.radius - radius) <= 1.0e-4 && c.from < high - 1.0e-6 && c.to > low + 1.0e-6) {
+          e.on_cylinder = true;
+          e.touching = length >= pitch - 1.0e-6;
+        }
+      }
+    } else if (curve.GetType() == GeomAbs_Circle) {
+      // An arc in a plane through the axis that touches a cylinder: its
+      // point nearest to or farthest from the axis on it.
+      const gp_Circ circle = curve.Circle();
+      const gp_Pnt center = circle.Location();
+      const gp_Vec off_axis = gp_Vec(axis.Location(), center) - along * gp_Vec(axis.Location(), center).Dot(along);
+      const bool in_plane = std::abs(gp_Vec(circle.Axis().Direction()).Dot(along)) < 1.0e-9 &&
+                            std::abs(gp_Vec(circle.Axis().Direction()).Dot(gp_Vec(axis.Location(), center))) < 1.0e-7;
+      if (in_plane && off_axis.Magnitude() > Precision::Confusion()) {
+        const gp_Vec out = off_axis.Normalized();
+        const double t = gp_Vec(axis.Location(), center).Dot(along);
+        for (const double side : {-1.0, 1.0}) {
+          const gp_Pnt touch = center.Translated(out * (side * circle.Radius()));
+          double u = ElCLib::Parameter(circle, touch);
+          const double first = curve.FirstParameter();
+          while (u < first) {
+            u += kTwoPi;
+          }
+          const double radius = off_axis.Magnitude() + side * circle.Radius();
+          for (const AxialCylinder& c : cylinders) {
+            if (u <= curve.LastParameter() + 1.0e-9 && std::abs(c.radius - radius) <= 1.0e-4 &&
+                c.from < t + rise && c.to > t) {
+              e.on_cylinder = true;
+            }
+          }
+        }
+      }
+    }
+    on_cylinder = on_cylinder || e.on_cylinder;
+    any = any || e.touching;
+    edges.push_back(e);
+  }
+  if (!any || edges.size() < 3) {
+    return loop;
+  }
+  const BRepAdaptor_Surface surface(face, false);
+  if (surface.GetType() != GeomAbs_Plane) {
+    return loop;
+  }
+  const gp_Dir plane_normal = surface.Plane().Axis().Direction();
+  const std::size_t n = edges.size();
+  // Each side's direction away from the profile (across it in the
+  // profile's plane, to the side the face is not on), and its neighbours
+  // cut back: the edges and their new ends.
+  std::vector<gp_Dir> away(n);
+  std::vector<TopoDS_Edge> trimmed(n);
+  std::vector<std::optional<gp_Pnt>> new_first(n), new_last(n);
+  for (std::size_t i = 0; i < n; ++i) {
+    const LoopEdge& e = edges[i];
+    if (!e.touching) {
+      continue;
+    }
+    const std::size_t before = (i + n - 1) % n;
+    const std::size_t after = (i + 1) % n;
+    if (edges[before].touching || edges[after].touching) {
+      return loop;
+    }
+    const gp_Vec side(e.first, e.last);
+    const gp_Vec across = gp_Vec(plane_normal).Crossed(side);
+    if (across.Magnitude() < 1.0e-9 * side.Magnitude()) {
+      return loop;
+    }
+    away[i] = gp_Dir(across);
+    const gp_Pnt probe = e.first.Translated(side / 2.0 + gp_Vec(away[i]) * kOffCylinder);
+    if (BRepClass_FaceClassifier(face, probe, Precision::Confusion()).State() == TopAbs_IN) {
+      away[i].Reverse();
+    }
+    const auto a = cut_back(edges[before], true, e.first, away[i].Reversed());
+    const auto b = cut_back(edges[after], false, e.last, away[i].Reversed());
+    // (A side between two such sides is left as it is.)
+    if (!a || !b || !trimmed[before].IsNull() || !trimmed[after].IsNull()) {
+      return loop;
+    }
+    trimmed[before] = a->first;
+    new_last[before] = a->second;
+    trimmed[after] = b->first;
+    new_first[after] = b->second;
+  }
+  BRepBuilderAPI_MakeWire wire;
+  NamedWire moved;
+  const auto add = [&](const TopoDS_Edge& edge, const std::string& name) {
+    wire.Add(edge);
+    if (!wire.IsDone()) {
+      return false;
+    }
+    if (!name.empty()) {
+      moved.edges.emplace_back(wire.Edge(), name);
+    }
+    return true;
+  };
+  const auto segment = [](const gp_Pnt& a, const gp_Pnt& b) { return BRepBuilderAPI_MakeEdge(a, b).Edge(); };
+  for (std::size_t i = 0; i < n; ++i) {
+    const LoopEdge& e = edges[i];
+    if (!e.touching) {
+      if (!add(trimmed[i].IsNull() ? e.edge : trimmed[i], e.name)) {
+        return loop;
+      }
+      continue;
+    }
+    const gp_Vec u = gp_Vec(e.first, e.last).Normalized();
+    const gp_Vec out = gp_Vec(away[i]) * kOffCylinder;
+    const gp_Pnt a = e.first.Translated(out + u * kOffCylinder);
+    const gp_Pnt b = e.last.Translated(out - u * kOffCylinder);
+    const gp_Pnt from = *new_last[(i + n - 1) % n];
+    const gp_Pnt to = *new_first[(i + 1) % n];
+    if (!add(segment(from, a), e.name) || !add(segment(a, b), e.name) || !add(segment(b, to), e.name)) {
+      return loop;
+    }
+  }
+  if (!wire.IsDone() || !BRep_Tool::IsClosed(wire.Wire())) {
+    return loop;
+  }
+  moved.wire = wire.Wire();
+  return moved;
+}
+
 } // namespace
 
 ShapePtr helix_sweep(const HelixSweepSpec& spec) {
@@ -1148,20 +1475,43 @@ ShapePtr helix_sweep(const HelixSweepSpec& spec) {
     const occ::handle<Geom_Surface> surface = new Geom_CylindricalSurface(axes, radius);
     const gp_Vec2d direction(kTwoPi, spec.pitch);
     const occ::handle<Geom2d_Line> line = new Geom2d_Line(gp_Pnt2d(0.0, 0.0), gp_Dir2d(direction));
-    BRepBuilderAPI_MakeEdge helix(line, surface, 0.0, spec.revolutions * direction.Magnitude());
-    if (!helix.IsDone()) {
-      throw std::runtime_error("the helix could not be built");
+    // Sides on the bodies' cylinders (see kSpineTurns and kOffCylinder).
+    const std::vector<AxialCylinder> cylinders = axial_cylinders(spec.bodies, spec.axis);
+    std::vector<std::vector<NamedWire>> face_loops;
+    bool on_cylinder = false;
+    for (const detail::SweepFace& face : faces) {
+      std::vector<NamedWire> loops = detail::face_loops(face.face, face.edges);
+      if (!cylinders.empty()) {
+        for (NamedWire& loop : loops) {
+          loop = off_cylinders(loop, face.face, spec.axis, spec.pitch, spec.pitch * spec.revolutions, cylinders,
+                               on_cylinder);
+        }
+      }
+      face_loops.push_back(std::move(loops));
     }
-    TopoDS_Edge edge = helix.Edge();
-    const int samples = std::max(32, static_cast<int>(std::ceil(spec.revolutions * 32.0)));
-    BRepLib::BuildCurves3d(edge, 1.0e-7, GeomAbs_C1, 14, samples);
-    const TopoDS_Wire spine = BRepBuilderAPI_MakeWire(edge).Wire();
+    // One edge, else edges of at most kSpineTurns each.
+    const int count =
+        on_cylinder ?std::max(1, static_cast<int>(std::ceil(spec.revolutions / kSpineTurns - 1.0e-9))) : 1;
+    const double length = spec.revolutions * direction.Magnitude();
+    BRepBuilderAPI_MakeWire spine_wire;
+    for (int k = 0; k < count; ++k) {
+      BRepBuilderAPI_MakeEdge helix(line, surface, length * k / count, length * (k + 1) / count);
+      if (!helix.IsDone()) {
+        throw std::runtime_error("the helix could not be built");
+      }
+      TopoDS_Edge edge = helix.Edge();
+      const int samples = std::max(32, static_cast<int>(std::ceil(spec.revolutions / count * 32.0)));
+      BRepLib::BuildCurves3d(edge, 1.0e-7, GeomAbs_C1, 14, samples);
+      spine_wire.Add(edge);
+    }
+    const TopoDS_Wire spine = spine_wire.Wire();
     PipeMode mode;
     mode.kind = PipeMode::Kind::Binormal;
     mode.binormal = axis;
     std::vector<ShapePtr> parts;
-    for (const detail::SweepFace& face : faces) {
-      const std::vector<NamedWire> loops = detail::face_loops(face.face, face.edges);
+    for (std::size_t f = 0; f < faces.size(); ++f) {
+      const detail::SweepFace& face = faces[f];
+      const std::vector<NamedWire>& loops = face_loops[f];
       const ShapePtr outer =
           detail::pipe_shell(loops.front(), spine, mode, detail::cap_names(spec.feature, "start", face),
                              detail::cap_names(spec.feature, "end", face), 1.0e-6);

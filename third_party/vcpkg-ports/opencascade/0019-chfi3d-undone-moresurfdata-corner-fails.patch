@@ -1,0 +1,37 @@
+Mitcad's patch to OCCT 8.0.1, under OCCT's licence:
+SPDX-License-Identifier: LGPL-2.1-only WITH OCCT-exception-1.0
+
+Fillets: a corner that PerformMoreSurfdata leaves undone fails the vertex
+instead of corrupting the data structure (mitcad#121).
+
+ChFi3d_Builder::PerformFilletOnVertex calls PerformMoreSurfdata for the
+end of a stripe whose last surfdatas both meet the face at the end
+(MoreSurfdata). PerformMoreSurfdata returns without doing anything where
+those surfdatas are not as it expects (no common point on the arcs it
+looks for, or the one on the arc not on an arc of the face at the end):
+e.g. where the contact on one face leaves it near the end of the spine
+and the walk there gave a surfdata with one side reduced to a point. The
+stripe's end then has no points, ChFi3d_FilDS stores point 0 in the data
+structure, and the topological build either throws
+(TopOpeBRepDS_DataStructure::Point) or, without range checks, writes out
+of bounds. The vertex now fails with an exception, as other corners that
+cannot be computed do, and the fillet fails cleanly.
+diff --git a/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder.cxx b/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder.cxx
+index 85f5818..00c95c2 100644
+--- a/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder.cxx
++++ b/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder.cxx
+@@ -1618,6 +1618,14 @@ void ChFi3d_Builder::PerformFilletOnVertex(const int Index)
+           if (MoreSurfdata(Index))
+           {
+             PerformMoreSurfdata(Index);
++            // PerformMoreSurfdata returns without a corner where the
++            // surfdatas at the end are not as it expects; the stripe's end
++            // then has no points, and the data structure built from it
++            // would refer to point 0.
++            if (stripe->IndexPoint(isfirst, 1) == 0 || stripe->IndexPoint(isfirst, 2) == 0)
++            {
++              throw Standard_Failure("PerformMoreSurfdata : corner not computed");
++            }
+           }
+           else
+           {

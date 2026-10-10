@@ -1,7 +1,8 @@
 # macOS trackpad and Magic Mouse checklist
 
 A manual test of the view's trackpad navigation (`NavigationScheme::Trackpad`,
-`OcctViewer::trackpadScroll` and `OcctViewer::nativeGesture`) on a Mac. Open a
+`OcctViewer::trackpadScroll` and `OcctViewer::nativeGesture`) on a Mac. Run
+first with the default native frontend, then repeat with `--ui=qt`. Open a
 design with a few bodies and a zoom level where you can see the model's edges
 (Fit first). Preferences > Navigation: "Trackpad ..." (the default on macOS;
 delete the `view/navigationScheme` setting to see the default again). Try it
@@ -33,6 +34,9 @@ off.
       (clockwise fingers, clockwise model; flip `kRollDirection` if not). Not
       with the constrained orbit.
 - [ ] Two-finger double tap fits the whole design.
+- [ ] In the native frontend, a pinch starting on the canvas keeps zooming
+      when the pointer crosses a floating card. A pinch starting on a card
+      leaves the canvas unchanged, even if the pointer crosses onto it.
 - [ ] Alt + left drag orbits; Shift + Alt + left drag pans; a middle drag (if
       there is a mouse) pans; a right drag orbits.
 - [ ] Left click selects; left drag selects with a window; Shift and
@@ -40,6 +44,11 @@ off.
 - [ ] Two-finger click (right click) and Control + click on a body, a face
       and an empty spot open the context menu on release; after a drag of
       more than a few pixels they do not.
+- [ ] Dismiss context menus on the canvas, orientation cube, Browser and
+      history with Escape or an outside click, and choose an action from
+      each. Moving the pointer afterwards leaves the camera still; the
+      next right drag orbits normally. Repeat after a drag crosses a card
+      and after switching applications while holding the mouse button.
 - [ ] In a sketch with a sketch tool active: two-finger scroll pans,
       Option + scroll orbits, pinch zooms, and the left button keeps
       drawing.
@@ -101,6 +110,15 @@ bodies.
 - [ ] Moving and resizing the window keeps the cards in place relative to it
       (no trailing). Collapsing the Browser and showing/hiding the cards from
       View keep the model's fit and the orientation cube out from under them.
+- [ ] The native feature timeline uses coloured CAD icons in a compact
+      horizontal row. Its marker sits between features and rolls the model
+      back and forward; one drag creates one undo step. Rolled-back and
+      suppressed features stay identifiable. Horizontal scrolling keeps
+      long histories usable at compact window sizes.
+- [ ] Timeline selection, Command/Shift selection, double-click editing,
+      context menus, feature reordering and keyboard marker movement work
+      with the native history card. Sheets and active commands block model
+      changes without leaving a marker drag transaction open.
 - [ ] Switching light and dark appearance (System Settings, or Auto at sunset)
       while the application runs: the cards, ribbon, icons and the view
       background (Follow System) change at once.

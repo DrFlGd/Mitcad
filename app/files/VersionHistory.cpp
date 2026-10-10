@@ -412,7 +412,7 @@ void VersionHistoryDialog::compare() {
     }
     with = older->label();
     heading = tr("Changes from %1 to %2:").arg(older->labelWithId(), version->labelWithId());
-    // Nothing computed: the two versions' project files, read from their
+    // Nothing computed: the two versions' design files, read from their
     // commits (P12c, the version history's diff command).
     try {
       const QByteArray path = m_file.toUtf8();

@@ -279,10 +279,10 @@ fn suppressing_or_rolling_back_the_consumer_keeps_the_sketch_hidden() {
     assert_eq!(light_bulb(&doc, "F1"), HIDDEN);
 }
 
-/// mitcad#7: a project file without light bulbs (as every file saved
+/// mitcad#7: a design file without light bulbs (as every file saved
 /// before the model owned the rule) opens with the default.
 #[test]
-fn project_files_without_light_bulbs_open_with_the_default() {
+fn design_files_without_light_bulbs_open_with_the_default() {
     let saved = part().to_json();
     assert!(!saved.contains("\"visible\""));
     let mut loaded = Document::from_json(&saved, MockKernel::default()).unwrap();

@@ -14,8 +14,8 @@
 //!
 //! - **Commit** ([`ProjectRepo::commit`]): the saved paths only, like `git
 //!   commit --only`: HEAD's tree with those paths written or removed, the
-//!   B-rep files their project files refer to added and the B-rep files no
-//!   project file of the version refers to removed (from the folder too),
+//!   B-rep files their design files refer to added and the B-rep files no
+//!   design file of the version refers to removed (from the folder too),
 //!   then the commit and the branch moved from the HEAD it was built on
 //!   (when another commit came first, it is built again). The index is
 //!   locked (`index.lock`) for the whole round and only the committed
@@ -25,8 +25,8 @@
 //! - **Author** ([`ProjectRepo::identity`]): git's configuration
 //!   (`user.name`, `user.email`, `GIT_AUTHOR_*`), else Mitcad's.
 //! - **History** ([`ProjectRepo::history`]): the commits on HEAD's
-//!   first-parent chain that changed a file, following renames of the same
-//!   content.
+//!   first-parent chain that changed a file, following recorded moves and
+//!   renames of the same content.
 //! - **Older versions** ([`ProjectRepo::read`], [`ProjectRepo::load_version`]):
 //!   read from the commit's tree without a checkout; their B-rep data from
 //!   the same tree ([`GitTreeStore`]).
@@ -63,6 +63,7 @@ use serde::Serialize;
 pub mod api;
 mod commit;
 mod history;
+mod transaction;
 // Remote repositories (P12 remote).
 pub mod remote;
 // Component libraries and the community library (mitcad#64, mitcad#63).
@@ -128,7 +129,7 @@ pub enum VcsError {
     InvalidPath(String),
     /// A version, or a file in a version, that is not there.
     NotFound(String),
-    /// A project file of an older version that cannot be read.
+    /// A design file of an older version that cannot be read.
     File(String),
     /// A JSON command that is not understood ([`api`]).
     Command(String),
@@ -237,8 +238,8 @@ pub fn repository_root(dir: &Path) -> Option<PathBuf> {
     repo.workdir().map(Path::to_path_buf)
 }
 
-/// Whether a path in a version is a project file.
-fn is_project_file(path: &str) -> bool {
+/// Whether a path in a version is a design file.
+fn is_design_file(path: &str) -> bool {
     path.rsplit_once('.')
         .is_some_and(|(_, extension)| extension.eq_ignore_ascii_case("mitcad"))
 }
@@ -250,7 +251,7 @@ pub struct ProjectRepo {
     /// The project's folder (absolute, as given), the repository's work
     /// tree.
     root: PathBuf,
-    /// The B-rep data each project file (by blob id) refers to; None for a
+    /// The B-rep data each design file (by blob id) refers to; None for a
     /// file that could not be read. Also kept in `.mitcad/cache/refs`.
     references: RefCell<HashMap<ObjectId, Option<BTreeSet<Sha256>>>>,
     /// The git program for remote work, when set ([`ProjectRepo::set_git`]).
@@ -486,7 +487,7 @@ impl ProjectRepo {
         GitTreeStore::new(&self.repo, commit)
     }
 
-    /// The project file `file` as it was in version `rev`, with its B-rep
+    /// The design file `file` as it was in version `rev`, with its B-rep
     /// data from that version, as an untitled document: nothing is
     /// computed, and linked components are not followed (their bodies are
     /// those saved with the version). An older version is read under the
@@ -524,7 +525,7 @@ impl ProjectRepo {
         let path = self.relative(file)?;
         let there = self.path_at(commit, file, &path)?;
         let data = self.read_at(commit, &there)?;
-        if is_project_file(&path) {
+        if is_design_file(&path) {
             let references = std::str::from_utf8(&data)
                 .ok()
                 .and_then(|text| mitcad_model::file::brep_references(text).ok())

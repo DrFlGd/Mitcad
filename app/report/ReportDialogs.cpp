@@ -93,6 +93,13 @@ void ScreenshotView::setImage(const QImage& image) {
 
 QImage ScreenshotView::image() const { return m_crop.isNull() ? m_image : m_image.copy(m_crop); }
 
+void ScreenshotView::setCropRect(const QRect& crop) {
+  const QRect bounded = crop.normalized().intersected(m_image.rect());
+  m_crop = bounded.width() >= 8 && bounded.height() >= 8 ? bounded : QRect();
+  update();
+  emit cropped();
+}
+
 void ScreenshotView::reset() {
   m_crop = QRect();
   update();

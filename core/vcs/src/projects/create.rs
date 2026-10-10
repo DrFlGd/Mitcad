@@ -21,7 +21,7 @@ use serde::Serialize;
 
 use super::inspect::{ProjectRemote, remotes_of, valid_relative};
 use super::{Context, folder_entries};
-use crate::commit::project_files_in;
+use crate::commit::design_files_in;
 use crate::remote::{
     CloneOutcome, Control, DEFAULT_REMOTE, ErrorClass, PushOutcome, RemoteError, SyncOptions,
     SyncOutcome, check_url, clone_outcome, clone_repository, failure, parse_ls_remote, redact,
@@ -265,7 +265,7 @@ fn make_project(
         files.push(full);
     }
     if options.include_designs {
-        for file in project_files_in(repo.root()) {
+        for file in design_files_in(repo.root()) {
             if !files.contains(&file) {
                 files.push(file);
             }

@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT
 //! Comparisons of designs (P12c) with the mock kernel: each kind of change
-//! between a document's project file before and after commands.
+//! between a document's design file before and after commands.
 
 use std::f64::consts::FRAC_PI_2;
 
@@ -38,7 +38,7 @@ fn block<K: Kernel>(kernel: K) -> Document<K> {
     doc
 }
 
-/// The comparison of a document's project file before and after
+/// The comparison of a document's design file before and after
 /// `commands`.
 fn changed(doc: &mut Document<MockKernel>, commands: Value) -> DesignDiff {
     let before = doc.to_json();
@@ -412,7 +412,7 @@ fn base_features_compare_their_data_by_sha256() {
         json!({"cmd": "add_feature", "def": {"type": "base",
                "bodies": [{"name": "Bolt", "brep": brep("6 bolt")}]}}),
     );
-    // A project file refers to the data that a single file holds.
+    // A design in a project refers to the data that a single file holds.
     let store = crate::MemoryStore::default();
     let referring = doc.to_project_json(&store).unwrap();
     assert!(referring.contains("\"sha256\""));

@@ -12,16 +12,18 @@ and exposure of the document's render settings (mitcad#47,
 bodies' coloured reflections on the ground (mitcad#54, [Lights](#lights)). File > Render Image and `mitcad-cli render`
 render a finished image to a file at a chosen size and quality
 (mitcad#48, [Final render](#final-render)). It is
-built only with the CMake option `MITCAD_RENDER` (off by default);
-without it nothing of this is compiled.
+part of every build on every platform (mitcad#141): there is no option to
+leave it out, and a configure without the renderer's libraries stops and
+names the script that builds them ([Building](#building)).
 
 The renderer is an executable of its own, `mitcad-render`, installed next
 to `mitcad` (mitcad#45). Only it links Cycles and its libraries; the
 application links none of them, so a session that never renders does not
 load them. View > Rendered is an ordinary entry of View > Visual Style,
-not a developer setting, and it is there whenever `mitcad-render` is: a
-build or package without the renderer simply has no rendered view (the
-log says `No render worker (mitcad-render) next to the application`).
+not a developer setting, and it is there whenever `mitcad-render` is: an
+installation whose worker is missing (or `MITCAD_RENDER_WORKER` naming no
+file) simply has no rendered view (the log says `No render worker
+(mitcad-render) next to the application`).
 
 ## Design
 
@@ -248,7 +250,8 @@ neither depth test nor depth write. The layers share the depth buffer,
 so the overlays in the default and the top layers are depth-tested
 against the bodies' depth, with the bodies' polygon offset: a sketch on
 a face stays in sight, one behind a body is hidden, as in the shaded
-view; see-through overlays (datum planes, previews of new bodies) are
+view (the highlight under the pointer too, mitcad#149: it is in the top
+layer, see-through over the image); see-through overlays (datum planes, previews of new bodies) are
 drawn with the transparent objects, after the image. The bodies'
 triangles are the ones the renderer gets, so their depth matches the
 render. Between a camera change and its first frame there is no image
@@ -412,9 +415,9 @@ it, the shaded view the base colours of the body and of its faces.
   block is reddish (red minus green of the pixels below it against the
   view's corner and against the ground without reflections), in the view
   and in a PNG saved from Render Image; the lights are in the saved file.
-  Skipped without `MITCAD_RENDER`; for the render build run it with
-  `UI_APP=$PWD/build/dev-render/app/mitcad` (an absolute path: the render
-  tests compare it with the worker's).
+  Another build's app is given as an absolute path
+  (`UI_APP=$PWD/build/<preset>/app/mitcad`): the render tests compare it
+  with the worker's.
 - `ctest` `app.unit`: the catcher's plane over the background (a red
   reflection, a shadow, the body covering it) in the view's and the final
   render's images, a transparent image's alpha; the fallback replays the
@@ -432,8 +435,7 @@ it, the shaded view the base colours of the body and of its faces.
   image the test writes (two cells per 20 mm repeat, planar), assigned
   and embedded in Edit Appearances and then deleted, renders from the top
   with squares of 10 mm (85 pixels measured for 85.7 expected; the test
-  allows 15 %). Without `MITCAD_RENDER` it checks the shaded view and the
-  dialog only.
+  allows 15 %).
 
 Decisions and limits:
 
@@ -463,7 +465,7 @@ Decisions and limits:
   2.97–3.02 s planar, against 2.79–2.84 s without (load about 12 on the
   machine of [Tests and measurements](#tests-and-measurements)): about
   7 %, the three image lookups of box projection a little more than one.
-- Embedded images are kept in the project file as base64 (at most 32 MB
+- Embedded images are kept in the design file as base64 (at most 32 MB
   per image); the comparison of versions shows their digest, not their
   data. An image path is stored relative to the design's folder when the
   design is saved (also with `..`; absolute on another drive).
@@ -763,9 +765,8 @@ Decisions and limits:
 - The command line tool cannot start the application's worker any other
   way than the application does, so it links what the application uses
   to make the scene and the job (`RenderBatch`, `RenderScene`,
-  `RenderMesh`, `Appearances`: Qt Core and Gui and OCCT, no widgets) in
-  builds with `MITCAD_RENDER`; without it `mitcad-cli render` says that
-  the build has no renderer. It links none of the renderer's libraries.
+  `RenderMesh`, `Appearances`: Qt Core and Gui and OCCT, no widgets). It
+  links none of the renderer's libraries.
 - Cycles' adaptive sampling (on, threshold 0.01) stops pixels that are
   converged, so a simple scene can be done before its samples; `done`
   and the dialog give the samples the render reached.
@@ -875,18 +876,34 @@ Decisions and limits:
 ## Building
 
 ```bash
-tools/dev-env/build-cycles.sh ~/mitcad-render-deps   # once, about 15 minutes
-cmake --preset dev -DMITCAD_RENDER=ON -DMITCAD_RENDER_DEPS=$HOME/mitcad-render-deps
+tools/dev-env/build-cycles.sh   # once (setup-user.sh runs it), about 15 minutes
+cmake --preset dev
 ```
 
-- `MITCAD_RENDER=ON` adds vcpkg.json's `render` feature (Embree, oneTBB,
-  OpenImageIO, OpenColorIO, OpenEXR, pugixml, zstd, cgltf and what they
-  need) to the toolchain's install, so it has to be set at the first
-  configure of a build folder (or with `--fresh`).
+- The render worker is part of every build (mitcad#141; the CMake option
+  `MITCAD_RENDER` of earlier versions is gone). `cmake/RenderDeps.cmake`
+  looks for the prefix before `project()`: `MITCAD_RENDER_DEPS` (a CMake
+  or environment variable), else `~/mitcad-render-deps`
+  (`C:\dev\mitcad-render-deps` on Windows). Without its
+  `install/cycles/mitcad-cycles.cmake` the configure stops with a message
+  that names the platform's script and `MITCAD_RENDER_DEPS`; it never
+  leaves the renderer out.
+- vcpkg.json's dependencies include the renderer's libraries (Embree,
+  oneTBB, OpenImageIO, OpenColorIO, OpenEXR, pugixml, zstd, cgltf and
+  what they need), so the toolchain installs them with OCCT; a new build
+  folder restores them from vcpkg's binary cache.
+- Nothing of the renderer is built again when it has not changed: Cycles
+  and Open Image Denoise stay prebuilt in the prefix, outside the build
+  folders, and no Mitcad build ever builds them; the worker's own sources
+  (`app/render`) compile incrementally and through the shared compiler
+  cache like the rest; a change elsewhere (in `core/`, say) compiles none
+  of them, and `tools/check-all.sh` runs the render tests only when
+  their sources change (their fingerprints follow the `mitcad-render`
+  target, and the render UI tests declare `app/render`).
 - `tools/dev-env/build-cycles.sh [prefix]` (Linux x86-64; Windows:
   [build-cycles.ps1](#windows); Apple Silicon:
   [build-cycles-macos.sh](#macos)) installs
-  the same feature into the prefix, downloads ISPC (a build tool) and
+  the manifest's libraries into the prefix, downloads ISPC (a build tool) and
   Open Image Denoise's source release (both checked against SHA-256
   pins), clones Cycles at its tag and checks the commit (pins in
   `tools/dev-env/versions.sh`), builds Open Image Denoise (CPU device, the
@@ -931,11 +948,11 @@ cmake --preset dev -DMITCAD_RENDER=ON -DMITCAD_RENDER_DEPS=$HOME/mitcad-render-d
   newer kernels) and stops with that message otherwise.
 
 The build makes `mitcad-render` next to `mitcad` (`build/<preset>/app/`);
-building `mitcad` builds it too. The application then has the client's
+building `mitcad` builds it too. The application has the client's
 side only (`RenderClient`, `RenderMode`, the scene writer, `FrameMemory`)
-and links the same libraries as without the option (`ldd mitcad`).
+and links none of the renderer's libraries (`ldd mitcad`).
 
-On a 16-core desktop: the render feature's vcpkg ports take about 15
+On a 16-core desktop: the renderer's vcpkg ports take about 15
 minutes the first time (Embree 9 minutes, debug and release), Open Image
 Denoise and Cycles about a minute together (12 jobs). The prefix needs about 1 GB
 (sources 240 MB, ISPC 420 MB, builds 290 MB). `mitcad-render` is about
@@ -960,24 +977,30 @@ In the build VM (mitcad#51), in the Visual Studio x64 environment:
 
 ```bat
 tools\dev-env\msvc.cmd powershell -ExecutionPolicy Bypass -File tools\dev-env\build-cycles.ps1
-tools\dev-env\msvc.cmd cmake --preset dev -DMITCAD_RENDER=ON
+tools\dev-env\msvc.cmd cmake --preset dev
 ```
 
-- `build-cycles.ps1 [-Prefix dir]` does what `build-cycles.sh` does,
-  with MSVC and Ninja: the render feature for `x64-windows`, ISPC's
+- `build-cycles.ps1 [-Prefix dir]` (which `setup-windows.ps1` runs) does
+  what `build-cycles.sh` does,
+  with MSVC and Ninja: the manifest's libraries for `x64-windows`, ISPC's
   Windows release (`ISPC_WINDOWS_SHA256`; the script reads the pins of
   `versions.sh` itself), Open Image Denoise and Cycles as release builds
   with the CPU device only (no GPU devices yet), the check with Cycles'
   standalone program and `mitcad-cycles.cmake` (the definitions of
   `compile_commands.json`, MSVC's `/fp:` and `/arch:` options). The
   prefix defaults to `MITCAD_RENDER_DEPS`, else
-  `C:\dev\mitcad-render-deps`, which is also `cmake/Render.cmake`'s
+  `C:\dev\mitcad-render-deps`, which is also `cmake/RenderDeps.cmake`'s
   default on Windows. Cycles' `FindTBB` looks for `tbb.lib`; the script
   names oneTBB's `tbb12.lib`. MSVC's linker needs no link group for
   Cycles' libraries.
-- A release configuration only (the Windows presets are RelWithDebInfo):
-  a Debug build's runtime library (`/MDd`) does not match the release
-  libraries, and `cmake/Render.cmake` stops with a message.
+- A release configuration only (the Windows preset is RelWithDebInfo;
+  there is no Windows Debug preset): a Debug build's runtime library
+  (`/MDd`) does not match the release libraries, and `cmake/Render.cmake`
+  stops with a message.
+- The compiler cache (`C:\dev\ccache`, shared by the checkouts) has a
+  limit of 4G (`setup-ccache-windows.ps1`): one build's objects are about
+  0.8 GB with the renderer, and at 2G the shared cache was cleaned 41
+  times during one fresh build.
 - `mitcad-render.exe` is built next to `mitcad.exe` with vcpkg's DLLs
   (vcpkg's applocal step) and Open Image Denoise's (copied after the
   build: the core loads its CPU device from its own folder). The worker's
@@ -994,7 +1017,7 @@ tools\dev-env\msvc.cmd cmake --preset dev -DMITCAD_RENDER=ON
   `tools/installer-windows-test.ps1` checks them and renders the test
   scene with the installed worker on a system-only `PATH`.
 
-On the build VM: the render feature's vcpkg ports take the
+On the build VM: the renderer's vcpkg ports take the
 longest the first time (hwloc alone 10 minutes, Embree next), Cycles
 111 s with 12 jobs. The prefix needs about 4 GB (its `vcpkg_installed`
 2.6 GB with the default features' ports, sources and ISPC 820 MB,
@@ -1003,12 +1026,12 @@ builds 390 MB). `mitcad-render.exe` is 11 MB, Open Image Denoise's core
 
 ### macOS
 
-In the isolated Apple Silicon build guest (mitcad#51), after
-`tools/dev-env/setup-macos.sh`:
+In the isolated Apple Silicon build guest (mitcad#51),
+`tools/dev-env/setup-macos.sh` runs `build-cycles-macos.sh` once; then:
 
 ```bash
-tools/dev-env/build-cycles-macos.sh
-cmake --preset dev -DMITCAD_RENDER=ON
+tools/dev-env/build-cycles-macos.sh   # again only after a pin changes
+cmake --preset dev
 ```
 
 `build-cycles-macos.sh [prefix]` follows the Linux and Windows prefix layout
@@ -1016,7 +1039,7 @@ and defaults to `MITCAD_RENDER_DEPS`, else `~/mitcad-render-deps`. It uses
 the pinned arm64 ISPC release (its SHA-256 comes from the
 [official release metadata](https://api.github.com/repos/ispc/ispc/releases/tags/v1.31.0)),
 the same Open Image Denoise source archive and Cycles commit, and the
-manifest's render feature through `arm64-osx-dynamic` and the overlay
+manifest's libraries through `arm64-osx-dynamic` and the overlay
 triplet. Cycles' NEON headers use sse2neon (MIT). The CPU denoiser uses
 ISPC's NEON kernels and Apple's Accelerate framework (BNNS).
 
@@ -1037,7 +1060,7 @@ relative install names and a loader-relative rpath. Qt's deployment also
 processes the worker and the module. `tools/package-macos.sh` then removes
 absolute build rpaths, signs the nested code and checks the bundle.
 `Contents/Resources/licenses` holds Cycles' and its bundled code's texts,
-Open Image Denoise's notices, and the render feature's vcpkg copyrights;
+Open Image Denoise's notices, and the renderer's vcpkg copyrights;
 `THIRD-PARTY-NOTICES.txt` names the renderer and the deployment-target patch.
 `tools/check-bundle-macos.sh` checks their presence and the CPU module as
 well as the normal arm64 and dependency-path checks.
@@ -1047,15 +1070,21 @@ separate build-tree `mitcad-cli`, pass
 `--worker <build>/app/mitcad.app/Contents/MacOS/mitcad-render` (or set
 `MITCAD_RENDER_WORKER`); `cli.render` uses the target's complete path too.
 
-This macOS implementation has not been built or tested. Validation in the
-macOS guest remains required: run the dependency script's standalone
-render, build Mitcad with `MITCAD_RENDER`, run `ctest` and the macOS UI
-tests, and check the installed bundle on a machine without the development
-prefixes. No renderer acceptance on macOS is claimed yet.
+The CPU renderer was built and validated in the isolated arm64 guest on
+macOS 27.0.1 with SDK 27.0, using the pinned Cycles commit and Open Image
+Denoise 2.5.1. The dependency build and standalone CPU render, worker
+tests, and `cli.render` passed. The macOS Qt UI smoke test displayed
+progressive shared-memory frames through 16 samples, used CPU rendering
+and denoising, captured the rendered block and stopped the worker cleanly.
+The installed bundle passed architecture, dependency, licence and
+signature checks; its worker and the same UI smoke test rendered while
+access to the development dependencies and build trees was denied. The
+deployment target is macOS 14.4; runtime compatibility with macOS 14.4 was
+not tested.
 
 ### AppImage
 
-`cmake --build --preset <preset> --target appimage` with `MITCAD_RENDER`
+`cmake --build --preset <preset> --target appimage`
 puts `mitcad-render` into the AppImage's `usr/bin` next to `mitcad`, and
 `packaging/linux/make-appimage.sh` hands it to linuxdeploy, which copies
 its libraries into `usr/lib`, together with Open Image Denoise's CPU
@@ -1065,7 +1094,7 @@ library loads at run time from its own folder). The licences of Cycles
 `install/cycles/licenses`) and Open Image Denoise go to
 `usr/share/doc/mitcad/licenses/{cycles,openimagedenoise}`, the vcpkg
 libraries' with the others; `THIRD-PARTY-NOTICES.txt` lists them. A Debug
-build's AppImage with the renderer is about 145 MB.
+build's AppImage is about 145 MB.
 With `--cuda` the AppImage also has the kernels in
 `usr/lib/mitcad/cycles/lib` (a Debug build's AppImage 181 MB instead of
 152 MB) and the cuew licence; the driver stays the system's.
@@ -1090,14 +1119,13 @@ GPU (tested with the build of `--cuda` on the GTX 1060 below).
   change only that body and no mesh (mitcad#53); then the last scene
   renders.
 - `tools/ui-render-materials-test.sh`: appearances in the render
-  ([Materials](#materials)); skipped without `MITCAD_RENDER` too.
+  ([Materials](#materials)).
 - `tools/ui-render-faces-test.sh`: appearances of faces and textures
-  ([Materials](#materials)); without `MITCAD_RENDER` only the shaded view
-  and Edit Appearances.
+  ([Materials](#materials)).
 - `ctest` `app.render_worker_environment`: the test scene outdoors, the
   sky as the background, a polished ground at a height.
 - `ctest` `app.unit`: the exposure and the view transforms of
-  `displayImage` (also in builds without the renderer).
+  `displayImage`.
 - `tools/ui-render-environment-test.sh`: Render Environment on a white box
   and a glass sphere: the Dark Studio renders the box darker than the
   Studio over the same background; a background colour shows without a
@@ -1106,7 +1134,7 @@ GPU (tested with the build of `--cuda` on the GTX 1060 below).
   bodies and are the background; without an image, or with one that
   cannot be read, the view says so; exposure brightens the frame without
   a new render and undo takes it back; the settings are saved in the
-  file. Skipped without `MITCAD_RENDER`.
+  file.
 - `tools/ui-render-test.sh`: the mode on Xvfb (frames refine, the
   silhouette matches the shaded view, the cube is on top, orbit, pan and
   zoom restart the render and still match, a resize renders larger
@@ -1122,9 +1150,13 @@ GPU (tested with the build of `--cuda` on the GTX 1060 below).
   under the block is hidden in the rendered view as in the shaded one
   while the one in front of it is drawn, and a render shows denoised
   previews before its last frame). It renders without a ground, whose
-  shadows would count as the block's silhouette. It prints `SKIP` and passes on a
-  build without `MITCAD_RENDER`; for the render build run it as
-  `UI_APP=$PWD/build/dev-render/app/mitcad tools/ui-render-test.sh` (an absolute path: it checks that the worker is next to the app).
+  shadows would count as the block's silhouette. Another build's app is
+  given as an absolute path (`UI_APP=$PWD/build/<preset>/app/mitcad
+  tools/ui-render-test.sh`): it checks that the worker is next to the app.
+- `ctest` `app.ui-macos`: `tools/ui-macos-test.sh` enters View > Rendered
+  in the Qt UI, selects CPU rendering and denoising, checks progressive
+  shared-memory frames through 16 samples and the rendered viewport
+  screenshot, then leaves the mode and checks that the bundled worker ends.
 - `tools/ui-render-image-test.sh`: File > Render Image on the red block
   (no ground): a size preset of 3840 x 2160 with 65536 samples renders in
   the worker's batch mode while the app stays usable, and Cancel ends the
@@ -1133,10 +1165,8 @@ GPU (tested with the build of `--cuda` on the GTX 1060 below).
   through Save is 320 x 240 with an alpha channel, and its silhouette
   matches the shaded view inside the frame (over 80 % overlap, bounding
   boxes within 12 pixels); a named view renders and hides the frame; the
-  output settings are saved in the file. Skipped without
-  `MITCAD_RENDER`; for the render build run it with
-  `UI_APP=build/dev-render/app/mitcad`.
-- `ctest` `cli.render` (render builds): `mitcad-cli render` renders a
+  output settings are saved in the file.
+- `ctest` `cli.render`: `mitcad-cli render` renders a
   test design (`tools/cli/tests/render_scene.json`) from a named view and
   the iso, top and front views as PNG (8 bits, 16 bits with alpha), JPEG
   and OpenEXR, checks their headers, and refuses an unknown view; it lists
@@ -1149,8 +1179,8 @@ GPU (tested with the build of `--cuda` on the GTX 1060 below).
   --samples 64 --device auto --compare cpu --tolerance 2:24` renders on
   the best GPU and on the CPU and compares the images (8-bit sRGB: the
   mean difference at most 2, the 99th percentile at most 24); skipped
-  (exit status 77) when there is no GPU device, so the normal and the
-  CPU-only render builds skip it.
+  (exit status 77) when there is no GPU device, so a build without GPU
+  devices skips it.
 - `ctest` `app.unit`: the device's choice (automatic prefers a GPU, an
   unknown one gives the CPU with the message) and the fallback with fake
   renderers: a GPU that cannot start, one that fails while it renders
@@ -1163,12 +1193,9 @@ GPU (tested with the build of `--cuda` on the GTX 1060 below).
   settings of another machine) renders on the CPU with the message over
   the view, and Preferences keeps it as "Not found"; a device that fails
   while rendering (the test hook) hands over to the CPU with the message.
-  Skipped without `MITCAD_RENDER`; for the render build run it with
-  `UI_APP=build/dev-render/app/mitcad`.
 - `ctest` `app.unit`: the final render's image conversions (opaque 8 bits
   as `displayImage`, 16 bits the same colours, straight alpha).
-- `tools/appimage-test.sh` with an AppImage of a render build: see
-  [AppImage](#appimage).
+- `tools/appimage-test.sh`: see [AppImage](#appimage).
 - `mitcad-render --bench 1920x1080 --samples 64 [--interactive]
   [--orthographic] [--trace] [--frames folder] [--previews n,m] [--output image.png]
   [--environment '<json>'] [--texture image[,size[,box|planar]]]
@@ -1213,10 +1240,9 @@ OpenEXR, Imath, libtiff, libjpeg-turbo, zstd (BSD-style), pugixml, cgltf,
 yaml-cpp, minizip-ng (MIT or zlib-style), OpenSSL (Apache-2.0). Cycles is
 linked statically into `mitcad-render`, the others dynamically by it.
 ISPC (BSD-3-Clause) only compiles Open Image Denoise and is not shipped.
-Nothing GPL. The AppImage of a build with `MITCAD_RENDER` includes the
-renderer and its licences ([AppImage](#appimage)), and so does the
+Nothing GPL. The AppImage includes the renderer and its licences ([AppImage](#appimage)), and so does the
 Windows installer ([Windows](#windows)) and the macOS bundle
-([macOS](#macos), implementation awaiting guest validation).
+([macOS](#macos)).
 
 GPU devices (mitcad#50; also in [development.md](development.md#licence-policy)):
 
@@ -1264,10 +1290,7 @@ GPU devices (mitcad#50; also in [development.md](development.md#licence-policy))
   image formats (TIFF), render passes and render queues for the final
   render ([Final render](#final-render)); `mitcad-cli render` in
   `tools/appimage-test.sh`.
-- Validate the macOS CPU dependency build, worker, shared frame memory
-  (`shm_open` with the socket) and installed bundle in the isolated guest
-  ([macOS](#macos)); they have not been built or tested yet. GPU devices
-  in `build-cycles.ps1` (CUDA and HIP on Windows).
+- GPU devices in `build-cycles.ps1` (CUDA and HIP on Windows).
 - A body recomputed to the same geometry (a later feature changed) is
   another `TopoDS_Shape`: its display triangulation is read and hashed
   again (not sent: the worker holds the hash). The model could keep the

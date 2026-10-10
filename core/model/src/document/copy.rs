@@ -1,21 +1,24 @@
 // SPDX-License-Identifier: MIT
 //! Copies of components with their history (F6): Paste New, and inserting
-//! a copy of another project file. The copied features get new uids and
+//! a copy of another design file. The copied features get new uids and
 //! default names; references among them follow (feature and body ids,
 //! topological names, occurrences), their own parameters are copied with
 //! their expressions, and other parameters are shared (the same document)
 //! or brought along by name (another file).
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::path::Path;
 use std::sync::Arc;
 
 use serde_json::Value;
 
 use super::{DocState, ModelError, invalid};
+use crate::appearance::{self, ImageData, Texture};
 use crate::assembly::{Assembly, Occurrence};
 use crate::expr::ParamSpec;
 use crate::features::{ChamferSizeDef, FeatureDef, FeatureEntry, FilletSizeDef, OccurrencePath};
 use crate::ids::{BodyUid, ComponentUid, FeatureUid, OccurrenceUid};
+use crate::library::{LibraryRequest, LinkResolver};
 use crate::links::OccurrenceLink;
 use crate::parameters::ParamId;
 use crate::topo::{EdgeName, TopoName};
@@ -23,6 +26,60 @@ use crate::transform::Transform;
 
 /// Marks a parameter in the JSON form of a copied definition.
 const PARAM: char = '\u{1}';
+
+/// Appearance definitions are shared within a document. Copies from
+/// elsewhere keep image paths tied to the source, never the target file.
+pub(crate) enum CopySource<'a> {
+    SameDocument,
+    Document(Option<&'a Path>),
+    Library {
+        resolver: &'a dyn LinkResolver,
+        request: &'a LibraryRequest,
+    },
+}
+
+impl CopySource<'_> {
+    fn texture(&self, texture: &mut Texture) -> Result<(), ModelError> {
+        if texture.data.is_some() {
+            return Ok(());
+        }
+        match self {
+            Self::SameDocument => {}
+            Self::Document(directory) => {
+                let path = Path::new(&texture.path);
+                if path.is_relative() {
+                    let directory = directory.ok_or_else(|| {
+                        invalid(format!(
+                            "cannot copy relative texture '{}': save the source design first, \
+                             or use an absolute path or an embedded image",
+                            texture.path
+                        ))
+                    })?;
+                    let path = directory.join(path);
+                    texture.path = std::path::absolute(&path)
+                        .map_err(|e| {
+                            invalid(format!("cannot resolve texture {}: {e}", path.display()))
+                        })?
+                        .to_string_lossy()
+                        .into_owned();
+                }
+            }
+            Self::Library { resolver, request } => {
+                let bytes = resolver
+                    .library_texture(request, &texture.path)
+                    .map_err(invalid)?;
+                if bytes.len() > appearance::MAX_EMBEDDED_IMAGE {
+                    return Err(invalid("the library texture image is too large to embed"));
+                }
+                if appearance::image_format(&bytes).is_none() {
+                    return Err(invalid("the library texture image is no PNG or JPEG file"));
+                }
+                texture.data = Some(ImageData::new(&crate::base64::encode(&bytes)));
+            }
+        }
+        Ok(())
+    }
+}
 
 impl DocState {
     /// Adds a feature with resolved values at the marker: checked, and a
@@ -47,7 +104,7 @@ impl DocState {
     }
 
     /// Copies the component at `source_path` of `source` (this document's
-    /// state before the copy when `same_document`, else another file's)
+    /// state before the copy with `SameDocument`, else another file's)
     /// with its features before the marker, the components placed in it and their
     /// occurrences, at the marker. `into` is already placed in the
     /// destination assembly. With `maker` (the same document only), the
@@ -59,8 +116,9 @@ impl DocState {
         source_path: &[OccurrenceUid],
         into: ComponentUid,
         maker: Option<FeatureUid>,
-        same_document: bool,
+        origin: CopySource<'_>,
     ) -> Result<ComponentUid, ModelError> {
+        let same_document = matches!(origin, CopySource::SameDocument);
         let a = &source.assembly;
         let from =
             crate::joints::path_component(a, ComponentUid::ROOT, source_path).map_err(invalid)?;
@@ -164,6 +222,13 @@ impl DocState {
             self.features.insert(self.marker, Arc::new(entry));
             self.marker += 1;
         }
+        // Import only appearances used by copied bodies/faces. Existing
+        // target definitions stay unchanged even when ids or names collide.
+        let appearances = if same_document {
+            BTreeMap::new()
+        } else {
+            self.copy_appearances(source, &uids, &origin)?
+        };
         // Body attributes follow the bodies, face appearances their faces.
         let text: HashMap<String, String> = uids
             .iter()
@@ -175,16 +240,89 @@ impl DocState {
             .filter_map(|(body, attributes)| {
                 let feature = uids.get(&body.feature)?;
                 let mut attributes = attributes.clone();
+                if let Some(id) = attributes.appearance.as_mut()
+                    && let Some(mapped) = appearances.get(id)
+                {
+                    *id = mapped.clone();
+                }
                 attributes.face_appearances = attributes
                     .face_appearances
                     .into_iter()
-                    .map(|(face, appearance)| (remap_reference(&face, &text), appearance))
+                    .map(|(face, appearance)| {
+                        let mapped = appearances.get(&appearance).cloned().unwrap_or(appearance);
+                        (remap_reference(&face, &text), mapped)
+                    })
                     .collect();
                 Some((BodyUid::new(*feature, body.index), attributes))
             })
             .collect();
         self.body_attributes.extend(attributes);
         Ok(into)
+    }
+
+    fn copy_appearances(
+        &mut self,
+        source: &DocState,
+        uids: &HashMap<FeatureUid, FeatureUid>,
+        origin: &CopySource<'_>,
+    ) -> Result<BTreeMap<String, String>, ModelError> {
+        let needed: BTreeSet<&str> = source
+            .body_attributes
+            .iter()
+            .filter(|(body, _)| uids.contains_key(&body.feature))
+            .flat_map(|(_, attributes)| {
+                attributes
+                    .appearance
+                    .iter()
+                    .chain(attributes.face_appearances.values())
+                    .map(String::as_str)
+            })
+            .collect();
+        let mut ids: BTreeSet<String> = appearance::library()
+            .iter()
+            .chain(&self.appearances)
+            .map(|a| a.id.clone())
+            .collect();
+        // Undefined target ids must remain undefined too: importing a
+        // definition with that id must not recolour an existing body.
+        ids.extend(self.body_attributes.values().flat_map(|attributes| {
+            attributes
+                .appearance
+                .iter()
+                .chain(attributes.face_appearances.values())
+                .cloned()
+        }));
+        let mut names: BTreeSet<String> = appearance::library()
+            .iter()
+            .chain(&self.appearances)
+            .map(|a| a.name.clone())
+            .collect();
+        let mut mapped = BTreeMap::new();
+        for id in needed {
+            if appearance::library_appearance(id).is_some() {
+                continue;
+            }
+            let new_id = std::iter::once(id.to_owned())
+                .chain((1..).map(|n| format!("{id}_{n}")))
+                .find(|id| ids.insert(id.clone()))
+                .expect("an unused appearance id exists");
+            // Older/imported designs may keep an unknown appearance id.
+            // Keep it unresolved instead of binding to a target definition.
+            if let Some(appearance) = source.appearances.iter().find(|a| a.id == id) {
+                let mut copy = appearance.clone();
+                copy.id = new_id.clone();
+                copy.name = std::iter::once(copy.name.clone())
+                    .chain((1..).map(|n| format!("{} ({n})", appearance.name)))
+                    .find(|name| names.insert(name.clone()))
+                    .expect("an unused appearance name exists");
+                if let Some(texture) = copy.texture.as_mut() {
+                    origin.texture(texture)?;
+                }
+                self.appearances.push(copy);
+            }
+            mapped.insert(id.to_owned(), new_id);
+        }
+        Ok(mapped)
     }
 
     /// The parameters the copied features use: their own ones copied with
@@ -231,7 +369,15 @@ impl DocState {
                 free_parameter_name(&self.parameters, p.name())
             };
             let expression = rename_references(p.expression(), p.expr(), &names);
-            let spec = ParamSpec::user(&name, &expression, p.unit()).with_comment(p.comment());
+            // Dimensionless parameters can still use implicit lengths or
+            // angles, and rounding uses default units too. Keep the source
+            // context instead of reinterpreting the same expression here.
+            let context = p
+                .expression_context()
+                .or_else(|| (!same_document).then_some(source.parameters.context()));
+            let spec = ParamSpec::user(&name, &expression, p.unit())
+                .with_comment(p.comment())
+                .with_expression_context(context);
             let new = self
                 .parameters
                 .add(spec, owner)

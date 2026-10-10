@@ -11,7 +11,6 @@
 #include <QComboBox>
 #include <QDialogButtonBox>
 #include <QDir>
-#include <QEventLoop>
 #include <QFileDialog>
 #include <QFileInfo>
 #include <QFormLayout>
@@ -26,6 +25,7 @@
 #include <QListWidget>
 #include <QMessageBox>
 #include <QPixmap>
+#include <QPointer>
 #include <QPlainTextEdit>
 #include <QPushButton>
 #include <QRadioButton>
@@ -229,15 +229,15 @@ LibrariesDialog::LibrariesDialog(QWidget* parent) : QDialog(parent) {
   layout->addLayout(buttons);
   connect(addUrlButton, &QPushButton::clicked, this, [this] {
     bool ok = false;
-    const QString url = QInputDialog::getText(this, tr("Add Library"),
+    const QString url = dialogText(this, tr("Add Library"),
                                               tr("A library's or a community index's git URL (https:// or ssh://):"),
-                                              QLineEdit::Normal, QString(), &ok);
+                                              QString(), &ok);
     if (ok && !url.trimmed().isEmpty()) {
       addUrl(url);
     }
   });
   connect(addFolder, &QPushButton::clicked, this, [this] {
-    const QString dir = QFileDialog::getExistingDirectory(this, tr("Library Folder"));
+    const QString dir = dialogDirectory(this, tr("Library Folder"));
     if (!dir.isEmpty()) {
       addUrl(QDir::toNativeSeparators(dir));
     }
@@ -449,7 +449,7 @@ LibraryBrowser::LibraryBrowser(bool community, QWidget* parent) : QDialog(parent
   connect(libraries, &QPushButton::clicked, this, [this] {
     LibrariesDialog dialog(this);
     prepareModal(&dialog);
-    dialog.exec();
+    execDialog(&dialog);
     search();
   });
   connect(m_size, &SizeChooser::rowChanged, this, [](const QString& row) {
@@ -1139,7 +1139,7 @@ PublishLibraryDialog::PublishLibraryDialog(std::function<QString()> design, std:
   buttons->addWidget(close);
   layout->addLayout(buttons);
   connect(browse, &QPushButton::clicked, this, [this] {
-    const QString dir = QFileDialog::getExistingDirectory(this, tr("Library Folder"), m_folder->text());
+    const QString dir = dialogDirectory(this, tr("Library Folder"), m_folder->text());
     if (!dir.isEmpty()) {
       m_folder->setText(QDir::toNativeSeparators(dir));
     }
@@ -1273,13 +1273,19 @@ void PublishLibraryDialog::push() {
     }
   }
   RemoteTask* task = RemoteTask::command(dir, remoteCommand, nullptr);
-  QEventLoop loop;
-  connect(task, &RemoteTask::finished, &loop, &QEventLoop::quit);
+  QObject waiting;
+  bool finished = false;
+  const QPointer<RemoteTask> pending = task;
+  const QPointer<PublishLibraryDialog> presenter = this;
+  connect(task, &RemoteTask::finished, &waiting, [&finished] { finished = true; });
+  connect(this, &QObject::destroyed, task, &RemoteTask::cancel);
   say(tr("Pushing %1...").arg(dir));
   task->start();
-  loop.exec();
+  waitDialogUntil([&] { return finished || pending == nullptr; });
+  if (pending == nullptr) { return; }
   const QJsonObject answer = task->answer();
   delete task;
+  if (presenter == nullptr) { return; }
   const QString error = errorOf(answer);
   say(error.isEmpty() ? tr("Pushed the library.") : tr("The push failed: %1").arg(error));
 }

@@ -12,11 +12,12 @@ use std::path::{Path, PathBuf};
 use serde_json::{Value, json};
 
 use super::manifest::{
-    ENTRY_FORMAT, IndexComponent, IndexEntry, LIBRARY_FORMAT, LIBRARY_MANIFEST, MAX_PREVIEW,
-    Manifest, ManifestComponent, Problems, read_json, valid_id, valid_path,
+    ENTRY_FORMAT, IndexComponent, IndexEntry, LIBRARY_FORMAT, LIBRARY_MANIFEST, MAX_COMPONENT,
+    MAX_PREVIEW, Manifest, ManifestComponent, Problems, read_json, valid_id, valid_path,
 };
 use super::{LibraryRepo, read_file};
 use crate::api::{optional, text};
+use crate::transaction::FileTransaction;
 use crate::{ProjectRepo, VcsError};
 
 fn invalid(message: impl Into<String>) -> VcsError {
@@ -59,6 +60,16 @@ fn read_manifest(dir: &Path) -> Result<Manifest, VcsError> {
     read_json(&data, LIBRARY_MANIFEST).map_err(VcsError::File)
 }
 
+fn has_links(text: &str) -> bool {
+    serde_json::from_str::<Value>(text.trim_start_matches('\u{feff}'))
+        .ok()
+        .and_then(|v| v.get("components").cloned())
+        .and_then(|c| c.as_array().cloned())
+        .unwrap_or_default()
+        .iter()
+        .any(|c| c.get("link").is_some_and(|l| !l.is_null()))
+}
+
 /// `library_check`: what is wrong with a library folder as it is now (its
 /// manifest and the files it names), before it is recorded and pushed.
 pub(super) fn check_command(command: &Value) -> Result<Value, VcsError> {
@@ -94,14 +105,7 @@ pub fn check_folder(dir: &Path, manifest: &Manifest) -> Problems {
                         if let Err(e) = mitcad_model::diff::read_design(&text) {
                             out.errors.push(format!("{}: {}: {e}", c.id, c.path));
                         }
-                        let links = serde_json::from_str::<Value>(&text)
-                            .ok()
-                            .and_then(|v| v.get("components").cloned())
-                            .and_then(|c| c.as_array().cloned())
-                            .unwrap_or_default()
-                            .iter()
-                            .any(|c| c.get("link").is_some_and(|l| !l.is_null()));
-                        if links {
+                        if has_links(&text) {
                             out.errors.push(format!(
                                 "{}: {} links other files; a library's designs hold their parts \
                                  (insert them as copies)",
@@ -206,7 +210,7 @@ pub(super) fn init_command(command: &Value) -> Result<Value, VcsError> {
     Ok(json!({"dir": dir.to_string_lossy(), "id": id, "written": written}))
 }
 
-/// `library_add`: a design (its text, a single project file) added to a
+/// `library_add`: a design (its text, a single-file design) added to a
 /// library folder as a component, with a preview image (base64 PNG) and
 /// its manifest entry; a component of the same id is replaced.
 pub(super) fn add_command(command: &Value) -> Result<Value, VcsError> {
@@ -219,6 +223,12 @@ pub(super) fn add_command(command: &Value) -> Result<Value, VcsError> {
         )));
     }
     let design = text(command, "text")?;
+    if design.len() > MAX_COMPONENT {
+        return Err(invalid(format!(
+            "the design is larger than the {} MB a library's component may hold",
+            MAX_COMPONENT >> 20
+        )));
+    }
     let state = mitcad_model::diff::read_design(design)
         .map_err(|e| invalid(format!("the design cannot be read: {e}")))?;
     let _ = state;
@@ -228,6 +238,12 @@ pub(super) fn add_command(command: &Value) -> Result<Value, VcsError> {
     {
         return Err(invalid(
             "the design refers to B-rep data in a project's store; give it as a single file",
+        ));
+    }
+    if has_links(design) {
+        return Err(invalid(
+            "the design links other files; a library's designs hold their parts \
+             (insert them as copies)",
         ));
     }
     let category = optional(command, "category")
@@ -242,15 +258,13 @@ pub(super) fn add_command(command: &Value) -> Result<Value, VcsError> {
     let path = optional(command, "path")
         .map(str::to_owned)
         .unwrap_or_else(|| format!("{folder_name}/{id}.mitcad"));
-    if !valid_path(&path) || !crate::is_project_file(&path) {
+    if !valid_path(&path) || !crate::is_design_file(&path) {
         return Err(invalid(format!(
             "'{path}' is no path of a design in the library"
         )));
     }
-    let mut written = vec![path.clone()];
-    write(&dir.join(&path), design.as_bytes())?;
     let mut preview = String::new();
-    if let Some(png) = optional(command, "preview") {
+    let preview_data = if let Some(png) = optional(command, "preview") {
         let data = mitcad_model::library::decode_base64(png).map_err(invalid)?;
         if !data.starts_with(b"\x89PNG") || data.len() > MAX_PREVIEW {
             return Err(invalid(format!(
@@ -259,9 +273,10 @@ pub(super) fn add_command(command: &Value) -> Result<Value, VcsError> {
             )));
         }
         preview = format!("previews/{id}.png");
-        write(&dir.join(&preview), &data)?;
-        written.push(preview.clone());
-    }
+        Some(data)
+    } else {
+        None
+    };
     if !category.is_empty() && !manifest.categories.iter().any(|c| c.id == category) {
         manifest.categories.push(super::manifest::Category {
             id: category.clone(),
@@ -286,12 +301,30 @@ pub(super) fn add_command(command: &Value) -> Result<Value, VcsError> {
         Some(old) => *old = component.clone(),
         None => manifest.components.push(component.clone()),
     }
-    write(
-        &dir.join(LIBRARY_MANIFEST),
-        manifest_text(&manifest).as_bytes(),
-    )?;
+    let problems = manifest.problems();
+    if !problems.is_ok() {
+        return Err(invalid(format!(
+            "the updated library manifest is invalid: {}",
+            problems.errors.join("; ")
+        )));
+    }
+    // Validate everything before replacing even the first file. Keep the
+    // originals until the whole design/preview/manifest update succeeds.
+    let mut written = vec![component.path.clone()];
+    let mut files = vec![(dir.join(&component.path), design.as_bytes().to_vec())];
+    if let Some(data) = preview_data {
+        files.push((dir.join(&component.preview), data));
+        written.push(component.preview.clone());
+    }
+    files.push((
+        dir.join(LIBRARY_MANIFEST),
+        manifest_text(&manifest).into_bytes(),
+    ));
+    let mut transaction = FileTransaction::prepare(&dir, &files)?;
+    transaction.apply()?;
     written.push(LIBRARY_MANIFEST.to_owned());
-    let problems = check_folder(&dir, &manifest);
+    let mut problems = check_folder(&dir, &manifest);
+    problems.warnings.extend(transaction.commit());
     Ok(json!({
         "dir": dir.to_string_lossy(),
         "component": component,

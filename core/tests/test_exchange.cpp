@@ -6,7 +6,8 @@
 //                                       STL and OBJ, base features in project
 //                                       files, base features from shapes,
 //                                       the bodies of a small .f3d file and
-//                                       3MF meshes for slicers
+//                                       3MF meshes for slicers and USDZ
+//                                       packages
 //   test_exchange --write-f3d <file>    writes that .f3d file (CLI tests)
 //   test_exchange --write-ipt <file>    writes a small .ipt part file
 //                                       (mitcad_ipt::testdata; CLI and UI
@@ -43,6 +44,7 @@
 #include <exception>
 #include <filesystem>
 #include <fstream>
+#include <iterator>
 #include <map>
 #include <string>
 #include <vector>
@@ -185,7 +187,7 @@ void test_brep_round_trips(const fs::path& dir) {
   CHECK(contains(std::string(document->query(R"({"query": "feature", "uid": "F7"})")), R"("status":"ok")"));
   CHECK(volume(*document, "F4.b0") < kBlockVolume);
 
-  // The project file keeps the imported bodies: it opens to the same shapes.
+  // The design file keeps the imported bodies: it opens to the same shapes.
   const std::string saved(document->to_json());
   CHECK(contains(saved, R"("type": "base")"));
   CHECK(contains(saved, R"("compression": "zlib")"));
@@ -228,7 +230,7 @@ void test_mesh_round_trips(const fs::path& dir) {
   CHECK(contains(bodies, R"("kind":"mesh")"));
   CHECK(contains(bodies, R"("kind":"solid")"));
 
-  // Mesh bodies stay meshes through the project file and go to STL only.
+  // Mesh bodies stay meshes through the design file and go to STL only.
   auto reloaded = mitcad::load_document(std::string(document->to_json()));
   run(*reloaded, R"({"cmd": "recompute"})");
   CHECK(near(volume(*reloaded, "F4.b0"), volume(*document, "F4.b0"), 1e-12));
@@ -465,6 +467,40 @@ void test_3mf_export(const fs::path& dir) {
                                               R"(, "bodies": ["F5.b0", "Bracket"], "colors": {"Bracket": [1, 0, 0]}})");
   CHECK(contains(some, R"("bodies":["F5.b0","F2.b0"])"));
   CHECK(near(json_number(some, "volume"), volume(*document, "F5.b0"), 1e-9));
+}
+
+// USDZ for AR viewers (mitcad#123): the block and a chrome cylinder as
+// shaded meshes; the package's first file is the binary layer, stored and
+// 64-byte aligned (mitcad-usdz's reader checks the rest in core.usdz).
+void test_usdz_export(const fs::path& dir) {
+  auto document = block();
+  run(*document, R"({"cmd": "add_feature", "def": {"type": "cylinder", "plane": "xy", "center": [100, 0],
+                      "diameter": 20, "height": 30, "operation": "new_body"}})");
+  run(*document, R"({"cmd": "set_body_appearance", "uid": "F4.b0", "appearance": "chrome"})");
+  const fs::path file = dir / "parts.usdz";
+  const std::string result =
+      run(*document, R"({"cmd": "export", "path": )" + json_path(file) + R"(, "refinement": "high"})");
+  CHECK(contains(result, R"("bodies":["F2.b0","F4.b0"])"));
+  CHECK(contains(result, R"("format":"usdz")"));
+  CHECK(contains(result, R"("materials":["default look","chrome"])"));
+  CHECK(contains(result, R"("skipped":[])"));
+  std::ifstream in(file, std::ios::binary);
+  const std::string data((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+  CHECK(data.size() > 200 && data.compare(0, 4, "PK\x03\x04") == 0);
+  if (data.size() <= 200) {
+    return;
+  }
+  const auto u16 = [&](std::size_t at) {
+    return static_cast<std::size_t>(static_cast<unsigned char>(data[at])) |
+           (static_cast<std::size_t>(static_cast<unsigned char>(data[at + 1])) << 8);
+  };
+  CHECK(u16(8) == 0); // stored
+  const std::size_t name = u16(26);
+  CHECK(data.compare(30, name, "parts.usdc") == 0);
+  const std::size_t start = 30 + name + u16(28);
+  CHECK(start % 64 == 0);
+  CHECK(data.compare(start, 8, "PXR-USDC") == 0);
+  CHECK(data[start + 8] == 0 && data[start + 9] == 8 && data[start + 10] == 0);
 }
 
 // Sketch geometry to DXF.
@@ -756,6 +792,7 @@ int main(int argc, char** argv) {
     test_base_features_from_shapes(dir);
     test_sketch_export(dir);
     test_3mf_export(dir);
+    test_usdz_export(dir);
     test_ipt_import(dir);
   } catch (const std::exception& e) {
     std::fprintf(stderr, "test_exchange: %s\n", e.what());

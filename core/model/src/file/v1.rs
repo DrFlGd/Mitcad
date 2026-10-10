@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-//! Project file version 1 (V0), converted to the current model on load.
+//! Design file version 1 (V0), converted to the current model on load.
 //!
 //! Version 1 named features by their names and gave them no uids: feature i
 //! becomes `F<i+1>`. Sketch shapes get curve ids in order (a rectangle four,
@@ -36,7 +36,7 @@ use crate::topo::{EdgeName, FaceName, RegionKey, SegmentKey};
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct ProjectFile {
+struct DesignFile {
     #[allow(dead_code)]
     format: String,
     #[allow(dead_code)]
@@ -136,7 +136,7 @@ impl fmt::Display for FileEdgeRole {
 }
 
 pub(super) fn load(json: &str) -> Result<(DocState, Vec<String>), FileError> {
-    let file: ProjectFile =
+    let file: DesignFile =
         serde_json::from_str(json).map_err(|e| FileError::Schema(e.to_string()))?;
     let mut state = DocState::default();
     // Values were millimetres. Names that are now units, functions or

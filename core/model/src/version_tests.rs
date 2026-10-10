@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 //! Deterministic result versions (P7d), with the mock kernel: the same
 //! definitions with the same inputs give the same versions in documents
-//! built apart, read from a project file, and after the cache let a result
+//! built apart, read from a design file, and after the cache let a result
 //! go, while the cache behaves as before.
 
 use crate::document_tests::{Block, block, extrude, num};

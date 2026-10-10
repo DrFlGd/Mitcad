@@ -40,6 +40,8 @@
 #include "OcctViewer.hpp"
 #include "render/RenderLights.hpp"
 
+#include "../framework/Dialogs.hpp"
+
 namespace mitcad {
 namespace {
 
@@ -390,7 +392,7 @@ void RenderEnvironmentDialog::change(const QString& key, const QJsonValue& value
 
 void RenderEnvironmentDialog::pickColor() {
   const QColor color =
-      QColorDialog::getColor(colorOf(value(QStringLiteral("background.color"))), this, tr("Background Colour"));
+      dialogColor(colorOf(value(QStringLiteral("background.color"))), this, tr("Background Colour"));
   if (color.isValid()) {
     change(QStringLiteral("background.color"), colorJson(color));
   }
@@ -398,7 +400,7 @@ void RenderEnvironmentDialog::pickColor() {
 
 void RenderEnvironmentDialog::browseImage() {
   const QString current = m_image->text();
-  const QString path = QFileDialog::getOpenFileName(this, tr("Environment Image"),
+  const QString path = dialogOpenFileName(this, tr("Environment Image"),
                                                     current.isEmpty() ? QString() : QFileInfo(current).absolutePath(),
                                                     tr("HDR images (*.hdr *.exr);;All files (*)"));
   if (!path.isEmpty()) {
@@ -865,7 +867,7 @@ void RenderEnvironmentDialog::changeLight(const QJsonObject& fields, const QStri
 
 void RenderEnvironmentDialog::pickLightColor() {
   const QColor color =
-      QColorDialog::getColor(colorOf(chosenLight().value(QStringLiteral("color"))), this, tr("Light Colour"));
+      dialogColor(colorOf(chosenLight().value(QStringLiteral("color"))), this, tr("Light Colour"));
   if (color.isValid()) {
     changeLight({{QStringLiteral("color"), colorJson(color)}}, QStringLiteral("color = %1").arg(color.name()));
   }

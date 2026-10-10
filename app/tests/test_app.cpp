@@ -808,7 +808,7 @@ void cloudAddressTests() {
   using namespace mitcad;
   CloudAddress address;
   address.service = CloudService::GitHub;
-  address.account = QStringLiteral("you");
+  address.owner = QStringLiteral("you");
   address.repository = QStringLiteral("robot-arm");
   CHECK(address.url() == QStringLiteral("https://github.com/you/robot-arm.git"));
   address.connect = CloudConnect::Ssh;
@@ -824,13 +824,27 @@ void cloudAddressTests() {
   address.service = CloudService::GitLab;
   address.connect = CloudConnect::Https;
   CHECK(address.url() == QStringLiteral("https://gitlab.com/you/robot-arm.git"));
+  // A GitLab group with subgroups as the owner (mitcad#142).
+  address.owner = QStringLiteral("group/sub");
+  CHECK(address.url() == QStringLiteral("https://gitlab.com/group/sub/robot-arm.git"));
+  CHECK(address.webPage() == QStringLiteral("https://gitlab.com/group/sub/robot-arm"));
+  address.connect = CloudConnect::Ssh;
+  CHECK(address.url() == QStringLiteral("git@gitlab.com:group/sub/robot-arm.git"));
+  address.connect = CloudConnect::Https;
   address.repository.clear();
   CHECK(address.url().isEmpty());
+  // An organisation as GitHub's owner, also on its new repository page.
+  address.service = CloudService::GitHub;
+  address.owner = QStringLiteral("acme");
+  address.repository = QStringLiteral("robot-arm");
+  CHECK(address.url() == QStringLiteral("https://github.com/acme/robot-arm.git"));
+  CHECK(address.newRepositoryPage() ==
+        QStringLiteral("https://github.com/new?owner=acme&name=robot-arm&visibility=private"));
 
   // Read back from an address.
   CloudAddress parsed = parseCloudAddress(QStringLiteral("git@github.com:me/bracket.git"));
   CHECK(parsed.service == CloudService::GitHub && parsed.connect == CloudConnect::Ssh);
-  CHECK(parsed.account == QStringLiteral("me") && parsed.repository == QStringLiteral("bracket"));
+  CHECK(parsed.owner == QStringLiteral("me") && parsed.repository == QStringLiteral("bracket"));
   parsed = parseCloudAddress(QStringLiteral("https://gitlab.com/me/bracket"));
   CHECK(parsed.service == CloudService::GitLab && parsed.connect == CloudConnect::Https);
   CHECK(parsed.url() == QStringLiteral("https://gitlab.com/me/bracket.git"));
@@ -839,9 +853,33 @@ void cloudAddressTests() {
   parsed = parseCloudAddress(QStringLiteral("ssh://git@git.example.org:2222/me/bracket.git"));
   CHECK(parsed.service == CloudService::Other && parsed.url() == QStringLiteral("ssh://git@git.example.org:2222/me/bracket.git"));
   parsed = parseCloudAddress(QStringLiteral("git@git.example.org:me/bracket.git"), QStringLiteral("git.example.org"));
-  CHECK(parsed.service == CloudService::Forgejo && parsed.account == QStringLiteral("me"));
-  // GitLab's nested groups stay an address of their own.
+  CHECK(parsed.service == CloudService::Forgejo && parsed.owner == QStringLiteral("me"));
+  // Organisations' repositories (mitcad#142).
+  parsed = parseCloudAddress(QStringLiteral("https://github.com/acme/bracket.git"));
+  CHECK(parsed.service == CloudService::GitHub && parsed.owner == QStringLiteral("acme") &&
+        parsed.repository == QStringLiteral("bracket"));
+  CHECK(parsed.url() == QStringLiteral("https://github.com/acme/bracket.git"));
+  parsed = parseCloudAddress(QStringLiteral("git@codeberg.org:acme/bracket.git"));
+  CHECK(parsed.service == CloudService::Forgejo && parsed.server == QStringLiteral("codeberg.org") &&
+        parsed.owner == QStringLiteral("acme") && parsed.repository == QStringLiteral("bracket"));
+  CHECK(parsed.url() == QStringLiteral("git@codeberg.org:acme/bracket.git"));
+  // GitLab's nested groups: every part but the last is the owner.
   parsed = parseCloudAddress(QStringLiteral("https://gitlab.com/group/sub/bracket.git"));
+  CHECK(parsed.service == CloudService::GitLab && parsed.connect == CloudConnect::Https);
+  CHECK(parsed.owner == QStringLiteral("group/sub") && parsed.repository == QStringLiteral("bracket"));
+  CHECK(parsed.url() == QStringLiteral("https://gitlab.com/group/sub/bracket.git"));
+  parsed = parseCloudAddress(QStringLiteral("git@gitlab.com:group/sub/deeper/bracket.git"));
+  CHECK(parsed.service == CloudService::GitLab && parsed.connect == CloudConnect::Ssh);
+  CHECK(parsed.owner == QStringLiteral("group/sub/deeper") && parsed.repository == QStringLiteral("bracket"));
+  // GitHub and Forgejo have one owner level: deeper paths stay another
+  // address, as do paths with a part starting with '~'.
+  parsed = parseCloudAddress(QStringLiteral("https://github.com/acme/sub/bracket.git"));
+  CHECK(parsed.service == CloudService::Other && parsed.url() == QStringLiteral("https://github.com/acme/sub/bracket.git"));
+  parsed = parseCloudAddress(QStringLiteral("https://codeberg.org/acme/sub/bracket.git"));
+  CHECK(parsed.service == CloudService::Other);
+  parsed = parseCloudAddress(QStringLiteral("git@gitlab.com:~me/bracket.git"));
+  CHECK(parsed.service == CloudService::Other);
+  parsed = parseCloudAddress(QStringLiteral("https://gitlab.com/group/~sub/bracket.git"));
   CHECK(parsed.service == CloudService::Other);
   parsed = parseCloudAddress(QStringLiteral("/srv/git/bracket.git"));
   CHECK(parsed.service == CloudService::SharedFolder && parsed.url() == QStringLiteral("/srv/git/bracket.git"));
@@ -854,6 +892,12 @@ void cloudAddressTests() {
   CHECK(repositoryNameFor(QStringLiteral("  My  Part (v2) ")) == QStringLiteral("my-part-v2"));
   CHECK(repositoryNameOf(QStringLiteral("git@github.com:me/bracket.git")) == QStringLiteral("bracket"));
   CHECK(repositoryNameOf(QStringLiteral("/srv/git/bracket.git/")) == QStringLiteral("bracket"));
+  CHECK(ownerAndRepositoryOf(QStringLiteral("git@github.com:acme/gripper.git")) == QStringLiteral("acme/gripper"));
+  CHECK(ownerAndRepositoryOf(QStringLiteral("https://gitlab.com/group/sub/part")) ==
+        QStringLiteral("group/sub/part"));
+  CHECK(ownerAndRepositoryOf(QStringLiteral("https://code.example.org/git/team/arm.git")) ==
+        QStringLiteral("team/arm"));
+  CHECK(ownerAndRepositoryOf(QStringLiteral("/srv/git/bracket.git")) == QStringLiteral("bracket"));
   CHECK(addressHost(QStringLiteral("ssh://git@Example.org:2222/x.git")) == QStringLiteral("example.org"));
   CHECK(addressHost(QStringLiteral("C:\\x")).isEmpty());
   CHECK(isSshAddress(QStringLiteral("git@github.com:me/x.git")) && !isSshAddress(QStringLiteral("https://h/x")));

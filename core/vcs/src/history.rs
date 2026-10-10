@@ -13,7 +13,7 @@ use mitcad_model::DocState;
 use mitcad_model::diff::{DesignDiff, diff_states, read_design};
 use serde::Serialize;
 
-use crate::commit::user_message;
+use crate::commit::{rename_trailers, user_message};
 use crate::{Identity, ProjectRepo, VcsError, absolute};
 
 /// A version of a file: a commit that changed it.
@@ -73,7 +73,7 @@ pub struct FileStatus {
     pub file: Option<String>,
     /// Whether they differ.
     pub modified: bool,
-    /// A project file not in the latest version whose content is that of
+    /// A design file not in the latest version whose content is that of
     /// another one there which is gone from the folder: renamed or moved
     /// outside Mitcad from that path (P12d).
     pub renamed_from: Option<String>,
@@ -96,7 +96,7 @@ impl ProjectRepo {
 
     /// The versions of `file`, newest first: the commits on HEAD's
     /// first-parent chain that changed it (`git log --first-parent --
-    /// <path>`), following it back through renames that kept its content.
+    /// <path>`), following recorded moves and renames that kept its content.
     pub fn history(&self, file: &Path) -> Result<Vec<Version>, VcsError> {
         let mut path = self.relative(file)?;
         let Some(head) = self.head_commit()? else {
@@ -119,10 +119,11 @@ impl ProjectRepo {
                 None => None,
             };
             let mut renamed_from = None;
-            if let (Some(blob), None, Some(parent)) = (here, before, parent)
-                && let Some(old) = self.renamed_from(parent, id, blob)?
+            if let (Some(blob), Some(parent)) = (here, parent)
+                && let Some((old, old_blob)) =
+                    self.renamed_from(parent, id, &path, blob, before.is_none())?
             {
-                before = here;
+                before = Some(old_blob);
                 renamed_from = Some(old);
             }
             if here != before || renamed_from.is_some() {
@@ -137,21 +138,39 @@ impl ProjectRepo {
         Ok(out)
     }
 
-    /// The path of a file that `commit` renamed to one with content `blob`:
-    /// a file of its parent with the same content that it deleted.
+    /// The old path and content of a file moved to `path`. Prefer an
+    /// explicit move with a deleted source, then equal-content detection
+    /// for moves made outside Mitcad or by older versions.
     fn renamed_from(
         &self,
         parent: ObjectId,
         commit: ObjectId,
+        path: &str,
         blob: ObjectId,
-    ) -> Result<Option<String>, VcsError> {
+        added: bool,
+    ) -> Result<Option<(String, ObjectId)>, VcsError> {
         let old = self.repo.find_commit(parent)?.tree_id()?.detach();
-        let new = self.repo.find_commit(commit)?.tree_id()?.detach();
+        let commit = self.repo.find_commit(commit)?;
+        let new = commit.tree_id()?.detach();
+        let message = commit.message_raw()?.to_str_lossy();
+        for (from, to) in rename_trailers(&message) {
+            if to == path
+                && let Some(old_blob) = self.blob_entry(old, &from)?
+                && self.tree_entry(new, &from)?.is_none()
+            {
+                return Ok(Some((from, old_blob)));
+            }
+        }
+        // Without an explicit move, a previously present destination is
+        // its own history, not a renamed equal-content file.
+        if !added {
+            return Ok(None);
+        }
         Ok(self
             .differences(Some(old), Some(new))?
             .into_iter()
             .find(|d| d.old == Some(blob) && d.new.is_none())
-            .map(|d| d.path))
+            .map(|d| (d.path, blob)))
     }
 
     fn version(
@@ -306,7 +325,7 @@ impl ProjectRepo {
             .collect())
     }
 
-    /// What differs in the design of project file `file` between version
+    /// What differs in the design file `file` between version
     /// `from` and version `to`, or the file as saved in the folder when
     /// `to` is None (P12c, `mitcad_model::diff`): parameters, timeline,
     /// sketches, components and bodies, read from the versions' trees
@@ -343,7 +362,7 @@ impl ProjectRepo {
     /// comparison (P12c, [`DesignDiff::summary`]; `no changes` when the
     /// design is the same, as after a rename). None for the oldest version
     /// and next to a version that deleted the file; an error for a version
-    /// whose project file cannot be read (another program's, a newer
+    /// whose design file cannot be read (another program's, a newer
     /// Mitcad's). Each version is read once, from its blob, oldest first,
     /// and only two are kept at a time.
     pub fn summaries(&self, versions: &[Version]) -> Vec<Option<Result<String, VcsError>>> {
@@ -366,7 +385,7 @@ impl ProjectRepo {
         out
     }
 
-    /// The design of a project file's blob (`path` names it in errors).
+    /// The design in a blob (`path` names it in errors).
     fn design_of(&self, blob: &str, path: &str) -> Result<DocState, VcsError> {
         let id = ObjectId::from_hex(blob.as_bytes())
             .map_err(|e| VcsError::Git(format!("blob id {blob} of {path}: {e}")))?;
@@ -378,16 +397,15 @@ impl ProjectRepo {
 
     /// The path that `file` (at `path` now) had in version `commit`: the
     /// same, or the one before the renames its history follows, when
-    /// `commit` is on HEAD's first-parent chain.
+    /// `commit` is on HEAD's first-parent chain. A reused filename can
+    /// belong to another design there, so follow the lineage first. For
+    /// other commits, such as fetched remote versions, use `path` as given.
     pub(crate) fn path_at(
         &self,
         commit: ObjectId,
         file: &Path,
         path: &str,
     ) -> Result<String, VcsError> {
-        if self.entry_at(commit, path)?.is_some() {
-            return Ok(path.to_owned());
-        }
         let renames: HashMap<String, String> = self
             .history(file)?
             .into_iter()
@@ -430,9 +448,9 @@ impl ProjectRepo {
         // Renamed outside Mitcad: the same content under a path the folder
         // no longer has.
         let renamed_from = match (commit, head, file) {
-            (Some(commit), None, Some(id)) if crate::is_project_file(&path) => {
+            (Some(commit), None, Some(id)) if crate::is_design_file(&path) => {
                 let tree = self.repo.find_commit(commit)?.tree_id()?.detach();
-                self.project_files(tree)?
+                self.design_files(tree)?
                     .into_iter()
                     .find(|(other, blob)| *blob == id && !self.root.join(other).exists())
                     .map(|(other, _)| other)
@@ -448,7 +466,7 @@ impl ProjectRepo {
         })
     }
 
-    /// A project file renamed or moved outside Mitcad
+    /// A design file renamed or moved outside Mitcad
     /// ([`FileStatus::renamed_from`]) takes its display state along from
     /// the path it had, which is per user and not versioned. Returns that
     /// path, if it was renamed, and whether a display state moved.

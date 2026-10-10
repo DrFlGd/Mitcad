@@ -15,7 +15,8 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
 
-use crate::parameters::Parameters;
+use crate::expr::TableError;
+use crate::parameters::{ParameterError, Parameters};
 
 /// A design's configuration table; empty when it has none.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -229,22 +230,30 @@ fn same_expression(a: &str, b: &str) -> bool {
     squeeze(a) == squeeze(b)
 }
 
-/// Sets the row's expressions on the parameters (each keeps its unit);
-/// returns the names of the parameters whose values changed.
+/// Sets the row's expressions atomically (each parameter keeps its unit);
+/// returns the names of the parameters whose final values changed.
 pub(crate) fn apply_values(
     parameters: &mut Parameters,
     row: &ConfigurationRow,
 ) -> Result<Vec<String>, String> {
-    let mut changed = BTreeSet::new();
+    let mut expressions = Vec::with_capacity(row.values.len());
     for (name, expression) in &row.values {
         let id = parameters
             .find(name)
             .ok_or_else(|| format!("parameter {name} does not exist"))?;
-        let set = parameters
-            .set_expression(id, expression)
-            .map_err(|e| format!("{name} = {expression}: {e}"))?;
-        changed.extend(set.iter().map(|id| parameters.name(*id)));
+        expressions.push((id, expression.as_str()));
     }
+    let changed = parameters.set_expressions(&expressions).map_err(|e| {
+        if let ParameterError::Table(
+            TableError::Parse { parameter, .. } | TableError::Eval { parameter, .. },
+        ) = &e
+            && let Some(expression) = row.values.get(parameter)
+        {
+            return format!("{parameter} = {expression}: {e}");
+        }
+        e.to_string()
+    })?;
+    let changed: BTreeSet<String> = changed.iter().map(|id| parameters.name(*id)).collect();
     Ok(changed.into_iter().collect())
 }
 

@@ -4,6 +4,9 @@
 #include <algorithm>
 #include <cmath>
 #include <limits>
+#include <utility>
+
+#include <BRepBuilderAPI_Copy.hxx>
 
 #include <QJsonArray>
 #include <QRegularExpression>
@@ -28,6 +31,55 @@ constexpr int kCachedPreviews = 24;
 constexpr double kDegreesPerRadian = 57.29577951308232;
 
 const QColor kFailedColor(0xd0, 0x20, 0x20);
+
+struct InspectionShape {
+  SelectionItem item;
+  TopoDS_Shape shape;
+  mutable TopoDS_Shape copy;
+  mutable bool copied = false;
+};
+
+// This context lives only inside the document's inspection worker job.
+// Placements and picked shapes were resolved while the UI owned the
+// document; calculations use private geometry copies, never the window.
+class WorkerInspectionContext final : public CommandContext {
+public:
+  WorkerInspectionContext(const Document& document, std::vector<InspectionShape> shapes)
+      : m_document(document), m_shapes(std::move(shapes)) {}
+
+  QJsonValue query(const QJsonObject& request) const override {
+    const QJsonDocument answer = parseJson(m_document.query(rustStr(compactJson(request))));
+    return answer.isArray() ? QJsonValue(answer.array()) : QJsonValue(answer.object());
+  }
+
+  std::shared_ptr<geometry::Shape> bodyShape(const QString& uid) const override {
+    return m_document.body_shape(uid.toStdString());
+  }
+
+  TopoDS_Shape itemShape(const SelectionItem& item) const override {
+    for (const InspectionShape& snapshot : m_shapes) {
+      if (snapshot.item != item) { continue; }
+      if (!snapshot.copied) {
+        if (!snapshot.shape.IsNull()) {
+          BRepBuilderAPI_Copy copier(snapshot.shape, true, false);
+          snapshot.copy = copier.Shape();
+        }
+        snapshot.copied = true;
+      }
+      return snapshot.copy;
+    }
+    return TopoDS_Shape();
+  }
+
+  TopoDS_Shape analysisShape(const QJsonObject& request) const override {
+    const auto shape = m_document.analysis_shape(rustStr(compactJson(request)));
+    return shape ? shape->occt() : TopoDS_Shape();
+  }
+
+private:
+  const Document& m_document;
+  std::vector<InspectionShape> m_shapes;
+};
 
 QString kindKey(ValueKind kind) {
   switch (kind) {
@@ -67,6 +119,9 @@ CommandSession::CommandSession(const CommandDef& def, CommandHost& host, const Q
 }
 
 CommandSession::~CommandSession() {
+  if (m_presenter != nullptr) {
+    m_presenter->setActions({});
+  }
   delete m_panel;
   delete m_manipulators;
 }
@@ -203,16 +258,22 @@ bool CommandSession::start(const Selection& preselection, QString& error) {
     }
     if (position >= 0 && marker > position) {
       // Show the model as the feature finds it.
-      if (!m_host.runCommand({{QStringLiteral("cmd"), QStringLiteral("set_marker")},
-                              {QStringLiteral("position"), position}})) {
-        error = tr("Could not roll the timeline back to %1.")
-                    .arg(feature.value(QStringLiteral("name")).toString());
-        return false;
-      }
-      m_markerMoved = true;
+      const QJsonObject rollback{{QStringLiteral("cmd"), QStringLiteral("set_marker")},
+                                 {QStringLiteral("position"), position}};
       m_markerPosition = position;
       m_originalMarker = marker;
-      m_host.refreshScene();
+      if (m_deferStartRollback) {
+        m_startRollback = rollback;
+        m_startRollback.insert(QStringLiteral("temporary"), true);
+      } else {
+        if (!m_host.runCommand(rollback)) {
+          error = tr("Could not roll the timeline back to %1.")
+                      .arg(feature.value(QStringLiteral("name")).toString());
+          return false;
+        }
+        m_markerMoved = true;
+        m_host.refreshScene();
+      }
     }
   } else if (!m_analysis.isEmpty()) {
     if (!m_def.load) {
@@ -248,9 +309,86 @@ bool CommandSession::start(const Selection& preselection, QString& error) {
   return true;
 }
 
+void CommandSession::startAsync(const Selection& preselection,
+                                std::function<void(bool, const QString&)> completion) {
+  if (m_done || m_cancelRequested) {
+    if (!m_done) { finish(false); }
+    completion(false, tr("Computation cancelled."));
+    return;
+  }
+  if (m_host.modelBusy()) {
+    m_host.whenIdle(this, [this, preselection, completion = std::move(completion)] {
+      startAsync(preselection, completion);
+    });
+    return;
+  }
+  m_deferStartRollback = true;
+  QString error;
+  const bool ready = start(preselection, error);
+  m_deferStartRollback = false;
+  if (!ready) {
+    completion(false, error);
+    return;
+  }
+  const auto stopped = [this, completion](const QString& reason) {
+    connect(this, &CommandSession::finished, this, [completion, reason](bool) {
+      completion(false, reason);
+    });
+    finish(false);
+  };
+  m_asyncPending = true;
+  commandSequenceAsync(QJsonArray{QJsonObject{{QStringLiteral("cmd"), QStringLiteral("begin_command")}}},
+      [this, completion, stopped](const CommandHost::AsyncResult& checkpoint) {
+        if (checkpoint.succeeded()) {
+          m_checkpoint = checkpoint.answer.value(QStringLiteral("token"));
+        }
+        if (!checkpoint.succeeded() || !m_checkpoint.isString()) {
+          m_asyncPending = false;
+          const QString error = checkpoint.cancelled ? tr("Computation cancelled.") : checkpoint.error;
+          if (m_cancelRequested) { stopped(error); }
+          else { completion(false, error); }
+          return;
+        }
+        if (m_cancelRequested) {
+          m_asyncPending = false;
+          stopped(tr("Computation cancelled."));
+          return;
+        }
+        if (m_startRollback.isEmpty()) {
+          m_asyncPending = false;
+          completion(true, QString());
+          return;
+        }
+        commandSequenceAsync(QJsonArray{m_startRollback},
+            [this, completion, stopped](const CommandHost::AsyncResult& result) {
+              m_asyncPending = false;
+              m_markerMoved = result.succeeded();
+              m_startRollback = {};
+              const QString error = result.cancelled ? tr("Computation cancelled.") : result.error;
+              if (m_cancelRequested || !result.succeeded()) {
+                if (!error.isEmpty()) { m_host.showHint(error); }
+                stopped(error);
+                return;
+              }
+              m_host.refreshScene();
+              completion(true, QString());
+            });
+      });
+}
+
 CommandPanel* CommandSession::createPanel(QWidget* parent) {
   m_panel = new CommandPanel(m_def, m_state, isEditing() || !m_analysis.isEmpty(), parent);
-  connect(m_panel, &CommandPanel::textEdited, this, [this](const QString& key, const QString& text) {
+  setPresenter(*m_panel);
+  return m_panel;
+}
+
+void CommandSession::setPresenter(CommandPresenter& presenter) {
+  if (m_presenter != nullptr) {
+    m_presenter->setActions({});
+  }
+  m_presenter = &presenter;
+  CommandPresenter::Actions actions;
+  actions.textEdited = [this](const QString& key, const QString& text) {
     m_state.setText(key, text);
     const auto slot = slotOf(key);
     if (slot && slot->def->type == InputDef::Type::Value) {
@@ -259,48 +397,48 @@ CommandPanel* CommandSession::createPanel(QWidget* parent) {
       qDebug().noquote() << QStringLiteral("%1 %2: %3").arg(m_def.name, slot->def->label, text);
     }
     inputsChanged();
-  });
+  };
   // A value entered with decimal commas shows them as points, as the model
   // keeps it ("12,5" becomes "12.5 mm"; mitcad#2).
-  connect(m_panel, &CommandPanel::valueCommitted, this, [this](const QString& key) {
+  actions.valueCommitted = [this](const QString& key) {
     const QString text = m_state.text(key).trimmed();
     const QString expression = m_state.expression(key);
     if (m_done || !std::isfinite(m_state.value(key)) || !text.contains(QLatin1Char(',')) ||
         expression.isEmpty() || expression == text) {
       return;
     }
+    ++m_generation;
     m_state.setText(key, expression);
     evaluate(key);
     inputsChanged();
-  });
-  connect(m_panel, &CommandPanel::choiceChanged, this,
-          [this](const QString& key, const QString& value) {
-            m_state.setChoice(key, value);
-            if (const auto slot = slotOf(key)) {
-              for (const auto& [choice, label] : slot->def->choicesIn(scopeOf(*slot))) {
-                if (choice == value) {
-                  qDebug().noquote()
-                      << QStringLiteral("%1: %2 = %3").arg(m_def.name, slot->def->label, label);
-                  break;
-                }
-              }
-              if (slot->def->onChange) {
-                slot->def->onChange(m_state, m_host);
-                // Values it set (made NaN) are evaluated again (Drive
-                // Joint: the motion's value where it is).
-                if (m_panel) {
-                  m_panel->refresh(m_state);
-                }
-                for (const Slot& other : slotsOf(true)) {
-                  if (other.def->type == InputDef::Type::Value && std::isnan(m_state.value(other.key))) {
-                    evaluate(other.key);
-                  }
-                }
-              }
-            }
-            inputsChanged();
-          });
-  connect(m_panel, &CommandPanel::checkChanged, this, [this](const QString& key, bool on) {
+  };
+  actions.choiceChanged = [this](const QString& key, const QString& value) {
+    m_state.setChoice(key, value);
+    if (const auto slot = slotOf(key)) {
+      for (const auto& [choice, label] : slot->def->choicesIn(scopeOf(*slot))) {
+        if (choice == value) {
+          qDebug().noquote()
+              << QStringLiteral("%1: %2 = %3").arg(m_def.name, slot->def->label, label);
+          break;
+        }
+      }
+      if (slot->def->onChange) {
+        slot->def->onChange(m_state, m_host);
+        // Values it set (made NaN) are evaluated again (Drive
+        // Joint: the motion's value where it is).
+        if (m_presenter) {
+          m_presenter->refresh(m_state);
+        }
+        for (const Slot& other : slotsOf(true)) {
+          if (other.def->type == InputDef::Type::Value && std::isnan(m_state.value(other.key))) {
+            evaluate(other.key);
+          }
+        }
+      }
+    }
+    inputsChanged();
+  };
+  actions.checkChanged = [this](const QString& key, bool on) {
     m_state.setChecked(key, on);
     if (const auto slot = slotOf(key)) {
       qDebug().noquote() << QStringLiteral("%1: %2 = %3")
@@ -308,33 +446,32 @@ CommandPanel* CommandSession::createPanel(QWidget* parent) {
                                      on ? QStringLiteral("on") : QStringLiteral("off"));
     }
     inputsChanged();
-  });
-  connect(m_panel, &CommandPanel::selectionActivated, this,
-          [this](const QString& key) { activate(key); });
-  connect(m_panel, &CommandPanel::selectionCleared, this, [this](const QString& key) {
+  };
+  actions.selectionActivated = [this](const QString& key) { activate(key); };
+  actions.selectionCleared = [this](const QString& key) {
     m_state.items(key).clear();
     activate(key);
     selectionChanged(key);
-  });
-  connect(m_panel, &CommandPanel::itemMoved, this, [this](const QString& key, int from, int to) {
+  };
+  actions.itemMoved = [this](const QString& key, int from, int to) {
     Selection& items = m_state.items(key);
     if (from >= 0 && from < items.size() && to >= 0 && to < items.size()) {
       items.move(from, to);
       selectionChanged(key);
     }
-  });
-  connect(m_panel, &CommandPanel::itemRemoved, this, [this](const QString& key, int index) {
+  };
+  actions.itemRemoved = [this](const QString& key, int index) {
     Selection& items = m_state.items(key);
     if (index >= 0 && index < items.size()) {
       items.removeAt(index);
       selectionChanged(key);
     }
-  });
-  connect(m_panel, &CommandPanel::rowAdded, this, [this](const QString& list) {
+  };
+  actions.rowAdded = [this](const QString& list) {
     const int row = m_state.rows(list);
     m_state.setRows(list, row + 1);
     setRowDefaults();
-    m_panel->refresh(m_state);
+    m_presenter->refresh(m_state);
     QString first;
     for (const Slot& slot : slotsOf(false)) {
       if (slot.list == list && slot.row == row) {
@@ -351,15 +488,15 @@ CommandPanel* CommandSession::createPanel(QWidget* parent) {
     }
     updateHighlights();
     inputsChanged();
-  });
-  connect(m_panel, &CommandPanel::rowRemoved, this, [this](const QString& list, int index) {
+  };
+  actions.rowRemoved = [this](const QString& list, int index) {
     const int list_ = m_def.inputIndex(list);
     if (list_ < 0 || m_state.rows(list) <= m_def.inputs[list_].minRows) {
       return;
     }
     m_state.removeRow(list, index);
     qDebug().noquote() << QStringLiteral("%1: removed %2 row %3").arg(m_def.name, list).arg(index + 1);
-    m_panel->refresh(m_state);
+    m_presenter->refresh(m_state);
     for (const Slot& slot : slotsOf(false)) {
       if (slot.list == list && slot.def->type == InputDef::Type::Value) {
         evaluate(slot.key);
@@ -370,9 +507,74 @@ CommandPanel* CommandSession::createPanel(QWidget* parent) {
     }
     updateHighlights();
     inputsChanged();
-  });
-  connect(m_panel, &CommandPanel::accepted, this, [this] { commit(); });
-  connect(m_panel, &CommandPanel::rejected, this, &CommandSession::cancel);
+  };
+  actions.accepted = [this] { commit(); };
+  actions.rejected = [this] { cancel(); };
+
+  // AppKit can deliver edits while a worker computes. Keep their values
+  // queued until the model is idle, and invalidate the preview immediately.
+  {
+    auto action = actions.textEdited;
+    actions.textEdited = [this, action](const QString& key, const QString& value) {
+      inputAction([action, key, value] { action(key, value); });
+    };
+  }
+  {
+    auto action = actions.valueCommitted;
+    actions.valueCommitted = [this, action](const QString& key) {
+      inputAction([action, key] { action(key); }, false);
+    };
+  }
+  {
+    auto action = actions.choiceChanged;
+    actions.choiceChanged = [this, action](const QString& key, const QString& value) {
+      inputAction([action, key, value] { action(key, value); });
+    };
+  }
+  {
+    auto action = actions.checkChanged;
+    actions.checkChanged = [this, action](const QString& key, bool value) {
+      inputAction([action, key, value] { action(key, value); });
+    };
+  }
+  {
+    auto action = actions.selectionActivated;
+    actions.selectionActivated = [this, action](const QString& key) {
+      inputAction([action, key] { action(key); });
+    };
+  }
+  {
+    auto action = actions.selectionCleared;
+    actions.selectionCleared = [this, action](const QString& key) {
+      structuralInputAction(key, [action, key] { action(key); });
+    };
+  }
+  {
+    auto action = actions.itemMoved;
+    actions.itemMoved = [this, action](const QString& key, int from, int to) {
+      structuralInputAction(key, [action, key, from, to] { action(key, from, to); });
+    };
+  }
+  {
+    auto action = actions.itemRemoved;
+    actions.itemRemoved = [this, action](const QString& key, int index) {
+      structuralInputAction(key, [action, key, index] { action(key, index); });
+    };
+  }
+  {
+    auto action = actions.rowAdded;
+    actions.rowAdded = [this, action](const QString& key) {
+      structuralInputAction(key, [action, key] { action(key); });
+    };
+  }
+  {
+    auto action = actions.rowRemoved;
+    actions.rowRemoved = [this, action](const QString& key, int index) {
+      structuralInputAction(key, [action, key, index] { action(key, index); });
+    };
+  }
+  actions.detached = [this] { presenterDetached(); };
+  presenter.setActions(std::move(actions));
 
   for (const Slot& slot : slotsOf(false)) {
     if (slot.def->type == InputDef::Type::Value) {
@@ -391,7 +593,7 @@ CommandPanel* CommandSession::createPanel(QWidget* parent) {
     }
   }
   activateFirstNeeded();
-  m_panel->refresh(m_state);
+  m_presenter->refresh(m_state);
   if (m_def.inspect) {
     m_sectionBefore = m_host.section();
   }
@@ -426,9 +628,12 @@ CommandPanel* CommandSession::createPanel(QWidget* parent) {
     qDebug().noquote() << QStringLiteral("Panel %1 choices: %2").arg(m_def.name, choices.join(QStringLiteral(", ")));
   }
   // Once the panel is shown and laid out.
-  TestSync::singleShot(100, m_panel.data(), [panel = m_panel.data()] { panel->logLayout(); });
+  TestSync::singleShot(100, this, [this] {
+    if (m_presenter != nullptr) {
+      m_presenter->logLayout();
+    }
+  });
   m_previewTimer.start(0);
-  return m_panel;
 }
 
 // ---------------------------------------------------------------------------
@@ -468,20 +673,23 @@ void CommandSession::activate(const QString& key) {
   if (input == nullptr) {
     m_active.clear();
   }
-  if (m_panel) {
-    m_panel->setActiveSelection(m_active);
+  if (m_presenter) {
+    m_presenter->setActiveSelection(m_active);
   }
   OcctViewer& viewer = m_host.viewer();
   if (input == nullptr) {
     viewer.setPickFilter(SelectFilter());
+    updateGhosts();
     m_host.inputActivated(SelectFilter());
     return;
   }
   viewer.setPickFilter(input->filter, [this, input](const SelectionItem& item) {
     return input->accepts(item) && isReferable(item);
   });
-  if (m_panel) {
-    viewer.setHoverColor(m_panel->colorOf(m_active).lighter(130));
+  // Before the input logs its pick places: the ghosts let picks through.
+  updateGhosts();
+  if (m_presenter) {
+    viewer.setHoverColor(m_presenter->colorOf(m_active).lighter(130));
   }
   m_host.inputActivated(input->showsOrigin ? input->filter : input->filter & ~kConstructionGeometry);
   m_host.showHint(tr("%1: select %2.").arg(m_def.name, input->label.toLower()));
@@ -513,6 +721,12 @@ bool CommandSession::isReferable(const SelectionItem& item) const {
 }
 
 void CommandSession::picked(const Selection& items, Qt::KeyboardModifiers modifiers, bool window) {
+  if (m_presenter && !m_presenter->inputEnabled(m_active)) { return; }
+  if (m_host.modelBusy()) {
+    inputAction([this, items, modifiers, window] { picked(items, modifiers, window); });
+    return;
+  }
+  ++m_generation;
   Q_UNUSED(modifiers);
   const InputDef* input = activeInput();
   if (input == nullptr || m_done) {
@@ -551,8 +765,8 @@ void CommandSession::picked(const Selection& items, Qt::KeyboardModifiers modifi
     }
     if (input->onPick && selection.contains(item)) {
       input->onPick(raw.first(), m_state, m_host);
-      if (m_panel) {
-        m_panel->refresh(m_state);
+      if (m_presenter) {
+        m_presenter->refresh(m_state);
       }
       // Values the pick set (positions, a centre) are evaluated again.
       for (const Slot& slot : slotsOf(false)) {
@@ -613,18 +827,49 @@ void CommandSession::logSelection(const QString& key) const {
 }
 
 void CommandSession::updateHighlights() {
+  if (m_host.modelBusy()) {
+    m_host.whenIdle(this, [this] { if (!m_done) { updateHighlights(); } });
+    return;
+  }
   std::vector<HighlightDisplay> highlights;
   for (const Slot& slot : slotsOf(true)) {
     if (slot.def->type != InputDef::Type::Selection) {
       continue;
     }
     const QColor color =
-        m_failed ? kFailedColor : (m_panel ? m_panel->colorOf(slot.key) : QColor(Qt::blue));
+        m_failed ? kFailedColor : (m_presenter ? m_presenter->colorOf(slot.key) : QColor(Qt::blue));
     for (const SelectionItem& item : m_state.items(slot.key)) {
       highlights.push_back({item, m_host.itemShape(item), color});
     }
   }
   m_host.viewer().setHighlights(highlights);
+  updateGhosts();
+}
+
+void CommandSession::updateGhosts() {
+  if (m_done) {
+    return;
+  }
+  if (m_host.modelBusy()) {
+    m_host.whenIdle(this, [this] { updateGhosts(); });
+    return;
+  }
+  QStringList ghosts;
+  for (const Slot& slot : slotsOf(true)) {
+    // The active input's own picks may lie on them.
+    if (slot.def->type != InputDef::Type::Selection || !slot.def->ghosts || slot.key == m_active) {
+      continue;
+    }
+    const CommandState scope = scopeOf(slot);
+    for (const SelectionItem& item : m_state.items(slot.key)) {
+      for (const QString& occurrence : slot.def->ghosts(item, scope, m_host)) {
+        if (!occurrence.isEmpty() && !ghosts.contains(occurrence)) {
+          ghosts << occurrence;
+        }
+      }
+    }
+  }
+  m_host.viewer().setGhosts(ghosts);
 }
 
 // ---------------------------------------------------------------------------
@@ -666,9 +911,9 @@ void CommandSession::evaluate(const QString& key) {
       problem = errorText(e);
     }
   }
-  if (m_panel) {
-    m_panel->setInputError(key, problem);
-    m_panel->setValueHint(key, hint);
+  if (m_presenter) {
+    m_presenter->setInputError(key, problem);
+    m_presenter->setValueHint(key, hint);
   }
   qDebug().noquote() << QStringLiteral("%1 %2: %3 %4")
                             .arg(m_def.name, input.label, text,
@@ -702,14 +947,18 @@ void CommandSession::inputsChanged() {
   if (!newlyShown.isEmpty() && newlyShown != m_active) {
     activate(newlyShown);
   }
-  if (m_panel) {
-    m_panel->refresh(m_state);
+  if (m_presenter) {
+    m_presenter->refresh(m_state);
   }
   updateManipulators();
   schedulePreview();
 }
 
 void CommandSession::updateManipulators() {
+  if (m_host.modelBusy()) {
+    m_host.whenIdle(this, [this] { if (!m_done) { updateManipulators(); } });
+    return;
+  }
   if (!m_manipulators) {
     return;
   }
@@ -745,6 +994,12 @@ void CommandSession::updateManipulators() {
 }
 
 void CommandSession::manipulatorDragged(const QString& key, double value) {
+  if (m_presenter && !m_presenter->inputEnabled(key)) { return; }
+  if (m_host.modelBusy()) {
+    inputAction([this, key, value] { manipulatorDragged(key, value); });
+    return;
+  }
+  ++m_generation;
   const auto slot = slotOf(key);
   if (!slot || m_done) {
     return;
@@ -767,6 +1022,12 @@ void CommandSession::manipulatorDragged(const QString& key, double value) {
 }
 
 void CommandSession::toggleElement(const QString& key, int element) {
+  if (m_presenter && !m_presenter->inputEnabled(key)) { return; }
+  if (m_host.modelBusy()) {
+    inputAction([this, key, element] { toggleElement(key, element); });
+    return;
+  }
+  ++m_generation;
   if (m_done) {
     return;
   }
@@ -822,11 +1083,72 @@ void CommandSession::runInspection() {
   QString message;
   bool error = false;
   if (!previewReady(message, error)) {
-    m_panel->setResult(QString());
-    m_panel->setMessage(message, error);
+    m_presenter->setResult(QString());
+    m_presenter->setMessage(message, error);
     m_host.viewer().setPreview(TopoDS_Shape());
     m_previewOk = true; // OK closes it anyway
-    m_panel->setOkEnabled(true);
+    m_shownKey = QByteArrayLiteral("inspection");
+    m_presenter->setOkEnabled(true);
+    return;
+  }
+  if (m_host.asynchronousCommands()) {
+    std::vector<InspectionShape> shapes;
+    try {
+      for (const Slot& slot : slotsOf(true)) {
+        if (slot.def->type != InputDef::Type::Selection) { continue; }
+        for (const SelectionItem& item : m_state.items(slot.key)) {
+          const bool captured = std::any_of(shapes.begin(), shapes.end(), [&item](const InspectionShape& shape) {
+            return shape.item == item;
+          });
+          if (!captured) { shapes.push_back({item, m_host.itemShape(item), {}, false}); }
+        }
+      }
+    } catch (const std::exception& failure) {
+      Inspection result;
+      result.error = errorText(failure);
+      acceptInspection(result);
+      return;
+    }
+    const CommandState state = m_state;
+    const auto inspect = m_def.inspect;
+    const quint64 generation = m_generation;
+    m_asyncPending = true;
+    m_presenter->setMessage(tr("Computing inspection…"), false);
+    m_presenter->setOkEnabled(false);
+    const bool started = m_host.modelInspectionAsync(m_def.name, this,
+        [state, inspect, shapes = std::move(shapes)](const Document& document) {
+          const WorkerInspectionContext context(document, shapes);
+          return inspect(state, context);
+        }, [this, generation](const Inspection& result, const CommandHost::AsyncResult& outcome) {
+          if (!asyncPresenterAvailable()) { return; }
+          m_asyncPending = false;
+          if (m_cancelRequested) {
+            finishAsyncCancel();
+            return;
+          }
+          if (generation != m_generation) {
+            schedulePreview();
+            return;
+          }
+          if (outcome.cancelled) {
+            m_previewOk = true; // Close remains available after cancellation.
+            m_shownKey = QByteArrayLiteral("inspection");
+            m_presenter->setResult(QString());
+            m_presenter->setMessage(tr("Inspection cancelled; change an input to try again."), false);
+            m_presenter->setOkEnabled(true);
+            m_host.viewer().setPreview(TopoDS_Shape());
+            qDebug().noquote() << QStringLiteral("Inspect %1: cancelled").arg(m_def.name);
+          } else {
+            Inspection shown = result;
+            if (!outcome.error.isEmpty()) { shown.error = outcome.error; }
+            acceptInspection(shown);
+          }
+          resumePendingCommit();
+        });
+    if (!started) {
+      m_asyncPending = false;
+      schedulePreview();
+    }
     return;
   }
   Inspection result;
@@ -835,9 +1157,14 @@ void CommandSession::runInspection() {
   } catch (const std::exception& e) {
     result.error = errorText(e);
   }
+  acceptInspection(result);
+}
+
+void CommandSession::acceptInspection(const Inspection& result) {
+  if (m_done || !m_presenter) { return; }
   m_failed = !result.error.isEmpty();
-  m_panel->setResult(result.text);
-  m_panel->setMessage(result.error, m_failed);
+  m_presenter->setResult(result.text);
+  m_presenter->setMessage(result.error, m_failed);
   m_host.viewer().setPreview(result.shape, result.red ? OcctViewer::PreviewStyle::Remove
                                                       : OcctViewer::PreviewStyle::Add);
   if (m_def.keepsSection || !result.section.isNull()) {
@@ -847,13 +1174,14 @@ void CommandSession::runInspection() {
                             .arg(m_def.name, m_failed ? QStringLiteral("failed: ") + result.error
                                                       : result.log);
   m_previewOk = true;
-  m_panel->setOkEnabled(true);
+  m_shownKey = QByteArrayLiteral("inspection");
+  m_presenter->setOkEnabled(true);
   updateHighlights();
 }
 
 void CommandSession::runPreview() {
   m_previewTimer.stop();
-  if (m_done || !m_panel) {
+  if (m_done || !m_presenter) {
     return;
   }
   if (m_host.modelBusy()) {
@@ -889,8 +1217,8 @@ void CommandSession::runPreview() {
     m_shownKey.clear();
     m_previewOk = false;
     m_failed = error;
-    m_panel->setMessage(message, error);
-    m_panel->setOkEnabled(false);
+    m_presenter->setMessage(message, error);
+    m_presenter->setOkEnabled(false);
     updateHighlights();
     return;
   }
@@ -899,14 +1227,18 @@ void CommandSession::runPreview() {
     m_shownKey = compactJson(built.def);
     m_previewOk = true;
     m_failed = false;
-    m_panel->setMessage(QString(), false);
-    m_panel->setOkEnabled(true);
+    m_presenter->setMessage(QString(), false);
+    m_presenter->setOkEnabled(true);
     m_host.showHint(tr("%1: Enter to confirm, Esc to cancel.").arg(m_def.name));
     updateHighlights();
     return;
   }
   if (m_def.sketchCommand) {
-    showSketchPreview(built);
+    if (m_host.asynchronousCommands()) {
+      showSketchPreviewAsync(built);
+    } else {
+      showSketchPreview(built);
+    }
     return;
   }
 
@@ -917,78 +1249,125 @@ void CommandSession::runPreview() {
     return; // already shown
   }
   m_previewCancelled = false;
-  auto cached = m_cache.constFind(key);
-  if (cached == m_cache.cend()) {
-    Preview preview;
-    try {
-      preview.report = m_host.modelPreview(key, m_def.name);
-    } catch (const ComputationCancelled&) {
-      showCancelledPreview(key); // not cached: it is not what the model gives
-      return;
-    } catch (const std::exception& e) {
-      preview.report = {{QStringLiteral("status"), QStringLiteral("error")},
-                        {QStringLiteral("error"), errorText(e)}};
+  const auto cached = m_cache.constFind(key);
+  if (cached != m_cache.cend()) {
+    acceptFeaturePreview(key, built, cached.value(), false);
+    resumePendingCommit();
+    return;
+  }
+  if (m_host.asynchronousCommands()) {
+    const quint64 generation = m_generation;
+    m_asyncPending = true;
+    m_presenter->setMessage(tr("Computing preview…"), false);
+    m_presenter->setOkEnabled(false);
+    const bool started = m_host.modelPreviewAsync(key, m_def.name, this,
+        [this, generation, key, built](const CommandHost::AsyncResult& result) {
+          if (!asyncPresenterAvailable()) { return; }
+          m_asyncPending = false;
+          if (m_cancelRequested) {
+            finishAsyncCancel();
+            return;
+          }
+          if (generation != m_generation) {
+            schedulePreview();
+            return;
+          }
+          if (result.cancelled) {
+            showCancelledPreview(key);
+          } else {
+            const QJsonObject report = result.error.isEmpty() ? result.answer
+                : QJsonObject{{QStringLiteral("status"), QStringLiteral("error")},
+                              {QStringLiteral("error"), result.error}};
+            acceptFeaturePreview(key, built, previewFromReport(report), true);
+          }
+          resumePendingCommit();
+        });
+    if (!started) {
+      m_asyncPending = false;
+      schedulePreview();
     }
-    if (preview.report.value(QStringLiteral("status")).toString() == QStringLiteral("ok")) {
-      // The bodies as shown now (placed by their occurrences), changed ones
-      // replaced by the preview's, removed ones left out, new ones added.
-      QHash<QString, bool> after; // uid: changed
-      for (const QJsonValue& value : preview.report.value(QStringLiteral("bodies")).toArray()) {
-        const QJsonObject body = value.toObject();
-        after.insert(body.value(QStringLiteral("uid")).toString(),
-                     body.value(QStringLiteral("changed")).toBool());
+    return;
+  }
+  QJsonObject report;
+  try {
+    report = m_host.modelPreview(key, m_def.name);
+  } catch (const ComputationCancelled&) {
+    showCancelledPreview(key);
+    return;
+  } catch (const std::exception& error) {
+    report = {{QStringLiteral("status"), QStringLiteral("error")},
+              {QStringLiteral("error"), errorText(error)}};
+  }
+  acceptFeaturePreview(key, built, previewFromReport(report), true);
+}
+
+CommandSession::Preview CommandSession::previewFromReport(const QJsonObject& report) {
+  Preview preview;
+  preview.report = report;
+  if (preview.report.value(QStringLiteral("status")).toString() == QStringLiteral("ok")) {
+    // The bodies as shown now (placed by their occurrences), changed ones
+    // replaced by the preview's, removed ones left out, new ones added.
+    QHash<QString, bool> after; // uid: changed
+    for (const QJsonValue& value : preview.report.value(QStringLiteral("bodies")).toArray()) {
+      const QJsonObject body = value.toObject();
+      after.insert(body.value(QStringLiteral("uid")).toString(),
+                   body.value(QStringLiteral("changed")).toBool());
+    }
+    QSet<QString> shown;
+    for (BodyDisplay display : m_host.modelBodies()) {
+      const QString uid = QString::fromStdString(display.uid);
+      if (!after.contains(uid)) {
+        continue;
       }
-      QSet<QString> shown;
-      for (BodyDisplay display : m_host.modelBodies()) {
-        const QString uid = QString::fromStdString(display.uid);
-        if (!after.contains(uid)) {
-          continue;
-        }
-        if (after.value(uid)) {
-          display.shape = m_host.previewBodyShape(display.uid);
-        }
-        shown.insert(uid);
+      if (after.value(uid)) {
+        display.shape = m_host.previewBodyShape(display.uid);
+      }
+      shown.insert(uid);
+      preview.bodies.push_back(display);
+    }
+    for (auto it = after.cbegin(); it != after.cend(); ++it) {
+      if (!shown.contains(it.key())) {
+        BodyDisplay display;
+        display.uid = it.key().toStdString();
+        display.shape = m_host.previewBodyShape(display.uid);
+        display.style = BodyDisplay::Style::New;
         preview.bodies.push_back(display);
       }
-      for (auto it = after.cbegin(); it != after.cend(); ++it) {
-        if (!shown.contains(it.key())) {
-          BodyDisplay display;
-          display.uid = it.key().toStdString();
-          display.shape = m_host.previewBodyShape(display.uid);
-          display.style = BodyDisplay::Style::New;
-          preview.bodies.push_back(display);
-        }
-      }
-      // Occurrences the command places elsewhere (joints, moves of
-      // occurrences; mitcad#55): their bodies where it puts them.
-      QHash<QString, QJsonArray> placed;
-      for (const QJsonValue& value : preview.report.value(QStringLiteral("placements")).toArray()) {
-        const QJsonObject placement = value.toObject();
-        placed.insert(placement.value(QStringLiteral("path")).toString(),
-                      placement.value(QStringLiteral("transform")).toArray());
-      }
-      for (BodyDisplay& display : preview.bodies) {
-        const auto moved = placed.constFind(QString::fromStdString(display.occurrence));
-        if (moved != placed.cend()) {
-          display.placement = isIdentity(moved.value()) ? TopLoc_Location() : TopLoc_Location(trsfOf(moved.value()));
-        }
-      }
-      if (const auto tool = m_host.previewToolShape()) {
-        preview.tool = tool->occt();
-      } else if (preview.report.contains(QStringLiteral("datum"))) {
-        // A construction feature shows its plane, axis or point.
-        preview.tool = datumShape(preview.report.value(QStringLiteral("datum")).toObject(), 100.0);
+    }
+    // Occurrences the command places elsewhere (joints, moves of
+    // occurrences; mitcad#55): their bodies where it puts them.
+    QHash<QString, QJsonArray> placed;
+    for (const QJsonValue& value : preview.report.value(QStringLiteral("placements")).toArray()) {
+      const QJsonObject placement = value.toObject();
+      placed.insert(placement.value(QStringLiteral("path")).toString(),
+                    placement.value(QStringLiteral("transform")).toArray());
+    }
+    for (BodyDisplay& display : preview.bodies) {
+      const auto moved = placed.constFind(QString::fromStdString(display.occurrence));
+      if (moved != placed.cend()) {
+        display.placement = isIdentity(moved.value()) ? TopLoc_Location() : TopLoc_Location(trsfOf(moved.value()));
       }
     }
-    // The oldest goes first: a removal can move the others in the hash,
-    // which would leave `cached` dangling.
+    if (const auto tool = m_host.previewToolShape()) {
+      preview.tool = tool->occt();
+    } else if (preview.report.contains(QStringLiteral("datum"))) {
+      // A construction feature shows its plane, axis or point.
+      preview.tool = datumShape(preview.report.value(QStringLiteral("datum")).toObject(), 100.0);
+    }
+  }
+  return preview;
+}
+
+void CommandSession::acceptFeaturePreview(const QByteArray& key, const Built& built,
+                                         const Preview& preview, bool cache) {
+  if (m_done || !m_presenter) { return; }
+  if (cache) {
     if (m_cacheOrder.size() >= kCachedPreviews) {
       m_cache.remove(m_cacheOrder.takeFirst());
     }
-    cached = m_cache.insert(key, preview);
+    m_cache.insert(key, preview);
     m_cacheOrder.append(key);
   }
-  const Preview& preview = cached.value();
   m_shownKey = key;
   const QString status = preview.report.value(QStringLiteral("status")).toString();
   m_previewOk = status == QStringLiteral("ok");
@@ -997,7 +1376,7 @@ void CommandSession::runPreview() {
     showPreview(preview, built.def.value(QStringLiteral("operation")).toString());
     // A feature that succeeds with a caveat says so (P9), not in red.
     const QStringList warnings = preview.report.value(QStringLiteral("warnings")).toVariant().toStringList();
-    m_panel->setMessage(warnings.join(QLatin1Char('\n')), false);
+    m_presenter->setMessage(warnings.join(QLatin1Char('\n')), false);
     m_host.showHint(tr("%1: Enter to confirm, Esc to cancel.").arg(m_def.name));
     qDebug().noquote() << QStringLiteral("Preview %1: ok%2")
                               .arg(m_def.name, warnings.isEmpty()
@@ -1014,10 +1393,10 @@ void CommandSession::runPreview() {
   } else {
     clearPreview();
     const QString problem = preview.report.value(QStringLiteral("error")).toString();
-    m_panel->setMessage(problem, true);
+    m_presenter->setMessage(problem, true);
     qDebug().noquote() << QStringLiteral("Preview %1: failed: %2").arg(m_def.name, problem);
   }
-  m_panel->setOkEnabled(m_previewOk);
+  m_presenter->setOkEnabled(m_previewOk);
   updateHighlights();
   // Toggles follow the shown preview (a pattern's instances, P9).
   const QJsonObject shown = m_previewOk ? preview.report : QJsonObject();
@@ -1044,13 +1423,14 @@ void CommandSession::showPreview(const Preview& preview, const QString& operatio
 }
 
 void CommandSession::showCancelledPreview(const QByteArray& key) {
+  if (m_done || !m_presenter) { return; }
   clearPreview();
   m_shownKey = key;
   m_previewCancelled = true;
   m_previewOk = true; // OK computes it, with a progress and a cancel of its own
   m_failed = false;
-  m_panel->setMessage(tr("Preview cancelled; change an input to preview again."), false);
-  m_panel->setOkEnabled(true);
+  m_presenter->setMessage(tr("Preview cancelled; change an input to preview again."), false);
+  m_presenter->setOkEnabled(true);
   updateHighlights();
   if (!m_shownReport.isEmpty()) {
     m_shownReport = QJsonObject();
@@ -1104,8 +1484,8 @@ void CommandSession::showSketchPreview(const Built& built) {
     m_previewOk = true;
     m_failed = false;
     m_host.refreshScene();
-    m_panel->setMessage(tr("Preview cancelled; change an input to preview again."), false);
-    m_panel->setOkEnabled(true);
+    m_presenter->setMessage(tr("Preview cancelled; change an input to preview again."), false);
+    m_presenter->setOkEnabled(true);
     updateHighlights();
     qDebug().noquote() << QStringLiteral("Preview %1: cancelled").arg(m_def.name);
     return;
@@ -1114,18 +1494,36 @@ void CommandSession::showSketchPreview(const Built& built) {
   m_failed = !m_previewOk;
   m_host.refreshScene();
   if (m_previewOk) {
-    m_panel->setMessage(QString(), false);
+    m_presenter->setMessage(QString(), false);
     m_host.showHint(tr("%1: Enter to confirm, Esc to cancel.").arg(m_def.name));
     qDebug().noquote() << QStringLiteral("Preview %1: ok").arg(m_def.name);
   } else {
-    m_panel->setMessage(problem, true);
+    m_presenter->setMessage(problem, true);
     qDebug().noquote() << QStringLiteral("Preview %1: failed: %2").arg(m_def.name, problem);
   }
-  m_panel->setOkEnabled(m_previewOk);
+  m_presenter->setOkEnabled(m_previewOk);
   updateHighlights();
 }
 
 void CommandSession::takeBackSketchPreview() {
+  if (m_host.asynchronousCommands() && m_appliedDepth >= 0) {
+    const int depth = m_appliedDepth;
+    m_appliedDepth = -1;
+    m_shownKey.clear();
+    m_asyncPending = true;
+    undoToDepthAsync(depth, [this, depth](const CommandHost::AsyncResult& result) {
+      m_asyncPending = false;
+      m_host.refreshScene();
+      if (!result.succeeded()) {
+        m_appliedDepth = depth;
+        m_previewOk = false;
+        m_presenter->setMessage(result.error, true);
+      }
+      if (m_cancelRequested) { finishAsyncCancel(); }
+      else { resumePendingCommit(); }
+    });
+    return;
+  }
   if (m_appliedDepth < 0) {
     return;
   }
@@ -1211,7 +1609,573 @@ void CommandSession::logVolumes(const QJsonObject& before) const {
   }
 }
 
+void CommandSession::inputAction(std::function<void()> action, bool invalidatesPreview,
+                                 std::function<void()> rejected) {
+  if (m_done || m_cancelRequested || m_committing) {
+    if (rejected) { rejected(); }
+    return;
+  }
+  if (invalidatesPreview) {
+    ++m_generation;
+    m_commitRequested = false;
+  }
+  if (m_host.modelBusy()) {
+    if (invalidatesPreview && m_host.asynchronousCommands() && m_asyncPending) {
+      m_host.cancelModelJob();
+    }
+    m_host.whenIdle(this, [this, action = std::move(action), rejected = std::move(rejected)] {
+      if (!m_done && !m_cancelRequested && !m_committing) {
+        action();
+      } else if (rejected) {
+        rejected();
+      }
+    });
+    return;
+  }
+  action();
+}
+
+void CommandSession::structuralInputAction(const QString& key, std::function<void()> action) {
+  const auto applied = [this, key] {
+    if (m_presenter) { m_presenter->inputActionApplied(key); }
+  };
+  inputAction([action = std::move(action), applied] {
+    action();
+    applied();
+  }, true, applied);
+}
+
+void CommandSession::presenterDetached() {
+  if (m_panel && m_presenter == static_cast<CommandPresenter*>(m_panel)) {
+    m_panel = nullptr;
+  }
+  m_presenter = nullptr;
+  m_previewTimer.stop();
+  ++m_generation;
+  if (!m_done && m_host.asynchronousCommands()) {
+    // A frontend may disappear while its worker still owns the document.
+    // Keep the session alive until cancellation restores its checkpoint.
+    cancelAsync();
+  }
+}
+
+bool CommandSession::asyncPresenterAvailable() {
+  if (m_done || m_finalizing) { return false; }
+  if (m_presenter) { return true; }
+  m_asyncPending = false;
+  m_cancelRequested = true;
+  m_commitRequested = false;
+  finishAsyncCancel();
+  return false;
+}
+
+void CommandSession::resumePendingCommit() {
+  if (m_commitRequested && !m_asyncPending && !m_host.modelBusy() && !m_done) {
+    m_commitRequested = false;
+    const quint64 generation = m_generation;
+    TestSync::singleShot(0, this, [this, generation] {
+      if (generation == m_generation && !m_done && !m_cancelRequested) { commitAsync(); }
+    });
+  }
+}
+
+void CommandSession::commandSequenceAsync(const QJsonArray& commands,
+                                          CommandHost::AsyncCompletion completion, int index,
+                                          std::function<bool()> aborted) {
+  if (aborted && aborted()) {
+    completion({{}, QString(), true});
+    return;
+  }
+  if (index >= commands.size()) {
+    completion({});
+    return;
+  }
+  if (m_host.modelBusy()) {
+    m_host.whenIdle(this, [this, commands, completion = std::move(completion), index, aborted] {
+      commandSequenceAsync(commands, completion, index, aborted);
+    });
+    return;
+  }
+  const bool started = m_host.modelCommandAsync(commands[index].toObject(), this,
+      [this, commands, completion, index, aborted](const CommandHost::AsyncResult& result) {
+        if (!result.succeeded()) {
+          completion(result);
+        } else if (aborted && aborted()) {
+          completion({{}, QString(), true});
+        } else if (index + 1 >= commands.size()) {
+          completion(result);
+        } else {
+          commandSequenceAsync(commands, completion, index + 1, aborted);
+        }
+      });
+  if (!started) {
+    completion({{}, tr("Could not start the model command."), false});
+  }
+}
+
+void CommandSession::undoToDepthAsync(int depth, CommandHost::AsyncCompletion completion, int guard) {
+  if (m_done || m_finalizing) {
+    completion({{}, QString(), true});
+    return;
+  }
+  if (m_host.modelBusy()) {
+    m_host.whenIdle(this, [this, depth, completion = std::move(completion), guard] {
+      undoToDepthAsync(depth, completion, guard);
+    });
+    return;
+  }
+  const int currentDepth = undoDepth();
+  if (currentDepth <= depth) {
+    completion({});
+    return;
+  }
+  if (guard < 0) {
+    // A batch can contain more than 64 selections. Allow one undo per
+    // accepted command, with room to retry a cancelled recovery job.
+    guard = currentDepth - depth + 8;
+  }
+  if (guard <= 0) {
+    completion({{}, tr("Could not restore the command's undo state."), false});
+    return;
+  }
+  commandSequenceAsync(QJsonArray{QJsonObject{{QStringLiteral("cmd"), QStringLiteral("undo")}}},
+      [this, depth, completion, guard](const CommandHost::AsyncResult& result) {
+        if (!result.succeeded() && !result.cancelled) {
+          completion(result);
+        } else {
+          undoToDepthAsync(depth, completion, guard - 1);
+        }
+      });
+}
+
+void CommandSession::restoreCheckpointAsync(CommandHost::AsyncCompletion completion) {
+  if (!m_checkpoint.isString()) {
+    completion({});
+    return;
+  }
+  commandSequenceAsync(QJsonArray{QJsonObject{{QStringLiteral("cmd"), QStringLiteral("restore_command")},
+                                              {QStringLiteral("token"), m_checkpoint}}},
+      [this, completion](const CommandHost::AsyncResult& result) {
+        if (result.cancelled) {
+          restoreCheckpointAsync(completion);
+          return;
+        }
+        if (result.succeeded()) {
+          m_markerMoved = false;
+          m_appliedDepth = -1;
+          m_shownKey.clear();
+        }
+        completion(result);
+      });
+}
+
+void CommandSession::rollForwardAsync(CommandHost::AsyncCompletion completion) {
+  if (m_done || m_finalizing) {
+    completion({{}, QString(), true});
+    return;
+  }
+  if (!m_markerMoved) {
+    completion({});
+    return;
+  }
+  const QJsonObject command{{QStringLiteral("cmd"), QStringLiteral("set_marker")},
+                           {QStringLiteral("position"), m_originalMarker},
+                           {QStringLiteral("temporary"), true}};
+  commandSequenceAsync(QJsonArray{command}, [this, completion](const CommandHost::AsyncResult& result) {
+    if (result.cancelled) {
+      // Restoring the editor's marker must finish before releasing its
+      // session, including a late cancellation of the restoration job.
+      rollForwardAsync(completion);
+      return;
+    }
+    m_markerMoved = !result.succeeded();
+    completion(result);
+  });
+}
+
+void CommandSession::showSketchPreviewAsync(const Built& built) {
+  const QByteArray key = compactJson(built.def);
+  if (key == m_shownKey && m_appliedDepth >= 0) {
+    resumePendingCommit();
+    return;
+  }
+  const quint64 generation = m_generation;
+  const int oldDepth = m_appliedDepth;
+  m_appliedDepth = -1;
+  m_asyncPending = true;
+  m_presenter->setOkEnabled(false);
+  const auto apply = [this, generation, built, key, oldDepth](const CommandHost::AsyncResult& undone) {
+    if (!asyncPresenterAvailable()) { return; }
+    if (!undone.succeeded()) {
+      m_asyncPending = false;
+      m_appliedDepth = oldDepth;
+      m_cancelRequested = false;
+      m_previewOk = false;
+      m_presenter->setMessage(undone.error, true);
+      return;
+    }
+    if (m_cancelRequested) {
+      m_asyncPending = false;
+      finishAsyncCancel();
+      return;
+    }
+    if (generation != m_generation) {
+      m_asyncPending = false;
+      schedulePreview();
+      return;
+    }
+    const QJsonArray commands = built.def.contains(QStringLiteral("commands"))
+        ? built.def.value(QStringLiteral("commands")).toArray() : QJsonArray{built.def};
+    const int depth = undoDepth();
+    commandSequenceAsync(commands, [this, generation, key, depth](const CommandHost::AsyncResult& result) {
+      if (!asyncPresenterAvailable()) { return; }
+      m_appliedDepth = depth;
+      const auto show = [this, generation, key, result, depth](const CommandHost::AsyncResult& undone) {
+        if (!asyncPresenterAvailable()) { return; }
+        m_asyncPending = false;
+        if (!undone.succeeded()) {
+          m_appliedDepth = depth;
+          m_cancelRequested = false;
+          m_previewOk = false;
+          m_presenter->setMessage(undone.error, true);
+          return;
+        }
+        if (m_cancelRequested) {
+          finishAsyncCancel();
+          return;
+        }
+        if (generation != m_generation) {
+          schedulePreview();
+          return;
+        }
+        m_shownKey = key;
+        m_previewCancelled = result.cancelled;
+        m_previewOk = result.succeeded() || result.cancelled;
+        m_failed = !m_previewOk;
+        m_host.refreshScene();
+        m_presenter->setMessage(result.cancelled
+            ? tr("Preview cancelled; change an input to preview again.") : result.error, !m_previewOk);
+        m_presenter->setOkEnabled(m_previewOk);
+        updateHighlights();
+        qDebug().noquote() << QStringLiteral("Preview %1: %2").arg(m_def.name,
+            result.cancelled ? QStringLiteral("cancelled")
+                             : (m_previewOk ? QStringLiteral("ok") : QStringLiteral("failed: ") + result.error));
+        resumePendingCommit();
+      };
+      if (!result.succeeded() || generation != m_generation || m_cancelRequested) {
+        m_appliedDepth = -1;
+        undoToDepthAsync(depth, show);
+      } else {
+        show({});
+      }
+    }, 0, [this, generation] { return m_cancelRequested || generation != m_generation; });
+  };
+  if (oldDepth >= 0) {
+    undoToDepthAsync(oldDepth, apply);
+  } else {
+    apply({});
+  }
+}
+
+void CommandSession::recoverFailedCommit(const CommandHost::AsyncResult& result) {
+  if (!asyncPresenterAvailable()) { return; }
+  if (m_cancelRequested) {
+    m_committing = false;
+    finishAsyncCancel();
+    return;
+  }
+  const auto show = [this, result](const CommandHost::AsyncResult& recovered) {
+    if (!asyncPresenterAvailable()) { return; }
+    m_asyncPending = false;
+    m_committing = false;
+    if (m_cancelRequested) {
+      finishAsyncCancel();
+      return;
+    }
+    if (recovered.cancelled) {
+      recoverFailedCommit(result);
+      return;
+    }
+    if (!recovered.succeeded()) {
+      m_previewOk = false;
+      m_presenter->setMessage(recovered.error, true);
+      return;
+    }
+    m_host.refreshScene();
+    if (m_presenter) { m_presenter->refresh(m_state); }
+    m_presenter->setMessage(result.cancelled ? tr("Computation cancelled.") : result.error,
+                            !result.cancelled);
+    m_presenter->setOkEnabled(true);
+    qDebug().noquote() << QStringLiteral("%1: OK %2").arg(m_def.name,
+        result.cancelled ? QStringLiteral("cancelled") : QStringLiteral("not done"));
+    schedulePreview();
+  };
+  if (!m_checkpoint.isString()) { show({}); return; }
+  m_asyncPending = true;
+  m_committing = true;
+  restoreCheckpointAsync([this, show](const CommandHost::AsyncResult& restored) {
+    if (!restored.succeeded() || m_cancelRequested || !isEditing() ||
+        m_originalMarker <= m_markerPosition) {
+      show(restored);
+      return;
+    }
+    commandSequenceAsync(QJsonArray{QJsonObject{{QStringLiteral("cmd"), QStringLiteral("set_marker")},
+        {QStringLiteral("position"), m_markerPosition}, {QStringLiteral("temporary"), true}}},
+        [this, show](const CommandHost::AsyncResult& rolled) {
+          m_markerMoved = rolled.succeeded();
+          show(rolled);
+        });
+  });
+}
+
+bool CommandSession::commitAsync() {
+  if (m_done || m_cancelRequested || m_committing) {
+    return false;
+  }
+  if (m_asyncPending || m_host.modelBusy()) {
+    m_commitRequested = true;
+    m_host.whenIdle(this, [this] { resumePendingCommit(); });
+    return true;
+  }
+  if (m_previewTimer.isActive() || m_shownKey.isEmpty()) {
+    m_commitRequested = true;
+    runPreview();
+    if (m_asyncPending || m_host.modelBusy()) {
+      return true;
+    }
+    m_commitRequested = false;
+  }
+  if (!m_def.inspect && !m_previewOk) {
+    qDebug().noquote() << QStringLiteral("%1: OK refused").arg(m_def.name);
+    return false;
+  }
+  m_committing = true;
+  m_presenter->setOkEnabled(false);
+  const auto failed = [this](const CommandHost::AsyncResult& result) {
+    recoverFailedCommit(result);
+  };
+  if (m_def.inspect) {
+    if (!m_def.keepsSection || !m_def.build) {
+      if (!m_def.keepsSection) {
+        m_host.showSection(m_sectionBefore);
+      }
+      qDebug().noquote() << QStringLiteral("Closed %1").arg(m_def.name);
+      finish(true);
+      return true;
+    }
+    const Built built = m_def.build(m_state, m_host);
+    if (!built.error.isEmpty()) {
+      m_host.showSection(m_sectionBefore);
+      finish(true);
+      return true;
+    }
+    const QString name = m_analysis.value(QStringLiteral("name")).toString();
+    const QJsonObject command = name.isEmpty()
+        ? QJsonObject{{QStringLiteral("cmd"), QStringLiteral("add_analysis")},
+                      {QStringLiteral("def"), built.def}}
+        : QJsonObject{{QStringLiteral("cmd"), QStringLiteral("edit_analysis")},
+                      {QStringLiteral("name"), name}, {QStringLiteral("def"), built.def},
+                      {QStringLiteral("visible"), true}};
+    const int depth = undoDepth();
+    commandSequenceAsync(QJsonArray{command}, [this, failed, name, depth](const CommandHost::AsyncResult& result) {
+      if (result.succeeded() && m_cancelRequested) {
+        undoToDepthAsync(depth, [failed](const CommandHost::AsyncResult&) { failed({{}, QString(), true}); });
+        return;
+      }
+      if (!result.succeeded()) { failed(result); return; }
+      qDebug().noquote() << (name.isEmpty() ? QStringLiteral("Kept %1 as %2")
+          .arg(m_def.name, result.answer.value(QStringLiteral("name")).toString())
+          : QStringLiteral("Edited analysis %1").arg(name));
+      finish(true);
+    });
+    return true;
+  }
+  if (m_def.modelCommand) {
+    const Built built = m_def.build(m_state, m_host);
+    const int depth = undoDepth();
+    const QString label = built.def.value(QStringLiteral("label")).toString(m_def.name);
+    commandSequenceAsync(built.def.value(QStringLiteral("commands")).toArray(),
+        [this, failed, depth, label](const CommandHost::AsyncResult& result) {
+          if (!result.succeeded() || m_cancelRequested) {
+            const CommandHost::AsyncResult stopped = m_cancelRequested && result.succeeded()
+                ? CommandHost::AsyncResult{{}, QString(), true} : result;
+            undoToDepthAsync(depth, [failed, stopped](const CommandHost::AsyncResult&) { failed(stopped); });
+            return;
+          }
+          const auto done = [this, failed, depth](const CommandHost::AsyncResult& merged) {
+            if (!merged.succeeded() || m_cancelRequested) {
+              const CommandHost::AsyncResult stopped = m_cancelRequested && merged.succeeded()
+                  ? CommandHost::AsyncResult{{}, QString(), true} : merged;
+              undoToDepthAsync(depth, [failed, stopped](const CommandHost::AsyncResult& undone) {
+                failed(undone.succeeded() ? stopped : undone);
+              });
+              return;
+            }
+            if (m_def.describe) { qDebug().noquote() << m_def.describe(m_state, m_host); }
+            qDebug().noquote() << QStringLiteral("Done %1").arg(m_def.name);
+            m_host.refreshScene();
+            finish(true);
+          };
+          if (undoDepth() > depth + 1) {
+            commandSequenceAsync(QJsonArray{QJsonObject{{QStringLiteral("cmd"), QStringLiteral("merge_undo")},
+                {QStringLiteral("depth"), depth}, {QStringLiteral("label"), label}}}, done);
+          } else {
+            done({});
+          }
+        }, 0, [this] { return m_cancelRequested; });
+    return true;
+  }
+  if (m_def.sketchCommand) {
+    if (m_appliedDepth < 0) {
+      m_committing = false;
+      m_commitRequested = true;
+      showSketchPreviewAsync(m_def.build(m_state, m_host));
+      return true;
+    }
+    const int depth = m_appliedDepth;
+    const auto done = [this, failed](const CommandHost::AsyncResult& result) {
+      if (!result.succeeded() || m_cancelRequested) {
+        failed(m_cancelRequested && result.succeeded()
+            ? CommandHost::AsyncResult{{}, QString(), true} : result);
+        return;
+      }
+      m_appliedDepth = -1;
+      if (m_def.describe) { qDebug().noquote() << m_def.describe(m_state, m_host); }
+      qDebug().noquote() << QStringLiteral("Added %1").arg(m_def.name);
+      finish(true);
+    };
+    if (undoDepth() > depth + 1) {
+      const Built built = m_def.build(m_state, m_host);
+      const QString sketch = built.def.value(QStringLiteral("sketch")).toString(
+          built.def.value(QStringLiteral("commands")).toArray().first().toObject()
+              .value(QStringLiteral("sketch")).toString());
+      commandSequenceAsync(QJsonArray{QJsonObject{{QStringLiteral("cmd"), QStringLiteral("merge_undo")},
+          {QStringLiteral("depth"), depth},
+          {QStringLiteral("label"), QStringLiteral("%1 in %2").arg(m_def.name, m_host.featureName(sketch))}}}, done);
+    } else {
+      done({});
+    }
+    return true;
+  }
+  const Built built = m_def.build(m_state, m_host);
+  const QString description = m_def.describe && m_def.describeBefore && !isEditing()
+      ? m_def.describe(m_state, m_host) : QString();
+  rollForwardAsync([this, failed, built, description](const CommandHost::AsyncResult& restored) {
+    if (!restored.succeeded() || m_cancelRequested) {
+      failed(m_cancelRequested && restored.succeeded()
+          ? CommandHost::AsyncResult{{}, QString(), true} : restored);
+      return;
+    }
+    const QJsonObject before = bodyVolumes();
+    const int depth = undoDepth();
+    const QJsonObject command = isEditing()
+        ? QJsonObject{{QStringLiteral("cmd"), QStringLiteral("edit_feature")},
+                      {QStringLiteral("uid"), m_editUid}, {QStringLiteral("def"), built.def}}
+        : QJsonObject{{QStringLiteral("cmd"), QStringLiteral("add_feature")},
+                      {QStringLiteral("def"), built.def}};
+    commandSequenceAsync(QJsonArray{command}, [this, failed, before, description, depth](const CommandHost::AsyncResult& result) {
+      if (result.succeeded() && m_cancelRequested) {
+        undoToDepthAsync(depth, [this, failed](const CommandHost::AsyncResult&) {
+          if (isEditing()) {
+            commandSequenceAsync(QJsonArray{QJsonObject{{QStringLiteral("cmd"), QStringLiteral("set_marker")},
+                {QStringLiteral("position"), m_markerPosition}, {QStringLiteral("temporary"), true}}},
+                [this, failed](const CommandHost::AsyncResult& rolled) {
+                  m_markerMoved = rolled.succeeded();
+                  failed({{}, QString(), true});
+                });
+          } else {
+            failed({{}, QString(), true});
+          }
+        });
+        return;
+      }
+      if (!result.succeeded()) {
+        if (isEditing()) {
+          commandSequenceAsync(QJsonArray{QJsonObject{{QStringLiteral("cmd"), QStringLiteral("set_marker")},
+              {QStringLiteral("position"), m_markerPosition}, {QStringLiteral("temporary"), true}}},
+              [this, failed, result](const CommandHost::AsyncResult& rolled) {
+                m_markerMoved = rolled.succeeded();
+                failed(result);
+              });
+        } else {
+          failed(result);
+        }
+        return;
+      }
+      if (m_def.describe && !isEditing()) {
+        qDebug().noquote() << (m_def.describeBefore ? description : m_def.describe(m_state, m_host));
+      }
+      qDebug().noquote() << (isEditing() ? QStringLiteral("Edited %1").arg(m_editUid)
+          : QStringLiteral("Added %1 as %2").arg(m_def.name, result.answer.value(QStringLiteral("uid")).toString()));
+      logVolumes(before);
+      finish(true);
+    });
+  });
+  return true;
+}
+
+void CommandSession::cancelAsync() {
+  if (m_done || m_cancelRequested || m_finalizing) {
+    return;
+  }
+  m_cancelRequested = true;
+  m_commitRequested = false;
+  ++m_generation;
+  m_previewTimer.stop();
+  if (m_presenter) { m_presenter->setOkEnabled(false); }
+  if (m_host.modelBusy()) {
+    m_host.cancelModelJob();
+    // Each active operation performs its own compensation before closing.
+    if (!m_asyncPending && !m_committing) {
+      m_host.whenIdle(this, [this] { finishAsyncCancel(); });
+    }
+    return;
+  }
+  finishAsyncCancel();
+}
+
+void CommandSession::finishAsyncCancel() {
+  if (m_done || m_host.modelBusy()) {
+    return;
+  }
+  if (m_checkpoint.isString()) {
+    qDebug().noquote() << QStringLiteral("Command %1 cancelled").arg(m_def.name);
+    finish(false);
+    return;
+  }
+  m_committing = false;
+  const int depth = m_appliedDepth;
+  m_appliedDepth = -1;
+  const auto restored = [this, depth](const CommandHost::AsyncResult& undone) {
+    if (!undone.succeeded()) {
+      // Keep ownership of an applied preview when recovery fails. The
+      // user can retry Cancel rather than closing with uncommitted changes.
+      m_appliedDepth = depth;
+      m_cancelRequested = false;
+      m_previewOk = false;
+      if (m_presenter) { m_presenter->setMessage(undone.error, true); }
+      return;
+    }
+    rollForwardAsync([this](const CommandHost::AsyncResult& result) {
+      if (!result.succeeded()) {
+        qDebug().noquote() << QStringLiteral("Command %1: the timeline stays rolled back").arg(m_def.name);
+      }
+      if (m_def.inspect) { m_host.showSection(m_sectionBefore); }
+      qDebug().noquote() << QStringLiteral("Command %1 cancelled").arg(m_def.name);
+      finish(false);
+    });
+  };
+  if (depth >= 0) {
+    undoToDepthAsync(depth, restored);
+  } else {
+    restored({});
+  }
+}
+
 bool CommandSession::commit() {
+  if (m_host.asynchronousCommands()) {
+    return commitAsync();
+  }
   if (m_done) {
     return false;
   }
@@ -1340,6 +2304,10 @@ bool CommandSession::keepAnalysis() {
 }
 
 void CommandSession::cancel() {
+  if (m_host.asynchronousCommands()) {
+    cancelAsync();
+    return;
+  }
   if (m_done) {
     return;
   }
@@ -1357,16 +2325,24 @@ void CommandSession::cancel() {
 }
 
 void CommandSession::discard() {
+  if (m_host.asynchronousCommands() && m_host.modelBusy()) {
+    m_host.cancelModelJob();
+    m_host.whenIdle(this, [this] { discard(); });
+    return;
+  }
   if (m_done) {
     return;
   }
+  // resetCommandState discards the whole old document immediately after
+  // this call; its checkpoint must not launch a job on that dying owner.
+  m_checkpoint = QJsonValue();
   m_markerMoved = false;
   m_appliedDepth = -1;
   qDebug().noquote() << QStringLiteral("Command %1 cancelled").arg(m_def.name);
   finish(false);
 }
 
-bool CommandSession::focusValue(const QString& key) { return m_panel != nullptr && m_panel->focusValue(key); }
+bool CommandSession::focusValue(const QString& key) { return m_presenter != nullptr && m_presenter->focusValue(key); }
 
 // Takes an edit's roll-back away: with undo while it is the last step, so
 // that the edit stays one undo step, else by moving the marker back.
@@ -1391,6 +2367,46 @@ bool CommandSession::rollForward() {
 }
 
 void CommandSession::finish(bool committed) {
+  if (m_done) { return; }
+  if (m_host.asynchronousCommands() && m_checkpoint.isString()) {
+    if (m_finalizing) { return; }
+    m_finalizing = true;
+    m_asyncPending = true;
+    m_committing = true;
+    const auto release = [this, committed](const CommandHost::AsyncResult& restored) {
+      if (!restored.succeeded()) {
+        m_finalizing = false;
+        m_asyncPending = false;
+        m_committing = false;
+        m_cancelRequested = false;
+        if (m_presenter) { m_presenter->setMessage(restored.error, true); }
+        else { m_host.showHint(restored.error); }
+        return;
+      }
+      commandSequenceAsync(QJsonArray{QJsonObject{{QStringLiteral("cmd"), QStringLiteral("discard_command")},
+                                                  {QStringLiteral("token"), m_checkpoint}}},
+          [this, committed](const CommandHost::AsyncResult& result) {
+            if (!result.succeeded()) {
+              m_finalizing = false;
+              m_asyncPending = false;
+              m_committing = false;
+              m_cancelRequested = false;
+              if (m_presenter) { m_presenter->setMessage(result.error, true); }
+              else { m_host.showHint(result.error); }
+              return;
+            }
+            m_checkpoint = QJsonValue();
+            m_finalizing = false;
+            m_asyncPending = false;
+            m_committing = false;
+            if (!committed && m_def.inspect) { m_host.showSection(m_sectionBefore); }
+            finish(committed);
+          });
+    };
+    if (committed) { release({}); }
+    else { restoreCheckpointAsync(release); }
+    return;
+  }
   m_done = true;
   m_previewTimer.stop();
   m_host.clearModelPreview();
@@ -1401,6 +2417,7 @@ void CommandSession::finish(bool committed) {
   OcctViewer& viewer = m_host.viewer();
   viewer.setPreview(TopoDS_Shape());
   viewer.setHighlights({});
+  viewer.setGhosts({});
   m_host.inputActivated(SelectFilter());
   emit finished(committed);
 }

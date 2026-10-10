@@ -15,18 +15,12 @@
 #   - A named view renders too (the frame is hidden for it), and the
 #     settings are saved in the file.
 #
-# Skipped (exit 0) when the build has no render worker (MITCAD_RENDER off).
 # Runs headless on Xvfb (see ui-test-lib.sh).
 # Usage: tools/ui-render-image-test.sh [directory for screenshots]
 # check-all sources: tools/cli
 
 UI_APP=${UI_APP:-$(cd "$(dirname "$0")/.." && pwd)/build/dev/app/mitcad}
 BUILD_DIR=$(cd "$(dirname "$UI_APP")/.." 2> /dev/null && pwd)
-if ! grep -qs '^MITCAD_RENDER:BOOL=ON' "$BUILD_DIR/CMakeCache.txt"; then
-  echo "SKIP: $UI_APP is built without the render worker (MITCAD_RENDER=OFF)"
-  exit 0
-fi
-
 source "$(dirname "$0")/ui-test-lib.sh"
 
 SHOTS=${1:-}

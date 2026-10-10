@@ -22,7 +22,7 @@ my-parts/                        a git repository, also a Mitcad project
   previews/iso4762.png           preview images (PNG, at most 512 KB)
 ```
 
-The designs are ordinary Mitcad project files. A design may have a
+The designs are ordinary Mitcad designs (`.mitcad` files). A design may have a
 configuration table (below) so that one design stands for a family of
 sizes. A library holds data only: nothing in it is run, symbolic links
 are refused, and paths stay inside the repository.

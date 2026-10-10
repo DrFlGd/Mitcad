@@ -144,7 +144,7 @@ endif()
 run(ok "${CLI}" import-fcstd "${WORK}/sample.FCStd" --bodies-only)
 expect("import-fcstd --bodies-only" "Sketch +Sketcher::SketchObject +skipped +: a sketch")
 
-# The saved project opens with the same bodies.
+# The saved design opens with the same bodies.
 run(ok "${CLI}" info "${WORK}/sample.mitcad")
 expect("info" "Block \\(F1\\.b0\\): volume 6000\\.000 mm3" "Peg \\(F2\\.b0\\): volume 785\\.398 mm3")
 

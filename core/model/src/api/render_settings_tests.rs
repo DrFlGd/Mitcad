@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT
 //! Render settings (mitcad#47): the defaults, changes as undo steps that
-//! recompute nothing, the project file and older files, the comparison of
+//! recompute nothing, the design file and older files, the comparison of
 //! versions.
 
 use serde_json::{Value, json};

@@ -127,11 +127,11 @@ pub struct JointOrigin {
 }
 
 impl JointOrigin {
-    fn add_references(&self, references: &mut References) {
+    pub(crate) fn add_references(&self, references: &mut References) {
         self.geometry.add_to(references);
     }
 
-    fn check(&self, ctx: &CheckContext<'_>) -> Result<(), String> {
+    pub(crate) fn check(&self, ctx: &CheckContext<'_>) -> Result<(), String> {
         check_geometry(ctx, &self.geometry)?;
         if let Some(o) = &self.frame_override {
             o.check()?;

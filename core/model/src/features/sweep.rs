@@ -2,7 +2,8 @@
 //! Sweep: profiles of a sketch swept along a path into a tool body that
 //! becomes new bodies or joins, cuts or intersects bodies: perpendicular
 //! or parallel orientation, twist and taper, a guide rail that turns and
-//! scales the profile, and partial extents.
+//! scales the profile, guide surfaces whose normal turns it (mitcad#157),
+//! and partial extents.
 
 use serde::{Deserialize, Serialize};
 
@@ -18,6 +19,11 @@ use crate::ids::BodyUid;
 use crate::kernel::Kernel;
 use crate::parameters::ParamId;
 use crate::sweeps::{PathCurve, ProfileScaling, SweepGuide, SweepOrientation, SweepSpec};
+// Sweeps along guide surfaces (mitcad#157).
+use super::face_refs::{kernel_error, require_faces};
+use super::reference::FaceRef;
+use crate::sweeps::GuideSurface;
+use crate::topo::FaceName;
 
 /// How much of a path a sweep or a pipe covers.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -147,6 +153,10 @@ pub struct SweepDef<P = ParamId> {
     /// taper are then ignored.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub guide_rail: Option<CurvePath>,
+    /// Faces the path lies on (mitcad#157): the profile turns with their
+    /// normal; not with a guide rail, twist and taper are ignored.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub guide_surfaces: Vec<FaceRef>,
     #[serde(default, skip_serializing_if = "is_scale")]
     pub profile_scaling: ProfileScaling,
     #[serde(
@@ -193,6 +203,7 @@ impl<P> SweepDef<P> {
                 .map(|v| f("taper_angle", v))
                 .transpose()?,
             guide_rail: self.guide_rail.clone(),
+            guide_surfaces: self.guide_surfaces.clone(),
             profile_scaling: self.profile_scaling,
             extent: self.extent.map_params(f)?,
             flip: self.flip,
@@ -210,6 +221,9 @@ impl FeatureInfo for SweepDef {
         if let Some(rail) = &self.guide_rail {
             rail.add_references(&mut references);
         }
+        for face in &self.guide_surfaces {
+            face.add_references(&mut references);
+        }
         for body in &self.participants {
             references.body(*body);
         }
@@ -222,6 +236,20 @@ impl FeatureInfo for SweepDef {
         self.path.check(ctx).map_err(|e| format!("path: {e}"))?;
         if let Some(rail) = &self.guide_rail {
             rail.check(ctx).map_err(|e| format!("guide rail: {e}"))?;
+        }
+        if !self.guide_surfaces.is_empty() {
+            if self.guide_rail.is_some() {
+                return Err("a sweep takes a guide rail or guide surfaces, not both".to_owned());
+            }
+            if self.orientation == SweepOrientation::Parallel {
+                return Err("guide surfaces need the perpendicular orientation".to_owned());
+            }
+            for (i, face) in self.guide_surfaces.iter().enumerate() {
+                if self.guide_surfaces[..i].contains(face) {
+                    return Err(format!("guide surface {} is selected twice", face.face));
+                }
+                face.check(ctx).map_err(|e| format!("guide surface: {e}"))?;
+            }
         }
         Ok(())
     }
@@ -282,9 +310,16 @@ impl<K: Kernel> Evaluate<K> for SweepDef {
             Some(rail) => Some(rail.resolve(ctx).map_err(|e| format!("guide rail: {e}"))?),
             None => None,
         };
-        // A guide rail overrides twist and taper.
+        // The guide surfaces' bodies, each face checked.
+        let mut surfaces: Vec<(K::Shape, &FaceName)> = Vec::new();
+        for face in &self.guide_surfaces {
+            let shape = ctx.body(face.body)?;
+            require_faces(ctx, face.body, &shape, std::slice::from_ref(&face.face))?;
+            surfaces.push((shape, &face.face));
+        }
+        // A guide rail or guide surfaces override twist and taper.
         let (mut twist, mut taper) = (0.0, 0.0);
-        if rail.is_none() {
+        if rail.is_none() && surfaces.is_empty() {
             if let Some(id) = self.twist_angle {
                 twist = ctx.param(id)?;
             }
@@ -308,7 +343,17 @@ impl<K: Kernel> Evaluate<K> for SweepDef {
                 scaling: self.profile_scaling,
             }),
         };
-        let tool = ctx.kernel.sweep(&spec).map_err(|e| e.to_string())?;
+        let tool = if surfaces.is_empty() {
+            ctx.kernel.sweep(&spec).map_err(|e| e.to_string())?
+        } else {
+            let guide: Vec<GuideSurface<'_, K::Shape>> = surfaces
+                .iter()
+                .map(|(body, face)| GuideSurface { body, face })
+                .collect();
+            ctx.kernel
+                .surface_sweep(&spec, &guide)
+                .map_err(kernel_error)?
+        };
         apply_operation(ctx, self.operation, participants, tool, "sweep")
     }
 }

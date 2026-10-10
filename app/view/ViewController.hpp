@@ -97,7 +97,8 @@ public:
   void showGridSettings();
   // The document's render settings (the `render_settings` query, mitcad#47)
   // and its file's folder, after each change of the model: the rendered
-  // view and Render Environment follow them. Nothing without MITCAD_RENDER.
+  // view and Render Environment follow them. Nothing without the render
+  // worker.
   void setRenderSettings(const QJsonObject& settings, const QString& documentFolder);
   // Render Environment (only with the render worker).
   void showRenderEnvironment();
@@ -123,7 +124,7 @@ private:
   QPointer<QWidget> m_settingsWindow; // macOS: the Settings window, when open
   ViewSettings m_settings;
   QHash<QString, QAction*> m_checks; // checkable actions by command id
-  // View > Rendered (docs/rendering.md); only in builds with MITCAD_RENDER.
+  // View > Rendered (docs/rendering.md); null without the render worker.
   RenderMode* m_render = nullptr;
   QPointer<RenderEnvironmentDialog> m_renderEnvironment;
   QPointer<RenderImageDialog> m_renderImage;

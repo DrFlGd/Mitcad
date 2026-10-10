@@ -22,14 +22,14 @@ namespace mitcad {
 struct RecoverableSession {
   QString directory;
   QString session;    // its id: metadata, snapshots and lock share this prefix
-  QString project;    // validated snapshot basename, from v1 or v2 metadata
+  QString design;     // validated snapshot basename, from v1 or v2 metadata
   QString document;   // the window's name of the document ("Untitled", "block.mitcad")
   QString path;       // the file it was opened from or saved to, or empty
   QString baseDigest; // that file's content then (fileDigest), or empty
   QDateTime savedAt;  // when it was written (UTC)
-  qint64 size = 0;    // of the project file
-  QString digest;     // of the project file
-  // Why it cannot be restored (no metadata, the project file missing or
+  qint64 size = 0;    // of the design file
+  QString digest;     // of the design file
+  // Why it cannot be restored (no metadata, the design file missing or
   // not the one the metadata describes), or empty.
   QString damage;
   // The file at `path` has changed since (its digest is not baseDigest),
@@ -45,7 +45,7 @@ struct RecoverableSession {
   RecoverableSession(RecoverableSession&&) noexcept;
   RecoverableSession& operator=(RecoverableSession&&) noexcept;
 
-  QString projectFile() const;
+  QString designFile() const;
   bool damaged() const { return !damage.isEmpty(); }
   // "Untitled, never saved, autosaved 2026-10-05T03:12:00Z, 2865 bytes":
   // what the log and the tests read.

@@ -111,7 +111,7 @@ pub(crate) enum ComponentCommand {
         occurrence: String,
     },
     InsertComponent {
-        /// A project file; or `library` (mitcad#64).
+        /// A design file; or `library` (mitcad#64).
         #[serde(default)]
         path: Option<String>,
         #[serde(default)]

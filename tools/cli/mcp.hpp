@@ -6,7 +6,7 @@
 
 namespace mitcad::cli {
 
-// The headless MCP stdio server (mitcad#124, docs/mcp.md).
+// MCP stdio server or bridge to a running GUI (mitcad#124, docs/mcp.md).
 extern const char* const kMcpUsage;
 int mcp(const std::vector<std::string>& args);
 

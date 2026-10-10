@@ -24,6 +24,8 @@
 #include "ResultCache.hpp"
 #include "mitcad_bridge/lib.h"
 
+#include "Dialogs.hpp"
+
 namespace mitcad {
 namespace {
 
@@ -344,7 +346,7 @@ QString CacheDiagnosticsDialog::reportText(const QJsonObject& report) {
 
 void CacheDiagnosticsDialog::exportReport() {
   QString filter;
-  const QString path = QFileDialog::getSaveFileName(this, tr("Export Report"), QString(),
+  const QString path = dialogSaveFileName(this, tr("Export Report"), QString(),
                                                     tr("JSON (*.json);;Text (*.txt)"), &filter);
   if (path.isEmpty()) {
     return;
@@ -354,7 +356,7 @@ void CacheDiagnosticsDialog::exportReport() {
       json ? QJsonDocument(m_report).toJson(QJsonDocument::Indented) : reportText(m_report).toUtf8();
   QSaveFile file(path);
   if (!file.open(QIODevice::WriteOnly) || file.write(content) != content.size() || !file.commit()) {
-    QMessageBox::warning(this, tr("Diagnostics"), tr("Could not write %1:\n%2").arg(path, file.errorString()));
+    sheetWarning(this, tr("Diagnostics"), tr("Could not write %1:\n%2").arg(path, file.errorString()));
     return;
   }
   qInfo().noquote() << "Diagnostics report written to" << path;

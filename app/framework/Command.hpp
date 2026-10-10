@@ -130,6 +130,15 @@ struct InputDef {
   std::function<SelectionItem(const SelectionItem&)> convert;
   // Called after a pick was taken, with the item as picked (with `at`).
   std::function<void(const SelectionItem&, CommandState&, const CommandContext&)> onPick;
+  // Occurrences to draw as ghosts for an item of the input (mitcad#147):
+  // paths of uids from the root, `O1/O4`. Their bodies are see-through and
+  // not pickable, and so are the highlights on them, while the item is in
+  // the input and the input does not take picks itself; a later input then
+  // picks what lies behind them. Called with each item, the state (a list
+  // row's for an input of a row) and the model, whenever the selections or
+  // the active input change: a command can stop naming them (Joint: once
+  // origin B is picked, the preview shows A where the joint puts it).
+  std::function<QStringList(const SelectionItem&, const CommandState&, const CommandContext&)> ghosts;
 
   // Value: an expression with units, as text.
   ValueKind valueKind = ValueKind::Length;
@@ -204,6 +213,11 @@ struct InputDef {
   InputDef& withToggles(
       std::function<std::vector<Manipulator>(const CommandState&, const CommandContext&, const QJsonObject&)> made) {
     toggles = std::move(made);
+    return *this;
+  }
+  InputDef& withGhosts(
+      std::function<QStringList(const SelectionItem&, const CommandState&, const CommandContext&)> named) {
+    ghosts = std::move(named);
     return *this;
   }
   InputDef& withChoices(std::function<QVector<QPair<QString, QString>>(const CommandState&)> options) {

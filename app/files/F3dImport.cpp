@@ -44,6 +44,8 @@
 #include "../framework/ResultCache.hpp"
 #include "mitcad_bridge/lib.h"
 
+#include "../framework/Dialogs.hpp"
+
 namespace mitcad {
 namespace {
 
@@ -233,12 +235,12 @@ int runImportWorker(int argc, char* argv[]) {
   QCommandLineParser parser;
   const QCommandLineOption worker(QStringLiteral("import-worker"),
                                   QStringLiteral(".f3d, .f3z, .FCStd, .ipt or .iam file"), QStringLiteral("file"));
-  const QCommandLineOption output(QStringLiteral("output"), QStringLiteral("Project file to write"),
+  const QCommandLineOption output(QStringLiteral("output"), QStringLiteral("Design file to write"),
                                   QStringLiteral("file"));
   const QCommandLineOption result(QStringLiteral("result"), QStringLiteral("Result (JSON) to write"),
                                   QStringLiteral("file"));
   // The result store (P7d): the design's costly results go there, so that
-  // the application does not compute them again when it reads the project.
+  // the application does not compute them again when it reads the design.
   const QCommandLineOption store(QStringLiteral("result-store"), QStringLiteral("Result store folder"),
                                  QStringLiteral("folder"));
   const QCommandLineOption minMs(QStringLiteral("persist-min-ms"), QStringLiteral("Milliseconds"),
@@ -306,8 +308,8 @@ int runImportWorker(int argc, char* argv[]) {
     std::printf("import-stored %d\n", persisted.value(QStringLiteral("results")).toInt());
     std::fflush(stdout);
   }
-  const rust::String project = document->to_json();
-  if (!writeFile(parser.value(output), QByteArray(project.data(), static_cast<qsizetype>(project.size()))) ||
+  const rust::String design = document->to_json();
+  if (!writeFile(parser.value(output), QByteArray(design.data(), static_cast<qsizetype>(design.size()))) ||
       !writeFile(parser.value(result), QJsonDocument(answer).toJson(QJsonDocument::Compact))) {
     std::fprintf(stderr, "import-failed cannot write the result\n");
     return endWorker(3);
@@ -361,7 +363,7 @@ void F3dImport::start() {
   m_clock.start();
   m_ticker->start();
   tick();
-  m_dialog->show();
+  showDialog(m_dialog);
   qInfo().noquote() << QStringLiteral("Import of %1 started").arg(name);
   QStringList arguments{QStringLiteral("--import-worker"), m_path, QStringLiteral("--output"),
                         m_dir.filePath(QStringLiteral("import.mitcad")), QStringLiteral("--result"),
@@ -470,16 +472,16 @@ void F3dImport::processFinished(int exitCode) {
     done(false, why);
     return;
   }
-  QFile project(m_dir.filePath(QStringLiteral("import.mitcad")));
+  QFile design(m_dir.filePath(QStringLiteral("import.mitcad")));
   QFile result(m_dir.filePath(QStringLiteral("result.json")));
-  if (!project.open(QIODevice::ReadOnly) || !result.open(QIODevice::ReadOnly)) {
+  if (!design.open(QIODevice::ReadOnly) || !result.open(QIODevice::ReadOnly)) {
     done(false, tr("The import wrote no result."));
     return;
   }
   m_finished = true;
   m_ticker->stop();
   m_dialog->hide();
-  emit finished(true, project.readAll(), QJsonDocument::fromJson(result.readAll()).object(), QString());
+  emit finished(true, design.readAll(), QJsonDocument::fromJson(result.readAll()).object(), QString());
   deleteLater();
 }
 

@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: MIT
 # Version history (P12b) through mitcad-cli: a project with history, three
-# versions of a project file with base features (the first, a parameter
+# versions of a design file with base features (the first, a parameter
 # changed, a base feature deleted with its B-rep data), the first version
 # opened with the same bodies and restored, and, where git is installed,
 # the repository as the system's git sees it.
@@ -37,7 +37,7 @@ function(git)
   set(out "${out}" PARENT_SCOPE)
 endfunction()
 
-# The number of different B-rep data the project file refers to.
+# The number of different B-rep data the design file refers to.
 function(references result)
   file(READ "${part}" text)
   string(REGEX MATCHALL "\"sha256\": \"[0-9a-f]+\"" found "${text}")
@@ -46,7 +46,7 @@ function(references result)
   set(${result} ${count} PARENT_SCOPE)
 endfunction()
 
-# The project's store keeps exactly what the project file refers to.
+# The project's store keeps exactly what the design file refers to.
 function(check_store when)
   references(count)
   file(GLOB_RECURSE files "${project}/.mitcad/brep/*")

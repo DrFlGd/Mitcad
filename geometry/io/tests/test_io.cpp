@@ -3,6 +3,7 @@
 // Usage: test_geometry_io <directory for the test files>
 
 #include "mitcad/io/exchange.hpp"
+#include "mitcad/io/face_mesh.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -34,6 +35,10 @@
 #include <TopoDS_Compound.hxx>
 #include <gp_Ax2.hxx>
 #include <gp_Pnt.hxx>
+#include <gp_Vec.hxx>
+#include <NCollection_IndexedMap.hxx>
+#include <TopTools_ShapeMapHasher.hxx>
+#include <vector>
 
 namespace {
 
@@ -400,6 +405,87 @@ void test_indexed_mesh(const std::string& dir) {
   CHECK(near(mesh_volume(mesh), exact, area(block) * 0.03));
 }
 
+// The shaded meshes of USDZ export (mitcad#123): a block per face in the
+// shapes' face order, unit normals out of the body that agree with the
+// winding of each triangle that has an area (a sphere's poles have
+// collapsed ones), the surface's own normals on curved faces; a mesh body
+// faceted.
+void test_face_meshes(const std::string& dir) {
+  using mitcad::io::FaceMeshes;
+  using mitcad::io::MeshOptions;
+  using mitcad::io::Refinement;
+  const auto consistent = [](const FaceMeshes& mesh) {
+    bool ok = mesh.vertices.size() == mesh.normals.size();
+    std::size_t total = 0;
+    for (const std::uint32_t count : mesh.face_triangles) {
+      total += count;
+    }
+    ok = ok && total == mesh.triangles.size();
+    for (const auto& n : mesh.normals) {
+      ok = ok && std::abs(std::sqrt(n[0] * n[0] + n[1] * n[1] + n[2] * n[2]) - 1.0) < 1e-9;
+    }
+    for (const auto& t : mesh.triangles) {
+      const auto& a = mesh.vertices[t[0]];
+      const auto& b = mesh.vertices[t[1]];
+      const auto& c = mesh.vertices[t[2]];
+      const gp_Vec facet = gp_Vec(gp_Pnt(a[0], a[1], a[2]), gp_Pnt(b[0], b[1], b[2]))
+                               .Crossed(gp_Vec(gp_Pnt(a[0], a[1], a[2]), gp_Pnt(c[0], c[1], c[2])));
+      const double length = facet.Magnitude();
+      for (const std::uint32_t corner : t) {
+        const auto& n = mesh.normals[corner];
+        if (length > 1e-12 && facet.Dot(gp_Vec(n[0], n[1], n[2])) <= 0.0) {
+          std::fprintf(stderr, "face meshes: a normal %g %g %g against its triangle's %g %g %g\n", n[0], n[1], n[2],
+                       facet.X() / length, facet.Y() / length, facet.Z() / length);
+          ok = false;
+        }
+      }
+    }
+    return ok;
+  };
+  const MeshOptions options = MeshOptions::from(Refinement::Medium);
+  // A box: six faces of two triangles and four vertices each, normals along
+  // the axes.
+  const TopoDS_Shape box = BRepPrimAPI_MakeBox(10.0, 20.0, 30.0).Shape();
+  const FaceMeshes boxed = mitcad::io::face_meshes(box, options);
+  CHECK(boxed.face_triangles == std::vector<std::uint32_t>(6, 2));
+  CHECK(boxed.vertices.size() == 24);
+  CHECK(consistent(boxed));
+  for (const auto& n : boxed.normals) {
+    CHECK(std::abs(std::abs(n[0]) + std::abs(n[1]) + std::abs(n[2]) - 1.0) < 1e-12);
+  }
+  // A sphere: the surface's normals, outwards.
+  const gp_Pnt center(0.0, 0.0, 50.0);
+  const TopoDS_Shape sphere = BRepPrimAPI_MakeSphere(center, 15.0).Shape();
+  const FaceMeshes round = mitcad::io::face_meshes(sphere, options);
+  CHECK(consistent(round));
+  double worst = 1.0;
+  for (std::size_t i = 0; i < round.vertices.size(); ++i) {
+    const auto& p = round.vertices[i];
+    const auto& n = round.normals[i];
+    const gp_Vec radial = gp_Vec(center, gp_Pnt(p[0], p[1], p[2])).Normalized();
+    worst = std::min(worst, radial.Dot(gp_Vec(n[0], n[1], n[2])));
+  }
+  std::fprintf(stderr, "face meshes: sphere %zu triangles, worst normal cosine %.9f\n", round.triangles.size(),
+               worst);
+  CHECK(worst > 0.999);
+  // Reversed faces (the hole's), fillets: every face, in the shape's order.
+  for (const TopoDS_Shape& shape : {holed_block(), filleted_block()}) {
+    const FaceMeshes mesh = mitcad::io::face_meshes(shape, options);
+    NCollection_IndexedMap<TopoDS_Shape, TopTools_ShapeMapHasher> faces;
+    TopExp::MapShapes(shape, TopAbs_FACE, faces);
+    CHECK(mesh.face_triangles.size() == static_cast<std::size_t>(faces.Extent()));
+    CHECK(consistent(mesh));
+    CHECK(mitcad::io::mesh_stats(shape).triangles == 0);
+  }
+  // A mesh body: faceted, three vertices per triangle.
+  const std::string path = dir + "/faces.stl";
+  mitcad::io::write_stl(path, {box}, {mitcad::io::StlFormat::Binary, options});
+  const FaceMeshes faceted = mitcad::io::face_meshes(mitcad::io::read_stl(path).shape, options);
+  CHECK(faceted.face_triangles == std::vector<std::uint32_t>{12});
+  CHECK(faceted.vertices.size() == 36);
+  CHECK(consistent(faceted));
+}
+
 void test_obj(const std::string& dir) {
   const std::vector<Body> bodies = sample_bodies();
   const std::string path = dir + "/bodies.obj";
@@ -588,6 +674,7 @@ int main(int argc, char** argv) {
     test_triangulate_keeps_original();
     test_stl(dir);
     test_indexed_mesh(dir);
+    test_face_meshes(dir);
     test_obj(dir);
     test_placements(dir);
     test_dispatch(dir);

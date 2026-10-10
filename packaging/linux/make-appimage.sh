@@ -3,8 +3,8 @@
 # Makes Mitcad's Linux AppImage from a build; the CMake target appimage
 # (cmake/AppImage.cmake) runs it:
 #   1. The build's install rules put Mitcad into an AppDir (usr/bin, the
-#      desktop file, the icons, the licences in usr/share/doc/mitcad), with
-#      MITCAD_RENDER also the render worker mitcad-render.
+#      desktop file, the icons, the licences in usr/share/doc/mitcad, the
+#      render worker mitcad-render).
 #   2. linuxdeploy copies the libraries the executables need into usr/lib
 #      (Qt, OCCT and the rest from vcpkg, ICU, ...) and points their
 #      RUNPATH there; its Qt plugin adds Qt's plugins (the X11 platform,
@@ -47,23 +47,22 @@ mkdir -p "$WORK"
 runpath() { readelf -d "$1" | sed -n 's/.*(RUNPATH).*\[\(.*\)\]$/\1/p'; }
 libraries=$(runpath "$APP")
 executables=(--executable "$APPDIR/usr/bin/mitcad" --executable "$APPDIR/usr/bin/mitcad-cli")
-# The render worker (a build with MITCAD_RENDER, docs/rendering.md) and
-# what it loads without linking it: Open Image Denoise's device modules,
-# next to its core library.
+# The render worker (docs/rendering.md), which every build has, and what
+# it loads without linking it: Open Image Denoise's device modules, next
+# to its core library.
 WORKER=$(dirname "$APP")/mitcad-render
-if [ -f "$APPDIR/usr/bin/mitcad-render" ]; then
-  libraries=$libraries:$(runpath "$WORKER")
-  executables+=(--executable "$APPDIR/usr/bin/mitcad-render")
-  oidn=$(LD_LIBRARY_PATH=$libraries ldd "$WORKER" | sed -n 's/.*libOpenImageDenoise_core[^ ]* => \([^ ]*\) .*/\1/p')
-  [ -n "$oidn" ] || { echo "mitcad-render does not link Open Image Denoise's core library" >&2; exit 1; }
-  # The GPU devices' modules too, when Open Image Denoise has them
-  # (build-cycles.sh --oidn-gpu, mitcad#50); they load the GPU's driver at
-  # run time, which stays the system's.
-  for module in "$(dirname "$oidn")"/libOpenImageDenoise_device_{cpu,cuda,hip,sycl}.so*; do
-    [ -e "$module" ] && [ ! -L "$module" ] && executables+=(--library "$module")
-  done
-  executables+=(--exclude-library 'libcuda.so*' --exclude-library 'libamdhip64.so*')
-fi
+[ -f "$APPDIR/usr/bin/mitcad-render" ] || { echo "no render worker in $APPDIR/usr/bin" >&2; exit 1; }
+libraries=$libraries:$(runpath "$WORKER")
+executables+=(--executable "$APPDIR/usr/bin/mitcad-render")
+oidn=$(LD_LIBRARY_PATH=$libraries ldd "$WORKER" | sed -n 's/.*libOpenImageDenoise_core[^ ]* => \([^ ]*\) .*/\1/p')
+[ -n "$oidn" ] || { echo "mitcad-render does not link Open Image Denoise's core library" >&2; exit 1; }
+# The GPU devices' modules too, when Open Image Denoise has them
+# (build-cycles.sh --oidn-gpu, mitcad#50); they load the GPU's driver at
+# run time, which stays the system's.
+for module in "$(dirname "$oidn")"/libOpenImageDenoise_device_{cpu,cuda,hip,sycl}.so*; do
+  [ -e "$module" ] && [ ! -L "$module" ] && executables+=(--library "$module")
+done
+executables+=(--exclude-library 'libcuda.so*' --exclude-library 'libamdhip64.so*')
 export LD_LIBRARY_PATH=$libraries${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}
 export PATH=$TOOLS/bin:$PATH
 export QMAKE

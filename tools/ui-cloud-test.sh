@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: MIT
-# check-all sources: app/files
+# check-all sources: app/files app/projects
 # check-all sources: core/vcs core/ffi/src/vcs.rs core/ffi/src/remote.rs core/ffi/src/diff.rs tools/cli
 # Open from Cloud and the settings everyone in a Cloud project shares
 # (mitcad#89) through the real UI, with bare repositories in folders
@@ -66,6 +66,17 @@ opened() {
   ui_focus_main
 }
 
+# new_design name: a new project's first design (mitcad#145: New Project
+# makes an empty project), named in the Projects panel and opened.
+new_design() {
+  ui_focus_main
+  ui_step "new design (search)"          ui_command "New Design"
+  ui_expect_new "Projects panel: naming a new design in " "named in the Projects panel" 20
+  ui_step "type its name"                xdotool type --delay 40 "$1"
+  ui_step "take it (Enter)"              ui_key Return
+  ui_expect_new "New Design: made " "made as a version" 20
+}
+
 expect_exit() {
   for _ in $(seq 1 50); do
     kill -0 "$UI_RUNNER" 2> /dev/null || break
@@ -111,13 +122,15 @@ ui_step "type the repository's folder"   type_text "$TEAM"
 ui_expect_new "Reachable and empty: ready." "an empty repository" 20
 ui_step "create (Enter)"                 ui_key Return
 ui_expect_new "New Project: created $A: version " "made and sent" 30
+ui_expect_new "Open Project: no designs in $A" "an empty project" 20
+new_design "team"
 opened "$A/team.mitcad" "its design opened"
 ui_expect_new "Project indicator: team, cloud, synced" "Cloud, synced" 20
 expect_sent "$A" "$TEAM" "the repository has the project"
 
 echo "--- Open from Cloud: Open It, a folder that is not empty, a new folder"
 open_from_cloud "$TEAM"
-ui_expect_new "Project \"team\": 1 version(s), latest " "the summary: the project, its versions"
+ui_expect_new "Project \"team\": 2 version(s), latest " "the summary: the project, its versions"
 ui_expect_new "Open from Cloud dialog: open, enabled" "the folder named after the repository is its clone: Open It"
 NOT_EMPTY=$WORK/not-empty
 mkdir -p "$NOT_EMPTY"
@@ -143,7 +156,8 @@ ui_expect_new "The repository is empty: Create Project Here makes a Cloud projec
 ui_expect_new "Open from Cloud dialog: create, enabled" "Create Project Here, the author git's" 20
 ui_step "create project here (Enter)"    ui_key Return
 ui_expect_new "Open from Cloud: create $FRESH into $DOCUMENTS/fresh" "made"
-opened "$DOCUMENTS/fresh/fresh.mitcad" "its first design opened" 30
+ui_expect_new "Open Project: no designs in $DOCUMENTS/fresh" "an empty project (mitcad#145)" 30
+ui_focus_main
 expect_sent "$DOCUMENTS/fresh" "$FRESH" "sent to the repository"
 expect_git "$DOCUMENTS/fresh" "log --format=%s|%an" "Create project fresh|Ada Tester" "its first version"
 
@@ -164,13 +178,12 @@ ui_step "make it a project (Enter)"      ui_key Return
 ui_expect_new "Open from Cloud: adopt $FILES into $DOCUMENTS/files" "adopted"
 ui_expect_new "Open from Cloud: adopt done into $DOCUMENTS/files" "made a project" 30
 ui_expect_new "Project: cloud files at $DOCUMENTS/files" "a Cloud project"
-# No design in it: a new one named after it, saved as a version and sent.
-ui_expect_new "Version recorded: files.mitcad " "its first design"
-ui_expect_new "Remote push: sent 1 version(s) to origin/main" "sent" 20
+# No design in it: none opens, the Projects panel offers New Design
+# (mitcad#145).
+ui_expect_new "Open Project: no designs in $DOCUMENTS/files" "no design named after it"
 ui_focus_main
 expect_git "$DOCUMENTS/files" "log --reverse --format=%s" "Add a README
-Make this repository a Mitcad project
-Save files.mitcad" "the project after the README's history"
+Make this repository a Mitcad project" "the project after the README's history"
 expect_sent "$DOCUMENTS/files" "$FILES" "sent to the repository"
 ui_key ctrl+q
 expect_exit "exited"

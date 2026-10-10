@@ -11,7 +11,7 @@
 //! order), so the names stay the same as long as the data does.
 //!
 //! The data is OCCT's binary B-rep format, kept in memory as it is and
-//! written to single project files and commands zlib-compressed and
+//! written to single-file designs and commands zlib-compressed and
 //! base64-encoded, or to the store of a project (version 3, P12a) and
 //! referred to by its SHA-256 (see [`Brep`]).
 
@@ -343,7 +343,7 @@ pub(crate) fn apply_tool<K: Kernel>(
 /// kernel writes and reads it ([`Kernel::brep_data`],
 /// [`Kernel::import_brep`]). Cloning shares the data.
 ///
-/// In single project files (version 2) and commands it is an object with
+/// In single-file designs (version 2) and commands it is an object with
 /// the zlib-compressed data in base64 and its size:
 ///
 /// ```json
@@ -351,9 +351,9 @@ pub(crate) fn apply_tool<K: Kernel>(
 /// ```
 ///
 /// `compression` may also be `"none"`. The encoded form is computed once
-/// and kept, so saving a project again does not compress again.
+/// and kept, so saving a design again does not compress again.
 ///
-/// A project file of version 3 (P12a, [`crate::file::project`]) refers to
+/// A design file of version 3 (P12a, [`crate::file::project`]) refers to
 /// the data in its project's store by the SHA-256 of the uncompressed data;
 /// the store's file holds it zlib-compressed:
 ///
@@ -431,7 +431,7 @@ impl Brep {
             .get_or_init(|| Sha256::of(self.data().expect("a reference is made with its SHA-256")))
     }
 
-    /// A reference to this data, as a version 3 project file writes it.
+    /// A reference to this data, as a version 3 design file writes it.
     pub fn to_reference(&self) -> Brep {
         if self.is_reference() {
             self.clone()

@@ -1,0 +1,42 @@
+Mitcad's patch to OCCT 8.0.1, under OCCT's licence:
+SPDX-License-Identifier: LGPL-2.1-only WITH OCCT-exception-1.0
+
+Topological operations: the count of the uses of the points of the data
+structure stays within its array (mitcad#160). TopOpeBRepBuild_Builder::
+BuildEdges counts, in an array indexed 0 to NbPoints, the interferences
+that use each point, to remove the points no interference uses. One of
+its four increments checked the index against NbPoints; the other three
+wrote wherever an interference of kind POINT pointed, so an interference
+with a wrong index (0090) overwrote the heap. An index outside the points
+names no point and is not counted, as the checked increment already did.
+diff --git a/src/ModelingAlgorithms/TKBool/TopOpeBRepBuild/TopOpeBRepBuild_BuildEdges.cxx b/src/ModelingAlgorithms/TKBool/TopOpeBRepBuild/TopOpeBRepBuild_BuildEdges.cxx
+index 32de52b3..30d0341f 100644
+--- a/src/ModelingAlgorithms/TKBool/TopOpeBRepBuild/TopOpeBRepBuild_BuildEdges.cxx
++++ b/src/ModelingAlgorithms/TKBool/TopOpeBRepBuild/TopOpeBRepBuild_BuildEdges.cxx
+@@ -165,7 +165,7 @@ void TopOpeBRepBuild_Builder::BuildEdges(const occ::handle<TopOpeBRepDS_HDataStr
+       {
+         int               is = I->Support();
+         TopOpeBRepDS_Kind ks = I->SupportType();
+-        if (ks == TopOpeBRepDS_POINT)
++        if (ks == TopOpeBRepDS_POINT && is >= 1 && is <= np)
+         {
+           tp.ChangeValue(is) = tp.Value(is) + 1;
+         }
+@@ -193,7 +193,7 @@ void TopOpeBRepBuild_Builder::BuildEdges(const occ::handle<TopOpeBRepDS_HDataStr
+       {
+         int               ig = I->Geometry();
+         TopOpeBRepDS_Kind kg = I->GeometryType();
+-        if (kg == TopOpeBRepDS_POINT)
++        if (kg == TopOpeBRepDS_POINT && ig >= 1 && ig <= np)
+         {
+           tp.ChangeValue(ig) = tp.Value(ig) + 1;
+         }
+@@ -201,7 +201,7 @@ void TopOpeBRepBuild_Builder::BuildEdges(const occ::handle<TopOpeBRepDS_HDataStr
+       {
+         int               is1 = I->Support();
+         TopOpeBRepDS_Kind ks  = I->SupportType();
+-        if (ks == TopOpeBRepDS_POINT)
++        if (ks == TopOpeBRepDS_POINT && is1 >= 1 && is1 <= np)
+         {
+           tp.ChangeValue(is1) = tp.Value(is1) + 1;
+         }

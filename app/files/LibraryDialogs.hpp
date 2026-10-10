@@ -179,7 +179,7 @@ class PublishLibraryDialog : public QDialog {
   Q_OBJECT
 
 public:
-  // `design`: the open design as a single project file; `preview`: an
+  // `design`: the open design as a single-file design; `preview`: an
   // image of the view; `author`: "Name <email>" for the version, or "".
   PublishLibraryDialog(std::function<QString()> design, std::function<QImage()> preview, QString author,
                        QWidget* parent = nullptr);

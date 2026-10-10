@@ -1,0 +1,752 @@
+// SPDX-License-Identifier: MIT
+// The Projects panel in the window (mitcad#145): its dock (Docked) or card
+// (Floating), View > Projects, File > New Design, and what the panel asks
+// for: opening a design, New Design, New Folder, renaming, moving and
+// deleting designs and folders (the core's new_design, create_folder,
+// move and delete, each a version, sent as Save's versions are), Version
+// History, Project Settings and Sync Now of a project, Add Existing Project
+// Folder and Remove from List. The panel itself is projects/ProjectsPanel.
+#include "../MainWindow.hpp"
+
+#include <utility>
+#include <vector>
+
+#include <QAction>
+#include <QApplication>
+#include <QDir>
+#include <QDockWidget>
+#include <QFileInfo>
+#include <QGuiApplication>
+#include <QJsonArray>
+#include <QMenu>
+#include <QMessageBox>
+#include <QPointer>
+#include <QPushButton>
+#include <QSignalBlocker>
+#include <QTimer>
+#include <QUrl>
+#include <QtLogging>
+
+#include "../browser/BrowserController.hpp"
+#include "../browser/BrowserPanel.hpp"
+#include "../files/Autosave.hpp"
+#include "../files/CloudAddress.hpp"
+#include "../files/LiveController.hpp"
+#include "../files/LockController.hpp"
+#include "../files/ProjectIndicator.hpp"
+#include "../files/ProjectSettings.hpp"
+#include "../files/RemoteController.hpp"
+#include "../files/RemoteTask.hpp"
+#include "../framework/AppSettings.hpp"
+#include "../framework/ChromeStyle.hpp"
+#include "../framework/CommandRegistry.hpp"
+#include "../framework/Dialogs.hpp"
+#include "../framework/FloatingLayout.hpp"
+#include "../framework/GlassCard.hpp"
+#include "../framework/Json.hpp"
+#include "../framework/TestSync.hpp"
+#include "../report/ReportCenter.hpp"
+#include "ProjectsPanel.hpp"
+
+namespace mitcad {
+namespace {
+
+QString joinPath(const QString& folder, const QString& name) {
+  return folder.isEmpty() ? name : QStringLiteral("%1/%2").arg(folder, name);
+}
+
+// Whether `path` is `folder` or inside it.
+bool atOrInside(const QString& path, const QString& folder) {
+  const QString a = QDir::cleanPath(path);
+  const QString b = QDir::cleanPath(folder);
+#ifdef _WIN32
+  const Qt::CaseSensitivity cs = Qt::CaseInsensitive;
+#else
+  const Qt::CaseSensitivity cs = Qt::CaseSensitive;
+#endif
+  return a.compare(b, cs) == 0 || a.startsWith(b + QLatin1Char('/'), cs);
+}
+
+} // namespace
+
+// ---------------------------------------------------------------------------
+// Commands
+
+void MainWindow::registerProjectsPanelCommands() {
+  CommandDef panel;
+  panel.id = QStringLiteral("view.projects");
+  panel.name = tr("Projects");
+  panel.icon = QStringLiteral("new-project");
+  panel.tooltip = tr("Shows or hides the Projects panel: your projects, their folders and designs");
+  panel.kind = CommandDef::Kind::Action;
+  panel.mode = CommandDef::Mode::Any;
+  panel.tab.clear(); // the View menu
+  panel.duringCommands = true;
+  panel.keywords = {QStringLiteral("projects"), QStringLiteral("panel"), QStringLiteral("designs"),
+                    QStringLiteral("folders"), QStringLiteral("files")};
+  panel.run = [this] { setProjectsPanelShown(!projectsPanelShown(), true); };
+  m_registry->add(panel);
+  CommandDef design;
+  design.id = QStringLiteral("file.new_design");
+  design.name = tr("New Design...");
+  design.icon = QStringLiteral("add");
+  design.tooltip = tr("A new design in the selected folder of the project, named first and recorded as a version");
+  design.kind = CommandDef::Kind::Action;
+  design.mode = CommandDef::Mode::Any;
+  design.tab.clear(); // the File menu
+  design.keywords = {QStringLiteral("design"), QStringLiteral("part"), QStringLiteral("project"),
+                     QStringLiteral("folder"), QStringLiteral("new")};
+  design.run = [this] { newDesign(); };
+  m_registry->add(design);
+}
+
+// ---------------------------------------------------------------------------
+// The panel, its dock or card
+
+void MainWindow::createProjectsPanel() {
+  if (m_nativeUi || m_projectsPanel != nullptr) {
+    return;
+  }
+  ProjectsPanel::Host host;
+  host.session = [this] { return m_autosave != nullptr ? m_autosave->session() : QString(); };
+  host.openDesign = [this] { return m_filePath; };
+  host.currentRoot = [this] { return m_project.isProject() ? m_project.root : QString(); };
+  host.currentRemote = [this] { return m_remote != nullptr ? m_remote->indicatorState() : ProjectIndicator::Remote(); };
+  m_projectsPanel = new ProjectsPanel(std::move(host));
+  ProjectsPanel* panel = m_projectsPanel;
+  // Queued: the panel's menus, editors and drags end before a dialog shows.
+  const Qt::ConnectionType queued = Qt::QueuedConnection;
+  connect(panel, &ProjectsPanel::openRequested, this, [this](const QString& path) { openPanelDesign(path); }, queued);
+  connect(panel, &ProjectsPanel::newDesignRequested, this,
+          [this](const QString& root, const QString& path) { createDesignInProject(root, path); }, queued);
+  connect(panel, &ProjectsPanel::newFolderRequested, this,
+          [this](const QString& root, const QString& path) { createFolderInProject(root, path); }, queued);
+  connect(panel, &ProjectsPanel::moveRequested, this,
+          [this](const QString& root, const QString& from, const QString& to, bool folder) {
+            moveInProject(root, from, to, folder);
+          },
+          queued);
+  connect(panel, &ProjectsPanel::deleteRequested, this,
+          [this](const QString& root, const QString& path, bool folder) { deleteInProject(root, path, folder); },
+          queued);
+  connect(panel, &ProjectsPanel::versionHistoryRequested, this,
+          [this](const QString& root, const QString& path) { panelVersionHistory(root, path); }, queued);
+  connect(panel, &ProjectsPanel::showInFolderRequested, this, [](const QString& folder) {
+    qInfo().noquote() << QStringLiteral("Projects panel: show in folder %1").arg(folder);
+    openExternalUrl(QUrl::fromLocalFile(folder));
+  });
+  connect(panel, &ProjectsPanel::projectSettingsRequested, this,
+          [this](const QString& root) { panelProjectSettings(root); }, queued);
+  connect(panel, &ProjectsPanel::syncRequested, this,
+          [this](const QString& root) { panelProjectAction(root, QStringLiteral("file.sync")); }, queued);
+  connect(panel, &ProjectsPanel::openProjectRequested, this,
+          [this](const QString& root) { openProjectFolder(root, true); }, queued);
+  connect(panel, &ProjectsPanel::commandRequested, this, [this](const QString& id) { trigger(id); }, queued);
+  connect(panel, &ProjectsPanel::addFolderRequested, this, [this] { addExistingProjectFolder(); }, queued);
+  connect(panel, &ProjectsPanel::removeFromListRequested, this, [this](const QString& root) {
+    ProjectsSettings::forget(root);
+    qInfo().noquote() << QStringLiteral("Projects panel: removed %1 from the list").arg(root);
+    showHint(tr("%1 is no longer in the Projects panel; its folder stays as it is. Open Project or Add Existing "
+                "Project Folder brings it back.")
+                 .arg(QFileInfo(root).fileName()));
+    refreshProjectsPanel();
+  });
+  connect(panel, &ProjectsPanel::statusMessage, this, [this](const QString& message, bool error) {
+    if (error) {
+      showError(message);
+    } else {
+      showHint(message);
+    }
+  });
+  // Read again when the window gets the focus back (files changed by
+  // another program, another Mitcad or git), and after versions went out
+  // or came in; the current project's sync state as the indicator's.
+  connect(qApp, &QGuiApplication::applicationStateChanged, this, [this](Qt::ApplicationState state) {
+    if (state == Qt::ApplicationActive) {
+      refreshProjectsPanel();
+    }
+  });
+  connect(m_remote, &RemoteController::stateChanged, panel, &ProjectsPanel::updateMarks);
+  connect(m_remote, &RemoteController::versionsSent, this, [this] { refreshProjectsPanel(); });
+  if (QAction* action = m_registry->action(QStringLiteral("view.projects"))) {
+    action->setCheckable(true);
+    if (QMenu* view = findChild<QMenu*>(QStringLiteral("viewMenu"))) {
+      view->addAction(action);
+    }
+  }
+}
+
+void MainWindow::dockProjectsPanel(QDockWidget* browserDock) {
+  createProjectsPanel();
+  if (m_projectsPanel == nullptr) {
+    return;
+  }
+  auto* dock = new QDockWidget(tr("Projects"), this);
+  dock->setObjectName(QStringLiteral("projectsDock"));
+  dock->setWidget(m_projectsPanel);
+  addDockWidget(Qt::LeftDockWidgetArea, dock);
+  // Above the browser, in the same column: the view keeps its width.
+  splitDockWidget(dock, browserDock, Qt::Vertical);
+  m_projectsContainer = dock;
+  m_projectsPanel->watchContainer(dock);
+  const bool shown = projectsPanelShownAtStart();
+  if (QAction* action = m_registry->action(QStringLiteral("view.projects"))) {
+    action->setChecked(shown);
+  }
+  dock->setVisible(shown);
+  // Closed with the dock's own button: as View > Projects.
+  // Not while the window closes or goes (its docks hide with it).
+  connect(dock->toggleViewAction(), &QAction::toggled, this, [this](bool on) {
+    if (!isVisible()) {
+      return;
+    }
+    QAction* action = m_registry->action(QStringLiteral("view.projects"));
+    if (action != nullptr && action->isChecked() != on) {
+      setProjectsPanelShown(on, true);
+    }
+  });
+}
+
+void MainWindow::addProjectsCard() {
+  createProjectsPanel();
+  if (m_projectsPanel == nullptr || m_floating == nullptr) {
+    return;
+  }
+  auto* card = new GlassCard;
+  card->setObjectName(QStringLiteral("projectsDock"));
+  card->setTitle(tr("Projects"));
+  card->setCollapsible(true);
+  card->setContent(m_projectsPanel, QMargins(6, 0, 6, 8));
+  const bool shown = projectsPanelShownAtStart();
+  // Above the browser's card (FloatingLayout stacks the upper left cards).
+  m_floating->addCard(card, FloatingLayout::Anchor::TopLeft,
+                      {260, [panel = m_projectsPanel] { return panel->contentHeight(); }, 0.4, shown});
+  connect(m_projectsPanel, &ProjectsPanel::contentHeightChanged, m_floating, &FloatingLayout::requestLayout);
+  m_projectsContainer = card;
+  m_projectsPanel->watchContainer(card);
+  if (QAction* action = m_registry->action(QStringLiteral("view.projects"))) {
+    action->setChecked(shown);
+  }
+}
+
+bool MainWindow::projectsPanelShownAtStart() const {
+  const ProjectsSettings settings = ProjectsSettings::load();
+  if (settings.panelShown.has_value()) {
+    qInfo().noquote() << QStringLiteral("Projects panel at the start: %1 (as chosen)")
+                             .arg(*settings.panelShown ? QStringLiteral("shown") : QStringLiteral("hidden"));
+    return *settings.panelShown;
+  }
+  // No choice yet (mitcad#151): shown when there is a project to list.
+  const bool any = anyProjectConfigured(settings.known, projectsDirectory(), settings.hidden);
+  qInfo().noquote() << (any ? QStringLiteral("Projects panel at the start: shown (no choice yet, projects configured)")
+                            : QStringLiteral("Projects panel at the start: hidden (no choice yet, no projects)"));
+  return any;
+}
+
+bool MainWindow::projectsPanelShown() const {
+  if (m_projectsContainer == nullptr) {
+    return false;
+  }
+  if (auto* card = qobject_cast<GlassCard*>(m_projectsContainer)) {
+    return card->isShown();
+  }
+  return !m_projectsContainer->isHidden();
+}
+
+void MainWindow::setProjectsPanelShown(bool shown, bool remember) {
+  if (m_projectsContainer == nullptr) {
+    return;
+  }
+  if (remember) {
+    ProjectsSettings settings = ProjectsSettings::load();
+    if (!settings.panelShown.has_value() || *settings.panelShown != shown) {
+      settings.panelShown = shown;
+      settings.save();
+      qInfo().noquote() << QStringLiteral("Projects panel: %1 at the next start")
+                               .arg(shown ? QStringLiteral("shown") : QStringLiteral("hidden"));
+    }
+  }
+  if (QAction* action = m_registry->action(QStringLiteral("view.projects"))) {
+    const QSignalBlocker blocker(action);
+    action->setChecked(shown);
+  }
+  if (shown == projectsPanelShown()) {
+    return;
+  }
+  if (auto* card = qobject_cast<GlassCard*>(m_projectsContainer)) {
+    card->setVisible(shown);
+    m_floating->requestLayout();
+  } else {
+    m_projectsContainer->setVisible(shown);
+    if (shown) {
+      // A third of the column, the browser the rest.
+      if (auto* browser = findChild<QDockWidget*>(QStringLiteral("browserDock"))) {
+        auto* dock = static_cast<QDockWidget*>(m_projectsContainer);
+        QTimer::singleShot(0, this, [this, dock, browser] {
+          const int total = dock->height() + browser->height();
+          resizeDocks({dock, browser}, {total / 3, total - total / 3}, Qt::Vertical);
+        });
+      }
+    }
+  }
+  qInfo().noquote() << QStringLiteral("Projects panel: %1").arg(shown ? QStringLiteral("shown") : QStringLiteral("hidden"));
+  // The browser below it moved: where its rows are now (UI tests).
+  TestSync::singleShot(150, this, [this] {
+    if (m_controller != nullptr) {
+      m_controller->browser()->logLayout();
+    }
+  });
+}
+
+void MainWindow::showProjectInPanel(const QString& root) {
+  if (m_projectsPanel == nullptr || root.isEmpty()) {
+    return;
+  }
+  setProjectsPanelShown(true, true);
+  m_projectsPanel->reveal(root);
+}
+
+void MainWindow::refreshProjectsPanel() {
+  if (m_projectsPanel != nullptr) {
+    m_projectsPanel->updateMarks();
+    m_projectsPanel->refresh();
+  }
+}
+
+QString MainWindow::projectsPanelFolder() const {
+  if (m_projectsPanel == nullptr || !m_project.hasHistory()) {
+    return {};
+  }
+  const QString root = m_projectsPanel->selectedRoot();
+  if (root.isEmpty() || !sameFolderPath(root, m_project.root)) {
+    return {};
+  }
+  return QDir::cleanPath(QDir(root).filePath(m_projectsPanel->selectedFolder()));
+}
+
+// ---------------------------------------------------------------------------
+// New Design
+
+void MainWindow::newDesign() {
+  QString root;
+  QString folder;
+  if (m_projectsPanel != nullptr) {
+    const QString selected = m_projectsPanel->selectedRoot();
+    const ProjectRow* row = m_projectsPanel->project(selected);
+    const bool usable =
+        row != nullptr && (row->kind == ProjectRow::Kind::Local || row->kind == ProjectRow::Kind::Cloud);
+    if (m_project.hasHistory()) {
+      root = m_project.root;
+      if (usable && sameFolderPath(selected, root)) {
+        folder = m_projectsPanel->selectedFolder();
+      }
+    } else if (usable) {
+      root = row->root;
+      folder = m_projectsPanel->selectedFolder();
+    }
+  } else if (m_project.hasHistory()) {
+    root = m_project.root;
+  }
+  if (root.isEmpty()) {
+    qInfo().noquote() << QStringLiteral("New Design: no project");
+    QMessageBox box(QMessageBox::Information, tr("New Design"), tr("New Design adds a design to a project."),
+                    QMessageBox::Cancel, this);
+    box.setInformativeText(tr("Make a project with New Project, or open one with Open Project. New (Ctrl+N) starts "
+                              "a design in no project."));
+    QPushButton* make = box.addButton(tr("New &Project..."), QMessageBox::AcceptRole);
+    QPushButton* open = box.addButton(tr("&Open Project..."), QMessageBox::AcceptRole);
+    box.setDefaultButton(make);
+    prepareModal(&box);
+    execDialog(&box);
+    if (box.clickedButton() == make) {
+      newProject();
+    } else if (box.clickedButton() == open) {
+      openProjectFolder();
+    }
+    return;
+  }
+  qInfo().noquote() << QStringLiteral("New Design: in %1%2")
+                           .arg(root, folder.isEmpty() ? QString() : QStringLiteral(", folder %1").arg(folder));
+  if (m_projectsPanel != nullptr) {
+    // Named in place in the panel.
+    setProjectsPanelShown(true, true);
+    m_projectsPanel->startNewDesign(root, folder);
+    return;
+  }
+  // Without the panel (the AppKit frontend): the name asked.
+  bool accepted = false;
+  QString name =
+      dialogText(this, tr("New Design"), tr("The new design's name:"), tr("Design1"), &accepted).trimmed();
+  if (!accepted || name.isEmpty()) {
+    qInfo().noquote() << QStringLiteral("New Design cancelled");
+    return;
+  }
+  if (!name.endsWith(QStringLiteral(".mitcad"), Qt::CaseInsensitive)) {
+    name += QStringLiteral(".mitcad");
+  }
+  createDesignInProject(root, joinPath(folder, name));
+}
+
+// ---------------------------------------------------------------------------
+// What the panel asks for
+
+std::optional<QJsonObject> MainWindow::projectWrite(const QString& root, QJsonObject command, const QString& title,
+                                                    QJsonObject* refused) {
+  const QString name = command.value(QStringLiteral("cmd")).toString();
+  const bool current = m_project.hasHistory() && sameFolderPath(m_project.root, root);
+  if (current) {
+    // A sync moves the project's branch: the change waits for it, as Save does.
+    m_remote->waitForBranch();
+  }
+  QJsonObject answer;
+  try {
+    const rust::Box<Project> project = open_project(rustStr(root.toUtf8()));
+    const std::optional<QString> author = versionAuthor(*project);
+    if (!author) {
+      qInfo().noquote() << QStringLiteral("Projects panel: %1 cancelled (no author)").arg(name);
+      return std::nullopt;
+    }
+    command.insert(QStringLiteral("author"), *author);
+    // Sent below as a saved version is.
+    command.insert(QStringLiteral("push"), false);
+    if (m_autosave != nullptr) {
+      // Whose edit locks are this window's.
+      command.insert(QStringLiteral("session"), m_autosave->session());
+    }
+    answer = parseObject(project->command(rustStr(compactJson(command))));
+  } catch (const std::exception& e) {
+    const QString message = tr("%1 failed: %2").arg(title, errorText(e));
+    qWarning().noquote() << QStringLiteral("Projects panel: %1 failed: %2").arg(name, errorText(e));
+    sheetWarning(this, title, message);
+    return std::nullopt;
+  }
+  const QString cls = errorClassOf(answer);
+  if (!cls.isEmpty()) {
+    qInfo().noquote() << QStringLiteral("Projects panel: %1 refused (%2): %3").arg(name, cls, errorMessageOf(answer));
+    if (refused != nullptr) {
+      *refused = answer;
+    } else {
+      sheetWarning(this, title, errorMessageOf(answer));
+    }
+    return std::nullopt;
+  }
+  const QString commit = answer.value(QStringLiteral("commit")).toString();
+  qInfo().noquote() << QStringLiteral("Projects panel: %1 recorded%2")
+                           .arg(name, commit.isEmpty() ? QStringLiteral(" (no new version)")
+                                                       : QStringLiteral(" as %1").arg(commit.left(7)));
+  for (const QJsonValue& warning : answer.value(QStringLiteral("warnings")).toArray()) {
+    qWarning().noquote() << QStringLiteral("Version warning: %1").arg(warning.toString());
+  }
+  if (current) {
+    // Sent at once (unless turned off), as Save's versions are.
+    m_remote->versionRecorded(root);
+  } else {
+    sendPanelProjectVersions(root);
+  }
+  return answer;
+}
+
+void MainWindow::sendPanelProjectVersions(const QString& root) {
+  if (m_projectsPanel == nullptr) {
+    return;
+  }
+  const ProjectRow* row = m_projectsPanel->project(root);
+  if (row == nullptr || row->kind != ProjectRow::Kind::Cloud || !RemoteSettings::load().autoPush) {
+    return;
+  }
+  // Another Cloud project's version: sent in the background.
+  RemoteTask* task = RemoteTask::command(root, {{QStringLiteral("cmd"), QStringLiteral("push")}}, this);
+  connect(task, &RemoteTask::finished, this, [this, task, root] {
+    const QJsonObject pushed = task->answer();
+    task->deleteLater();
+    const QString failure = errorClassOf(pushed);
+    qInfo().noquote() << (failure.isEmpty() ? QStringLiteral("Projects panel: sent the versions of %1").arg(root)
+                                            : QStringLiteral("Projects panel: the versions of %1 wait (%2): %3")
+                                                  .arg(root, failure, errorMessageOf(pushed)));
+    refreshProjectsPanel();
+  });
+  task->start();
+}
+
+void MainWindow::createDesignInProject(const QString& root, const QString& path) {
+  if (!maybeSave()) {
+    qInfo().noquote() << QStringLiteral("New Design cancelled");
+    return;
+  }
+  const std::optional<QJsonObject> answer =
+      projectWrite(root, {{QStringLiteral("cmd"), QStringLiteral("new_design")}, {QStringLiteral("path"), path}},
+                   tr("New Design"));
+  refreshProjectsPanel();
+  if (!answer) {
+    return;
+  }
+  const QString file = QDir::cleanPath(QDir(root).filePath(path));
+  qInfo().noquote() << QStringLiteral("New Design: made %1").arg(file);
+  QString error;
+  if (!openFile(file, error)) {
+    if (!error.isEmpty()) {
+      sheetWarning(this, tr("New Design"), tr("Could not open %1:\n%2").arg(QDir::toNativeSeparators(file), error));
+    }
+    return;
+  }
+  showHint(tr("%1 is a new design of %2: every save records a version.")
+               .arg(QFileInfo(file).fileName(), QFileInfo(root).fileName()));
+}
+
+void MainWindow::createFolderInProject(const QString& root, const QString& path) {
+  const std::optional<QJsonObject> answer = projectWrite(
+      root, {{QStringLiteral("cmd"), QStringLiteral("create_folder")}, {QStringLiteral("path"), path}},
+      tr("New Folder"));
+  refreshProjectsPanel();
+  if (answer) {
+    showHint(tr("The folder %1 is in %2.").arg(path, QFileInfo(root).fileName()));
+  }
+}
+
+void MainWindow::moveInProject(const QString& root, const QString& from, const QString& to, bool folder) {
+  const bool rename = from.section(QLatin1Char('/'), 0, -2) == to.section(QLatin1Char('/'), 0, -2);
+  QJsonArray openDesigns;
+  QJsonArray modifiedDesigns;
+  std::vector<std::pair<QPointer<MainWindow>, QString>> windows;
+  QString canonicalRoot = QFileInfo(root).canonicalFilePath();
+  if (canonicalRoot.isEmpty()) {
+    canonicalRoot = QFileInfo(root).absoluteFilePath();
+  }
+  for (QWidget* widget : QApplication::topLevelWidgets()) {
+    auto* window = qobject_cast<MainWindow*>(widget);
+    if (window == nullptr || window->m_filePath.isEmpty()) {
+      continue;
+    }
+    openDesigns.append(window->m_filePath);
+    QString identity = QFileInfo(window->m_filePath).canonicalFilePath();
+    if (identity.isEmpty()) {
+      identity = QFileInfo(window->m_filePath).absoluteFilePath();
+    }
+    // Resolve aliases while the old file still exists. A modal author
+    // prompt may close another window, so keep a guarded pointer.
+    windows.emplace_back(QPointer<MainWindow>(window), QDir::cleanPath(identity));
+    if (window->isModified()) {
+      modifiedDesigns.append(window->m_filePath);
+    }
+  }
+  const std::optional<QJsonObject> answer = projectWrite(
+      root,
+      {{QStringLiteral("cmd"), QStringLiteral("move")}, {QStringLiteral("from"), from}, {QStringLiteral("to"), to},
+       {QStringLiteral("open_designs"), openDesigns}, {QStringLiteral("modified_designs"), modifiedDesigns}},
+      rename ? tr("Rename") : tr("Move"));
+  if (answer) {
+    // Every window follows a moved design, so a later Save cannot
+    // recreate the old filename from another window's stale path.
+    for (const QJsonValue& value : answer->value(QStringLiteral("moved")).toArray()) {
+      const QJsonObject moved = value.toObject();
+      const QString was = QDir::cleanPath(QDir(canonicalRoot).filePath(moved.value(QStringLiteral("from")).toString()));
+      const QString now = QDir::cleanPath(QDir(root).filePath(moved.value(QStringLiteral("to")).toString()));
+      for (const auto& [window, identity] : windows) {
+        if (window && sameFolderPath(was, identity)) {
+          window->openDesignMoved(now);
+        }
+      }
+    }
+    showHint(rename ? tr("Renamed %1 to %2.").arg(from, to)
+                    : tr("Moved %1 to %2.").arg(from, to.section(QLatin1Char('/'), 0, -2).isEmpty()
+                                                         ? QFileInfo(root).fileName()
+                                                         : to.section(QLatin1Char('/'), 0, -2)));
+  }
+  Q_UNUSED(folder);
+  refreshProjectsPanel();
+}
+
+void MainWindow::openDesignMoved(const QString& path) {
+  const QString from = m_filePath;
+  m_filePath = QDir::cleanPath(QFileInfo(path).absoluteFilePath());
+  m_renamedFrom.clear();
+  if (const std::optional<rust::Box<Project>> project = versionedProject(m_filePath)) {
+    // What Save compares the file with.
+    rememberVersionBase(**project, m_filePath);
+  }
+  updateWindowTitle();
+  addRecentFile(m_filePath);
+  qInfo().noquote() << QStringLiteral("Projects panel: the open design follows: %1 -> %2").arg(from, m_filePath);
+  // Its edit lock: the old path's released, the new path's taken.
+  m_locks->designSaved(m_filePath);
+  updateVersionStatus();
+}
+
+void MainWindow::deleteInProject(const QString& root, const QString& path, bool folder) {
+  const QString absolute = QDir::cleanPath(QDir(root).filePath(path));
+  const bool open = !m_filePath.isEmpty() && (folder ? atOrInside(m_filePath, absolute) : sameFolderPath(m_filePath, absolute));
+  // What the panel knows of the designs that go.
+  int designs = 0;
+  QStringList unrecorded;
+  if (m_projectsPanel != nullptr) {
+    if (const ProjectRow* row = m_projectsPanel->project(root)) {
+      for (const ProjectDesignRow& design : row->designs) {
+        if (design.path == path || (folder && design.path.startsWith(path + QLatin1Char('/')))) {
+          ++designs;
+          if (design.changed) {
+            unrecorded << design.path;
+          }
+        }
+      }
+    }
+  }
+  const QString name = folder ? path : QFileInfo(path).fileName();
+  QMessageBox box(QMessageBox::Warning, tr("Delete"),
+                  folder ? tr("Delete the folder %1 and the %n design(s) in it?", nullptr, designs).arg(name)
+                         : tr("Delete %1?").arg(name),
+                  QMessageBox::Cancel, this);
+  QStringList info{tr("It leaves the project as a new version; the project's history keeps it.")};
+  if (!unrecorded.isEmpty()) {
+    info << tr("Changes that no version holds are lost: %1.").arg(unrecorded.join(QStringLiteral(", ")));
+  }
+  if (open) {
+    info << (isModified() ? tr("%1 is open: it closes, and its unsaved changes are lost.").arg(documentName())
+                          : tr("%1 is open: it closes.").arg(documentName()));
+  }
+  box.setInformativeText(info.join(QStringLiteral("\n\n")));
+  QPushButton* remove = box.addButton(tr("&Delete"), QMessageBox::DestructiveRole);
+  box.setDefaultButton(QMessageBox::Cancel);
+  qInfo().noquote() << QStringLiteral("Delete dialog: %1 (%2 designs%3%4)")
+                           .arg(path)
+                           .arg(designs)
+                           .arg(open ? QStringLiteral(", open") : QString(),
+                                unrecorded.isEmpty() ? QString() : QStringLiteral(", changes no version holds"));
+  prepareModal(&box);
+  execDialog(&box);
+  if (box.clickedButton() != remove) {
+    qInfo().noquote() << QStringLiteral("Delete cancelled");
+    return;
+  }
+  QJsonObject command{{QStringLiteral("cmd"), QStringLiteral("delete")}, {QStringLiteral("path"), path}};
+  QJsonObject refused;
+  std::optional<QJsonObject> answer = projectWrite(root, command, tr("Delete"), &refused);
+  if (!answer && errorClassOf(refused) == QLatin1String("local_changes")) {
+    // Changes no version holds, which the panel did not know of: asked.
+    const QMessageBox::StandardButton anyway = sheetWarning(
+        this, tr("Delete"),
+        tr("%1\n\nDelete all the same? Those changes are lost.").arg(errorMessageOf(refused)),
+        QMessageBox::Yes | QMessageBox::Cancel, QMessageBox::Cancel);
+    qInfo().noquote() << QStringLiteral("Delete: changes no version holds: %1")
+                             .arg(anyway == QMessageBox::Yes ? QStringLiteral("deleted all the same")
+                                                             : QStringLiteral("cancelled"));
+    if (anyway == QMessageBox::Yes) {
+      command.insert(QStringLiteral("force"), true);
+      answer = projectWrite(root, command, tr("Delete"));
+    }
+  } else if (!answer && !errorClassOf(refused).isEmpty()) {
+    sheetWarning(this, tr("Delete"), errorMessageOf(refused));
+  }
+  if (answer && open) {
+    // The deleted design closes; the window keeps the project.
+    if (installEmptyDocument(QString())) {
+      qInfo().noquote() << QStringLiteral("Projects panel: closed the deleted design %1").arg(absolute);
+    }
+  }
+  if (answer) {
+    showHint(tr("Deleted %1: the project's history keeps it.").arg(name));
+  }
+  refreshProjectsPanel();
+}
+
+void MainWindow::openPanelDesign(const QString& path) {
+  if (!m_filePath.isEmpty() && sameFolderPath(path, m_filePath)) {
+    qInfo().noquote() << QStringLiteral("Projects panel: %1 is open already").arg(path);
+    return;
+  }
+  openPath(path);
+}
+
+void MainWindow::panelVersionHistory(const QString& root, const QString& path) {
+  const QString file = QDir::cleanPath(QDir(root).filePath(path));
+  if (m_filePath.isEmpty() || !sameFolderPath(file, m_filePath)) {
+    // The history is the open design's: it opens first.
+    if (!maybeSave()) {
+      return;
+    }
+    QString error;
+    if (!openFile(file, error)) {
+      if (!error.isEmpty()) {
+        sheetWarning(this, tr("Version History"),
+                     tr("Could not open %1:\n%2").arg(QDir::toNativeSeparators(file), error));
+      }
+      return;
+    }
+  }
+  showVersionHistory();
+}
+
+void MainWindow::panelProjectAction(const QString& root, const QString& id) {
+  if (!(m_project.isProject() && sameFolderPath(m_project.root, root))) {
+    // Another project: it opens first (its last design, as Open Project).
+    openProjectFolder(root, true);
+    if (!(m_project.isProject() && sameFolderPath(m_project.root, root))) {
+      return;
+    }
+  }
+  trigger(id);
+}
+
+void MainWindow::panelProjectSettings(const QString& root) {
+  if (m_project.hasHistory() && sameFolderPath(m_project.root, root)) {
+    // The current project: as File > Project Settings, with its remote
+    // work, edit locks and live updates.
+    qInfo().noquote() << QStringLiteral("Projects panel: Project Settings of the current project %1").arg(root);
+    trigger(QStringLiteral("file.project_settings"));
+    return;
+  }
+  const ProjectRow* row = m_projectsPanel != nullptr ? m_projectsPanel->project(root) : nullptr;
+  if (row == nullptr || (row->kind != ProjectRow::Kind::Local && row->kind != ProjectRow::Kind::Cloud)) {
+    qInfo().noquote() << QStringLiteral("Projects panel: no Project Settings for %1").arg(root);
+    return;
+  }
+  // Another project: its settings without opening it (the open design
+  // stays). This window runs no remote work, edit locks or live updates
+  // for it, so there is nothing to settle or stop first.
+  qInfo().noquote() << QStringLiteral("Projects panel: Project Settings of %1 (not the current project)").arg(root);
+  const QString url = row->remoteUrl;
+  ProjectSettingsHost host;
+  host.projectChanged = [this] { refreshProjectsPanel(); };
+  host.settle = [](const QString&) { return true; };
+  host.versionRecorded = [this, root] { sendPanelProjectVersions(root); };
+  host.sync = [this, root] { panelProjectAction(root, QStringLiteral("file.sync")); };
+  host.openInBrowser = [url] {
+    const QString page = addressWebPage(url);
+    if (!page.isEmpty()) {
+      openExternalUrl(QUrl(page));
+    }
+  };
+  host.status = [this, root] { return m_projectsPanel != nullptr ? m_projectsPanel->stateText(root) : QString(); };
+  host.settingsChanged = [this](const QJsonObject&) { refreshProjectsPanel(); };
+  host.testBroker = [this](QWidget* parent, const QString& broker, const QString& prefix) {
+    m_live->testBroker(parent, broker, prefix);
+  };
+  mitcad::showProjectSettings(this, root, host);
+  refreshProjectsPanel();
+}
+
+void MainWindow::addExistingProjectFolder() {
+  const QString folder = dialogDirectory(this, tr("Add Existing Project Folder"), projectsDirectory());
+  if (folder.isEmpty()) {
+    qInfo().noquote() << QStringLiteral("Add Existing Project Folder cancelled");
+    return;
+  }
+  const ProjectState state = projectOfInspection(inspectFolder(folder));
+  if (state.isProject()) {
+    ProjectsSettings::remember(state.root);
+    qInfo().noquote() << QStringLiteral("Projects panel: added %1").arg(state.root);
+    showProjectInPanel(state.root);
+    return;
+  }
+  qInfo().noquote() << QStringLiteral("Add Existing Project Folder: %1 is no project").arg(folder);
+  QMessageBox box(QMessageBox::Question, tr("Add Existing Project Folder"),
+                  tr("%1 is not a Mitcad project.").arg(QDir::toNativeSeparators(folder)), QMessageBox::Cancel, this);
+  box.setInformativeText(tr("Make It a Project makes it one in New Project: the designs in it become the project's."));
+  QPushButton* make = box.addButton(tr("&Make It a Project..."), QMessageBox::AcceptRole);
+  prepareModal(&box);
+  execDialog(&box);
+  if (box.clickedButton() == make) {
+    openProjectFolder(folder, true);
+  }
+}
+
+} // namespace mitcad

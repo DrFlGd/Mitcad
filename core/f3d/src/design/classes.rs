@@ -28,6 +28,10 @@ pub const SKETCH_LINE: &str = "DCA267ED-D615-4934-B64F-AD805E8003E2";
 pub const SKETCH_LINE_2: &str = "16DEFC4D-1816-4FB0-8E39-9BDA23954248";
 pub const SKETCH_LINE_3: &str = "AE42BAB6-643F-4169-A33C-529C8E0A4D84";
 pub const SKETCH_ARC: &str = "F0130424-8B7E-4092-93C9-1CA807482534";
+/// A sketch spline (fitted or control-point): a NURBS curve (mitcad#154).
+pub const SKETCH_SPLINE: &str = "D82E012F-6DDD-4AED-BDE1-C0F7F9100B9B";
+/// A sketch ellipse or elliptical arc (mitcad#154).
+pub const SKETCH_ELLIPSE: &str = "FF23079A-D99C-47AB-940E-2F4E18F022AB";
 /// Base class of all sketch curves.
 pub const SKETCH_CURVE: &str = "9FF71F46-205F-484B-A2B5-A245D0D8FE33";
 pub const SKETCH_TEXT: &str = "E0618268-3A06-450E-9E94-7CF4C2E66802";
@@ -256,14 +260,24 @@ pub const ITEM_CLASSES: &[(&str, &str)] = &[
     // Modelling features.
     ("B6678572-C095-4DD1-9348-614677DD0B4A", "LoftFeature"),
     ("F4163A07-9E71-4C46-BD92-ACE5B5B40BED", "DraftFeature"),
-    ("6AA4C36C-52A2-48D2-A062-69FE123B84D1", "CylinderFeature"),
-    ("04A353F2-AA37-4163-9D4D-A07A7AA9AFA5", "SphereFeature"),
+    (CYLINDER, "CylinderFeature"),
+    (SPHERE, "SphereFeature"),
     ("C3A9ECCE-7D25-4432-A645-3A0D9687F22A", "EmbossFeature"),
     // Sheet metal flanges (the base names are those of the flange types).
     ("7AFA0A65-B53C-472C-ACA4-5C7C0A65001C", "FlangeFeature"),
     ("B0EEF272-DF39-419E-905C-38FDB5032817", "PCBFeature"),
     ("99F6967E-ED35-4222-B906-5CCF0AC70B53", "MeshFeature"),
 ];
+
+/// A cylinder primitive (mitcad#154): after its root part `u8 1 | u32
+/// operation | u8 1 | refs`, then a rigid 4x4 matrix that the cadmpeg
+/// format description takes for its frame but that does not place the
+/// corpus' cylinders; `Height` (signed) and `Diameter` parameters.
+pub const CYLINDER: &str = "6AA4C36C-52A2-48D2-A062-69FE123B84D1";
+/// A sphere primitive (mitcad#154): `u32 operation | u8 1 | refs` after its
+/// root part, a rigid matrix (as for [`CYLINDER`]) and a `Diameter`
+/// parameter.
+pub const SPHERE: &str = "04A353F2-AA37-4163-9D4D-A07A7AA9AFA5";
 
 /// The timeline item of a new or placed occurrence: the base class of
 /// component inserts, fasteners, pasted and derived occurrences.
@@ -287,6 +301,9 @@ pub const BODY_REF: &str = "9716F783-676D-42E0-93F9-EBF273E7C035";
 /// Feature input: a body, or a fillet's or chamfer's edge set (in an item's
 /// input list it comes before the edges and parameters of its set).
 pub const BODY_INPUT: &str = "2CA5A1CD-C99B-4C9B-91AF-57989148E841";
+/// A fillet's edge set options, one per set in the fillet's leading list
+/// (mitcad#154, [`super::build`]'s `fillet_set_options`).
+pub const FILLET_SET: &str = "4A557CE2-375C-4F69-AA76-2403109F1493";
 /// A thread: a timeline item, or a tapped hole's sub-item (mitcad#35).
 pub const THREAD: &str = "584D9526-EF22-4F6F-9FE1-5FCF1F3CE575";
 
@@ -377,3 +394,12 @@ pub const PROFILE_LOOPS: &str = "0D57BD2F-D09B-43FC-AD57-1E89A118C453";
 /// A revolution's profile input: `u32 n | n` [`PROFILE_ID`] references, as
 /// an extrusion's [`PROFILE`].
 pub const REVOLVE_PROFILE: &str = "63D2920D-7EC2-49C4-9F08-315197F9E657";
+
+// Components made from bodies (mitcad#156).
+
+/// A component made from bodies (`ComponentFromBodiesFeature`): its bodies
+/// go into the new component by a [`BASE_FEATURE`] of that component, which
+/// it refers to, and leave its own by a body removal.
+pub const COMPONENT_FROM_BODIES: &str = "56225BC7-69B7-446A-9AEA-6AA25BC7806E";
+/// A base feature: bodies as they are, with an item tail of its own.
+pub const BASE_FEATURE: &str = "D7015B81-AB4D-4C89-BED7-AA4411E1964A";

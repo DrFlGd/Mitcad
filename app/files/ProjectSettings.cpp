@@ -36,6 +36,7 @@
 #include "../framework/Dialogs.hpp"
 #include "../framework/Json.hpp"
 #include "../framework/Theme.hpp"
+#include "CloudAddress.hpp"
 #include "CloudSection.hpp"
 #include "ProjectDialogs.hpp"
 #include "Projects.hpp"
@@ -136,6 +137,10 @@ private:
   void writeShared();
   void writeLocal();
   void writeAuthor();
+  void writeDisplayName();
+  // The name the Projects panel shows without a display name: a Cloud
+  // project's owner/repository, else the folder's name.
+  QString defaultName() const;
   void listAuthors();
   QJsonObject sharedChosen() const;
   QJsonObject localChosen() const;
@@ -171,6 +176,7 @@ private:
   QWidget* m_statusRow = nullptr;
   QLabel* m_status = nullptr;
   QFormLayout* m_top = nullptr;
+  QLineEdit* m_displayName = nullptr;
   QGroupBox* m_shareBox = nullptr;
   CloudSection* m_section = nullptr;
   QLabel* m_authors = nullptr;
@@ -204,6 +210,15 @@ ProjectSettingsDialog::ProjectSettingsDialog(QWidget* parent, QString root, cons
   setWindowTitle(tr("Project Settings - %1").arg(QFileInfo(m_root).fileName()));
   auto* layout = new QVBoxLayout(this);
   m_top = new QFormLayout;
+  // The name the Projects panel shows (mitcad#152): this computer's, a
+  // display name only.
+  m_displayName = new QLineEdit;
+  m_displayName->setObjectName(QStringLiteral("projectDisplayName"));
+  m_displayName->setMaxLength(200);
+  m_displayName->setClearButtonEnabled(true);
+  auto* displayLabel = new QLabel(tr("&Display name:"));
+  displayLabel->setBuddy(m_displayName);
+  m_top->addRow(displayLabel, m_displayName);
   auto* folder = new QLabel(QDir::toNativeSeparators(m_root));
   folder->setTextInteractionFlags(Qt::TextSelectableByMouse);
   auto* show = new QPushButton(tr("Show in &Folder"));
@@ -354,8 +369,10 @@ ProjectSettingsDialog::ProjectSettingsDialog(QWidget* parent, QString root, cons
   auto* here = new QGroupBox(tr("On this computer"));
   auto* hereForm = new QFormLayout(here);
   m_name = new QLineEdit;
+  m_name->setObjectName(QStringLiteral("projectAuthorName"));
   m_name->setPlaceholderText(tr("Your Name"));
   m_email = new QLineEdit;
+  m_email->setObjectName(QStringLiteral("projectAuthorEmail"));
   m_email->setPlaceholderText(tr("you@example.com"));
   auto* authorRow = new QHBoxLayout;
   authorRow->addWidget(m_name, 1);
@@ -446,6 +463,7 @@ ProjectSettingsDialog::ProjectSettingsDialog(QWidget* parent, QString root, cons
       m_host.testBroker(this, m_broker->text().trimmed(), m_prefix->text().trimmed());
     }
   });
+  connect(m_displayName, &QLineEdit::editingFinished, this, [this] { writeDisplayName(); });
   connect(m_name, &QLineEdit::editingFinished, this, [this] { writeAuthor(); });
   connect(m_email, &QLineEdit::editingFinished, this, [this] { writeAuthor(); });
   connect(m_sendAtOnce, &QCheckBox::toggled, this, [this] { writeLocal(); });
@@ -493,6 +511,8 @@ void ProjectSettingsDialog::read() {
   m_prefix->setEnabled(!live.isEmpty());
   m_test->setEnabled(static_cast<bool>(m_host.testBroker));
   const QJsonObject local = m_settings.value(QStringLiteral("local")).toObject();
+  m_displayName->setText(local.value(QStringLiteral("name")).toString());
+  m_displayName->setModified(false);
   const QJsonObject sync = local.value(QStringLiteral("sync")).toObject();
   const RemoteSettings defaults = RemoteSettings::load();
   m_sendAtOnce->setChecked(sync.value(QStringLiteral("send_at_once")).isBool()
@@ -530,6 +550,10 @@ void ProjectSettingsDialog::showKind() {
   }
   m_address->setText(m_url);
   m_browser->setEnabled(!addressWebPage(m_url).isEmpty());
+  m_displayName->setPlaceholderText(defaultName());
+  m_displayName->setToolTip(tr("The name the Projects panel shows for this project on this computer. The folder "
+                               "and the repository keep their names. Empty: %1")
+                                .arg(defaultName()));
   m_status->setText(m_host.status ? m_host.status() : QString());
   // Several remotes and none followed (mitcad#89): which one first; the
   // project neither syncs nor has edit locks before.
@@ -602,6 +626,9 @@ void ProjectSettingsDialog::reject() {
   if (m_name->isModified() || m_email->isModified()) {
     writeAuthor();
   }
+  if (m_displayName->isModified()) {
+    writeDisplayName();
+  }
   qInfo().noquote() << QStringLiteral("Project Settings closed");
   QDialog::reject();
 }
@@ -640,7 +667,7 @@ void ProjectSettingsDialog::stopSyncing() {
                             "no longer sent, and newer ones are not fetched."));
   QPushButton* stop = box.addButton(tr("&Stop Syncing"), QMessageBox::DestructiveRole);
   qInfo().noquote() << QStringLiteral("Project Settings: stop syncing asked");
-  box.exec();
+  execDialog(&box);
   if (box.clickedButton() != stop || (m_host.settle && !m_host.settle(tr("stop syncing")))) {
     qInfo().noquote() << QStringLiteral("Project Settings: stop syncing cancelled");
     showKind();
@@ -952,6 +979,39 @@ void ProjectSettingsDialog::writeLocal() {
   }
 }
 
+QString ProjectSettingsDialog::defaultName() const {
+  const QString cloud = m_kind == QLatin1String("cloud") && !m_url.isEmpty() ? ownerAndRepositoryOf(m_url) : QString();
+  return cloud.isEmpty() ? QFileInfo(m_root).fileName() : cloud;
+}
+
+void ProjectSettingsDialog::writeDisplayName() {
+  if (m_reading) {
+    return;
+  }
+  m_displayName->setModified(false);
+  const QString name = m_displayName->text().trimmed();
+  const QString old = m_settings.value(QStringLiteral("local")).toObject().value(QStringLiteral("name")).toString();
+  if (name == old) {
+    return;
+  }
+  const QJsonObject answer =
+      projectCommand(m_root, {{QStringLiteral("cmd"), QStringLiteral("set_project_settings")},
+                              {QStringLiteral("local"), QJsonObject{{QStringLiteral("name"),
+                                                                     name.isEmpty() ? QJsonValue() : QJsonValue(name)}}}});
+  if (!errorClassOf(answer).isEmpty()) {
+    m_problem->setText(errorMessageOf(answer));
+    qInfo().noquote() << QStringLiteral("Project Settings: display name refused: %1").arg(errorMessageOf(answer));
+    return;
+  }
+  m_problem->clear();
+  m_settings = projectCommand(m_root, named("project_settings"));
+  qInfo().noquote() << (name.isEmpty() ? QStringLiteral("Project Settings: display name cleared: %1").arg(defaultName())
+                                       : QStringLiteral("Project Settings: display name %1").arg(name));
+  if (m_host.settingsChanged) {
+    m_host.settingsChanged(m_settings);
+  }
+}
+
 void ProjectSettingsDialog::writeAuthor() {
   if (m_reading) {
     return;
@@ -982,7 +1042,7 @@ void showProjectSettings(QWidget* parent, const QString& root, const ProjectSett
   {
     ProjectSettingsDialog dialog(parent, root, host);
     prepareModal(&dialog);
-    dialog.exec();
+    execDialog(&dialog);
     sync = dialog.syncRequested();
   }
   if (sync && host.sync) {

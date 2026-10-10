@@ -44,7 +44,7 @@ constexpr int kBodyRole = Qt::UserRole + 1;
 constexpr int kFaceRole = Qt::UserRole + 2;
 constexpr int kPreviewSize = 120;
 constexpr double kDegree = 3.14159265358979323846 / 180.0;
-// The largest image the project file embeds (core/model's
+// The largest image the design file embeds (core/model's
 // MAX_EMBEDDED_IMAGE).
 constexpr qint64 kMaxEmbedded = qint64(32) << 20;
 constexpr int kIconSize = 22;
@@ -152,7 +152,7 @@ AppearanceDialog::AppearanceDialog(DocumentHost& host, QWidget* parent) : QDialo
                                      "Planar: along the body's Z axis"));
   form->addRow(tr("Projection"), m_textureProjection);
   m_textureEmbed = new QCheckBox(tr("Embed the image in the design"));
-  m_textureEmbed->setToolTip(tr("The project file keeps a copy of the image, so it goes with the design"));
+  m_textureEmbed->setToolTip(tr("The design file keeps a copy of the image, so it goes with the design"));
   form->addRow(QString(), m_textureEmbed);
   m_textureInfo = new QLabel;
   m_textureInfo->setWordWrap(true);
@@ -579,7 +579,7 @@ void AppearanceDialog::pickColor(const ColorField& field) {
     return;
   }
   const bool base = qstrcmp(field.key, "base_color") == 0;
-  const QColor color = QColorDialog::getColor(base ? a->baseColor : a->emissionColor, this,
+  const QColor color = dialogColor(base ? a->baseColor : a->emissionColor, this,
                                               base ? tr("Base Colour") : tr("Emission Colour"));
   if (color.isValid()) {
     change(QString::fromLatin1(field.key), colorJson(color));
@@ -822,7 +822,7 @@ void AppearanceDialog::chooseTexture() {
   }
   const QString start = a->hasTexture && !a->texture.file.isEmpty() ? QFileInfo(a->texture.file).absolutePath()
                                                                      : m_host.documentFolder();
-  const QString path = QFileDialog::getOpenFileName(this, tr("Texture Image"), start,
+  const QString path = dialogOpenFileName(this, tr("Texture Image"), start,
                                                     tr("Images (*.png *.jpg *.jpeg);;All files (*)"));
   if (!path.isEmpty()) {
     setTexturePath(path);

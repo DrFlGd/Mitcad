@@ -300,12 +300,12 @@ foreach ($where in @('app', 'model-worker')) {
   } else { Fail "${where}: the report's stack starts at $($stack[0]), not at mitcad::crash::crashNow" }
 }
 
-# View > Rendered (mitcad#51), in a build with the render worker: the app
-# starts mitcad-render.exe next to it, whose frames (through the named
-# shared memory) refine to all samples; the rendered view shows the block.
+# View > Rendered (mitcad#51): the app starts mitcad-render.exe next to it
+# (every build has it), whose frames (through the named shared memory)
+# refine to all samples; the rendered view shows the block.
 $worker = Join-Path (Split-Path $App) 'mitcad-render.exe'
 if (-not (Test-Path $worker)) {
-  Write-Host 'SKIP: View > Rendered (no mitcad-render.exe: MITCAD_RENDER=OFF)'
+  Fail "View > Rendered: no render worker $worker next to the app"
 } else {
   $script = Join-Path $Out 'render.script'
   @"

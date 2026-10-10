@@ -23,7 +23,8 @@ struct RibInput;
 struct HelixInput;
 
 std::shared_ptr<geometry::Shape> sweep_solid(rust::Str feature, const Frame& frame,
-                                             rust::Slice<const Region> regions, const SweepInput& input);
+                                             rust::Slice<const Region> regions, const SweepInput& input,
+                                             const ShapeList& bodies);
 std::shared_ptr<geometry::Shape> loft_solid(rust::Str feature, const LoftInput& input,
                                             rust::Slice<const Frame> frames,
                                             rust::Slice<const Region> regions, const ShapeList& bodies);
@@ -33,6 +34,7 @@ std::shared_ptr<geometry::Shape> rib_solid(rust::Str feature, const Frame& frame
                                            const ShapeList& bodies);
 // FreeCAD's helices (mitcad#4).
 std::shared_ptr<geometry::Shape> helix_solid(rust::Str feature, const Frame& frame,
-                                             rust::Slice<const Region> regions, const HelixInput& input);
+                                             rust::Slice<const Region> regions, const HelixInput& input,
+                                             const ShapeList& bodies);
 
 } // namespace mitcad::bridge

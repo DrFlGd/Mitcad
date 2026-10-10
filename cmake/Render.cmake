@@ -1,38 +1,19 @@
 # SPDX-License-Identifier: MIT
-# The Cycles renderer of the render worker (MITCAD_RENDER, docs/rendering.md):
-# the target mitcad_cycles_renderer, app/render/CyclesRenderer.cpp linked
-# with Cycles and its libraries. Cycles and Open Image Denoise come from
-# tools/dev-env/build-cycles.sh's prefix (build-cycles.ps1 on Windows,
-# build-cycles-macos.sh on Apple Silicon), the
-# other libraries from vcpkg's "render" feature (the root CMakeLists.txt
-# turns it on).
+# The Cycles renderer of the render worker (docs/rendering.md): the target
+# mitcad_cycles_renderer, app/render/CyclesRenderer.cpp linked with Cycles
+# and its libraries. Cycles and Open Image Denoise come from the prefix
+# MITCAD_RENDER_DEPS of tools/dev-env/build-cycles.sh (build-cycles.ps1 on
+# Windows, build-cycles-macos.sh on Apple Silicon), which
+# cmake/RenderDeps.cmake checked before project(); the other libraries
+# from vcpkg.json's dependencies.
 
-if(WIN32)
-  set(mitcad_render_script build-cycles.ps1)
-  set(mitcad_render_default "C:/dev/mitcad-render-deps")
-elseif(APPLE)
-  set(mitcad_render_script build-cycles-macos.sh)
-  set(mitcad_render_default "$ENV{HOME}/mitcad-render-deps")
-else()
-  set(mitcad_render_script build-cycles.sh)
-  set(mitcad_render_default "$ENV{HOME}/mitcad-render-deps")
-endif()
-set(MITCAD_RENDER_DEPS "$ENV{MITCAD_RENDER_DEPS}" CACHE PATH
-    "Prefix of tools/dev-env/${mitcad_render_script} (default ${mitcad_render_default})")
-if(NOT MITCAD_RENDER_DEPS)
-  set(MITCAD_RENDER_DEPS "${mitcad_render_default}" CACHE PATH
-      "Prefix of tools/dev-env/${mitcad_render_script} (default ${mitcad_render_default})" FORCE)
-endif()
-set(mitcad_cycles_cmake "${MITCAD_RENDER_DEPS}/install/cycles/mitcad-cycles.cmake")
-if(NOT EXISTS "${mitcad_cycles_cmake}")
-  message(FATAL_ERROR "MITCAD_RENDER needs Cycles: run tools/dev-env/${mitcad_render_script} "
-                      "(no ${mitcad_cycles_cmake}; set MITCAD_RENDER_DEPS to its prefix)")
-endif()
+set(mitcad_cycles_cmake "${MITCAD_CYCLES_CMAKE}")
 # Cycles and Open Image Denoise are release builds. With MSVC a Debug build's
-# runtime library (/MDd) does not mix with them; RelWithDebInfo has the
-# debug information.
+# runtime library (/MDd) does not mix with them, so Mitcad has no MSVC Debug
+# build; RelWithDebInfo (the Windows presets') has the debug information.
 if(MSVC AND CMAKE_BUILD_TYPE STREQUAL "Debug")
-  message(FATAL_ERROR "MITCAD_RENDER with MSVC needs a release configuration (RelWithDebInfo or Release)")
+  message(FATAL_ERROR "With MSVC Mitcad needs a release configuration (RelWithDebInfo or Release): "
+                      "the render worker links the release builds of Cycles and Open Image Denoise")
 endif()
 # MITCAD_CYCLES_ROOT, MITCAD_OIDN_ROOT, MITCAD_CYCLES_DEFINITIONS,
 # MITCAD_CYCLES_LIBRARIES; since mitcad#50 MITCAD_CYCLES_DEVICES (CPU, CUDA,
@@ -99,7 +80,7 @@ target_include_directories(mitcad_cycles_renderer PRIVATE "${PROJECT_SOURCE_DIR}
 target_include_directories(mitcad_cycles_renderer SYSTEM PRIVATE "${MITCAD_CYCLES_ROOT}/include"
                            "${MITCAD_CYCLES_ROOT}/include/third_party/atomic")
 if("WITH_SSE2NEON" IN_LIST MITCAD_CYCLES_DEFINITIONS)
-  find_path(MITCAD_SSE2NEON_INCLUDE_DIR sse2neon.h REQUIRED)
+  find_path(MITCAD_SSE2NEON_INCLUDE_DIR sse2neon.h PATH_SUFFIXES sse2neon REQUIRED)
   target_include_directories(mitcad_cycles_renderer SYSTEM PRIVATE "${MITCAD_SSE2NEON_INCLUDE_DIR}")
 endif()
 if(TARGET zstd::libzstd_shared)

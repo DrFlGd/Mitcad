@@ -17,13 +17,13 @@ use serde_json::Value;
 
 use super::{clean_text, folder_entries, modified};
 use crate::remote::{branch_of, redact, remote_url, upstream_for};
-use crate::{VcsError, absolute, is_project_file, same_folder};
+use crate::{VcsError, absolute, is_design_file, same_folder};
 
 /// The designs listed at most.
-const MAX_DESIGNS: usize = 1000;
+pub(crate) const MAX_DESIGNS: usize = 1000;
 /// The folder entries looked at for designs at most (a folder such as a
 /// home folder is not walked whole while the user types).
-const MAX_ENTRIES: usize = 50_000;
+pub(crate) const MAX_ENTRIES: usize = 50_000;
 /// The file of the design opened last, relative to the project.
 pub(crate) const RECENT: &str = ".mitcad/local/recent.json";
 /// Settings and state files larger than this are not read.
@@ -100,7 +100,7 @@ pub struct FolderInfo {
     /// A Cloud project: version history and a remote.
     pub cloud: bool,
     /// The designs (`.mitcad` files) of the project (else of the folder),
-    /// newest first, `.git` and `.mitcad` folders left out.
+    /// newest first, folders whose names start with a dot left out.
     pub designs: Vec<Design>,
     /// More designs than listed, or the folder too large to look at whole.
     pub designs_truncated: bool,
@@ -241,7 +241,7 @@ pub(crate) fn remotes_of(repo: &gix::Repository) -> (Option<ProjectRemote>, Vec<
 }
 
 /// The `.mitcad` files under `root`, newest first (at most
-/// [`MAX_DESIGNS`]), leaving out `.git` and `.mitcad` folders and links;
+/// [`MAX_DESIGNS`]), leaving out dot-folders (`.git`, `.mitcad`) and links;
 /// true when there are more, or the folder holds too much to look at whole.
 fn designs_in(root: &Path) -> (Vec<Design>, bool) {
     let mut designs = Vec::new();
@@ -267,10 +267,11 @@ fn designs_in(root: &Path) -> (Vec<Design>, bool) {
             };
             let path = format!("{prefix}{name}");
             if kind.is_dir() {
-                if name != ".git" && name != ".mitcad" {
+                // Every dot-folder, as the commit's walk (mitcad#144).
+                if !name.starts_with('.') {
                     folders.push((entry.path(), format!("{path}/")));
                 }
-            } else if kind.is_file() && is_project_file(name) {
+            } else if kind.is_file() && is_design_file(name) {
                 let metadata = entry.metadata().ok();
                 let seconds = metadata
                     .as_ref()
@@ -309,7 +310,7 @@ pub(crate) fn valid_relative(path: &str) -> bool {
 
 /// The design opened last, from `.mitcad/local/recent.json`, while it is
 /// in the project.
-fn last_design(root: &Path) -> Option<String> {
+pub(crate) fn last_design(root: &Path) -> Option<String> {
     let file = root.join(RECENT);
     if fs::metadata(&file).ok()?.len() > MAX_STATE_SIZE {
         return None;

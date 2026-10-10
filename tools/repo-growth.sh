@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: MIT
-# Measures how a git repository grows when a project file is saved again and
+# Measures how a git repository grows when a design file is saved again and
 # again (P12a): for each model, three repositories get the model and then
 # SAVES commits that each change one parameter (its expression and value):
 #   v2      one file with the B-rep data inside (base64),

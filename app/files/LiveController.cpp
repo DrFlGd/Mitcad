@@ -1047,7 +1047,7 @@ void LiveController::testBroker(QWidget* parent, const QString& broker, const QS
                                   credentials.isEmpty() ? QString() : QStringLiteral(", as %1").arg(credentials.user));
     task->start();
     prepareModal(dialog);
-    dialog->open();
+    showDialog(dialog);
   };
   if (brokers::isPlain(broker) || key.isEmpty() || m_brokers.value(key).read) {
     run(m_brokers.value(key).credentials);

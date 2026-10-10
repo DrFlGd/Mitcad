@@ -1,0 +1,197 @@
+Mitcad's patch to OCCT 8.0.1, under OCCT's licence:
+SPDX-License-Identifier: LGPL-2.1-only WITH OCCT-exception-1.0
+
+Fillets: the blend cut by the face at the spine's end (0059) where the
+narrow face vanishes: along the middle of the chain the contact runs along
+the face's edge with the face at the end, towards the ends past it
+(mitcad#121): e.g. the foot of a groove's end wall where the groove's
+bottom is exactly as deep as the rounding and rounds up into the part's
+side at both sides.
+
+- ChFi3d_Builder::SplitKPart: a tangency line along the boundary of its
+  face can leave the hatching undone (Geom2dHatch_Hatcher::IsDone false)
+  instead of giving no domain; it is hatched on the boundary then too
+  (HatchOnBoundary, 0014), as where no domain is found.
+- ChFi3d_KPartCutToEnd (0059): the piece nearest to the end may be such a
+  piece on the boundary: its contact on N runs along an edge E of N whose
+  other face is the face B at the spine's end, and its end lies on E (no
+  arc given). Its end point is given the arc E (the vertex too where it
+  lies at one), and the pieces cut by B run from there to the end. Where
+  the pieces are not added, the point is restored.
+- ChFi3d_ContactsAlongFaceEdges (0014, 0054): an inner end of a contact
+  along a part of an edge, next to a piece whose contact runs off N onto
+  the face beyond Fv (cut by it), puts its point on the edge with an
+  external transition, as the neighbour's point there: N keeps no piece
+  beyond the inner end either, so no part of the edge is kept for N. With
+  the transitions of a contact leaving N and coming back, the parts of the
+  edge beyond the inner ends stayed with Fv's boundary, or (reversed) the
+  part along the blend came twice into Fv's wire.
+diff --git a/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_0.cxx b/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_0.cxx
+index cfc980b..ed0026c 100644
+--- a/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_0.cxx
++++ b/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_0.cxx
+@@ -3179,6 +3179,22 @@ void ChFi3d_ContactsAlongFaceEdges(TopOpeBRepDS_DataStructure&       DStr,
+               continue;
+             }
+           }
++          if (!Fn.IsNull() && !Fn->IsOnCurve(ons) && Fn->Index(ons) == DStr.AddShape(Fv))
++          {
++            // The neighbour's contact runs off F onto Fv there (a blend cut by
++            // the face beyond, 0055, 0059): F keeps no piece beyond the inner
++            // end either. The point cuts the edge with no side of it kept
++            // for F (an external transition); the face beyond covers the
++            // edge's other parts up to the cuts, and the part along the
++            // blend is the blend's.
++            CP.SetArc(Tol3d, E, aW[k], TopAbs_EXTERNAL);
++            ChFiDS_CommonPoint& CPn = Fn->ChangeVertex(!isFirst, ons);
++            if (CPn.Point().Distance(CP.Point()) <= Tol3d)
++            {
++              CPn.SetArc(Tol3d, E, aW[k], TopAbs_EXTERNAL);
++            }
++            continue;
++          }
+           CP.SetArc(Tol3d, E, aW[k], aTraE);
+           if (Fn.IsNull())
+           {
+diff --git a/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_2.cxx b/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_2.cxx
+index bf1c804..8cc2751 100644
+--- a/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_2.cxx
++++ b/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_2.cxx
+@@ -5228,6 +5228,101 @@ static bool ChFi3d_KPartCutToEnd(
+       }
+     }
+   }
++  // (A point given an arc below is restored unless the pieces are added.)
++  struct RestoreOnFailure
++  {
++    ChFiDS_CommonPoint* CP = nullptr;
++    ChFiDS_CommonPoint  Saved;
++    bool                Keep = false;
++
++    ~RestoreOnFailure()
++    {
++      if (CP != nullptr && !Keep)
++      {
++        *CP = Saved;
++      }
++    }
++  } aRestore;
++  for (int s = 1; s <= 2 && ons == 0; s++)
++  {
++    // A piece whose contact runs along an edge E of its face (on the
++    // boundary, as SplitKPart hatches it there) between N and a face at
++    // the end: its end is on E (its point given the arc E here).
++    ChFiDS_CommonPoint& CPs = P->ChangeVertex(isFirst, s);
++    if (CPs.IsOnArc() || P->Index(s) <= 0 || P->Index(3 - s) <= 0)
++    {
++      continue;
++    }
++    const TopoDS_Face Ns  = TopoDS::Face(DStr.Shape(P->Index(s)));
++    TopoDS_Face       NsF = Ns;
++    NsF.Orientation(TopAbs_FORWARD);
++    for (TopExp_Explorer ex(NsF, TopAbs_EDGE); ex.More() && ons == 0; ex.Next())
++    {
++      const TopoDS_Edge& Ec = TopoDS::Edge(ex.Current());
++      if (BRep_Tool::Degenerated(Ec) || !EFMap.Contains(Ec))
++      {
++        continue;
++      }
++      TopoDS_Face Bc;
++      for (NCollection_List<TopoDS_Shape>::Iterator it(EFMap(Ec)); it.More(); it.Next())
++      {
++        if (!it.Value().IsSame(Ns))
++        {
++          Bc = TopoDS::Face(it.Value());
++        }
++      }
++      bool atEndc = false;
++      for (NCollection_List<TopoDS_Shape>::Iterator it(VFMap(V)); it.More() && !Bc.IsNull(); it.Next())
++      {
++        atEndc = atEndc || it.Value().IsSame(Bc);
++      }
++      if (!atEndc)
++      {
++        continue;
++      }
++      double                        fc = 0., lc = 0.;
++      const occ::handle<Geom_Curve> Cc = BRep_Tool::Curve(Ec, fc, lc);
++      if (Cc.IsNull())
++      {
++        continue;
++      }
++      GeomAPI_ProjectPointOnCurve aPr(CPs.Point(), Cc, fc, lc);
++      if (aPr.NbPoints() == 0 || aPr.LowerDistance() > 10. * tol3d)
++      {
++        continue;
++      }
++      // (The contact runs along Ec over the piece: its middle lies on Ec.)
++      const ChFiDS_FaceInterference& FIs = P->Interference(s);
++      if (FIs.LineIndex() <= 0 || DStr.Curve(FIs.LineIndex()).Curve().IsNull())
++      {
++        continue;
++      }
++      GeomAPI_ProjectPointOnCurve aPm(
++        DStr.Curve(FIs.LineIndex()).Curve()->Value(0.5 * (FIs.FirstParameter() + FIs.LastParameter())),
++        Cc,
++        fc,
++        lc);
++      if (aPm.NbPoints() == 0 || aPm.LowerDistance() > 10. * tol3d)
++      {
++        continue;
++      }
++      const double             w   = aPr.LowerDistanceParameter();
++      const TopAbs_Orientation aTr = isFirst ? TopAbs::Reverse(TopAbs::Compose(FIs.Transition(), Ec.Orientation()))
++                                             : TopAbs::Compose(FIs.Transition(), Ec.Orientation());
++      aRestore.CP    = &CPs;
++      aRestore.Saved = CPs;
++      CPs.SetArc(10. * tol3d, Ec, w, aTr);
++      for (TopExp_Explorer exv(Ec, TopAbs_VERTEX); exv.More(); exv.Next())
++      {
++        const TopoDS_Vertex& Vc = TopoDS::Vertex(exv.Current());
++        if (BRep_Tool::Pnt(Vc).Distance(CPs.Point()) <= 10. * tol3d)
++        {
++          CPs.SetVertex(Vc);
++        }
++      }
++      ons = s;
++    }
++  }
+   if (ons == 0)
+   {
+     return false;
+@@ -5501,6 +5596,7 @@ static bool ChFi3d_KPartCutToEnd(
+     aIntl(eEnd) = true;
+     Spine->SetLastStatus(ChFiDS_FreeBoundary);
+   }
++  aRestore.Keep = true;
+   return true;
+ }
+ 
+diff --git a/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_SpKP.cxx b/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_SpKP.cxx
+index c4a0d7b..13ccb0a 100644
+--- a/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_SpKP.cxx
++++ b/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_SpKP.cxx
+@@ -957,6 +957,11 @@ bool ChFi3d_Builder::SplitKPart(const occ::handle<ChFiDS_SurfData>&
+     }
+     iH1 = H1.Trim(ll1);
+     H1.ComputeDomains(iH1);
++    // (A line on the boundary of its face may leave the hatching undone.)
++    if (!H1.IsDone(iH1) && HatchOnBoundary(H1, iH1, C1, I1, aShift) > 0)
++    {
++      snap1 = 100. * aShift;
++    }
+     if (!H1.IsDone(iH1))
+     {
+       return false;
+@@ -997,6 +1002,11 @@ bool ChFi3d_Builder::SplitKPart(const occ::handle<ChFiDS_SurfData>&
+     }
+     iH2 = H2.Trim(ll2);
+     H2.ComputeDomains(iH2);
++    // (A line on the boundary of its face may leave the hatching undone.)
++    if (!H2.IsDone(iH2) && HatchOnBoundary(H2, iH2, C2, I2, aShift) > 0)
++    {
++      snap2 = 100. * aShift;
++    }
+     if (!H2.IsDone(iH2))
+     {
+       return false;

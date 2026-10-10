@@ -17,7 +17,7 @@
 //!   empty, holds a Mitcad project and shares the project's history.
 //! - [`ProjectRepo::remote_set`] and [`ProjectRepo::remote_remove`]: the
 //!   remote (`origin`), the branch's upstream, and `.gitattributes` with
-//!   `merge=binary` for project files recorded as a version.
+//!   `merge=binary` for design files recorded as a version.
 //! - [`ProjectRepo::connect`]: check, set, then push to an empty remote or
 //!   fetch from one that shares the history; another history is refused
 //!   without changing anything.
@@ -229,7 +229,7 @@ enum Attempted {
 /// project do not have it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct OutsideLink {
-    /// The project file that links it, relative to the project.
+    /// The design file that links it, relative to the project.
     pub file: String,
     /// The component's name.
     pub component: String,
@@ -256,7 +256,7 @@ pub struct RemoteInfo {
     pub last_push: Option<Attempt>,
     pub last_sync: Option<Attempt>,
     /// Linked components outside the project (asked for: it reads every
-    /// project file of the latest version).
+    /// design file of the latest version).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub external_links: Option<Vec<OutsideLink>>,
     /// Every remote, by name (mitcad#89): with several and none followed
@@ -403,7 +403,7 @@ pub struct CloneOutcome {
     pub url: String,
     pub branch: Option<String>,
     pub head: Option<String>,
-    /// The project files of its latest version, to choose from.
+    /// The design files of its latest version, to choose from.
     pub files: Vec<String>,
 }
 
@@ -741,7 +741,7 @@ impl ProjectRepo {
         })
     }
 
-    /// The linked components of the latest version's project files whose
+    /// The linked components of the latest version's design files whose
     /// files are outside the project.
     fn outside_links(&self) -> Result<Vec<OutsideLink>, VcsError> {
         let Some(head) = self.head_commit()? else {
@@ -749,7 +749,7 @@ impl ProjectRepo {
         };
         let tree = self.repo.find_commit(head)?.tree_id()?.detach();
         let mut out = Vec::new();
-        for (file, blob) in self.project_files(tree)? {
+        for (file, blob) in self.design_files(tree)? {
             let data = self.repo.find_blob(blob)?.take_data();
             let Ok(design) = serde_json::from_slice::<serde_json::Value>(&data) else {
                 continue;
@@ -863,7 +863,7 @@ impl ProjectRepo {
     /// Sets the remote `name` (added, or its URL changed), makes the current
     /// branch follow its branch of the same name (unless it follows one of
     /// that remote already), and records the recommended `.gitattributes`
-    /// (project files merged only as whole files) as the version `Configure
+    /// (design files merged only as whole files) as the version `Configure
     /// project for sync` by `author` when the project lacks it. Nothing is
     /// sent or fetched.
     pub fn remote_set(
@@ -1412,7 +1412,7 @@ pub(crate) fn clone_outcome(cloned: &Cloned) -> Result<CloneOutcome, VcsError> {
     let files = match head {
         Some(head) => {
             let tree = repo.repo.find_commit(head)?.tree_id()?.detach();
-            repo.project_files(tree)?
+            repo.design_files(tree)?
                 .into_iter()
                 .map(|(path, _)| path)
                 .collect()

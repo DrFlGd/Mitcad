@@ -43,6 +43,8 @@
 #include "render/RenderDevice.hpp"
 #include "render/RenderScene.hpp"
 
+#include "../framework/Dialogs.hpp"
+
 namespace mitcad {
 
 namespace {
@@ -672,7 +674,7 @@ void RenderImageDialog::save() {
   const QString name = (m_documentName.isEmpty() ? tr("Render") : m_documentName) + QLatin1Char('.') + extension;
   const QString start = m_documentFolder.isEmpty() ? name : QDir(m_documentFolder).filePath(name);
   qDebug().noquote() << "Render image save dialog";
-  QString path = QFileDialog::getSaveFileName(this, tr("Save Rendered Image"), start, filter);
+  QString path = dialogSaveFileName(this, tr("Save Rendered Image"), start, filter);
   if (path.isEmpty()) {
     return;
   }

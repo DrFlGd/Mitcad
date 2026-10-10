@@ -31,6 +31,8 @@ pub mod persist;
 pub mod cancel;
 // Triangle meshes for 3D printing (3MF export, mitcad#13).
 pub mod mesh;
+// Shaded meshes of faces (USDZ export, mitcad#123).
+pub mod face_mesh;
 
 use std::sync::Arc;
 
@@ -613,6 +615,8 @@ impl Kernel for OcctKernel {
                 ExportFormat::Brep => Format::Brep,
                 // The model writes 3MF from triangle_mesh.
                 ExportFormat::ThreeMf => return Err(KernelError::Unsupported("3MF files")),
+                // And USDZ from face_meshes (mitcad#123).
+                ExportFormat::Usdz => return Err(KernelError::Unsupported("USDZ files")),
             },
             ap242: options.step_schema == StepSchema::Ap242,
             unit: match options.unit {
@@ -1114,7 +1118,10 @@ impl Kernel for OcctKernel {
 
     // FreeCAD helices (mitcad#4; sweeps.rs).
 
-    fn helix(&self, spec: &mitcad_model::HelixSpec<'_>) -> Result<Self::Shape, KernelError> {
+    fn helix(
+        &self,
+        spec: &mitcad_model::HelixSpec<'_, Self::Shape>,
+    ) -> Result<Self::Shape, KernelError> {
         sweeps::helix(spec)
     }
 
@@ -1249,6 +1256,33 @@ impl Kernel for OcctKernel {
             volume: props.volume,
             area: props.area,
             center: props.center,
+        })
+    }
+
+    // Sweeps along guide surfaces (mitcad#157; sweeps.rs).
+
+    fn surface_sweep(
+        &self,
+        spec: &mitcad_model::SweepSpec<'_>,
+        surfaces: &[mitcad_model::GuideSurface<'_, Self::Shape>],
+    ) -> Result<Self::Shape, KernelError> {
+        sweeps::surface_sweep(spec, surfaces)
+    }
+
+    // Shaded meshes of faces (USDZ export, mitcad#123; face_mesh.rs).
+
+    fn face_meshes(
+        &self,
+        shape: &Self::Shape,
+        tolerance: &mitcad_model::exchange::MeshTolerance,
+    ) -> Result<mitcad_model::exchange::FaceMeshes, KernelError> {
+        let mesh = face_mesh::ffi::face_meshes(occt(shape)?, tolerance.deviation, tolerance.angle)
+            .map_err(failed)?;
+        Ok(mitcad_model::exchange::FaceMeshes {
+            vertices: mesh.vertices.as_chunks::<3>().0.to_vec(),
+            normals: mesh.normals.as_chunks::<3>().0.to_vec(),
+            triangles: mesh.triangles.as_chunks::<3>().0.to_vec(),
+            face_triangles: mesh.face_triangles,
         })
     }
 }

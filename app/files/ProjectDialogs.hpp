@@ -2,12 +2,13 @@
 #pragma once
 
 // The dialogs of Local and Cloud projects (mitcad#89): New Project, Open
-// from Cloud, the design chooser of Open Project, Move to a Project's
-// question, and Project Settings' Change... of the address. Each runs its
-// network work on a thread of its own (RemoteTask) with its progress and
-// Cancel in the dialog; a cancel or a failure leaves the folder as it was.
+// from Cloud, Move to a Project's question, and Project Settings' Change...
+// of the address. Each runs its network work on a thread of its own
+// (RemoteTask) with its progress and Cancel in the dialog; a cancel or a
+// failure leaves the folder as it was. New Project and Create Project Here
+// make an empty project (or one of the designs its folder has); the
+// Projects panel (projects/ProjectsPanel.hpp, mitcad#145) adds designs.
 
-#include <functional>
 #include <optional>
 
 #include <QJsonObject>
@@ -26,7 +27,6 @@ struct NewProjectOptions {
   bool folderFixed = false; // Open Project: the folder chosen there
   bool cloud = false;     // Storage preset to Cloud
   QString url;            // the address preset
-  bool firstDesign = true; // a design named after the folder when it has none
 };
 
 struct NewProjectResult {
@@ -39,8 +39,7 @@ struct NewProjectResult {
   QString folder;      // the project's folder (absolute)
   QString url;         // Cloud: the address
   QJsonObject answer;  // Created: create_project's answer
-  QString design;      // Created: the first design (relative), or empty
-  QString broker;      // Created: live updates through this broker, or empty
+  QString broker;     // Created: live updates through this broker, or empty
 };
 
 std::optional<NewProjectResult> askNewProject(QWidget* parent, const NewProjectOptions& options);
@@ -59,17 +58,9 @@ struct OpenFromCloudResult {
   QString url;
   QString action;     // "clone", "create", "adopt" or "open"
   QJsonObject answer; // the command's answer (none for "open")
-  QString design;     // "create": the first design (relative)
 };
 
 std::optional<OpenFromCloudResult> askOpenFromCloud(QWidget* parent, const OpenFromCloudOptions& options);
-
-// Open Project's design chooser for a project with several designs: each
-// with its latest preview (`preview` gives a design's image path, or ""),
-// `last` (relative) selected. The design chosen (relative), "" for New
-// Design, nothing when cancelled.
-std::optional<QString> askChooseDesign(QWidget* parent, const QString& project, const QStringList& designs,
-                                       const QString& last, const std::function<QString(const QString&)>& preview);
 
 // Move to a Project: a new project (through New Project) or an existing one.
 enum class MoveTarget { NewProject, ExistingProject };

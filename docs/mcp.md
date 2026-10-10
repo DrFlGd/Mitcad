@@ -1,8 +1,9 @@
 <!-- SPDX-License-Identifier: MIT -->
 # Mitcad Model Context Protocol server
 
-`mitcad-cli mcp` exposes Mitcad's native parametric model to an MCP client
-without opening the desktop application. One process owns up to 64 open
+`mitcad-cli mcp` exposes Mitcad's native parametric model to an MCP client.
+Use `--connect` to edit the document in an already-open desktop application,
+or `--workspace DIR` to run without a UI. The headless process owns up to 64 open
 documents, each identified by an opaque handle such as `D1`. Handles last
 until the document closes or the process exits. The server uses the same
 JSON commands, queries and OCCT geometry kernel as the application.
@@ -46,12 +47,74 @@ Use the equivalent command-and-arguments fields if the client uses a
 different configuration layout. The client launches the process and
 owns its stdin and stdout pipes; no HTTP listener, desktop session or
 plugin package is required. stdout carries only MCP messages and stderr
-carries diagnostics. Closing stdin ends the session; unsaved documents
+carries diagnostics. Closing stdin ends the headless session; unsaved documents
 then leave memory without being written.
+
+## Connect to an open desktop document
+
+The desktop application starts a local MCP listener automatically. An agent
+can discover it after the app is already open; no restart with special
+arguments is needed. Start Mitcad with `--no-mcp` to disable this listener.
+
+On macOS the installed bundle includes the CLI:
+
+```bash
+/Applications/Mitcad.app/Contents/MacOS/mitcad-cli mcp --list-instances
+/Applications/Mitcad.app/Contents/MacOS/mitcad-cli mcp --connect
+```
+
+`--list-instances` prints `{"instances":[...]}` with each live instance's
+`instance`, `pid`, `host` and `port`. It never prints authentication tokens.
+If several instances are open, `--connect` refuses to choose; pass
+`--connect --instance ID` using an ID from the list. Stale records from a
+crashed app and records that fail authentication are ignored.
+
+Configure an MCP client to launch the stdio bridge:
+
+```json
+{
+  "mcpServers": {
+    "mitcad-desktop": {
+      "command": "/Applications/Mitcad.app/Contents/MacOS/mitcad-cli",
+      "args": ["mcp", "--connect"]
+    }
+  }
+}
+```
+
+The bridge authenticates the local socket before forwarding MCP messages.
+The listener binds only to `127.0.0.1` on an automatically selected port.
+Its discovery record and token are private to the current user, under
+`GenericCacheLocation/Mitcad/mcp` (`~/Library/Caches/Mitcad/mcp` on macOS).
+`MITCAD_MCP_DISCOVERY_DIR` overrides that directory for isolated tests or a
+separate client environment; the app and bridge must use the same absolute
+directory. Public or symlinked discovery records are refused. This is a
+local stdio bridge, not an HTTP endpoint for remote clients.
+
+The live catalog contains only `document_list`, `model_query` and
+`model_command`, with the argument shapes below. `document_list` returns
+the GUI document's opaque handle, path, name, state, `busy` and `editable`.
+Commands modify that actual document through its normal computation and
+undo workflow, updating its viewport, browser and history. New or Open in
+the GUI invalidates the previous document handle; list again before editing
+the replacement. Busy computations, active commands, sketches, drags and
+dialogs refuse external model access; editing also respects the GUI's
+read-only state. Retry after the user finishes the active operation.
+
+The live tools do not create, open, close, save or export files. File and
+remote operations remain unavailable through model commands and queries.
+Save through the desktop UI or use the separate headless workspace mode
+when file tools are required. `--workspace` and `--read-only` belong to
+headless mode and cannot be combined with `--connect` or `--list-instances`.
+Closing the bridge's stdin ends that connection after forwarding its
+requested replies; the GUI and its unsaved work remain open. A new bridge
+can reconnect to the same document.
 
 ## Tools and results
 
-`tools/list` supplies the full input schemas. All arguments are JSON
+`tools/list` supplies the full input schemas. The table lists the headless
+catalog; live connections expose its three document/model tools above.
+All arguments are JSON
 objects; fields below without a default are required.
 
 | Tool | Arguments | Result |
@@ -72,12 +135,14 @@ returns an object whose `result` is the native bodies array. The
 `timeline` snapshot is the native timeline object, including its
 `features` array; `state` is the native `document` query.
 
-Export formats are `step`, `iges`, `brep`, `stl`, `obj`, `3mf` and `dxf`.
+Export formats are `step`, `iges`, `brep`, `stl`, `obj`, `3mf`, `usdz` and `dxf`.
 DXF requires a `sketch` name or UID and excludes `bodies`; other formats
 accept `bodies` and exclude `sketch`. Export requires a new output path.
 OBJ may also write the adjacent `.mtl` file, which must also be a new
 path inside the workspace. STEP, IGES and BRep preserve exact geometry;
-STL, OBJ and 3MF tessellate it. Document save always writes a single
+STL, OBJ, 3MF and USDZ tessellate it (USDZ with the appearances; texture
+paths relative to the document's folder when it was saved or opened from a
+file). Document save always writes a single
 self-contained `.mitcad` file, even in a project with a B-rep store.
 
 The command reference is available through `resources/list` and
@@ -192,6 +257,15 @@ response. Model, workspace and file errors return tool results with
 `isError:true`, usually `structuredContent:{"error":"..."}`. A failed
 command validation leaves the document unchanged.
 
+Request and response frames are limited to 8 MiB, including JSON escaping
+and both text and structured tool content. An oversized tool result returns
+`isError:true` with `error_code:"response_too_large"` and `result_omitted:true`;
+the connection remains usable. If the operation already changed the document,
+the compact result preserves `applied:true` and the document handle: do not
+retry that operation. `original_is_error` reports whether the omitted result
+itself contained an error. Large embedded images may exceed this response
+limit even though the design file accepts them.
+
 A valid command can add or edit a feature whose geometry fails during
 recompute. That result has `isError:true` **and** `applied:true`, with the
 document's current state, timeline and bodies. Inspect the feature
@@ -201,7 +275,7 @@ handle and an error snapshot. Export refuses documents with failed
 features. File IO errors can leave partial output; inspect or remove it
 before choosing a retry destination.
 
-Paths are relative to the workspace or absolute inside it. Parent
+In headless mode, paths are relative to the workspace or absolute inside it. Parent
 traversal (`..`) and symlinks leading outside the workspace are refused;
 output parent directories must already exist. Project discovery stops
 at the workspace root. Version 3 documents can read their existing
@@ -215,8 +289,8 @@ changes or impose operating-system resource limits.
 Requests run synchronously, one at a time. This version does not report
 progress or interrupt a running geometry operation;
 `notifications/cancelled` cannot cancel that operation. A client may
-terminate the process, losing unsaved session documents. There is no
-background autosave. Document and B-rep reads have size limits; large
+terminate the headless process, losing its unsaved session documents. That
+mode has no background autosave. Document and B-rep reads have size limits; large
 geometry computations can still use substantial time and memory.
 
 ## Validation
@@ -228,7 +302,12 @@ notifications, workspace boundaries, read-only mode, version negotiation
 and EOF cleanup, plus persisted geometry failures, symlink escapes and
 OBJ companion-file conflicts. Protocol unit tests accompany the Rust
 protocol crate; the native CLI integration tests exercise the FFI backend.
-Builds, tests, formatters and dependency checks for this change
-remain pending in the external validation environment. Run the focused
-`cli.mcp` and `core.mcp` CTests there, followed by the repository's full
-checks, as described in [development.md](development.md#mcp-validation).
+The macOS `app.ui-macos-mcp` test
+([tools/ui-macos-mcp-test.py](../tools/ui-macos-mcp-test.py)) launches the
+actual GUI and CLI bridge. It verifies live discovery, private records,
+authentication, model edits and undo, native history and viewport
+screenshots, reconnect and EOF retention, stale document handles,
+ambiguous instances, malformed and oversized input, full-width integer
+request IDs, and `--no-mcp`. Run these focused CTests only in the approved
+isolated environments, as described in
+[development.md](development.md#mcp-validation).

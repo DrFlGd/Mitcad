@@ -1,0 +1,374 @@
+Mitcad's patch to OCCT 8.0.1, under OCCT's licence:
+SPDX-License-Identifier: LGPL-2.1-only WITH OCCT-exception-1.0
+
+Fillets: the corner where a face cuts the last two walked pieces of a
+blend (PerformMoreSurfdata, mitcad#121): the contact on one side has left
+its face across an edge of the face at the end while the other runs on to
+another edge of it, crossing a face boundary on the way (e.g. a rounding
+round a rod where it meets a pipe whose top is flush with the rod's top,
+the rod's rounded side and its narrow bevel at the top).
+
+- ChFi3d_Builder::MoreSurfdata: a point of the last but one piece on
+  either of the two edges of the face at the end, at either point of the
+  last piece, now qualifies. Before, the second point was only compared
+  with the edge that happened to be found second among the vertex's
+  edges, so the same corner went to PerformMoreSurfdata or, with its
+  edges in the other order, to PerformOneCorner, which drops the last
+  piece (one of its sides lies on no face) and fails ("Failed to find
+  edge").
+- PerformMoreSurfdata: where the face cuts the last piece along a curve
+  that leaves it through its end section instead of reaching the point on
+  arc (the contact reaches the edge to the face at the end there, and the
+  piece dips under the face next to it because the faces' normals are
+  more than a right angle apart), the piece's surface is extended beyond
+  its end (GeomLib::ExtendSurfByLength, as at the end of a stripe cut by a
+  face) and cut again; the extended surface replaces the piece's. A
+  curve that starts and ends at the point on arc (the face only touches
+  the piece there) is not taken for the cut.
+- PerformMoreSurfdata: the two pieces meet within their tolerance only
+  (the walk restarts a little beyond the previous piece's end): the ends of
+  the section and of the cuts are matched to the nearer point, and the
+  curves' orientations follow from the nearer pair of ends
+  (ChFi3d_ContinuesCurve), where before an end farther than 1e-4 from the
+  point made the section run to the other side of the piece and the
+  edges' orientations come out inconsistent (an unorientable shell). The
+  points' tolerances cover the gap.
+- PerformMoreSurfdata: where the section's p-curve on the previous piece
+  cannot be projected (it lies on that surface's boundary), it is the
+  segment between its ends' parameters, as between two pieces in
+  ChFi3d_FilDS. Before, the edge had no p-curve on that face.
+- PerformMoreSurfdata: the contact line of the last piece is trimmed at
+  the point on arc where the piece runs on beyond it (prolonged for the
+  face at the end to cut it); before, the whole line became the edge.
+diff --git a/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_C1.cxx b/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_C1.cxx
+index 40fc544..1ac78f8 100644
+--- a/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_C1.cxx
++++ b/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_C1.cxx
+@@ -4698,6 +4698,25 @@ void ChFi3d_Builder::PerformIntersectionAtEnd(const int Index)
+   }
+ }
+ 
++//=======================================================================
++// function : ChFi3d_ContinuesCurve
++// purpose  : whether the curve from theB0 to theB1 continues the one from
++//           theA0 to theA1 in the same direction (it starts where that
++//           one ends, or ends where it starts) rather than running back
++//           (they start or end at the same point), by the nearer pair of
++//           ends: the curves of consecutive surfdatas meet within their
++//           tolerances only.
++//=======================================================================
++
++static bool ChFi3d_ContinuesCurve(const gp_Pnt& theA0,
++                                  const gp_Pnt& theA1,
++                                  const gp_Pnt& theB0,
++                                  const gp_Pnt& theB1)
++{
++  return std::min(theA1.Distance(theB0), theA0.Distance(theB1))
++         <= std::min(theA0.Distance(theB0), theA1.Distance(theB1));
++}
++
+ //  Modified by Sergey KHROMOV - Thu Apr 11 12:23:40 2002 Begin
+ 
+ //=======================================================================
+@@ -4911,10 +4930,12 @@ void ChFi3d_Builder::PerformMoreSurfdata(const int Index)
+   occ::handle<Geom2d_Curve> aPClineOnFace;
+   int                       indLine;
+ 
+-  indLine       = aFI.LineIndex();
+-  aCline        = DStr.Curve(aFI.LineIndex()).Curve();
+-  aPClineOnSurf = aFI.PCurveOnSurf();
+-  aPClineOnFace = aFI.PCurveOnFace();
++  indLine                  = aFI.LineIndex();
++  aCline                   = DStr.Curve(aFI.LineIndex()).Curve();
++  aPClineOnSurf            = aFI.PCurveOnSurf();
++  aPClineOnFace            = aFI.PCurveOnFace();
++  const double aClineFirst = aFI.FirstParameter();
++  const double aClineLast  = aFI.LastParameter();
+ 
+   // intersection between the SurfData number anInd and the Face aFace.
+   // Obtaining of curves aCint1, aPCint11 and aPCint12.
+@@ -4953,14 +4974,75 @@ void ChFi3d_Builder::PerformMoreSurfdata(const int Index)
+     //  Modified by skv - Mon Jun  7 18:38:57 2004 OCC5898 Begin
+     //     if (aPext1.Distance(aCP1onArc.Point()) <= aTol3d ||
+     // 	aPext2.Distance(aCP1onArc.Point()))
+-    if (aPext1.Distance(aCP1onArc.Point()) <= aTol3d
+-        || aPext2.Distance(aCP1onArc.Point()) <= aTol3d)
++    // (A line from the point on arc that ends there too is the touch of
++    // the face at the point only.)
++    if ((aPext1.Distance(aCP1onArc.Point()) <= aTol3d
++         || aPext2.Distance(aCP1onArc.Point()) <= aTol3d)
++        && aPext1.Distance(aPext2) > aTol3d)
+     {
+       //  Modified by skv - Mon Jun  7 18:38:58 2004 OCC5898 End
+       isFound = true;
+     }
+   }
+ 
++  if (!isFound)
++  {
++    // The face may cut the blend along a curve that leaves it through its
++    // end section and comes back to the point on arc beyond it: near its
++    // contact the blend dips below the face (the contact reaches the edge
++    // between its face and this one at the end section, and that edge is
++    // not tangent to the blend). The blend's surface is extended beyond
++    // its end (as at the end of a stripe cut by a face) and cut again.
++    occ::handle<Geom_BoundedSurface> anExtSurf =
++      occ::down_cast<Geom_BoundedSurface>(aSurf->Copy());
++    if (!anExtSurf.IsNull())
++    {
++      const double aLength = aSurfData->Vertex(isFirst, 1).Point().Distance(
++        aSurfData->Vertex(isFirst, 2).Point());
++      GeomLib::ExtendSurfByLength(anExtSurf, aLength, 2, false, !isFirst);
++      GeomInt_IntSS anInterExt(aSurfPrev, anExtSurf, 1.e-7, true, true, true);
++      if (anInterExt.IsDone())
++      {
++        occ::handle<GeomAdaptor_Surface> H2ext = new GeomAdaptor_Surface(anExtSurf);
++        for (i = 1; i <= anInterExt.NbLines() && !isFound; i++)
++        {
++          aCint1 = anInterExt.Line(i);
++          aCint1->D0(aCint1->FirstParameter(), aPext1);
++          aCint1->D0(aCint1->LastParameter(), aPext2);
++          if ((aPext1.Distance(aCP1onArc.Point()) <= aTol3d
++               || aPext2.Distance(aCP1onArc.Point()) <= aTol3d)
++              && aPext1.Distance(aPext2) > aTol3d)
++          {
++            isFound  = true;
++            aPCint11 = anInterExt.LineOnS1(i);
++            aPCint12 = anInterExt.LineOnS2(i);
++            aTolex1  = ChFi3d_EvalTolReached(H1, aPCint11, H2ext, aPCint12, aCint1);
++          }
++        }
++      }
++      if (isFound)
++      {
++        // The blend's surface is the extended one from now on.
++        const int anOldSurf = aSurfData->Surf();
++        aSurfData->ChangeSurf(DStr.AddSurface(
++          TopOpeBRepDS_Surface(anExtSurf, DStr.ChangeSurface(anOldSurf).Tolerance())));
++        for (NCollection_DataMap<TopoDS_Shape, NCollection_List<int>, TopTools_ShapeMapHasher>::
++               Iterator itEVI(myEVIMap);
++             itEVI.More();
++             itEVI.Next())
++        {
++          for (NCollection_List<int>::Iterator itl(itEVI.ChangeValue()); itl.More(); itl.Next())
++          {
++            if (itl.Value() == anOldSurf)
++            {
++              itl.ChangeValue() = aSurfData->Surf();
++            }
++          }
++        }
++        aSurf = anExtSurf;
++      }
++    }
++  }
+   if (!isFound)
+   {
+     return;
+@@ -5032,8 +5114,12 @@ void ChFi3d_Builder::PerformMoreSurfdata(const int Index)
+     double aPar1;
+ 
+     aCracc->D0(aCracc->FirstParameter(), aPext1);
++    aCracc->D0(aCracc->LastParameter(), aPext2);
+ 
+-    if (aPext1.Distance(aCP2NotonArc.Point()) <= aTol3d)
++    // The end at the point not on arc: the nearer one (the walk may have
++    // restarted a little beyond the previous surface's end, so the two
++    // sections are apart by up to their tolerance).
++    if (aPext1.Distance(aCP2NotonArc.Point()) <= aPext2.Distance(aCP2NotonArc.Point()))
+     {
+       aPar1 = aCracc->FirstParameter();
+     }
+@@ -5097,6 +5183,45 @@ void ChFi3d_Builder::PerformMoreSurfdata(const int Index)
+   // anIndPrev which contains aCP2onArc
+ 
+   occ::handle<Geom2d_Curve> aPCraccS = GeomProjLib::Curve2d(aTrCracc, aSurf);
++  if (aPCraccS.IsNull())
++  {
++    // The section lies on the boundary of the previous surface (its end
++    // section, within the approximation's tolerance), where the
++    // projection may fail: its p-curve is the segment between the
++    // points' parameters on that surface, as between two fillets.
++    const ChFiDS_FaceInterference& aFINot =
++      is2ndCP1OnArc ? aSurfData->InterferenceOnS2() : aSurfData->InterferenceOnS1();
++    const ChFiDS_FaceInterference& aFIOn =
++      is2ndCP1OnArc ? aSurfData->InterferenceOnS1() : aSurfData->InterferenceOnS2();
++    const gp_Pnt2d aUVNot =
++      aFINot.PCurveOnSurf()->Value(isFirst ? aFINot.FirstParameter() : aFINot.LastParameter());
++    gp_Pnt2d aUVOther =
++      aFIOn.PCurveOnSurf()->Value(isFirst ? aFIOn.FirstParameter() : aFIOn.LastParameter());
++    if (isDoSecondSection)
++    {
++      gp_Pnt aP;
++      aCint2->D0(aCint2->FirstParameter(), aP);
++      aUVOther = aPCint22->Value(aP.Distance(aPext) <= aP.Distance(aCP2onArc.Point())
++                                   ? aCint2->FirstParameter()
++                                   : aCint2->LastParameter());
++    }
++    gp_Pnt aPStart, aPEnd;
++    aTrCracc->D0(aTrCracc->FirstParameter(), aPStart);
++    aTrCracc->D0(aTrCracc->LastParameter(), aPEnd);
++    const bool isNotFirst =
++      aPStart.Distance(aCP2NotonArc.Point()) <= aPEnd.Distance(aCP2NotonArc.Point());
++    double     aTolPC     = 0.;
++    ChFi3d_ComputePCurv(aTrCracc,
++                        isNotFirst ? aUVNot : aUVOther,
++                        isNotFirst ? aUVOther : aUVNot,
++                        aPCraccS,
++                        aSurf,
++                        aTrCracc->FirstParameter(),
++                        aTrCracc->LastParameter(),
++                        aTol3d,
++                        aTolPC);
++    aTolReached = std::max(aTolReached, aTolPC);
++  }
+ 
+   if (is2ndCP1OnArc)
+   {
+@@ -5237,7 +5362,7 @@ void ChFi3d_Builder::PerformMoreSurfdata(const int Index)
+     aCint2->D0(aCint2->FirstParameter(), aPext1);
+     aCint2->D0(aCint2->LastParameter(), aPext2);
+ 
+-    if (aPext1.Distance(aPext) <= aTol3d)
++    if (aPext1.Distance(aCP2onArc.Point()) > aPext2.Distance(aCP2onArc.Point()))
+     {
+       indPoint1 = indPoint;
+       indPoint2 = indCP2onArc;
+@@ -5247,9 +5372,12 @@ void ChFi3d_Builder::PerformMoreSurfdata(const int Index)
+       indPoint1 = indCP2onArc;
+       indPoint2 = indPoint;
+     }
++    // The point where the two cuts meet covers both ends.
++    DStr.ChangePoint(indPoint).Tolerance(
++      std::max(aTolex2, aPext.Distance(indPoint1 == indPoint ? aPext1 : aPext2)));
+ 
+     // define the orientation of aCint2
+-    if (aPext1.Distance(aPoint2) > aTol3d && aPext2.Distance(aPoint1) > aTol3d)
++    if (!ChFi3d_ContinuesCurve(aPoint1, aPoint2, aPext1, aPext2))
+     {
+       anOrSurf = TopAbs::Reverse(anOrSurf);
+     }
+@@ -5282,7 +5410,7 @@ void ChFi3d_Builder::PerformMoreSurfdata(const int Index)
+ 
+   aTrCracc->D0(aTrCracc->FirstParameter(), aPext1);
+   aTrCracc->D0(aTrCracc->LastParameter(), aPext2);
+-  if (aPext1.Distance(aCP2NotonArc.Point()) <= aTol3d)
++  if (aPext1.Distance(aCP2NotonArc.Point()) <= aPext2.Distance(aCP2NotonArc.Point()))
+   {
+     indPoint1 = indCP2NotonArc;
+     indPoint2 = indPoint;
+@@ -5306,11 +5434,19 @@ void ChFi3d_Builder::PerformMoreSurfdata(const int Index)
+     aTrCracc->D0(aTrCracc->LastParameter(), aP2);
+     aCint2->D0(aCint2->FirstParameter(), aP3);
+     aCint2->D0(aCint2->LastParameter(), aP4);
+-    isToReverse = (aP1.Distance(aP4) > aTol3d && aP2.Distance(aP3) > aTol3d);
++    isToReverse = !ChFi3d_ContinuesCurve(aP3, aP4, aP1, aP2);
+   }
+   else
+   {
+-    isToReverse = (aPext1.Distance(aPoint2) > aTol3d && aPext2.Distance(aPoint1) > aTol3d);
++    isToReverse = !ChFi3d_ContinuesCurve(aPoint1, aPoint2, aPext1, aPext2);
++  }
++  // The point not on arc covers the end of the section on the last
++  // surface too.
++  {
++    TopOpeBRepDS_Point& aPtNot = DStr.ChangePoint(indCP2NotonArc);
++    aPtNot.Tolerance(std::max(
++      aPtNot.Tolerance(),
++      aCP2NotonArc.Point().Distance(indPoint1 == indCP2NotonArc ? aPext1 : aPext2)));
+   }
+ 
+   if (isToReverse)
+@@ -5347,7 +5483,8 @@ void ChFi3d_Builder::PerformMoreSurfdata(const int Index)
+   // storage of aCint1
+ 
+   aCint1->D0(aCint1->FirstParameter(), aPext1);
+-  if (aPext1.Distance(aCP1onArc.Point()) <= aTol3d)
++  aCint1->D0(aCint1->LastParameter(), aPext2);
++  if (aPext1.Distance(aCP1onArc.Point()) <= aPext2.Distance(aCP1onArc.Point()))
+   {
+     indPoint1 = indCP1onArc;
+     indPoint2 = indPoint;
+@@ -5365,7 +5502,7 @@ void ChFi3d_Builder::PerformMoreSurfdata(const int Index)
+   aTrCracc->D0(aTrCracc->FirstParameter(), aP3);
+   aTrCracc->D0(aTrCracc->LastParameter(), aP4);
+ 
+-  if (aP1.Distance(aP4) > aTol3d && aP2.Distance(aP3) > aTol3d)
++  if (!ChFi3d_ContinuesCurve(aP3, aP4, aP1, aP2))
+   {
+     anOrSurf = TopAbs::Reverse(anOrSurf);
+   }
+@@ -5400,16 +5537,27 @@ void ChFi3d_Builder::PerformMoreSurfdata(const int Index)
+   // ---------------------------------------------------------------
+   // storage of aCline passing through aCP1onArc and aCP2NotonArc
+ 
+-  occ::handle<Geom_Curve> aTrCline =
+-    new Geom_TrimmedCurve(aCline, aCline->FirstParameter(), aCline->LastParameter());
++  // The contact line from the section between the two surfdatas to the
++  // point on arc: the surfdata may run on beyond that point (prolonged for
++  // the face at the end to cut it).
++  double aLine1 = isFirst ? aCP1onArc.Parameter() : aClineFirst;
++  double aLine2 = isFirst ? aClineLast : aCP1onArc.Parameter();
++  if (aLine1 < aCline->FirstParameter() || aLine2 > aCline->LastParameter()
++      || aLine2 - aLine1 <= 0.)
++  {
++    aLine1 = aCline->FirstParameter();
++    aLine2 = aCline->LastParameter();
++  }
++  occ::handle<Geom_Curve> aTrCline = new Geom_TrimmedCurve(aCline, aLine1, aLine2);
+   double             aTolerance = DStr.Curve(indLine).Tolerance();
+   TopOpeBRepDS_Curve aTct3(aTrCline, aTolerance);
+ 
+   indCurve = DStr.AddCurve(aTct3);
+ 
+   aTrCline->D0(aTrCline->FirstParameter(), aPext1);
++  aTrCline->D0(aTrCline->LastParameter(), aPext2);
+ 
+-  if (aPext1.Distance(aCP1onArc.Point()) < aTol3d)
++  if (aPext1.Distance(aCP1onArc.Point()) < aPext2.Distance(aCP1onArc.Point()))
+   {
+     indPoint1 = indCP1onArc;
+     indPoint2 = indCP2NotonArc;
+@@ -5426,7 +5574,7 @@ void ChFi3d_Builder::PerformMoreSurfdata(const int Index)
+   aCint1->D0(aCint1->FirstParameter(), aP3);
+   aCint1->D0(aCint1->LastParameter(), aP4);
+ 
+-  if (aP1.Distance(aP4) > aTol3d && aP2.Distance(aP3) > aTol3d)
++  if (!ChFi3d_ContinuesCurve(aP3, aP4, aP1, aP2))
+   {
+     anOrSurf = TopAbs::Reverse(anOrSurf);
+   }
+@@ -5603,18 +5751,15 @@ bool ChFi3d_Builder::MoreSurfdata(const int Index) const
+     ChFiDS_CommonPoint&          CV3 = Fd1->ChangeVertex(isfirst, 1);
+     ChFiDS_CommonPoint&          CV4 = Fd1->ChangeVertex(isfirst, 2);
+ 
++    // (The two arcs are found in the order of the vertex's edges: a point
++    // of the last but one surfdata on either of them, at either point of
++    // the last one.)
+     if (CV3.IsOnArc())
+     {
+-      if (CV3.Arc().IsSame(arc1))
+-      {
+-        if (CV1.Point().Distance(CV3.Point()) < 1.e-4)
+-        {
+-          oksurf = true;
+-        }
+-      }
+-      else if (CV3.Arc().IsSame(arc2))
++      if (CV3.Arc().IsSame(arc1) || CV3.Arc().IsSame(arc2))
+       {
+-        if (CV2.Point().Distance(CV3.Point()) < 1.e-4)
++        if (CV1.Point().Distance(CV3.Point()) < 1.e-4
++            || CV2.Point().Distance(CV3.Point()) < 1.e-4)
+         {
+           oksurf = true;
+         }
+@@ -5627,7 +5772,7 @@ bool ChFi3d_Builder::MoreSurfdata(const int Index) const
+       {
+         oksurf = true;
+       }
+-      else if (CV4.Arc().IsSame(arc2))
++      else if (CV4.Arc().IsSame(arc1) || CV4.Arc().IsSame(arc2))
+       {
+         if (CV2.Point().Distance(CV4.Point()) < 1.e-4)
+         {

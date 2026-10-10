@@ -26,7 +26,10 @@ const USAGE: &str = "usage: mitcad-f3d-inspect <command> ...
   design <file> [--json]      decoded design streams: timeline, parameters,
                               components; --json prints the dump IR
                               (core/import/SCHEMA.md; an array for an
-                              .f3z package)";
+                              .f3z package)
+  objects <file> <class> [n]  the design stream's objects of a class (GUID
+                              or its first digits; id:<n> for one object)
+                              in hex, the first n";
 
 fn open(path: &str) -> Result<F3dFile, String> {
     F3dFile::open(Path::new(path)).map_err(|e| format!("{path}: {e}"))
@@ -586,6 +589,51 @@ fn cmd_design(path: &str, json: bool) -> Result<(), String> {
     Ok(())
 }
 
+/// The design stream's objects of one class in hex, for studying a record
+/// layout: id, version, length, references (offset and target class) and
+/// the bytes, 32 a line.
+fn cmd_objects(path: &str, class: &str, max: Option<usize>) -> Result<(), String> {
+    use mitcad_f3d::design;
+    let prefix = class.to_uppercase();
+    for (label, doc) in design::documents(Path::new(path))? {
+        let Some(s) = design::find_design_streams(&doc).map_err(|e| e.to_string())? else {
+            continue;
+        };
+        let seg = design::Segment::parse(&s.meta, s.bulk).map_err(|e| e.to_string())?;
+        let mut shown = 0;
+        let id = prefix
+            .strip_prefix("ID:")
+            .and_then(|s| s.parse::<u64>().ok());
+        for o in &seg.objects {
+            let Some(g) = seg.guid(o) else { continue };
+            if id.map_or(!g.starts_with(&prefix), |id| o.id != id) {
+                continue;
+            }
+            if max.is_some_and(|m| shown >= m) {
+                break;
+            }
+            shown += 1;
+            let d = seg.data(o);
+            println!(
+                "== {label} object {} class {g} v{} len {} sub {}",
+                o.id,
+                seg.version(o).unwrap_or(0),
+                d.len(),
+                seg.sub_start(o)
+            );
+            for (p, r) in seg.refs_in(d, 0, d.len()) {
+                let t = seg.guid_of(r.id).unwrap_or("?");
+                println!("  ref @{p}..{} -> {} {}", r.end, r.id, &t[..8.min(t.len())]);
+            }
+            for (i, chunk) in d.chunks(32).enumerate() {
+                let hex: Vec<String> = chunk.iter().map(|b| format!("{b:02x}")).collect();
+                println!("  {:5} {}", i * 32, hex.join(" "));
+            }
+        }
+    }
+    Ok(())
+}
+
 fn run(args: &[String]) -> Result<(), String> {
     match args {
         [cmd, file] if cmd == "list" => cmd_list(file),
@@ -611,6 +659,8 @@ fn run(args: &[String]) -> Result<(), String> {
         }
         [cmd, file] if cmd == "design" => cmd_design(file, false),
         [cmd, file, flag] if cmd == "design" && flag == "--json" => cmd_design(file, true),
+        [cmd, file, class] if cmd == "objects" => cmd_objects(file, class, None),
+        [cmd, file, class, n] if cmd == "objects" => cmd_objects(file, class, n.parse().ok()),
         _ => Err(USAGE.to_string()),
     }
 }

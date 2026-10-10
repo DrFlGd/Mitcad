@@ -1,0 +1,118 @@
+# SPDX-License-Identifier: MIT
+# Native asynchronous command regression. Run in the macOS VM with an
+# empty document, MITCAD_LOG_VOLUMES=1 and
+# MITCAD_TEST_RECOMPUTE_DELAY_MS=0,preview=1500,add_feature=1500,edit_feature=1500.
+# The explicit *-now verbs send actual AppKit input while a job is running.
+expect-ever 'Native UI: AppKit shell with embedded OCCT viewport'
+expect-ever 'View area'
+sleep 800
+
+# Establish a persisted box whose volume can expose stale command state.
+mark
+native-action solid.box
+expect-log 'Command Box started'
+click-logged 'Datum xy'
+native-type input_x '0 mm'
+native-type input_y '0 mm'
+native-type input_length '40 mm'
+native-type input_width '25 mm'
+native-type input_height '10 mm'
+expect-native-enabled commandOk true
+native-click commandOk
+expect-log 'Added box \(New Body\)' 30
+capture baseline 'New body \S+ \(F1\.b0\): volume ([0-9.]+) mm3' 30
+expect-near ${baseline} 10000
+menu 'View/Show History'
+
+# Change an input while its previous preview runs. A stale preview must
+# neither overwrite the native field nor become the committed definition.
+mark
+native-activate native.history.F1
+expect-log 'Editing F1 with Box'
+expect-native-enabled commandOk true
+mark
+native-type-now input_height '11 mm'
+wait-log 'Box Height: 11 mm' 30
+wait-log 'Computing preview started' 30
+native-type-now input_height '12 mm'
+wait-log 'Box Height: 12 mm' 30
+expect-native-text input_height '^12(?:\.0*)?(?: mm)?$'
+expect-native-enabled commandOk true
+native-click commandOk
+expect-log 'Edited F1' 30
+capture latest 'Body \S+ \(F1\.b0\): volume 10000\.000 -> ([0-9.]+) mm3' 30
+expect-near ${latest} 12000
+expect-no-log 'Body .*volume .* -> 11000\.000 mm3'
+
+# Return while the new preview is still computing requests a commit. The
+# form must wait for that preview and commit exactly the latest dimension.
+mark
+native-activate native.history.F1
+expect-log 'Editing F1 with Box'
+native-type-now input_height '13 mm'
+wait-log 'Box Height: 13 mm' 30
+sleep 250
+native-key-now Return
+expect-log 'Edited F1' 30
+capture pending 'Body \S+ \(F1\.b0\): volume 12000\.000 -> ([0-9.]+) mm3' 30
+expect-near ${pending} 13000
+
+# Keep a previous edit on the redo stack, then cancel an accepted edit
+# while its commit job runs. The command checkpoint must preserve both
+# the persisted definition and the earlier redo entry.
+focus-main
+mark
+native-action edit.undo
+expect-log 'Undo:' 30
+mark
+native-activate native.history.F1
+expect-log 'Editing F1 with Box'
+expect-native-text input_height '^12(?:\.0*)?(?: mm)?$'
+native-type input_height '14 mm'
+expect-native-enabled commandOk true
+# Dispatch the real native Cancel action at the actual worker job boundary.
+# Timer polling can arrive after a progress sheet obscures the form.
+native-click-on-job edit_feature commandCancel
+native-click commandOk
+expect-log 'Native test: clicked commandCancel during edit_feature \(busy\)' 30
+expect-log 'Command Box cancelled' 30
+native-activate native.history.F1
+expect-log 'Editing F1 with Box'
+expect-native-text input_height '^12(?:\.0*)?(?: mm)?$'
+native-click commandCancel
+expect-log 'Command Box cancelled' 30
+expect-no-log 'Edited F1|Body .*volume .* -> 14000\.000 mm3'
+focus-main
+mark
+native-action edit.redo
+expect-log 'Redo:' 30
+native-activate native.history.F1
+expect-log 'Editing F1 with Box'
+expect-native-text input_height '^13(?:\.0*)?(?: mm)?$'
+native-click commandCancel
+expect-log 'Command Box cancelled' 30
+
+# Cancel while an editing preview is running, then immediately run another
+# command. Cleanup must finish before destroying the old presenter, restore
+# the timeline marker and leave the persisted box dimension unchanged.
+mark
+native-activate native.history.F1
+expect-log 'Editing F1 with Box'
+expect-native-enabled commandOk true
+mark
+native-type-now input_height '99 mm'
+wait-log 'Box Height: 99 mm' 30
+wait-log 'Computing preview started' 30
+native-click-now commandCancel
+expect-log 'Command Box cancelled' 30
+native-action solid.sphere
+expect-log 'Command Sphere started'
+native-click commandCancel
+expect-log 'Command Sphere cancelled' 30
+native-activate native.history.F1
+expect-log 'Editing F1 with Box'
+expect-native-text input_height '^13(?:\.0*)?(?: mm)?$'
+native-click commandCancel
+expect-log 'Command Box cancelled' 30
+expect-no-log 'Edited F1|Body .*volume .* -> 99000\.000 mm3'
+expect-never 'The document was read while a job computes it|TestDriver: FAIL|OCCT view event failed'

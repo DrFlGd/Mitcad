@@ -1,0 +1,78 @@
+[
+  {"comment": "Assembly constraints (mitcad#148) on the geometry kernel's faces and edges. Plate (C1, Plate:1 at the origin, grounded): a 40 x 40 x 10 block, Sketch1 F1 and Extrude1 F2 (Body1), with a hole of diameter 6 through its middle, Cylinder1 F3."},
+  {"cmd": "create_component", "name": "Plate"},
+  {"cmd": "sketch.create"},
+  {"cmd": "sketch.add_rectangle", "sketch": "F1", "corner": [0, 0], "width": 40, "height": 40},
+  {"cmd": "add_feature", "def": {"type": "extrude",
+    "profiles": [{"sketch": "F1", "region": "r{c1[c4,c2],c2[c1,c3],c3[c2,c4],c4[c3,c1]}"}],
+    "extent": {"type": "distance", "distance": 10}, "operation": "new_body"}},
+  {"cmd": "add_feature", "def": {"type": "cylinder", "plane": "xy", "center": [20, 20],
+    "diameter": 6, "height": 10, "operation": "cut"}},
+
+  {"comment": "Pin (C2, Pin:1 at x = 100): a cylinder of diameter 6 and height 30, Cylinder2 F4 (Body2)."},
+  {"cmd": "activate_component", "component": "Root"},
+  {"cmd": "create_component", "name": "Pin", "transform": {"translation": [100, 0, 0]}},
+  {"cmd": "add_feature", "def": {"type": "cylinder", "plane": "xy", "center": [0, 0],
+    "diameter": 6, "height": 30, "operation": "new_body"}},
+  {"cmd": "activate_component", "component": "Root"},
+  {"cmd": "ground_occurrence", "occurrence": "Plate:1"},
+
+  {"comment": "The pin's bottom rim and the hole's top rim are two circles: an insert first. The pin's rim looks down (its bottom face's normal), the hole's up (the plate's top): half a turn between them."},
+  {"expect": {"query": {"query": "constraint_row",
+    "a": {"occurrence": "Pin:1", "geometry": {"body": "F4.b0", "edge": "E{F4:bottom|F4:side0}"}},
+    "b": {"occurrence": "Plate:1", "geometry": {"body": "F2.b0", "edge": "E{F2:end(r{c1[c4,c2],c2[c1,c3],c3[c2,c4],c4[c3,c1]})|F3:side0}"}}},
+    "result": {"kinds": {"a": "circle", "b": "circle"}, "type": "insert",
+               "measures": {"angle": 3.141592653589793}}}},
+  {"expect": {"query": {"query": "constraint_row",
+    "a": {"occurrence": "Pin:1", "geometry": {"body": "F4.b0", "edge": "E{F4:bottom|F4:side0}"}},
+    "b": {"occurrence": "Plate:1", "geometry": {"body": "F2.b0", "face": "F3:side0"}}},
+    "result": {"kinds": {"a": "circle", "b": "cylinder"}, "type": "insert_axis"}}},
+
+  {"comment": "Constraint1 F5: the pin inserted into the hole, 10 down: its bottom at the plate's bottom. It turns about the axis: one motion left."},
+  {"cmd": "add_constraint_set", "rows": [{"type": "insert", "offset": -10,
+    "a": {"occurrence": "Pin:1", "geometry": {"body": "F4.b0", "edge": "E{F4:bottom|F4:side0}"}},
+    "b": {"occurrence": "Plate:1", "geometry": {"body": "F2.b0", "edge": "E{F2:end(r{c1[c4,c2],c2[c1,c3],c3[c2,c4],c4[c3,c1]})|F3:side0}"}}}]},
+  {"expect": {"occurrence": "Pin:1", "body": "Body2", "center": [20, 20, 15], "tolerance": 1e-6}},
+  {"expect": {"query": {"query": "joints"}, "result": {"constraints": [
+    {"name": "Constraint1", "type": "constraint_set", "state": "placed", "solved": true,
+     "rows": [{"row": 1, "type": "insert", "holds": true}]}]}}},
+  {"expect": {"query": {"query": "joint_dof", "occurrence": "Pin:1"}, "result": {"dof": 1}}},
+
+  {"comment": "Suppressed, the pin is back where it was placed."},
+  {"cmd": "suppress_feature", "uid": "F5"},
+  {"expect": {"occurrence": "Pin:1", "body": "Body2", "center": [100, 0, 15], "tolerance": 1e-6}},
+
+  {"comment": "Constraint2 F6: the rim on the hole's axis, the depth left free: the pin comes onto the axis at the height it had."},
+  {"cmd": "add_constraint_set", "rows": [{"type": "insert_axis",
+    "a": {"occurrence": "Pin:1", "geometry": {"body": "F4.b0", "edge": "E{F4:bottom|F4:side0}"}},
+    "b": {"occurrence": "Plate:1", "geometry": {"body": "F2.b0", "face": "F3:side0"}}}]},
+  {"expect": {"occurrence": "Pin:1", "body": "Body2", "center": [20, 20, 15], "tolerance": 1e-6}},
+  {"expect": {"query": {"query": "joint_dof", "occurrence": "Pin:1"}, "result": {"dof": 2, "mobile": true}}},
+
+  {"comment": "A drag along the axis moves the pin; one across it keeps it on the axis."},
+  {"cmd": "drag_occurrence", "occurrence": "Pin:1", "point": [20, 20, 0], "target": [20, 20, 5]},
+  {"expect": {"occurrence": "Pin:1", "body": "Body2", "center": [20, 20, 20], "tolerance": 1e-6}},
+  {"cmd": "drag_occurrence", "occurrence": "Pin:1", "point": [20, 20, 5], "target": [30, 20, 5]},
+  {"expect": {"occurrence": "Pin:1", "body": "Body2", "center": [20, 20, 20], "tolerance": 1e-6}},
+
+  {"comment": "Constraint3 F7: the pin's bottom on the plate's top and its top on it too cannot both hold; the rows are named."},
+  {"cmd": "add_constraint_set", "rows": [
+    {"type": "align",
+     "a": {"occurrence": "Pin:1", "geometry": {"body": "F4.b0", "face": "F4:bottom"}},
+     "b": {"occurrence": "Plate:1", "geometry": {"body": "F2.b0", "face": "F2:end(r{c1[c4,c2],c2[c1,c3],c3[c2,c4],c4[c3,c1]})"}}},
+    {"type": "align",
+     "a": {"occurrence": "Pin:1", "geometry": {"body": "F4.b0", "face": "F4:top"}},
+     "b": {"occurrence": "Plate:1", "geometry": {"body": "F2.b0", "face": "F2:end(r{c1[c4,c2],c2[c1,c3],c3[c2,c4],c4[c3,c1]})"}}}]},
+  {"expect": {"feature": "Constraint3", "status": "error", "error_contains": "Constraint3 row 2 (align)"}},
+  {"cmd": "delete_feature", "uid": "F7"},
+
+  {"comment": "Constraint3 again, F8: the pin's bottom 4 above the plate's top, facing it: with the axis insert it stands on the hole. Its normals along each other repeat the axes' direction: redundant, it holds."},
+  {"cmd": "add_constraint_set", "rows": [{"type": "align", "offset": 4,
+     "a": {"occurrence": "Pin:1", "geometry": {"body": "F4.b0", "face": "F4:bottom"}},
+     "b": {"occurrence": "Plate:1", "geometry": {"body": "F2.b0", "face": "F2:end(r{c1[c4,c2],c2[c1,c3],c3[c2,c4],c4[c3,c1]})"}}}]},
+  {"expect": {"occurrence": "Pin:1", "body": "Body2", "center": [20, 20, 29], "tolerance": 1e-6}},
+  {"expect": {"query": {"query": "joints"}, "result": {"constraints": [
+    {"name": "Constraint1", "state": "suppressed"}, {"name": "Constraint2", "state": "satisfied"},
+    {"name": "Constraint3", "state": "placed", "rows": [{"holds": true}]}],
+    "dof": [{"component": "C0", "total": 1, "redundant": ["F8"], "conflicting": []}]}}}
+]

@@ -34,7 +34,7 @@ struct AppearanceTexture {
   double height = 100.0;
   double rotation = 0.0; // radians
   bool planar = false;   // else box
-  bool embedded = false; // the image is in the project file
+  bool embedded = false; // the image is in the design file
   QString imageSha256;   // of an embedded image
   // The image file the renderer reads (resolveTexture): absolute; empty
   // when there is none, with the reason in `missing`.

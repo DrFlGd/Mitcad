@@ -17,7 +17,7 @@
 //! from the root ([`Assembly::instances`]).
 //!
 //! The structure (components, occurrences, flags, the active component)
-//! is part of the definition state, so undo and the project file cover it.
+//! is part of the definition state, so undo and the design file cover it.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -38,20 +38,20 @@ pub struct ComponentDef {
     /// into this component) or a component from bodies. None for an empty
     /// component, an inserted one and a copy.
     pub created_by: Option<FeatureUid>,
-    /// Another project file this component shows (read only), when linked.
+    /// Another design file this component shows (read only), when linked.
     pub link: Option<ExternalLink>,
     /// The library it came from, linked or copied (mitcad#64, mitcad#63):
     /// the version, configuration, licence and designation.
     pub library: Option<crate::library::LibraryRef>,
 }
 
-/// A component linked from another project file: its bodies are the
+/// A component linked from another design file: its bodies are the
 /// file's, read again when the source has changed.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ExternalLink {
     /// The file as given; a relative path is relative to the directory of
-    /// the project file that links it.
+    /// the design file that links it.
     pub path: String,
     /// A digest of the source text when it was last read, to tell whether
     /// it changed.

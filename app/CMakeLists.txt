@@ -32,6 +32,7 @@ qt_add_executable(mitcad
   framework/ChromeStyle.hpp
   framework/Command.cpp
   framework/Command.hpp
+  framework/CommandPresenter.hpp
   framework/CommandPanel.cpp
   framework/CommandPanel.hpp
   framework/CommandRegistry.cpp
@@ -40,6 +41,8 @@ qt_add_executable(mitcad
   framework/CommandSearch.hpp
   framework/CommandSession.cpp
   framework/CommandSession.hpp
+  framework/DocumentSession.cpp
+  framework/DocumentSession.hpp
   framework/DesktopEntry.cpp
   framework/DesktopEntry.hpp
   framework/Diagnostics.hpp
@@ -230,7 +233,13 @@ qt_add_executable(mitcad
   # Edit locks of Cloud projects' designs and read-only windows (mitcad#89).
   files/LockController.cpp
   files/LockController.hpp
-  files/MainWindowLocks.cpp)
+  files/MainWindowLocks.cpp
+  # The Projects panel: projects, folders and designs (mitcad#145).
+  projects/MainWindowProjectsPanel.cpp
+  projects/ProjectsPanel.cpp
+  projects/ProjectsPanel.hpp
+  projects/ProjectsTree.cpp
+  projects/ProjectsTree.hpp)
 
 # Toolbar and command icons (own drawings, MIT), rendered with Qt SVG.
 file(GLOB MITCAD_ICONS RELATIVE "${CMAKE_CURRENT_SOURCE_DIR}" CONFIGURE_DEPENDS icons/*.svg)
@@ -278,6 +287,22 @@ if(APPLE)
   target_sources(mitcad PRIVATE platform/MacChrome.hpp platform/macos/MacChrome.mm)
   set_source_files_properties(platform/macos/MacChrome.mm PROPERTIES COMPILE_OPTIONS -fobjc-arc)
   target_link_libraries(mitcad PRIVATE "-framework AppKit")
+  if(MITCAD_MACOS_NATIVE_UI)
+    target_link_libraries(mitcad PRIVATE "-framework UniformTypeIdentifiers")
+    target_compile_definitions(mitcad PRIVATE MITCAD_MACOS_NATIVE_UI=1)
+    target_sources(mitcad PRIVATE
+      MainWindowNative.cpp
+      platform/NativeMacWindow.hpp platform/macos/NativeMacWindow.mm
+      platform/NativeForms.hpp platform/macos/NativeForms.mm
+      platform/NativeDialogs.hpp platform/macos/NativeDialogs.mm
+      platform/NativeInlineEditor.hpp platform/macos/NativeInlineEditor.mm
+      platform/NativeTestInput.hpp platform/macos/NativeTestInput.mm)
+    set_source_files_properties(
+      platform/macos/NativeMacWindow.mm platform/macos/NativeForms.mm
+      platform/macos/NativeDialogs.mm platform/macos/NativeTestInput.mm
+      platform/macos/NativeInlineEditor.mm
+      PROPERTIES COMPILE_OPTIONS -fobjc-arc)
+  endif()
 endif()
 
 set_target_properties(mitcad PROPERTIES WIN32_EXECUTABLE ON)
@@ -288,6 +313,16 @@ set_target_properties(mitcad PROPERTIES WIN32_EXECUTABLE ON)
 # file's lines of 64 hex digits (two while the key changes); while it has
 # none (the placeholder), Mitcad makes no update request.
 target_link_libraries(mitcad PRIVATE Qt6::Network)
+# MCP connections target the open GUI document, using the shared protocol
+# through the FFI rather than creating an invisible headless document.
+target_sources(mitcad PRIVATE
+  MainWindowMcp.cpp
+  mcp/LocalEndpoint.cpp mcp/LocalEndpoint.hpp
+  mcp/LiveServer.cpp mcp/LiveServer.hpp)
+if(WIN32)
+  target_sources(mitcad PRIVATE mcp/WindowsEndpointSecurity.cpp mcp/WindowsEndpointSecurity.hpp)
+  target_link_libraries(mitcad PRIVATE advapi32)
+endif()
 set(MITCAD_UPDATE_KEY_FILE "${PROJECT_SOURCE_DIR}/packaging/update-key.txt" CACHE FILEPATH
     "The public Ed25519 keys of Mitcad's releases (lines of 64 hex digits)")
 set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${MITCAD_UPDATE_KEY_FILE}")
@@ -360,13 +395,14 @@ if(BUILD_TESTING)
   qt_add_resources(test_app test_icons PREFIX / FILES ${MITCAD_ICONS})
   # 3D Print's slicers and file names (mitcad#13).
   target_sources(test_app PRIVATE files/Print3d.cpp files/Print3d.hpp)
+  target_sources(test_app PRIVATE framework/Dialogs.cpp framework/Dialogs.hpp)
   # The AppImage's desktop file and icons in the user's data folder.
   target_sources(test_app PRIVATE framework/DesktopEntry.cpp framework/DesktopEntry.hpp)
   # The rendered view's exposure and view transforms (mitcad#47): plain Qt
-  # Gui, also in builds without the renderer.
+  # Gui.
   target_sources(test_app PRIVATE render/RenderImage.cpp render/RenderImage.hpp)
   # The render device's choice and the CPU's fallback (mitcad#50): plain
-  # C++, also in builds without the renderer.
+  # C++.
   target_sources(test_app PRIVATE render/RenderDevices.cpp render/RenderDevices.hpp)
   # Feedback and error reports (mitcad#61, mitcad#62): masking, crash files,
   # duplicate keys, the issue form's address.
@@ -384,149 +420,146 @@ if(BUILD_TESTING)
 endif()
 
 # View > Rendered and its render worker mitcad-render (mitcad#32, mitcad#45,
-# docs/rendering.md), only with MITCAD_RENDER. The application has the
+# docs/rendering.md), in every build. The application has the
 # client's side and links none of the renderer's libraries; only the
 # worker, an executable of its own next to it, links Cycles and the rest.
-if(MITCAD_RENDER)
-  include("${PROJECT_SOURCE_DIR}/cmake/Render.cmake")
-  target_sources(mitcad PRIVATE
-    render/FrameMemory.cpp
-    render/FrameMemory.hpp
-    render/RenderClient.cpp
-    render/RenderClient.hpp
-    render/RenderDevice.cpp
-    render/RenderDevice.hpp
-    render/RenderEnvironmentDialog.cpp
-    render/RenderEnvironmentDialog.hpp
-    render/RenderLights.cpp
-    render/RenderLights.hpp
-    render/RenderImage.cpp
-    render/RenderImage.hpp
-    render/RenderMesh.cpp
-    render/RenderMesh.hpp
-    render/RenderMode.cpp
-    render/RenderMode.hpp
-    render/RenderProtocol.hpp
-    render/RenderScene.cpp
-    render/RenderScene.hpp
-    render/Renderer.hpp)
-  target_compile_definitions(mitcad PRIVATE MITCAD_RENDER)
-  target_include_directories(mitcad SYSTEM PRIVATE "${MITCAD_CGLTF_INCLUDE_DIR}")
-  # File > Render Image (mitcad#48): the final render in the worker's batch
-  # mode; RenderBatch is shared with mitcad-cli render.
-  target_sources(mitcad PRIVATE
-    render/RenderBatch.cpp
-    render/RenderBatch.hpp
-    render/RenderImageDialog.cpp
-    render/RenderImageDialog.hpp)
+include("${PROJECT_SOURCE_DIR}/cmake/Render.cmake")
+target_sources(mitcad PRIVATE
+  render/FrameMemory.cpp
+  render/FrameMemory.hpp
+  render/RenderClient.cpp
+  render/RenderClient.hpp
+  render/RenderDevice.cpp
+  render/RenderDevice.hpp
+  render/RenderEnvironmentDialog.cpp
+  render/RenderEnvironmentDialog.hpp
+  render/RenderLights.cpp
+  render/RenderLights.hpp
+  render/RenderImage.cpp
+  render/RenderImage.hpp
+  render/RenderMesh.cpp
+  render/RenderMesh.hpp
+  render/RenderMode.cpp
+  render/RenderMode.hpp
+  render/RenderProtocol.hpp
+  render/RenderScene.cpp
+  render/RenderScene.hpp
+  render/Renderer.hpp)
+target_include_directories(mitcad SYSTEM PRIVATE "${MITCAD_CGLTF_INCLUDE_DIR}")
+# File > Render Image (mitcad#48): the final render in the worker's batch
+# mode; RenderBatch is shared with mitcad-cli render.
+target_sources(mitcad PRIVATE
+  render/RenderBatch.cpp
+  render/RenderBatch.hpp
+  render/RenderImageDialog.cpp
+  render/RenderImageDialog.hpp)
 
-  # The worker: no windows, Qt Core and Gui (QImage for --bench --output),
-  # OCCT for the test scene, the renderer.
-  add_executable(mitcad-render
-    render/RenderWorker.cpp
-    render/FrameMemory.cpp
-    render/FrameMemory.hpp
-    render/RenderDevices.cpp
-    render/RenderDevices.hpp
-    render/RenderImage.cpp
-    render/RenderImage.hpp
-    render/RenderMesh.cpp
-    render/RenderMesh.hpp
-    render/RenderProtocol.hpp
-    render/RenderScene.cpp
-    render/RenderScene.hpp
-    render/Renderer.hpp)
-  # Crash reports (mitcad#62), with the worker's functions named in their
-  # stacks as the application's are.
-  target_sources(mitcad-render PRIVATE report/CrashHandler.cpp report/CrashHandler.hpp)
-  if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
-    target_link_options(mitcad-render PRIVATE
-      "LINKER:--dynamic-list=${CMAKE_CURRENT_SOURCE_DIR}/report/crash-symbols.list")
-  endif()
+# The worker: no windows, Qt Core and Gui (QImage for --bench --output),
+# OCCT for the test scene, the renderer.
+add_executable(mitcad-render
+  render/RenderWorker.cpp
+  render/FrameMemory.cpp
+  render/FrameMemory.hpp
+  render/RenderDevices.cpp
+  render/RenderDevices.hpp
+  render/RenderImage.cpp
+  render/RenderImage.hpp
+  render/RenderMesh.cpp
+  render/RenderMesh.hpp
+  render/RenderProtocol.hpp
+  render/RenderScene.cpp
+  render/RenderScene.hpp
+  render/Renderer.hpp)
+# Crash reports (mitcad#62), with the worker's functions named in their
+# stacks as the application's are.
+target_sources(mitcad-render PRIVATE report/CrashHandler.cpp report/CrashHandler.hpp)
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+  target_link_options(mitcad-render PRIVATE
+    "LINKER:--dynamic-list=${CMAKE_CURRENT_SOURCE_DIR}/report/crash-symbols.list")
+endif()
+if(WIN32)
+  target_link_libraries(mitcad-render PRIVATE dbghelp)
+endif()
+# The final render's image files (mitcad#48): PNG and JPEG through Qt,
+# OpenEXR through OpenImageIO.
+target_sources(mitcad-render PRIVATE render/RenderOutput.cpp render/RenderOutput.hpp)
+target_include_directories(mitcad-render PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
+target_include_directories(mitcad-render SYSTEM PRIVATE "${MITCAD_CGLTF_INCLUDE_DIR}")
+target_compile_definitions(mitcad-render PRIVATE MITCAD_VERSION="${PROJECT_VERSION}")
+target_link_libraries(mitcad-render PRIVATE
+  mitcad_cycles_renderer Qt6::Gui TKMesh TKFillet TKPrim TKTopAlgo TKBRep mitcad_warnings)
+# Built with the application. On macOS the worker lives in Contents/MacOS
+# in the build bundle too, where the application's ordinary lookup finds it.
+if(APPLE)
+  set_target_properties(mitcad-render PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY "$<TARGET_FILE_DIR:mitcad>"
+    INSTALL_RPATH "@executable_path/../Frameworks")
+  target_link_options(mitcad-render PRIVATE LINKER:-headerpad_max_install_names)
+endif()
+add_dependencies(mitcad mitcad-render)
+# The GPU devices' kernels (mitcad#50, build-cycles.sh --cuda and the
+# like) where the worker looks for them in a build folder: cycles/lib
+# next to it.
+if(MITCAD_CYCLES_KERNELS)
+  add_custom_command(TARGET mitcad-render POST_BUILD
+    COMMAND "${CMAKE_COMMAND}" -E make_directory "$<TARGET_FILE_DIR:mitcad-render>/cycles/lib"
+    COMMAND "${CMAKE_COMMAND}" -E copy_if_different ${MITCAD_CYCLES_KERNELS}
+            "$<TARGET_FILE_DIR:mitcad-render>/cycles/lib/"
+    VERBATIM)
+endif()
+# On Windows Open Image Denoise's DLLs next to it (vcpkg's come with
+# vcpkg's applocal step).
+if(MITCAD_OIDN_DLLS)
+  add_custom_command(TARGET mitcad-render POST_BUILD
+    COMMAND "${CMAKE_COMMAND}" -E copy_if_different ${MITCAD_OIDN_DLLS} "$<TARGET_FILE_DIR:mitcad-render>"
+    VERBATIM)
+endif()
+if(BUILD_TESTING)
+  # The worker renders the test scene headless (no display needed).
+  add_test(NAME app.render_worker
+           COMMAND mitcad-render --bench 160x120 --samples 4
+                   --output "${CMAKE_CURRENT_BINARY_DIR}/render-worker-test.png")
+  set_tests_properties(app.render_worker PROPERTIES PASS_REGULAR_EXPRESSION "render-bench 160x120 samples 4")
+  # Scene updates change only what changed (mitcad#49).
+  add_test(NAME app.render_updates COMMAND mitcad-render --update-test)
+  # In an environment of the render settings (mitcad#47): the outdoor sky
+  # as the background, a polished ground at a height.
+  add_test(NAME app.render_worker_environment
+           COMMAND mitcad-render --bench 160x120 --samples 4
+                   --environment "{\"environment\": {\"preset\": \"outdoor\", \"sun_elevation\": 0.4}, \"background\": {\"mode\": \"environment\"}, \"ground\": {\"reflections\": true, \"height\": -5}}"
+                   --output "${CMAKE_CURRENT_BINARY_DIR}/render-worker-environment-test.png")
+  set_tests_properties(app.render_worker_environment PROPERTIES
+    PASS_REGULAR_EXPRESSION "render-bench 160x120 samples 4" FAIL_REGULAR_EXPRESSION "render-environment")
+  # Render devices (mitcad#50). A device that is not there: the CPU
+  # renders, and says why.
+  add_test(NAME app.render_worker_fallback
+           COMMAND mitcad-render --bench 64x48 --samples 2 --device NO_SUCH_DEVICE)
+  set_tests_properties(app.render_worker_fallback PROPERTIES PASS_REGULAR_EXPRESSION
+    "render-fallback There is no render device \"NO_SUCH_DEVICE\"; rendering on the CPU.*render-bench 64x48 samples 2.*render-device CPU")
+  # A device that fails while it renders (the test hook fails the first
+  # one, also the CPU): the CPU renders the same scene and view again.
+  add_test(NAME app.render_worker_device_failure COMMAND mitcad-render --bench 64x48 --samples 2)
+  set_tests_properties(app.render_worker_device_failure PROPERTIES
+    ENVIRONMENT "MITCAD_RENDER_TEST_DEVICE_FAILURE=simulated device failure"
+    PASS_REGULAR_EXPRESSION "render-fallback Rendering on the CPU: .* failed \\(simulated device failure\\).*render-bench 64x48 samples 2.*render-device CPU")
+  # The best GPU against the CPU: the same test scene, images close to each
+  # other (8-bit sRGB: mean difference, 99th percentile). Skipped without a
+  # GPU device (a machine without one, or a build without GPU devices).
+  add_test(NAME app.render_worker_gpu
+           COMMAND mitcad-render --bench 320x240 --samples 64 --device auto --compare cpu --tolerance 2:24
+                   --output "${CMAKE_CURRENT_BINARY_DIR}/render-worker-gpu-test.png")
+  set_tests_properties(app.render_worker_gpu PROPERTIES SKIP_RETURN_CODE 77
+    PASS_REGULAR_EXPRESSION "render-compare (CUDA|OPTIX|HIP|METAL|ONEAPI) ")
+  # On Windows the worker finds Qt's DLLs through PATH, as app.unit does.
   if(WIN32)
-    target_link_libraries(mitcad-render PRIVATE dbghelp)
-  endif()
-  # The final render's image files (mitcad#48): PNG and JPEG through Qt,
-  # OpenEXR through OpenImageIO.
-  target_sources(mitcad-render PRIVATE render/RenderOutput.cpp render/RenderOutput.hpp)
-  target_include_directories(mitcad-render PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
-  target_include_directories(mitcad-render SYSTEM PRIVATE "${MITCAD_CGLTF_INCLUDE_DIR}")
-  target_compile_definitions(mitcad-render PRIVATE MITCAD_VERSION="${PROJECT_VERSION}")
-  target_link_libraries(mitcad-render PRIVATE
-    mitcad_cycles_renderer Qt6::Gui TKMesh TKFillet TKPrim TKTopAlgo TKBRep mitcad_warnings)
-  # Built with the application. On macOS the worker lives in Contents/MacOS
-  # in the build bundle too, where the application's ordinary lookup finds it.
-  if(APPLE)
-    set_target_properties(mitcad-render PROPERTIES
-      RUNTIME_OUTPUT_DIRECTORY "$<TARGET_FILE_DIR:mitcad>"
-      INSTALL_RPATH "@executable_path/../Frameworks")
-    target_link_options(mitcad-render PRIVATE LINKER:-headerpad_max_install_names)
-  endif()
-  add_dependencies(mitcad mitcad-render)
-  # The GPU devices' kernels (mitcad#50, build-cycles.sh --cuda and the
-  # like) where the worker looks for them in a build folder: cycles/lib
-  # next to it.
-  if(MITCAD_CYCLES_KERNELS)
-    add_custom_command(TARGET mitcad-render POST_BUILD
-      COMMAND "${CMAKE_COMMAND}" -E make_directory "$<TARGET_FILE_DIR:mitcad-render>/cycles/lib"
-      COMMAND "${CMAKE_COMMAND}" -E copy_if_different ${MITCAD_CYCLES_KERNELS}
-              "$<TARGET_FILE_DIR:mitcad-render>/cycles/lib/"
-      VERBATIM)
-  endif()
-  # On Windows Open Image Denoise's DLLs next to it (vcpkg's come with
-  # vcpkg's applocal step).
-  if(MITCAD_OIDN_DLLS)
-    add_custom_command(TARGET mitcad-render POST_BUILD
-      COMMAND "${CMAKE_COMMAND}" -E copy_if_different ${MITCAD_OIDN_DLLS} "$<TARGET_FILE_DIR:mitcad-render>"
-      VERBATIM)
-  endif()
-  if(BUILD_TESTING)
-    # The worker renders the test scene headless (no display needed).
-    add_test(NAME app.render_worker
-             COMMAND mitcad-render --bench 160x120 --samples 4
-                     --output "${CMAKE_CURRENT_BINARY_DIR}/render-worker-test.png")
-    set_tests_properties(app.render_worker PROPERTIES PASS_REGULAR_EXPRESSION "render-bench 160x120 samples 4")
-    # Scene updates change only what changed (mitcad#49).
-    add_test(NAME app.render_updates COMMAND mitcad-render --update-test)
-    # In an environment of the render settings (mitcad#47): the outdoor sky
-    # as the background, a polished ground at a height.
-    add_test(NAME app.render_worker_environment
-             COMMAND mitcad-render --bench 160x120 --samples 4
-                     --environment "{\"environment\": {\"preset\": \"outdoor\", \"sun_elevation\": 0.4}, \"background\": {\"mode\": \"environment\"}, \"ground\": {\"reflections\": true, \"height\": -5}}"
-                     --output "${CMAKE_CURRENT_BINARY_DIR}/render-worker-environment-test.png")
-    set_tests_properties(app.render_worker_environment PROPERTIES
-      PASS_REGULAR_EXPRESSION "render-bench 160x120 samples 4" FAIL_REGULAR_EXPRESSION "render-environment")
-    # Render devices (mitcad#50). A device that is not there: the CPU
-    # renders, and says why.
-    add_test(NAME app.render_worker_fallback
-             COMMAND mitcad-render --bench 64x48 --samples 2 --device NO_SUCH_DEVICE)
-    set_tests_properties(app.render_worker_fallback PROPERTIES PASS_REGULAR_EXPRESSION
-      "render-fallback There is no render device \"NO_SUCH_DEVICE\"; rendering on the CPU.*render-bench 64x48 samples 2.*render-device CPU")
-    # A device that fails while it renders (the test hook fails the first
-    # one, also the CPU): the CPU renders the same scene and view again.
-    add_test(NAME app.render_worker_device_failure COMMAND mitcad-render --bench 64x48 --samples 2)
-    set_tests_properties(app.render_worker_device_failure PROPERTIES
-      ENVIRONMENT "MITCAD_RENDER_TEST_DEVICE_FAILURE=simulated device failure"
-      PASS_REGULAR_EXPRESSION "render-fallback Rendering on the CPU: .* failed \\(simulated device failure\\).*render-bench 64x48 samples 2.*render-device CPU")
-    # The best GPU against the CPU: the same test scene, images close to each
-    # other (8-bit sRGB: mean difference, 99th percentile). Skipped without a
-    # GPU device (a machine without one, or a build without GPU devices).
-    add_test(NAME app.render_worker_gpu
-             COMMAND mitcad-render --bench 320x240 --samples 64 --device auto --compare cpu --tolerance 2:24
-                     --output "${CMAKE_CURRENT_BINARY_DIR}/render-worker-gpu-test.png")
-    set_tests_properties(app.render_worker_gpu PROPERTIES SKIP_RETURN_CODE 77
-      PASS_REGULAR_EXPRESSION "render-compare (CUDA|OPTIX|HIP|METAL|ONEAPI) ")
-    # On Windows the worker finds Qt's DLLs through PATH, as app.unit does.
-    if(WIN32)
-      set_tests_properties(app.render_worker app.render_updates app.render_worker_environment
-                           app.render_worker_fallback app.render_worker_device_failure app.render_worker_gpu
-        PROPERTIES ENVIRONMENT_MODIFICATION "PATH=path_list_prepend:$<TARGET_FILE_DIR:Qt6::Core>")
-    endif()
+    set_tests_properties(app.render_worker app.render_updates app.render_worker_environment
+                         app.render_worker_fallback app.render_worker_device_failure app.render_worker_gpu
+      PROPERTIES ENVIRONMENT_MODIFICATION "PATH=path_list_prepend:$<TARGET_FILE_DIR:Qt6::Core>")
   endif()
 endif()
 
 if(APPLE)
-  # Configure the bundle after its optional render worker exists, so its
+  # Configure the bundle after its render worker exists, so its
   # install rules include the worker, denoiser module and their libraries.
   include(packaging/macos/Bundle.cmake)
 endif()

@@ -37,7 +37,7 @@ wsl -d mitcad-dev --cd "~/src/mitcad" -- bash -lc "cmake --preset dev && cmake -
 |---|---|
 | `sync-to-wsl.sh [distro] [dir]` | Mirrors tracked and non-ignored untracked files into the distro (default `mitcad-dev`, `~/src/mitcad`). Only files whose content differs are replaced and get the sync time, so switching branches rebuilds exactly what changed. Deletes removed files; keeps `build/` and `CMakeUserPresets.json`. |
 | `install-packages.sh` | System packages (compilers, CMake, Ninja, ccache, rsync, X11/OpenGL headers, gdb, Xvfb, xdotool, rsvg-convert, ImageMagick; mosquitto for the live updates' tests, its service disabled; libsecret's headers for QtKeychain and GNOME's keyring for the keychain's test). Run as root. |
-| `setup-user.sh` | Pinned per-user toolchain: Rust from `rust-toolchain.toml`, cargo-deny, vcpkg at `vcpkg.json`'s `builtin-baseline`, Qt via aqtinstall; writes `CMakeUserPresets.json` (`dev` = Linux debug). Under WSLg sets `GALLIUM_DRIVER=d3d12`; `MITCAD_GPU_ADAPTER=NVIDIA` picks a GPU. |
+| `setup-user.sh` | Pinned per-user toolchain: Rust from `rust-toolchain.toml`, cargo-deny, vcpkg at `vcpkg.json`'s `builtin-baseline`, Qt via aqtinstall, the render worker's Cycles and Open Image Denoise (`build-cycles.sh`, once); writes `CMakeUserPresets.json` (`dev` = Linux debug). Under WSLg sets `GALLIUM_DRIVER=d3d12`; `MITCAD_GPU_ADAPTER=NVIDIA` picks a GPU. |
 | `install-appimage-tools.sh` | AppImage tools into `~/appimage-tools` (`MITCAD_APPIMAGE_TOOLS`), see [below](#tools-downloaded-from-releases). |
 
 Parallel checkouts: `sync-to-wsl.sh mitcad-dev src/mitcad-<name>` and copy
@@ -67,8 +67,8 @@ ssh -i <key> <user>@<vm-host> "cd /d C:\dev\src\mitcad && tools\dev-env\msvc.cmd
 | Script | Use |
 |---|---|
 | `sync-to-vm.sh [user@host] [dir]` | Like `sync-to-wsl.sh`, over SSH. Defaults: `MITCAD_VM`, `MITCAD_VM_DIR` (`C:/dev/src/mitcad`), `MITCAD_VM_KEY` (`~/.ssh/mitcad_vm`). |
-| `setup-windows.ps1 [-Repo <dir>]` | Installs Git, CMake, Ninja, Rustup, Python, NSIS (winget), ccache, the pinned Rust toolchain, cargo-deny, vcpkg and Qt under `C:\dev`; writes `CMakeUserPresets.json` (`dev` = Windows release). Run as administrator. |
-| `setup-ccache-windows.ps1 [-Dir] [-MaxSize]` | ccache into `C:\dev\ccache`, on the machine `PATH`, cache limit 2G. |
+| `setup-windows.ps1 [-Repo <dir>]` | Installs Git, CMake, Ninja, Rustup, Python, NSIS (winget), ccache, the pinned Rust toolchain, cargo-deny, vcpkg and Qt under `C:\dev`, the render worker's libraries (`build-cycles.ps1`, once); writes `CMakeUserPresets.json` (`dev` = Windows release). Run as administrator. |
+| `setup-ccache-windows.ps1 [-Dir] [-MaxSize]` | ccache into `C:\dev\ccache`, on the machine `PATH`, cache limit 4G (a build with the render worker; 2G was cleaned over and over). |
 | `setup-mesa-windows.ps1 [-Out] [-Vcpkg] [-Jobs]` | Builds Mesa's llvmpipe (~20 min) into `<Out>\bin` (default `C:\dev\mesa`). Needed in a VM without a GPU (Windows offers only OpenGL 1.1). |
 | `msvc.cmd <command>` | Runs a command in the VS x64 environment, rebuilding `PATH` from the registry first (SSH sessions keep a stale one). |
 
@@ -108,7 +108,7 @@ ssh -i ~/.ssh/mitcad_mac $MITCAD_MAC "cd ~/src/mitcad && cmake --preset dev && c
 | Script | Use |
 |---|---|
 | `sync-to-mac.sh [user@host] [dir]` | Like `sync-to-vm.sh`. Defaults: `MITCAD_MAC`, `MITCAD_MAC_DIR` (`~/src/mitcad`), `MITCAD_MAC_KEY` (`~/.ssh/mitcad_mac`). Clears the target except `build` and `CMakeUserPresets.json` first; no `._*` files or extended attributes. |
-| `setup-macos.sh` | CMake and Ninja release archives into `~/.local` (not Homebrew), the pinned Rust toolchain, cargo-deny, vcpkg at `vcpkg.json`'s baseline, Qt via aqtinstall (`~/Qt/<version>/macos`); writes `CMakeUserPresets.json` (`dev` = `macos-debug`). Downloads are checked against the SHA-256 pins in `versions.sh`; an empty pin stops it unless `MITCAD_SKIP_HASH=1`. |
+| `setup-macos.sh` | CMake and Ninja release archives into `~/.local` (not Homebrew), the pinned Rust toolchain, cargo-deny, vcpkg at `vcpkg.json`'s baseline, Qt via aqtinstall (`~/Qt/<version>/macos`), the render worker's libraries (`build-cycles-macos.sh`, once); writes `CMakeUserPresets.json` (`dev` = `macos-debug`). Downloads are checked against the SHA-256 pins in `versions.sh`; an empty pin stops it unless `MITCAD_SKIP_HASH=1`. |
 
 `tools/dev-env/versions.sh` holds the pins `setup-user.sh` and
 `setup-macos.sh` share; the Windows script mirrors them by hand. The
@@ -119,6 +119,17 @@ target for vcpkg's libraries).
 
 ## macOS: bundle and native UI
 
+- Configure `cmake --preset dev -DMITCAD_MACOS_NATIVE_UI=ON` to build
+  the AppKit frontend. It starts by default in that build; `--ui=qt`
+  runs the retained frontend and `--ui=native` explicitly selects AppKit.
+  The native sources are confined to `app/platform/macos/` and compiled
+  with ARC. Shared command/session changes also build without this option.
+- `app.ui-macos-native` drives real native menu items, fields, buttons,
+  history and command search in process, verifies model volumes and saves
+  a composed screenshot. The older `app.ui-macos` and
+  `app.ui-macos-workflow` explicitly use `--ui=qt` to cover retained
+  workflows. Run GUI tests sequentially in the isolated VM. See
+  [native-macos-ui.md](native-macos-ui.md) for rollout and manual checks.
 - The app is a `MACOSX_BUNDLE` (`mitcad.app`) with
   `app/packaging/macos/Info.plist.in`. `MITCAD_BUNDLE_ID` (default
   `fi.nocodo.mitcad`) is a placeholder: fix it before the first release,
@@ -127,12 +138,12 @@ target for vcpkg's libraries).
 - `cmake --install <build> --prefix <dir>` deploys Qt with `macdeployqt`,
   copies the vcpkg dylibs into `Contents/Frameworks` and the licence texts
   into `Contents/Resources/licenses`.
-  With `MITCAD_RENDER`, it also installs `mitcad-render` in `Contents/MacOS`,
-  its dependencies and Open Image Denoise's runtime-loaded CPU module in
-  `Contents/Frameworks`, and their licence texts. Prepare the pinned CPU
-  dependencies with `tools/dev-env/build-cycles-macos.sh` in the guest;
-  see [rendering.md](rendering.md#macos). This renderer implementation
-  still requires macOS guest validation.
+  It also installs the render worker `mitcad-render` (every build has it)
+  in `Contents/MacOS`, its dependencies and Open Image Denoise's
+  runtime-loaded CPU module in `Contents/Frameworks`, and their licence
+  texts. `setup-macos.sh` prepares the pinned CPU dependencies with
+  `tools/dev-env/build-cycles-macos.sh` in the guest;
+  see [rendering.md](rendering.md#macos).
 - `tools/package-macos.sh [build dir]` installs, signs ad hoc, checks and
   makes a `.dmg`. Developer ID signing (`MITCAD_SIGN_IDENTITY`) and
   notarisation (`MITCAD_NOTARY_PROFILE`) need an Apple Developer account.
@@ -224,8 +235,8 @@ the same files as a `.zip`. Contents: `bin` (executables, Qt, vcpkg DLLs,
 VC++ runtime, `qt.conf`), `plugins` (via `windeployqt`), licences
 (`LICENSE`, `THIRD-PARTY-NOTICES.txt`, `licenses\` with the font and every
 vcpkg port's `copyright`), uninstaller. Never included: Mesa, Qt's
-software OpenGL, PDBs. A build with `MITCAD_RENDER` adds the render worker
-`mitcad-render.exe` with its DLLs (Open Image Denoise's too) and the
+software OpenGL, PDBs. The render worker
+`mitcad-render.exe` is installed with its DLLs (Open Image Denoise's too) and the
 licences of Cycles and Open Image Denoise
 ([rendering.md](rendering.md#windows)).
 
@@ -263,7 +274,7 @@ icons, licences incl. `packaging/linux/THIRD-PARTY-NOTICES.txt`), then:
   RUNPATH; its Qt plugin adds the X11/GLX platform, image formats, SVG
   icons and TLS backends. glibc, libstdc++, X11/xcb, OpenGL, fontconfig,
   FreeType and OpenSSL stay the system's.
-- A build with `MITCAD_RENDER` adds the render worker `mitcad-render`
+- The render worker `mitcad-render` goes in
   with its libraries (and Open Image Denoise's CPU device module) and
   their licences ([rendering.md](rendering.md#appimage)).
 - ELF files are stripped.
@@ -327,7 +338,7 @@ Run in the isolated environments:
   body's faces and edges, to compare the topology two builds (or one
   build with and without `MITCAD_NO_FAR_FEATURES=1`) give a design.
 - `tools/repo-growth.sh <work dir> design.mitcad...` measures git
-  repository growth of the project formats over 50 saves.
+  repository growth of the design file formats over 50 saves.
 - Live updates (mitcad#89): `core.vcs` runs the MQTT client's scenarios
   against a broker inside the test and against mosquitto when it is
   installed (`install-packages.sh`; `setup-macos.sh` with Homebrew,
@@ -551,16 +562,33 @@ in the distro only:
   sketch with FreeCAD's reading. Example:
   `MITCAD_FCSTD_CORPUS=~/fcstd-models:~/fcstd-examples ctest -R freecad`.
 
+### USDZ files
+
+USDZ export (mitcad#123, [commands.md](../core/model/src/api/commands.md#usdz))
+writes the binary USD layer with Mitcad's own code; the tests read it back
+with `mitcad-usdz`'s reader (the package's 64-byte alignment, the layer's
+header and metadata, prims, points, indices, normals, materials, subsets,
+texture coordinates and transforms). The format was checked once with
+OpenUSD's own validators when the export was written (mitcad#123); no USD
+library is needed to build or test.
+
 ## Before a commit
 
-1. In the distro, after `sync-to-wsl.sh`: `tools/check-all.sh` (add
-   `--fresh` when CMake files changed), e.g.
-   `wsl -d mitcad-dev --cd "~/src/mitcad" -- bash -lc tools/check-all.sh`.
-2. Warning-free build and `ctest` (with `MITCAD_MESA_DIR`) in the VM.
-3. Warning-free build and `ctest` (with `app.ui-macos`) in the macOS VM.
-4. Commit in steps that build and pass the tests.
+For development and merges to main the check is scoped and fast; an
+occasional miss is accepted:
 
-Before a release build, the full check: `tools/check-all.sh --full`.
+1. On Linux: `tools/check-all.sh` in its default mode (add `--fresh`
+   when CMake files changed), e.g. in the distro after `sync-to-wsl.sh`:
+   `wsl -d mitcad-dev --cd "~/src/mitcad" -- bash -lc tools/check-all.sh`.
+   It runs only the ctests, UI tests and corpus the change affects.
+2. Windows or macOS only when the change touches that platform's own
+   code (`app/platform/`, `Q_OS_*` branches, packaging, its scripts):
+   a warning-free build and `ctest` there.
+3. Commit in steps that build and pass the tests.
+
+Before a release build, the full check: `tools/check-all.sh --full` on
+Linux, and warning-free builds with `ctest` in the Windows VM (with
+`MITCAD_MESA_DIR`) and the macOS VM (with `app.ui-macos`).
 
 ### The check script
 
@@ -656,8 +684,8 @@ or corpus test reads them):
   `tools/cli` when it makes its designs with `mitcad-cli`;
 - the build files (`UI_BASE`: `third_party/`, the top-level CMake files
   and `cmake/`, `triplets/`, `rust-toolchain.toml`, `vcpkg.json`) and the
-  build's options (`MITCAD_*` switches such as `MITCAD_RENDER`, the build
-  type);
+  build's options (`MITCAD_*` switches such as `MITCAD_COMPILER_CACHE`,
+  the build type);
 - its script and the test library (`UI_LIBRARY`: `tools/ui-test-lib.sh`,
   `ui-image-stats.py`, `xwd2png.py`);
 - for the smoke set (`UI_SMOKE`: `ui-smoke`, `ui-workflow`, `ui-command`,
@@ -781,7 +809,10 @@ lint use half the cores unless `CMAKE_BUILD_PARALLEL_LEVEL` /
 
 The headless server is implemented in `core/mcp` (stdio protocol and
 catalog), `core/ffi/src/mcp.rs` (native CAD tools and workspace paths),
-and `tools/cli/mcp.cpp` (command-line entry). The CLI dispatches MCP
+and `tools/cli/mcp.cpp` (command-line entry). Live GUI access adds
+`app/mcp/LiveServer.*`, the shared private endpoint discovery in
+`app/mcp/LocalEndpoint.*`, `app/MainWindowMcp.cpp` and the CLI's
+`tools/cli/mcp-connect.*` stdio bridge. The CLI dispatches MCP
 before configuring global component libraries, and suppresses OCCT's
 stdout message printers. User setup and modeling examples:
 [mcp.md](mcp.md).
@@ -791,6 +822,8 @@ and building with the usual preset, run:
 
 ```bash
 ctest --preset dev -R '^(cli\.mcp|core\.mcp)$' --output-on-failure
+# In the isolated macOS VM with a logged-in window server:
+ctest --preset dev -R '^app\.ui-macos-mcp$' --output-on-failure
 ```
 
 `core.mcp` uses the Cargo build fixture that CTest includes automatically.
@@ -799,12 +832,22 @@ ctest --preset dev -R '^(cli\.mcp|core\.mcp)$' --output-on-failure
 reads and shutdowns have timeouts, and it creates temporary workspaces
 under the build directory, cleaning them after each test. It checks
 native box geometry, file round trips and STEP export in addition to
-protocol and path refusals. With `MITCAD_RENDER` on Windows, the test
-receives Qt's DLL directory on `PATH`, like the other CLI tests.
+protocol and path refusals. On Windows the test receives Qt's DLL
+directory on `PATH`, like the other CLI tests (`mitcad-cli render` loads
+Qt).
+
+`app.ui-macos-mcp` runs the actual application and CLI with a private
+`MITCAD_MCP_DISCOVERY_DIR`, settings and recovery directories under the
+build tree. The in-process TestDriver verifies model volumes, native
+history and viewport screenshots after live MCP edits. The Python harness
+checks authentication, stale and insecure records, ambiguous instances,
+notification and file-operation refusals, geometry errors with applied
+mutations, undo, full-width integer IDs, malformed/oversized frames,
+reconnect, EOF retention and GUI New invalidating old handles. It runs
+serially with the other Mac GUI tests and needs no Accessibility permission.
 
 Follow the focused checks with `tools/check-all.sh` in the Linux isolated
 environment and the documented Windows and macOS builds with CTest.
-The MCP implementation was prepared without running builds, tests,
-formatters, package installation or runtime checks on the host. External
-validation is pending; commits made before those checks must explicitly
-state that the tests were not run.
+Builds, tests, formatters, package installation and runtime checks belong
+in those isolated environments, never on the host. Commit messages must
+identify any platforms whose checks were not run.

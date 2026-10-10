@@ -13,11 +13,15 @@
 #include <utility>
 #include <vector>
 
+#include <BRepAdaptor_Curve.hxx>
+#include <BRepBuilderAPI_MakeVertex.hxx>
 #include <BRepCheck_Analyzer.hxx>
 #include <BRepCheck_Result.hxx>
+#include <BRepExtrema_DistShapeShape.hxx>
 #include <BRepFilletAPI_MakeChamfer.hxx>
 #include <BRepFilletAPI_MakeFillet.hxx>
 #include <BRepGProp.hxx>
+#include <BRep_Tool.hxx>
 #include <ChFi3d.hxx>
 #include <GProp_GProps.hxx>
 #include <Law_BSpline.hxx>
@@ -35,6 +39,7 @@
 #include <TopExp.hxx>
 #include <TopExp_Explorer.hxx>
 #include <TopTools_ShapeMapHasher.hxx>
+#include <TopoDS.hxx>
 #include <gp_Pnt2d.hxx>
 
 #include "blend.hpp"
@@ -316,6 +321,83 @@ public:
   RetryScope& operator=(const RetryScope&) = delete;
 };
 
+// Whether edge `a` runs along edge `b`: its ends and its middle lie on b
+// within their tolerances.
+bool runs_along(const TopoDS_Edge& a, const TopoDS_Edge& b) {
+  if (BRep_Tool::Degenerated(a) || BRep_Tool::Degenerated(b)) {
+    return false;
+  }
+  const BRepAdaptor_Curve curve(a);
+  const double tolerance = BRep_Tool::Tolerance(a) + BRep_Tool::Tolerance(b) + Precision::Confusion();
+  for (const double t : {0.0, 0.5, 1.0}) {
+    const gp_Pnt p = curve.Value(curve.FirstParameter() + t * (curve.LastParameter() - curve.FirstParameter()));
+    BRepExtrema_DistShapeShape distance(BRepBuilderAPI_MakeVertex(p).Vertex(), b);
+    if (!distance.IsDone() || distance.Value() > tolerance) {
+      return false;
+    }
+  }
+  return true;
+}
+
+// A face of the body that the rounding or chamfer of one of its edges
+// consumed, where the blend's contact runs along the face's far edge (a
+// face exactly as wide as the contact distance, or a blend rolling on that
+// edge, mitcad#121), lives on in the blend's face: it now meets the faces
+// beyond in the old edges. The blend's face also takes the consumed face's
+// names, so that those edges keep their names (a later rounding of the
+// same item, one tangent chain at a time, still finds them). Only a face
+// at the edges of one contour is named so; a blend that runs onto the face
+// beyond touches none of the face's edges and takes no names.
+void name_consumed_faces(BRepFilletAPI_LocalOperation& maker, const Shape& body, detail::FaceNamer& namer) {
+  ShapeMap contours;
+  for (int ic = 1; ic <= maker.NbContours(); ++ic) {
+    for (int ie = 1; ie <= maker.NbEdges(ic); ++ie) {
+      contours.Add(maker.Edge(ic, ie));
+    }
+  }
+  for (int f = 0; f < body.face_count(); ++f) {
+    const TopoDS_Face& face = body.face(f);
+    if (body.face_names(f).empty() || !maker.IsDeleted(face)) {
+      continue;
+    }
+    int contour = 0;
+    std::vector<TopoDS_Edge> at;   // the contours' edges of the face
+    std::vector<TopoDS_Edge> rest; // its other edges
+    for (TopExp_Explorer e(face, TopAbs_EDGE); e.More(); e.Next()) {
+      const TopoDS_Edge& edge = TopoDS::Edge(e.Current());
+      if (!contours.Contains(edge)) {
+        rest.push_back(edge);
+        continue;
+      }
+      const int ic = maker.Contour(edge);
+      contour = (contour == 0 || contour == ic) ? ic : -1;
+      at.push_back(edge);
+    }
+    if (contour <= 0) {
+      continue;
+    }
+    for (const TopoDS_Edge& edge : at) {
+      for (const TopoDS_Shape& image : maker.Generated(edge)) {
+        if (image.ShapeType() != TopAbs_FACE || !namer.contains(image)) {
+          continue;
+        }
+        bool along = false;
+        for (TopExp_Explorer e(image, TopAbs_EDGE); e.More() && !along; e.Next()) {
+          for (const TopoDS_Edge& old : rest) {
+            if (runs_along(TopoDS::Edge(e.Current()), old)) {
+              along = true;
+              break;
+            }
+          }
+        }
+        if (along) {
+          namer.add(image, body.face_names(f), -1);
+        }
+      }
+    }
+  }
+}
+
 // Names the result of a fillet or chamfer: the faces generated from every
 // edge of the contours (the tangent chains included) and their vertices.
 ShapePtr name_result(BRepFilletAPI_LocalOperation& maker, const std::string& feature,
@@ -344,6 +426,7 @@ ShapePtr name_result(BRepFilletAPI_LocalOperation& maker, const std::string& fea
       namer.generated(maker, vertices(v), face_name(feature, "corner", *name));
     }
   }
+  name_consumed_faces(maker, body, namer);
   namer.finish();
   // One check of a valid result: on a large body BRepCheck takes about as
   // long as the fillet itself.

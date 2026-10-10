@@ -30,7 +30,7 @@ struct GeneralSettings;
 // - `<id>.lock`: a QLockFile held while the session runs, from its first
 //   autosave to its end. A lock whose process is gone (QLockFile checks the
 //   process id and the application's name) marks a session that crashed.
-// - `<id>.<generation UUID>.mitcad`: an immutable project snapshot (the
+// - `<id>.<generation UUID>.mitcad`: an immutable design snapshot (the
 //   same format as a saved one), written before publishing its metadata.
 // - `<id>.json`: what it is, written last, so that it marks a complete
 //   generation: {"format": "mitcad-autosave", "version": 2, "session", "pid",
@@ -38,7 +38,8 @@ struct GeneralSettings;
 //   it), "path" (the file it was opened from or saved to, or empty),
 //   "base_digest" (that file's content as opened or saved, or empty),
 //   "saved_at" (UTC, ISO 8601), "revision" (the model's), "project" (the
-//   project file's name), "size" and "digest" (the project file's)}.
+//   design file's name; the key keeps its old name), "size" and "digest"
+//   (the design file's)}.
 //   Digests are FNV-1a 64 of the bytes, 16 hex digits (fileDigest).
 //
 // A document is written only when the model says it is modified and its
@@ -46,7 +47,7 @@ struct GeneralSettings;
 // written again, and none that is as on disk (saved, or undone back to
 // it): its files are removed then, as after Save and when the window takes
 // another document. A normal end removes the session's files and its lock.
-// The project file is made on the UI thread when the model is not busy (the
+// The design file is made on the UI thread when the model is not busy (the
 // window's `blocked` says why not; it is tried again a little later), and
 // both files are written on a thread of the manager's own. QSaveFile
 // atomically publishes the metadata pointer only after its new snapshot
@@ -69,7 +70,7 @@ public:
   };
   // What is written.
   struct Snapshot {
-    QByteArray project; // the project file
+    QByteArray design;  // the design file
     QString name;       // the window's name of the document
     QString path;       // the file it was opened from or saved to, or empty
   };
@@ -152,10 +153,10 @@ QString fileDigest(QByteArrayView data);
 using AutosaveWriter = std::function<bool(const QString&, const QByteArray&, QString&)>;
 bool publishAutosave(const QString& directory, const QString& session, const QByteArray& data,
                      QJsonObject about, QString& error, const AutosaveWriter& writer = {});
-bool validAutosaveProject(const QString& session, const QString& project, int version);
+bool validAutosaveDesign(const QString& session, const QString& design, int version);
 
 // Removes a session's files from the recovery folder: its metadata first
-// (without it, what is left is no pair to recover), then its project file
+// (without it, what is left is no pair to recover), then its design file
 // and what an interrupted write left of either; not its lock.
 void removeSessionFiles(const QString& directory, const QString& session);
 

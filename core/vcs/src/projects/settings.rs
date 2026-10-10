@@ -179,6 +179,10 @@ impl ProjectRepo {
                 if let Some(sync) = changes.get("sync") {
                     value["sync"] = merged(&value["sync"], sync);
                 }
+                // The display name: replaced; null or empty is the default.
+                if let Some(name) = changes.get("name") {
+                    value["name"] = name.clone();
+                }
                 LocalSettings::from_json(&value, true).map_err(invalid)?.0
             }
             None => current.local.clone(),

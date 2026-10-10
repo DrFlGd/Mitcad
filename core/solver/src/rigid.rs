@@ -38,6 +38,19 @@
 //!
 //! The skew part of a rotation also vanishes at half a turn; a solve that
 //! ends there turns the joint's body over and iterates again.
+//!
+//! An assembly constraint (mitcad#148, [`RigidConstraint`]) relates a frame
+//! on `a` to one on `b` by some of these equations only
+//! ([`ConstraintPart`]), written in frame `b`'s coordinates: coordinates
+//! of a's origin, its distance from b's origin or z axis, the z axes along
+//! or across each other or at an angle, and a's x axis turned about b's z.
+//! A constraint may have one value (an offset or an angle) as an unknown
+//! with limits and a target, like a joint's motion. Constraints are
+//! numbered with the joints ([`JointId`]), their rows and targets are in
+//! the same runs, rank analysis and dependencies. Before iterating, a
+//! constraint moves its free side as little as it can so that each part
+//! holds (directions first, about a's origin), joining nothing; a solve
+//! that ends with z or x axes the wrong way turns the side over.
 
 use std::sync::OnceLock;
 
@@ -340,6 +353,96 @@ pub struct RigidJoint {
     pub alignment: Pose,
 }
 
+/// Which way a constraint's z axes point against each other.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Sense {
+    /// The same way.
+    Same,
+    /// Opposite ways (a face against a face).
+    Opposite,
+    /// Either way.
+    Either,
+}
+
+/// What a part of a constraint holds a measure at: a number, or the
+/// constraint's value (an unknown within its limits, driven to its
+/// target when it has one).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Amount {
+    Fixed(f64),
+    Value,
+}
+
+/// One equation of an assembly constraint (mitcad#148), in frame `b`'s
+/// coordinates: `d` is frame `a`'s origin there, `z` and `x` frame `a`'s
+/// axes.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum ConstraintPart {
+    /// `d.x = 0`: a's origin on b's yz-plane.
+    OriginX,
+    /// `d.y = 0`.
+    OriginY,
+    /// `d.z` at the amount: a's origin that high above b's xy-plane.
+    OriginZ(Amount),
+    /// `|d|` at the amount (not zero: use the three origin parts).
+    Distance(Amount),
+    /// The distance of a's origin from b's z axis at the amount (not zero:
+    /// use `OriginX` and `OriginY`).
+    Radial(Amount),
+    /// The z axes along each other (two equations).
+    Parallel(Sense),
+    /// The z axes across each other.
+    Perpendicular,
+    /// The angle between the z axes (0 to π) at the amount (neither 0 nor
+    /// π: use `Parallel`).
+    Angle(Amount),
+    /// a's x axis turned this far (radians) about b's z axis from b's x
+    /// axis; for z axes along each other.
+    Twist(f64),
+}
+
+impl ConstraintPart {
+    /// Its equations.
+    pub fn rows(&self) -> usize {
+        match self {
+            Self::Parallel(_) => 2,
+            _ => 1,
+        }
+    }
+
+    fn amount(&self) -> Option<Amount> {
+        match self {
+            Self::OriginZ(a) | Self::Distance(a) | Self::Radial(a) | Self::Angle(a) => Some(*a),
+            _ => None,
+        }
+    }
+
+    /// Whether its equations are of directions (scaled by the system's size).
+    fn angular(&self) -> bool {
+        matches!(
+            self,
+            Self::Parallel(_) | Self::Perpendicular | Self::Angle(_) | Self::Twist(_)
+        )
+    }
+}
+
+/// An assembly constraint: some of a joint's equations between a frame on
+/// body `a` and one on body `b` (either side may be the fixed world),
+/// solved together with the joints. Frames are given where the bodies are
+/// when it is added.
+#[derive(Clone, Debug, PartialEq)]
+pub struct RigidConstraint {
+    pub a: Option<BodyId>,
+    pub frame_a: Pose,
+    pub b: Option<BodyId>,
+    pub frame_b: Pose,
+    pub parts: Vec<ConstraintPart>,
+    /// The value of the parts with [`Amount::Value`]: its limits and target
+    /// (`freedom` says whether it is a length, `Tz`, or an angle, `Rz`, and
+    /// names it in dependencies).
+    pub value: Option<JointMotion>,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum RigidError {
     NoBody(BodyId),
@@ -352,6 +455,9 @@ pub enum RigidError {
     RepeatedMotion(Freedom),
     /// Limits in the wrong order, or a number that is not finite.
     BadValue(Freedom),
+    /// A constraint's part holds its value but the constraint has none, or
+    /// one of its numbers is not finite.
+    BadPart,
 }
 
 impl std::fmt::Display for RigidError {
@@ -363,6 +469,7 @@ impl std::fmt::Display for RigidError {
             RigidError::SameSides => f.write_str("both sides of the joint are the same body"),
             RigidError::RepeatedMotion(m) => write!(f, "the motion {m:?} is listed twice"),
             RigidError::BadValue(m) => write!(f, "the limits or target of {m:?} are invalid"),
+            RigidError::BadPart => f.write_str("a part of the constraint is invalid"),
         }
     }
 }
@@ -430,6 +537,10 @@ pub struct RigidAnalysis {
     pub dof: usize,
     /// Of each body with the others held where they are; 0 when fixed.
     pub body_dof: Vec<usize>,
+    /// Whether each body moves in some motion of all of them together
+    /// (the others free too): a link of a four-bar linkage has no motion
+    /// of its own but moves; false when fixed or held fixed by the joints.
+    pub body_mobile: Vec<bool>,
     /// Joints that take away motions earlier joints already took
     /// (consistent: they hold).
     pub redundant: Vec<RigidDependency>,
@@ -445,8 +556,11 @@ struct BodyRec {
 
 #[derive(Clone, Debug)]
 struct JointRec {
+    /// A constraint's sides and value (as its one motion; no alignment).
     def: RigidJoint,
     values: Vec<f64>,
+    /// A constraint's equations; None for a joint.
+    parts: Option<Vec<ConstraintPart>>,
 }
 
 /// Rigid bodies and the joints between them.
@@ -463,6 +577,16 @@ enum Mode {
     Solve,
     /// Joints only (drags, degrees of freedom).
     Joints,
+}
+
+/// Which bodies a rank analysis holds where they are.
+#[derive(Clone, Copy, PartialEq)]
+enum Hold {
+    None,
+    /// Every body but this one.
+    AllBut(usize),
+    /// This body only.
+    One(usize),
 }
 
 /// The unknowns of a run: each free body's six, then each joint's values.
@@ -484,8 +608,20 @@ struct FrameRows {
     alignment: Pose,
 }
 
+/// A constraint's rows.
+struct PartRows {
+    ga: Pose,
+    ca: Option<Vec3>,
+    gb: Pose,
+    cb: Option<Vec3>,
+    parts: Vec<ConstraintPart>,
+    /// Whether the constraint has a value (the last unknown).
+    value: bool,
+}
+
 enum BlockKind {
     Frames(Box<FrameRows>),
+    Parts(Box<PartRows>),
     Target { value: f64, rotation: bool },
 }
 
@@ -552,6 +688,114 @@ fn frame_rows<T: Scalar>(rows: &FrameRows, x: &[T], scale: f64) -> [T; 6] {
     ]
 }
 
+/// Frame `a` seen from frame `b`: a's origin, z axis and x axis in b's
+/// coordinates.
+fn relative<T: Scalar>(fa: &PoseT<T>, fb: &PoseT<T>) -> [[T; 3]; 3] {
+    let local = |v: [T; 3]| -> [T; 3] {
+        std::array::from_fn(|i| fb.r[0][i] * v[0] + fb.r[1][i] * v[1] + fb.r[2][i] * v[2])
+    };
+    let column = |c: usize| -> [T; 3] { std::array::from_fn(|r| fa.r[r][c]) };
+    [
+        local(std::array::from_fn(|i| fa.t[i] - fb.t[i])),
+        local(column(2)),
+        local(column(0)),
+    ]
+}
+
+/// A constraint's residuals between frames `fa` and `fb` (lengths in mm,
+/// directions times `scale`); `value` is the constraint's value.
+fn constraint_rows<T: Scalar>(
+    parts: &[ConstraintPart],
+    fa: &PoseT<T>,
+    fb: &PoseT<T>,
+    value: Option<T>,
+    scale: f64,
+    out: &mut Vec<T>,
+) {
+    let [d, z, x] = relative(fa, fb);
+    let amount = |a: Amount| match a {
+        Amount::Fixed(v) => T::cst(v),
+        Amount::Value => value.unwrap_or(T::cst(0.0)),
+    };
+    for part in parts {
+        match *part {
+            ConstraintPart::OriginX => out.push(d[0]),
+            ConstraintPart::OriginY => out.push(d[1]),
+            ConstraintPart::OriginZ(a) => out.push(d[2] - amount(a)),
+            ConstraintPart::Distance(a) => {
+                out.push((d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt() - amount(a));
+            }
+            ConstraintPart::Radial(a) => out.push((d[0] * d[0] + d[1] * d[1]).sqrt() - amount(a)),
+            ConstraintPart::Parallel(_) => {
+                out.push(z[0].mulf(scale));
+                out.push(z[1].mulf(scale));
+            }
+            ConstraintPart::Perpendicular => out.push(z[2].mulf(scale)),
+            ConstraintPart::Angle(a) => {
+                let across = (z[0] * z[0] + z[1] * z[1]).sqrt();
+                out.push((across.atan2(z[2]) - amount(a)).mulf(scale));
+            }
+            ConstraintPart::Twist(t) => {
+                out.push((x[1].mulf(t.cos()) - x[0].mulf(t.sin())).mulf(scale));
+            }
+        }
+    }
+}
+
+/// A constraint's residuals at the run's unknowns.
+fn part_rows<T: Scalar>(rows: &PartRows, x: &[T], scale: f64) -> Vec<T> {
+    let (fa, used_a) = side_frame(&rows.ga, rows.ca, x);
+    let (fb, used_b) = side_frame(&rows.gb, rows.cb, &x[used_a..]);
+    let value = rows.value.then(|| x[used_a + used_b]);
+    let mut out = Vec::new();
+    constraint_rows(&rows.parts, &fa, &fb, value, scale, &mut out);
+    out
+}
+
+/// A block's residuals and their derivatives by its unknowns, in passes of
+/// [`LANES`] unknowns.
+fn evaluate_block<R: AsRef<[f64]>, D: AsRef<[Dual]>>(
+    block: &Block,
+    params: &[f64],
+    f: &mut [f64],
+    jac: Option<&mut Rows>,
+    eval_f64: impl Fn(&[f64]) -> R,
+    eval_dual: impl Fn(&[Dual]) -> D,
+) {
+    let Some(jac) = jac else {
+        let x: Vec<f64> = block.vars.iter().map(|&g| params[g]).collect();
+        let r = eval_f64(&x);
+        f[block.row..block.row + block.rows].copy_from_slice(r.as_ref());
+        return;
+    };
+    let n = block.vars.len();
+    let mut start = 0;
+    loop {
+        let x: Vec<Dual> = block
+            .vars
+            .iter()
+            .enumerate()
+            .map(|(i, &g)| {
+                let lane = (i >= start && i < start + LANES).then(|| i - start);
+                Dual::var(params[g], lane)
+            })
+            .collect();
+        let r = eval_dual(&x);
+        for (k, v) in r.as_ref().iter().enumerate() {
+            let row = block.row + k;
+            f[row] = v.v;
+            let base = jac.ptr[row];
+            for i in start..(start + LANES).min(n) {
+                jac.val[base + i] = v.d[i - start];
+            }
+        }
+        start += LANES;
+        if start >= n {
+            break;
+        }
+    }
+}
+
 impl Equations for RigidEquations {
     fn evaluate(
         &self,
@@ -570,41 +814,22 @@ impl Equations for RigidEquations {
                         jac.val[jac.ptr[block.row]] = k;
                     }
                 }
-                BlockKind::Frames(rows) => match jac.as_deref_mut() {
-                    None => {
-                        let x: Vec<f64> = block.vars.iter().map(|&g| params[g]).collect();
-                        let r = frame_rows(rows, &x, scale);
-                        f[block.row..block.row + 6].copy_from_slice(&r);
-                    }
-                    Some(jac) => {
-                        let n = block.vars.len();
-                        let mut start = 0;
-                        loop {
-                            let x: Vec<Dual> = block
-                                .vars
-                                .iter()
-                                .enumerate()
-                                .map(|(i, &g)| {
-                                    let lane = (i >= start && i < start + LANES).then(|| i - start);
-                                    Dual::var(params[g], lane)
-                                })
-                                .collect();
-                            let r = frame_rows(rows, &x, scale);
-                            for (k, v) in r.iter().enumerate() {
-                                let row = block.row + k;
-                                f[row] = v.v;
-                                let base = jac.ptr[row];
-                                for i in start..(start + LANES).min(n) {
-                                    jac.val[base + i] = v.d[i - start];
-                                }
-                            }
-                            start += LANES;
-                            if start >= n {
-                                break;
-                            }
-                        }
-                    }
-                },
+                BlockKind::Frames(rows) => evaluate_block(
+                    block,
+                    params,
+                    f,
+                    jac.as_deref_mut(),
+                    |x| frame_rows(rows, x, scale),
+                    |x| frame_rows(rows, x, scale),
+                ),
+                BlockKind::Parts(rows) => evaluate_block(
+                    block,
+                    params,
+                    f,
+                    jac.as_deref_mut(),
+                    |x| part_rows(rows, x, scale),
+                    |x| part_rows(rows, x, scale),
+                ),
             }
         }
     }
@@ -737,6 +962,205 @@ fn project(motions: &[Freedom], relative: &Pose) -> Vec<f64> {
         .collect()
 }
 
+/// The measure the parts with [`Amount::Value`] hold (the first one's):
+/// a height, distance or angle between the frames.
+fn parts_measure(parts: &[ConstraintPart], fa: &Pose, fb: &Pose) -> Option<f64> {
+    let k = parts
+        .iter()
+        .position(|p| p.amount() == Some(Amount::Value))?;
+    let mut rows = Vec::new();
+    constraint_rows(
+        &parts[k..=k],
+        &PoseT::cst(fa),
+        &PoseT::cst(fb),
+        Some(0.0),
+        1.0,
+        &mut rows,
+    );
+    rows.first().copied()
+}
+
+/// How far parts are from holding between two frames with the value at
+/// `value`: the largest residual of lengths (mm) and the largest error of
+/// directions (radians; half a turn when z axes or x axes point the wrong
+/// way).
+fn parts_error(parts: &[ConstraintPart], fa: &Pose, fb: &Pose, value: Option<f64>) -> (f64, f64) {
+    let (pa, pb) = (PoseT::cst(fa), PoseT::cst(fb));
+    let [_, z, x] = relative(&pa, &pb);
+    let mut length: f64 = 0.0;
+    let mut angle: f64 = 0.0;
+    for part in parts {
+        let mut rows = Vec::new();
+        constraint_rows(std::slice::from_ref(part), &pa, &pb, value, 1.0, &mut rows);
+        let worst = rows.iter().fold(0.0_f64, |m, r| m.max(r.abs()));
+        if !part.angular() {
+            length = length.max(worst);
+            continue;
+        }
+        let wrong_way = match part {
+            ConstraintPart::Parallel(Sense::Same) => z[2] < 0.0,
+            ConstraintPart::Parallel(Sense::Opposite) => z[2] > 0.0,
+            ConstraintPart::Twist(t) => x[0] * t.cos() + x[1] * t.sin() < 0.0,
+            _ => false,
+        };
+        let error = match part {
+            ConstraintPart::Angle(_) => worst,
+            _ => worst.clamp(0.0, 1.0).asin(),
+        };
+        angle = angle.max(if wrong_way {
+            std::f64::consts::PI
+        } else {
+            error
+        });
+    }
+    (length, angle)
+}
+
+fn dot(a: Vec3, b: Vec3) -> f64 {
+    a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
+}
+
+fn cross(a: Vec3, b: Vec3) -> Vec3 {
+    [
+        a[1] * b[2] - a[2] * b[1],
+        a[2] * b[0] - a[0] * b[2],
+        a[0] * b[1] - a[1] * b[0],
+    ]
+}
+
+fn column(p: &Pose, c: usize) -> Vec3 {
+    std::array::from_fn(|r| p.rotation[r][c])
+}
+
+/// The turn about `pivot` that takes the unit direction `from` to `to`
+/// (half a turn about `across`, a unit direction across both, when they
+/// are opposite).
+fn turn_between(pivot: Vec3, from: Vec3, to: Vec3, across: Vec3) -> Pose {
+    let axis = cross(from, to);
+    let sin = norm(axis);
+    let cos = dot(from, to);
+    if sin < 1e-12 {
+        return if cos > 0.0 {
+            Pose::IDENTITY
+        } else {
+            Pose::rotation(pivot, across, std::f64::consts::PI)
+        };
+    }
+    Pose::rotation(pivot, axis, sin.atan2(cos))
+}
+
+/// The smallest motion of frame `a` that makes the parts hold against
+/// frame `b` with the value at `value`, as far as each part alone settles
+/// it: directions first (turning about a's origin), then the origin.
+fn constraint_delta(parts: &[ConstraintPart], fa: &Pose, fb: &Pose, value: Option<f64>) -> Pose {
+    let (xb, yb, zb) = (column(fb, 0), column(fb, 1), column(fb, 2));
+    let pivot = fa.translation;
+    let amount = |a: Amount| match a {
+        Amount::Fixed(v) => Some(v),
+        Amount::Value => value,
+    };
+    let mut delta = Pose::IDENTITY;
+    let za = |d: &Pose| d.apply_vector(column(fa, 2));
+    for part in parts {
+        let z = za(&delta);
+        let turn = match *part {
+            ConstraintPart::Parallel(sense) => {
+                let same = match sense {
+                    Sense::Same => true,
+                    Sense::Opposite => false,
+                    Sense::Either => dot(z, zb) >= 0.0,
+                };
+                let to = if same { zb } else { zb.map(|v| -v) };
+                turn_between(pivot, z, to, xb)
+            }
+            ConstraintPart::Perpendicular => {
+                let c = dot(z, zb);
+                let across = std::array::from_fn(|i| z[i] - c * zb[i]);
+                let n = norm(across);
+                let to = if n < 1e-12 { xb } else { across.map(|v| v / n) };
+                turn_between(pivot, z, to, xb)
+            }
+            ConstraintPart::Angle(a) => match amount(a) {
+                Some(v) => {
+                    let now = norm(cross(zb, z)).atan2(dot(zb, z));
+                    let k = cross(zb, z);
+                    let axis = if norm(k) < 1e-9 { xb } else { k };
+                    Pose::rotation(pivot, axis, v - now)
+                }
+                None => Pose::IDENTITY,
+            },
+            ConstraintPart::Twist(t) => {
+                let x = delta.apply_vector(column(fa, 0));
+                let now = dot(x, yb).atan2(dot(x, xb));
+                Pose::rotation(pivot, zb, t - now)
+            }
+            _ => Pose::IDENTITY,
+        };
+        delta = turn.after(&delta);
+    }
+    // The origin: each part's coordinates of it in b's frame.
+    let local = |p: Vec3| -> Vec3 {
+        let w = sub(p, fb.translation);
+        [dot(w, xb), dot(w, yb), dot(w, zb)]
+    };
+    let d = local(delta.apply_point(pivot));
+    let mut want = d;
+    for part in parts {
+        match *part {
+            ConstraintPart::OriginX => want[0] = 0.0,
+            ConstraintPart::OriginY => want[1] = 0.0,
+            ConstraintPart::OriginZ(a) => {
+                if let Some(v) = amount(a) {
+                    want[2] = v;
+                }
+            }
+            ConstraintPart::Distance(a) => {
+                let n = norm(want);
+                if let (Some(v), true) = (amount(a), n > 1e-12) {
+                    want = want.map(|c| c * v / n);
+                }
+            }
+            ConstraintPart::Radial(a) => {
+                let n = (want[0] * want[0] + want[1] * want[1]).sqrt();
+                if let (Some(v), true) = (amount(a), n > 1e-12) {
+                    want[0] *= v / n;
+                    want[1] *= v / n;
+                }
+            }
+            _ => {}
+        }
+    }
+    let shift: Vec3 = std::array::from_fn(|i| {
+        (want[0] - d[0]) * xb[i] + (want[1] - d[1]) * yb[i] + (want[2] - d[2]) * zb[i]
+    });
+    Pose::translation(shift).after(&delta)
+}
+
+impl RigidConstraint {
+    /// The measure its value holds where the frames are (the height of a's
+    /// origin, a distance or an angle); None without a value.
+    pub fn measured(&self) -> Option<f64> {
+        self.value.as_ref()?;
+        parts_measure(&self.parts, &self.frame_a, &self.frame_b)
+    }
+
+    /// How far it is from holding where the frames are: the largest
+    /// residual of lengths (mm) and error of directions (radians). Its
+    /// value is its target, else the measure kept within its limits.
+    pub fn error(&self) -> (f64, f64) {
+        let value = self.value.as_ref().and_then(|m| {
+            m.target.or_else(|| {
+                let v = self.measured()?;
+                Some(v.clamp(
+                    m.min.unwrap_or(f64::NEG_INFINITY),
+                    m.max.unwrap_or(f64::INFINITY),
+                ))
+            })
+        });
+        parts_error(&self.parts, &self.frame_a, &self.frame_b, value)
+    }
+}
+
 /// `angle` plus whole turns, nearest to `reference`.
 fn unwrap_turn(angle: f64, reference: f64) -> f64 {
     let tau = std::f64::consts::TAU;
@@ -781,11 +1205,63 @@ impl RigidSystem {
                 return Err(RigidError::BadValue(m.freedom));
             }
         }
-        let values = vec![0.0; joint.motions.len()];
-        self.joints.push(JointRec { def: joint, values });
+        Ok(self.push(joint, None))
+    }
+
+    fn push(&mut self, def: RigidJoint, parts: Option<Vec<ConstraintPart>>) -> JointId {
+        let values = vec![0.0; def.motions.len()];
+        self.joints.push(JointRec { def, values, parts });
         let id = JointId(self.joints.len() as u32 - 1);
         self.joints[id.0 as usize].values = self.start_values(id.0 as usize);
-        Ok(id)
+        id
+    }
+
+    /// Adds an assembly constraint (mitcad#148): numbered with the joints,
+    /// solved and analysed with them.
+    pub fn add_constraint(&mut self, c: RigidConstraint) -> Result<JointId, RigidError> {
+        for b in [c.a, c.b].into_iter().flatten() {
+            if b.0 as usize >= self.bodies.len() {
+                return Err(RigidError::NoBody(b));
+            }
+        }
+        if c.a == c.b {
+            return Err(RigidError::SameSides);
+        }
+        if let Some(m) = &c.value {
+            let finite = [m.min, m.max, m.target]
+                .iter()
+                .flatten()
+                .all(|v| v.is_finite());
+            let ordered = match (m.min, m.max) {
+                (Some(lo), Some(hi)) => lo <= hi,
+                _ => true,
+            };
+            if !finite || !ordered {
+                return Err(RigidError::BadValue(m.freedom));
+            }
+        }
+        for part in &c.parts {
+            let number = match part {
+                ConstraintPart::Twist(t) => Some(*t),
+                _ => match part.amount() {
+                    Some(Amount::Fixed(v)) => Some(v),
+                    Some(Amount::Value) if c.value.is_none() => return Err(RigidError::BadPart),
+                    _ => None,
+                },
+            };
+            if number.is_some_and(|v| !v.is_finite()) {
+                return Err(RigidError::BadPart);
+            }
+        }
+        let def = RigidJoint {
+            a: c.a,
+            frame_a: c.frame_a,
+            b: c.b,
+            frame_b: c.frame_b,
+            motions: c.value.into_iter().collect(),
+            alignment: Pose::IDENTITY,
+        };
+        Ok(self.push(def, Some(c.parts)))
     }
 
     /// Replaces the limits and target of one of a joint's motions (the one
@@ -853,7 +1329,14 @@ impl RigidSystem {
 
     /// How far the joint is from holding at its values: the distance of
     /// the frames' origins (mm) and the angle between them (radians).
+    /// A constraint's: its largest residual of lengths (mm) and of
+    /// directions (radians) at its value.
     pub fn joint_error(&self, joint: JointId) -> (f64, f64) {
+        let rec = &self.joints[joint.0 as usize];
+        if let Some(parts) = &rec.parts {
+            let (fa, fb) = self.side_frames(joint.0 as usize);
+            return parts_error(parts, &fa, &fb, rec.values.first().copied());
+        }
         let (fa, q) = self.frames(joint.0 as usize);
         let e = mat_mul_t(&fa.rotation, &q.rotation);
         let cos = (e[0][0] + e[1][1] + e[2][2] - 1.0) / 2.0;
@@ -867,6 +1350,22 @@ impl RigidSystem {
     fn start_values(&self, j: usize) -> Vec<f64> {
         let joint = &self.joints[j];
         let (fa, fb) = self.side_frames(j);
+        if let Some(parts) = &joint.parts {
+            // A constraint's value: its target, else its measure.
+            return joint
+                .def
+                .motions
+                .iter()
+                .map(|m| {
+                    m.target.unwrap_or_else(|| {
+                        parts_measure(parts, &fa, &fb).unwrap_or(0.0).clamp(
+                            m.min.unwrap_or(f64::NEG_INFINITY),
+                            m.max.unwrap_or(f64::INFINITY),
+                        )
+                    })
+                })
+                .collect();
+        }
         let relative = fb
             .inverse()
             .after(&fa)
@@ -997,22 +1496,39 @@ impl RigidSystem {
             let cb = centre(def.b);
             let first = layout.value_col[j];
             vars.extend(first..first + def.motions.len());
+            let (count, kind) = match &joint.parts {
+                Some(parts) => (
+                    parts.iter().map(ConstraintPart::rows).sum(),
+                    BlockKind::Parts(Box::new(PartRows {
+                        ga,
+                        ca,
+                        gb,
+                        cb,
+                        parts: parts.clone(),
+                        value: !def.motions.is_empty(),
+                    })),
+                ),
+                None => (
+                    6,
+                    BlockKind::Frames(Box::new(FrameRows {
+                        ga,
+                        ca,
+                        gb,
+                        cb,
+                        motions: def.motions.iter().map(|m| m.freedom).collect(),
+                        alignment: def.alignment,
+                    })),
+                ),
+            };
             blocks.push(Block {
                 joint: j,
                 target: None,
                 row: rows,
-                rows: 6,
+                rows: count,
                 vars,
-                kind: BlockKind::Frames(Box::new(FrameRows {
-                    ga,
-                    ca,
-                    gb,
-                    cb,
-                    motions: def.motions.iter().map(|m| m.freedom).collect(),
-                    alignment: def.alignment,
-                })),
+                kind,
             });
-            rows += 6;
+            rows += count;
             for (k, m) in def.motions.iter().enumerate() {
                 let col = first + k;
                 if m.min.is_some() || m.max.is_some() {
@@ -1132,13 +1648,13 @@ impl RigidSystem {
         run
     }
 
-    /// The rank analysis of the rows where the bodies are: rank, and the
-    /// redundant and conflicting rows. `mask` holds every body but one
-    /// where it is (its unknowns weigh nothing).
+    /// The rank analysis of the rows where the bodies are: the unknowns,
+    /// the rank, and the redundant and conflicting rows. `hold` holds
+    /// bodies where they are (their unknowns weigh nothing).
     fn rank(
         &self,
         mode: Mode,
-        mask: Option<usize>,
+        hold: Hold,
     ) -> (usize, usize, Vec<RigidDependency>, Vec<RigidDependency>) {
         let scale = self.size(&[]);
         let layout = self.layout();
@@ -1146,14 +1662,17 @@ impl RigidSystem {
         let eqs = self.equations(&layout, &centres, mode);
         let mut dcol = self.weights(&layout, scale);
         let mut n = layout.n;
-        if let Some(keep) = mask {
-            for (b, col) in layout.body_col.iter().enumerate() {
-                if let Some(col) = col
-                    && b != keep
-                {
-                    dcol[*col..col + 6].iter_mut().for_each(|w| *w = 0.0);
-                    n -= 6;
-                }
+        for (b, col) in layout.body_col.iter().enumerate() {
+            let held = match hold {
+                Hold::None => false,
+                Hold::AllBut(keep) => b != keep,
+                Hold::One(one) => b == one,
+            };
+            if let Some(col) = col
+                && held
+            {
+                dcol[*col..col + 6].iter_mut().for_each(|w| *w = 0.0);
+                n -= 6;
             }
         }
         let comp = eqs.component(layout.n, dcol);
@@ -1193,6 +1712,29 @@ impl RigidSystem {
                 continue;
             }
             let (fixed_a, fixed_b) = (is_fixed(&cluster, ra), is_fixed(&cluster, rb));
+            if let Some(parts) = &self.joints[j].parts {
+                // A constraint moves the free side (a's between two free
+                // ones) as little as it can so that it holds, and joins
+                // nothing: what it leaves free is left to the iteration.
+                if fixed_a && fixed_b {
+                    continue;
+                }
+                let (fa, fb) = self.side_frames(j);
+                let delta =
+                    constraint_delta(parts, &fa, &fb, self.joints[j].values.first().copied());
+                let (root, delta) = if !fixed_a {
+                    (ra, delta)
+                } else {
+                    (rb, delta.inverse())
+                };
+                let root = root.expect("a free side is a body");
+                for b in 0..n {
+                    if find(&cluster, b) == root {
+                        self.bodies[b].pose = delta.after(&self.bodies[b].pose);
+                    }
+                }
+                continue;
+            }
             if !(fixed_a && fixed_b) {
                 let joint = &self.joints[j];
                 let freedoms: Vec<Freedom> = joint.def.motions.iter().map(|m| m.freedom).collect();
@@ -1223,6 +1765,12 @@ impl RigidSystem {
     /// when every joint is less than a quarter turn off.
     fn turn_over(&mut self) -> bool {
         for j in 0..self.joints.len() {
+            if self.joints[j].parts.is_some() {
+                if self.turn_constraint_over(j) {
+                    return true;
+                }
+                continue;
+            }
             let (fa, q) = self.frames(j);
             let e = mat_mul_t(&fa.rotation, &q.rotation);
             let cos = (e[0][0] + e[1][1] + e[2][2] - 1.0) / 2.0;
@@ -1253,6 +1801,45 @@ impl RigidSystem {
             return true;
         }
         false
+    }
+
+    /// A constraint whose z axes (or x axes, for a twist) ended up pointing
+    /// the wrong way, turned over: half a turn of side `a`'s body (else
+    /// `b`'s) about b's x axis (z for a twist) through a's origin.
+    fn turn_constraint_over(&mut self, j: usize) -> bool {
+        let Some(parts) = &self.joints[j].parts else {
+            return false;
+        };
+        let (fa, fb) = self.side_frames(j);
+        let (za, xa) = (column(&fa, 2), column(&fa, 0));
+        let (xb, yb, zb) = (column(&fb, 0), column(&fb, 1), column(&fb, 2));
+        let mut axis = None;
+        for part in parts {
+            match part {
+                ConstraintPart::Parallel(Sense::Same) if dot(za, zb) < -0.5 => axis = Some(xb),
+                ConstraintPart::Parallel(Sense::Opposite) if dot(za, zb) > 0.5 => axis = Some(xb),
+                ConstraintPart::Twist(t)
+                    if dot(za, zb).abs() > 0.5
+                        && dot(xa, xb) * t.cos() + dot(xa, yb) * t.sin() < -0.5 =>
+                {
+                    axis = Some(zb)
+                }
+                _ => continue,
+            }
+            break;
+        }
+        let Some(axis) = axis else {
+            return false;
+        };
+        let def = &self.joints[j].def;
+        let free = |b: Option<BodyId>| b.filter(|b| !self.bodies[b.0 as usize].fixed);
+        let Some(body) = free(def.a).or_else(|| free(def.b)) else {
+            return false;
+        };
+        let turn = Pose::rotation(fa.translation, axis, std::f64::consts::PI);
+        let pose = &mut self.bodies[body.0 as usize].pose;
+        *pose = turn.after(pose);
+        true
     }
 
     fn at_limits(&self, scale: f64, opts: &RigidOptions) -> Vec<(JointId, Freedom)> {
@@ -1336,7 +1923,7 @@ impl RigidSystem {
                 at_limits: self.at_limits(scale, opts),
             };
         }
-        let (_, _, _, conflicts) = self.rank(mode, None);
+        let (_, _, _, conflicts) = self.rank(mode, Hold::None);
         (self.bodies, self.joints) = saved;
         RigidResult {
             status: if conflicts.is_empty() {
@@ -1354,20 +1941,35 @@ impl RigidSystem {
     /// Degrees of freedom of the joints where the bodies are (targets left
     /// out), and redundant or conflicting joints.
     pub fn analyze(&self) -> RigidAnalysis {
-        let (n, rank, redundant, conflicts) = self.rank(Mode::Joints, None);
-        let body_dof = (0..self.bodies.len())
+        let (n, rank, redundant, conflicts) = self.rank(Mode::Joints, Hold::None);
+        let body_dof: Vec<usize> = (0..self.bodies.len())
             .map(|b| {
                 if self.bodies[b].fixed {
                     0
                 } else {
-                    let (n, rank, _, _) = self.rank(Mode::Joints, Some(b));
+                    let (n, rank, _, _) = self.rank(Mode::Joints, Hold::AllBut(b));
                     n - rank
+                }
+            })
+            .collect();
+        // A body without a motion of its own moves when holding it takes
+        // a motion away from all of them.
+        let body_mobile = (0..self.bodies.len())
+            .map(|b| {
+                if self.bodies[b].fixed {
+                    false
+                } else if body_dof[b] > 0 {
+                    true
+                } else {
+                    let (held_n, held_rank, _, _) = self.rank(Mode::Joints, Hold::One(b));
+                    held_n - held_rank < n - rank
                 }
             })
             .collect();
         RigidAnalysis {
             dof: n - rank,
             body_dof,
+            body_mobile,
             redundant,
             conflicts,
         }

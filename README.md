@@ -11,7 +11,7 @@ Linux and macOS (Apple Silicon, macOS 14.4 or newer), licensed under the
   and drag handles, a model browser, a timeline and command search.
 - **Support for multiple CAD formats:** FreeCAD and `.f3d` designs open
   with their history, `.ipt` parts with their bodies; STEP, IGES, BRep,
-  STL, OBJ, DXF and 3MF import and export
+  STL, OBJ, DXF and 3MF import and export; USDZ export
   ([the table below](#support-for-multiple-cad-formats)).
 - **3D printing:** bodies straight to a slicer (Bambu Studio, OrcaSlicer,
   PrusaSlicer, UltiMaker Cura).
@@ -28,7 +28,7 @@ well. It is free to use, change and share under the MIT licence.
 
 | Format | Import | Export | Design history |
 |---|---|---|---|
-| Mitcad project (`.mitcad`) | Open, Insert Component | Save | Yes |
+| Mitcad design (`.mitcad`) | Open, Insert Component | Save | Yes |
 | FreeCAD (`.FCStd`) | Open, Import | – | Features, sketches and parameters |
 | `.f3d`, `.f3z` | Open, Import | – | Features, sketches and parameters |
 | `.ipt` (parts) | Open, Import | – | Bodies only, for now |
@@ -39,6 +39,7 @@ well. It is free to use, change and share under the MIT licence.
 | OBJ | Meshes | Meshes | – |
 | DXF | Into a sketch | From a sketch | – |
 | 3MF | – | For slicers | – |
+| USDZ | – | For AR and 3D viewers: meshes with appearances, components kept | – |
 
 If a file does not import as it should, please
 [open an issue](https://github.com/mitcad/Mitcad/issues).
@@ -75,7 +76,8 @@ toolchain pinned in [rust-toolchain.toml](rust-toolchain.toml).
 
 The configure presets in [CMakePresets.json](CMakePresets.json)
 (`linux-debug`, `linux-release`, `macos-debug`, `macos-release`,
-`windows-debug`, `windows-release`) take
+`windows-release`; no Windows Debug build, as the render worker links
+release builds of its libraries) take
 vcpkg and Qt from the environment variables `VCPKG_ROOT` and
 `QT_ROOT_DIR`. The setup scripts below write a local
 `CMakeUserPresets.json` (not under version control) with a `dev` preset
@@ -96,29 +98,32 @@ tools/dev-env/setup-user.sh
 cmake --preset dev && cmake --build --preset dev && ctest --preset dev
 ```
 
-The first configure builds OCCT with vcpkg (about 15 minutes). The
+The first configure builds OCCT and the renderer's libraries with vcpkg
+(about 30 minutes). The
 application is `build/dev/app/mitcad`; use a release build
 (`linux-release`) for performance measurements. Packaging as an
 AppImage: [docs/development.md](docs/development.md#linux-appimage).
 
-The rendered view (a prototype with Cycles on the CPU, or an NVIDIA GPU
-with `build-cycles.sh --cuda`) is built only with
-`-DMITCAD_RENDER=ON` after `tools/dev-env/build-cycles.sh` (`build-cycles.ps1` on
-Windows), which builds
-Cycles and Open Image Denoise from pinned sources
-([docs/rendering.md](docs/rendering.md#building)). The renderer is then the
+Every build has the rendered view (a prototype with Cycles on the CPU,
+or an NVIDIA GPU with `build-cycles.sh --cuda`): the setup scripts run
+`tools/dev-env/build-cycles.sh` (`build-cycles.ps1` on Windows,
+`build-cycles-macos.sh` on macOS) once, which builds Cycles and Open Image
+Denoise from pinned sources outside the build folders
+([docs/rendering.md](docs/rendering.md#building)); without them the
+configure stops and names the script. The renderer is the
 executable `mitcad-render` next to `mitcad` (only it links the renderer's
 libraries), and View > Rendered appears whenever it is there, with View
 > Render Environment for the design's light (with lights of one's own),
 background, ground and exposure, and File > Render Image (and `mitcad-cli render`) for a final
-image file at a chosen size and quality; the AppImage and the Windows
-installer of such a build include it.
+image file at a chosen size and quality; the AppImage, the Windows
+installer and the macOS bundle include it.
 
 ### Windows
 
 Requirements: Visual Studio 2022 or newer with the C++ desktop tools.
 `setup-windows.ps1` installs Git, CMake, Ninja, ccache, Rust, Python, NSIS,
-cargo-deny, vcpkg and Qt (run it as an administrator) and writes
+cargo-deny, vcpkg and Qt (run it as an administrator), builds the
+renderer's libraries (`build-cycles.ps1`) and writes
 `CMakeUserPresets.json`; `msvc.cmd` runs a command in the MSVC
 environment:
 
@@ -139,7 +144,8 @@ and needs OpenGL 2.1+. Without a GPU, build Mesa's llvmpipe with
 Requirements: Apple Silicon, macOS 14.4 or newer, the Xcode Command Line
 Tools and OpenGL 4.1 core (deprecated by Apple but present). In the build
 VM, `setup-macos.sh` installs CMake, Ninja, Rust, cargo-deny, vcpkg and Qt
-in the user's home directory and writes `CMakeUserPresets.json`:
+in the user's home directory, builds the renderer's libraries
+(`build-cycles-macos.sh`) and writes `CMakeUserPresets.json`:
 
 ```bash
 tools/dev-env/sync-to-mac.sh
@@ -149,6 +155,10 @@ ssh <user>@<guest> "cd ~/src/mitcad && cmake --preset dev && cmake --build --pre
 
 The application is `build/dev/app/mitcad.app`. Packaging as a disk image:
 [docs/development.md](docs/development.md#macos-bundle-and-native-ui).
+The AppKit frontend is built with `-DMITCAD_MACOS_NATIVE_UI=ON`; that build
+uses a native window, toolbar, browser, inspector and dialogs by default.
+`--ui=qt` selects the retained Qt frontend. Details and validation:
+[native macOS UI](docs/native-macos-ui.md).
 
 ## Tests
 
@@ -166,11 +176,11 @@ corpus setup: [docs/development.md](docs/development.md#the-check-script).
 
 | Directory | Contents |
 |---|---|
-| `core/model` | Rust model: document, timeline, features, sketches, naming, recompute, project file, JSON API ([commands.md](core/model/src/api/commands.md)) |
+| `core/model` | Rust model: document, timeline, features, sketches, naming, recompute, design file, JSON API ([commands.md](core/model/src/api/commands.md)) |
 | `core/solver` | 2D sketch constraint solver |
 | `core/f3d`, `core/freecad`, `core/import`, `core/zip` | `.f3d` and FreeCAD readers and the history import |
 | `core/ipt` | `.ipt` reader: compound file, property sets, segments, the bodies |
-| `core/dxf`, `core/3mf` | DXF and 3MF |
+| `core/dxf`, `core/3mf`, `core/usdz` | DXF, 3MF and USDZ |
 | `core/vcs`, `core/update` | Version history in git; automatic updates |
 | `core/ffi`, `core/cpp` | CXX bridges between Rust and C++ |
 | `geometry` | C++ facade over OCCT |

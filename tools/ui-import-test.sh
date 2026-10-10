@@ -5,6 +5,8 @@
 #   - STEP, STL and DXF round trips: File > Export writes the block (its
 #     sketch for DXF), File > Import brings the file back: a base feature
 #     of the same volume, a mesh body, a sketch with the rectangle's profile.
+#   - USDZ export (mitcad#123): the Export dialog takes the type from the
+#     extension; the package holds the binary layer first, 64-byte aligned.
 #   - Insert DXF's placement and layers (P9): a layered drawing placed by
 #     its lower left corner, one layer left out.
 #   - --open of a STEP and a DXF file: new documents; Open Recent.
@@ -45,7 +47,7 @@
 # Runs headless on Xvfb (see ui-test-lib.sh); Qt's own file dialogs
 # (--no-native-dialogs), so that paths can be typed.
 # Usage: tools/ui-import-test.sh
-# check-all sources: core/import core/f3d core/freecad core/ipt core/zip core/dxf core/tests tools/cli
+# check-all sources: core/import core/f3d core/freecad core/ipt core/zip core/dxf core/tests tools/cli core/usdz
 # check-all sources: core/ffi/src/brep_import.rs core/ffi/src/f3d_import.rs core/ffi/src/fcstd_import.rs
 # check-all sources: core/ffi/src/ipt_import.rs core/ffi/src/ipt_history.rs core/ffi/src/iam_import.rs
 
@@ -124,6 +126,19 @@ ui_expect_new "Imported block.stl as" "the STL came in"
 ui_expect_volume "New body .*(F[0-9]*\.b0): volume \([0-9.]*\) mm3" 48000 "the mesh body's volume" 1e-4
 ui_step "undo the import (Ctrl+Z)"         ui_key ctrl+z
 ui_expect_log "Undo: Import block.stl" "undone"
+
+echo "--- USDZ (mitcad#123)"
+ui_mark
+ui_step "File > Export a USDZ file"        export_to "$WORK/block.usdz"
+ui_expect_new "Export dialog: USDZ for AR and 3D viewers (*.usdz) to $WORK/block.usdz" \
+  "the extension chose the USDZ type"
+ui_expect_new "Exported $WORK/block.usdz: usdz, 1 body(ies), 1 material(s)" "the block written as USDZ"
+# A package: a zip whose first file, the binary layer, starts 64-byte
+# aligned (the stored name block.usdc at 30, the padding, PXR-USDC).
+[ "$(head -c 2 "$WORK/block.usdz")" = 'PK' ] || ui_fail "no zip package"
+[ "$(dd if="$WORK/block.usdz" bs=1 skip=30 count=10 2> /dev/null)" = 'block.usdc' ] || ui_fail "no layer first"
+[ "$(dd if="$WORK/block.usdz" bs=1 skip=64 count=8 2> /dev/null)" = 'PXR-USDC' ] || ui_fail "no aligned layer"
+echo "ok   the package's layer at 64"
 
 echo "--- DXF"
 ui_mark

@@ -8,6 +8,8 @@
 #   2. --open of a project file with a fillet: recomputed and drawn.
 #   3. the same file with --set d3=35: the block is drawn taller.
 #   4. the result store (P7d): the first open stores, the second restores.
+#   5. View > Rendered (mitcad#51): the bundled CPU worker sends progressive
+#      frames through macOS shared memory, and the view draws the block.
 # The app renders into an offscreen framebuffer and --screenshot reads it
 # back, so nothing is clicked and no Accessibility or Screen Recording
 # permission is needed; the window still opens, so a window server is
@@ -52,7 +54,7 @@ if command -v launchctl > /dev/null; then
 fi
 
 echo '--- Demo block'
-ui_run_app demo --demo --screenshot "$UI_OUT/demo.png"
+ui_run_app demo --ui=qt --demo --screenshot "$UI_OUT/demo.png"
 renderer=$(ui_log_value 'OpenGL renderer: *\(.*\)')
 if [ -z "$renderer" ]; then
   ui_fail 'the log has no "OpenGL renderer:" line: OpenGL did not initialise'
@@ -88,14 +90,14 @@ cat > "$file" << 'EOF'
   ]
 }
 EOF
-ui_run_app block20 --open "$file" --screenshot "$UI_OUT/block20.png"
+ui_run_app block20 --ui=qt --open "$file" --screenshot "$UI_OUT/block20.png"
 ui_expect_log 'Opened .*block\.mitcad' 'opened with --open'
 ui_expect_log 'Recomputed 3 feature\(s\)' 'sketch, extrude and fillet recomputed'
 ui_expect_no_log 'Recompute failed' 'no recompute failed'
 ui_check_shot block20
 low_ok=$UI_SHOT_OK low_shades=$UI_SHOT_SHADES low_ratio=$UI_SHOT_RATIO
 
-ui_run_app block35 --open "$file" --set d3=35 --screenshot "$UI_OUT/block35.png"
+ui_run_app block35 --ui=qt --open "$file" --set d3=35 --screenshot "$UI_OUT/block35.png"
 ui_expect_log 'Recomputed 2 feature\(s\)' 'd3=35 recomputed extrude and fillet'
 ui_check_shot block35
 if [ "$low_ok" = 1 ] && [ "$UI_SHOT_OK" = 1 ]; then
@@ -112,15 +114,87 @@ fi
 results=$UI_OUT/results
 rm -rf "$results"
 MITCAD_RESULT_STORE=$results MITCAD_RESULT_STORE_MIN_MS=0 \
-  ui_run_app store1 --open "$file" --screenshot "$UI_OUT/store1.png"
+  ui_run_app store1 --ui=qt --open "$file" --screenshot "$UI_OUT/store1.png"
 ui_expect_log 'Result store: restored 0, evaluated 3; stored 2 ' 'the first open stored two results'
 MITCAD_RESULT_STORE=$results MITCAD_RESULT_STORE_MIN_MS=0 \
-  ui_run_app store2 --open "$file" --screenshot "$UI_OUT/store2.png"
+  ui_run_app store2 --ui=qt --open "$file" --screenshot "$UI_OUT/store2.png"
 ui_expect_log 'Result store: restored 2, evaluated 1; stored 0 ' 'the second open took them from the store'
 ui_expect_log 'Recomputed 1 feature\(s\)' 'only the sketch computed'
 ui_check_shot store2
 if [ "$low_ok" = 1 ] && [ "$UI_SHOT_OK" = 1 ] && [ "$UI_SHOT_SHADES" = "$low_shades" ]; then
   ui_pass 'the stored block is drawn as the computed one'
+fi
+
+echo '--- CPU rendered view and shared-memory frames'
+worker=$(dirname "$UI_APP")/mitcad-render
+if [ ! -x "$worker" ]; then
+  ui_fail "View > Rendered: no render worker $worker next to the app"
+else
+  # main.cpp sets the macOS organization domain and forces QSettings'
+  # IniFormat for these private settings, so the path is nocodo.fi/Mitcad.ini.
+  mkdir -p "$MITCAD_SETTINGS_DIR/nocodo.fi"
+  printf '\n[render]\ndevice=cpu\n' >> "$MITCAD_SETTINGS_DIR/nocodo.fi/Mitcad.ini"
+  rm -f "$UI_OUT/rendered.png"
+  script=$UI_OUT/render.script
+  cat > "$script" << 'EOF'
+expect-ever 'View area'
+command view.rendered
+expect-log 'Rendered view on'
+wait-log 'Render frame view [0-9]+ [0-9]+x[0-9]+ samples 16 ' 120
+screenshot-view '${MITCAD_TEST_RENDER_SHOT}'
+command view.rendered
+expect-log 'Rendered view off'
+wait-log 'Render worker ended' 10
+EOF
+  # A displayed final frame has crossed the actual shm_open/SCM_RIGHTS
+  # channel between the application and worker, rather than a fake worker.
+  MITCAD_TEST_INPUT=$script MITCAD_TEST_RENDER_SHOT=$UI_OUT/rendered.png \
+    MITCAD_RENDER_SAMPLES=16 UI_TIMEOUT=150 \
+    ui_run_app rendered --ui=qt --no-recovery --demo
+  ui_expect_log 'TestDriver: done' 'View > Rendered: the script completed'
+  ui_expect_log 'Rendered view on' 'View > Rendered: the mode entered'
+  ui_expect_log 'Rendered view off' 'View > Rendered: the mode exited'
+  ui_expect_log 'Render worker ended' 'View > Rendered: leaving the mode ended the worker'
+  ui_expect_log 'Render device: .*\(asked for cpu\), denoising on the CPU' \
+    'View > Rendered: rendering and denoising used the CPU'
+  ui_expect_no_log 'Render worker stopped:' 'View > Rendered: no worker failed'
+  started_worker=$(ui_log_value 'Render worker started (pid [0-9]*): *\(.*\)')
+  if [ "$started_worker" = "$worker" ]; then
+    ui_pass 'View > Rendered: the app started its bundled worker'
+  else
+    ui_fail "View > Rendered: worker '$started_worker', expected '$worker'"
+  fi
+  ui_expect_log 'Render frame view [0-9]+ [0-9]+x[0-9]+ samples 16 ' \
+    'View > Rendered: the view displayed the final shared-memory frame'
+  frames=$(grep -Ec 'Render frame view [0-9]+ [0-9]+x[0-9]+ samples ' "$UI_LOG_FILE" || true)
+  if [ "$frames" -ge 2 ]; then
+    ui_pass "View > Rendered: the view refined in $frames frames"
+  else
+    ui_fail "View > Rendered: only $frames frames were displayed"
+  fi
+  # Path tracing has different face shades from OpenGL; inspect the actual
+  # body coverage without assuming the shaded view's lighting colours.
+  if [ ! -s "$UI_OUT/rendered.png" ]; then
+    ui_fail 'View > Rendered: no screenshot'
+  elif ! stats=$(python3 "$UI_STATS" --shot "$UI_OUT/rendered.png" 2> "$UI_OUT/rendered.stats.err"); then
+    ui_fail "View > Rendered: screenshot analysis failed: $(cat "$UI_OUT/rendered.stats.err")"
+  else
+    fields=$(printf '%s' "$stats" | python3 -c '
+import json, sys
+d = json.load(sys.stdin)
+print("|".join([str(d["width"]), str(d["height"]), str(d["colors"]),
+                "%.1f" % d["face_percent"]]))
+')
+    IFS='|' read -r width height colors faces <<< "$fields"
+    echo "     rendered: ${width}x$height, $colors colours, body $faces%"
+    if [ "$width" -lt 300 ] || [ "$height" -lt 200 ] || [ "$colors" -lt 8 ]; then
+      ui_fail 'View > Rendered: screenshot is too small or blank'
+    elif ui_lt "$faces" 10; then
+      ui_fail 'View > Rendered: the block is missing from the screenshot'
+    else
+      ui_pass 'View > Rendered: the rendered block is visible'
+    fi
+  fi
 fi
 
 echo "Screenshots and logs: $UI_OUT"

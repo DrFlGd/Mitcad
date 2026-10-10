@@ -144,6 +144,11 @@ int main() {
   test::fillet_end_tests();
   // Allocations that fail inside OCCT, with the port's patch (mitcad#132).
   test::allocation_tests();
+  // ShapeFix on faces with many holes, with the port's patch 0060 (mitcad#60).
+  test::shapefix_tests();
+  // A chamfer whose pieces meet at a vertex of the edge they reach, with the
+  // port's patches 0090 and 0091 (mitcad#160).
+  test::chamfer_kernel_tests();
   for (const std::string& change : mitcad::geometry::input_changes()) {
     std::fprintf(stderr, "%s\n", change.c_str());
   }

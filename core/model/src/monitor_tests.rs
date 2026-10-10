@@ -72,6 +72,80 @@ fn snapshot(doc: &Document<MockKernel>) -> Snapshot {
 }
 
 #[test]
+fn cancelled_command_checkpoint_restore_is_atomic_and_can_be_retried() {
+    let (mut b, _) = joined();
+    b.doc.mark_saved();
+    b.doc.set_parameter("d3", 35.0).unwrap();
+    b.doc.undo().unwrap();
+    let original = snapshot(&b.doc);
+    let token: serde_json::Value =
+        serde_json::from_str(&b.doc.command(r#"{"cmd":"begin_command"}"#).unwrap()).unwrap();
+    let token = token["token"].as_str().unwrap();
+    b.doc.set_temporary_marker(1).unwrap();
+    b.doc.set_parameter("d1", 80.0).unwrap();
+    let edited = snapshot(&b.doc);
+    monitor(&mut b.doc).cancel();
+    let restore = serde_json::json!({"cmd": "restore_command", "token": token}).to_string();
+    assert_eq!(
+        b.doc.command(&restore).unwrap_err().0,
+        "the computation was cancelled"
+    );
+    assert_eq!(snapshot(&b.doc), edited);
+
+    // The failure did not consume the checkpoint or move any history.
+    b.doc.set_monitor(None);
+    b.doc.command(&restore).unwrap();
+    let restored = snapshot(&b.doc);
+    assert_eq!(restored.json, original.json);
+    assert_eq!(restored.bodies, original.bodies);
+    assert_eq!(restored.revision, original.revision);
+    assert_eq!(restored.modified, original.modified);
+    assert_eq!(restored.undo, original.undo);
+    assert_eq!(restored.redo, original.redo);
+    assert_eq!(restored.undo_depth, original.undo_depth);
+    b.doc
+        .command(&serde_json::json!({"cmd": "discard_command", "token": token}).to_string())
+        .unwrap();
+    b.doc.redo().unwrap();
+    assert_eq!(value(&b.doc, "d3"), 35.0);
+}
+
+#[test]
+fn cancelled_temporary_marker_moves_preserve_state_results_and_history() {
+    let (mut b, _) = joined();
+    b.doc.mark_saved();
+    b.doc.set_parameter("d3", 35.0).unwrap();
+    b.doc.undo().unwrap();
+    let original = snapshot(&b.doc);
+    assert_eq!(original.redo.as_deref(), Some("Change d3"));
+
+    monitor(&mut b.doc).cancel();
+    assert_eq!(b.doc.set_temporary_marker(1), Err(ModelError::Cancelled));
+    assert_eq!(snapshot(&b.doc), original);
+
+    b.doc.set_monitor(None);
+    b.doc.set_temporary_marker(1).unwrap();
+    let rolled_back = snapshot(&b.doc);
+    assert_eq!(rolled_back.revision, original.revision);
+    assert_eq!(rolled_back.undo_depth, original.undo_depth);
+    assert_eq!(rolled_back.redo, original.redo);
+    monitor(&mut b.doc).cancel();
+    assert_eq!(b.doc.set_temporary_marker(4), Err(ModelError::Cancelled));
+    assert_eq!(snapshot(&b.doc), rolled_back);
+
+    b.doc.set_monitor(None);
+    b.doc.set_temporary_marker(4).unwrap();
+    let restored = snapshot(&b.doc);
+    assert_eq!(restored.json, original.json);
+    assert_eq!(restored.bodies, original.bodies);
+    assert_eq!(restored.revision, original.revision);
+    assert_eq!(restored.modified, original.modified);
+    assert_eq!(restored.undo, original.undo);
+    assert_eq!(restored.redo, original.redo);
+    assert_eq!(restored.undo_depth, original.undo_depth);
+}
+
+#[test]
 fn progress_gives_the_position_the_feature_and_the_evaluations() {
     let (mut b, _) = joined();
     let monitor = monitor(&mut b.doc);

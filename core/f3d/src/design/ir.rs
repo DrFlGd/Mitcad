@@ -366,6 +366,11 @@ record! {
         /// (hex; mitcad#6): a sketch's `u32 k | u8 0 | u8 on`, a plane's
         /// `u32 0 | u8 on`. The item's `props.isLightBulbOn` gives it.
         "light_bulb" => light_bulb: String,
+        /// A component made from bodies (mitcad#156): the result number
+        /// of the base feature that put its bodies into the new component,
+        /// that component's history operation for it (its own
+        /// `result_no` is -1).
+        "made_result_no" => made_result_no: i32,
     }
 }
 
@@ -394,6 +399,14 @@ record! {
         /// A symmetric extent's length (mitcad#96): the whole length or half
         /// of it each way.
         "full_length" => full_length: bool,
+        /// A solid (`false`: a surface) extrusion (mitcad#154).
+        "solid" => solid: bool,
+        /// Where the profile starts (mitcad#154): 0 its plane, 1 a plane
+        /// offset from it, 2 a selected face.
+        "start" => start: u32,
+        /// Each side's extent kind (mitcad#154): 0 none, 1 a distance, 2 up
+        /// to an object, 3 up to the next face, 4 through all.
+        "sides" => sides: Vec<u32>,
     }
 }
 

@@ -292,7 +292,7 @@ int library(const std::vector<std::string>& args) {
       return problem("library add needs --id");
     }
     // The design as one file: B-rep data of a project's store inside it.
-    const rust::Box<mitcad::Document> document = mitcad::load_project(a.positional[2]);
+    const rust::Box<mitcad::Document> document = mitcad::load_design(a.positional[2]);
     std::string command = R"({"cmd": "library_add", "dir": )" + json_text(a.positional[1]) +
                           R"(, "text": )" + json_text(std::string(document->to_json())) + optional("--id", "id") +
                           optional("--name", "name") + optional("--category", "category") +
@@ -330,7 +330,7 @@ int parts(const std::vector<std::string>& args, const OpenDocument& open) {
     return problem(error);
   }
   if (a.positional.size() != 1) {
-    return problem("parts needs a project file");
+    return problem("parts needs a design");
   }
   const rust::Box<mitcad::Document> document = open(a.positional[0]);
   if (a.flag("--json")) {

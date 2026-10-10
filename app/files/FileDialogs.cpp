@@ -55,6 +55,8 @@ const ExportType kTypes[] = {
     {"dxf", "", "dxf", QT_TRANSLATE_NOOP("Export", "Sketch to DXF (*.dxf)")},
     // For slicers: the bodies as the parts of one object (mitcad#13).
     {"3mf", "", "3mf", QT_TRANSLATE_NOOP("Export", "3MF for 3D printing (*.3mf)")},
+    // For AR and 3D viewers: shaded meshes with appearances (mitcad#123).
+    {"usdz", "", "usdz", QT_TRANSLATE_NOOP("Export", "USDZ for AR and 3D viewers (*.usdz)")},
 };
 
 // The type a file's extension asks for (the first of a format), or -1.
@@ -88,6 +90,9 @@ int typeOfSuffix(const QString& suffix, int current) {
   }
   if (is({"3mf"})) {
     return 7;
+  }
+  if (is({"usdz"})) {
+    return 8;
   }
   return -1;
 }
@@ -190,8 +195,8 @@ std::optional<ExportChoice> askExport(QWidget* parent, const QString& path, int 
   // type the extension typed.
   const auto showRows = [=] {
     const QString format = QLatin1String(kTypes[type->currentIndex()].format);
-    const bool mesh =
-        format == QStringLiteral("stl") || format == QStringLiteral("obj") || format == QStringLiteral("3mf");
+    const bool mesh = format == QStringLiteral("stl") || format == QStringLiteral("obj") ||
+                      format == QStringLiteral("3mf") || format == QStringLiteral("usdz");
     form->setRowVisible(bodies, format != QStringLiteral("dxf"));
     form->setRowVisible(coordinates, occurrences && format != QStringLiteral("dxf"));
     form->setRowVisible(unit, format == QStringLiteral("step") || format == QStringLiteral("iges"));
@@ -217,7 +222,7 @@ std::optional<ExportChoice> askExport(QWidget* parent, const QString& path, int 
     }
   });
   QObject::connect(browse, &QPushButton::clicked, &dialog, [&dialog, file] {
-    const QString chosen = QFileDialog::getSaveFileName(&dialog, QObject::tr("Export"), file->text());
+    const QString chosen = dialogSaveFileName(&dialog, QObject::tr("Export"), file->text());
     if (!chosen.isEmpty()) {
       file->setText(chosen);
     }
@@ -233,7 +238,7 @@ std::optional<ExportChoice> askExport(QWidget* parent, const QString& path, int 
                                                               : QString());
 
   prepareModal(&dialog);
-  while (dialog.exec() == QDialog::Accepted) {
+  while (execDialog(&dialog) == QDialog::Accepted) {
     const ExportType& chosen = kTypes[type->currentIndex()];
     ExportChoice choice;
     choice.path = file->text().trimmed();
@@ -421,7 +426,7 @@ std::optional<DxfChoice> askDxfInsert(QWidget* parent, const QString& file,
   });
 
   prepareModal(&dialog);
-  while (dialog.exec() == QDialog::Accepted) {
+  while (execDialog(&dialog) == QDialog::Accepted) {
     DxfChoice choice;
     choice.plane = plane->currentData().toString();
     choice.unit = unit->currentText();
@@ -473,7 +478,7 @@ std::optional<double> askMeshUnit(QWidget* parent, const QString& file) {
   unit->setFocus();
   qDebug().noquote() << QStringLiteral("Insert Mesh dialog opened: unit %1").arg(unitOffer(unit));
   prepareModal(&dialog);
-  if (dialog.exec() != QDialog::Accepted) {
+  if (execDialog(&dialog) != QDialog::Accepted) {
     return std::nullopt;
   }
   return kUnits[unit->currentIndex()].second;
@@ -489,7 +494,7 @@ std::optional<bool> askLinked(QWidget* parent, const QString& file) {
   QPushButton* copy = box.addButton(QObject::tr("&Copy"), QMessageBox::AcceptRole);
   box.setDefaultButton(link);
   prepareModal(&box);
-  box.exec();
+  execDialog(&box);
   if (box.clickedButton() == link) {
     return true;
   }
@@ -919,7 +924,7 @@ void showImportReport(QWidget* parent, const QString& file, const QJsonObject& r
     qDebug().noquote() << QStringLiteral("Import report kept: %1").arg(line);
   }
   prepareModal(&dialog);
-  dialog.exec();
+  execDialog(&dialog);
 }
 
 } // namespace mitcad

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 //! Analyses kept in the document (mitcad#41): section analyses added,
 //! edited, shown and hidden one at a time, renamed and deleted as undo
-//! steps, their planes following the model, and saved in the project file.
+//! steps, their planes following the model, and saved in the design file.
 
 use serde_json::{Value, json};
 

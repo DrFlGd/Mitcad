@@ -190,6 +190,7 @@ impl<K: Kernel> Evaluate<K> for HelixDef {
             Some(g) => finite_growth(ctx.param(g)?)?,
             None => 0.0,
         };
+        let bodies: Vec<K::Shape> = participants.iter().map(|(_, s)| s.clone()).collect();
         let spec = HelixSpec {
             feature: ctx.uid,
             frame: sketch.frame,
@@ -202,6 +203,7 @@ impl<K: Kernel> Evaluate<K> for HelixDef {
             growth,
             flip: self.flip,
             freecad: self.construction == Some(HelixConstruction::Freecad),
+            bodies: &bodies,
         };
         let tool = ctx.kernel.helix(&spec).map_err(|e| e.to_string())?;
         apply_operation(ctx, self.operation, participants, tool, "helix")

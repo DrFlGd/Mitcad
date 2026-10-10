@@ -5,12 +5,29 @@
 
 #include <limits>
 #include <optional>
+#include <stdexcept>
+#include <string>
 
 #include <BRepAdaptor_Surface.hxx>
+#include <BRepBuilderAPI_MakeEdge.hxx>
+#include <BRepBuilderAPI_MakeWire.hxx>
 #include <BRepCheck_Analyzer.hxx>
 #include <BRepGProp.hxx>
+#include <BRepLib.hxx>
+#include <BRepOffsetAPI_ThruSections.hxx>
+#include <BRep_Tool.hxx>
 #include <GProp_GProps.hxx>
+#include <Geom2d_Line.hxx>
+#include <GeomConvert.hxx>
+#include <Geom_BSplineCurve.hxx>
+#include <Geom_CylindricalSurface.hxx>
+#include <Geom_TrimmedCurve.hxx>
+#include <TopExp_Explorer.hxx>
+#include <TopoDS.hxx>
+#include <gp.hxx>
+#include <gp_Ax3.hxx>
 
+#include "../src/util.hpp"
 #include "check.hpp"
 
 namespace test {
@@ -640,6 +657,156 @@ void test_growing_helices() {
   CHECK(throws_with([&] { helix_sweep(spec); }, "narrows into its axis"));
 }
 
+// A polygon c1..cn through the points (sketch coordinates).
+Region polygon(const std::vector<gp_Pnt2d>& points) {
+  Region region;
+  region.name = "r{polygon}";
+  Loop loop;
+  for (std::size_t i = 0; i < points.size(); ++i) {
+    Segment segment;
+    segment.name = "c" + std::to_string(i + 1);
+    segment.start = points[i];
+    segment.end = points[(i + 1) % points.size()];
+    loop.segments.push_back(segment);
+  }
+  region.loops.push_back(loop);
+  return region;
+}
+
+// An M3 thread's groove (pitch 0.5005) with rounded roots and crests, on
+// the XZ plane as x the radius and y the height: its base on radius r1 =
+// 1.2294 from z = zm - 0.2368 to zm + 0.2368, its crest on r2 = 1.5.
+Region m3_groove(double zm) {
+  const double r1 = 1.2294, r2 = 1.5, p1 = 0.0313, p2 = 0.0625, zb = zm + 0.2368;
+  const double c30 = std::sqrt(3.0) / 2.0;
+  const gp_Pnt2d a(r1 + 0.5 * p1, zb - c30 * p1);
+  const double t = (r2 - 0.5 * p2 - r1 - 0.5 * p1) / c30;
+  const gp_Pnt2d b(a.X() + c30 * t, a.Y() - 0.5 * t);
+  const double zc = b.Y() - c30 * p2;
+  const auto mirror = [&](const gp_Pnt2d& p) { return gp_Pnt2d(p.X(), 2 * zm - p.Y()); };
+  const auto line = [](const char* name, const gp_Pnt2d& s, const gp_Pnt2d& e) {
+    Segment segment;
+    segment.name = name;
+    segment.start = s;
+    segment.end = e;
+    return segment;
+  };
+  const auto arc = [](const char* name, const gp_Pnt2d& c, double radius, double from, double to) {
+    Segment segment;
+    segment.name = name;
+    segment.kind = SegmentKind::Arc;
+    segment.center = c;
+    segment.radius = radius;
+    segment.start_angle = from * kPi / 180;
+    segment.end_angle = to * kPi / 180;
+    return segment;
+  };
+  Region region;
+  region.name = "r{m3}";
+  Loop loop;
+  loop.segments = {line("c1", gp_Pnt2d(r1, 2 * zm - zb), gp_Pnt2d(r1, zb)),
+                   arc("c2", gp_Pnt2d(r1 + p1, zb), p1, 180, 240),
+                   line("c3", a, b),
+                   arc("c4", gp_Pnt2d(r2 - p2, zc), p2, 0, 60),
+                   line("c5", gp_Pnt2d(r2, zc), gp_Pnt2d(r2, 2 * zm - zc)),
+                   arc("c6", gp_Pnt2d(r2 - p2, 2 * zm - zc), p2, -60, 0),
+                   line("c7", mirror(b), mirror(a)),
+                   arc("c8", gp_Pnt2d(r1 + p1, 2 * zm - zb), p1, 120, 180)};
+  region.loops.push_back(loop);
+  return region;
+}
+
+// A ring about Z from radius `inner` to `outer`, from z0 to z1 (a rod
+// without `inner`).
+ShapePtr ring_body(double inner, double outer, double z0, double z1) {
+  Region section = circle(1, 0, 0, outer);
+  if (inner > 0) {
+    section.loops.push_back(circle(2, 0, 0, inner).loops.front());
+  }
+  return extrude("F1", {section}, z0, z1);
+}
+
+// Helices whose profile has a side on a cylinder of the body they are cut
+// from or joined to (mitcad#60), about Z: the result is one valid solid
+// of the body's volume less or plus the helix's (the helix swept without
+// the body) within `tolerance`, or, without one (0), less than the body.
+void test_helices_on_cylinders() {
+  struct Case {
+    const char* what;
+    BooleanOp op;
+    ShapePtr body;
+    Frame frame;
+    Region profile;
+    double pitch;
+    double revolutions;
+    double tolerance;
+  };
+  Frame xz; // the sketch's x the radius, its y the height
+  xz.x_axis = gp_Dir(1, 0, 0);
+  xz.y_axis = gp_Dir(0, 0, 1);
+  Frame across; // the sketch's x the height, its y towards -Y
+  across.x_axis = gp_Dir(0, 0, 1);
+  across.y_axis = gp_Dir(0, 1, 0);
+  // A triangle with its base on radius 5 from z = 4, `base` long, its apex
+  // `apex` out from it.
+  const auto triangle = [](double base, double apex) {
+    return polygon({{5, 4}, {5 + apex, 4 + base / 2}, {5, 4 + base}});
+  };
+  const ShapePtr nut = ring_body(5, 10, 0, 20);
+  const ShapePtr rod = ring_body(0, 5, 0, 20);
+  const Case cases[] = {
+      // An internal thread that starts and ends inside the hole's length.
+      {"internal thread", BooleanOp::Cut, nut, xz, triangle(1, 0.6), 1.5, 6, 1e-6},
+      // Turns that touch: the base as long as the pitch.
+      {"touching turns", BooleanOp::Cut, nut, xz, triangle(1.5, 0.6), 1.5, 6, 1e-5},
+      // External threads cut into a rod and joined to it.
+      {"external thread", BooleanOp::Cut, rod, xz, triangle(1, -0.6), 1.5, 6, 1e-6},
+      {"joined thread", BooleanOp::Join, rod, xz, triangle(1, 0.6), 1.5, 6, 1e-6},
+      {"joined touching turns", BooleanOp::Join, rod, xz, triangle(1.5, 0.6), 1.5, 6, 1e-5},
+      // Touching turns from the end of a short rod with a hole to beyond
+      // its other end, sketched across the axis: the sliver joined beyond
+      // the rod's end adds to the volume.
+      {"joined from the end", BooleanOp::Join, ring_body(2.5, 6.25, 0, 5.5), across,
+       polygon({{-2, -6.25}, {-1, -7.65}, {0, -6.25}}), 2, 5, 1e-4},
+      // A round groove touching the hole.
+      {"round groove", BooleanOp::Cut, nut, xz, circle(1, 5.5, 6, 0.5), 1.5, 6, 1e-6},
+      // An M3 internal thread inside a hole, 6 and 18 turns.
+      {"M3 thread", BooleanOp::Cut, ring_body(1.2294, 4, 0, 6), xz, m3_groove(0.75), 0.5005, 6, 1e-6},
+      {"long M3 thread", BooleanOp::Cut, ring_body(1.2294, 4, 0, 12), xz, m3_groove(0.75), 0.5005, 18, 1e-6},
+      // The groove through a ring as thick as it, from one end of the
+      // ring past its other end.
+      {"M3 ring", BooleanOp::Cut, ring_body(1.2294, 1.5, 0, 2), xz, m3_groove(-0.25), 0.5005, 3 / 0.5005, 0},
+  };
+  for (const Case& c : cases) {
+    HelixSweepSpec spec;
+    spec.feature = "F2";
+    spec.frame = c.frame;
+    spec.regions = {c.profile};
+    spec.axis = gp_Ax1(gp_Pnt(0, 0, 0), gp_Dir(0, 0, 1));
+    spec.pitch = c.pitch;
+    spec.revolutions = c.revolutions;
+    const double body = precise_volume(*c.body);
+    const double helix = precise_volume(*helix_sweep(spec));
+    const double expected = body + (c.op == BooleanOp::Cut ? -helix : helix);
+    spec.bodies = {c.body};
+    try {
+      const BooleanResult result = boolean(c.op, {c.body.get()}, *helix_sweep(spec));
+      const bool one = result.pieces.size() == 1;
+      const bool valid = one && detail::is_valid(result.pieces.front().shape->occt());
+      const double volume = one ? precise_volume(*result.pieces.front().shape) : 0.0;
+      const bool right = c.tolerance > 0 ? near(volume, expected, c.tolerance) : volume > 0 && volume < body;
+      if (!one || !valid || !right) {
+        std::fprintf(stderr, "helix on a cylinder, %s: %zu pieces, %s, volume %.9g, expected %.9g\n", c.what,
+                     result.pieces.size(), valid ? "valid" : "invalid", volume, expected);
+        ++failures;
+      }
+    } catch (const std::exception& error) {
+      std::fprintf(stderr, "helix on a cylinder, %s: %s\n", c.what, error.what());
+      ++failures;
+    }
+  }
+}
+
 Frame xy_at(double z) {
   Frame frame;
   frame.origin = gp_Pnt(0, 0, z);
@@ -850,6 +1017,125 @@ void test_ribs() {
   CHECK(throws_with([&] { rib(webs); }, "lies inside the bodies"));
 }
 
+// A B-spline as a path curve.
+ModelCurve bspline3(const occ::handle<Geom_BSplineCurve>& curve) {
+  ModelCurve model;
+  model.kind = ModelCurveKind::BSpline;
+  model.degree = curve->Degree();
+  for (int i = 1; i <= curve->NbPoles(); ++i) {
+    model.poles.push_back(curve->Pole(i));
+    if (curve->IsRational()) {
+      model.weights.push_back(curve->Weight(i));
+    }
+  }
+  for (const double k : curve->KnotSequence()) {
+    model.knots.push_back(k);
+  }
+  return model;
+}
+
+// A helix on the cylinder of `radius` about +Z from (radius, 0, 0),
+// counter-clockwise, `turns` turns rising `pitch` each, as a B-spline.
+ModelCurve helix3(double radius, double pitch, double turns) {
+  const occ::handle<Geom_Surface> surface =
+      new Geom_CylindricalSurface(gp_Ax3(gp::Origin(), gp::DZ(), gp::DX()), radius);
+  const gp_Vec2d direction(2 * kPi, pitch);
+  const occ::handle<Geom2d_Line> line = new Geom2d_Line(gp_Pnt2d(0, 0), gp_Dir2d(direction));
+  TopoDS_Edge edge = BRepBuilderAPI_MakeEdge(line, surface, 0.0, turns * direction.Magnitude()).Edge();
+  BRepLib::BuildCurves3d(edge, 1.0e-8, GeomAbs_C2, 14, 400);
+  double first = 0.0;
+  double last = 0.0;
+  const occ::handle<Geom_Curve> curve = BRep_Tool::Curve(edge, first, last);
+  return bspline3(GeomConvert::CurveToBSplineCurve(new Geom_TrimmedCurve(curve, first, last)));
+}
+
+// A face through the Z axis from z = 0 to `length`, made of the lines
+// through it of half-length `half` at z, turned by `twist` z / length
+// from the X axis: its normal along the axis turns with z.
+ShapePtr twisted_face(double length, double half, double twist) {
+  BRepOffsetAPI_ThruSections loft(false, false, 1.0e-7);
+  constexpr int kSections = 17;
+  for (int i = 0; i < kSections; ++i) {
+    const double z = length * i / (kSections - 1);
+    const double a = twist * z / length;
+    const gp_Vec d(half * std::cos(a), half * std::sin(a), 0);
+    const gp_Pnt c(0, 0, z);
+    loft.AddWire(BRepBuilderAPI_MakeWire(BRepBuilderAPI_MakeEdge(c.Translated(-d), c.Translated(d)).Edge()).Wire());
+  }
+  loft.Build();
+  TopoDS_Face face;
+  for (TopExp_Explorer f(loft.Shape(), TopAbs_FACE); f.More(); f.Next()) {
+    face = TopoDS::Face(f.Current());
+  }
+  return std::make_shared<Shape>(face, std::vector<Shape::NamedFace>{{face, {"F3:twisted"}}});
+}
+
+// Guide surfaces (mitcad#157): the profile keeps its place in the frame
+// of the path's tangent and the surface's normal.
+void test_guide_surfaces() {
+  // A thread-like rectangle in the XZ plane, beside a cylinder of radius
+  // 10, swept along a helix on it guided by the cylinder: a screw motion,
+  // so V = A * 2 pi * N * (the mean radius) = 4 * 2 pi * 2 * 11, the
+  // helix sweep's solid.
+  const ShapePtr cylinder = extrude("F2", {circle(1, 0, 0, 10)}, -1, 20);
+  SweepSpec thread;
+  thread.feature = "F5";
+  thread.frame.x_axis = gp_Dir(1, 0, 0);
+  thread.frame.y_axis = gp_Dir(0, 0, 1);
+  thread.regions = {rectangle(1, 10, -1, 2, 2)};
+  thread.path = {{"E{F2:side(c1)}", helix3(10, 5, 2)}};
+  thread.guide = {{cylinder, "F2:side(c1)"}};
+  const ShapePtr guided = sweep(thread);
+  CHECK(BRepCheck_Analyzer(guided->occt()).IsValid());
+  CHECK_NEAR_TOL(precise_volume(*guided), 4 * 2 * kPi * 2 * 11, 1e-6);
+  HelixSweepSpec screw;
+  screw.feature = "F6";
+  screw.frame = thread.frame;
+  screw.regions = thread.regions;
+  screw.axis = gp_Ax1(gp::Origin(), gp::DZ());
+  screw.pitch = 5;
+  screw.revolutions = 2;
+  CHECK_NEAR_TOL(precise_volume(*guided), precise_volume(*helix_sweep(screw)), 1e-6);
+  CHECK(faces_with(*guided, "F5:start(") == 1 && faces_with(*guided, "F5:end(") == 1);
+  CHECK(faces_named(*guided, side("F5", 1, 0)) >= 1 && edge_names_unique(*guided));
+  CHECK(near(bounding_box(*guided).max.Z(), 11, 1e-4));
+
+  // A rectangle swept along the Z axis on a face that twists about it by
+  // a quarter turn: a twisted prism, V = A L, its end turned a quarter:
+  // the long sides along Y. Without the guide surface it does not turn.
+  const double length = 40;
+  const ShapePtr twisted = twisted_face(length, 6, kPi / 2);
+  SweepSpec prism;
+  prism.feature = "F5";
+  prism.regions = {rectangle(1, -4, -1, 8, 2)};
+  prism.path = {{"c1", line3(gp_Pnt(0, 0, 0), gp_Pnt(0, 0, length))}};
+  prism.guide = {{twisted, "F3:twisted"}};
+  const ShapePtr turned = sweep(prism);
+  CHECK(BRepCheck_Analyzer(turned->occt()).IsValid());
+  CHECK_NEAR_TOL(precise_volume(*turned), 16 * length, 1e-5);
+  const auto end_box = [](const Shape& shape) {
+    return bounding_box(Shape(shape.face(shape.find_faces(end_cap("F5", 1)).front())));
+  };
+  CHECK(near(end_box(*turned).max.X(), 1, 1e-3) && near(end_box(*turned).max.Y(), 4, 1e-3));
+  prism.guide.clear();
+  CHECK(near(end_box(*sweep(prism)).max.X(), 4, 1e-6));
+
+  // The path must lie on the guide surface; a rail or the parallel
+  // orientation do not go with it.
+  prism.guide = {{twisted, "F3:twisted"}};
+  prism.path = {{"c1", line3(gp_Pnt(0.5, 0, 0), gp_Pnt(0.5, 0, length))}};
+  CHECK(throws_with([&] { sweep(prism); }, "must lie on the guide surface"));
+  prism.path = {{"c1", line3(gp_Pnt(0, 0, 0), gp_Pnt(0, 0, length))}};
+  prism.orientation = SweepOrientation::Parallel;
+  CHECK(throws_with([&] { sweep(prism); }, "parallel orientation"));
+  prism.orientation = SweepOrientation::Perpendicular;
+  prism.rail = {{"c2", line3(gp_Pnt(0, 5, 0), gp_Pnt(0, 5, length))}};
+  CHECK(throws_with([&] { sweep(prism); }, "not both"));
+  prism.rail.clear();
+  prism.guide = {{twisted, "F3:nothing"}};
+  CHECK(throws_with([&] { sweep(prism); }, "does not exist"));
+}
+
 } // namespace
 
 void sweeps_tests() {
@@ -861,8 +1147,10 @@ void sweeps_tests() {
   guarded("coils", test_coils);
   guarded("helices", test_helices);
   guarded("growing helices", test_growing_helices);
+  guarded("helices on cylinders", test_helices_on_cylinders);
   guarded("lofts", test_lofts);
   guarded("ribs", test_ribs);
+  guarded("guide surfaces", test_guide_surfaces);
 }
 
 } // namespace test

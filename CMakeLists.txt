@@ -7,23 +7,20 @@ if(POLICY CMP0141)
   cmake_policy(SET CMP0141 NEW)
 endif()
 
-# The Cycles render worker (View > Rendered, docs/rendering.md): off by
-# default. It needs the libraries of vcpkg.json's "render" feature, which
-# the toolchain installs when this is on (so before project()), and Cycles
-# and Open Image Denoise from tools/dev-env/build-cycles.sh.
-option(MITCAD_RENDER "Build the Cycles render worker (run tools/dev-env/build-cycles.sh first)" OFF)
-if(MITCAD_RENDER)
-  list(APPEND VCPKG_MANIFEST_FEATURES render)
-endif()
+# The Cycles render worker (View > Rendered, docs/rendering.md) is part of
+# every build: its prebuilt libraries must be there before the toolchain's
+# vcpkg install (vcpkg.json's dependencies include the renderer's).
+include(cmake/RenderDeps.cmake)
 
 project(Mitcad
-  VERSION 0.2.1
+  VERSION 0.2.3
   DESCRIPTION "Open source parametric desktop CAD"
   LANGUAGES CXX)
 
 if(APPLE)
   # app/platform/macos: the parts that need AppKit.
   enable_language(OBJCXX)
+  option(MITCAD_MACOS_NATIVE_UI "Build the native AppKit macOS frontend" OFF)
 endif()
 
 set(CMAKE_CXX_STANDARD 17)
@@ -58,7 +55,7 @@ FetchContent_Declare(Corrosion
   URL_HASH SHA256=e9e95b1ee2bad52681f347993fb1a5af5cce458c5ce8a2636c9e476e4babf8e3)
 FetchContent_MakeAvailable(Corrosion)
 
-find_package(Qt6 6.8 REQUIRED COMPONENTS Widgets OpenGL OpenGLWidgets)
+find_package(Qt6 6.8 REQUIRED COMPONENTS Widgets OpenGL OpenGLWidgets Network)
 qt_standard_project_setup()
 
 # The system's keychain for the live updates' broker credentials (mitcad#89):
@@ -111,6 +108,11 @@ add_subdirectory(geometry)
 add_subdirectory(core)
 add_subdirectory(app)
 add_subdirectory(tools/cli)
+if(APPLE)
+  # The installed application includes the MCP bridge for standard stdio
+  # clients; building the app must leave that executable ready to install.
+  add_dependencies(mitcad mitcad-cli)
+endif()
 add_subdirectory(tools/geomtool)
 include(cmake/MesaRuntime.cmake)
 include(cmake/MacUiTests.cmake)

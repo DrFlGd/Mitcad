@@ -5,7 +5,9 @@
 //     move the model's `joint_drag` says where the occurrences go while
 //     every joint holds (nothing changes), and the view shows the bodies
 //     there. The release keeps it with `drag_occurrence`, one undo step
-//     (the driven motions take their new values).
+//     (the driven motions take their new values). The pointer over such a
+//     body shows the move cursor and a hint; a drag on a body that does
+//     not drag says why in the status bar (mitcad#150, dragAnswer).
 //   - Animate Joint: a joint's free motion shown through its range, frame
 //     by frame, each the preview of the joint driven there (the preview's
 //     `placements`); the document stays as it is.
@@ -17,6 +19,7 @@
 
 #include <QJsonArray>
 #include <QJsonObject>
+#include <QLabel>
 #include <QtLogging>
 
 #include "browser/BrowserController.hpp"
@@ -45,54 +48,213 @@ QString motionValue(const QString& motion, double value) {
                                              : rounded(value) + QStringLiteral(" mm");
 }
 
+// "A", "A and B", "A, B and C".
+QString listed(const QStringList& items) {
+  if (items.size() <= 1) {
+    return items.value(0);
+  }
+  return QObject::tr("%1 and %2").arg(items.mid(0, items.size() - 1).join(QStringLiteral(", ")), items.last());
+}
+
+bool isBodyItem(const SelectionItem& item) {
+  return item.kind == SelectKind::Face || item.kind == SelectKind::Edge || item.kind == SelectKind::Vertex ||
+         item.kind == SelectKind::Body;
+}
+
 } // namespace
 
 void MainWindow::setUpOccurrenceDrag() {
   OccurrenceDrag drag;
-  drag.accepts = [this](const SelectionItem& item) {
-    return m_mode == Mode::Idle && !m_session && !modelBusy() && canChangeModel() &&
-           !item.occurrence.isEmpty() && !dragOccurrenceOf(item.occurrence).isEmpty();
+  drag.accepts = [this](const SelectionItem& item) { return dragAnswer(item).start; };
+  drag.refused = [this](const SelectionItem& item) {
+    const QString why = dragAnswer(item).text;
+    if (!why.isEmpty()) {
+      showHint(why);
+      m_dragHint.clear();
+      qDebug().noquote() << QStringLiteral("Drag refused: %1").arg(why);
+    }
   };
   drag.started = [this](const SelectionItem& item, const gp_Pnt& grabbed) { occurrenceDragStarted(item, grabbed); };
   drag.moved = [this](const gp_Pnt& target) { occurrenceDragged(target); };
   drag.finished = [this](const gp_Pnt& target, bool cancelled) { occurrenceDragFinished(target, cancelled); };
   m_viewer->setOccurrenceDrag(std::move(drag));
+  connect(m_viewer, &OcctViewer::hovered, this, &MainWindow::showDragHint);
 }
 
-QString MainWindow::dragOccurrenceOf(const QString& path) const {
-  // The component each occurrence places, from the snapshot's tree.
-  QHash<QString, QString> components;
+MainWindow::DragAnswer MainWindow::dragAnswer(const SelectionItem& item) const {
+  const bool idle = m_mode == Mode::Idle && !m_session;
+  const bool body = isBodyItem(item);
+  // In a design without components nothing drags.
+  if (m_snapshot.occurrences.isEmpty() || (item.occurrence.isEmpty() && !(body && idle))) {
+    return {};
+  }
+  if (item.occurrence.isEmpty()) {
+    return {OccurrenceDragStart::Refuse, QString(), tr("Bodies of the root component do not move")};
+  }
+  // The occurrences of the snapshot's tree, by uid.
+  QHash<QString, const DocumentSnapshot::Occurrence*> occurrences;
   std::function<void(const QVector<DocumentSnapshot::Occurrence>&)> walk =
       [&](const QVector<DocumentSnapshot::Occurrence>& level) {
         for (const DocumentSnapshot::Occurrence& occurrence : level) {
-          components.insert(occurrence.uid, occurrence.component);
+          occurrences.insert(occurrence.uid, &occurrence);
           walk(occurrence.children);
         }
       };
   walk(m_snapshot.occurrences);
-  const QStringList uids = path.split(QLatin1Char('/'), Qt::SkipEmptyParts);
+  const auto nameOf = [&](const QString& uid) {
+    const DocumentSnapshot::Occurrence* occurrence = occurrences.value(uid);
+    return occurrence != nullptr ? occurrence->name : uid;
+  };
+  const QStringList uids = item.occurrence.split(QLatin1Char('/'), Qt::SkipEmptyParts);
   // From the innermost occurrence out: the first whose parent component has
-  // joints and whose unit can move.
-  for (int depth = static_cast<int>(uids.size()); depth >= 1; --depth) {
+  // joints and whose unit can move drags; else the innermost reason.
+  QString refusal;
+  bool unjoined = false; // the innermost reason: no joints of its own
+  DragAnswer answer;
+  for (int depth = static_cast<int>(uids.size()); depth >= 1 && answer.path.isEmpty(); --depth) {
     const QString uid = uids.at(depth - 1);
-    const QString parent = depth == 1 ? QStringLiteral("C0") : components.value(uids.at(depth - 2));
+    const DocumentSnapshot::Occurrence* above = depth == 1 ? nullptr : occurrences.value(uids.at(depth - 2));
+    const QString parent = depth == 1 ? QStringLiteral("C0") : above != nullptr ? above->component : QString();
     const QJsonObject dof = m_snapshot.jointDof(parent);
+    QJsonObject unit;
     for (const QJsonValue& value : dof.value(QStringLiteral("units")).toArray()) {
-      const QJsonObject unit = value.toObject();
-      if (unit.value(QStringLiteral("occurrences")).toArray().contains(uid) &&
-          !unit.value(QStringLiteral("grounded")).toBool()) {
-        return uids.mid(0, depth).join(QLatin1Char('/'));
+      if (value.toObject().value(QStringLiteral("occurrences")).toArray().contains(uid)) {
+        unit = value.toObject();
       }
     }
+    const QString name = nameOf(uid);
+    const QJsonArray joints = unit.value(QStringLiteral("joints")).toArray();
+    const DocumentSnapshot::Occurrence* self = occurrences.value(uid);
+    const bool selfGrounded = self != nullptr && self->grounded;
+    const bool grounded = selfGrounded || unit.value(QStringLiteral("grounded")).toBool();
+    if (!grounded && (dof.isEmpty() || (!unit.isEmpty() && joints.isEmpty()))) {
+      // No joints of its own in the parent component: components do not
+      // drag freely (mitcad#150); an occurrence above it may drag.
+      unjoined = unjoined || refusal.isEmpty();
+      continue;
+    }
+    QString why;
+    if (grounded) {
+      // Grounded itself, or in a rigid group with a grounded occurrence.
+      QStringList members;
+      for (const QJsonValue& member : unit.value(QStringLiteral("occurrences")).toArray()) {
+        const DocumentSnapshot::Occurrence* occurrence = occurrences.value(member.toString());
+        if (occurrence != nullptr && occurrence->grounded && member.toString() != uid) {
+          members << occurrence->name;
+        }
+      }
+      why = selfGrounded || members.isEmpty()
+                ? tr("%1 is grounded").arg(name)
+                : tr("%1 is in a rigid group with %2, which is grounded").arg(name, listed(members));
+    } else if (unit.isEmpty()) {
+      why = tr("The joints of %1 cannot be solved where the components are").arg(m_snapshot.componentName(parent));
+    } else if (unit.value(QStringLiteral("dof")).toInt() == 0 && !unit.value(QStringLiteral("mobile")).toBool(true)) {
+      // Held fixed by its joints: name them.
+      QStringList names;
+      QStringList described;
+      bool rigid = true;
+      for (const QJsonValue& value : joints) {
+        const QJsonObject joint = m_snapshot.joint(value.toString());
+        const QString kind = joint.value(QStringLiteral("kind")).toString();
+        names << joint.value(QStringLiteral("name")).toString(value.toString());
+        described << QStringLiteral("%1 (%2)").arg(names.last(), kind);
+        rigid = rigid && kind == QStringLiteral("rigid");
+      }
+      if (names.isEmpty()) {
+        why = tr("%1 cannot move").arg(name);
+      } else if (!rigid) {
+        why = tr("%1 cannot move: %2 hold it").arg(name, listed(described));
+      } else if (names.size() == 1) {
+        why = tr("%1 cannot move: %2 is rigid").arg(name, names.first());
+      } else {
+        why = tr("%1 cannot move: %2 are rigid").arg(name, listed(names));
+      }
+    } else {
+      // It drags: its joints' free motions in the hint.
+      QStringList free;
+      for (const QJsonValue& value : joints) {
+        const QJsonObject joint = m_snapshot.joint(value.toString());
+        QStringList motions;
+        for (const QJsonValue& motion : joint.value(QStringLiteral("motions")).toArray()) {
+          motions << motion.toString();
+        }
+        if (!motions.isEmpty()) {
+          free << QStringLiteral("%1: %2").arg(joint.value(QStringLiteral("name")).toString(value.toString()),
+                                               motions.join(QStringLiteral(", ")));
+        }
+      }
+      answer.start = OccurrenceDragStart::Drag;
+      answer.path = uids.mid(0, depth).join(QLatin1Char('/'));
+      answer.text = free.isEmpty() ? tr("Drag to move %1").arg(name)
+                                   : tr("Drag to move %1 (%2)").arg(name, free.join(QStringLiteral("; ")));
+    }
+    if (refusal.isEmpty() && !unjoined) {
+      refusal = why;
+    }
   }
-  return QString();
+  if (answer.start == OccurrenceDragStart::Drag) {
+    // It would drag, but not now.
+    QString now;
+    if (windowReadOnly()) {
+      now = readOnlyReason();
+    } else if (m_mode == Mode::Sketch) {
+      now = tr("Finish the sketch to drag components");
+    } else if (!idle) {
+      now = tr("Close the command to drag components");
+    } else if (modelBusy()) {
+      now = tr("Wait for the computation to finish to drag components");
+    }
+    if (!now.isEmpty()) {
+      return {OccurrenceDragStart::Refuse, QString(), now};
+    }
+    return answer;
+  }
+  // Only bodies say why they do not drag; in a command or a sketch, a drag
+  // there selects with a window as before.
+  if (!body || !idle) {
+    return {};
+  }
+  if (!unjoined && !refusal.isEmpty()) {
+    return {OccurrenceDragStart::Refuse, QString(), refusal};
+  }
+  // The innermost occurrence has no joints in its parent component.
+  const DocumentSnapshot::Occurrence* innermost = occurrences.value(uids.last());
+  const DocumentSnapshot::Component* component =
+      innermost != nullptr ? m_snapshot.component(innermost->component) : nullptr;
+  const QString bodyName = m_snapshot.bodies.value(item.owner).name;
+  if (component != nullptr && component->bodies.size() > 1 && !bodyName.isEmpty()) {
+    return {OccurrenceDragStart::Refuse, QString(),
+            tr("%1 is a body of %2: bodies move only with their component, and %3 has no joints in its parent "
+               "component; Create Components from Bodies makes one component per body")
+                .arg(bodyName, component->name, nameOf(uids.last()))};
+  }
+  return {OccurrenceDragStart::Refuse, QString(),
+          tr("%1 has no joints in its parent component").arg(nameOf(uids.last()))};
+}
+
+void MainWindow::showDragHint(const SelectionItem& item) {
+  const DragAnswer answer = item.isValid() ? dragAnswer(item) : DragAnswer();
+  const bool drag = answer.start == OccurrenceDragStart::Drag;
+  m_viewer->setDragCursor(drag);
+  const QString hint = drag ? answer.text : QString();
+  if (hint == m_dragHint) {
+    return;
+  }
+  if (!hint.isEmpty()) {
+    showHint(hint);
+  } else if (m_statusLabel->text() == m_dragHint) {
+    showHint(QString());
+  }
+  m_dragHint = hint;
+  qDebug().noquote() << QStringLiteral("Drag hint: %1").arg(hint.isEmpty() ? QStringLiteral("none") : hint);
 }
 
 void MainWindow::occurrenceDragStarted(const SelectionItem& item, const gp_Pnt& grabbed) {
-  const QString path = dragOccurrenceOf(item.occurrence);
-  if (path.isEmpty()) {
+  const DragAnswer answer = dragAnswer(item);
+  if (answer.start != OccurrenceDragStart::Drag) {
     return;
   }
+  const QString path = answer.path;
   OccurrenceDragState state;
   state.path = path;
   const QString parent = path.section(QLatin1Char('/'), 0, -2);

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 //! Mitcad parametric model: parameters, features in a timeline, the body
 //! state they build, topological names, recompute with a cache, undo and
-//! redo, the project file and the JSON command interface.
+//! redo, the design file and the JSON command interface.
 //!
 //! The model does not depend on any geometry kernel. Solid operations go
 //! through the [`Kernel`] trait, so the timeline and recompute logic is
@@ -95,6 +95,8 @@ pub use document::{Analysis, AnalysisDef, SectionAnalysis, SectionPlane};
 // Sketch text (P3).
 pub use kernel::{FontGlyphs, FontRequest, Glyph};
 pub use topo::CurveId;
+// Sweeps along guide surfaces (mitcad#157).
+pub use sweeps::GuideSurface;
 // Progress and cancellation of recomputes (P7).
 pub mod monitor;
 pub use monitor::{Cancelled, Progress, RecomputeMonitor};
@@ -110,9 +112,9 @@ mod cache_tests;
 mod store_tests;
 #[cfg(test)]
 mod version_tests;
-// Project files of version 3 and their B-rep store (P12a).
+// Design files of version 3 and their projects' B-rep store (P12a).
 mod sha256;
-pub use file::{BlobStore, FileFormat, FsStore, MemoryStore, Project, ProjectError, Sha256};
+pub use file::{BlobStore, DesignError, FileFormat, FsStore, MemoryStore, Project, Sha256};
 // Comparison of two designs or versions (P12c).
 pub mod diff;
 pub use diff::DesignDiff;
@@ -143,3 +145,8 @@ mod link_tests;
 
 // An operation's new faces (the .f3d import's geometric check, mitcad#138).
 pub use kernel::NewFace;
+
+// Assembly constraints (mitcad#148).
+#[cfg(test)]
+mod constraint_tests;
+pub mod constraints;

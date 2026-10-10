@@ -17,6 +17,7 @@
 #include <QVBoxLayout>
 #include <QtLogging>
 
+#include "../framework/Dialogs.hpp"
 #include "VersionDialogs.hpp"
 
 namespace mitcad {
@@ -261,7 +262,7 @@ std::optional<QJsonObject> askResolveConflicts(QWidget* parent, const QJsonArray
   selected();
   dialog.resize(900, 420);
   qInfo().noquote() << QStringLiteral("Resolve Sync Conflicts dialog: %1").arg(logged.join(QStringLiteral(" | ")));
-  if (dialog.exec() != QDialog::Accepted) {
+  if (execDialog(&dialog) != QDialog::Accepted) {
     qInfo().noquote() << QStringLiteral("Resolve Sync Conflicts cancelled");
     return std::nullopt;
   }

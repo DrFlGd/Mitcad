@@ -926,6 +926,30 @@ fn shared_settings_are_recorded_as_a_version() {
     let settings = run(&repo, json!({"cmd": "project_settings"}));
     assert_eq!(settings["local"]["sync"]["check_minutes"], 30);
     assert_eq!(settings["live_updates"], Value::Null, "off here");
+    assert_eq!(settings["local"]["name"], Value::Null, "no display name");
+    // The display name (mitcad#152): this computer's, no version, the
+    // other local settings kept; project_tree gives it; empty clears it.
+    let answer = run(
+        &repo,
+        json!({"cmd": "set_project_settings", "local": {"name": "  Shop floor  "}}),
+    );
+    assert_eq!(answer["commit"], Value::Null);
+    assert_eq!(answer["local"]["name"], "Shop floor");
+    assert_eq!(answer["local"]["sync"]["check_minutes"], 30);
+    let tree = run(&repo, json!({"cmd": "project_tree"}));
+    assert_eq!(tree["display_name"], "Shop floor");
+    assert_eq!(tree["name"], "project", "the folder keeps its name");
+    let refused = repo
+        .command(&json!({"cmd": "set_project_settings", "local": {"name": "a\u{7}b"}}).to_string());
+    assert!(refused.is_err());
+    let answer = run(
+        &repo,
+        json!({"cmd": "set_project_settings", "local": {"name": ""}}),
+    );
+    assert_eq!(answer["local"]["name"], Value::Null);
+    assert!(!repo.root().join(".mitcad/local/name.json").exists());
+    let tree = run(&repo, json!({"cmd": "project_tree"}));
+    assert_eq!(tree["display_name"], Value::Null);
     // The same again: nothing.
     let answer = run(
         &repo,

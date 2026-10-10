@@ -1,0 +1,203 @@
+Mitcad's patch to OCCT 8.0.1, under OCCT's licence:
+SPDX-License-Identifier: LGPL-2.1-only WITH OCCT-exception-1.0
+
+Fillets: a contact that runs along a part of an edge of its face
+(mitcad#121): e.g. a channel whose side wall is exactly as high as the
+rounding at its foot and whose floor rounds down at the part's ends; along
+the straight part the rounding's contact runs along the wall's top edge,
+round the floor's end roundings it lies inside the wall, so the wall keeps
+a piece at each end.
+
+- ChFi3d_ContactsAlongFaceEdges (0014, 0017) took a contact on a face as
+  running along an edge of the face only when it covered the whole edge
+  (from vertex to vertex). It now also takes a contact that covers a part
+  of an edge, one end or both at inner points of the edge
+  (runsAlongEdgePart). The surface data is converted as before (the
+  contact is on the face beyond, the edge is its curve); each inner end
+  gets the edge as its arc, at the point's parameter, with the transition
+  of a contact on the face leaving it across the edge (at the first end)
+  or coming back (at the last), and so does the neighbouring surface data
+  whose contact on the face comes to the edge there, so that the edge is
+  cut there and its rest stays with the face's pieces. Where the neighbour
+  runs along the same edge, the edge is not cut. Before, the contact stayed
+  on the face, along its boundary, and the result's wire of the face
+  intersected itself.
+diff --git a/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_0.cxx b/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_0.cxx
+index 5859439..7c75673 100644
+--- a/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_0.cxx
++++ b/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_0.cxx
+@@ -2909,6 +2909,66 @@ static bool runsAlongEdge(const occ::handle<Geom_Curve>& C,
+   return true;
+ }
+ 
++// Whether the contact curve C on [T1, T2] runs along a part of edge E: its
++// points on E within Tol, each end at a vertex of E or at an inner point of
++// E (its parameter on E in W1, W2), at least one end at an inner point.
++static bool runsAlongEdgePart(const occ::handle<Geom_Curve>& C,
++                              const double                   T1,
++                              const double                   T2,
++                              const TopoDS_Edge&             E,
++                              const double                   Tol,
++                              bool&                          Inner1,
++                              double&                        W1,
++                              bool&                          Inner2,
++                              double&                        W2)
++{
++  TopoDS_Vertex V1, V2;
++  TopExp::Vertices(E, V1, V2);
++  if (V1.IsNull() || V2.IsNull() || V1.IsSame(V2))
++  {
++    return false;
++  }
++  double                        f = 0., l = 0.;
++  const occ::handle<Geom_Curve> aCE = BRep_Tool::Curve(E, f, l);
++  if (aCE.IsNull())
++  {
++    return false;
++  }
++  const gp_Pnt A = BRep_Tool::Pnt(V1), B = BRep_Tool::Pnt(V2);
++  const double aTolV = Tol + std::max(BRep_Tool::Tolerance(V1), BRep_Tool::Tolerance(V2));
++  // An end: at a vertex, or projected inside the edge.
++  auto anEnd = [&](const gp_Pnt& P, bool& Inner, double& W) {
++    if (P.Distance(A) <= aTolV || P.Distance(B) <= aTolV)
++    {
++      Inner = false;
++      return true;
++    }
++    GeomAPI_ProjectPointOnCurve aProj(P, aCE, f, l);
++    if (aProj.NbPoints() == 0 || aProj.LowerDistance() > Tol)
++    {
++      return false;
++    }
++    W     = aProj.LowerDistanceParameter();
++    Inner = true;
++    return W > f + Precision::PConfusion() && W < l - Precision::PConfusion();
++  };
++  if (!anEnd(C->Value(T1), Inner1, W1) || !anEnd(C->Value(T2), Inner2, W2) || (!Inner1 && !Inner2))
++  {
++    return false;
++  }
++  constexpr int aNbSamples = 9;
++  for (int i = 1; i < aNbSamples; i++)
++  {
++    const gp_Pnt                aP = C->Value(T1 + (T2 - T1) * i / aNbSamples);
++    GeomAPI_ProjectPointOnCurve aProj(aP, aCE, f, l);
++    if (aProj.NbPoints() == 0 || aProj.LowerDistance() > Tol)
++    {
++      return false;
++    }
++  }
++  return true;
++}
++
+ // The outward normal of face F at the point of its surface nearest to P.
+ static bool faceNormalAt(const TopoDS_Face& F, const gp_Pnt& P, gp_Dir& N)
+ {
+@@ -2980,6 +3040,27 @@ void ChFi3d_ContactsAlongFaceEdges(TopOpeBRepDS_DataStructure&       DStr,
+           E = aCur;
+         }
+       }
++      // Else a contact along a part of an edge: the face keeps its pieces
++      // beyond the blend's neighbours, and the edge is cut at the inner ends.
++      bool   isPart = false, anInner[2] = {false, false};
++      double aW[2] = {0., 0.};
++      TopoDS_Face aFF = F;
++      aFF.Orientation(TopAbs_FORWARD);
++      for (TopExp_Explorer ex(aFF, TopAbs_EDGE); ex.More() && E.IsNull(); ex.Next())
++      {
++        const TopoDS_Edge& aCur = TopoDS::Edge(ex.Current());
++        bool               onSpine = BRep_Tool::Degenerated(aCur);
++        for (int ie = 1; ie <= aSpine->NbEdges() && !onSpine; ie++)
++        {
++          onSpine = aSpine->Edges(ie).IsSame(aCur);
++        }
++        if (!onSpine
++            && runsAlongEdgePart(C, T1, T2, aCur, 0.1 * Tol3d, anInner[0], aW[0], anInner[1], aW[1]))
++        {
++          E      = aCur;
++          isPart = true;
++        }
++      }
+       if (E.IsNull() || !EFMap.Contains(E))
+       {
+         continue;
+@@ -3032,6 +3113,7 @@ void ChFi3d_ContactsAlongFaceEdges(TopOpeBRepDS_DataStructure&       DStr,
+       }
+       const TopAbs_Orientation aTra =
+         (aSF > 0.) == (aSv > 0.) ? FI.Transition() : TopAbs::Reverse(FI.Transition());
++      const TopAbs_Orientation aTraOnF = FI.Transition();
+       ChFiDS_FaceInterference& aFI = Fd->ChangeInterference(ons);
+       aFI.ChangePCurveOnFace()     = PCv;
+       aFI.SetTransition(aTra);
+@@ -3045,6 +3127,71 @@ void ChFi3d_ContactsAlongFaceEdges(TopOpeBRepDS_DataStructure&       DStr,
+         Fd->ChangeIndexOfS2(DStr.AddShape(Fv));
+         Fd->SetIndexOfC2(DStr.AddShape(E));
+       }
++      if (isPart)
++      {
++        // An inner end is a point on the edge, shared with the neighbour
++        // whose contact on F comes to the edge there (tangentially): the
++        // edge is cut there, its part along the blend is the blend's, the
++        // rest stays with F's pieces. The transitions are those of a
++        // contact on F leaving F across the edge into the blend (at the
++        // first end) and coming back from it (at the last end).
++        const int anIE = DStr.AddShape(E);
++        for (int k = 0; k < 2; k++)
++        {
++          if (!anInner[k])
++          {
++            continue;
++          }
++          const bool               isFirst = (k == 0);
++          const TopAbs_Orientation aTraE =
++            isFirst ? TopAbs::Compose(aTraOnF, E.Orientation())
++                    : TopAbs::Reverse(TopAbs::Compose(aTraOnF, E.Orientation()));
++          ChFiDS_CommonPoint& CP = Fd->ChangeVertex(isFirst, ons);
++          if (CP.IsOnArc() && !CP.Arc().IsSame(E))
++          {
++            continue;
++          }
++          // A neighbour running along the same edge on: the blend goes on
++          // along it, the edge is not cut there.
++          const int                    jn = isFirst ? j - 1 : j + 1;
++          occ::handle<ChFiDS_SurfData> Fn;
++          if (jn >= 1 && jn <= SeqFil.Length())
++          {
++            Fn = SeqFil(jn);
++          }
++          if (!Fn.IsNull())
++          {
++            bool alongToo = Fn->IsOnCurve(ons) && Fn->IndexOfC(ons) == anIE;
++            const ChFiDS_FaceInterference& FIn = Fn->Interference(ons);
++            if (!alongToo && !Fn->IsOnCurve(ons) && Fn->Index(ons) == anIndex && FIn.LineIndex() != 0
++                && !DStr.Curve(FIn.LineIndex()).Curve().IsNull())
++            {
++              const gp_Pnt aPn = DStr.Curve(FIn.LineIndex())
++                                   .Curve()
++                                   ->Value(0.5 * (FIn.FirstParameter() + FIn.LastParameter()));
++              double                        fe = 0., le = 0.;
++              const occ::handle<Geom_Curve> aCE = BRep_Tool::Curve(E, fe, le);
++              GeomAPI_ProjectPointOnCurve   aProj(aPn, aCE, fe, le);
++              alongToo = aProj.NbPoints() > 0 && aProj.LowerDistance() <= 0.1 * Tol3d;
++            }
++            if (alongToo)
++            {
++              continue;
++            }
++          }
++          CP.SetArc(Tol3d, E, aW[k], aTraE);
++          if (Fn.IsNull())
++          {
++            continue;
++          }
++          ChFiDS_CommonPoint& CPn = Fn->ChangeVertex(!isFirst, ons);
++          if (Fn->Index(ons) == anIndex && !CPn.IsOnArc()
++              && CPn.Point().Distance(CP.Point()) <= Tol3d)
++          {
++            CPn.SetArc(Tol3d, E, aW[k], aTraE);
++          }
++        }
++      }
+     }
+   }
+ }

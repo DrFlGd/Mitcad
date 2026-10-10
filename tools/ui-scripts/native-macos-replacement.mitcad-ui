@@ -1,0 +1,87 @@
+# SPDX-License-Identifier: MIT
+# Real Resolve Sync refusals preserve the original document (mitcad#131).
+# The runner creates two clones of a local bare repository; no network or
+# user repository is used. Its fixture verifies recovery bytes and the lock.
+expect-ever 'Native UI: AppKit shell with embedded OCCT viewport'
+expect-ever 'Edit lock taken: part.mitcad' 30
+expect-ever 'Autosaved part.mitcad:' 30
+expect-model-bodies 1 64800
+capture-undo-depth originalUndo
+screenshot '${MITCAD_TEST_REPLACEMENT}/ready.png'
+expect-file '${MITCAD_TEST_REPLACEMENT}/divergence-ready' 30
+
+# Finder's Open route uses the same document replacement and native
+# save/lock questions without accepting an out-of-process file chooser.
+mark
+open-file '${MITCAD_TEST_REPLACEMENT}/exchange.step'
+focus-dialog '^Save changes to part\.mitcad\?$'
+button "^Don't Save$"
+expect-log 'needs a choice before the release: asked' 30
+focus-dialog '^The versions of part\.mitcad cannot be sent:'
+button '^Resolve Sync$'
+expect-log 'Edit lock: Resolve Sync'
+focus-dialog '^Save part\.mitcad before the sync\?$'
+button '^Cancel$'
+expect-log 'Sync cancelled'
+focus-main
+expect-model-bodies 1 64800
+expect-undo-depth ${originalUndo} 0
+expect-no-log 'Imported exchange.step|New document|Document closed|Autosave removed'
+sleep 2500
+screenshot '${MITCAD_TEST_REPLACEMENT}/Open.png'
+expect-file '${MITCAD_TEST_REPLACEMENT}/Open-verified' 20
+
+mark
+menu 'File/New'
+focus-dialog '^Save changes to part\.mitcad\?$'
+button "^Don't Save$"
+expect-log 'needs a choice before the release: asked' 30
+focus-dialog '^The versions of part\.mitcad cannot be sent:'
+button '^Resolve Sync$'
+expect-log 'Edit lock: Resolve Sync'
+focus-dialog '^Save part\.mitcad before the sync\?$'
+button '^Cancel$'
+expect-log 'Sync cancelled'
+focus-main
+expect-model-bodies 1 64800
+expect-undo-depth ${originalUndo} 0
+expect-no-log 'Imported exchange.step|New document|Document closed|Autosave removed'
+sleep 2500
+screenshot '${MITCAD_TEST_REPLACEMENT}/New.png'
+expect-file '${MITCAD_TEST_REPLACEMENT}/New-verified' 20
+
+mark
+menu 'File/Close'
+focus-dialog '^Save changes to part\.mitcad\?$'
+button "^Don't Save$"
+expect-log 'needs a choice before the release: asked' 30
+focus-dialog '^The versions of part\.mitcad cannot be sent:'
+button '^Resolve Sync$'
+expect-log 'Edit lock: Resolve Sync'
+focus-dialog '^Save part\.mitcad before the sync\?$'
+button '^Cancel$'
+expect-log 'Sync cancelled'
+focus-main
+expect-model-bodies 1 64800
+expect-undo-depth ${originalUndo} 0
+expect-no-log 'Imported exchange.step|New document|Document closed|Autosave removed'
+sleep 2500
+screenshot '${MITCAD_TEST_REPLACEMENT}/Close.png'
+expect-file '${MITCAD_TEST_REPLACEMENT}/Close-verified' 20
+
+# Releasing without sending permits replacement, into a separate untitled
+# STEP document. Its geometry and recovery are independent of the old file.
+mark
+open-file '${MITCAD_TEST_REPLACEMENT}/exchange.step'
+focus-dialog '^Save changes to part\.mitcad\?$'
+button "^Don't Save$"
+expect-log 'needs a choice before the release: asked' 30
+focus-dialog '^The versions of part\.mitcad cannot be sent:'
+button '^Release Without Sending$'
+expect-log 'Imported exchange.step as' 30
+focus-main
+expect-model-bodies 1 48000
+expect-log 'Autosaved exchange:' 30
+screenshot '${MITCAD_TEST_REPLACEMENT}/imported.png'
+expect-file '${MITCAD_TEST_REPLACEMENT}/import-verified' 20
+expect-never 'TestDriver: FAIL|Native Mac canvas:|OCCT view event failed'

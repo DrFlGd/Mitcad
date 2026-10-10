@@ -18,10 +18,10 @@ namespace mitcad {
 // What Export writes.
 struct ExportChoice {
   QString path;
-  QString format;     // step, iges, stl, obj, brep, dxf, 3mf
+  QString format;     // step, iges, stl, obj, brep, dxf, 3mf, usdz
   QString schema;     // STEP: ap214, ap242
   QString unit;       // STEP, IGES: mm (the default), cm, m, in, ft
-  QString refinement; // STL, OBJ, 3MF: low, medium, high
+  QString refinement; // STL, OBJ, 3MF, USDZ: low, medium, high
   bool ascii = false; // STL
   bool selectedOnly = false;
   QString sketch; // DXF: the sketch's uid

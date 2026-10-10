@@ -1,10 +1,17 @@
 // SPDX-License-Identifier: MIT
 #pragma once
 
+#include <functional>
 #include <QMessageBox>
+#include <QColorDialog>
 #include <QString>
+#include <QStringList>
 
 class QDialog;
+class QMenu;
+class QAction;
+class QPoint;
+class QProgressDialog;
 class QWidget;
 
 namespace mitcad {
@@ -16,6 +23,28 @@ namespace mitcad {
 // is a dialog itself (sheets do not nest) or not shown yet, it does nothing and the dialog
 // stays application modal.
 void prepareModal(QDialog* dialog);
+
+// Shared dialog/menu dispatch. The native frontend uses AppKit controls;
+// the other frontends retain their existing Qt presentations.
+int execDialog(QDialog* dialog);
+void showDialog(QWidget* widget);
+void waitDialogUntil(const std::function<bool()>& completed);
+// Call before setValue or the minimum-duration timer can show a progress
+// dialog. Native mode keeps the Qt presenter hidden and forwards its show
+// lifecycle to an AppKit progress sheet.
+void prepareProgressDialog(QProgressDialog* dialog);
+QAction* execMenu(QMenu* menu, const QPoint& position);
+QString dialogText(QWidget* parent, const QString& title, const QString& label,
+                   const QString& initial, bool* accepted);
+QString dialogItem(QWidget* parent, const QString& title, const QString& label,
+                   const QStringList& items, int current, bool* accepted);
+QString dialogOpenFileName(QWidget* parent, const QString& title = {}, const QString& directory = {},
+                           const QString& filter = {}, QString* selectedFilter = nullptr);
+QString dialogSaveFileName(QWidget* parent, const QString& title = {}, const QString& directory = {},
+                           const QString& filter = {}, QString* selectedFilter = nullptr);
+QString dialogDirectory(QWidget* parent, const QString& title = {}, const QString& directory = {});
+QColor dialogColor(const QColor& initial, QWidget* parent, const QString& title = {},
+                   QColorDialog::ColorDialogOptions options = {});
 
 // QMessageBox::warning, information and question as sheets (prepareModal),
 // with the same arguments and result.

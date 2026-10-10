@@ -9,7 +9,9 @@
 
 #include <BRepAdaptor_Curve.hxx>
 #include <BRepAlgoAPI_Cut.hxx>
+#include <BRepBuilderAPI_Copy.hxx>
 #include <BRepBuilderAPI_MakeEdge.hxx>
+#include <BRepBuilderAPI_MakeVertex.hxx>
 #include <BRepBuilderAPI_MakeWire.hxx>
 #include <BRepExtrema_DistShapeShape.hxx>
 #include <BRepGProp.hxx>
@@ -24,7 +26,11 @@
 #include <GCPnts_AbscissaPoint.hxx>
 #include <GProp_GProps.hxx>
 #include <GeomAdaptor_Curve.hxx>
+#include <Geom2d_Curve.hxx>
 #include <Geom_BSplineCurve.hxx>
+#include <Geom_Surface.hxx>
+#include <ShapeConstruct_ProjectCurveOnSurface.hxx>
+#include <Standard_Failure.hxx>
 #include <Geom_Plane.hxx>
 #include <NCollection_Array1.hxx>
 #include <NCollection_List.hxx>
@@ -500,6 +506,73 @@ PipeMode perpendicular_mode(const Spine& spine) {
   return mode;
 }
 
+namespace {
+
+// The curve on the face's surface that the 3D curve lies on within
+// `tolerance` over [first, last] (same parameters), or none.
+occ::handle<Geom2d_Curve> curve_on(const TopoDS_Face& face, const occ::handle<Geom_Curve>& curve, double first,
+                                   double last, double tolerance) {
+  const occ::handle<Geom_Surface> surface = BRep_Tool::Surface(face);
+  // Quick rejection: the curve's middle must be near the face.
+  const gp_Pnt middle = curve->Value((first + last) / 2.0);
+  BRepExtrema_DistShapeShape near(BRepBuilderAPI_MakeVertex(middle).Vertex(), face);
+  if (!near.IsDone() || near.Value() > tolerance) {
+    return {};
+  }
+  ShapeConstruct_ProjectCurveOnSurface project;
+  project.Init(surface, Precision::Confusion());
+  occ::handle<Geom2d_Curve> pcurve;
+  try {
+    if (!project.Perform(curve, first, last, pcurve) || pcurve.IsNull()) {
+      return {};
+    }
+  } catch (const Standard_Failure&) {
+    return {};
+  }
+  constexpr int kSamples = 64;
+  for (int i = 0; i <= kSamples; ++i) {
+    const double t = first + (last - first) * i / kSamples;
+    const gp_Pnt2d uv = pcurve->Value(t);
+    if (curve->Value(t).Distance(surface->Value(uv.X(), uv.Y())) > tolerance) {
+      return {};
+    }
+  }
+  return pcurve;
+}
+
+} // namespace
+
+TopoDS_Wire on_faces(const TopoDS_Wire& wire, const std::vector<TopoDS_Face>& faces, double tolerance) {
+  BRepBuilderAPI_Copy copy(wire, true, false);
+  const TopoDS_Wire result = TopoDS::Wire(copy.Shape());
+  BRep_Builder builder;
+  for (TopExp_Explorer e(result, TopAbs_EDGE); e.More(); e.Next()) {
+    const TopoDS_Edge& edge = TopoDS::Edge(e.Current());
+    if (BRep_Tool::Degenerated(edge)) {
+      continue;
+    }
+    double first = 0.0;
+    double last = 0.0;
+    const occ::handle<Geom_Curve> curve = BRep_Tool::Curve(edge, first, last);
+    if (curve.IsNull()) {
+      throw std::invalid_argument("a path curve has no geometry");
+    }
+    bool found = false;
+    for (const TopoDS_Face& face : faces) {
+      const occ::handle<Geom2d_Curve> pcurve = curve_on(face, curve, first, last, tolerance);
+      if (!pcurve.IsNull()) {
+        builder.UpdateEdge(edge, pcurve, face, std::max(tolerance, BRep_Tool::Tolerance(edge)));
+        found = true;
+        break;
+      }
+    }
+    if (!found) {
+      throw std::invalid_argument("the path must lie on the guide surface: a path curve lies on none of its faces");
+    }
+  }
+  return result;
+}
+
 void name_caps(FaceNamer& namer, const TopoDS_Shape& section, const NameList& names) {
   if (names.empty() || section.IsNull()) {
     return;
@@ -591,6 +664,11 @@ ShapePtr pipe_shell_with(const NamedWire& loop, const TopoDS_Wire& spine, const 
     break;
   case PipeMode::Kind::Fixed:
     pipe.SetMode(mode.fixed);
+    break;
+  case PipeMode::Kind::Support:
+    if (!pipe.SetMode(mode.support)) {
+      throw std::invalid_argument("the path does not lie on the guide surface");
+    }
     break;
   }
   pipe.SetTransitionMode(transition);

@@ -52,7 +52,7 @@ function(expect pattern what)
   endif()
 endfunction()
 
-# A new value of d3 in a project file, recorded as a version.
+# A new value of d3 in a design file, recorded as a version.
 function(change file d3)
   file(WRITE "${WORK}/d3.json" "[{\"cmd\": \"set_parameter\", \"name\": \"d3\", \"value\": ${d3}}]")
   cli(ok run "${WORK}/d3.json" --open "${file}" --save "${file}")
@@ -88,7 +88,7 @@ endif()
 
 # B: the project opened from the remote.
 cli(ok clone "${remote}" "${b}")
-expect("^Opened [^\n]*remote.git into [^\n]*b: branch main, latest version [0-9a-f]+\nProject files: part.mitcad\n$"
+expect("^Opened [^\n]*remote.git into [^\n]*b: branch main, latest version [0-9a-f]+\nDesigns: part.mitcad\n$"
        "clone")
 cli(ok info "${a}/part.mitcad")
 set(report_a "${out}")

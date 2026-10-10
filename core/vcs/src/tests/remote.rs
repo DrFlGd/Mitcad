@@ -79,9 +79,9 @@ pub(super) fn connected(scratch: &Scratch, cli: &GitCli, url: &str) -> (ProjectR
     (repo, part)
 }
 
-/// Changes `d3` of the project file `part` and records it.
+/// Changes `d3` of the design file `part` and records it.
 pub(super) fn new_version(repo: &ProjectRepo, part: &Path, d3: f64) -> String {
-    let mut doc = Document::load_project(part, MockKernel::default()).unwrap();
+    let mut doc = Document::load_design(part, MockKernel::default()).unwrap();
     set_parameter(&mut doc, "d3", d3);
     doc.save_file(part, FileFormat::Auto).unwrap();
     repo.commit(&[part.to_path_buf()], &format!("d3 = {d3} mm"), &author())
@@ -342,7 +342,7 @@ fn a_project_connects_to_an_empty_remote() {
     let remote = bare(&scratch, "remote.git");
     let url = remote.to_string_lossy().into_owned();
     let (repo, _, part) = project(&scratch);
-    // A project made before project files were merged as whole files.
+    // A project made before design files were merged as whole files.
     let attributes = repo.root().join(".gitattributes");
     fs::write(
         &attributes,
@@ -392,7 +392,7 @@ fn a_project_connects_to_an_empty_remote() {
             .any(|line| line.starts_with("git push") && line.ends_with(": ok")),
         "{log:?}"
     );
-    // Project files are merged as whole files, and that is a version.
+    // Design files are merged as whole files, and that is a version.
     assert_eq!(
         fs::read_to_string(&attributes).unwrap(),
         "*.mitcad text eol=lf merge=binary\n.mitcad/brep/** binary\n"

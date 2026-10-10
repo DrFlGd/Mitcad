@@ -32,6 +32,7 @@ public:
 
   BrowserPanel* browser() const { return m_browser; }
   TimelineWidget* timeline() const { return m_timeline; }
+  bool markerDragActive() const { return m_markerDepth >= 0; }
   // The status bar's summary of failed features; a click goes to them.
   QToolButton* failures() const { return m_failures; }
 

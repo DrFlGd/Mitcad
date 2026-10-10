@@ -75,6 +75,22 @@ pub trait StoredGeometry<S> {
         let _ = index;
         false
     }
+    /// Whether the history holds the timeline item's operation but the
+    /// operation left every body of its history as it was (mitcad#156: an
+    /// extrusion that failed in the file for want of a body to cut keeps
+    /// its operation, which changed nothing).
+    fn item_unchanged(&mut self, index: i64) -> bool {
+        let _ = index;
+        false
+    }
+    /// The state before the operations no item names that come right
+    /// before the timeline item's own in its history (each copy of a
+    /// pattern is an operation, the last one the item's, mitcad#156), when
+    /// there are such: they may be the item's own.
+    fn item_start(&mut self, index: i64) -> Option<usize> {
+        let _ = index;
+        None
+    }
 }
 
 /// The solids of a stored body of several lumps (disjoint pieces of one
@@ -703,6 +719,18 @@ impl<'g, S: Clone> Oracle<'g, S> {
     /// See [`StoredGeometry::item_without_result`].
     pub fn item_without_result(&mut self, index: i64) -> bool {
         self.geometry.item_without_result(index)
+    }
+
+    /// See [`StoredGeometry::item_unchanged`].
+    pub fn item_unchanged(&mut self, index: i64) -> bool {
+        self.geometry.item_unchanged(index)
+    }
+
+    /// See [`StoredGeometry::item_start`].
+    pub fn item_start(&mut self, index: i64) -> Option<usize> {
+        self.geometry
+            .item_start(index)
+            .filter(|&s| s < self.states.len())
     }
 
     /// See [`StoredGeometry::item_components`].

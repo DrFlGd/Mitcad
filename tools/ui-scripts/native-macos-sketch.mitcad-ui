@@ -1,0 +1,73 @@
+# SPDX-License-Identifier: MIT
+# Native sketch precision fields and command-form integration. Run with
+# the native UI, an empty document, MITCAD_LOG_VOLUMES=1 and MITCAD_TEST_WORK.
+# Actual AppKit text input, focus traversal and confirmation create a
+# 40.5 x 25 mm rectangle, then OCCT verifies its 20 mm extrusion volume.
+expect-ever 'Native UI: AppKit shell with embedded OCCT viewport'
+expect-ever 'View area'
+sleep 800
+
+mark
+native-action sketch.create
+expect-log 'Create Sketch: select a plane'
+click-logged 'Datum xy'
+expect-log 'Sketch started on xy'
+expect-native-visible native.inspectorCard true
+expect-native-layout
+expect-native-text native.ribbon.group.create '^Create$'
+expect-native-visible native.ribbon.sketch.line true
+expect-native-visible native.ribbon.sketch.rectangle true
+expect-native-visible native.ribbon.sketch.constraint.horizontal_vertical true
+expect-native-visible palette_sketch.constraint.horizontal_vertical true
+expect-native-layout
+screenshot '${MITCAD_TEST_WORK}/native-macos-sketch-palette.png'
+
+# Escape from a real AppKit field cancels the unfinished drawing safely.
+mark
+native-click native.ribbon.sketch.rectangle
+sketch-click 0 0
+native-type sketchField_width '90 mm'
+expect-log 'Sketch value width: 90 mm = '
+key Escape
+expect-no-log 'Added rectangle'
+
+# Validation and precision entry share the declarative sketch controller.
+# Typing into the focused field after Tab/Shift+Tab verifies native focus
+# transfer, rather than selecting each field through the test bridge.
+mark
+native-click native.ribbon.sketch.rectangle
+sketch-click 0 0
+native-type sketchField_width 'bad_expression'
+expect-log 'Sketch value width: bad_expression is invalid:'
+native-type sketchField_width '40,5 mm'
+expect-log 'Sketch value width: 40,5 mm = 40\.5 mm'
+key Tab
+type '25 mm'
+expect-native-text sketchField_height '^25 mm$'
+expect-log 'Sketch value height: 25 mm = 25 mm'
+key shift+Tab
+type '40.5 mm'
+expect-native-text sketchField_width '^40\.5 mm$'
+key Tab
+screenshot '${MITCAD_TEST_WORK}/native-macos-sketch-fields.png'
+key Return
+expect-log 'Added rectangle 40\.5 x 25 mm at \(0, 0\)' 30
+expect-log 'Sketch Sketch1: 0 DOF' 30
+native-click native.ribbon.sketch.finish
+expect-log 'Sketch finished' 30
+
+# The native feature presenter consumes the actual newly drawn profile.
+mark
+native-action solid.extrude
+expect-log 'Command Extrude started'
+native-type input_distance '20 mm'
+expect-native-enabled commandOk true
+native-click commandOk
+expect-log 'Added extrude \(New Body\), distance 20' 30
+capture extruded 'New body \S+ \(F2\.b0\): volume ([0-9.]+) mm3' 30
+expect-near ${extruded} 20250
+screenshot '${MITCAD_TEST_WORK}/native-macos-sketch-extrude.png'
+expect-file '${MITCAD_TEST_WORK}/native-macos-sketch-fields.png'
+expect-file '${MITCAD_TEST_WORK}/native-macos-sketch-palette.png'
+expect-file '${MITCAD_TEST_WORK}/native-macos-sketch-extrude.png'
+expect-never 'The document was read while a job computes it|Native Mac canvas:|OCCT view event failed|TestDriver: FAIL'

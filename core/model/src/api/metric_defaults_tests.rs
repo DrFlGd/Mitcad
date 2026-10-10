@@ -73,7 +73,7 @@ fn documents_and_expressions_are_millimetres_and_degrees() {
     assert_eq!(context.default_length_unit, ExprLength::Millimetre);
     assert_eq!(context.default_angle_unit, AngleUnit::Degree);
 
-    // A project file without units is in millimetres; one with inches keeps
+    // A design file without units is in millimetres; one with inches keeps
     // them (a file's own units are kept).
     let saved = doc.to_json();
     let mut file: Value = serde_json::from_str(&saved).unwrap();

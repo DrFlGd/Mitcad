@@ -9,7 +9,7 @@ JSON commands.
 
 | Part | Language | Responsibility |
 |---|---|---|
-| `core/model` (`mitcad-model`) | Rust | Document, timeline, features, parameters and expressions, units, sketches, topological naming, cached recompute, undo, project file, design comparison, JSON command API. No OCCT. |
+| `core/model` (`mitcad-model`) | Rust | Document, timeline, features, parameters and expressions, units, sketches, topological naming, cached recompute, undo, design file, design comparison, JSON command API. No OCCT. |
 | `core/solver` (`mitcad-solver`) | Rust | 2D constraint solver and the joint solver of assemblies behind a narrow API ([README](../core/solver/README.md)). |
 | `core/f3d` (`mitcad-f3d`) | Rust | `.f3d` container, ASM B-rep, design streams decoded into the dump IR. |
 | `core/import` (`mitcad-import`) | Rust | Replays `.f3d` dumps and FreeCAD documents as Mitcad commands, checked against the file's stored results ([README](../core/import/README.md)). |
@@ -18,18 +18,39 @@ JSON commands.
 | `core/ipt` (`mitcad-ipt`) | Rust | `.ipt` part files: compound file container (MS-CFB), property sets (MS-OLEPS), the segment database, the B-rep record converted by `core/f3d`'s ASM code, the meshes of mesh features, the definitions segment (parameters, sketches, features) as the import's dump IR, and `.iam` assemblies (referenced files, occurrences, placements; [README](../core/ipt/README.md)). No geometry. |
 | `core/dxf` | Rust | DXF read and write. |
 | `core/3mf` (`mitcad-3mf`) | Rust | 3MF writer (one object of parts) and a checking reader for tests. |
+| `core/usdz` (`mitcad-usdz`) | Rust | USDZ writer: the binary USD layer (crate format 0.8.0, LZ4 and USD's integer coding written here, no USD library) of a scene of meshes, `Xform`s and `UsdPreviewSurface` materials, packed with its textures 64-byte aligned; a checking reader for tests (mitcad#123). |
 | `core/vcs` (`mitcad-vcs`) | Rust | Version history of projects in git (gitoxide, only here); remotes through the system's git; component libraries and community indexes in git repositories ([libraries.md](libraries.md)). |
 | `core/update` (`mitcad-update`) | Rust | Release manifest, signatures, version selection; the `mitcad-release` tool. No network ([updates.md](updates.md)). |
+| `core/mcp` (`mitcad-mcp`) | Rust | MCP lifecycle, JSON-RPC envelopes, tool schemas and command-reference resource; headless stdio and live application profiles. No geometry dependency ([mcp.md](mcp.md)). |
 | `core/ffi`, `core/cpp` | Rust, C++ | CXX bridges: the `Kernel` on OCCT, the document API for C++. |
 | `geometry` (`mitcad_geometry`) | C++ | OCCT facade: profiles, features, booleans, name transfer, queries, file formats, ASM bodies, analyses. No Qt. |
-| `tools/cli` (`mitcad-cli`) | C++ | Headless open/import, recompute, properties, export; kernel and import tests run through it. In builds with `MITCAD_RENDER` also `render` (the final render through the render worker), which links Qt Core and Gui for the application's scene and job code. |
-| `app` | C++/Qt | The UI. |
+| `tools/cli` (`mitcad-cli`) | C++ | Headless open/import, recompute, properties, export; kernel and import tests run through it. Also `render` (the final render through the render worker), which links Qt Core and Gui for the application's scene and job code. |
+| `app` | C++/Qt, Objective-C++/AppKit | Shared document and command orchestration; Qt desktop UI and native macOS UI. |
 | `tools/freecad-export` | Python, Bash | FreeCAD macros that make the FreeCAD import's reference models and dumps. |
 
 Dependencies point one way: `app` → `core/ffi` → `core/model` (with
-`solver`, `f3d`, `import`, `freecad`, `zip`, `3mf`, `vcs`, `ipt`; `update`
+`solver`, `f3d`, `import`, `freecad`, `zip`, `3mf`, `usdz`, `vcs`, `ipt`; `update`
 stands alone) and `core/ffi` → `geometry` → OCCT. The model reaches geometry only
 through the `Kernel` trait, so model tests run on a mock kernel.
+
+## Terms
+
+Each term has one meaning in the code, the UI and the docs:
+
+| Term | Meaning | In the code |
+|---|---|---|
+| **Design** | One `.mitcad` file (a part or an assembly) | `Document::load_design`, `save_design` (bridge), `is_design_file`, `FileKind::Design` |
+| **Project** | A folder that is one git repository and holds designs and folders; Local or Cloud | `Project`, `ProjectRepo`, `open_project`, `find_project`, `create_project` |
+| **Folder** | A folder inside a project | relative paths with `/` |
+| **Version** | A recorded state of a design: one commit | `commit`, `history`, `load_version` |
+| **Owner** | A user or an organisation on a git service (the first part of a Cloud address) | `CloudAddress::owner` |
+| **Projects panel** | The panel of projects, folders and designs; the **Browser** is the design's feature tree | |
+| **Projects folder** | The default parent of new projects (Documents/Mitcad) | `projectsDirectory()` (`framework/AppSettings`) |
+
+JSON command and field names and the file formats' keys stay as they
+are; the autosave metadata's `project` key names the snapshot's design
+file, and the format `"project"` of `save_design` means version 3, a
+design in a project.
 
 ## Identifiers
 
@@ -149,9 +170,9 @@ through the `Kernel` trait, so model tests run on a mock kernel.
 - **Appearances** (mitcad#46, `core/model/src/appearance.rs`): physically
   based parameter sets (base colour, metalness, roughness, specular,
   transmission, IOR, coat, emission, opacity, and a texture for the base
-  colour: an image file or one embedded in the project file, mitcad#53).
+  colour: an image file or one embedded in the design file, mitcad#53).
   The library is built into the model; a document's own appearances are
-  in the definition state and the project file, changed by undoable
+  in the definition state and the design file, changed by undoable
   commands that recompute nothing. Bodies refer to one by id, and so do
   single faces by topological name (a body attribute; the face's
   appearance overrides the body's and follows the face as other face
@@ -168,7 +189,7 @@ through the `Kernel` trait, so model tests run on a mock kernel.
   and the user's lights (mitcad#54: point, spot, area and sun lights,
   placed in the design or relative to the camera), a list changed by
   commands of their own and compared light by light. They are in the definition
-  state and the project file (left out while they are the defaults),
+  state and the design file (left out while they are the defaults),
   changed by undoable commands that recompute nothing, and compared field
   by field in the comparison of versions.
 - **Analyses** (`core/model/src/document/analyses.rs`): section analyses
@@ -224,6 +245,19 @@ through the `Kernel` trait, so model tests run on a mock kernel.
   ([app/COMMANDS.md](../app/COMMANDS.md), "Joints"). The `.f3d` import
   (phase 4, `core/import/src/joints.rs`) maps the file's joints to these
   features (*Imports with history* below).
+- **Assembly constraints** (mitcad#148, `core/model/src/constraints.rs`,
+  `features/constraint_set.rs`): a `constraint_set` feature's rows (align,
+  angle, center, tangent, insert, axis insert) each hold geometry of one
+  occurrence against another's, referenced as joint origins, with only
+  some of a joint's equations (`mitcad_solver::RigidConstraint`, partial
+  equations in frame b's coordinates, optionally with a value between
+  limits). Recompute treats the rows like joints (`joints::apply`): they
+  are `ActiveJoint`s with their parts, solved in the same runs, rank
+  analysis, degrees of freedom and drags; conflicts name rows
+  (`Constraint1 row 2 (insert)`). The application's Constraint command
+  edits the rows in one panel, the type inferred from the picks by the
+  `constraint_row` query ([commands.md](../core/model/src/api/commands.md),
+  "Assembly constraints").
 
 ### Units
 
@@ -379,7 +413,12 @@ the `Shape` type.
   `Kernel::triangle_mesh` (one closed, outward-facing mesh per body,
   placed by its occurrences). STEP, IGES, OBJ and BRep go through
   `Kernel::write_file` with each body's placements (`ExportBody::placements`;
-  STEP as an assembly, the others as moved copies).
+  STEP as an assembly, the others as moved copies). USDZ is written by
+  the model from `Kernel::face_meshes` (each face its own vertices with
+  the surface's normals, in the order `Kernel::faces` lists them, so
+  face appearances find their triangles): a mesh per placement under
+  `Xform`s of the occurrences, materials from the appearances
+  (`core/model/src/exchange/usdz.rs`, `core/usdz`).
 - A mesh body (STL, OBJ) is a face with a triangulation and no surface.
   `geometry::transform_shape` moves a copy of the triangulation, and the
   validity check skips such faces.
@@ -417,6 +456,9 @@ them through operations and derives edge names.
   region with the most curves in common and keeps the old key.
 - A face may carry several names. When a boolean splits a face, pieces get
   `#k` in geometric order; a reference without `#k` means all pieces.
+  A face a fillet or chamfer consumes, where the blend runs along the
+  face's far edge (a face as wide as the blend or narrower, mitcad#121),
+  gives its names to the blend's face, so its edges keep their names.
 - **Edge:** `E{<face A>|<face B>}` (sorted), `#k` when the same faces meet
   more than once; a seam has the same face twice. **Vertex:** the set of
   faces meeting at it. Sorting is byte-wise in both languages.
@@ -511,13 +553,40 @@ not recompute.
   are refused (`ModelBusy`), and deferred work waits for idle
   (`MainWindow::whenIdle`). `MITCAD_COMPUTE_INLINE=1` runs jobs on the UI
   thread for debugging.
+- **Document owner** (`app/framework/DocumentSession`): owns the Rust
+  document, model worker, active command, selection, mode and file/recovery
+  state. `MainWindow` retains reference aliases for existing workflows.
+  Queries are allowed only while idle; a cached snapshot remains available
+  during computation. The native command presenter uses asynchronous jobs
+  and callbacks on the UI thread. Input changes invalidate pending previews;
+  cancel waits for the worker, restores the native command checkpoint's
+  definition, saved state and exact undo/redo history, then releases it
+  before the session finishes. Legacy workflows keep their existing
+  synchronous wait presentation through an injected handler.
+- **MCP** (`core/mcp`, `core/ffi/src/mcp.rs`, `app/mcp`): the live
+  application profile exposes `document_list`, `model_query` and
+  `model_command` against the window's actual `DocumentSession`. Each
+  connection has a Rust `LiveSession` for protocol state and a pending
+  request; it owns no detached document. The FFI prepares a validated tool
+  and wraps its completed result. Commands follow the ordinary window
+  workflow and run on the same model worker; queries require an idle
+  document. Active commands, drags, dialogs and edit locks guard access,
+  and replacing the document invalidates its handle. A listener binds only
+  to IPv4 loopback on an allocated port; a private per-user discovery
+  record supplies an instance ID and authentication token.
+  `mitcad-cli mcp --connect` discovers and authenticates a running instance,
+  then bridges standard MCP stdio to its JSON-lines socket without exposing
+  the token on stdout. Bridge EOF leaves the GUI and unsaved document open.
+  `--no-mcp` disables the listener. The separate headless `--workspace`
+  mode retains its own documents and confined file tools ([mcp.md](mcp.md)).
 - **Imports** run in a separate process (`mitcad --import-worker`) so a
   kernel crash or hang only kills that process. Stop keeps what was
   imported (the worker reads `stop` on stdin); Cancel kills the process.
   Inside it, the `.f3d` and `.ipt` imports guard their memory themselves
   (mitcad#80, mitcad#60): low on memory, they give up definitions and
   finish with the file's bodies rather than end the process.
-- **Rendering** (`app/render/`, only with the CMake option `MITCAD_RENDER`):
+- **Rendering** (`app/render/`, in every build since mitcad#141; the
+  configure stops without the prebuilt Cycles and Open Image Denoise):
   View > Rendered shows the visible bodies path traced by Cycles in the
   render worker `mitcad-render`, an executable of its own next to
   `mitcad`. Only the worker links Cycles and its libraries (Embree, Open
@@ -601,6 +670,45 @@ not recompute.
 
 ## Window layouts and the macOS layer
 
+With `MITCAD_MACOS_NATIVE_UI=ON`, macOS starts the AppKit frontend by
+default. `--ui=qt` selects the retained Qt frontend; `--chrome` also selects
+Qt. `--ui=native` requires the native build option. The native frontend keeps
+the single-document workflow and the macOS 14.4 deployment target.
+
+`NativeMacWindow` owns an `NSWindow`, configurable `NSToolbar`, model
+`NSOutlineView`, inspector, and collapsible horizontal feature history with
+coloured icons and an in-row marker. Timeline filtering uses the shared
+component filter while preserving model indices; playback skips boundaries
+inside hidden feature runs. The native toolbar presents the shared project,
+live-update and edit-lock status and opens the shared project menu.
+The menu bar, application delegate, Finder open requests, document edited
+indicator, Services, text editing and window actions are AppKit's. System
+controls, semantic colours, fonts and sidebar material follow the running
+macOS version and accessibility settings. The toolbar changes in sketch
+mode; command definitions and saved shortcuts remain shared.
+
+`CommandPresenter` separates command-session actions and displayed state
+from controls. `NativeForms` builds real AppKit inputs from `InputDef`;
+`CommandPanel` remains the Qt presenter. Only one presenter is attached to
+a command. Secondary dialogs and Settings use `NativeDialogs`, which binds
+the existing hidden Qt presenter models and signals to AppKit controls.
+Those widgets initialize their existing workflows but are never drawn.
+File and colour panels use explicit AppKit sheet hosts. Native alerts
+and secondary modal sheets preserve existing synchronous result semantics;
+native command previews, inspections and commits use the asynchronous model API.
+
+The viewport alone remains Qt/OCCT content. A standalone viewport host is
+embedded as a native sibling of the AppKit panes through the public
+`QWindow::fromWinId(NSView*)` and `QWindow::setParent` APIs. No private Qt
+platform API or replacement geometry/rendering kernel is used. AppKit owns
+the outer window and resizes the embedded drawable; general Qt overlay
+buttons are suppressed. A failed native attachment is reported at startup
+instead of leaving an unusable canvas. OpenGL focus, frame pacing, fullscreen,
+display changes and hardware rendering require the manual checks in
+[native-macos-ui.md](native-macos-ui.md).
+
+The following layouts describe the retained Qt frontend.
+
 `chromeStyle()` (`app/framework/ChromeStyle`) picks the layout at start-up:
 **Docked** (Windows and Linux: the ribbon in a toolbar, the panels in docks)
 or **Floating** (the default on macOS; `--chrome=docked|floating` overrides
@@ -659,9 +767,9 @@ them (Objective-C++, ARC); elsewhere they are inline stubs in the header, so
 portable code calls them without `#ifdef`. `Q_OS_MACOS` branches in portable
 files are for Qt-level behaviour only (the GL format, shortcuts).
 
-## Project file
+## Design file
 
-Single-file format, version 2:
+A design is one `.mitcad` file. **Single-file design** (format 2):
 `{"format": "mitcad", "version": 2, "units", "parameters", "features":
 [{"uid": "F3", "type": "extrude", ...}], "bodies", "marker"}`, plus
 `components`, `occurrences`, `active_component`, `root_component`, a
@@ -672,17 +780,18 @@ live in base features as OCCT binary BRep, zlib + base64
 `core/model/src/features/base.rs`); their faces are named
 `<feature>:import(<j>)`.
 
-**Projects** (version 3): a folder with the marker `.mitcad/project.json`.
-Project files inside keep base-feature B-rep data in a content-addressed
-store, `.mitcad/brep/<aa>/<sha256>.brep.zlib`, referenced as
+**Design in a project** (format 3): a project is a folder with the
+marker `.mitcad/project.json`. Designs inside keep base-feature B-rep
+data in a content-addressed store, `.mitcad/brep/<aa>/<sha256>.brep.zlib`,
+referenced as
 `{"format": "occt", "compression": "zlib", "size": n, "sha256": "…"}`.
-Store files are written once, before the project file, so the JSON stays
+Store files are written once, before the design file, so the JSON stays
 small and diffable. A file is version 3 only when it has such references.
 Opening resolves them from the nearest enclosing project and checks size
 and hash; missing data fails its base feature with a message. The
 per-user display state (Origin folder, Isolate) is kept out of versioned
 files in `.mitcad/local/display/<path>.json`. Autosave and the import
-process always write single files (version 2).
+process always write single-file designs (format 2).
 
 Autosave publishes immutable snapshots named
 `<session UUID>.<generation UUID>.mitcad` in the user's recovery folder.
@@ -695,7 +804,7 @@ recovery reads them; obsolete generations are removed after publication or
 when the session is discarded.
 
 Code: `Document::save_file` (atomic: temp file renamed over),
-`load_project`, `from_json_at`, `from_json_in` with a `BlobStore`
+`load_design`, `from_json_at`, `from_json_in` with a `BlobStore`
 (`core/model/src/file/project.rs`: `FsStore`, `MemoryStore`; `core/vcs`
 adds `GitTreeStore`). `mitcad-cli project init` and
 `convert --format v2|v3`. `project init` writes:
@@ -711,7 +820,7 @@ adds `GitTreeStore`). `mitcad-cli project init` and
 ```
 
 `eol=lf` protects files from `core.autocrlf`; `merge=binary` makes git's
-own merge treat a project file changed on both sides as a whole-file
+own merge treat a design file changed on both sides as a whole-file
 conflict instead of producing valid JSON of a broken design. Temp files
 of an interrupted save are `.<name>.<process>.<n>.tmp`. On Windows the
 rename is retried for up to 2 s while another program holds the file
@@ -737,9 +846,12 @@ in the crate's API. JSON commands: [commands.md](../core/model/src/api/commands.
   Preferences' default author. Messages end with trailers
   `Mitcad-Version` and `Mitcad-Format: 3`.
 - A file's history is HEAD's first-parent chain, following content-
-  preserving renames. Older versions are read from the commit tree with
-  `GitTreeStore`, no checkout. Restore writes the old content back as a
-  new version; history is never rewritten.
+  preserving renames. Open, Restore and Compare follow that lineage even
+  when another design previously used the current filename. Explicit
+  versions outside the first-parent chain use the requested path. Older
+  versions are read from the commit tree with `GitTreeStore`, no checkout.
+  Restore writes the old content back as a new version; history is never
+  rewritten.
 - **Comparison** (`core/model/src/diff/`): two document snapshots are
   compared in model terms without computing them (parameters by name,
   features by uid with moves, definition fields, sketch elements,
@@ -844,6 +956,26 @@ commands ([commands.md](../core/model/src/api/commands.md), "Projects").
   (`ProjectState::unfollowedRemotes`; the indicator says "No remote
   chosen"), and Project Settings asks which, `remote_follow` setting the
   branch's upstream (no network).
+- **Folders and designs** (mitcad#144, `projects/listing.rs`,
+  `projects/operations.rs`): `project_tree` lists a project's folders and
+  designs without the network or writes, each design with its latest
+  version (counted in one walk of HEAD's first-parent history, renames
+  followed as `history` follows them), whether it changed since, and its
+  edit lock from the local copies of the last lock poll. `create_folder`,
+  `new_design`, `move` and `delete` are each one version with Save's rules
+  (`ProjectRepo::commit`: only their paths, the index locked, nothing
+  while HEAD is detached or a merge is in progress), and a Cloud project
+  pushes it as a Save does (the application passes `push: false` and
+  pushes itself). git records files, not folders, so a folder keeps an
+  empty `.gitkeep`, never listed; a move or delete that would empty a
+  folder's versions adds one. A move records old and new paths in one
+  version, so the B-rep store stays consistent (the commit keeps what the
+  new paths refer to) and the history follows the rename; the per-user
+  display state and the design opened last follow too. Refusals (a target
+  that is there, a path outside the project, hidden or not portable, a
+  design locked by another person, a delete that would lose unrecorded
+  work) change nothing and are answers' `error`s. The listing and the
+  commit's walk both skip every dot-folder.
 - **What a remote or a server sends is untrusted**: a check of a remote
   without a project clones it without file contents into a temporary
   repository that is removed, and names shown are cleaned of control and
@@ -868,10 +1000,15 @@ for the project through the design's file and could not find a project
 just made).
 
 - Dialogs (`files/ProjectDialogs`, `files/ProjectSettings`): New Project,
-  Open from Cloud, the design chooser, Move to a Project's question,
-  Change Address and Project Settings. The first three and Change Address
+  Open from Cloud, Move to a Project's question, Change Address and
+  Project Settings. New Project and Create Project Here make an empty
+  project (`create_project` without a design; mitcad#145), and Open
+  Project opens the design opened last (`last_design`), else the newest,
+  none for an empty project. The first two and Change Address
   share `CloudSection` (`files/CloudSection`): the service, the address
-  composed of account, repository and HTTPS or SSH (`files/CloudAddress`,
+  composed of owner (a user or an organisation; on GitLab also a group
+  with subgroups, `group/sub`), repository and HTTPS or SSH
+  (`files/CloudAddress`,
   plain Qt Core, unit-tested; a typed address fills the fields back), and
   the check of the address while typing (after a pause), again when the
   dialog gets the focus back, on a thread of its own; its failures get
@@ -886,11 +1023,55 @@ just made).
   It shows the project, its kind, the open design's version and the
   remote's state (`RemoteController::indicatorState`), and has the
   project's menu.
+- The AppKit frontend observes the same indicator state and opens its menu
+  through the native menu presenter. Native asynchronous model commands
+  enforce the shared edit-lock policy; checkpoint bookkeeping remains
+  available to finish inspections and cancel an in-flight edit after a lock
+  is lost.
 - Hooks for the edit locks and live updates (the lock controller, below):
   `ProjectIndicator::setLockText`, `setLiveText`, `setLockActions`;
   `ProjectSettingsHost::stoppingSync`, `settingsChanged`, `probeLocks`,
   `testBroker`; `MainWindow::m_openingReadOnly` while Open Read-Only
   opens a design.
+- The **Projects panel** (mitcad#145, `app/projects/`) shows the projects,
+  their folders and designs: location (Local, or a Cloud project's host and
+  owner from `CloudAddress`, a shared folder's parent folder) → project →
+  folders → designs, with the sync state, versions, edit locks and changes
+  `project_tree` gives (no network). `ProjectsTree::readProjects` reads
+  the known projects (`ProjectsSettings` in the application settings,
+  remembered by `setCurrentProject`) and the projects folder's on a
+  `RemoteTask` thread, each with a `Project` of the thread's own; the
+  panel reads again after Save (`updateVersionStatus`), a sync or a push,
+  a change of its own and when the application gets the focus back, and
+  only while it is shown. The panel only shows and asks; the window
+  (`projects/MainWindowProjectsPanel.cpp`) runs `new_design`,
+  `create_folder`, `move` and `delete` on the UI thread as Save records a
+  version (after `RemoteController::waitForBranch`, with the project's
+  author and `push: false`), then sends the current project's versions
+  through `RemoteController::versionRecorded` and another Cloud project's
+  with a `push` task. A move of the open design takes the window's file,
+  version base and edit lock along (`openDesignMoved`, the lock through
+  `LockController::designSaved`); deleting it closes it. Renames and new
+  names are typed in place (`QTreeWidget` editors), drags are the tree's
+  own mouse handling (no system drag and drop: nothing leaves the panel).
+  In the Docked layout it is a dock split above the browser's (the view
+  keeps its width); in the Floating one a card, which `FloatingLayout`
+  stacks above the browser's card (upper left cards stack in the order
+  added). The AppKit frontend has no panel: File › New Design asks for a
+  name in a dialog there. Shown or hidden at the start (mitcad#151): the
+  user's last choice (`ProjectsSettings::panelShown`, written only by a
+  show or hide), else shown when `anyProjectConfigured` finds a project
+  (folder entries only, nothing opened). A project row shows a display
+  name (mitcad#152; the project's `local.name`, `.mitcad/local/name.json`,
+  per computer and never versioned), else a Cloud project's
+  `owner/repository` (`ownerAndRepositoryOf`), else the folder's name;
+  row keys keep the folder's name. Project Settings from the panel
+  (the settings button for the selected row's project, mitcad#153; a
+  double-click on a Cloud project or its location) is the current
+  project's `file.project_settings`, or the same dialog for another project
+  without opening it (`panelProjectSettings`: its host refreshes the
+  panel, pushes a recorded version in the background, and has no lock
+  probe or remote work to settle, as the window runs none for it).
 
 ### Edit locks
 
@@ -1071,7 +1252,7 @@ it is installed; fuzz targets for the decoder and the readers are in
 
 Libraries of parts (mitcad#64) and the community library (mitcad#63) are
 git repositories with a manifest (`mitcad-library.json`) whose components
-are ordinary project files, usually with a **configuration table**
+are ordinary designs, usually with a **configuration table**
 (`core/model/src/configurations.rs`: named rows of parameter expressions
 with selectors such as Size and Length; applying a row only changes
 expressions). Formats: [libraries.md](libraries.md).
@@ -1116,9 +1297,9 @@ are model commands (jobs on the model worker).
 
 ### Autosave
 
-Autosave writes unsaved work as a version 2 project file with a metadata
-file and a session lock to a recovery folder in the user's local app data,
-never into the project (format: [app/COMMANDS.md](../app/COMMANDS.md),
+Autosave writes unsaved work as a single-file design (format 2) with a
+metadata file and a session lock to a recovery folder in the user's local
+app data, never into the project (format: [app/COMMANDS.md](../app/COMMANDS.md),
 Files). It writes only when the revision changed. On start the app offers
 sessions whose lock is stale; a recovered document keeps its file path
 but is modified and has no undo history.

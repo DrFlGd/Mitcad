@@ -43,7 +43,8 @@ struct DocumentSnapshot {
     // the browser's Joints folder.
     bool isJoint() const {
       return type == QStringLiteral("joint") || type == QStringLiteral("as_built_joint") ||
-             type == QStringLiteral("joint_origin") || type == QStringLiteral("rigid_group");
+             type == QStringLiteral("joint_origin") || type == QStringLiteral("rigid_group") ||
+             type == QStringLiteral("constraint_set");
     }
     // Evaluated without an error (perhaps with warnings).
     bool succeeded() const { return status == QStringLiteral("ok") || status == QStringLiteral("warning"); }
@@ -123,8 +124,8 @@ struct DocumentSnapshot {
   QJsonObject shownAnalysis() const;
   // An analysis by name, or an empty object.
   QJsonObject analysis(const QString& name) const;
-  // A joint or as-built joint as the `joints` query has it, or an empty
-  // object.
+  // A joint or as-built joint as the `joints` query has it, a constraint
+  // set as one of the kind "constraint" (mitcad#148), or an empty object.
   QJsonObject joint(const QString& uid) const;
   // The degrees of freedom of a component with joints (the `joints`
   // query's `dof` entry), or an empty object.

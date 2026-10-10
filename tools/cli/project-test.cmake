@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: MIT
-# Project files of version 3 (P12a) through mitcad-cli: a project's store
+# Design files of version 3 (P12a) through mitcad-cli: a project's store
 # keeps each base feature's B-rep data once, the version 3 file opens with
 # the same bodies as the single file it was converted from, and converted
 # back it is the same file.
@@ -91,4 +91,4 @@ cli(ok info "${v3}")
 if(NOT out MATCHES "is missing from the project store \\(\\.mitcad/brep\\)")
   message(FATAL_ERROR "a missing B-rep file is not reported:\n${out}")
 endif()
-message(STATUS "project files of version 3: ${stored} B-rep files, same bodies, same file back")
+message(STATUS "design files of version 3: ${stored} B-rep files, same bodies, same file back")

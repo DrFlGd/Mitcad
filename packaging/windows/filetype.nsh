@@ -5,7 +5,7 @@
 
 !macro MitcadFileTypeRegister
   WriteRegStr SHCTX "Software\Classes\.mitcad" "" "Mitcad.Project"
-  WriteRegStr SHCTX "Software\Classes\Mitcad.Project" "" "Mitcad project"
+  WriteRegStr SHCTX "Software\Classes\Mitcad.Project" "" "Mitcad design"
   WriteRegStr SHCTX "Software\Classes\Mitcad.Project\shell\open\command" "" \
     '"$INSTDIR\bin\mitcad.exe" --open "%1"'
   ; Tell the shell that file associations changed.

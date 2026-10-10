@@ -62,9 +62,9 @@ Rust libraries compiled into mitcad and mitcad-cli
   the Apache License 2.0 and the ISC licence, and from fiat-crypto under
   the MIT licence).
 
-Only in builds with the render worker (the CMake option MITCAD_RENDER, not
-in releases yet; docs/rendering.md): the executable usr/bin/mitcad-render,
-which alone links the following; mitcad starts it for View > Rendered.
+The render worker (docs/rendering.md): the executable
+usr/bin/mitcad-render, which alone links the following; mitcad starts it
+for View > Rendered.
   Cycles (https://projects.blender.org/blender/cycles), Blender's path
   tracer, Apache License 2.0, linked statically into mitcad-render, with
   code it bundles under Apache-2.0, BSD-3-Clause and MIT; the licence

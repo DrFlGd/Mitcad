@@ -132,7 +132,7 @@ void AutosaveManager::tick() {
     }
     ScopedTiming timing("autosave");
     taken = snapshot();
-    timing.setDetail(QStringLiteral("%1 bytes").arg(taken.project.size()));
+    timing.setDetail(QStringLiteral("%1 bytes").arg(taken.design.size()));
   } catch (const std::exception& e) {
     // Nothing may leave a timer's slot; the next tick tries again.
     qWarning().noquote() << QStringLiteral("Autosave failed: %1").arg(QString::fromUtf8(e.what()));
@@ -156,7 +156,7 @@ void AutosaveManager::tick() {
   const quint64 generation = m_generation;
   const quint64 revision = now.revision;
   m_pool.start([this, generation, revision, directory = m_directory, session = m_session, name = taken.name,
-                data = std::move(taken.project), about = std::move(about)]() mutable {
+                data = std::move(taken.design), about = std::move(about)]() mutable {
     QString error;
     const bool ok = publishAutosave(directory, session, data, std::move(about), error);
     if (ok) {

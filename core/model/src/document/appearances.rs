@@ -2,7 +2,7 @@
 //! Appearances kept in the document (mitcad#46): the user's own physically
 //! based appearances, next to Mitcad's library (`crate::appearance`).
 //! Creating, editing and deleting one is an undo step that recomputes
-//! nothing; they are saved in the project file. Bodies refer to an
+//! nothing; they are saved in the design file. Bodies refer to an
 //! appearance by id (`set_body_appearance`), and so do single faces
 //! (`set_face_appearance`, mitcad#53); deleting one gives the bodies that
 //! use it the default look again and the faces their body's, in the same

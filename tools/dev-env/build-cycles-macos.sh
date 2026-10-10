@@ -3,7 +3,9 @@
 # Builds the CPU render worker's dependencies in the isolated Apple Silicon
 # macOS guest, never on the host (mitcad#51, docs/rendering.md). Mirrors
 # build-cycles.sh/build-cycles.ps1 with AppleClang and Ninja. Metal is a
-# separate follow-up (mitcad#50); every GPU device is disabled here.
+# separate follow-up (mitcad#50); every GPU device is disabled here. Every
+# Mitcad build has the render worker and needs this prefix: setup-macos.sh
+# runs this once, and Mitcad's configure finds the default prefix itself.
 #
 # Usage: tools/dev-env/build-cycles-macos.sh [prefix]
 # Prefix: MITCAD_RENDER_DEPS, else ~/mitcad-render-deps; the same downloads/,
@@ -66,8 +68,8 @@ fetch() {
   fi
 }
 
-echo "== vcpkg: the manifest's render feature ($TRIPLET)"
-"$VCPKG_ROOT/vcpkg" install --x-manifest-root="$REPO" --x-feature=render \
+echo "== vcpkg: the manifest's libraries ($TRIPLET)"
+"$VCPKG_ROOT/vcpkg" install --x-manifest-root="$REPO" \
   --x-install-root="$VCPKG_INSTALLED" --overlay-triplets="$REPO/triplets" \
   --triplet "$TRIPLET" --no-print-usage > "$PREFIX/vcpkg.log" 2>&1 || {
   tail -40 "$PREFIX/vcpkg.log" >&2
@@ -131,6 +133,14 @@ if [ "$(git -C "$CYCLES_SRC" rev-parse HEAD)" != "$CYCLES_COMMIT" ]; then
 fi
 CYCLES_DONE=$INSTALL/cycles/.done-$CYCLES_VERSION-arm64-macos14.4-cpu
 if [ ! -f "$CYCLES_DONE" ]; then
+  # vcpkg nests this header under include/sse2neon; Cycles' find module
+  # searches only include. Without it the ARM branch is skipped and an
+  # AppleClang SSE4.2 probe can enable unsupported x86 compiler options.
+  SSE2NEON_INCLUDE=$DEPS/include/sse2neon
+  if [ ! -f "$SSE2NEON_INCLUDE/sse2neon.h" ]; then
+    echo "No sse2neon.h in $SSE2NEON_INCLUDE; install the arm64 vcpkg dependencies." >&2
+    exit 1
+  fi
   cmake -S "$CYCLES_SRC" -B "$BUILD/cycles" -G Ninja \
     -DCMAKE_BUILD_TYPE=Release -DCMAKE_OSX_ARCHITECTURES=arm64 \
     -DCMAKE_OSX_DEPLOYMENT_TARGET=14.4 \
@@ -145,7 +155,7 @@ if [ ! -f "$CYCLES_DONE" ]; then
     -DWITH_CYCLES_DEVICE_CUDA=OFF -DWITH_CYCLES_DEVICE_OPTIX=OFF -DWITH_CYCLES_DEVICE_HIP=OFF \
     -DWITH_CYCLES_DEVICE_HIPRT=OFF -DWITH_CYCLES_DEVICE_METAL=OFF -DWITH_CYCLES_DEVICE_ONEAPI=OFF \
     -DEMBREE_ROOT_DIR="$DEPS" -DTBB_ROOT_DIR="$DEPS" -DOPENIMAGEDENOISE_ROOT_DIR="$INSTALL/oidn" \
-    -DSSE2NEON_ROOT_DIR="$DEPS" -DZSTD_ROOT_DIR="$DEPS" -DPUGIXML_ROOT_DIR="$DEPS" \
+    -DSSE2NEON_INCLUDE_DIR="$SSE2NEON_INCLUDE" -DZSTD_ROOT_DIR="$DEPS" -DPUGIXML_ROOT_DIR="$DEPS" \
     -DCMAKE_BUILD_RPATH="$DEPS/lib;$INSTALL/oidn/lib" > "$PREFIX/cycles-configure.log"
   cmake --build "$BUILD/cycles" --parallel "$JOBS"
 
@@ -175,12 +185,24 @@ cp "$CYCLES_SRC"/src/doc/license/*license*.txt "$INSTALL/cycles/licenses/"
 # The compile definitions and host options must match Cycles' headers.
 # Export architecture-neutral options and ARM -m flags, never x86 SSE flags.
 python3 - "$BUILD/cycles/compile_commands.json" "$INSTALL/cycles" "$INSTALL/oidn" <<'PY'
-import json, pathlib, shlex, sys
+import json, pathlib, re, shlex, sys
 commands, out, oidn = sys.argv[1:]
 with open(commands) as stream:
     entry = next(e for e in json.load(stream) if e["file"].endswith("src/session/session.cpp"))
 args = shlex.split(entry["command"]) if "command" in entry else entry["arguments"]
 defines = sorted({a[2:] for a in args if a.startswith("-D")})
+define_names = {d.split("=", 1)[0] for d in defines}
+if "WITH_SSE2NEON" not in define_names:
+    raise SystemExit("Cycles was not built with SSE2NEON for arm64; rebuild its dependencies")
+x86_defines = [d for d in define_names if d.startswith(("WITH_KERNEL_SSE", "WITH_KERNEL_AVX",
+                                                       "__SSE", "__AVX", "__MMX"))]
+x86_option = re.compile(r"^-m(?:no-)?(?:sse|ssse|avx|mmx|f16c|fma|fpmath|lzcnt|bmi|"
+                        r"aes|pclmul|3dnow|xop|rdrnd|rdseed|cx16|rtm|xsave)")
+x86_options = [a for a in args if x86_option.match(a) or a in ("-m32", "-m64")
+               or a.startswith(("-march=x86", "-march=i386", "-march=i486", "-march=i586", "-march=i686"))]
+if x86_defines or x86_options:
+    raise SystemExit("Refusing x86 Cycles definitions/options in the arm64 export: "
+                     + ", ".join(sorted(x86_defines) + x86_options))
 options = [a for a in args if (a.startswith("-m") or a.startswith("-f")) and a != "-fPIC"]
 libraries = sorted(pathlib.Path(out, "lib").glob("*.a"))
 if not libraries:
@@ -207,4 +229,4 @@ mkdir -p "$BUILD/check"
 "$BUILD/cycles/bin/cycles" --background --quiet --samples 4 --width 64 --height 48 \
   --output "$BUILD/check/scene.png" "$CYCLES_SRC/examples/scene_cube_surface.xml"
 test -s "$BUILD/check/scene.png"
-echo "Done: configure Mitcad with -DMITCAD_RENDER=ON -DMITCAD_RENDER_DEPS=$PREFIX"
+echo "Done: Mitcad's configure takes the renderer's libraries from $PREFIX (MITCAD_RENDER_DEPS)"

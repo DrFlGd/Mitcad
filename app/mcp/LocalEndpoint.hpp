@@ -1,0 +1,28 @@
+// SPDX-License-Identifier: MIT
+#pragma once
+
+#include <QByteArray>
+#include <QList>
+#include <QString>
+
+namespace mitcad::mcp {
+
+// Requests and responses share the Rust protocol's MAX_FRAME_BYTES limit,
+// excluding the newline delimiter. Oversized results become tool errors.
+constexpr qsizetype kMaxFrameBytes = 8 * 1024 * 1024;
+
+struct Endpoint {
+  QString instance;
+  qint64 pid = 0;
+  quint16 port = 0;
+  QString token;
+};
+
+QString discoveryDirectory();
+bool prepareDiscoveryDirectory(QString* error);
+bool publishEndpoint(const Endpoint& endpoint, QString* error);
+void removeEndpoint(const Endpoint& endpoint);
+QList<Endpoint> discover(QString* error = nullptr);
+QByteArray encodeAuth(const Endpoint& endpoint);
+
+} // namespace mitcad::mcp

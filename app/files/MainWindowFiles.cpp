@@ -1,16 +1,18 @@
 // SPDX-License-Identifier: MIT
-// The main window's File menu (U6): New, New Project, Open Read-Only, Open
+// The main window's File menu (U6): New, New Design (mitcad#145,
+// projects/MainWindowProjectsPanel.cpp), New Project, Open Read-Only, Open
 // Project, Open from Cloud (mitcad#89, MainWindowProjects.cpp), Open (designs,
 // and any file Import takes, as a new document), Open Recent, Recover
 // Documents (P8c, MainWindowAutosave.cpp), Close, Save, Save As, Save
 // Version (P12d), Version History (P12e), Sync, Project Settings, Import,
 // Export, Insert Component; the INSERT
-// group's Insert Mesh, Insert DXF and Insert Component; files dropped on
-// the window.
+// group's Insert Mesh and Insert DXF, and Insert Component in the ASSEMBLE
+// group; files dropped on the window.
 #include "../MainWindow.hpp"
 
 #include <algorithm>
 #include <functional>
+#include <stdexcept>
 #include <utility>
 
 #include <QAction>
@@ -103,6 +105,8 @@ void MainWindow::registerFileCommands() {
   CommandDef component = def("insert.component", tr("Insert Component"), "insert-component",
                              tr("Places another Mitcad design here, linked or as a copy"),
                              [this] { insertComponent(); });
+  component.group = QStringLiteral("ASSEMBLE");
+  component.pinned = true;
   component.keywords = {QStringLiteral("assembly"), QStringLiteral("external"), QStringLiteral("mitcad")};
   m_registry->add(component);
   CommandDef importDef = def("file.import", tr("Import..."), "import",
@@ -121,7 +125,8 @@ void MainWindow::registerFileCommands() {
   exportDef.tab.clear(); // the File menu
   exportDef.mode = CommandDef::Mode::Any;
   exportDef.keywords = {QStringLiteral("step"), QStringLiteral("stl"), QStringLiteral("dxf"),
-                        QStringLiteral("save as"), QStringLiteral("3mf")};
+                        QStringLiteral("save as"), QStringLiteral("3mf"), QStringLiteral("usdz"),
+                        QStringLiteral("augmented reality")};
   m_registry->add(exportDef);
   // 3D Print (mitcad#13, MainWindowPrint.cpp): the MAKE group and the File menu.
   CommandDef print = def("make.print3d", tr("3D Print..."), "print-3d",
@@ -156,6 +161,8 @@ void MainWindow::createFileMenu() {
     file->addAction(action);
   };
   add(tr("&New"), QKeySequence::New, &MainWindow::newDocument);
+  // A design in a project, named first (mitcad#145, the Projects panel).
+  command("file.new_design", tr("Ne&w Design..."));
   // Local and Cloud projects (P12d, mitcad#89).
   command("file.new_project", tr("New &Project..."));
   add(tr("&Open..."), QKeySequence::Open, &MainWindow::openDocument);
@@ -179,7 +186,7 @@ void MainWindow::createFileMenu() {
   // settings.
   file->addSeparator();
   command("file.sync", tr("S&ync"));
-  command("file.project_settings", tr("Project Settin&gs..."));
+  command("file.project_settings", tr("Project Se&ttings..."));
   file->addSeparator();
   QAction* importAction = m_registry->action(QStringLiteral("file.import"));
   importAction->setText(tr("&Import..."));
@@ -190,9 +197,10 @@ void MainWindow::createFileMenu() {
   QAction* printAction = m_registry->action(QStringLiteral("make.print3d"));
   printAction->setText(tr("&3D Print..."));
   file->addAction(printAction);
-  // The final render (mitcad#48), with the render worker only.
+  // The final render (mitcad#48), when the render worker is there. Its
+  // underlined letter: &I is Import's, so Image's g (and Project Se&ttings).
   if (QAction* render = m_registry->action(QStringLiteral("file.render_image"))) {
-    render->setText(tr("Render &Image..."));
+    render->setText(tr("Render Ima&ge..."));
     file->addAction(render);
   }
   QAction* component = m_registry->action(QStringLiteral("insert.component"));
@@ -253,13 +261,13 @@ void MainWindow::updateRecentMenu() {
 bool MainWindow::openFile(const QString& path, QString& error) {
   const QFileInfo info(path);
   const FileKind kind = fileKind(path);
-  if (kind != FileKind::Project && !info.isFile()) {
+  if (kind != FileKind::Design && !info.isFile()) {
     error = tr("The file does not exist.");
     return false;
   }
   switch (kind) {
-  case FileKind::Project:
-    return loadProject(path, error);
+  case FileKind::Design:
+    return loadDesign(path, error);
   case FileKind::F3d:
   case FileKind::FreeCad:
   case FileKind::Ipt:
@@ -269,8 +277,7 @@ bool MainWindow::openFile(const QString& path, QString& error) {
   case FileKind::Cad:
   case FileKind::Mesh:
   case FileKind::Drawing: {
-    startImportedDocument(path);
-    if (!importPath(path, false, &error)) {
+    if (!startImportedDocument(path, error)) {
       return false;
     }
     addRecentFile(path);
@@ -284,6 +291,9 @@ bool MainWindow::openFile(const QString& path, QString& error) {
 }
 
 void MainWindow::openPath(const QString& path) {
+  if (deferForNativeCommand([this, path] { openPath(path); })) {
+    return;
+  }
   if (!maybeSave()) {
     return;
   }
@@ -296,11 +306,18 @@ void MainWindow::openPath(const QString& path) {
 }
 
 void MainWindow::openExternalFile(const QString& path) {
-  if (isMinimized()) {
-    showNormal();
+  if (deferForNativeCommand([this, path] { openExternalFile(path); })) {
+    return;
   }
-  raise();
-  activateWindow();
+  if (usesNativeUi()) {
+    present();
+  } else {
+    if (isMinimized()) {
+      showNormal();
+    }
+    raise();
+    activateWindow();
+  }
   if (fileKind(path) == FileKind::None) {
     const QString message = tr("Mitcad cannot open %1 files.").arg(QFileInfo(path).suffix());
     qWarning().noquote() << QStringLiteral("Could not open %1: %2").arg(path, message);
@@ -310,11 +327,76 @@ void MainWindow::openExternalFile(const QString& path) {
   openPath(path);
 }
 
-void MainWindow::startImportedDocument(const QString& path) {
-  installEmptyDocument(QFileInfo(path).completeBaseName());
+bool MainWindow::startImportedDocument(const QString& path, QString& error) {
+  const QString name = QFileInfo(path).fileName();
+  const QString file = QFileInfo(path).absoluteFilePath();
+  const FileKind kind = fileKind(path);
+  QJsonObject result;
+  QString sketch;
+  // Import into a document owned by the opening job. The active model,
+  // its history, edit lock and recovery stay until the whole import works.
+  const DocumentMaker read = [&](ModelJob& job) {
+    job.setStage(tr("Importing %1").arg(name));
+    rust::Box<Document> document = new_document();
+    const AttachedJob attached(*document, job);
+    const auto run = [&](const QJsonObject& command) {
+      if (job.control().is_cancelled()) { throw ComputationCancelled(); }
+      const QJsonObject answer = parseObject(document->command(rustStr(compactJson(command))));
+      if (job.control().is_cancelled()) { throw ComputationCancelled(); }
+      const QJsonValue failure = answer.value(QStringLiteral("error"));
+      if (!failure.isUndefined() && !failure.isNull()) {
+        throw std::runtime_error(failure.toString(tr("The imported geometry could not be computed.")).toStdString());
+      }
+      return answer;
+    };
+    if (kind == FileKind::Drawing) {
+      const QJsonObject created = run(cmd("sketch.create", {{QStringLiteral("plane"), QStringLiteral("xy")}}));
+      sketch = created.value(QStringLiteral("uid")).toString();
+      result = run(cmd("sketch.import_dxf", {{QStringLiteral("sketch"), sketch},
+                                            {QStringLiteral("path"), file},
+                                            {QStringLiteral("unit"), QStringLiteral("mm")}}));
+      run(cmd("merge_undo", {{QStringLiteral("depth"), 0},
+                              {QStringLiteral("label"), tr("Insert %1").arg(name)}}));
+    } else {
+      QJsonObject command = cmd("import_file", {{QStringLiteral("path"), file}});
+      if (kind == FileKind::Mesh) {
+        command.insert(QStringLiteral("unit_mm"), 1.0);
+      }
+      result = run(command);
+    }
+    return document;
+  };
+  if (!installDocument(name, QString(), read, error)) {
+    return false;
+  }
+  m_documentName = QFileInfo(path).completeBaseName();
+  updateWindowTitle();
+  m_autosave->saveSoon();
+  if (kind == FileKind::Drawing) {
+    const QJsonObject model = queryObject({{QStringLiteral("query"), QStringLiteral("sketch")},
+                                           {QStringLiteral("uid"), sketch}});
+    qInfo().noquote() << QStringLiteral("Inserted %1 into %2: %3 curves, %4 points, %5 texts, %6 profiles, "
+                                        "%7 warnings")
+                             .arg(name, model.value(QStringLiteral("name")).toString())
+                             .arg(result.value(QStringLiteral("curves")).toInt())
+                             .arg(result.value(QStringLiteral("points")).toInt())
+                             .arg(result.value(QStringLiteral("text_count")).toInt())
+                             .arg(model.value(QStringLiteral("regions")).toArray().size())
+                             .arg(result.value(QStringLiteral("warnings")).toArray().size());
+    showHint(tr("Inserted %1. Extrude (E) a profile of it.").arg(name));
+  } else {
+    qInfo().noquote() << QStringLiteral("Imported %1 as %2: %3 body(ies)")
+                             .arg(name, result.value(QStringLiteral("name")).toString())
+                             .arg(result.value(QStringLiteral("bodies")).toArray().size());
+    showHint(tr("Imported %1.").arg(name));
+  }
+  return true;
 }
 
 void MainWindow::closeDocument() {
+  if (deferForNativeCommand([this] { closeDocument(); })) {
+    return;
+  }
   // Cmd+W in the Settings window (macOS) closes the window; the menu's Close
   // may get the key before the window's own shortcut does.
   if (auto* settings = qobject_cast<SettingsWindow*>(QApplication::activeWindow())) {
@@ -324,7 +406,9 @@ void MainWindow::closeDocument() {
   if (!maybeSave()) {
     return;
   }
-  installEmptyDocument(QString());
+  if (!installEmptyDocument(QString())) {
+    return;
+  }
   qInfo() << "Document closed";
   showHint(tr("Create a sketch to start modelling. S searches for commands."));
 }
@@ -350,10 +434,10 @@ void MainWindow::dropEvent(QDropEvent* event) {
   }
   event->acceptProposedAction();
   qDebug().noquote() << QStringLiteral("Dropped %1").arg(paths.join(QStringLiteral(", ")));
-  // Later, so that the drag ends first; a project opens, the rest come in.
+  // Later, so that the drag ends first; a design opens, the rest come in.
   QTimer::singleShot(0, this, [this, paths] {
     for (const QString& path : paths) {
-      if (fileKind(path) == FileKind::Project) {
+      if (fileKind(path) == FileKind::Design) {
         openPath(path);
       } else if (m_mode == Mode::Idle || fileKind(path) == FileKind::Drawing) {
         importPath(path, true);
@@ -366,7 +450,7 @@ void MainWindow::dropEvent(QDropEvent* event) {
 // Import
 
 void MainWindow::importFile() {
-  const QString path = QFileDialog::getOpenFileName(this, tr("Import"), fileDialogDirectory(), importFilter());
+  const QString path = dialogOpenFileName(this, tr("Import"), fileDialogDirectory(), importFilter());
   if (!path.isEmpty()) {
     importPath(path, true);
   }
@@ -386,7 +470,7 @@ bool MainWindow::importPath(const QString& path, bool interactive, QString* erro
     }
     startF3dImport(path);
     return true;
-  case FileKind::Project:
+  case FileKind::Design:
     insertComponent(path);
     return true;
   case FileKind::Cad:
@@ -575,7 +659,7 @@ bool MainWindow::importDrawing(const QString& path, bool interactive, QString* e
 }
 
 void MainWindow::insertMesh() {
-  const QString path = QFileDialog::getOpenFileName(this, tr("Insert Mesh"), fileDialogDirectory(),
+  const QString path = dialogOpenFileName(this, tr("Insert Mesh"), fileDialogDirectory(),
                                                     tr("Meshes (*.stl *.obj);;All files (*)"));
   if (!path.isEmpty()) {
     importPath(path, true);
@@ -583,7 +667,7 @@ void MainWindow::insertMesh() {
 }
 
 void MainWindow::insertDxf() {
-  const QString path = QFileDialog::getOpenFileName(this, tr("Insert DXF"), fileDialogDirectory(),
+  const QString path = dialogOpenFileName(this, tr("Insert DXF"), fileDialogDirectory(),
                                                     tr("DXF drawings (*.dxf);;All files (*)"));
   if (!path.isEmpty()) {
     importPath(path, true);
@@ -596,8 +680,8 @@ void MainWindow::insertComponent(const QString& given) {
   }
   QString path = given;
   if (path.isEmpty()) {
-    path = QFileDialog::getOpenFileName(this, tr("Insert Component"), fileDialogDirectory(),
-                                        tr("Mitcad projects (*.mitcad)"));
+    path = dialogOpenFileName(this, tr("Insert Component"), fileDialogDirectory(),
+                                        tr("Mitcad designs (*.mitcad)"));
     if (path.isEmpty()) {
       return;
     }
@@ -660,7 +744,7 @@ void MainWindow::startF3dImport(const QString& path) {
               return;
             }
             m_documentName = QFileInfo(path).completeBaseName();
-            // Not saved anywhere yet: a project read is modified until it
+            // Not saved anywhere yet: a design read is modified until it
             // is marked saved (P8), so closing it asks, and autosave
             // keeps it at once (a long import is not to be lost).
             updateWindowTitle();
@@ -719,8 +803,13 @@ void MainWindow::exportFile() {
       command.insert(QStringLiteral("unit"), choice->unit);
     }
     if (choice->format == QStringLiteral("stl") || choice->format == QStringLiteral("obj") ||
-        choice->format == QStringLiteral("3mf")) {
+        choice->format == QStringLiteral("3mf") || choice->format == QStringLiteral("usdz")) {
       command.insert(QStringLiteral("refinement"), choice->refinement);
+    }
+    if (choice->format == QStringLiteral("usdz") && !m_filePath.isEmpty()) {
+      // The bodies' appearances with their textures (mitcad#123), whose
+      // paths are relative to the design's folder.
+      command.insert(QStringLiteral("design_folder"), QFileInfo(m_filePath).absolutePath());
     }
     if (choice->format == QStringLiteral("3mf")) {
       // The parts in the colours the view shows (mitcad#13).
@@ -749,13 +838,20 @@ void MainWindow::exportFile() {
   if (choice->format != QStringLiteral("dxf") && !choice->coordinates.isEmpty()) {
     what += QStringLiteral(", %1 coordinates").arg(choice->coordinates);
   }
+  if (choice->format == QStringLiteral("usdz")) {
+    // The materials, and textures written in their base colour.
+    what += tr(", %1 material(s)").arg(result.value(QStringLiteral("materials")).toArray().size());
+    for (const QJsonValue warning : result.value(QStringLiteral("warnings")).toArray()) {
+      qWarning().noquote() << QStringLiteral("Export: %1").arg(warning.toString());
+    }
+  }
   qInfo().noquote() << QStringLiteral("Exported %1: %2, %3").arg(choice->path, choice->format, what);
   showHint(tr("Exported %1 (%2).").arg(QDir::toNativeSeparators(choice->path), what));
 }
 
 void MainWindow::exportSketch(const QString& sketch) {
   const QString name = featureName(sketch);
-  const QString path = QFileDialog::getSaveFileName(this, tr("Save As DXF"),
+  const QString path = dialogSaveFileName(this, tr("Save As DXF"),
                                                     QDir(fileDialogDirectory()).filePath(name + QStringLiteral(".dxf")),
                                                     tr("DXF drawings (*.dxf)"));
   if (path.isEmpty()) {

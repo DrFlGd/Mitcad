@@ -38,10 +38,10 @@ public:
   void start();
 
 signals:
-  // ok: `project` is the imported document's project file (JSON) and
+  // ok: `design` is the imported document's design file (JSON) and
   // `result` the import_f3d command's result with its report. Not ok:
   // `error` says why (cancelled: empty).
-  void finished(bool ok, const QByteArray& project, const QJsonObject& result, const QString& error);
+  void finished(bool ok, const QByteArray& design, const QJsonObject& result, const QString& error);
 
 private:
   void readProgress();
@@ -69,7 +69,7 @@ private:
 };
 
 // The worker process: imports the file given after --import-worker and
-// writes the project (--output) and the command's result (--result). A
+// writes the design (--output) and the command's result (--result). A
 // line "stop" on its standard input stops the import early. Returns the
 // process's exit code.
 int runImportWorker(int argc, char* argv[]);

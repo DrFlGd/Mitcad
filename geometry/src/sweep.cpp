@@ -12,12 +12,14 @@
 #include <BRepAdaptor_Curve.hxx>
 #include <BRepAdaptor_Surface.hxx>
 #include <BRepAlgoAPI_Fuse.hxx>
+#include <BRepAlgoAPI_Section.hxx>
 #include <BRepAlgoAPI_Splitter.hxx>
 #include <BRepBndLib.hxx>
 #include <BRepBuilderAPI_MakeFace.hxx>
 #include <BRepBuilderAPI_MakeVertex.hxx>
 #include <BRepBuilderAPI_Transform.hxx>
 #include <BRepClass3d_SolidClassifier.hxx>
+#include <BRepClass_FaceClassifier.hxx>
 #include <BRepExtrema_DistShapeShape.hxx>
 #include <BRepGProp.hxx>
 #include <BRepOffsetAPI_DraftAngle.hxx>
@@ -721,16 +723,82 @@ ShapePtr split_keep(const Shape& solid, const TopoDS_Shape& tool, const NameList
   return fused(kept, what);
 }
 
+namespace {
+
+// Walls along a straight sweep through the lines where the tool crosses
+// its start face (named `near`) inside it, from behind the start to past
+// the end: they part the sweep into columns over the parts of the profile.
+TopoDS_Compound start_walls(const Shape& sweep, const std::string& near, const TopoDS_Shape& tool,
+                            const gp_Dir& along) {
+  BRep_Builder builder;
+  TopoDS_Compound walls;
+  builder.MakeCompound(walls);
+  const double size = diagonal(bounds_of(sweep.occt())) + 1.0;
+  gp_Trsf back;
+  back.SetTranslation(gp_Vec(along) * -size);
+  for (int i = 0; i < sweep.face_count(); ++i) {
+    const NameList& names = sweep.face_names(i);
+    if (std::find(names.begin(), names.end(), near) == names.end()) {
+      continue;
+    }
+    const TopoDS_Face& start = sweep.face(i);
+    BRepAlgoAPI_Section section(start, tool, false);
+    section.Approximation(true);
+    detail::build(section);
+    if (!section.IsDone() || section.HasErrors()) {
+      throw std::runtime_error("the target's crossing with the profile could not be found");
+    }
+    for (TopExp_Explorer e(section.Shape(), TopAbs_EDGE); e.More(); e.Next()) {
+      const BRepAdaptor_Curve curve(TopoDS::Edge(e.Current()));
+      const gp_Pnt middle = curve.Value((curve.FirstParameter() + curve.LastParameter()) / 2.0);
+      // Not along the profile's own edges.
+      const BRepClass_FaceClassifier inside(start, middle, Precision::Confusion());
+      if (inside.State() != TopAbs_IN) {
+        continue;
+      }
+      const TopoDS_Shape behind = BRepBuilderAPI_Transform(e.Current(), back, true).Shape();
+      BRepPrimAPI_MakePrism wall(behind, gp_Vec(along) * (3.0 * size));
+      wall.Build();
+      if (!wall.IsDone()) {
+        throw std::runtime_error("the sweep could not be parted where the target crosses the profile");
+      }
+      builder.Add(walls, wall.Shape());
+    }
+  }
+  return walls;
+}
+
+} // namespace
+
 ShapePtr trimmed(const Shape& sweep, const Target& target, const TopoDS_Shape& tool,
                  const gp_Dir& along, const std::string& near, const NameList& far,
-                 const std::string& unreached) {
-  const std::vector<ShapePtr> pieces = split_pieces(sweep, tool, far, "the sweep to its target");
+                 const std::string& unreached, bool straight) {
+  std::vector<ShapePtr> pieces = split_pieces(sweep, tool, far, "the sweep to its target");
   int near_faces = 0;
   for (const ShapePtr& piece : pieces) {
     near_faces += count_named(*piece, near);
   }
   if (near_faces > count_named(sweep, near)) {
-    throw std::invalid_argument("the target crosses the profile where the sweep starts");
+    // A plane that crosses the profile leaves its end undefined. Up to a
+    // body (its first face) or a curved face that the profile starts
+    // inside of or on, each part of a straight sweep ends at the first
+    // face beyond the profile: the sweep is parted into columns over the
+    // parts first, so that a column inside the body does not take the
+    // body's inside next to another column.
+    const bool each_part =
+        straight && !is_planar_target(target) && !(target.kind == Target::Kind::Body && target.through);
+    if (!each_part) {
+      throw std::invalid_argument("the target crosses the profile where the sweep starts");
+    }
+    const TopoDS_Compound walls = start_walls(sweep, near, tool, along);
+    if (TopExp_Explorer(walls, TopAbs_FACE).More()) {
+      pieces.clear();
+      for (const ShapePtr& column : split_pieces(sweep, walls, far, "the sweep along the profile's parts")) {
+        for (const ShapePtr& piece : split_pieces(*column, tool, far, "the sweep to its target")) {
+          pieces.push_back(piece);
+        }
+      }
+    }
   }
   std::vector<ShapePtr> kept;
   if (target.kind == Target::Kind::Body && target.through) {

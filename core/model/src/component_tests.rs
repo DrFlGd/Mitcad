@@ -2,7 +2,7 @@
 //! Components and occurrences (F6) with the mock kernel: shared
 //! definitions, placements, nesting, the active component, new-component
 //! operations, timeline moves, copies, external components and the
-//! project file.
+//! design file.
 
 use serde_json::{Value, json};
 
@@ -300,6 +300,58 @@ fn components_from_bodies_take_the_bodies() {
 }
 
 #[test]
+fn a_component_from_bodies_can_fill_an_existing_empty_component() {
+    let mut b = block();
+    let (base, occurrence) = b
+        .doc
+        .create_component(Some("Base"), shift(0.0, 0.0, 5.0), false)
+        .unwrap();
+    let made = b.doc.components_from_bodies(&[b.body]).unwrap();
+    let (added, component) = &made[0];
+    b.doc.move_made_component(added.uid, base).unwrap();
+    // The body is the existing component's, placed by its occurrence; the
+    // component the feature made is gone.
+    let a = b.doc.assembly();
+    assert!(a.component(*component).is_none());
+    assert_eq!(a.created_by(added.uid), Some(base));
+    assert_eq!(a.occurrences.len(), 1);
+    assert_eq!(a.occurrences[0].uid, occurrence);
+    assert_eq!(b.doc.body_component(b.body), Some(base));
+    // Its features reach the body.
+    b.doc.activate_component(base).unwrap();
+    let uid = b
+        .doc
+        .add_feature(&def(fillet_json(b.body)), None)
+        .unwrap()
+        .uid;
+    assert_eq!(b.doc.status(uid), Some(&FeatureStatus::Ok));
+    // Only into an empty component: one with a feature is refused, as is a
+    // feature that made none.
+    let (other, _) = b
+        .doc
+        .create_component(Some("Other"), Transform::IDENTITY, false)
+        .unwrap();
+    let error = b
+        .doc
+        .move_made_component(added.uid, ComponentUid::ROOT)
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("not an empty component"), "{error}");
+    let error = b
+        .doc
+        .move_made_component(uid, other)
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("made no component"), "{error}");
+    // Undo puts the made component back.
+    b.doc.undo();
+    b.doc.undo();
+    b.doc.undo();
+    b.doc.undo();
+    assert_eq!(b.doc.body_component(b.body), Some(*component));
+}
+
+#[test]
 fn timeline_moves_and_captured_positions_place_occurrences() {
     let mut doc = Document::new(MockKernel::default());
     let (_, o1) = doc
@@ -515,7 +567,7 @@ fn deleting_the_last_occurrence_deletes_the_component() {
 }
 
 #[test]
-fn components_survive_the_project_file() {
+fn components_survive_the_design_file() {
     let mut doc = Document::new(MockKernel::default());
     small_block(&mut doc);
     let (_, o1) = doc

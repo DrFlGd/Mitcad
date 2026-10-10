@@ -67,5 +67,7 @@ CommandDef asBuiltJointCommand(const CommandContext& context);
 CommandDef jointOriginCommand(const CommandContext& context);
 CommandDef rigidGroupCommand(const CommandContext& context);
 CommandDef driveJointCommand(const CommandContext& context);
+// Assembly constraints (mitcad#148).
+CommandDef constraintCommand(const CommandContext& context);
 
 } // namespace mitcad::cmd

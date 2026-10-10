@@ -795,6 +795,80 @@ impl LinkResolver for LibraryResolver {
         repo.source(commit, &request.component, &request.url)
             .map_err(|e| e.to_string())
     }
+
+    fn library_texture(&self, request: &LibraryRequest, path: &str) -> Result<Vec<u8>, String> {
+        use mitcad_model::appearance::{MAX_EMBEDDED_IMAGE, image_format};
+
+        if request.rev.len() != 40 || ObjectId::from_hex(request.rev.as_bytes()).is_err() {
+            return Err("a library texture needs the component's exact commit".to_owned());
+        }
+        let (repo, commit) = self
+            .cache
+            .find(&request.library, &request.url, &request.rev)
+            .map_err(|e| e.to_string())?;
+        let manifest = repo.manifest(commit).map_err(|e| e.to_string())?;
+        let problems = manifest.problems();
+        if !problems.is_ok() {
+            return Err(format!(
+                "the library's manifest at {}: {}",
+                commit.to_hex_with_len(7),
+                problems.errors.join("; ")
+            ));
+        }
+        let item = manifest.component(&request.component).ok_or_else(|| {
+            format!(
+                "{} {} has no component '{}'",
+                manifest.id,
+                commit.to_hex_with_len(7),
+                request.component
+            )
+        })?;
+        let relative = texture_path(&item.path, path)?;
+        let bytes = repo
+            .read(commit, &relative)
+            .map_err(|e| e.to_string())?
+            .ok_or_else(|| format!("texture '{relative}' is not in the library"))?;
+        if bytes.len() > MAX_EMBEDDED_IMAGE {
+            return Err(format!(
+                "texture '{relative}' is larger than the {} MB a design file embeds",
+                MAX_EMBEDDED_IMAGE >> 20
+            ));
+        }
+        if image_format(&bytes).is_none() {
+            return Err(format!("texture '{relative}' is no PNG or JPEG file"));
+        }
+        Ok(bytes)
+    }
+}
+
+/// A texture's path in the commit tree. Parent directories may reach
+/// shared images elsewhere in the library, but never leave its root.
+fn texture_path(design: &str, texture: &str) -> Result<String, String> {
+    let invalid = || format!("texture '{texture}' is not a path inside the library");
+    if texture.is_empty()
+        || texture.starts_with('/')
+        || texture.contains('\\')
+        || texture.contains(':')
+        || !manifest::valid_path(design)
+    {
+        return Err(invalid());
+    }
+    let mut parts: Vec<_> = design.split('/').collect();
+    parts.pop();
+    for part in texture.split('/') {
+        match part {
+            "" | "." => {}
+            ".." => {
+                parts.pop().ok_or_else(invalid)?;
+            }
+            part => parts.push(part),
+        }
+    }
+    let path = parts.join("/");
+    if !manifest::valid_path(&path) {
+        return Err(invalid());
+    }
+    Ok(path)
 }
 
 /// Reads a manifest JSON from a folder (a library being made), at most

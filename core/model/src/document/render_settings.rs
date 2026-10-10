@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 //! The document's render settings (mitcad#47, `crate::render_settings`):
 //! changed by undoable commands that recompute nothing, saved in the
-//! project file.
+//! design file.
 
 use serde_json::{Map, Value};
 

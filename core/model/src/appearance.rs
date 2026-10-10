@@ -4,14 +4,14 @@
 //! BSDF's: base colour, metalness, roughness, specular, transmission and
 //! index of refraction, coat, emission and opacity, with an optional
 //! texture for the base colour (mitcad#53: an image file, or the image
-//! embedded in the project file, projected onto the body). The shaded view
+//! embedded in the design file, projected onto the body). The shaded view
 //! colours a body with the appearance's display colour, its base colour;
 //! the rendered view (`docs/rendering.md`) uses all parameters and the
 //! texture.
 //!
 //! Mitcad's library ([`library`]) is built in and read-only; a document
 //! keeps its own appearances (`document/appearances.rs`), saved in the
-//! project file. A body names its appearance by id
+//! design file. A body names its appearance by id
 //! (`set_body_appearance`), and single faces of it can have their own
 //! (`set_face_appearance`, mitcad#53); an id that is in neither (an
 //! imported one) shows the default look.
@@ -66,7 +66,7 @@ pub struct Appearance {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Texture {
-    /// The image file, relative to the project file's folder or absolute.
+    /// The image file, relative to the design file's folder or absolute.
     /// With `data`, the name of the file the image was embedded from.
     pub path: String,
     /// How large one repeat of the image is on the body (width, height), in
@@ -78,7 +78,7 @@ pub struct Texture {
     pub rotation: f64,
     #[serde(default)]
     pub projection: Projection,
-    /// The image file's bytes, when the image is embedded in the project
+    /// The image file's bytes, when the image is embedded in the design
     /// file (mitcad#53); else the file at `path` is read.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub data: Option<ImageData>,
@@ -93,7 +93,7 @@ pub struct Texture {
     pub image_sha256: Option<String>,
 }
 
-/// The largest image a project file embeds (decoded), 32 MB.
+/// The largest image a design file embeds (decoded), 32 MB.
 pub const MAX_EMBEDDED_IMAGE: usize = 32 << 20;
 
 /// An embedded image: the file's bytes as base64, shared by the copies of
@@ -117,7 +117,7 @@ impl ImageData {
             .map_err(|e| format!("texture: the embedded image is no base64 data: {e}"))?;
         if bytes.len() > MAX_EMBEDDED_IMAGE {
             return Err(format!(
-                "texture: the embedded image is {} MB, more than the {} MB a project file \
+                "texture: the embedded image is {} MB, more than the {} MB a design file \
                  embeds",
                 bytes.len() >> 20,
                 MAX_EMBEDDED_IMAGE >> 20

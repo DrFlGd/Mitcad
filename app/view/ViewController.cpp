@@ -44,6 +44,9 @@
 
 #include "../browser/DocumentHost.hpp"
 #include "../framework/Dialogs.hpp"
+#ifdef MITCAD_MACOS_NATIVE_UI
+#include "../platform/NativeDialogs.hpp"
+#endif
 #include "../framework/AppSettings.hpp"
 #include "../framework/CachePreferences.hpp"
 #include "../framework/CommandRegistry.hpp"
@@ -58,13 +61,11 @@
 // Remote repositories' git program (P12 remote).
 #include "../files/RemotePreferences.hpp"
 // View > Rendered (mitcad#32).
-#ifdef MITCAD_RENDER
 #include "../render/RenderClient.hpp"
 #include "../render/RenderDevice.hpp"
 #include "../render/RenderEnvironmentDialog.hpp"
 #include "../render/RenderImageDialog.hpp"
 #include "../render/RenderMode.hpp"
-#endif
 
 namespace mitcad {
 namespace {
@@ -374,7 +375,6 @@ ViewController::ViewController(OcctViewer& viewer, CommandRegistry& registry, Do
                                std::function<void()> lookAt, QWidget* window)
     : QObject(window), m_viewer(viewer), m_registry(registry), m_host(host),
       m_lookAt(std::move(lookAt)), m_window(window), m_settings(ViewSettings::load()) {
-#ifdef MITCAD_RENDER
   // Offered when the render worker is installed next to the application
   // (a package without it has no rendered view).
   if (!render::RenderClient::workerPath().isEmpty()) {
@@ -386,7 +386,6 @@ ViewController::ViewController(OcctViewer& viewer, CommandRegistry& registry, Do
     qInfo().noquote() << QStringLiteral("No render worker (%1) next to the application: no rendered view")
                              .arg(QString::fromLatin1(render::kWorkerName));
   }
-#endif
   // The automatic background follows the system's light and dark modes.
   connect(&m_viewer, &OcctViewer::themeChanged, this, [this] {
     if (m_settings.background != ViewSettings::Background::Automatic) {
@@ -397,11 +396,9 @@ ViewController::ViewController(OcctViewer& viewer, CommandRegistry& registry, Do
     bool gradient = true;
     m_settings.colors(top, bottom, gradient);
     m_viewer.setBackground(top, bottom, gradient);
-#ifdef MITCAD_RENDER
     if (m_render != nullptr) {
       m_render->redisplay();
     }
-#endif
     qDebug().noquote() << QStringLiteral("Background %1 %2").arg(top.name(), bottom.name());
   });
 }
@@ -449,7 +446,6 @@ void ViewController::registerCommands() {
     add(entry.id, QCoreApplication::translate("View", entry.name), "visual-style",
         [this, style] { setStyle(style); }, {QStringLiteral("visual style"), QStringLiteral("display")});
   }
-#ifdef MITCAD_RENDER
   if (m_render != nullptr) {
     add("view.rendered", tr("Rendered"), "visual-style", [this] { setRendered(!m_render->isEnabled()); },
         {QStringLiteral("render"), QStringLiteral("path tracing"), QStringLiteral("cycles"), QStringLiteral("visual style")},
@@ -465,7 +461,6 @@ void ViewController::registerCommands() {
          QStringLiteral("jpeg"), QStringLiteral("exr"), QStringLiteral("photo"), QStringLiteral("cycles")},
         tr("Renders the view or a named view to an image file at a chosen size and quality"));
   }
-#endif
   add("view.grid", tr("Layout Grid"), "grid", [this] { setGridShown(!m_settings.gridShown); },
       {QStringLiteral("grid")}, tr("Shows the grid on the ground or sketch plane"));
   add("view.snap_grid", tr("Snap to Grid"), "grid", [this] { setSnapToGrid(!m_settings.snapToGrid); },
@@ -627,14 +622,12 @@ void ViewController::syncChecks() {
   check(QStringLiteral("view.perspective"), m_settings.perspective);
   check(QStringLiteral("view.grid"), m_settings.gridShown);
   check(QStringLiteral("view.snap_grid"), m_settings.snapToGrid);
-#ifdef MITCAD_RENDER
   if (m_render != nullptr) {
     check(QStringLiteral("view.rendered"), m_render->isEnabled());
     if (m_renderEnvironment) {
       m_renderEnvironment->setRenderedShown(m_render->isEnabled());
     }
   }
-#endif
 }
 
 void ViewController::setStyle(VisualStyle style) {
@@ -662,28 +655,22 @@ void ViewController::setBackground(ViewSettings::Background background) {
   bool gradient = true;
   m_settings.colors(top, bottom, gradient);
   m_viewer.setBackground(top, bottom, gradient);
-#ifdef MITCAD_RENDER
   // A rendered frame over the view's background is shown over the new one.
   if (m_render != nullptr) {
     m_render->redisplay();
   }
-#endif
   syncChecks();
   qDebug().noquote() << QStringLiteral("Background %1 %2").arg(top.name(), bottom.name());
 }
 
-void ViewController::setRendered([[maybe_unused]] bool on) {
-#ifdef MITCAD_RENDER
+void ViewController::setRendered(bool on) {
   if (m_render != nullptr) {
     m_render->setEnabled(on);
   }
-#endif
   syncChecks();
 }
 
-void ViewController::setRenderSettings([[maybe_unused]] const QJsonObject& settings,
-                                       [[maybe_unused]] const QString& documentFolder) {
-#ifdef MITCAD_RENDER
+void ViewController::setRenderSettings(const QJsonObject& settings, const QString& documentFolder) {
   if (m_render == nullptr) {
     return;
   }
@@ -698,11 +685,9 @@ void ViewController::setRenderSettings([[maybe_unused]] const QJsonObject& setti
       m_renderImage->refresh();
     }
   }
-#endif
 }
 
 void ViewController::showRenderImage() {
-#ifdef MITCAD_RENDER
   if (m_render == nullptr) {
     return;
   }
@@ -710,16 +695,16 @@ void ViewController::showRenderImage() {
     m_renderImage = new RenderImageDialog(m_host, m_viewer, m_window);
   }
   m_renderImage->setDocument(m_documentFolder, m_documentName);
-  m_renderImage->show();
-  m_renderImage->raise();
-  m_renderImage->activateWindow();
+  showDialog(m_renderImage);
+  if (!m_renderImage->testAttribute(Qt::WA_DontShowOnScreen)) {
+    m_renderImage->raise();
+    m_renderImage->activateWindow();
+  }
   m_renderImage->refresh();
   qDebug().noquote() << "Render image dialog opened";
-#endif
 }
 
 void ViewController::showRenderEnvironment() {
-#ifdef MITCAD_RENDER
   if (m_render == nullptr) {
     return;
   }
@@ -727,13 +712,14 @@ void ViewController::showRenderEnvironment() {
     m_renderEnvironment =
         new RenderEnvironmentDialog(m_host, m_viewer, [this](bool on) { setRendered(on); }, m_window);
   }
-  m_renderEnvironment->show();
-  m_renderEnvironment->raise();
-  m_renderEnvironment->activateWindow();
+  showDialog(m_renderEnvironment);
+  if (!m_renderEnvironment->testAttribute(Qt::WA_DontShowOnScreen)) {
+    m_renderEnvironment->raise();
+    m_renderEnvironment->activateWindow();
+  }
   m_renderEnvironment->setRenderedShown(m_render->isEnabled());
   m_renderEnvironment->refresh();
   qDebug().noquote() << "Render environment dialog opened";
-#endif
 }
 
 void ViewController::setGridShown(bool shown) {
@@ -817,7 +803,7 @@ void ViewController::showOrientationCubeMenu(const QPoint& globalPosition) {
     }
   }
   qDebug().noquote() << QStringLiteral("Context menu: %1").arg(entries.join(QStringLiteral(" | ")));
-  menu.exec(globalPosition);
+  execMenu(&menu, globalPosition);
 }
 
 // ---------------------------------------------------------------------------
@@ -854,7 +840,7 @@ void ViewController::showGridSettings() {
                             .arg(spacing->value())
                             .arg(spacing->suffix());
   prepareModal(&dialog);
-  if (dialog.exec() != QDialog::Accepted) {
+  if (execDialog(&dialog) != QDialog::Accepted) {
     return;
   }
   m_settings.gridSpacing = fixed->isChecked() ? spacing->value() : 0.0;
@@ -887,9 +873,14 @@ void ViewController::showPreferences(const QString& page) {
     if (!page.isEmpty()) {
       open->showPane(wantedIndex);
     }
-    open->show();
-    open->raise();
-    open->activateWindow();
+    showDialog(open);
+#ifdef MITCAD_MACOS_NATIVE_UI
+    if (!nativeDialogsActive())
+#endif
+    {
+      open->raise();
+      open->activateWindow();
+    }
     return;
   }
   window = new SettingsWindow(m_window);
@@ -1038,7 +1029,7 @@ void ViewController::showPreferences(const QString& page) {
     };
     show();
     connect(button, &QPushButton::clicked, host, [host, color, title, show, changed] {
-      const QColor chosen = QColorDialog::getColor(*color, host, title);
+      const QColor chosen = dialogColor(*color, host, title);
       if (chosen.isValid()) {
         *color = chosen;
         show();
@@ -1062,7 +1053,6 @@ void ViewController::showPreferences(const QString& page) {
   // design. The worker lists its devices; GPUs come after the automatic
   // choice and the CPU.
   QComboBox* renderDevice = nullptr;
-#ifdef MITCAD_RENDER
   if (m_render != nullptr) {
     renderDevice = new QComboBox;
     renderDevice->setObjectName(QStringLiteral("renderDevice"));
@@ -1097,7 +1087,6 @@ void ViewController::showPreferences(const QString& page) {
     }
     qDebug().noquote() << QStringLiteral("Preferences: render devices %1").arg(labels.join(QStringLiteral(", ")));
   }
-#endif
   groups.insert(QStringLiteral("display"), displayBox);
 
   *commit = [this, general, top, bottom, scheme, zoomToCursor, reverseZoom, constrained, animate, camera, background,
@@ -1147,7 +1136,6 @@ void ViewController::showPreferences(const QString& page) {
                                                            : QStringLiteral("never"),
                                    onOff(remote.autoPush), onOff(remote.allowLive),
                                    remote.defaultBroker.isEmpty() ? QStringLiteral("none") : remote.defaultBroker);
-#ifdef MITCAD_RENDER
     if (renderDevice != nullptr && renderDevice->currentData().toString() != render::renderDeviceChoice()) {
       render::setRenderDeviceChoice(renderDevice->currentData().toString());
       qDebug().noquote() << QStringLiteral("Preferences: render device %1").arg(render::renderDeviceChoice());
@@ -1155,9 +1143,6 @@ void ViewController::showPreferences(const QString& page) {
         m_render->deviceChanged();
       }
     }
-#else
-    (void)renderDevice;
-#endif
     apply();
     if (generalChanged) {
       generalChanged();
@@ -1248,7 +1233,7 @@ void ViewController::showPreferences(const QString& page) {
     window->setClosedHandler(changed);
     window->setWindowTitle(tr("Settings"));
     window->showPane(wantedIndex);
-    window->show();
+    showDialog(window);
     return;
   }
 
@@ -1292,7 +1277,6 @@ void ViewController::showPreferences(const QString& page) {
                             .arg(pages->currentItem()->text())
                             .arg(size.width())
                             .arg(size.height());
-#ifdef MITCAD_RENDER
   if (renderDevice != nullptr) {
     // Where the render device's list is once the dialog shows (UI tests).
     QTimer::singleShot(0, renderDevice, [this, renderDevice] {
@@ -1303,8 +1287,7 @@ void ViewController::showPreferences(const QString& page) {
       }
     });
   }
-#endif
-  if (dialog->exec() != QDialog::Accepted) {
+  if (execDialog(dialog.get()) != QDialog::Accepted) {
     return;
   }
   (*commit)();
@@ -1416,7 +1399,7 @@ void ViewController::showShortcutOverview() {
   dialog.resize(560, 620);
   qDebug().noquote() << QStringLiteral("Shortcut overview: %1 command shortcuts").arg(count);
   prepareModal(&dialog);
-  dialog.exec();
+  execDialog(&dialog);
 }
 
 } // namespace mitcad

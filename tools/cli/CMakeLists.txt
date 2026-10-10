@@ -3,25 +3,21 @@
 add_executable(mitcad-cli main.cpp library.cpp library.hpp projects.cpp projects.hpp)
 target_link_libraries(mitcad-cli PRIVATE mitcad_ffi mitcad_geometry mitcad_geometry_io mitcad_warnings)
 
-# mitcad-cli render (mitcad#48, docs/rendering.md "Final render"): only with
-# MITCAD_RENDER. It makes the scene and the job as File > Render Image does
-# (the application's render/RenderBatch, with Qt Core and Gui, no widgets)
-# and runs the render worker mitcad-render; it links none of the
-# renderer's libraries.
-if(MITCAD_RENDER)
-  set(app "${PROJECT_SOURCE_DIR}/app")
-  target_sources(mitcad-cli PRIVATE render.cpp render.hpp
-    "${app}/framework/Appearances.cpp" "${app}/framework/Appearances.hpp"
-    "${app}/render/RenderBatch.cpp" "${app}/render/RenderBatch.hpp"
-    "${app}/render/RenderDevice.cpp" "${app}/render/RenderDevice.hpp"
-    "${app}/render/RenderMesh.cpp" "${app}/render/RenderMesh.hpp"
-    "${app}/render/RenderScene.cpp" "${app}/render/RenderScene.hpp")
-  set_target_properties(mitcad-cli PROPERTIES AUTOMOC ON)
-  target_compile_definitions(mitcad-cli PRIVATE MITCAD_RENDER)
-  target_include_directories(mitcad-cli PRIVATE "${app}")
-  target_include_directories(mitcad-cli SYSTEM PRIVATE "${MITCAD_CGLTF_INCLUDE_DIR}")
-  target_link_libraries(mitcad-cli PRIVATE Qt6::Gui TKMesh TKFillet TKPrim TKTopAlgo TKBRep)
-endif()
+# mitcad-cli render (mitcad#48, docs/rendering.md "Final render"). It makes
+# the scene and the job as File > Render Image does (the application's
+# render/RenderBatch, with Qt Core and Gui, no widgets) and runs the render
+# worker mitcad-render; it links none of the renderer's libraries.
+set(app "${PROJECT_SOURCE_DIR}/app")
+target_sources(mitcad-cli PRIVATE render.cpp render.hpp
+  "${app}/framework/Appearances.cpp" "${app}/framework/Appearances.hpp"
+  "${app}/render/RenderBatch.cpp" "${app}/render/RenderBatch.hpp"
+  "${app}/render/RenderDevice.cpp" "${app}/render/RenderDevice.hpp"
+  "${app}/render/RenderMesh.cpp" "${app}/render/RenderMesh.hpp"
+  "${app}/render/RenderScene.cpp" "${app}/render/RenderScene.hpp")
+set_target_properties(mitcad-cli PROPERTIES AUTOMOC ON)
+target_include_directories(mitcad-cli PRIVATE "${app}")
+target_include_directories(mitcad-cli SYSTEM PRIVATE "${MITCAD_CGLTF_INCLUDE_DIR}")
+target_link_libraries(mitcad-cli PRIVATE Qt6::Gui TKMesh TKFillet TKPrim TKTopAlgo TKBRep)
 
 # The imports, which the import corpus tests run, apart from the other
 # commands (tools/check-all.sh runs the corpus again when they change).
@@ -69,7 +65,7 @@ if(BUILD_TESTING)
   # moves, components made by features and copies, with world-space
   # volumes, boxes and centres of mass; then external components: the
   # assembly saved, inserted linked and as a copy, edited, and the link
-  # following the edit when the project opens again.
+  # following the edit when the design opens again.
   add_test(NAME cli.f6_components COMMAND mitcad-cli run "${scripts}/f6_components.json")
   set(f6 "${CMAKE_CURRENT_BINARY_DIR}/f6")
   file(MAKE_DIRECTORY "${f6}")
@@ -150,7 +146,7 @@ if(BUILD_TESTING)
   set_tests_properties(cli.compare_step_differs PROPERTIES FIXTURES_REQUIRED cli_step WILL_FAIL TRUE)
   # Data exchange: round trips through every format inside a script (files
   # in its working directory), then the export, import and import-f3d
-  # commands on its project and on a small .f3d file.
+  # commands on its design and on a small .f3d file.
   set(exchange "${CMAKE_CURRENT_BINARY_DIR}/exchange")
   file(MAKE_DIRECTORY "${exchange}")
   add_test(NAME cli.exchange
@@ -178,6 +174,12 @@ if(BUILD_TESTING)
     COMMAND mitcad-cli export "${exchange}/exchange.mitcad" "${exchange}/out.3mf" --refinement high)
   set_tests_properties(cli.export_3mf PROPERTIES FIXTURES_REQUIRED cli_exchange PASS_REGULAR_EXPRESSION
     "\"format\":\"3mf\",\"meshes\":\\[{\"body\":\"F2\\.b0\",\"name\":\"Bracket\",\"triangles\":[0-9]+,\"volume\":2394[56]\\.")
+  # USDZ for AR viewers (mitcad#123): the exchange design's shown bodies
+  # as shaded meshes with their materials.
+  add_test(NAME cli.export_usdz
+    COMMAND mitcad-cli export "${exchange}/exchange.mitcad" "${exchange}/out.usdz" --refinement low)
+  set_tests_properties(cli.export_usdz PROPERTIES FIXTURES_REQUIRED cli_exchange PASS_REGULAR_EXPRESSION
+    "\"format\":\"usdz\",\"materials\":\\[[^]]+\\].*\"warnings\":\\[\\]")
   # The bodies in their components' coordinates (mitcad#19).
   add_test(NAME cli.export_component
     COMMAND mitcad-cli export "${exchange}/exchange.mitcad" "${exchange}/local-out.step"
@@ -188,13 +190,13 @@ if(BUILD_TESTING)
     COMMAND mitcad-cli export-sketch "${exchange}/exchange.mitcad" Sketch1 "${exchange}/sketch.dxf" --r12)
   set_tests_properties(cli.export_sketch PROPERTIES FIXTURES_REQUIRED cli_exchange
     PASS_REGULAR_EXPRESSION "\"entities\":4")
-  # Project files of version 3 (P12a): the exchange project's base features
+  # Design files of version 3 (P12a): the exchange design's base features
   # converted into a project's B-rep store and back.
   add_test(NAME cli.project_v3
     COMMAND "${CMAKE_COMMAND}" "-DCLI=$<TARGET_FILE:mitcad-cli>" "-DSOURCE=${exchange}/exchange.mitcad"
             "-DWORK=${CMAKE_CURRENT_BINARY_DIR}/project-v3" -P "${CMAKE_CURRENT_SOURCE_DIR}/project-test.cmake")
   set_tests_properties(cli.project_v3 PROPERTIES FIXTURES_REQUIRED cli_exchange)
-  # Version history (P12b): versions of the exchange project in a project
+  # Version history (P12b): versions of the exchange design in a project
   # with history, an older version opened and restored; checked with the
   # system's git where it is installed.
   find_package(Git QUIET)
@@ -208,7 +210,7 @@ if(BUILD_TESTING)
   add_test(NAME cli.diff
     COMMAND "${CMAKE_COMMAND}" "-DCLI=$<TARGET_FILE:mitcad-cli>" "-DWORK=${CMAKE_CURRENT_BINARY_DIR}/diff"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/diff-test.cmake")
-  # Remote repositories (P12 remote): the exchange project connected to a
+  # Remote repositories (P12 remote): the exchange design's project connected to a
   # bare repository, opened from it, pushed and fetched both ways; needs the
   # system's git.
   if(GIT_FOUND)
@@ -218,6 +220,11 @@ if(BUILD_TESTING)
               -P "${CMAKE_CURRENT_SOURCE_DIR}/remote-test.cmake")
     set_tests_properties(cli.remote PROPERTIES FIXTURES_REQUIRED cli_exchange)
   endif()
+  # A project's folders and designs (mitcad#144): made, listed, moved and
+  # deleted as versions, every refusal, and with git a Cloud project's push.
+  add_test(NAME cli.project_folders
+    COMMAND "${CMAKE_COMMAND}" "-DCLI=$<TARGET_FILE:mitcad-cli>" "-DGIT=${GIT_EXECUTABLE}"
+            "-DWORK=${CMAKE_CURRENT_BINARY_DIR}/project-folders" -P "${CMAKE_CURRENT_SOURCE_DIR}/folders-test.cmake")
 
   # .f3d bodies without history: Mitcad's own ASM test bodies in an .f3d.
   add_test(NAME cli.f3d_file COMMAND test_exchange --write-f3d "${exchange}/bodies.f3d")
@@ -417,13 +424,11 @@ if(BUILD_TESTING)
   add_test(NAME cli.decimal_commas COMMAND mitcad-cli run "${scripts}/decimal_commas.json")
 
   # The final render from the command line (mitcad#48): a design rendered by
-  # the render worker in every format (render builds only).
-  if(MITCAD_RENDER)
-    add_test(NAME cli.render
-      COMMAND "${CMAKE_COMMAND}" "-DCLI=$<TARGET_FILE:mitcad-cli>" "-DWORKER=$<TARGET_FILE:mitcad-render>"
-              "-DSCRIPT=${scripts}/render_scene.json" "-DWORK=${CMAKE_CURRENT_BINARY_DIR}/render"
-              -P "${CMAKE_CURRENT_SOURCE_DIR}/render-test.cmake")
-  endif()
+  # the render worker in every format.
+  add_test(NAME cli.render
+    COMMAND "${CMAKE_COMMAND}" "-DCLI=$<TARGET_FILE:mitcad-cli>" "-DWORKER=$<TARGET_FILE:mitcad-render>"
+            "-DSCRIPT=${scripts}/render_scene.json" "-DWORK=${CMAKE_CURRENT_BINARY_DIR}/render"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/render-test.cmake")
 
   # Joints between occurrences (mitcad#55): joints placed on the geometry
   # kernel's faces and edges, saved and opened again.
@@ -434,6 +439,18 @@ if(BUILD_TESTING)
   add_test(NAME cli.joints_info COMMAND mitcad-cli info "${joints}/joints.mitcad")
   set_tests_properties(cli.joints_info PROPERTIES FIXTURES_REQUIRED cli_joints PASS_REGULAR_EXPRESSION
     "F6 Joint1 \\(joint\\): ok.*F7 Joint2 \\(joint\\): ok")
+
+  # Assembly constraints (mitcad#148): a pin inserted into a hole, on its
+  # axis with the depth free and dragged along it, conflicting rows named,
+  # saved and opened again.
+  set(constraints "${CMAKE_CURRENT_BINARY_DIR}/constraints")
+  file(MAKE_DIRECTORY "${constraints}")
+  add_test(NAME cli.constraints COMMAND mitcad-cli run "${scripts}/constraints.json"
+           --save "${constraints}/constraints.mitcad")
+  set_tests_properties(cli.constraints PROPERTIES FIXTURES_SETUP cli_constraints)
+  add_test(NAME cli.constraints_info COMMAND mitcad-cli info "${constraints}/constraints.mitcad")
+  set_tests_properties(cli.constraints_info PROPERTIES FIXTURES_REQUIRED cli_constraints
+    PASS_REGULAR_EXPRESSION "F6 Constraint2 \\(constraint_set\\): ok.*F8 Constraint3 \\(constraint_set\\): ok")
 
   # Component libraries (mitcad#64, mitcad#63): a small fastener library
   # made by the generator, fetched, its parts inserted, compared and
@@ -461,16 +478,23 @@ if(BUILD_TESTING)
     "connect: failed \\([0-9]+ ms\\).*Warning: mqtt://127.0.0.1:9 is plain text.*Failed: ")
 endif()
 
-# With MITCAD_RENDER mitcad-cli loads Qt's DLLs (mitcad-cli render): on
-# Windows its tests find them through PATH, as app.unit does.
-if(BUILD_TESTING AND MITCAD_RENDER AND WIN32)
+# mitcad-cli loads Qt's DLLs (mitcad-cli render): on Windows its tests find
+# them through PATH, as app.unit does.
+if(BUILD_TESTING AND WIN32)
   get_property(mitcad_cli_tests DIRECTORY PROPERTY TESTS)
   set_property(TEST ${mitcad_cli_tests} APPEND PROPERTY ENVIRONMENT_MODIFICATION
     "PATH=path_list_prepend:$<TARGET_FILE_DIR:Qt6::Core>")
 endif()
 
 # Headless MCP stdio server (mitcad#124), and the real CLI transport test.
-target_sources(mitcad-cli PRIVATE mcp.cpp mcp.hpp)
+target_sources(mitcad-cli PRIVATE mcp.cpp mcp.hpp mcp-connect.cpp mcp-connect.hpp
+  "${app}/mcp/LocalEndpoint.cpp" "${app}/mcp/LocalEndpoint.hpp")
+find_package(Threads REQUIRED)
+target_link_libraries(mitcad-cli PRIVATE Qt6::Network Threads::Threads)
+if(WIN32)
+  target_sources(mitcad-cli PRIVATE "${app}/mcp/WindowsEndpointSecurity.cpp" "${app}/mcp/WindowsEndpointSecurity.hpp")
+  target_link_libraries(mitcad-cli PRIVATE advapi32)
+endif()
 if(BUILD_TESTING)
   find_package(Python3 COMPONENTS Interpreter QUIET)
   if(Python3_Interpreter_FOUND)
@@ -479,7 +503,7 @@ if(BUILD_TESTING)
               "$<TARGET_FILE:mitcad-cli>" "${CMAKE_CURRENT_BINARY_DIR}/mcp")
     set_tests_properties(cli.mcp PROPERTIES TIMEOUT 180
       ENVIRONMENT "PYTHONDONTWRITEBYTECODE=1")
-    if(MITCAD_RENDER AND WIN32)
+    if(WIN32)
       set_property(TEST cli.mcp APPEND PROPERTY ENVIRONMENT_MODIFICATION
         "PATH=path_list_prepend:$<TARGET_FILE_DIR:Qt6::Core>")
     endif()

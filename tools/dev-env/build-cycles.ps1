@@ -1,10 +1,12 @@
 # SPDX-License-Identifier: MIT
 # The Windows build of tools/dev-env/build-cycles.sh: fetches and builds the
-# Cycles render worker's libraries that vcpkg has no port for (MITCAD_RENDER,
-# docs/rendering.md), Cycles itself (Apache-2.0) and Open Image Denoise
+# Cycles render worker's libraries that vcpkg has no port for
+# (docs/rendering.md), Cycles itself (Apache-2.0) and Open Image Denoise
 # (Apache-2.0, built with Intel's ISPC compiler, BSD-3-Clause, which is only
 # a build tool). Everything else comes from vcpkg through the manifest's
-# "render" feature. Cycles has its CPU device only so far (mitcad#51).
+# dependencies. Cycles has its CPU device only so far (mitcad#51). Every
+# Mitcad build has the render worker and needs this prefix:
+# setup-windows.ps1 runs this once.
 #
 # Usage, in the Visual Studio x64 environment (cl, Ninja):
 #   tools\dev-env\msvc.cmd powershell -ExecutionPolicy Bypass -File tools\dev-env\build-cycles.ps1 [-Prefix dir]
@@ -12,13 +14,14 @@
 # The prefix (default: MITCAD_RENDER_DEPS, else C:\dev\mitcad-render-deps)
 # gets the same layout as on Linux:
 #   downloads\  src\  build\       the pinned sources and their builds
-#   vcpkg_installed\               the render feature's vcpkg libraries
+#   vcpkg_installed\               the manifest's vcpkg libraries
 #   install\oidn\                  Open Image Denoise (DLLs in bin\)
 #   install\cycles\                Cycles' headers, static libraries and
 #                                  mitcad-cycles.cmake for Mitcad's build
-# Configure Mitcad with -DMITCAD_RENDER=ON -DMITCAD_RENDER_DEPS=<prefix>, in
-# a release configuration (RelWithDebInfo or Release): the libraries are
-# release builds, which a Debug build's runtime library does not match.
+# Mitcad's configure finds the default prefix itself (another one with
+# -DMITCAD_RENDER_DEPS=<prefix> or the environment variable), in a release
+# configuration (RelWithDebInfo or Release): the libraries are release
+# builds, which a Debug build's runtime library does not match.
 #
 # Pins: tools/dev-env/versions.sh, read from there. Re-running it is cheap:
 # finished steps are skipped (delete the prefix's build\ and install\
@@ -85,10 +88,10 @@ function Get-Pinned([string]$Url, [string]$File, [string]$Sha256) {
   return $path
 }
 
-Write-Host "== vcpkg: the manifest's render feature ($Triplet)"
+Write-Host "== vcpkg: the manifest's libraries ($Triplet)"
 # The same manifest and baseline as Mitcad's own build, so the libraries
 # Cycles is compiled against are the ones Mitcad links.
-Invoke-Native (Join-Path $VcpkgRoot 'vcpkg.exe') @('install', "--x-manifest-root=$Repo", '--x-feature=render',
+Invoke-Native (Join-Path $VcpkgRoot 'vcpkg.exe') @('install', "--x-manifest-root=$Repo",
   "--x-install-root=$VcpkgInstalled", '--triplet', $Triplet, '--no-print-usage') (Join-Path $Prefix 'vcpkg.log')
 $Deps = Join-Path $VcpkgInstalled $Triplet
 $DepsCMake = $Deps -replace '\\', '/'
@@ -232,4 +235,4 @@ Invoke-Native (Join-Path $cyclesBuild 'bin\cycles.exe') @('--background', '--qui
   '--width', '64', '--height', '48', '--output', (Join-Path $check 'scene.png'),
   (Join-Path $cyclesSrc 'examples\scene_cube_surface.xml'))
 if ((Get-Item (Join-Path $check 'scene.png')).Length -eq 0) { throw 'The test scene rendered an empty image' }
-Write-Host "Done: configure Mitcad with -DMITCAD_RENDER=ON -DMITCAD_RENDER_DEPS=$Prefix"
+Write-Host "Done: Mitcad's configure takes the renderer's libraries from $Prefix (MITCAD_RENDER_DEPS)"

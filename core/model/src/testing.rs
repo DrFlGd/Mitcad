@@ -1183,6 +1183,30 @@ impl Kernel for MockKernel {
         })
     }
 
+    // Sweeps along guide surfaces (mitcad#157): the sweep's spec line ends
+    // with the faces.
+
+    fn surface_sweep(
+        &self,
+        spec: &SweepSpec<'_>,
+        surfaces: &[crate::sweeps::GuideSurface<'_, MockShape>],
+    ) -> Result<MockShape, KernelError> {
+        for surface in surfaces {
+            if !surface.body.faces.contains(surface.face) {
+                return Err(KernelError::Failed(format!(
+                    "guide surface {} does not exist",
+                    surface.face
+                )));
+            }
+        }
+        let shape = self.sweep(spec)?;
+        let faces: Vec<String> = surfaces.iter().map(|s| s.face.to_string()).collect();
+        if let Some(line) = self.specs.borrow_mut().last_mut() {
+            line.push_str(&format!(" surfaces {}", faces.join(",")));
+        }
+        Ok(shape)
+    }
+
     fn loft(&self, spec: &LoftSpec<'_, MockShape>) -> Result<MockShape, KernelError> {
         self.call("loft")?;
         let describe = |section: &LoftSection<'_, MockShape>| match section {
@@ -1544,9 +1568,63 @@ impl Kernel for MockKernel {
         })
     }
 
+    /// The shape's bounding box, each face of [`MockShape::faces`] (six
+    /// without any) a side of the box (the sides in turn: -Z, +Z, -Y, +Y,
+    /// -X, +X) of two triangles with its own four vertices and the side's
+    /// normal; the tolerances go to `mesh_tolerances`.
+    fn face_meshes(
+        &self,
+        shape: &MockShape,
+        tolerance: &crate::exchange::MeshTolerance,
+    ) -> Result<crate::exchange::FaceMeshes, KernelError> {
+        self.call("face_meshes")?;
+        self.mesh_tolerances.borrow_mut().push(*tolerance);
+        let Some(bounds) = shape.bounds else {
+            return Ok(crate::exchange::FaceMeshes::default());
+        };
+        let corner = |i: u32| -> [f64; 3] {
+            std::array::from_fn(|axis| {
+                if (i >> axis) & 1 == 1 {
+                    bounds.max[axis]
+                } else {
+                    bounds.min[axis]
+                }
+            })
+        };
+        let sides: [([u32; 4], [f64; 3]); 6] = [
+            ([0, 2, 3, 1], [0.0, 0.0, -1.0]),
+            ([4, 5, 7, 6], [0.0, 0.0, 1.0]),
+            ([0, 1, 5, 4], [0.0, -1.0, 0.0]),
+            ([2, 6, 7, 3], [0.0, 1.0, 0.0]),
+            ([0, 4, 6, 2], [-1.0, 0.0, 0.0]),
+            ([1, 3, 7, 5], [1.0, 0.0, 0.0]),
+        ];
+        let mut mesh = crate::exchange::FaceMeshes::default();
+        let count = if shape.faces.is_empty() {
+            6
+        } else {
+            shape.faces.len()
+        };
+        for face in 0..count {
+            let (quad, normal) = sides[face % 6];
+            let first = mesh.vertices.len() as u32;
+            for i in quad {
+                mesh.vertices.push(corner(i));
+                mesh.normals.push(normal);
+            }
+            mesh.triangles
+                .extend([[first, first + 1, first + 2], [first, first + 2, first + 3]]);
+            mesh.face_triangles.push(2);
+        }
+        Ok(mesh)
+    }
+
     // FreeCAD helices (mitcad#4).
 
-    fn helix(&self, spec: &crate::sweeps::HelixSpec<'_>) -> Result<MockShape, KernelError> {
+    fn helix(
+        &self,
+        spec: &crate::sweeps::HelixSpec<'_, MockShape>,
+    ) -> Result<MockShape, KernelError> {
         self.call("helix")?;
         let growth = if spec.growth == 0.0 {
             String::new()

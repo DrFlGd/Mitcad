@@ -84,6 +84,8 @@ bool MainWindow::readOnlyCommand(const CommandDef& def) {
       QStringLiteral("tools.search"),         QStringLiteral("tools.shortcuts"),
       QStringLiteral("tools.libraries"),      QStringLiteral("tools.community_library"),
       QStringLiteral("tools.library_parts"),  QStringLiteral("tools.publish_library"),
+      // Another design of the project (mitcad#145).
+      QStringLiteral("file.new_design"),
   };
   return allowed.contains(def.id) || def.id.startsWith(QLatin1String("view.")) ||
          def.id.startsWith(QLatin1String("inspect.")) || def.id.startsWith(QLatin1String("help."));
@@ -92,13 +94,16 @@ bool MainWindow::readOnlyCommand(const CommandDef& def) {
 bool MainWindow::readOnlyModelCommand(const QString& name) {
   // What changes no design: reading and computing it, its file's state,
   // the display state of this computer (isolation, the origin), the
-  // section analyses shown (never saved over the file), exports.
+  // section analyses shown (never saved over the file), exports. Command
+  // checkpoints preserve or restore in-flight state, so an inspection's
+  // async work and cancellation remain available after turning read-only.
   static const QSet<QString> allowed{
       QStringLiteral("recompute"),        QStringLiteral("update_links"),     QStringLiteral("mark_saved"),
       QStringLiteral("clear_cache"),      QStringLiteral("export"),           QStringLiteral("export_sketch"),
       QStringLiteral("set_isolation"),    QStringLiteral("set_origin_visible"), QStringLiteral("add_analysis"),
       QStringLiteral("edit_analysis"),    QStringLiteral("delete_analysis"),  QStringLiteral("rename_analysis"),
       QStringLiteral("set_analysis_visible"), QStringLiteral("merge_undo"),
+      QStringLiteral("begin_command"),    QStringLiteral("restore_command"), QStringLiteral("discard_command"),
   };
   return allowed.contains(name);
 }
@@ -207,7 +212,7 @@ std::optional<bool> MainWindow::readOnlySave(bool closing) {
   box.setDefaultButton(copy);
   prepareModal(&box);
   qInfo().noquote() << QStringLiteral("Read-only: unsaved changes of %1 asked about").arg(name);
-  box.exec();
+  execDialog(&box);
   if (box.clickedButton() == copy) {
     return saveAs();
   }

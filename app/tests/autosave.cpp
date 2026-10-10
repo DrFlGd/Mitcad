@@ -51,7 +51,7 @@ int autosaveTests() {
     auto found = findRecoverable(folder.path(), QString());
     check(found.size() == 1 && !found[0].damaged(), "first snapshot recoverable");
     if (!found.empty()) {
-      oldSnapshot = found[0].projectFile();
+      oldSnapshot = found[0].designFile();
       check(read(oldSnapshot) == first, "normal recovery names the first bytes");
     }
   }
@@ -72,7 +72,7 @@ int autosaveTests() {
     auto found = findRecoverable(folder.path(), QString());
     check(found.size() == 1 && !found[0].damaged(), "failed update is recoverable, one session");
     if (!found.empty()) {
-      check(read(found[0].projectFile()) == first, "recovery reads old generation after failure");
+      check(read(found[0].designFile()) == first, "recovery reads old generation after failure");
     }
   }
   check(publishAutosave(folder.path(), session, second, about, error), "successful replacement");
@@ -83,7 +83,7 @@ int autosaveTests() {
     auto found = findRecoverable(folder.path(), QString());
     check(found.size() == 1 && !found[0].damaged(), "updated generation recoverable");
     if (!found.empty()) {
-      check(read(found[0].projectFile()) == second, "recovery reads updated bytes");
+      check(read(found[0].designFile()) == second, "recovery reads updated bytes");
       discardSession(found[0]);
     }
   }
@@ -99,7 +99,7 @@ int autosaveTests() {
   check(write(dir.filePath(session + QStringLiteral(".json")), QJsonDocument(legacy).toJson(), error), "legacy metadata");
   {
     auto found = findRecoverable(folder.path(), QString());
-    check(found.size() == 1 && !found[0].damaged() && read(found[0].projectFile()) == first, "v1 recovery");
+    check(found.size() == 1 && !found[0].damaged() && read(found[0].designFile()) == first, "v1 recovery");
   }
   const AutosaveWriter failUpgrade = [&](const QString& path, const QByteArray& bytes, QString& reason) {
     return !path.endsWith(QStringLiteral(".json")) && write(path, bytes, reason);
@@ -107,7 +107,7 @@ int autosaveTests() {
   check(!publishAutosave(folder.path(), session, second, about, error, failUpgrade), "failed v1 upgrade");
   {
     auto found = findRecoverable(folder.path(), QString());
-    check(found.size() == 1 && !found[0].damaged() && read(found[0].projectFile()) == first,
+    check(found.size() == 1 && !found[0].damaged() && read(found[0].designFile()) == first,
           "v1 remains recoverable after interrupted upgrade");
   }
   check(publishAutosave(folder.path(), session, second, about, error), "v1 upgrade");

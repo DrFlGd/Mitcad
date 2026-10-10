@@ -22,6 +22,15 @@ impl<K: Kernel> Document<K> {
         self.result.joints.joints.get(&uid)
     }
 
+    /// What a constraint set did in the last recompute (mitcad#148); None
+    /// when it failed, is suppressed or after the marker.
+    pub fn constraint_result(
+        &self,
+        uid: FeatureUid,
+    ) -> Option<&crate::constraints::ConstraintSetResult> {
+        self.result.joints.constraints.get(&uid)
+    }
+
     /// The rigid groups in effect at the marker: feature, component and
     /// occurrences.
     pub fn rigid_groups(&self) -> &[(FeatureUid, ComponentUid, Vec<OccurrenceUid>)] {

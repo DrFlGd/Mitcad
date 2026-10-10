@@ -20,7 +20,7 @@ use serde::{Deserialize, Serialize};
 use crate::file::MemoryStore;
 
 /// Where a component came from when it came from a library: the
-/// component's `library` in the project file.
+/// component's `library` in the design file.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct LibraryRef {
@@ -78,7 +78,7 @@ pub struct LibraryRequest {
 /// A library component's design at a version, as a resolver reads it.
 #[derive(Debug)]
 pub struct LibrarySource {
-    /// The project file's text.
+    /// The design file's text.
     pub text: String,
     /// The B-rep data it refers to (a library may be a project with a
     /// store).
@@ -108,6 +108,17 @@ pub struct LibrarySource {
 /// `mitcad-cli` install one that reads git repositories, `mitcad-vcs`).
 pub trait LinkResolver: Send + Sync {
     fn library_source(&self, request: &LibraryRequest) -> Result<LibrarySource, String>;
+
+    /// Reads a texture relative to the component's design at the exact
+    /// commit returned by `library_source`. Editable copies embed these
+    /// bytes so their appearances do not depend on the library's cache.
+    /// Resolvers without external images need only `library_source`.
+    fn library_texture(&self, request: &LibraryRequest, path: &str) -> Result<Vec<u8>, String> {
+        Err(format!(
+            "the library resolver cannot read texture '{path}' of {}",
+            request.component
+        ))
+    }
 }
 
 static RESOLVER: RwLock<Option<Arc<dyn LinkResolver>>> = RwLock::new(None);

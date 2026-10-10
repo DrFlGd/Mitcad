@@ -13,14 +13,13 @@
 #include <QDialog>
 #include <QDialogButtonBox>
 #include <QDir>
-#include <QEventLoop>
 #include <QFileInfo>
 #include <QHBoxLayout>
-#include <QInputDialog>
 #include <QLabel>
 #include <QLineEdit>
 #include <QMainWindow>
 #include <QMessageBox>
+#include <QPointer>
 #include <QProgressDialog>
 #include <QPushButton>
 #include <QTimer>
@@ -442,10 +441,12 @@ void LockController::dropRunning() {
   ++m_generation;
   m_queue.clear();
   if (m_task != nullptr) {
-    QEventLoop loop;
-    connect(m_task, &RemoteTask::finished, &loop, &QEventLoop::quit);
+    QObject waiting;
+    bool finished = false;
+    const QPointer<RemoteTask> pending = m_task;
+    connect(m_task, &RemoteTask::finished, &waiting, [&finished] { finished = true; });
     m_task->cancel();
-    loop.exec();
+    waitDialogUntil([&] { return finished || pending == nullptr; });
   }
 }
 
@@ -458,18 +459,25 @@ QJsonObject LockController::runNow(RemoteTask* task, const QString& label) {
     QProgressDialog dialog(label, tr("Cancel"), 0, 0, &m_window);
     dialog.setWindowTitle(tr("Edit Lock"));
     dialog.setWindowModality(Qt::WindowModal);
+    prepareProgressDialog(&dialog);
     dialog.setMinimumDuration(400);
     dialog.setAutoReset(false);
     dialog.setAutoClose(false);
-    QEventLoop loop;
+    QObject waiting;
+    bool finished = false;
+    const QPointer<RemoteTask> pending = task;
     connect(&dialog, &QProgressDialog::canceled, task, &RemoteTask::cancel);
-    connect(task, &RemoteTask::finished, &loop, &QEventLoop::quit);
+    connect(task, &RemoteTask::finished, &waiting, [&finished] { finished = true; });
     task->start();
-    loop.exec();
-    disconnect(&dialog, nullptr, task, nullptr);
+    waitDialogUntil([&] { return finished || pending == nullptr; });
+    if (pending != nullptr) {
+      disconnect(&dialog, nullptr, pending.data(), nullptr);
+    }
     dialog.reset();
-    answer = task->answer();
-    delete task;
+    if (pending != nullptr) {
+      answer = pending->answer();
+      delete pending.data();
+    }
   }
   --m_blocking;
   if (m_blocking == 0 && m_task == nullptr && !m_queue.empty()) {
@@ -1443,7 +1451,7 @@ void LockController::showHeldDialog(const QJsonObject& lock) {
   });
   m_dialog = box;
   prepareModal(box);
-  box->open();
+  showDialog(box);
 }
 
 void LockController::showSameOwnerDialog(const QJsonObject& lock) {
@@ -1477,7 +1485,7 @@ void LockController::showSameOwnerDialog(const QJsonObject& lock) {
   });
   m_dialog = box;
   prepareModal(box);
-  box->open();
+  showDialog(box);
 }
 
 void LockController::askForAccess() {
@@ -1508,7 +1516,7 @@ void LockController::askForAccess() {
   qInfo().noquote() << QStringLiteral("Request Edit Access dialog: %1, %2").arg(fileName(), holder);
   prepareModal(&dialog);
   const quint64 generation = m_generation;
-  const int result = dialog.exec();
+  const int result = execDialog(&dialog);
   if (result != QDialog::Accepted) {
     qInfo().noquote() << QStringLiteral("Request Edit Access cancelled");
     return;
@@ -1639,17 +1647,16 @@ void LockController::showAnswerDialog(const QJsonObject& request, const QJsonArr
               QTimer::singleShot(0, this, [this, request] {
                 bool ok = false;
                 qInfo().noquote() << QStringLiteral("Decline dialog: %1").arg(requesterName(request));
-                const QString why =
-                    QInputDialog::getText(&m_window, tr("Decline"),
-                                          tr("Decline %1's request (a message, optional):").arg(requesterName(request)),
-                                          QLineEdit::Normal, QString(), &ok);
+                const QString why = dialogText(&m_window, tr("Decline"),
+                                                tr("Decline %1's request (a message, optional):")
+                                                    .arg(requesterName(request)),
+                                                QString(), &ok);
                 sendAnswer(request, QStringLiteral("declined"), ok ? why.left(200).trimmed() : QString());
               });
             }
           });
   m_answerDialog = box;
-  box->show();
-  box->raise();
+  showDialog(box);
   m_answerTimer->start(scaledMs(m_idleMinutes * 60.0));
 }
 
@@ -1861,7 +1868,7 @@ bool LockController::closeLock(bool quit) {
       QPushButton* keep = box.addButton(tr("&Keep Lock"), QMessageBox::RejectRole);
       box.setDefaultButton(resolve);
       prepareModal(&box);
-      box.exec();
+      execDialog(&box);
       if (box.clickedButton() == resolve) {
         qInfo().noquote() << QStringLiteral("Edit lock: Resolve Sync");
         startHoldingTimers();
@@ -1906,7 +1913,7 @@ void LockController::releaseByUser() {
     box.button(QMessageBox::Save)->setText(tr("&Save and Release"));
     box.button(QMessageBox::Discard)->setText(tr("Release &Without Saving"));
     prepareModal(&box);
-    const int chosen = box.exec();
+    const int chosen = execDialog(&box);
     if (chosen == QMessageBox::Cancel) {
       return;
     }
@@ -1976,7 +1983,7 @@ void LockController::showDetails() {
                   &m_window);
   box.setTextFormat(Qt::PlainText);
   prepareModal(&box);
-  box.exec();
+  execDialog(&box);
 }
 
 // ---------------------------------------------------------------------------
@@ -2014,7 +2021,7 @@ bool LockController::confirmSend() {
   QPushButton* send = box.addButton(tr("Send &Anyway"), QMessageBox::AcceptRole);
   box.setDefaultButton(QMessageBox::Cancel);
   prepareModal(&box);
-  box.exec();
+  execDialog(&box);
   const bool anyway = box.clickedButton() == send;
   qInfo().noquote() << (anyway ? QStringLiteral("Sync: Send Anyway") : QStringLiteral("Sync: not sent (locked files)"));
   return anyway;
@@ -2203,7 +2210,7 @@ void LockController::offlineWill(const QString& session, const QJsonObject& even
   });
   m_dialog = box;
   prepareModal(box);
-  box->open();
+  showDialog(box);
 }
 
 // ---------------------------------------------------------------------------

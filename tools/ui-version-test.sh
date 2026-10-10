@@ -445,7 +445,7 @@ ui_expect_new "New Project dialog: $DOCUMENTS/Project1" "Project1 is free"
 ui_focus_dialog '^New Project$'
 ui_step "create (Enter)"                 ui_key Return
 ui_expect_new "New project $DOCUMENTS/Project1" "a new project, its author the default one"
-ui_expect_new "Opened $DOCUMENTS/Project1/Project1.mitcad" "its first design"
+ui_expect_new "Open Project: no designs in $DOCUMENTS/Project1" "an empty project (mitcad#145)"
 ui_focus_main
 expect_git "$DOCUMENTS/Project1" "log --format=%s|%an|%ae" "Create project Project1|Asked Author|asked@example.invalid" \
   "by Preferences' author"

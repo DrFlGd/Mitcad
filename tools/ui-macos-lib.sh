@@ -99,6 +99,8 @@ ui_init() {
   export MITCAD_THUMBNAIL_DIR=$UI_ROOT/thumbnails
   # Crash reports of the run's own (mitcad#62): none offered from the user's.
   export MITCAD_CRASH_DIR=$UI_ROOT/crashes
+  # Local MCP discovery records and tokens stay with this run's data too.
+  export MITCAD_MCP_DISCOVERY_DIR=$UI_ROOT/mcp
   mkdir -p "$MITCAD_SETTINGS_DIR" "$MITCAD_AUTOSAVE_DIR" "$MITCAD_PROJECTS_DIR" "$MITCAD_THUMBNAIL_DIR"
   # The store of computed results (P7d) is off unless a run turns it on
   # (MITCAD_RESULT_STORE=<directory> in front of ui_run_app).

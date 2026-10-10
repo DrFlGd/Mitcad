@@ -599,6 +599,10 @@ pub(crate) struct Importer<'a, K: Kernel> {
     features: HashMap<i64, FeatureUid>,
     report: DesignReport,
     pending: Vec<Pending>,
+    /// Items whose definitions were tried against their state (a
+    /// translation gave some), for the items that failed in the file
+    /// (mitcad#156).
+    defined: std::collections::HashSet<i64>,
     /// Without a history: the bodies were replaced by the stored design.
     at_final: bool,
     /// When the import started (for `Options::time_limit`).
@@ -709,6 +713,7 @@ pub fn import_design<K: ImportKernel>(
         features: HashMap::new(),
         report,
         pending: Vec::new(),
+        defined: std::collections::HashSet::new(),
         at_final: false,
         started: std::time::Instant::now(),
         components: components::Components::default(),
@@ -760,6 +765,12 @@ const NO_RESULT: &str = "the file keeps no result for it (suppressed or failed i
 
 /// The note of an item whose definitions built, none to the file's result.
 const NOT_IN_HISTORY: &str = "its result is not in the file's history";
+
+/// The note of a modelling item whose operation in the file's history left
+/// every body as it was, which none of its definitions does (mitcad#156:
+/// an extrusion that found no body to cut in the file).
+const FAILED_IN_FILE: &str = "failed in the file: its operation in the file's history \
+                              left every body as it was, which none of its definitions does";
 
 /// The most memory (estimated) the document's cached results may take for
 /// the rest of an import once the process ran low on memory (mitcad#80).
@@ -1642,7 +1653,13 @@ impl<'a, K: ImportKernel> Importer<'a, K> {
                     .unwrap_or("no geometry"),
             ),
             Class::Geometry => {
-                let originals = self.sketches_into_component(at, index, item);
+                // (A component made from bodies uses no sketch, and goes
+                // into the component of its bodies.)
+                let originals = if object_type.as_deref() == Some("ComponentFromBodies") {
+                    Vec::new()
+                } else {
+                    self.sketches_into_component(at, index, item)
+                };
                 self.geometry_item(at, index, item);
                 self.sketches.extend(originals);
             }
@@ -2178,6 +2195,11 @@ impl<'a, K: ImportKernel> Importer<'a, K> {
             return;
         }
         if self.oracle.enabled {
+            if item.object_type() == Some("ComponentFromBodies")
+                && self.component_from_bodies(at, index, item)
+            {
+                return;
+            }
             self.retire_consumed_tools(index, item);
             self.verified(at, index, item);
             return;
@@ -2933,12 +2955,75 @@ impl<'a, K: ImportKernel> Importer<'a, K> {
         self.failed(at, last_error);
     }
 
+    /// [`Importer::verified_at`] from state `own`, where the replay is,
+    /// before the operations no item names that come right before the
+    /// item's own (`state`): whether one of its candidates gave `state`, in
+    /// half the item's time. Else nothing is left of the try, and the item
+    /// is tried as one whose state comes right after the one before.
+    fn tried_from_own_start(
+        &mut self,
+        at: usize,
+        index: i64,
+        item: &TimelineItem,
+        own: usize,
+        state: usize,
+    ) -> bool {
+        let name = item_name(item);
+        let kernel = self.doc.kernel();
+        let (Some(expected), Some(target)) = (
+            self.oracle.try_sigs(kernel, own),
+            self.oracle.try_sigs(kernel, state),
+        ) else {
+            return false;
+        };
+        let Some((carried, _)) = history::bodies_distance(&expected, &self.current_sigs()) else {
+            return false;
+        };
+        trace!("{name}: its state {state} from state {own}, before the operations it made");
+        let states = geometric::States {
+            before: Some(own),
+            after: state,
+        };
+        let depth = self.doc.undo_depth();
+        let budget = self.options.item_seconds / 2.0;
+        match self.try_state(
+            at,
+            index,
+            item,
+            states,
+            &target,
+            Some(&expected),
+            carried,
+            budget,
+        ) {
+            Ok(()) => true,
+            Err(e) => {
+                trace!("{name}: not from state {own}: {e}");
+                self.undo_to(depth);
+                self.oracle.cursor = Some(own);
+                false
+            }
+        }
+    }
+
     /// An item whose state the history names: the replay is brought to the
     /// state before it (a base feature for what the items before changed
     /// without being replayed), then its candidates must give `state`, else
     /// the state comes in as its fallback.
     fn verified_at(&mut self, at: usize, index: i64, item: &TimelineItem, state: usize) {
         let name = item_name(item);
+        // Operations no item names right before the item's own, from the
+        // state the replay is at: tried first as the item's own (each copy
+        // of a pattern is an operation of its own, mitcad#156), so that no
+        // base feature takes the place of the copies before the last.
+        if let Some(own) = self
+            .oracle
+            .item_start(index)
+            .filter(|&b| self.pending.is_empty() && self.oracle.cursor == Some(b) && b + 1 < state)
+            && self.tried_from_own_start(at, index, item, own, state)
+        {
+            return;
+        }
         let start = if self.oracle.cursor == Some(state) {
             Some(state)
         } else {
@@ -3057,6 +3142,39 @@ impl<'a, K: ImportKernel> Importer<'a, K> {
             self.note(at, Outcome::Skipped, last_error);
             return;
         }
+        // An operation that changed nothing in the file, which no definition
+        // reproduces (each one changes the bodies or fails): the item
+        // failed in the file and is skipped as a suppressed one is. Its
+        // state is the items' before it; where the replay's bodies carry an
+        // approximation of theirs, a base feature brings them to it exactly
+        // (as after an approximate extrusion), so that it does not reach
+        // the items after (sketches on its faces, extents up to them).
+        // (Only an item whose definitions were tried: one not translated,
+        // such as a base feature that brings no body, is skipped as before
+        // where its state is the bodies'.)
+        if self.oracle.item_unchanged(index) && self.defined.contains(&index) {
+            trace!("{name}: {last_error}; {FAILED_IN_FILE}");
+            self.oracle.cursor = Some(state);
+            self.commit(Before::Keep, Some(state), None);
+            self.note(at, Outcome::Skipped, FAILED_IN_FILE);
+            let depth = self.doc.undo_depth();
+            match self.fallback_to(state, None) {
+                Ok(Some(uid)) => {
+                    let base = self.doc.feature(uid).map(|f| f.name.clone());
+                    self.report.warnings.push(format!(
+                        "{} brings the bodies to the file's state at {name}, which failed in \
+                         the file",
+                        base.unwrap_or_default()
+                    ));
+                }
+                Ok(None) => {}
+                Err(e) => {
+                    trace!("{name}: its state did not come in exactly: {e}");
+                    self.undo_to(depth);
+                }
+            }
+            return;
+        }
         let label = self.report.items[at].name.clone();
         let depth = self.doc.undo_depth();
         match self.fallback_to(state, Some(&label)) {
@@ -3159,6 +3277,7 @@ impl<'a, K: ImportKernel> Importer<'a, K> {
         match translated {
             Ok(c) if c.is_empty() => last_error = "nothing to try".to_owned(),
             Ok(mut candidates) => {
+                self.defined.insert(index);
                 // The bodies a definition without participants changed:
                 // limited to participants that include them it gives the
                 // same result, which is not built again (on large bodies
@@ -4053,6 +4172,22 @@ impl<'a, K: ImportKernel> Importer<'a, K> {
         }
         if new.is_empty() && old.is_empty() && new_sheets.is_empty() && old_sheets.is_empty() {
             return Ok(None);
+        }
+        if tracing() {
+            for (component, bodies) in &new {
+                let sigs: Vec<Sig> = bodies.iter().map(|(_, s)| **s).collect();
+                trace!("{source}: into {component}: {:?}", short(&sigs));
+            }
+            for (component, bodies) in &old {
+                let sigs: Vec<Sig> = bodies.iter().map(|(_, s)| *s).collect();
+                trace!("{source}: out of {component}: {:?}", short(&sigs));
+            }
+            for (component, sheets) in &new_sheets {
+                trace!("{source}: {} sheets into {component}", sheets.len());
+            }
+            for (component, sheets) in &old_sheets {
+                trace!("{source}: {} sheets out of {component}", sheets.len());
+            }
         }
         let components: BTreeSet<ComponentUid> = new
             .keys()

@@ -1,0 +1,80 @@
+Mitcad's patch to OCCT 8.0.1, under OCCT's licence:
+SPDX-License-Identifier: LGPL-2.1-only WITH OCCT-exception-1.0
+
+Fillets: a blend rolling on an edge (an obstacle, 0011) whose other
+contact changes faces on the way while the ball goes on rolling on the
+same edge (mitcad#121): e.g. the edges between the sides of a plate with
+round corners and a bevel along its bottom narrower than the rounding;
+the ball touches the side and rolls on the bevel's bottom edge, and where
+the side turns into a corner (a cylinder as round as the ball) the
+contact passes onto the corner while the ball rolls on along the bevel's
+edge (at the corner the ball's centre stays put: the blend is a part of
+the ball).
+
+ChFi3d_FilDS: each SurfData puts the point where it ends on an arc into
+the arc's interferences, which cuts the edge there. Where a SurfData
+rolling on an edge ends at an inner point of that edge because its other
+contact reached the end of its face, and the next one rolls on from
+there on the same edge, that point cut the obstacle edge between the two
+pieces of the blend that run along it; the piece of the edge beyond the
+point then came twice into the wire of the face across the edge (the
+edge's piece and the next blend's contact curve along it), and the face
+was invalid (BRepCheck_UnorientableShape). Such a point (RollsOnAcross:
+not a vertex, on the obstacle edge of both SurfDatas) no longer cuts the
+edge; the edge is cut at its vertices, where the ball passes onto the
+next edge, as before.
+diff --git a/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_0.cxx b/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_0.cxx
+index 4215c54..5859439 100644
+--- a/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_0.cxx
++++ b/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_0.cxx
+@@ -3049,6 +3049,32 @@ void ChFi3d_ContactsAlongFaceEdges(TopOpeBRepDS_DataStructure&       DStr,
+   }
+ }
+ 
++//=======================================================================
++// function : RollsOnAcross
++// purpose  : Whether the blend of SurfData j rolls on an obstacle edge on
++//           side ons up to its end CP, an inner point of that edge, and
++//           the next SurfData rolls on the same edge from there (the other
++//           contact changed faces). The edge is not cut there: the blend
++//           runs along it on, and a point on it would split the edge and
++//           leave its piece beyond twice in the face across it.
++//=======================================================================
++
++static bool RollsOnAcross(const TopOpeBRepDS_DataStructure&                         DStr,
++                          const NCollection_Sequence<occ::handle<ChFiDS_SurfData>>& SeqFil,
++                          const int                                                 j,
++                          const int                                                 ons,
++                          const ChFiDS_CommonPoint&                                 CP)
++{
++  if (j >= SeqFil.Length() || !CP.IsOnArc() || CP.IsVertex())
++  {
++    return false;
++  }
++  const occ::handle<ChFiDS_SurfData>& Fd   = SeqFil(j);
++  const occ::handle<ChFiDS_SurfData>& Next = SeqFil(j + 1);
++  return Fd->IsOnCurve(ons) && Next->IsOnCurve(ons) && Next->IndexOfC(ons) == Fd->IndexOfC(ons)
++         && DStr.Shape(Fd->IndexOfC(ons)).IsSame(CP.Arc());
++}
++
+ void ChFi3d_FilDS(const int                         SolidIndex,
+                   const occ::handle<ChFiDS_Stripe>& CorDat,
+                   TopOpeBRepDS_DataStructure&       DStr,
+@@ -3800,7 +3826,7 @@ void ChFi3d_FilDS(const int                         SolidIndex,
+       // Processing of interference Point / Edges
+       if (V3.IsOnArc())
+       {
+-        if (!(V3.IsVertex() && Fd->IsOnCurve1()))
++        if (!(V3.IsVertex() && Fd->IsOnCurve1()) && !RollsOnAcross(DStr, SeqFil, j, 1, V3))
+         {
+           Iarc1 = DStr.AddShape(V3.Arc());
+           if (!ChFi3d_Contains(DStr.ShapeInterferences(Iarc1), Iarc1, Ipoin1, V3.IsVertex(), true))
+@@ -3818,7 +3844,7 @@ void ChFi3d_FilDS(const int                         SolidIndex,
+ 
+       if (V4.IsOnArc())
+       {
+-        if (!(V4.IsVertex() && Fd->IsOnCurve2()))
++        if (!(V4.IsVertex() && Fd->IsOnCurve2()) && !RollsOnAcross(DStr, SeqFil, j, 2, V4))
+         {
+           Iarc2 = DStr.AddShape(V4.Arc());
+           if (!ChFi3d_Contains(DStr.ShapeInterferences(Iarc2), Iarc2, Ipoin2, V4.IsVertex(), true))

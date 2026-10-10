@@ -1,0 +1,50 @@
+# SPDX-License-Identifier: MIT
+# AppKit open/save panels must remain visible and responsive with the real
+# document host and with a secondary presenter as their parent. This test
+# uses a temporary directory and sends no user data. Save acceptance is a
+# manual check: macOS hosts the real Save button in a separate process.
+expect-ever 'Native UI: AppKit shell with embedded OCCT viewport'
+sleep 800
+
+menu 'File/Open'
+focus-dialog '^Open$'
+native-file-cancel
+expect-native-dialog-gone '^Open$'
+focus-main
+
+menu 'File/Save As'
+focus-dialog '^Save As$'
+native-file-directory '${MITCAD_TEST_WORK}'
+native-file-name 'native-panel'
+expect-native-text native.file.directory '${MITCAD_TEST_WORK}$'
+expect-native-text native.file.name '^native-panel$'
+native-file-cancel
+expect-native-dialog-gone '^Save As$'
+focus-main
+
+# A file chooser opened by Diagnostics is a native sheet on Diagnostics,
+# including its genuine native format popup. Cancelling returns to the
+# still-live diagnostics window and then to modeless Settings.
+native-action tools.search
+native-type native.commandSearch 'Preferences: Cache'
+key Return
+focus-dialog '^Settings$'
+button '^Diagnostics.*$'
+focus-dialog '^Diagnostics$'
+button '^Export Report.*$'
+focus-dialog '^Export Report$'
+native-choice native.file.filter 'Text (*.txt)'
+expect-native-text native.file.filter '^Text \(\*\.txt\)$'
+native-file-directory '${MITCAD_TEST_WORK}'
+native-file-name 'native-diagnostics'
+expect-native-text native.file.directory '${MITCAD_TEST_WORK}$'
+expect-native-text native.file.name '^native-diagnostics$'
+native-file-cancel
+expect-native-dialog-gone '^Export Report$'
+focus-dialog '^Diagnostics$'
+button '^Close$'
+focus-dialog '^Settings$'
+key Ctrl+w
+expect-native-dialog-gone '^Settings$'
+focus-main
+expect-never 'TestDriver: FAIL|Native Mac canvas:|OCCT view event failed'

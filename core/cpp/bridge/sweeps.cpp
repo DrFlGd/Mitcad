@@ -88,7 +88,8 @@ geometry::ShapePtr body_at(const ShapeList& bodies, std::size_t index) {
 } // namespace
 
 std::shared_ptr<geometry::Shape> sweep_solid(rust::Str feature, const Frame& frame,
-                                             rust::Slice<const Region> regions, const SweepInput& input) {
+                                             rust::Slice<const Region> regions, const SweepInput& input,
+                                             const ShapeList& bodies) {
   geometry::SweepSpec spec;
   spec.feature = std::string(feature);
   spec.frame = to_geometry(frame);
@@ -104,6 +105,17 @@ std::shared_ptr<geometry::Shape> sweep_solid(rust::Str feature, const Frame& fra
   spec.scaling = input.scaling == 1   ? geometry::ProfileScaling::Stretch
                  : input.scaling == 2 ? geometry::ProfileScaling::None
                                       : geometry::ProfileScaling::Scale;
+  // Guide surfaces (mitcad#157).
+  if (input.guide_faces.size() != input.guide_bodies.size()) {
+    throw std::invalid_argument("a guide surface's body is missing");
+  }
+  for (std::size_t i = 0; i < input.guide_faces.size(); ++i) {
+    const std::size_t body = input.guide_bodies[i];
+    if (body >= bodies.size() || !bodies.at(body)) {
+      throw std::invalid_argument("a guide surface's body is missing");
+    }
+    spec.guide.push_back({bodies.at(body), std::string(input.guide_faces[i])});
+  }
   return geometry::sweep(spec);
 }
 
@@ -231,7 +243,8 @@ std::shared_ptr<geometry::Shape> rib_solid(rust::Str feature, const Frame& frame
 }
 
 std::shared_ptr<geometry::Shape> helix_solid(rust::Str feature, const Frame& frame,
-                                             rust::Slice<const Region> regions, const HelixInput& input) {
+                                             rust::Slice<const Region> regions, const HelixInput& input,
+                                             const ShapeList& bodies) {
   geometry::HelixSweepSpec spec;
   spec.feature = std::string(feature);
   spec.frame = to_geometry(frame);
@@ -243,6 +256,9 @@ std::shared_ptr<geometry::Shape> helix_solid(rust::Str feature, const Frame& fra
   spec.growth = input.growth;
   spec.flip = input.flip;
   spec.freecad = input.freecad;
+  for (std::size_t i = 0; i < bodies.size(); ++i) {
+    spec.bodies.push_back(body_at(bodies, i));
+  }
   return geometry::helix_sweep(spec);
 }
 

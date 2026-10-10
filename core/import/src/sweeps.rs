@@ -215,6 +215,33 @@ impl<K: crate::ImportKernel> Importer<'_, K> {
         Ok(json!({"type": "face", "body": body.to_string(), "face": face.to_string()}))
     }
 
+    /// A sweep's guide surfaces (mitcad#157) as `guide_surfaces`: each
+    /// face found by its fingerprint (a point on it, its surface type and
+    /// area), as other face inputs are.
+    fn guide_surfaces(&self, faces: Option<&Value>) -> Result<Value, String> {
+        let items: Vec<&Value> = match faces {
+            Some(Value::Array(items)) => items.iter().collect(),
+            Some(v @ Value::Object(_)) => vec![v],
+            _ => return Err("its guide surfaces were not decoded".to_owned()),
+        };
+        let mut out = Vec::new();
+        for item in items {
+            let Some(Reference::Face(fp)) = reference(item) else {
+                return Err("its guide surfaces were not decoded".to_owned());
+            };
+            if fp.point_on_face.is_none() {
+                return Err("its guide surfaces' geometry was not decoded".to_owned());
+            }
+            let (body, face) = refs::resolve_face(self.doc, &fp)
+                .ok_or_else(|| "a guide surface was not found".to_owned())?;
+            let face = json!({"body": body.to_string(), "face": face.to_string()});
+            if !out.contains(&face) {
+                out.push(face);
+            }
+        }
+        Ok(Value::Array(out))
+    }
+
     /// A unitless value (a fraction, a weight): the imported parameter's
     /// name, or its number.
     fn unitless(&self, r: &Option<Reference>) -> Option<Value> {
@@ -274,9 +301,16 @@ impl<K: crate::ImportKernel> Importer<'_, K> {
         if d.is_solid == Some(false) {
             return Err("surface sweeps are not supported".to_owned());
         }
-        if given(d.other.get("guideSurfaces")) {
-            return Err("sweeps along guide surfaces are not supported".to_owned());
-        }
+        // Guide surfaces (mitcad#157): the faces as found by their
+        // fingerprints. The stream decoder may also give a guide rail
+        // then (a slot the sweep keeps from another type): the surfaces
+        // decide the type.
+        let surfaces = given(d.other.get("guideSurfaces"));
+        let guide_surfaces = if surfaces {
+            Some(self.guide_surfaces(d.other.get("guideSurfaces"))?)
+        } else {
+            None
+        };
         let profiles = profiles_of(&d.profile, &d.other);
         if profiles.is_empty() {
             return Err("its profiles were not decoded".to_owned());
@@ -293,8 +327,15 @@ impl<K: crate::ImportKernel> Importer<'_, K> {
         {
             base["orientation"] = json!("parallel");
         }
-        let rail = given(d.guide_rail.as_ref());
-        if rail {
+        let rail = given(d.guide_rail.as_ref()) && !surfaces;
+        if let Some(faces) = guide_surfaces {
+            if base.get("orientation").is_some() {
+                return Err(
+                    "guide surfaces with the parallel orientation are not supported".to_owned(),
+                );
+            }
+            base["guide_surfaces"] = faces;
+        } else if rail {
             base["guide_rail"] = self.path_of(d.guide_rail.as_ref(), "guide rail")?;
             match d.profile_scaling.as_deref() {
                 Some(s) if s.contains("Stretch") => base["profile_scaling"] = json!("stretch"),
@@ -353,7 +394,7 @@ impl<K: crate::ImportKernel> Importer<'_, K> {
                     v
                 }));
             }
-        } else if !rail && d.orientation.is_none() && flip.is_none() {
+        } else if !rail && !surfaces && d.orientation.is_none() && flip.is_none() {
             more.extend(variants.iter().map(|v| {
                 let mut v = v.clone();
                 v["orientation"] = json!("parallel");

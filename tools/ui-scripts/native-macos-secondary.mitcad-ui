@@ -1,0 +1,109 @@
+# SPDX-License-Identifier: MIT
+# Native secondary UI regression: editable parameter sheets, modeless
+# Project Settings and nested report preview. Starts with an empty document and never
+# confirms Send or opens an external issue tracker.
+expect-ever 'Native UI: AppKit shell with embedded OCCT viewport'
+sleep 800
+
+# The upstream Local project flow must work through the native form. All
+# folders and identities belong to the test; no remote is contacted.
+mark
+native-action file.new_project
+focus-dialog '^New Project$'
+native-type projectFolder '${MITCAD_TEST_WORK}/NativeProject'
+native-type projectAuthorName 'Native Project Tester'
+native-type projectAuthorEmail 'native-project@example.invalid'
+button '^Create$'
+expect-log 'New Project: created ${MITCAD_TEST_WORK:re}/NativeProject: version ' 30
+expect-native-dialog-gone '^New Project$'
+focus-main
+# An empty project (mitcad#145): no design named after the folder.
+expect-log 'Open Project: no designs in ${MITCAD_TEST_WORK:re}/NativeProject' 20
+expect-file '${MITCAD_TEST_WORK}/NativeProject/.mitcad/project.json'
+
+# Closing immediately after a native user edit must keep the author. Close
+# intentionally skips editingFinished; reopening reads git's actual config.
+mark
+native-action file.project_settings
+focus-dialog '^Project Settings - NativeProject$'
+expect-native-text projectAuthorName '^Native Project Tester$'
+expect-native-text projectAuthorEmail '^native-project@example\.invalid$'
+native-type projectAuthorName 'Native Project Edited'
+button '^Close$'
+expect-log 'Project Settings: author Native Project Edited <native-project@example\.invalid>'
+expect-native-dialog-gone '^Project Settings - NativeProject$'
+focus-main
+native-action file.project_settings
+focus-dialog '^Project Settings - NativeProject$'
+expect-native-text projectAuthorName '^Native Project Edited$'
+native-type projectAuthorEmail 'native-edited@example.invalid'
+button '^Close$'
+expect-log 'Project Settings: author Native Project Edited <native-edited@example\.invalid>'
+expect-native-dialog-gone '^Project Settings - NativeProject$'
+focus-main
+native-action file.project_settings
+focus-dialog '^Project Settings - NativeProject$'
+expect-native-text projectAuthorName '^Native Project Edited$'
+expect-native-text projectAuthorEmail '^native-edited@example\.invalid$'
+button '^Close$'
+expect-native-dialog-gone '^Project Settings - NativeProject$'
+focus-main
+
+# Add a parameter through a native child sheet; accepting it must keep the
+# outer Parameters sheet open and update the shared document model.
+mark
+native-action solid.parameters
+expect-log 'Parameters dialog opened'
+focus-dialog '^Parameters$'
+button '^User Parameter$'
+expect-log 'Add User Parameter dialog opened'
+focus-dialog '^Add User Parameter$'
+type 'nativeWidth'
+key Tab
+key Ctrl+a
+type 'mm'
+key Tab
+type '30'
+button '^OK$'
+expect-log 'Added parameter nativeWidth = 30 mm' 30
+focus-dialog '^Parameters$'
+button '^OK$'
+focus-main
+
+# Settings is a real native modeless window. Search-only settings pages
+# remain available through command search without appearing in CAD menus.
+# Cache Diagnostics exercises a nested dialog with table models and tabs.
+native-action tools.search
+native-type native.commandSearch 'Preferences: Cache'
+key Return
+focus-dialog '^Settings$'
+button '^Diagnostics.*$'
+focus-dialog '^Diagnostics$'
+button '^Close$'
+focus-dialog '^Settings$'
+key Ctrl+w
+expect-native-dialog-gone '^Settings$'
+focus-main
+
+# Preview remains local. Native field editing and the section checkbox must
+# drive the same presenter data; cancelling both sheets sends nothing.
+mark
+native-action help.send_feedback
+expect-log 'Send Feedback: the form shows'
+focus-dialog '^Send Feedback$'
+button '^Preview.*$'
+focus-dialog '^Review Report$'
+expect-native-text reportTitle '^Bug: Feedback$'
+native-type reportTitle 'Native secondary UI regression'
+expect-native-text reportTitle '^Native secondary UI regression$'
+native-click reportSection_diagnostics
+expect-log 'Report section diagnostics left out'
+screenshot '${MITCAD_TEST_WORK}/native-secondary.png'
+expect-file '${MITCAD_TEST_WORK}/native-secondary.png'
+button '^Cancel$'
+expect-log 'Report not sent: the preview was cancelled'
+focus-dialog '^Send Feedback$'
+button '^Cancel$'
+expect-log 'Send Feedback cancelled'
+focus-main
+expect-never 'Report sent:|Report on the clipboard:|TestDriver: FAIL|Native Mac canvas:|OCCT view event failed'

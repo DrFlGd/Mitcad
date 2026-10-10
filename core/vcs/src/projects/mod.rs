@@ -18,6 +18,9 @@
 //!   and `connect` onto a remote's files (`onto.rs`).
 //! - SSH servers: [`host_keys`], [`trust_host_key`] and [`ssh_public_key`]
 //!   (`hostkeys.rs`).
+//! - A project's folders and designs (mitcad#144): `project_tree`
+//!   (`listing.rs`), and `create_folder`, `new_design`, `move` and
+//!   `delete`, each one version (`operations.rs`).
 //!
 //! What a remote or a server sends is untrusted: names shown to people are
 //! cleaned ([`clean_text`]) and host keys are parsed and checked here; the
@@ -32,6 +35,11 @@ mod hostkeys;
 mod inspect;
 mod onto;
 mod settings;
+// A project's folders and designs (mitcad#144).
+mod links;
+mod listing;
+mod operations;
+pub use listing::FOLDER_PLACEHOLDER;
 
 use std::fmt::Write;
 use std::path::{Path, PathBuf};
@@ -595,7 +603,7 @@ pub fn describe(name: &str, answer: &Value) -> String {
                 let label = if name == "create_project" {
                     "Recorded"
                 } else {
-                    "Project files"
+                    "Designs"
                 };
                 let _ = writeln!(out, "{label}: {}", files.join(", "));
             }
@@ -705,6 +713,9 @@ pub(crate) fn describe_project(name: &str, answer: &Value) -> Option<String> {
             out,
             "Send each version at once: {send}; check for newer versions: {check}"
         );
+        if let Some(name) = local["name"].as_str() {
+            let _ = writeln!(out, "Display name on this computer: {name}");
+        }
     };
     match name {
         "project_settings" => {
@@ -766,7 +777,8 @@ pub(crate) fn describe_project(name: &str, answer: &Value) -> Option<String> {
                 answer["path"].as_str().unwrap_or("")
             );
         }
-        _ => return None,
+        // A project's folders and designs (mitcad#144).
+        _ => return operations::describe(name, answer),
     }
     Some(out)
 }

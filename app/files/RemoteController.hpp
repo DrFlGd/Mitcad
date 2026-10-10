@@ -71,7 +71,7 @@ public:
     // Who records versions (files/MainWindowVersions.cpp), none when
     // cancelled.
     std::function<std::optional<QString>(const Project& project)> author;
-    // Opens a project file as the window's design; false with the reason,
+    // Opens a design file as the window's design; false with the reason,
     // or with none when cancelled.
     std::function<bool(const QString& path, QString& error)> open;
     // The project's history moved (a sync): what Save compares the file
@@ -109,7 +109,7 @@ public:
   // The current project changed (opened, made, shared, stopped syncing):
   // its remote's state, and a check for newer versions when `check`.
   void projectChanged(bool check);
-  // A project file opened as the design: its remote's state, and a check
+  // A design file opened as the design: its remote's state, and a check
   // for newer versions.
   void fileOpened(const QString& path);
   // Save (or Project Settings) recorded a version in the project: sent to

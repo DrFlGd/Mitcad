@@ -3,7 +3,7 @@
 //!
 //! Each feature type lives in its own module with its definition struct,
 //! generic over how values refer to parameters (`P`): [`ParamId`] in the
-//! model, the parameter name in project files and a name or a number
+//! model, the parameter name in design files and a name or a number
 //! ([`ValueInput`]) in commands. The struct's serde form is the file and
 //! command form of the feature. A type implements:
 //!
@@ -76,6 +76,9 @@ pub mod joint;
 // Fillets and chamfers repeated by patterns and mirrors (mitcad#105).
 pub(crate) mod dressup_copies;
 
+// Assembly constraints (mitcad#148).
+pub mod constraint_set;
+
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
@@ -134,6 +137,8 @@ pub use joint::{
     AsBuiltJointDef, FrameOverride, JointDef, JointOrigin, JointOriginDef, JointPosition, Limit,
     Limits, OccurrencePath, RigidGroupDef,
 };
+// Assembly constraints (mitcad#148).
+pub use constraint_set::{ConstraintRow, ConstraintSetDef, ConstraintType};
 
 use crate::assembly::Assembly;
 use crate::datum::Datum;
@@ -250,6 +255,8 @@ feature_types! {
     Helix(HelixDef),
     // Joints between occurrences (mitcad#55).
     Joint(JointDef), AsBuiltJoint(AsBuiltJointDef), JointOrigin(JointOriginDef), RigidGroup(RigidGroupDef),
+    // Assembly constraints (mitcad#148).
+    ConstraintSet(ConstraintSetDef),
 }
 
 /// Brings a feature definition in an earlier form up to date before it is

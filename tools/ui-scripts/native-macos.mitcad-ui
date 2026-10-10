@@ -1,0 +1,202 @@
+# SPDX-License-Identifier: MIT
+# Run on macOS with the native UI, an empty document, MITCAD_LOG_VOLUMES=1
+# and MITCAD_TEST_WORK set to the output directory. AppKit controls drive the
+# actual command presenter; resulting OCCT model volumes verify the changes.
+expect-ever 'Native UI: AppKit shell with embedded OCCT viewport'
+expect-ever 'View area'
+sleep 800
+
+# The canvas keeps the entire window width behind floating native cards.
+# Check geometry and AppKit pointer routing with each card shown/hidden,
+# then resize to a compact window and return to the normal working size.
+native-resize 1280 820
+expect-native-visible native.sidebar true
+expect-native-visible native.inspectorCard false
+expect-native-layout
+menu 'View/Hide Sidebar'
+expect-native-visible native.sidebar false
+expect-native-layout
+menu 'View/Show Sidebar'
+menu 'View/Show Inspector'
+expect-native-visible native.sidebar true
+expect-native-visible native.inspectorCard true
+expect-native-layout
+native-resize 900 640
+expect-native-layout
+screenshot '${MITCAD_TEST_WORK}/native-macos-compact.png'
+native-resize 1280 820
+expect-native-layout
+menu 'View/Hide Inspector'
+expect-native-visible native.inspectorCard false
+expect-native-layout
+
+# The ribbon preserves existing pinned membership and availability. Extrude
+# stays disabled until the document has profiles; Offset Plane can start on
+# an empty document. Box remains available through the native command menu.
+# The group labels are real native popup controls.
+expect-native-text native.ribbon.group.create '^Create$'
+expect-native-visible native.ribbon.solid.extrude true
+expect-native-enabled native.ribbon.solid.extrude false
+expect-native-text native.ribbon.group.construct '^Construct$'
+expect-native-visible native.ribbon.construct.offset_plane true
+expect-native-enabled native.ribbon.construct.offset_plane true
+mark
+native-click native.ribbon.construct.offset_plane
+expect-log 'Command Offset Plane started'
+expect-native-visible native.inspectorCard true
+expect-native-layout
+native-click commandCancel
+expect-log 'Command Offset Plane cancelled' 30
+
+# Create a box through the native menu and form, including input validation.
+mark
+native-action solid.box
+expect-log 'Command Box started'
+expect-native-visible native.inspectorCard true
+expect-native-layout
+click-logged 'Datum xy'
+native-type input_x '0 mm'
+native-type input_y '0 mm'
+native-type input_length '40 mm'
+native-type input_width '25 mm'
+native-type input_height 'bad_expression'
+expect-native-enabled commandOk false
+# Hiding a form while its field editor owns focus returns focus to the
+# canvas. Showing it again preserves the invalid expression and validation.
+menu 'View/Hide Inspector'
+expect-native-visible native.inspectorCard false
+expect-native-layout
+menu 'View/Show Inspector'
+expect-native-visible native.inspectorCard true
+expect-native-layout
+expect-native-text input_height '^bad_expression$'
+expect-native-enabled commandOk false
+native-type input_height '20 mm'
+native-choice input_direction 'One Side'
+expect-native-enabled commandOk true
+native-resize 900 640
+expect-native-layout
+screenshot '${MITCAD_TEST_WORK}/native-macos-compact-form.png'
+native-click commandOk
+expect-log 'Added box \(New Body\)' 30
+capture created 'New body \S+ \(F1\.b0\): volume ([0-9.]+) mm3' 30
+expect-near ${created} 20000
+native-resize 1280 820
+expect-native-layout
+screenshot '${MITCAD_TEST_WORK}/native-macos-box.png'
+
+# Edit through native feature history. Both the native field and the model
+# must reflect the change after committing.
+menu 'View/Show History'
+expect-native-visible native.historyCard true
+expect-native-layout
+mark
+native-activate native.history.F1
+expect-log 'Editing F1 with Box'
+expect-native-text input_height '^20(?:\.0*)?(?: mm)?$'
+screenshot '${MITCAD_TEST_WORK}/native-macos-form.png'
+native-type input_height '10 mm'
+native-click commandOk
+expect-log 'Edited F1' 30
+capture edited 'Body \S+ \(F1\.b0\): volume 20000\.000 -> ([0-9.]+) mm3' 30
+expect-near ${edited} 10000
+
+# Undo and redo from the native menu must restore the persisted field value.
+focus-main
+mark
+native-action edit.undo
+expect-log 'Undo:' 30
+native-activate native.history.F1
+expect-log 'Editing F1 with Box'
+expect-native-text input_height '^20(?:\.0*)?(?: mm)?$'
+native-click commandCancel
+expect-log 'Command Box cancelled' 30
+focus-main
+mark
+native-action edit.redo
+expect-log 'Redo:' 30
+native-activate native.history.F1
+expect-log 'Editing F1 with Box'
+expect-native-text input_height '^10(?:\.0*)?(?: mm)?$'
+
+# Cancelling a valid preview preserves the persisted dimensions. Escape
+# travels through AppKit's field editor and the native command presenter.
+native-type input_height '35 mm'
+key Escape
+expect-log 'Command Box cancelled' 30
+mark
+native-activate native.history.F1
+expect-log 'Editing F1 with Box'
+expect-native-text input_height '^10(?:\.0*)?(?: mm)?$'
+native-click commandCancel
+expect-log 'Command Box cancelled' 30
+
+# Native command search uses a real NSSearchField and native result table.
+focus-main
+native-action tools.search
+native-type native.commandSearch 'Sphere'
+key Return
+expect-log 'Command Sphere started'
+native-click commandCancel
+expect-log 'Command Sphere cancelled' 30
+
+# Repeated native inputs keep their values when rows are renumbered, and
+# their controls unlock after the structural action is acknowledged.
+mark
+native-action solid.fillet
+expect-log 'Command Fillet started'
+native-click add_sets
+expect-log 'Fillet: added sets row 2'
+expect-native-enabled input_sets.1.radius true
+native-type input_sets.1.radius '3 mm'
+native-click 'native.action.removeRow|sets|0'
+expect-log 'Fillet: removed sets row 1'
+expect-native-text input_sets.0.radius '^3(?:\.0*)?(?: mm)?$'
+expect-native-enabled input_sets.0.radius true
+native-type input_sets.0.radius '4 mm'
+native-click add_sets
+expect-log 'Fillet: added sets row 2'
+expect-native-enabled input_sets.1.radius true
+native-click 'native.action.removeRow|sets|1'
+expect-log 'Fillet: removed sets row 2'
+expect-native-text input_sets.0.radius '^4(?:\.0*)?(?: mm)?$'
+native-click commandCancel
+expect-log 'Command Fillet cancelled' 30
+
+# Measurement reads the model on the document worker and publishes the
+# result to the real native inspector. Select through the native outline.
+mark
+native-action inspect.measure
+expect-log 'Command Measure started'
+native-choice input_filter 'Bodies'
+native-expand native.modelTree
+native-select native.model.body:F1.b0@
+expect-log 'Measure Body 1: 1 body' 30
+expect-log 'Computing inspection started' 30
+expect-log 'Inspect Measure: volume 10000' 30
+expect-native-text commandResult 'Volume: 10000 mm'
+key Return
+expect-log 'Closed Measure' 30
+
+# Return and Escape keep their document meanings while a read-only model
+# row has native keyboard focus.
+mark
+native-action inspect.measure
+expect-log 'Command Measure started'
+native-choice input_filter 'Bodies'
+native-select native.model.body:F1.b0@
+expect-log 'Measure Body 1: 1 body' 30
+key Escape
+expect-log 'Command Measure cancelled' 30
+
+# Physical Properties shares the worker inspection path and presents its
+# report in a native dialog without changing the model.
+mark
+native-action inspect.properties
+focus-dialog '^Properties$'
+expect-log 'Physical properties:.*volume 10000' 30
+button '^Close$'
+focus-main
+screenshot '${MITCAD_TEST_WORK}/native-macos.png'
+expect-file '${MITCAD_TEST_WORK}/native-macos.png'
+expect-never 'Native Mac canvas:|OCCT view event failed|TestDriver: FAIL'

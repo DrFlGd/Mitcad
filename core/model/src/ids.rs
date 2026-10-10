@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT
 //! Stable identities of features, bodies and sketch entities. They are
-//! assigned when an item is created, saved in the project file and never
+//! assigned when an item is created, saved in the design file and never
 //! derived from positions, so inserting, deleting or reordering features
 //! does not change what a reference points at.
 

@@ -23,9 +23,7 @@
 #include "rust/cxx.h"
 // The imports, and the helpers the commands share (import.cpp).
 #include "import.hpp"
-#ifdef MITCAD_RENDER
 #include "render.hpp"
-#endif
 // Component libraries (mitcad#64, mitcad#63).
 #include "library.hpp"
 // Local and Cloud projects (mitcad#89).
@@ -40,7 +38,7 @@ namespace {
 const char* const kUsage = R"(usage:
   mitcad-cli info <file.mitcad> [--json] [--properties [--density G_PER_CM3]] [--timings]
                   [--result-store DIR [--persist-min-ms MS]] [--diagnostics] [--names]
-      Opens a project file, recomputes it and prints the timeline with the
+      Opens a design, recomputes it and prints the timeline with the
       status of each feature and the bodies with volume, area, centre of
       mass, bounding box and face and edge counts. --timings adds how long
       the recompute took and its slowest features. --result-store takes
@@ -57,7 +55,7 @@ const char* const kUsage = R"(usage:
       on an opened one, then prints the same report. A script is a JSON
       array of commands ({"cmd": ...}), expectations ({"expect": {...}}) and
       comments ({"comment": "..."}); see core/model/src/api/commands.md.
-      --save writes the resulting project file.
+      --save writes the resulting design.
       --properties adds the physical properties of each body: mass, centre
       of mass and inertia, with its material (steel by default), or with
       --density (g/cm3) for bodies without a material.
@@ -72,11 +70,11 @@ const char* const kUsage = R"(usage:
       Compares the bodies (all, or those given) with the bodies of a STEP
       file (all, or one): volumes, volume differences, surface deviation
       and bounding boxes. Exits with 1 when a given limit is exceeded.
-      <part> is a project file (.mitcad) or a script (.json) that builds one.
+      <part> is a design (.mitcad) or a script (.json) that builds one.
   mitcad-cli import <file> [--unit-mm N] [--open <file.mitcad>] [--save <out.mitcad>] [--json]
       Imports a STEP, IGES, BRep, STL or OBJ file as a base feature (bodies
       without history; STL and OBJ give mesh bodies) into a new or opened
-      project and prints the report. --unit-mm is the length of one STL or
+      design and prints the report. --unit-mm is the length of one STL or
       OBJ unit in millimetres (default 1).
   mitcad-cli import-f3d <file.f3d> [--save <out.mitcad>] [--report <report.json>] [--json]
                         [--design <name>] [--dump <dump.json>] [--no-verify] [--no-fallback]
@@ -170,11 +168,15 @@ const char* const kUsage = R"(usage:
                     [--deviation MM --angle DEG] [--ascii]
                     [--coordinates design|component] [--occurrence <path>]
       Writes bodies at the timeline marker (all, or the listed uids or
-      names) to a .step/.stp, .iges/.igs, .stl, .obj, .brep or .3mf file.
-      STEP and IGES keep body names and imported colours; --refinement or
-      --deviation and --angle set the STL, OBJ and 3MF triangulation. A
-      3MF file (for slicers) holds the solid and mesh bodies as the parts
-      of one object, in their places, with names and imported colours.
+      names) to a .step/.stp, .iges/.igs, .stl, .obj, .brep, .3mf or .usdz
+      file. STEP and IGES keep body names and imported colours;
+      --refinement or --deviation and --angle set the STL, OBJ, 3MF and
+      USDZ triangulation. A 3MF file (for slicers) holds the solid and mesh
+      bodies as the parts of one object, in their places, with names and
+      imported colours. A USDZ file (for AR viewers) holds the shown
+      bodies as shaded meshes in the components' hierarchy, with their
+      appearances and textures (relative texture paths from the design's
+      folder).
       Every format has the bodies where the design shows them (a STEP
       file of moved components is an assembly); --coordinates component
       writes each body once in its component's coordinates, --occurrence
@@ -189,21 +191,21 @@ const char* const kUsage = R"(usage:
       recommended .gitattributes and .gitignore lines, makes the folder a
       git repository (unless it is the root of one) and records these files
       as the first version, by --author or by git's configured author
-      (user.name, user.email). --no-history writes the files only. Project
-      files in a project (in the folder or below it) are saved in version
-      3: the B-rep data of base features goes into the project's store
+      (user.name, user.email). --no-history writes the files only. Designs
+      in a project (in the folder or below it) are saved in version 3: the
+      B-rep data of base features goes into the project's store
       (.mitcad/brep), each body's data once, and the file refers to it.
   mitcad-cli history <file.mitcad> [--json]
-      Lists the versions of a project file of a project with version
+      Lists the versions of a design in a project with version
       history, newest first: number, id, time, author and message (the
       commits that changed it, following renames).
   mitcad-cli version save <file.mitcad>... [-m <message>] [--author "Name <email>"] [--json]
       Records the saved files as a new version: a commit of these files and
-      of the B-rep files they refer to, without the B-rep files no project
-      file of the version refers to (they leave the folder too). The author
+      of the B-rep files they refer to, without the B-rep files no design
+      of the version refers to (they leave the folder too). The author
       is --author, else git's configured one. Nothing changed: no version.
   mitcad-cli version show <file.mitcad> <version> [--save <out.mitcad>] [--json] [--properties]
-      Opens a project file as it was in a version (an id or a unique prefix
+      Opens a design as it was in a version (an id or a unique prefix
       of one, HEAD, HEAD~n), with its B-rep data read from that version,
       recomputes it and prints the report as info does; --save writes it.
   mitcad-cli version changes <file-or-folder> <version> [<version>] [--json]
@@ -211,11 +213,11 @@ const char* const kUsage = R"(usage:
       second defaults to the latest): A added, D deleted, M modified, R
       renamed.
   mitcad-cli version restore <file.mitcad> <version> [-m <message>] [--author "Name <email>"] [--json]
-      Writes a project file as it was in a version and records it as a new
+      Writes a design as it was in a version and records it as a new
       version.
   mitcad-cli diff <a.mitcad> <b.mitcad> [--json] [--geometry]
   mitcad-cli diff <file.mitcad> <version> [<version>] [--json] [--geometry]
-      Compares two project files, or two versions of a project file (the
+      Compares two designs, or two versions of a design (the
       second defaults to the file as saved in the folder), in the model's
       terms: parameters, features with their changed fields and values
       ("Extrude1 (F2): distance 10 mm -> 15 mm"), features added, deleted
@@ -228,7 +230,7 @@ const char* const kUsage = R"(usage:
       (default name origin): an empty one gets the project's versions, one
       that shares the project's history is fetched (and gets the versions it
       lacks when it has none of its own), another history is refused without
-      changes. The project's .gitattributes gets merge=binary for project
+      changes. The project's .gitattributes gets merge=binary for design
       files, recorded as a version. <url>: https://host/owner/repo.git,
       git@host:owner/repo.git, ssh://host/path or a folder, never with a
       password or token: git signs in with SSH keys (and the SSH agent) or a
@@ -267,7 +269,7 @@ const char* const kUsage = R"(usage:
       configured user. --dry-run tells what a sync would do.
   mitcad-cli clone <url> <folder> [--json]
       Opens a project from a remote into a new (or empty) folder and lists
-      its project files; a repository without a project is refused.
+      its designs; a repository without a project is refused.
       Remote repositories need the git program (MITCAD_GIT, else PATH);
       with --json the answer's "error" is null on success.
   mitcad-cli lock status <project-or-file> [--json]
@@ -287,8 +289,8 @@ const char* const kUsage = R"(usage:
       Renders the visible bodies to an image file with the design's render
       settings (environment, background, ground, film and output), as File >
       Render Image does, in the render worker mitcad-render (next to
-      mitcad-cli, or --worker, or MITCAD_RENDER_WORKER); only in builds with
-      the renderer. --view is a named view of the design, or a standard view
+      mitcad-cli, or --worker, or MITCAD_RENDER_WORKER). --view is a named
+      view of the design, or a standard view
       (front, back, left, right, top, bottom, iso) fitted to the bodies; the
       default is the design's Home view, else iso. --size, --samples,
       --time-limit (stop after that long), --format (else from the file's
@@ -297,10 +299,10 @@ const char* const kUsage = R"(usage:
       and JPEG are as the view shows the render (exposure, view transform);
       EXR is the render's linear light without them.
   mitcad-cli convert <file.mitcad> <out.mitcad> [--format v2|v3|auto]
-      Writes a project file again without computing it: v3 refers to B-rep
-      data in the project's store (the output must be in a project), v2 is
-      a single file with the data inside, auto (default) is v3 in a
-      project and v2 elsewhere. --save of the other commands writes as
+      Writes a design again without computing it: v3 (a design in a
+      project) refers to B-rep data in the project's store (the output must
+      be in a project), v2 is a single-file design with the data inside,
+      auto (default) is v3 in a project and v2 elsewhere. --save of the other commands writes as
       auto does.
 )";
 
@@ -364,7 +366,7 @@ std::string string_list(const std::string& text) {
   return out + "]";
 }
 
-// A project file, or a script (.json) run on a new document.
+// A design, or a script (.json) run on a new document.
 rust::Box<mitcad::Document> open_part(const std::string& path) {
   const std::string suffix = ".json";
   if (path.size() < suffix.size() || path.compare(path.size() - suffix.size(), suffix.size(), suffix) != 0) {
@@ -500,25 +502,25 @@ int info_or_run(const std::string& mode, const std::vector<std::string>& args) {
     }
   }
   if (input.empty()) {
-    return usage(mode == "info" ? "no project file" : "no script");
+    return usage(mode == "info" ? "no design" : "no script");
   }
   if (!density.empty() && (!properties || !is_number(density))) {
     return usage("--density needs --properties and a number");
   }
-  const std::string project = mode == "info" ? input : open;
+  const std::string design = mode == "info" ? input : open;
   if (!min_ms.empty()) {
     if (store.dir.empty() || !is_number(min_ms)) {
       return usage("--persist-min-ms needs --result-store and a number");
     }
     store.min_ms = std::stod(min_ms);
   }
-  if (!store.dir.empty() && project.empty()) {
-    return usage("--result-store needs a project file to open");
+  if (!store.dir.empty() && design.empty()) {
+    return usage("--result-store needs a design to open");
   }
   rust::Box<mitcad::Document> document = mitcad::new_document();
-  if (!project.empty()) {
+  if (!design.empty()) {
     // The store's line goes before the report, or to stderr with --json.
-    document = open_document(project, store, json ? &std::cerr : &std::cout);
+    document = open_document(design, store, json ? &std::cerr : &std::cout);
   }
   if (mode == "run") {
     std::string script;
@@ -605,7 +607,7 @@ int export_bodies(const std::vector<std::string>& args) {
     return usage(problem);
   }
   if (a.positional.size() != 2) {
-    return usage("export needs a project file and an output file");
+    return usage("export needs a design and an output file");
   }
   std::string command = R"({"cmd": "export", "path": )" + json_string(a.positional[1]);
   if (const std::string* bodies = a.option("--bodies")) {
@@ -645,6 +647,9 @@ int export_bodies(const std::vector<std::string>& args) {
   if (const std::string* occurrence = a.option("--occurrence")) {
     command += R"(, "occurrence": )" + json_string(*occurrence);
   }
+  // USDZ (mitcad#123): texture paths are relative to the design's folder.
+  command += R"(, "design_folder": )" +
+             json_string(std::filesystem::absolute(a.positional[0]).parent_path().string());
   command += "}";
   rust::Box<mitcad::Document> document = open_document(a.positional[0]);
   const std::string result(document->command(command));
@@ -659,7 +664,7 @@ int export_sketch(const std::vector<std::string>& args) {
     return usage(problem);
   }
   if (a.positional.size() != 3) {
-    return usage("export-sketch needs a project file, a sketch and an output file");
+    return usage("export-sketch needs a design, a sketch and an output file");
   }
   std::string command = R"({"cmd": "export_sketch", "sketch": )" + json_string(a.positional[1]) +
                         R"(, "path": )" + json_string(a.positional[2]);
@@ -718,7 +723,7 @@ int history(const std::vector<std::string>& args) {
     return usage(problem);
   }
   if (a.positional.size() != 1) {
-    return usage("history needs a project file");
+    return usage("history needs a design");
   }
   const rust::Box<mitcad::Project> project = mitcad::open_project(a.positional[0]);
   print_versions(*project, R"({"cmd": "history", "path": )" + json_string(a.positional[0]) + "}",
@@ -803,8 +808,8 @@ bool ends_with(const std::string& text, const std::string& suffix) {
   return text.size() >= suffix.size() && text.compare(text.size() - suffix.size(), suffix.size(), suffix) == 0;
 }
 
-// Comparison of versions (P12c): two project files, or two versions of a
-// project file (the second the file as saved when left out), in the
+// Comparison of versions (P12c): two designs, or two versions of a
+// design (the second the file as saved when left out), in the
 // model's terms; with --geometry both are computed (links not followed) and
 // their bodies' volumes and areas compared too.
 int diff(const std::vector<std::string>& args) {
@@ -814,7 +819,7 @@ int diff(const std::vector<std::string>& args) {
     return usage(problem);
   }
   if (a.positional.size() < 2 || a.positional.size() > 3) {
-    return usage("diff needs two project files, or a project file and one or two versions");
+    return usage("diff needs two designs, or a design and one or two versions");
   }
   const bool json = a.flag("--json");
   const bool geometry = a.flag("--geometry");
@@ -835,8 +840,8 @@ int diff(const std::vector<std::string>& args) {
   };
   const auto print = [json](const std::string& answer) { std::cout << answer << (json ? "\n" : ""); };
   if (a.positional.size() == 2 && (std::filesystem::is_regular_file(second) || ends_with(second, ".mitcad"))) {
-    const rust::Box<mitcad::Document> from = computed(mitcad::load_project(file));
-    const rust::Box<mitcad::Document> to = computed(mitcad::load_project(second));
+    const rust::Box<mitcad::Document> from = computed(mitcad::load_design(file));
+    const rust::Box<mitcad::Document> to = computed(mitcad::load_design(second));
     print(std::string(mitcad::diff_documents(*from, *to, options("", file, second))));
     return 0;
   }
@@ -862,7 +867,7 @@ int diff(const std::vector<std::string>& args) {
       json_field(std::string(project->command(R"({"cmd": "status", "path": )" + json_string(file) + "}")), "path");
   const rust::Box<mitcad::Document> from = computed(mitcad::load_version(*project, second, file));
   const rust::Box<mitcad::Document> to =
-      computed(saved ? mitcad::load_project(file) : mitcad::load_version(*project, a.positional[2], file));
+      computed(saved ? mitcad::load_design(file) : mitcad::load_version(*project, a.positional[2], file));
   print(std::string(
       mitcad::diff_documents(*from, *to, options(path, id(second), saved ? "" : id(a.positional[2])))));
   return 0;
@@ -1099,7 +1104,7 @@ int lock(const std::vector<std::string>& args) {
   return 0;
 }
 
-// Writes a project file in another format without computing it: the
+// Writes a design in another format without computing it: the
 // B-rep data into the project's store (v3) or into the file (v2).
 int convert(const std::vector<std::string>& args) {
   Arguments a;
@@ -1108,7 +1113,7 @@ int convert(const std::vector<std::string>& args) {
     return usage(problem);
   }
   if (a.positional.size() != 2) {
-    return usage("convert needs a project file and an output file");
+    return usage("convert needs a design and an output file");
   }
   std::string format = "auto";
   if (const std::string* given = a.option("--format")) {
@@ -1120,11 +1125,11 @@ int convert(const std::vector<std::string>& args) {
       return usage("--format is v2, v3 or auto");
     }
   }
-  rust::Box<mitcad::Document> document = mitcad::load_project(a.positional[0]);
+  rust::Box<mitcad::Document> document = mitcad::load_design(a.positional[0]);
   for (const rust::String& warning : document->load_warnings()) {
     std::cerr << "warning: " << std::string(warning) << "\n";
   }
-  const std::string text(document->save_project(a.positional[1], format));
+  const std::string text(document->save_design(a.positional[1], format));
   std::cout << "Wrote " << a.positional[1] << " (version " << json_count(text, "version") << ", "
             << text.size() << " bytes)\n";
   return 0;
@@ -1244,13 +1249,9 @@ int run(int argc, char* argv[]) {
     if (mode == "host-keys") {
       return mitcad::cli::host_keys(args);
     }
-    // The final render (mitcad#48), in builds with the renderer.
+    // The final render (mitcad#48).
     if (mode == "render") {
-#ifdef MITCAD_RENDER
       return mitcad::cli::render(argc, argv, [](const std::string& path) { return open_part(path); });
-#else
-      return fail("this mitcad-cli is built without the renderer (the CMake option MITCAD_RENDER)");
-#endif
     }
     // Live updates (mitcad#89).
     if (mode == "live") {

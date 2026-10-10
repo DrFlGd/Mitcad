@@ -242,6 +242,44 @@ impl<K: Kernel> Document<K> {
             .collect()
     }
 
+    /// The faces of a body's shape that have appearances of their own, by
+    /// their index in [`Kernel::faces`]' order: (appearance id, face
+    /// indices) per face appearance that finds faces, as
+    /// [`Document::face_appearances`] finds them.
+    pub(crate) fn face_appearance_indices(&self, uid: BodyUid) -> Vec<(String, Vec<usize>)> {
+        let assigned = self
+            .state
+            .body_attributes
+            .get(&uid)
+            .map(|a| &a.face_appearances);
+        let Some(assigned) = assigned.filter(|a| !a.is_empty()) else {
+            return Vec::new();
+        };
+        let faces: Vec<Vec<FaceName>> = self
+            .body_shape(uid)
+            .and_then(|shape| self.kernel().faces(shape).ok())
+            .unwrap_or_default()
+            .into_iter()
+            .map(|face| {
+                face.names
+                    .iter()
+                    .filter_map(|n| FaceName::from_str(n).ok())
+                    .collect()
+            })
+            .collect();
+        assigned
+            .iter()
+            .filter_map(|(face, appearance)| {
+                let name = FaceName::from_str(face).ok()?;
+                let found: Vec<usize> = faces_found(&faces, &name)
+                    .into_iter()
+                    .map(|(i, _)| i)
+                    .collect();
+                (!found.is_empty()).then(|| (appearance.clone(), found))
+            })
+            .collect()
+    }
+
     /// Sets a body's attributes as one undo step that recomputes nothing
     /// (none when they do not change).
     fn set_attributes(
@@ -297,31 +335,41 @@ impl<K: Kernel> Document<K> {
 /// A name of each face that `reference` finds among the faces (each face's
 /// names): those it names (all pieces without `#k`), else those of the same
 /// feature and role whose key has most in common with it.
-fn faces_named(faces: &[Vec<FaceName>], reference: &FaceName) -> Vec<String> {
-    let exact: Vec<String> = faces
+pub(super) fn faces_named(faces: &[Vec<FaceName>], reference: &FaceName) -> Vec<String> {
+    faces_found(faces, reference)
+        .into_iter()
+        .map(|(_, name)| name.to_string())
+        .collect()
+}
+
+/// The faces `reference` finds (see [`faces_named`]): each one's index
+/// among `faces` and the name of it that it finds.
+fn faces_found<'a>(faces: &'a [Vec<FaceName>], reference: &FaceName) -> Vec<(usize, &'a FaceName)> {
+    let exact: Vec<(usize, &FaceName)> = faces
         .iter()
-        .filter_map(|names| names.iter().find(|n| n.matches(reference)))
-        .map(ToString::to_string)
+        .enumerate()
+        .filter_map(|(i, names)| names.iter().find(|n| n.matches(reference)).map(|n| (i, n)))
         .collect();
     if !exact.is_empty() {
         return exact;
     }
-    let scored: Vec<(usize, &FaceName)> = faces
+    let scored: Vec<(usize, usize, &FaceName)> = faces
         .iter()
-        .filter_map(|names| {
+        .enumerate()
+        .filter_map(|(i, names)| {
             names
                 .iter()
-                .filter_map(|n| likeness(reference, n).map(|score| (score, n)))
-                .max_by_key(|(score, _)| *score)
+                .filter_map(|n| likeness(reference, n).map(|score| (score, i, n)))
+                .max_by_key(|(score, _, _)| *score)
         })
         .collect();
-    let Some(best) = scored.iter().map(|(score, _)| *score).max() else {
+    let Some(best) = scored.iter().map(|(score, _, _)| *score).max() else {
         return Vec::new();
     };
     scored
         .into_iter()
-        .filter(|(score, _)| *score == best)
-        .map(|(_, n)| n.to_string())
+        .filter(|(score, _, _)| *score == best)
+        .map(|(_, i, n)| (i, n))
         .collect()
 }
 

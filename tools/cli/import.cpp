@@ -97,12 +97,12 @@ bool parse_arguments(const std::vector<std::string>& args, const std::vector<std
 
 rust::Box<mitcad::Document> open_document(const std::string& path, const StoreOptions& store, std::ostream* log) {
   // A version 3 file's B-rep data comes from its project's store (P12a).
-  rust::Box<mitcad::Document> document = mitcad::load_project(path);
+  rust::Box<mitcad::Document> document = mitcad::load_design(path);
   if (!store.dir.empty()) {
     document->set_result_store(store.dir, mitcad::geometry::kernel_build_id(),
                                std::filesystem::path(path).filename().string());
   }
-  // Linked components follow their files, relative to the project's.
+  // Linked components follow their files, relative to the design's.
   std::string base = std::filesystem::path(path).parent_path().string();
   if (base.empty()) {
     base = ".";
@@ -122,7 +122,7 @@ rust::Box<mitcad::Document> open_document(const std::string& path, const StoreOp
 }
 
 void save_document(const mitcad::Document& document, const std::string& path) {
-  document.save_project(path, "auto");
+  document.save_design(path, "auto");
 }
 
 int import(const std::vector<std::string>& args) {

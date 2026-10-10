@@ -113,4 +113,67 @@ QString recoveryDirectory() {
   return data.isEmpty() ? QString() : QDir(data).filePath(QStringLiteral("autosave"));
 }
 
+namespace {
+
+// A project's folder as the lists keep it, and whether two are the same.
+QString projectKey(const QString& root) { return QDir::cleanPath(QDir::fromNativeSeparators(root)); }
+
+void removePath(QStringList& list, const QString& root) {
+  const QString key = projectKey(root);
+  list.erase(std::remove_if(list.begin(), list.end(),
+                            [&key](const QString& other) {
+#ifdef _WIN32
+                              return projectKey(other).compare(key, Qt::CaseInsensitive) == 0;
+#else
+                              return projectKey(other) == key;
+#endif
+                            }),
+             list.end());
+}
+
+} // namespace
+
+ProjectsSettings ProjectsSettings::load() {
+  const QSettings settings;
+  ProjectsSettings projects;
+  projects.known = settings.value(QStringLiteral("projects/known")).toStringList();
+  projects.hidden = settings.value(QStringLiteral("projects/hidden")).toStringList();
+  if (settings.contains(QStringLiteral("projects/panel"))) {
+    projects.panelShown = settings.value(QStringLiteral("projects/panel")).toBool();
+  }
+  return projects;
+}
+
+void ProjectsSettings::save() const {
+  QSettings settings;
+  settings.setValue(QStringLiteral("projects/known"), known);
+  settings.setValue(QStringLiteral("projects/hidden"), hidden);
+  // Never written before a choice: the default follows the projects.
+  if (panelShown) {
+    settings.setValue(QStringLiteral("projects/panel"), *panelShown);
+  }
+}
+
+void ProjectsSettings::remember(const QString& root) {
+  if (root.isEmpty()) {
+    return;
+  }
+  ProjectsSettings projects = load();
+  removePath(projects.known, root);
+  removePath(projects.hidden, root);
+  projects.known.prepend(projectKey(root));
+  while (projects.known.size() > kMaxKnown) {
+    projects.known.removeLast();
+  }
+  projects.save();
+}
+
+void ProjectsSettings::forget(const QString& root) {
+  ProjectsSettings projects = load();
+  removePath(projects.known, root);
+  removePath(projects.hidden, root);
+  projects.hidden.append(projectKey(root));
+  projects.save();
+}
+
 } // namespace mitcad

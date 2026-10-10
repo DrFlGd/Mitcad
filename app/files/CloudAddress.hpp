@@ -3,10 +3,11 @@
 
 // The addresses of Cloud projects (mitcad#89): the git services the Cloud
 // section of New Project, Open from Cloud and Project Settings knows, how
-// an address is composed of an account, a repository and the way to
-// connect, and read back from one typed; the services' pages for a new
-// repository and for SSH keys. Plain Qt Core, without the network (the
-// application's unit tests check it).
+// an address is composed of an owner (a user or an organisation, or a
+// GitLab group with its subgroups), a repository and the way to connect,
+// and read back from one typed; the services' pages for a new repository
+// and for SSH keys. Plain Qt Core, without the network (the application's
+// unit tests check it).
 
 #include <optional>
 
@@ -25,7 +26,7 @@ struct CloudAddress {
   CloudService service = CloudService::GitHub;
   CloudConnect connect = CloudConnect::Https;
   QString server;     // Forgejo / Gitea: the host (codeberg.org)
-  QString account;    // the user or organisation
+  QString owner;      // a user or an organisation; on GitLab also group/sub
   QString repository; // without ".git"
   QString folder;     // Shared folder
   QString other;      // Other address: as typed
@@ -33,13 +34,15 @@ struct CloudAddress {
   // The address git is given: composed for a known service, the folder or
   // the typed address otherwise; empty while a part is missing.
   QString url() const;
-  // The repository's web page (https://host/account/repository), empty
-  // when there is none.
+  // The repository's web page (https://host/owner/repository), empty when
+  // there is none.
   QString webPage() const;
-  // The service's page for a new repository, filled in where the service
-  // takes parameters (GitHub), else empty.
+  // The service's page for a new repository: GitHub's filled in (its owner
+  // may be an organisation); GitLab's and Forgejo's choose the owner on
+  // the page (their forms take a numeric namespace id).
   QString newRepositoryPage() const;
-  // The service's page for the account's SSH keys (or how to make one).
+  // The service's page for the SSH keys of the user's own account (also for
+  // an organisation's repository), or how to make a key.
   QString sshKeysPage() const;
 };
 
@@ -49,10 +52,12 @@ QString cloudServiceName(CloudService service);
 QString cloudServiceHost(CloudService service, const QString& server = QString());
 
 // An address typed or read from a project, as the fields: a known host's
-// https:// or SSH address as that service (the account and repository from
-// its path), a local path or file:// address as a shared folder, anything
-// else as another address. `forgejoServer`: the server the Forgejo fields
-// hold, whose addresses are then read as Forgejo's.
+// https:// or SSH address as that service (the owner and repository from
+// its path: owner/repository on GitHub and Forgejo, group/sub/repository
+// on GitLab with every part but the last as the owner), a local path or
+// file:// address as a shared folder, anything else (also a path part
+// starting with '~') as another address. `forgejoServer`: the server the
+// Forgejo fields hold, whose addresses are then read as Forgejo's.
 CloudAddress parseCloudAddress(const QString& url, const QString& forgejoServer = QString());
 
 // The repository's name a folder's name suggests: lowercase, spaces and
@@ -63,6 +68,12 @@ QString repositoryNameFor(const QString& folderName);
 // The repository's name in an address: its last part without ".git"
 // ("bracket" of git@github.com:me/bracket.git), for a folder's name.
 QString repositoryNameOf(const QString& url);
+
+// A Cloud project's default name in the Projects panel (mitcad#152): the
+// owner and the repository ("acme/gripper" of
+// git@github.com:acme/gripper.git, "group/sub/part" on GitLab), the last
+// two parts of another server's path, a shared folder's repository name.
+QString ownerAndRepositoryOf(const QString& url);
 
 // The host of an SSH or web address (git@host:owner/repo.git,
 // ssh://git@host/..., https://host/...); empty for a folder.

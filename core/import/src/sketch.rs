@@ -501,6 +501,11 @@ fn spline(
         .iter()
         .map(|p| {
             let v: Vec3 = serde_json::from_value(p.clone()).map_err(|e| e.to_string())?;
+            // A spline out of the sketch's plane (a 3D sketch) would be
+            // flattened (sketch space, cm).
+            if v[2].abs() > 1e-6 {
+                return Err("a spline out of the sketch's plane".to_owned());
+            }
             Ok(xy(v))
         })
         .collect::<Result<_, String>>()?;

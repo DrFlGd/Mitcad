@@ -2,6 +2,8 @@
 #include "TestDriver.hpp"
 
 #include <algorithm>
+#include <array>
+#include <cmath>
 #include <cstdlib>
 #include <memory>
 #include <utility>
@@ -20,6 +22,7 @@
 #include <QMenuBar>
 #include <QMessageBox>
 #include <QMouseEvent>
+#include <QNativeGestureEvent>
 #include <QOpenGLWidget>
 #include <QPainter>
 #include <QPixmap>
@@ -34,6 +37,10 @@
 #include <QtLogging>
 
 #include "../platform/MacChrome.hpp"
+#include "../platform/NativeTestInput.hpp"
+#include "../OcctViewer.hpp"
+#include "../MainWindow.hpp"
+#include "../browser/TimelineWidget.hpp"
 #include "GlassCard.hpp"
 
 namespace mitcad {
@@ -89,9 +96,50 @@ const StepSpec kSpecs[] = {
     {"sketch-drag", 4, 4, kInputOfMain},
     {"type-in", 2, 2, kInputOfMain},
     {"command", 1, 1, kInputOfMain},
+    {"open-file", 1, 1, kInputOfMain},
     {"menu", 1, 1, kInputOfMain},
     {"popup", 1, 1, kInputOfTarget},
     {"button", 1, 1, kInputOfTarget},
+    {"native-click", 1, 1, kInputOfTarget},
+    {"native-type", 2, 2, kInputOfTarget},
+    {"native-choice", 2, 2, kInputOfTarget},
+    {"native-action", 1, 1, kInputOfMain},
+    {"native-activate", 1, 1, kInputOfTarget},
+    {"native-select", 1, 2, kInputOfTarget},
+    {"native-expand", 1, 1, kInputOfTarget},
+    {"native-click-now", 1, 1, kPlain},
+    {"native-click-on-job", 2, 2, kIdle},
+    {"native-type-now", 2, 2, kPlain},
+    {"native-key-now", 1, -1, kPlain},
+    {"native-file-name", 1, 1, kInputOfTarget},
+    {"native-file-directory", 1, 1, kInputOfTarget},
+    {"native-file-cancel", 0, 0, kInputOfTarget},
+    {"native-resize", 2, 2, kInputOfMain},
+    {"native-appearance", 1, 1, kInputOfMain},
+    {"native-pinch", 3, 3, kInputOfMain},
+    {"native-context-menu", 2, 2, kInputOfMain},
+    {"native-popup", 2, 2, kInputOfMain},
+    {"view-context-menu", 3, 3, kInputOfMain},
+    {"view-context-menu-logged", 2, 2, kInputOfMain},
+    {"view-pointer", 4, 5, kInputOfMain},
+    {"qt-pinch", 3, 3, kInputOfMain},
+    {"capture-view-height", 1, 1, kIdle},
+    {"expect-view-zoom", 2, 4, kIdle},
+    {"capture-view-orientation", 1, 1, kIdle},
+    {"expect-view-orientation", 2, 2, kIdle},
+    {"expect-view-buttons", 1, 1, kIdle},
+    {"expect-native-text", 2, 2, kIdle},
+    {"expect-native-enabled", 2, 2, kIdle},
+    {"expect-native-visible", 2, 2, kIdle},
+    {"expect-native-layout", 0, 0, kIdle},
+    {"expect-native-history", 0, -1, kIdle},
+    {"native-history-drag", 1, 2, kInputOfMain},
+    {"native-history-drag-now", 1, 2, kPlain},
+    {"expect-model-busy", 1, 1, kPlain},
+    {"capture-undo-depth", 1, 1, kIdle},
+    {"expect-undo-depth", 2, 2, kIdle},
+    {"expect-model-bodies", 2, 2, kIdle},
+    {"expect-native-dialog-gone", 1, 2, kPlain},
     {"focus-dialog", 1, 2, kPlain},
     {"focus-main", 0, 0, kPlain},
     {"mark", 0, 0, kPlain},
@@ -577,6 +625,10 @@ bool TestDriver::findMain() {
   for (QWidget* widget : widgets) {
     if (widget->inherits("mitcad::MainWindow")) {
       m_main = widget;
+      if (mac::test::active()) {
+        mac::test::focusMain();
+        return true;
+      }
       // Not needed where the window is active already; where it is not (a
       // session without a user at the console), it may help.
       widget->raise();
@@ -656,6 +708,8 @@ void TestDriver::fail(int line, const QString& reason) {
 }
 
 void TestDriver::leave(int code) {
+  QObject::disconnect(m_nativeJobClickConnection);
+  m_nativeJobClickLabel.clear();
   m_finished = true;
   if (m_timer != nullptr) {
     m_timer->stop();
@@ -666,6 +720,10 @@ void TestDriver::leave(int code) {
 }
 
 void TestDriver::finish() {
+  if (!m_nativeJobClickLabel.isEmpty()) {
+    fail(m_nativeJobClickLine, QStringLiteral("the armed native click's job '%1' never started").arg(m_nativeJobClickLabel));
+    return;
+  }
   if (m_stay) {
     qDebug().noquote() << QStringLiteral("TestDriver: done (%1 steps), staying").arg(m_steps.size());
     m_finished = true;
@@ -809,6 +867,7 @@ void TestDriver::tick() {
 // Events
 
 void TestDriver::sendKey(const KeyPress& press) {
+  if (mac::test::sendKey(press.key, press.modifiers, press.text)) return;
   QWidget* window = targetWindow();
   if (window == nullptr) {
     return;
@@ -912,6 +971,7 @@ bool TestDriver::triggerShortcut(QWidget* window, const KeyPress& press) {
 }
 
 void TestDriver::sendText(const QString& text) {
+  if (mac::test::sendText(text)) return;
   for (const QChar c : text) {
     KeyPress press;
     press.text = QString(c);
@@ -1021,6 +1081,7 @@ bool TestDriver::saveScreenshot(const QString& path, bool viewOnly) {
     // What --screenshot saves.
     return gl != nullptr && gl->grabFramebuffer().save(path);
   }
+  if (mac::test::active()) return mac::test::screenshot(path, gl);
   QWidget* top = m_main.data();
   if (top == nullptr) {
     return false;
@@ -1111,7 +1172,398 @@ void TestDriver::run(const Step& step) {
   QWidget* mainWindow = m_main.data();
 
   // --- Keys and text
-  if (name == QLatin1String("key")) {
+  if (name == QLatin1String("native-click-on-job")) {
+    if (!mac::test::active()) { fail(line, QStringLiteral("native-click-on-job requires the native macOS UI")); return; }
+    auto* window = qobject_cast<MainWindow*>(mainWindow);
+    auto* session = window ? window->findChild<DocumentSession*>() : nullptr;
+    if (!session || window->modelBusy() || a.at(0).isEmpty() || a.at(1).isEmpty() || !m_nativeJobClickLabel.isEmpty()) {
+      fail(line, QStringLiteral("native-click-on-job requires an idle document and no existing armed click")); return;
+    }
+    m_nativeJobClickLabel = a.at(0);
+    m_nativeJobClickLine = line;
+    const QString label = a.at(0);
+    const QString identifier = a.at(1);
+    const QPointer<MainWindow> guard(window);
+    m_nativeJobClickConnection = QObject::connect(session, &DocumentSession::jobStarted, this,
+        [this, guard, label, identifier, line](const QString& started, const QString&) {
+          if (started != label) return;
+          QObject::disconnect(m_nativeJobClickConnection);
+          m_nativeJobClickLabel.clear();
+          if (!guard || !guard->modelBusy()) {
+            fail(line, QStringLiteral("the armed native click did not observe an actual busy '%1' job").arg(label)); return;
+          }
+          QString error;
+          if (!mac::test::clickImmediately(identifier, error)) { fail(line, error); return; }
+          qInfo().noquote() << QStringLiteral("Native test: clicked %1 during %2 (busy)").arg(identifier, label);
+        });
+  } else if (name == QLatin1String("capture-undo-depth")) {
+    auto* window = qobject_cast<MainWindow*>(mainWindow);
+    if (!window || window->modelBusy()) { fail(line, QStringLiteral("capture-undo-depth requires an idle document")); return; }
+    const QJsonValue depth = window->query({{QStringLiteral("query"), QStringLiteral("document")}})
+                                 .toObject().value(QStringLiteral("undo_depth"));
+    if (!depth.isDouble() || !std::isfinite(depth.toDouble()) || depth.toDouble() < 0 ||
+        depth.toDouble() != std::floor(depth.toDouble())) {
+      fail(line, QStringLiteral("the document query returned no valid numeric undo depth")); return;
+    }
+    m_vars[a.at(0)] = QString::number(depth.toInteger());
+  } else if (name == QLatin1String("expect-undo-depth")) {
+    double base = 0;
+    double delta = 0;
+    if (!toNumber(a.at(0), base) || !toNumber(a.at(1), delta) || base != std::floor(base) ||
+        delta != std::floor(delta) || base + delta < 0) {
+      fail(line, QStringLiteral("expect-undo-depth <base-depth> <integer-change>")); return;
+    }
+    whenReady([this, base, delta] {
+      auto* window = qobject_cast<MainWindow*>(m_main.data());
+      if (!window || window->modelBusy()) return false;
+      const int depth = window->query({{QStringLiteral("query"), QStringLiteral("document")}})
+                            .toObject().value(QStringLiteral("undo_depth")).toInt(-1);
+      m_waitDetail = QStringLiteral("actual undo depth %1").arg(depth);
+      return depth == base + delta;
+    }, 6, QStringLiteral("undo depth did not change by %1 from %2").arg(delta).arg(base));
+  } else if (name == QLatin1String("expect-model-bodies")) {
+    double count = 0;
+    double volume = 0;
+    if (!toNumber(a.at(0), count) || !toNumber(a.at(1), volume) || count < 0 || count != std::floor(count) || volume < 0) {
+      fail(line, QStringLiteral("expect-model-bodies <count> <total-volume-mm3>")); return;
+    }
+    whenReady([this, count, volume] {
+      auto* window = qobject_cast<MainWindow*>(m_main.data());
+      if (!window || window->modelBusy()) return false;
+      const QJsonValue result = window->query({{QStringLiteral("query"), QStringLiteral("bodies")},
+                                              {QStringLiteral("volumes"), true}});
+      if (!result.isArray()) {
+        m_waitDetail = QStringLiteral("the bodies query returned a non-array result");
+        return false;
+      }
+      const QJsonArray bodies = result.toArray();
+      double actual = 0;
+      for (const QJsonValue& body : bodies) {
+        const QJsonValue amount = body.toObject().value(QStringLiteral("volume"));
+        if (!amount.isDouble() || !std::isfinite(amount.toDouble()) || amount.toDouble() < 0) {
+          m_waitDetail = QStringLiteral("a body has no finite numeric volume");
+          return false;
+        }
+        actual += amount.toDouble();
+      }
+      if (!std::isfinite(actual)) { m_waitDetail = QStringLiteral("the total body volume is not finite"); return false; }
+      m_waitDetail = QStringLiteral("%1 bodies, total volume %2 mm3").arg(bodies.size()).arg(actual, 0, 'g', 12);
+      return bodies.size() == count && std::abs(actual - volume) <= std::max(1e-5, volume * 1e-6);
+    }, 6, QStringLiteral("expected %1 bodies with total volume %2 mm3").arg(count).arg(volume));
+  } else if (name == QLatin1String("expect-native-history")) {
+    if (!mac::test::active()) { fail(line, QStringLiteral("expect-native-history requires the native macOS UI")); return; }
+    const bool checkSelection = !a.isEmpty();
+    const QStringList selected = a == QStringList{QStringLiteral("-")} ? QStringList{} : a;
+    whenReady([this, selected, checkSelection] {
+      auto* window = qobject_cast<MainWindow*>(m_main.data());
+      if (!window || window->modelBusy()) return false;
+      auto* timeline = window->findChild<TimelineWidget*>();
+      if (checkSelection && (!timeline || timeline->selectedFeatures() != selected)) {
+        m_waitDetail = QStringLiteral("shared timeline selection '%1' differs from '%2'")
+            .arg(timeline ? timeline->selectedFeatures().join(QLatin1Char(',')) : QStringLiteral("missing"),
+                 selected.join(QLatin1Char(',')));
+        return false;
+      }
+      const QJsonObject state = window->query({{QStringLiteral("query"), QStringLiteral("timeline")}}).toObject();
+      return mac::test::historyLayout(state, timeline ? timeline->filteredFeatures() : QSet<QString>(),
+                                      selected, checkSelection, m_waitDetail);
+    }, 6, QStringLiteral("native history does not match the real model timeline"));
+  } else if (name == QLatin1String("expect-model-busy")) {
+    auto* window = qobject_cast<MainWindow*>(mainWindow);
+    if (!window || (a.at(0) != QStringLiteral("true") && a.at(0) != QStringLiteral("false"))) {
+      fail(line, QStringLiteral("expect-model-busy true|false requires a document window")); return;
+    }
+    if (window->modelBusy() != (a.at(0) == QStringLiteral("true"))) {
+      fail(line, QStringLiteral("the document was not busy=%1 at this input step").arg(a.at(0)));
+    }
+  } else if (name == QLatin1String("native-history-drag") || name == QLatin1String("native-history-drag-now")) {
+    if (!mac::test::active()) { fail(line, QStringLiteral("%1 requires the native macOS UI").arg(name)); return; }
+    const QString phase = a.at(0);
+    double index = -1;
+    if ((phase == QStringLiteral("to") && (a.size() != 2 || !toNumber(a.at(1), index) || index < 0 || index != std::floor(index))) ||
+        (phase != QStringLiteral("to") && (a.size() != 1 || (phase != QStringLiteral("begin") && phase != QStringLiteral("end"))))) {
+      fail(line, QStringLiteral("native-history-drag begin|to <index>|end")); return;
+    }
+    const auto perform = [this, phase, index, line] {
+      QString error;
+      if (!mac::test::historyMarkerEvent(phase, int(index), error)) fail(line, error);
+    };
+    if (name == QLatin1String("native-history-drag-now")) perform();
+    else queue(perform);
+  } else if (name == QLatin1String("native-appearance")) {
+    if (!mac::test::active()) { fail(line, QStringLiteral("native-appearance requires the native macOS UI")); return; }
+    queue([this, a, line] {
+      QString error;
+      if (!mac::test::setAppearance(a.at(0), error)) fail(line, error);
+    });
+  } else if (name == QLatin1String("expect-view-buttons")) {
+    const QHash<QString, Aspect_VKeyMouse> buttons = {
+      {QStringLiteral("none"), Aspect_VKeyMouse_NONE},
+      {QStringLiteral("left"), Aspect_VKeyMouse_LeftButton},
+      {QStringLiteral("right"), Aspect_VKeyMouse_RightButton},
+      {QStringLiteral("middle"), Aspect_VKeyMouse_MiddleButton}};
+    auto* view = qobject_cast<OcctViewer*>(viewer());
+    if (!view || !buttons.contains(a.at(0))) {
+      fail(line, QStringLiteral("expect-view-buttons none|left|right|middle requires an OCCT view")); return;
+    }
+    if (view->PressedMouseButtons() != buttons.value(a.at(0))) {
+      fail(line, QStringLiteral("OCCT retains mouse buttons %1 instead of %2")
+          .arg(int(view->PressedMouseButtons())).arg(a.at(0)));
+    }
+  } else if (name == QLatin1String("capture-view-orientation") || name == QLatin1String("expect-view-orientation")) {
+    const auto orientation = [](const CameraState& camera) {
+      const gp_Dir direction(gp_Vec(camera.eye, camera.target));
+      return std::array<double, 6>{direction.X(), direction.Y(), direction.Z(),
+                                  camera.up.X(), camera.up.Y(), camera.up.Z()};
+    };
+    auto* view = qobject_cast<OcctViewer*>(viewer());
+    if (!view) { fail(line, QStringLiteral("camera orientation requires an initialized OCCT view")); return; }
+    if (name == QLatin1String("capture-view-orientation")) {
+      QStringList values;
+      for (double value : orientation(view->camera())) values.append(QString::number(value, 'g', 17));
+      m_vars[a.at(0)] = values.join(QLatin1Char(','));
+    } else {
+      const QStringList values = a.at(0).split(QLatin1Char(','));
+      const bool changed = a.at(1) == QStringLiteral("changed");
+      std::array<double, 6> before{};
+      if (values.size() != int(before.size()) || (!changed && a.at(1) != QStringLiteral("unchanged"))) {
+        fail(line, QStringLiteral("expect-view-orientation <captured-orientation> changed|unchanged")); return;
+      }
+      for (int index = 0; index < int(before.size()); ++index) {
+        if (!toNumber(values.at(index), before[size_t(index)])) {
+          fail(line, QStringLiteral("a captured camera orientation must contain six finite numbers")); return;
+        }
+      }
+      whenReady([this, before, changed, orientation] {
+        auto* currentView = qobject_cast<OcctViewer*>(viewer());
+        if (!currentView) return false;
+        const auto current = orientation(currentView->camera());
+        double difference = 0;
+        for (size_t index = 0; index < before.size(); ++index)
+          difference = std::max(difference, std::abs(current[index] - before[index]));
+        m_waitDetail = QStringLiteral("actual camera direction/up difference %1").arg(difference, 0, 'g', 12);
+        return changed ? difference > 0.002 : difference <= 1e-7;
+      }, 6, QStringLiteral("the camera orientation did not remain %1").arg(a.at(1)));
+    }
+  } else if (name == QLatin1String("native-context-menu") || name == QLatin1String("native-popup")) {
+    if (!mac::test::active()) { fail(line, QStringLiteral("%1 requires the native macOS UI").arg(name)); return; }
+    queue([this, name, a, line] {
+      QString error;
+      m_timer->stop();
+      if (name == QLatin1String("native-popup")) {
+        QString clickError;
+        const bool tracked = mac::test::trackContextMenu(a.at(1), [&] {
+          mac::test::click(a.at(0), clickError);
+        }, error);
+        if (!clickError.isEmpty()) fail(line, clickError);
+        else if (!tracked) fail(line, error);
+      } else if (!mac::test::contextMenu(a.at(0), a.at(1), error)) fail(line, error);
+      if (!m_finished) m_timer->start();
+    });
+  } else if (name == QLatin1String("view-context-menu") || name == QLatin1String("view-context-menu-logged")) {
+    if (!mac::test::active()) { fail(line, QStringLiteral("%1 requires the native macOS UI").arg(name)); return; }
+    const QString choice = a.last();
+    const auto perform = [this, choice, line](const QPoint& at) {
+      queue([this, at, choice, line] {
+        QString error;
+        const auto open = [this, at] {
+          sendMouse(QEvent::MouseMove, at, Qt::NoButton, Qt::NoButton, Qt::NoModifier);
+          sendMouse(QEvent::MouseButtonPress, at, Qt::RightButton, Qt::RightButton, Qt::NoModifier);
+          sendMouse(QEvent::MouseButtonRelease, at, Qt::RightButton, Qt::NoButton, Qt::NoModifier);
+        };
+        m_timer->stop();
+        if (!mac::test::trackContextMenu(choice, open, error)) fail(line, error);
+        if (!m_finished) m_timer->start();
+      });
+    };
+    if (name == QLatin1String("view-context-menu-logged")) {
+      QRegularExpression re;
+      if (!regex(a.at(0), re)) return;
+      const auto at = std::make_shared<QPoint>();
+      whenReady([this, re, at] { return loggedPoint(re, 0, *at); }, 6,
+          QStringLiteral("no logged context-menu position matches '%1'").arg(a.at(0)),
+          [at, perform] { perform(*at); });
+    } else {
+      double x = 0, y = 0;
+      QPoint at;
+      if (!toNumber(a.at(0), x) || !toNumber(a.at(1), y) || !viewPoint(x, y, at)) {
+        fail(line, QStringLiteral("view-context-menu <x%> <y%> cancel|item requires an OCCT view")); return;
+      }
+      perform(at);
+    }
+  } else if (name == QLatin1String("view-pointer")) {
+    const QString phase = a.at(0);
+    const QHash<QString, Qt::MouseButton> buttons = {
+      {QStringLiteral("none"), Qt::NoButton}, {QStringLiteral("left"), Qt::LeftButton},
+      {QStringLiteral("right"), Qt::RightButton}, {QStringLiteral("middle"), Qt::MiddleButton}};
+    double x = 0, y = 0;
+    QPoint at;
+    Qt::KeyboardModifiers modifiers;
+    if ((phase != QStringLiteral("press") && phase != QStringLiteral("move") && phase != QStringLiteral("release")) ||
+        !buttons.contains(a.at(3)) || !toNumber(a.at(1), x) || !toNumber(a.at(2), y) || !viewPoint(x, y, at) ||
+        (a.size() == 5 && !parseModifiers(a.at(4), modifiers)) ||
+        (phase != QStringLiteral("move") && buttons.value(a.at(3)) == Qt::NoButton)) {
+      fail(line, QStringLiteral("view-pointer press|move|release <x%> <y%> none|left|right|middle [mods]")); return;
+    }
+    const Qt::MouseButton button = buttons.value(a.at(3));
+    queue([this, phase, at, button, modifiers] {
+      const auto type = phase == QStringLiteral("press") ? QEvent::MouseButtonPress :
+                        phase == QStringLiteral("release") ? QEvent::MouseButtonRelease : QEvent::MouseMove;
+      sendMouse(type, at, phase == QStringLiteral("move") ? Qt::NoButton : button,
+                phase == QStringLiteral("release") ? Qt::NoButton : button, modifiers);
+    });
+  } else if (name == QLatin1String("capture-view-height")) {
+    auto* view = qobject_cast<OcctViewer*>(viewer());
+    if (!view || !std::isfinite(view->camera().height) || view->camera().height <= 0) {
+      fail(line, QStringLiteral("capture-view-height requires an initialized OCCT camera"));
+      return;
+    }
+    m_vars[a.at(0)] = QString::number(view->camera().height, 'g', 17);
+  } else if (name == QLatin1String("expect-view-zoom")) {
+    double before = 0;
+    double referenceBefore = 0;
+    double referenceAfter = 0;
+    const QString direction = a.at(1);
+    if (!toNumber(a.at(0), before) || before <= 0 ||
+        (direction != QStringLiteral("in") && direction != QStringLiteral("out") && direction != QStringLiteral("unchanged")) ||
+        (a.size() != 2 && (a.size() != 4 || !toNumber(a.at(2), referenceBefore) ||
+                          !toNumber(a.at(3), referenceAfter) || referenceBefore <= 0 || referenceAfter <= 0))) {
+      fail(line, QStringLiteral("expect-view-zoom <previous-height> in|out|unchanged [control-before control-after]"));
+      return;
+    }
+    const double referenceRatio = referenceBefore > 0 ? referenceAfter / referenceBefore : 0;
+    whenReady([this, before, direction, referenceRatio] {
+      auto* view = qobject_cast<OcctViewer*>(viewer());
+      if (!view) return false;
+      const double ratio = view->camera().height / before;
+      m_waitDetail = QStringLiteral("camera height ratio %1").arg(ratio, 0, 'g', 12);
+      return std::isfinite(ratio) && (direction == QStringLiteral("in") ? ratio < 0.97 :
+          direction == QStringLiteral("out") ? ratio > 1.03 : std::abs(ratio - 1) <= 0.001) &&
+          (referenceRatio == 0 || std::abs(ratio - referenceRatio) <= 0.005 * referenceRatio);
+    }, 6, QStringLiteral("the view did not zoom %1 from camera height %2").arg(direction).arg(before, 0, 'g', 12));
+  } else if (name == QLatin1String("native-pinch") || name == QLatin1String("qt-pinch")) {
+    double x = 0;
+    double y = 0;
+    double magnification = 0;
+    if (!toNumber(a.at(0), x) || !toNumber(a.at(1), y) || !toNumber(a.at(2), magnification) ||
+        x < 0 || x > 100 || y < 0 || y > 100 || std::abs(magnification) > 1) {
+      fail(line, QStringLiteral("%1 <x%> <y%> <magnification -1..1>").arg(name));
+      return;
+    }
+    if (name == QLatin1String("native-pinch") && !mac::test::active()) {
+      fail(line, QStringLiteral("native-pinch requires the native macOS UI"));
+      return;
+    }
+    auto* view = qobject_cast<OcctViewer*>(viewer());
+    if (!view) { fail(line, QStringLiteral("pinch requires an OCCT view")); return; }
+    const QPointer<OcctViewer> guard(view);
+    const QPointF local(view->width() * x / 100, view->height() * y / 100);
+    queue([this, guard, local, magnification, name, line] {
+      if (!guard) { fail(line, QStringLiteral("the pinch viewport was destroyed")); return; }
+      if (name == QLatin1String("native-pinch")) {
+        QString error;
+        if (!mac::test::pinch(guard, local, magnification, error)) fail(line, error);
+      } else {
+        const QPointF scene = guard->mapTo(guard->window(), local.toPoint());
+        const QPointF global = guard->mapToGlobal(local.toPoint());
+        for (Qt::NativeGestureType type : {Qt::BeginNativeGesture, Qt::ZoomNativeGesture, Qt::EndNativeGesture}) {
+          QNativeGestureEvent event(type, QPointingDevice::primaryPointingDevice(), 2, local, scene, global,
+                                    type == Qt::ZoomNativeGesture ? magnification : 0, QPointF());
+          QCoreApplication::sendEvent(guard, &event);
+        }
+      }
+    });
+  } else if (name == QLatin1String("native-resize")) {
+    if (!mac::test::active()) { fail(line, QStringLiteral("native-resize requires the native macOS UI")); return; }
+    double width = 0;
+    double height = 0;
+    if (!toNumber(a.at(0), width) || !toNumber(a.at(1), height) || width < 820 || height < 520 ||
+        width > 10000 || height > 10000) {
+      fail(line, QStringLiteral("native-resize expects width 820..10000 and height 520..10000"));
+      return;
+    }
+    queue([this, width, height, line] {
+      QString error;
+      if (!mac::test::resizeDocument(int(width), int(height), error)) fail(line, error);
+    });
+    m_notBefore = std::max(m_notBefore, m_clock.elapsed() + 300);
+  } else if (name == QLatin1String("expect-native-layout")) {
+    if (!mac::test::active()) { fail(line, QStringLiteral("expect-native-layout requires the native macOS UI")); return; }
+    QString error;
+    if (!mac::test::floatingLayout(error)) {
+      whenReady([] { QString detail; return mac::test::floatingLayout(detail); }, 6, error);
+    }
+  } else if (name == QLatin1String("expect-native-dialog-gone")) {
+    if (!mac::test::active()) { fail(line, QStringLiteral("expect-native-dialog-gone requires the native macOS UI")); return; }
+    QRegularExpression re;
+    double limit = 6;
+    if (!regex(a.at(0), re) || !seconds(1, 6, limit)) return;
+    whenReady([re] { return !mac::test::dialogExists(re); }, limit,
+              QStringLiteral("native window matching '%1' remains open").arg(a.at(0)));
+  } else if (name.startsWith(QLatin1String("native-file-"))) {
+    if (!mac::test::active()) { fail(line, QStringLiteral("'%1' requires the native macOS UI").arg(name)); return; }
+    queue([this, name, a, line] {
+      QString error;
+      const bool ok = name == QLatin1String("native-file-name") ? mac::test::replaceFileName(a.at(0), error) :
+                      name == QLatin1String("native-file-directory") ? mac::test::setFileDirectory(a.at(0), error) : mac::test::cancelFilePanel(error);
+      if (!ok) fail(line, error);
+    });
+  } else if (name == QLatin1String("expect-native-text") || name == QLatin1String("expect-native-enabled") ||
+             name == QLatin1String("expect-native-visible")) {
+    if (!mac::test::active()) {
+      fail(line, QStringLiteral("'%1' requires the native macOS UI").arg(name));
+      return;
+    }
+    if (name == QLatin1String("expect-native-text")) {
+      QRegularExpression re;
+      if (!regex(a.at(1), re)) return;
+      const QString id = a.at(0);
+      whenReady([id, re] { return mac::test::textMatches(id, re); }, 6,
+                QStringLiteral("native text '%1' did not match '%2'").arg(id, a.at(1)));
+    } else {
+      const QString value = a.at(1).toLower();
+      if (value != QStringLiteral("true") && value != QStringLiteral("false")) {
+        fail(line, QStringLiteral("%1 <identifier> true|false").arg(name)); return;
+      }
+      const QString id = a.at(0);
+      const bool expected = value == QStringLiteral("true");
+      const bool visibility = name == QLatin1String("expect-native-visible");
+      whenReady([id, expected, visibility] {
+        return visibility ? mac::test::visible(id, expected) : mac::test::enabled(id, expected);
+      }, 6, QStringLiteral("native control '%1' was not %2=%3")
+                .arg(id, visibility ? QStringLiteral("visible") : QStringLiteral("enabled"), value));
+    }
+  } else if (name.startsWith(QLatin1String("native-")) && name != QLatin1String("native-key-now")) {
+    if (!mac::test::active()) {
+      fail(line, QStringLiteral("'%1' requires the native macOS UI").arg(name));
+      return;
+    }
+    const QString identifier = a.at(0);
+    Qt::KeyboardModifiers modifiers;
+    if (name == QLatin1String("native-select") && a.size() == 2) {
+      if (a.at(1) == QStringLiteral("shift")) modifiers = Qt::ShiftModifier;
+      else if (a.at(1) == QStringLiteral("ctrl")) modifiers = Qt::ControlModifier;
+      else { fail(line, QStringLiteral("native-select <id> [shift|ctrl]")); return; }
+    }
+    const auto perform = [this, line, name, identifier, a, modifiers] {
+      QString error;
+      const bool ok = (name == QLatin1String("native-click") || name == QLatin1String("native-click-now")) ? mac::test::click(identifier, error) :
+                      (name == QLatin1String("native-type") || name == QLatin1String("native-type-now")) ? mac::test::replaceText(identifier, a.at(1), error) :
+                      name == QLatin1String("native-choice") ? mac::test::choose(identifier, a.at(1), error) :
+                      name == QLatin1String("native-activate") ? mac::test::activate(identifier, error) :
+                      name == QLatin1String("native-select") ? mac::test::select(identifier, error, modifiers) :
+                      name == QLatin1String("native-expand") ? mac::test::expand(identifier, error) :
+                      mac::test::triggerAction(identifier, error);
+      if (!ok) fail(line, error.isEmpty() ? QStringLiteral("native input failed for '%1'").arg(identifier) : error);
+    };
+    if (name == QLatin1String("native-action")) queue(perform);
+    else whenReady([identifier] { return mac::test::controlExists(identifier); }, 6,
+                   QStringLiteral("no native control '%1'").arg(identifier), [this, perform] { queue(perform); });
+  } else if (name == QLatin1String("key") || name == QLatin1String("native-key-now")) {
+    if (name == QLatin1String("native-key-now") && !mac::test::active()) {
+      fail(line, QStringLiteral("native-key-now requires the native macOS UI"));
+      return;
+    }
     std::vector<KeyPress> presses;
     for (const QString& spec : a) {
       KeyPress press;
@@ -1268,6 +1720,24 @@ void TestDriver::run(const Step& step) {
       return;
     }
     const QString text = a.at(1);
+    if (mac::test::active()) {
+      const auto identifier = std::make_shared<QString>();
+      whenReady([this, re, identifier] {
+        QString logged;
+        if (findLastLine(re, 0, &logged) < 0) return false;
+        const QRegularExpression input(QStringLiteral(" input (\\S+) at "));
+        const auto match = input.match(logged);
+        if (!match.hasMatch()) return false;
+        *identifier = QStringLiteral("input_") + match.captured(1);
+        return mac::test::controlExists(*identifier);
+      }, 6, QStringLiteral("no native input logged for '%1'").arg(a.at(0)), [this, identifier, text, line] {
+        queue([this, identifier, text, line] {
+          QString error;
+          if (!mac::test::replaceText(*identifier, text, error)) fail(line, error);
+        });
+      });
+      return;
+    }
     const auto at = std::make_shared<QPoint>();
     whenReady(
         [this, re, at] { return loggedPoint(re, 0, *at); }, 6,
@@ -1335,7 +1805,28 @@ void TestDriver::run(const Step& step) {
                 }
               },
               mainWindow);
+  } else if (name == QLatin1String("open-file")) {
+    auto* window = qobject_cast<MainWindow*>(mainWindow);
+    if (window == nullptr) {
+      fail(line, QStringLiteral("open-file requires a document window"));
+      return;
+    }
+    const QPointer<MainWindow> guard(window);
+    const QString path = a.at(0);
+    queue([guard, path] {
+      if (guard != nullptr) {
+        guard->openExternalFile(path);
+      }
+    });
   } else if (name == QLatin1String("menu")) {
+    if (mac::test::active()) {
+      const QString path = a.at(0);
+      queue([this, path, line] {
+        QString error;
+        if (!mac::test::triggerMenu(path, error)) fail(line, error);
+      });
+      return;
+    }
     QMenuBar* bar = mainWindow->findChild<QMenuBar*>();
     if (bar == nullptr) {
       fail(line, QStringLiteral("the main window has no menu bar"));
@@ -1405,6 +1896,14 @@ void TestDriver::run(const Step& step) {
     if (!regex(a.at(0), re)) {
       return;
     }
+    if (mac::test::active()) {
+      whenReady([re] { return mac::test::buttonExists(re); }, 6,
+                QStringLiteral("no native button matching '%1'").arg(a.at(0)), [this, re, line] {
+        QString error;
+        if (!mac::test::clickButton(re, error)) fail(line, error);
+      });
+      return;
+    }
     const QPointer<QWidget> window = targetWindow();
     whenReady(
         [this, re, window] {
@@ -1436,6 +1935,14 @@ void TestDriver::run(const Step& step) {
     if (!regex(a.at(0), re) || !seconds(1, 10, limit)) {
       return;
     }
+    if (mac::test::active()) {
+      whenReady([re] { return mac::test::dialogExists(re); }, limit,
+                QStringLiteral("no native window matching '%1'").arg(a.at(0)), [this, re] {
+        mac::test::focusDialog(re);
+        m_notBefore = std::max(m_notBefore, m_clock.elapsed() + 300);
+      });
+      return;
+    }
     whenReady(
         [this, re] {
           m_found = nullptr;
@@ -1464,6 +1971,7 @@ void TestDriver::run(const Step& step) {
         });
   } else if (name == QLatin1String("focus-main")) {
     m_dialog = nullptr;
+    if (mac::test::active()) mac::test::focusMain();
     m_notBefore = std::max(m_notBefore, m_clock.elapsed() + 300);
 
     // --- The log
@@ -1592,7 +2100,7 @@ void TestDriver::run(const Step& step) {
   } else if (name == QLatin1String("screenshot-dialog")) {
     QWidget* window = targetWindow();
     QDir().mkpath(QFileInfo(a.at(0)).absolutePath());
-    if (window == nullptr || !window->grab().save(a.at(0))) {
+    if (mac::test::active() ? !mac::test::screenshot(a.at(0)) : (window == nullptr || !window->grab().save(a.at(0)))) {
       fail(line, QStringLiteral("could not save the screenshot %1").arg(a.at(0)));
       return;
     }

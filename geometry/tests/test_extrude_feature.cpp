@@ -281,6 +281,72 @@ void test_to_faces_and_bodies() {
   CHECK(near(volume(*extrude_feature(bar)), 4 * (4 * 30 - chord), 1e-6));
 }
 
+void test_to_body_from_inside() {
+  // A stepped body: the block z = 0..20 with a step x = 30..60 up to z = 30.
+  const ShapePtr block = extrude("F2", {rectangle(1, 0, 0, 60, 40)}, 0, 20);
+  const ShapePtr step = extrude("F3", {rectangle(5, 30, 0, 30, 40)}, 20, 30);
+  const ShapePtr body = boolean(BooleanOp::Join, {block.get()}, *step).pieces.at(0).shape;
+  Target first;
+  first.kind = Target::Kind::Body;
+  first.body = body;
+
+  // A profile inside the body ends at the first face beyond it: a circle
+  // at z = 10 up to the top at z = 20.
+  ExtrudeFeatureSpec inside;
+  inside.feature = "F4";
+  inside.frame.origin = gp_Pnt(0, 0, 10);
+  inside.regions = {circle(9, 15, 20, 5)};
+  inside.side1.target = first;
+  const ShapePtr post = extrude_feature(inside);
+  CHECK(near(volume(*post), kPi * 25 * 10));
+  CHECK(face_at_z(*post, "F4:end(r{c9})", 20) && face_at_z(*post, "F4:start(r{c9})", 10));
+
+  // Partly inside: a 20 x 20 square at z = 25 across the step's side, down.
+  // Outside the step it ends on the lower top (z = 20), inside it at the
+  // bottom (z = 0).
+  ExtrudeFeatureSpec across;
+  across.feature = "F6";
+  across.frame.origin = gp_Pnt(0, 0, 25);
+  across.regions = {rectangle(10, 20, 10, 20, 20)};
+  across.direction = gp_Dir(0, 0, -1);
+  across.side1.target = first;
+  const ShapePtr partly = extrude_feature(across);
+  CHECK(near(volume(*partly), 10 * 20 * 5 + 10 * 20 * 25));
+  CHECK(near(bounding_box(*partly).min.Z(), 0) && near(bounding_box(*partly).max.Z(), 25));
+
+  // On a face: the same square on the step's top (z = 30), down: 10 mm to
+  // the lower top beside the step, 30 mm through the step.
+  across.frame.origin = gp_Pnt(0, 0, 30);
+  CHECK(near(volume(*extrude_feature(across)), 10 * 20 * 10 + 10 * 20 * 30));
+
+  // Up to a curved face that crosses the profile: a 4 x 4 bar along -x from
+  // x = 9.9 to a cylinder of radius 10 on the z axis. Its middle (|y| < a)
+  // starts inside and runs to the far side, the rest to the near side.
+  const ShapePtr pillar = extrude("F7", {circle(9, 0, 0, 10)}, 0, 20);
+  ExtrudeFeatureSpec bar;
+  bar.feature = "F8";
+  bar.frame.origin = gp_Pnt(9.9, 0, 0);
+  bar.frame.x_axis = gp_Dir(0, 1, 0);
+  bar.frame.y_axis = gp_Dir(0, 0, 1);
+  bar.regions = {rectangle(1, -2, 8, 4, 4)};
+  bar.direction = gp_Dir(-1, 0, 0);
+  Target wall;
+  wall.kind = Target::Kind::Face;
+  wall.body = pillar;
+  wall.face = "F7:side(c9)";
+  bar.side1.target = wall;
+  // The integral of sqrt(100 - y^2) from 0 to y.
+  const auto arc = [](double y) { return y / 2 * std::sqrt(100 - y * y) + 50 * std::asin(y / 10); };
+  const double a = std::sqrt(100 - 9.9 * 9.9);
+  CHECK(near(volume(*extrude_feature(bar)), 4 * (9.9 * 4 + 4 * arc(a) - 2 * arc(2)), 1e-6));
+
+  // A plane that crosses the profile still leaves no end.
+  Target slanted;
+  slanted.plane = gp_Pln(gp_Pnt(30, 0, 25), gp_Dir(1, 0, 1));
+  across.side1.target = slanted;
+  CHECK(throws_with([&] { extrude_feature(across); }, "crosses the profile"));
+}
+
 void test_clockwise_loops() {
   // Loops may run either way round: a clockwise outline with a
   // counter-clockwise hole extrudes like the other way round.
@@ -319,6 +385,7 @@ void extrude_feature_tests() {
   guarded("test_thin", test_thin);
   guarded("test_to_planes", test_to_planes);
   guarded("test_to_faces_and_bodies", test_to_faces_and_bodies);
+  guarded("test_to_body_from_inside", test_to_body_from_inside);
   guarded("test_clockwise_loops", test_clockwise_loops);
   guarded("test_several_regions", test_several_regions);
 }

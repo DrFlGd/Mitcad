@@ -8,11 +8,13 @@ use serde_json::{Map, Value, json};
 
 use super::ApiError;
 use crate::assembly::matrix_rows;
+use crate::constraints::{Geo, constraint_fits, fitting_types, measures, resolve_geo};
 use crate::datum::Vec3;
 use crate::document::{Document, status_message, status_text};
 use crate::features::{
-    AsBuiltJointDef, FeatureDef, FrameOverride, GeomRef, JointDef, JointOrigin, JointPosition,
-    Limits, OccurrencePath, RigidGroupDef, ValueInput,
+    AsBuiltJointDef, ConstraintRow, ConstraintSetDef, ConstraintType, FeatureDef, FrameOverride,
+    GeomRef, JointDef, JointOrigin, JointPosition, Limits, OccurrencePath, RigidGroupDef,
+    ValueInput,
 };
 use crate::ids::{ComponentUid, FeatureUid, OccurrenceUid};
 use crate::joints::{
@@ -105,15 +107,25 @@ pub(crate) enum JointCommand {
         point: Option<Vec3>,
         target: Vec3,
     },
+    /// A constraint set (mitcad#148): rows of `constraint_set`, their
+    /// occurrences also by names.
+    AddConstraintSet {
+        rows: Vec<Value>,
+        #[serde(default)]
+        name: Option<String>,
+        #[serde(default)]
+        component: Option<String>,
+    },
 }
 
 /// The commands' names, to send them here.
-pub(crate) const COMMANDS: [&str; 5] = [
+pub(crate) const COMMANDS: [&str; 6] = [
     "add_joint",
     "add_as_built_joint",
     "add_rigid_group",
     "drive_joint",
     "drag_occurrence",
+    "add_constraint_set",
 ];
 
 /// The `joint_dof` query.
@@ -147,6 +159,25 @@ pub(crate) struct JointFrameQuery {
     frame_override: Option<FrameOverride>,
     /// The component the path starts in (the root when left out), whose
     /// coordinates the frame is in.
+    #[serde(default)]
+    component: Option<String>,
+}
+
+/// The `constraint_row` query (mitcad#148): a row's references before the
+/// row is added.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct ConstraintRowQuery {
+    a: OriginInput,
+    b: OriginInput,
+    #[serde(default)]
+    a2: Option<OriginInput>,
+    #[serde(default)]
+    b2: Option<OriginInput>,
+    /// A type to check the references against.
+    #[serde(default, rename = "type")]
+    kind: Option<ConstraintType>,
+    /// The component the paths start in (the active one when left out).
     #[serde(default)]
     component: Option<String>,
 }
@@ -305,6 +336,44 @@ impl<K: Kernel> Document<K> {
                 let uid = self.occurrence_ref(&occurrence)?;
                 let dragged = self.drag_occurrence(uid, point, target)?;
                 return Ok(self.dragged_json(&dragged));
+            }
+            JointCommand::AddConstraintSet {
+                rows,
+                name,
+                component: c,
+            } => {
+                let c = component(self, &c)?;
+                let mut parsed = Vec::with_capacity(rows.len());
+                for (i, mut row) in rows.into_iter().enumerate() {
+                    let at = |e: String| ApiError(format!("rows[{i}]: {e}"));
+                    // Occurrences by names become uid paths.
+                    for key in ["a", "a2", "b", "b2"] {
+                        let Some(text) = row
+                            .get(key)
+                            .and_then(|o| o.get("occurrence"))
+                            .and_then(Value::as_str)
+                        else {
+                            continue;
+                        };
+                        let path = self
+                            .path_from(c, text)
+                            .map_err(|e| at(format!("{key}: {e}")))?;
+                        row[key]["occurrence"] = json!(OccurrencePath(path).to_string());
+                    }
+                    parsed.push(
+                        serde_json::from_value::<ConstraintRow<ValueInput>>(row)
+                            .map_err(|e| at(e.to_string()))?,
+                    );
+                }
+                let def = FeatureDef::ConstraintSet(ConstraintSetDef { rows: parsed });
+                let added = self.add_feature_to(&def, name.as_deref(), Some(c))?;
+                let mut result = json!({"uid": added.uid, "name": added.name,
+                                        "parameters": added.parameters});
+                if let Some(set) = self.constraint_result(added.uid) {
+                    result["state"] = json!(set.state.as_str());
+                    result["solved"] = json!(set.rows.iter().all(|r| r.holds));
+                }
+                return Ok(result);
             }
         };
         let mut result = json!({"uid": added.uid, "name": added.name,
@@ -487,6 +556,121 @@ impl<K: Kernel> Document<K> {
         value
     }
 
+    /// A reference of a constraint row at the marker, its frame placed by
+    /// its path into `component`'s coordinates.
+    fn row_geo(&self, component: ComponentUid, input: &OriginInput) -> Result<Geo, ApiError> {
+        let path = self.path_from(component, &input.occurrence)?;
+        let origin = JointOrigin {
+            occurrence: OccurrencePath(path.clone()),
+            geometry: input.geometry.clone(),
+            frame_override: input.frame_override,
+        };
+        let mut geo = resolve_geo(&mut self.resolver(), &origin).map_err(ApiError)?;
+        geo.frame = self.path_transform(&path).after(&geo.frame);
+        Ok(geo)
+    }
+
+    /// The `constraint_row` query: the kinds of a row's references, the
+    /// types they fit (the likeliest first), what they measure where they
+    /// are (an align's `offset`, the `angle` between their z axes, an
+    /// insert's `twist`: the turn a locked insert records), and for a
+    /// `type` whether they fit it.
+    pub(crate) fn constraint_row_json(
+        &self,
+        query: &ConstraintRowQuery,
+    ) -> Result<Value, ApiError> {
+        let component = match &query.component {
+            Some(c) => self.component_ref(c)?,
+            None => self.active_component(),
+        };
+        let geo = |key: &str, input: &OriginInput| {
+            self.row_geo(component, input)
+                .map_err(|e| ApiError(format!("{key}: {e}")))
+        };
+        let a = geo("a", &query.a)?;
+        let b = geo("b", &query.b)?;
+        let a2 = query.a2.as_ref().map(|o| geo("a2", o)).transpose()?;
+        let b2 = query.b2.as_ref().map(|o| geo("b2", o)).transpose()?;
+        let types: Vec<&str> = fitting_types(&a, &b)
+            .into_iter()
+            .map(ConstraintType::as_str)
+            .collect();
+        let mut value = json!({
+            "kinds": {"a": a.kind.as_str(), "b": b.kind.as_str()},
+            "types": types,
+            "type": types.first(),
+            "measures": measures(&a, &b),
+        });
+        if let Some(kind) = query.kind {
+            let fits = constraint_fits(kind, &a, a2.as_ref(), &b, b2.as_ref());
+            value["fits"] = json!(fits.is_ok());
+            if let Err(e) = fits {
+                value["error"] = json!(e);
+            }
+        }
+        Ok(value)
+    }
+
+    fn constraint_json(&self, uid: FeatureUid) -> Value {
+        let a = self.assembly();
+        let entry = self.feature(uid).expect("a feature of the document");
+        let FeatureDef::ConstraintSet(set) = &entry.def else {
+            unreachable!("constraint sets only")
+        };
+        let status = self.status(uid);
+        let warnings = self.warnings(uid);
+        let result = self.constraint_result(uid);
+        let side =
+            |path: &OccurrencePath| json!({"occurrence": a.path_name(&path.0), "path": path.0});
+        let rows: Vec<Value> = set
+            .rows
+            .iter()
+            .enumerate()
+            .map(|(i, row)| {
+                let mut value = json!({
+                    "row": i + 1,
+                    "type": row.kind.as_str(),
+                    "a": side(&row.a.occurrence),
+                    "b": side(&row.b.occurrence),
+                });
+                if let Some(r) = result.and_then(|r| r.rows.get(i)) {
+                    value["holds"] = json!(r.holds);
+                    if let Some(v) = r.value {
+                        value["value"] = json!(v);
+                    }
+                }
+                value
+            })
+            .collect();
+        let mut value = json!({
+            "uid": uid,
+            "name": entry.name,
+            "type": entry.def.type_name(),
+            "component": entry.component,
+            "rows": rows,
+            "status": status_text(status, warnings),
+            "error": status_message(status, warnings),
+        });
+        match result {
+            Some(r) => {
+                value["state"] = json!(r.state.as_str());
+                if let crate::joints::JointState::Placed(moved) = &r.state {
+                    value["moved"] = json!(moved);
+                }
+                value["solved"] = json!(r.rows.iter().all(|row| row.holds));
+            }
+            None => {
+                let state = match status_text(status, warnings) {
+                    "error" => "failed",
+                    other => other,
+                };
+                value["state"] = json!(state);
+                value["solved"] = json!(false);
+            }
+        }
+        value
+    }
+
     fn unit_json(&self, unit: &DofUnit) -> Value {
         let a = self.assembly();
         json!({
@@ -494,6 +678,7 @@ impl<K: Kernel> Document<K> {
             "names": unit.occurrences.iter().map(|o| a.occurrence_name(*o)).collect::<Vec<_>>(),
             "grounded": unit.grounded,
             "dof": unit.dof,
+            "mobile": unit.mobile,
             "joints": unit.joints,
         })
     }
@@ -504,18 +689,24 @@ impl<K: Kernel> Document<K> {
     pub(crate) fn joints_json(&self) -> Value {
         let a = self.assembly();
         let mut joints = Vec::new();
+        let mut constraints = Vec::new();
         let mut components: Vec<ComponentUid> = Vec::new();
         for entry in self.features() {
             if !matches!(
                 entry.def,
-                FeatureDef::Joint(_) | FeatureDef::AsBuiltJoint(_) | FeatureDef::RigidGroup(_)
+                FeatureDef::Joint(_)
+                    | FeatureDef::AsBuiltJoint(_)
+                    | FeatureDef::RigidGroup(_)
+                    | FeatureDef::ConstraintSet(_)
             ) {
                 continue;
             }
             if !components.contains(&entry.component) {
                 components.push(entry.component);
             }
-            if !matches!(entry.def, FeatureDef::RigidGroup(_)) {
+            if matches!(entry.def, FeatureDef::ConstraintSet(_)) {
+                constraints.push(self.constraint_json(entry.uid));
+            } else if !matches!(entry.def, FeatureDef::RigidGroup(_)) {
                 joints.push(self.joint_json(entry.uid, self.joint_result(entry.uid)));
             }
         }
@@ -554,7 +745,7 @@ impl<K: Kernel> Document<K> {
                 })
             })
             .collect();
-        json!({"joints": joints, "rigid_groups": groups, "dof": dof})
+        json!({"joints": joints, "rigid_groups": groups, "constraints": constraints, "dof": dof})
     }
 
     /// The `joint_dof` query: an occurrence's free motions in its parent
@@ -611,6 +802,7 @@ impl<K: Kernel> Document<K> {
             "grounded": unit.grounded,
             "group": unit.occurrences,
             "dof": unit.dof,
+            "mobile": unit.mobile,
             "motions": motions,
             "joints": joints,
         }))

@@ -60,6 +60,9 @@ pub struct ParamSpec {
     pub unit: Unit,
     pub comment: String,
     pub kind: ParamKind,
+    /// Default units retained by an expression copied from another
+    /// document. None follows the table's defaults.
+    pub expression_context: Option<EvalContext>,
 }
 
 impl ParamSpec {
@@ -70,6 +73,7 @@ impl ParamSpec {
             unit,
             comment: String::new(),
             kind,
+            expression_context: None,
         }
     }
 
@@ -91,6 +95,11 @@ impl ParamSpec {
         comment.clone_into(&mut self.comment);
         self
     }
+
+    pub fn with_expression_context(mut self, context: Option<EvalContext>) -> Self {
+        self.expression_context = context;
+        self
+    }
 }
 
 /// Parameters whose values changed, in creation order.
@@ -109,6 +118,7 @@ pub struct Parameter {
     kind: ParamKind,
     value: Quantity,
     dependencies: Vec<ParamId>,
+    expression_context: Option<EvalContext>,
 }
 
 impl Parameter {
@@ -132,6 +142,12 @@ impl Parameter {
 
     pub fn unit(&self) -> Unit {
         self.unit
+    }
+
+    /// Explicit defaults of a copied expression; None uses its document's
+    /// defaults. The parameter's own unit still takes precedence.
+    pub fn expression_context(&self) -> Option<EvalContext> {
+        self.expression_context
     }
 
     pub fn comment(&self) -> &str {
@@ -304,6 +320,7 @@ impl ParameterTable {
                 kind: spec.kind,
                 value: Quantity::unitless(0.0),
                 dependencies: Vec::new(),
+                expression_context: spec.expression_context,
             });
             table.next_id = id.0 + 1;
         }
@@ -319,7 +336,8 @@ impl ParameterTable {
         for id in order {
             let i = table.index(id).expect("ordered ids exist");
             let p = &table.items[i];
-            let value = table.eval_param(&p.expr, p.unit, &p.name, &no_overlay)?;
+            let value =
+                table.eval_param(&p.expr, p.unit, &p.name, p.expression_context, &no_overlay)?;
             table.items[i].value = value;
         }
         Ok(table)
@@ -402,7 +420,13 @@ impl ParameterTable {
             });
         }
         let dependencies = self.resolve(&spec.name, &expr)?;
-        let value = self.eval_param(&expr, spec.unit, &spec.name, &HashMap::new())?;
+        let value = self.eval_param(
+            &expr,
+            spec.unit,
+            &spec.name,
+            spec.expression_context,
+            &HashMap::new(),
+        )?;
         let id = ParamId(self.next_id);
         self.next_id = self.next_id.checked_add(1).expect("parameter ids left");
         self.by_name.insert(spec.name.clone(), id);
@@ -416,6 +440,7 @@ impl ParameterTable {
             kind: spec.kind,
             value,
             dependencies,
+            expression_context: spec.expression_context,
         });
         Ok(id)
     }
@@ -429,6 +454,38 @@ impl ParameterTable {
     ) -> Result<ChangeSet, TableError> {
         let unit = self.param(id)?.unit;
         self.update(id, expression, unit)
+    }
+
+    /// Changes several expressions together, keeping their units. Checks
+    /// and evaluates the final dependency graph, so no intermediate state
+    /// can reject an otherwise valid set of expressions. On failure the
+    /// table is unchanged; on success returns the parameters whose values
+    /// changed.
+    pub fn set_expressions(
+        &mut self,
+        expressions: &[(ParamId, &str)],
+    ) -> Result<ChangeSet, TableError> {
+        if expressions.is_empty() {
+            return Ok(ChangeSet::new());
+        }
+        let mut candidate = self.clone();
+        for &(id, expression) in expressions {
+            let i = candidate.index(id).ok_or(TableError::UnknownId(id))?;
+            let name = &candidate.items[i].name;
+            let expr = parse(name, expression)?;
+            let dependencies = candidate.resolve(name, &expr)?;
+            let p = &mut candidate.items[i];
+            p.expression = with_decimal_points(expression).into_owned();
+            p.expr = expr;
+            p.dependencies = dependencies;
+        }
+        let order = candidate
+            .topological_order()
+            .map_err(|cycle| candidate.cycle_error(&cycle))?;
+        let values = candidate.evaluate_pending(&order, None)?;
+        let changed = candidate.commit(values);
+        *self = candidate;
+        Ok(changed)
     }
 
     /// Changes a parameter's unit; bare numbers in its expression are then
@@ -601,13 +658,14 @@ impl ParameterTable {
         expr: &Expr,
         unit: Unit,
         name: &str,
+        context: Option<EvalContext>,
         pending: &HashMap<ParamId, Quantity>,
     ) -> Result<Quantity, TableError> {
         let lookup = Overlay {
             table: self,
             values: pending,
         };
-        expr.eval_as(&lookup, &self.context, unit)
+        expr.eval_as(&lookup, &context.unwrap_or(self.context), unit)
             .map_err(|error| TableError::Eval {
                 parameter: name.to_owned(),
                 error,
@@ -628,7 +686,7 @@ impl ParameterTable {
                 Some((replaced, expr, unit)) if replaced == id => (expr, unit),
                 _ => (&p.expr, p.unit),
             };
-            let value = self.eval_param(expr, unit, &p.name, &values)?;
+            let value = self.eval_param(expr, unit, &p.name, p.expression_context, &values)?;
             values.insert(id, value);
         }
         Ok(values)

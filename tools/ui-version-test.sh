@@ -1,16 +1,17 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: MIT
-# check-all sources: app/files
+# check-all sources: app/files app/projects
 # Saving versions (P12d) through the real UI, checked with the system's git:
 #   1. Move to a Project of an untitled design: New Project (the folder
-#      typed, the author git's settings give), Save As in the project's
-#      folder; the first version has the undo steps' names as its message,
-#      git's author and Mitcad's trailers, and git status is clean. Save
-#      without a change, and a change of the display state only (the Origin
-#      shown, kept apart in .mitcad/local), record no version.
+#      typed, the author git's settings give), its name typed in the
+#      project picker (mitcad#174); the first version has the undo steps'
+#      names as its message, git's author and Mitcad's trailers, and git
+#      status is clean. Save without a change, and a change of the display
+#      state only (the Origin shown, kept apart in .mitcad/local), record
+#      no version.
 #   2. Autosave writes the changed design to the recovery folder but
-#      records no version and leaves the file. Save Version (Ctrl+Alt+S)
-#      records one with the description typed.
+#      records no version and leaves the file. Save with Description
+#      (Ctrl+Alt+S, mitcad#175) records one with the description typed.
 #   3. Opened again with a change, Ctrl+S records it without asking. A
 #      change made to the file by another program: Compare shows it, Save
 #      as New Version records it first and then the design on top. A newer
@@ -20,8 +21,9 @@
 #      (the project's repository's) instead of git's.
 #   5. A file renamed outside Mitcad: opened, its display state follows,
 #      and Save records the rename as a version of its own, then the change.
-#   6. Move to a Project of a file outside projects: its folder made a
-#      project; another one moved into a new project.
+#   6. Move to a Project of a file outside projects (saved there through
+#      the project picker's Another Folder..., mitcad#176): its folder made
+#      a project; another one moved into a new project.
 #   7. Without git's user.name and user.email: an older project without
 #      versions opened asks for the author; cancelled, nothing is added to
 #      its folder; given, Preferences keep it as the default author. New
@@ -30,10 +32,12 @@
 #      file's ten versions newest first with what each changed, the latest
 #      with its preview compared with the one before; an older one compared
 #      with the open design (a change not saved) and with the geometry;
-#      Save Copy As outside the project; Restore with the unsaved change
-#      saved first: git's log has the restore as a new version, the file
-#      is the old version's, and Save asks nothing after it; Open of an
-#      older version as an untitled design, which Save As keeps.
+#      Save Copy As in the project picker (mitcad#176: a version of its
+#      own; the name taken then) and outside the project (Another
+#      Folder...); Restore with the unsaved change saved first: git's log
+#      has the restore as a new version, the file is the old version's,
+#      and Save asks nothing after it; Open of an older version as an
+#      untitled design, which Save As keeps in its project (the picker).
 #   9. When the version that keeps bytes about to be written over cannot
 #      be recorded (HEAD detached, the index locked; mitcad#114): Save as
 #      New Version of a change made outside, Restore over such a change
@@ -129,6 +133,18 @@ type_path() {
   ui_focus_main
 }
 
+# save_as_elsewhere path: Save As while a project is current: the project
+# picker (mitcad#176), then Another Folder... and the path typed into the
+# file dialog.
+save_as_elsewhere() {
+  ui_step "save as (Ctrl+Shift+S)"       ui_key ctrl+shift+s
+  ui_expect_new "Project picker Save in a Project: a place, reading the projects" "the project picker"
+  ui_focus_dialog '^Save in a Project$'
+  ui_step "another folder (Alt+A)"       ui_key alt+a
+  ui_expect_new "Project picker Save in a Project: another folder" "the file dialog instead"
+  ui_step "outside projects"             type_path "Save As" "$1"
+}
+
 # no_new_since "text" description: nothing logged with the text since the mark.
 no_new_since() {
   tail -n +$((UI_MARK + 1)) "$UI_LOG" | grep -qF -- "$1" && ui_fail "$2: '$1' logged"
@@ -166,7 +182,16 @@ ui_step "name it bracket"                type_text "$PROJECT"
 ui_expect_new "New Project dialog: folder $PROJECT: missing" "a new folder"
 ui_step "create (Enter)"                 ui_key Return
 ui_expect_new "New Project: created $PROJECT: version " "the project is made"
-ui_step "a name in the project's folder" type_path "Save As" block.mitcad
+# Its name and folder in the project picker (mitcad#174), no file dialog.
+ui_expect_new "Project picker Save in a Project: 1 projects: bracket (local)" "the project picker, the new project in it" 20
+ui_focus_dialog '^Save in a Project$'
+ui_expect_new "Project picker target bracket/Untitled.mitcad: free" "the design's name offered in the project's top"
+ui_step "a name in the project's folder" type_text block
+ui_expect_new "Project picker target bracket/block.mitcad: free" "the name typed"
+ui_step "save (Enter)"                   ui_key Return
+ui_expect_new "Project picker Save in a Project: chose $FILE" "chosen in the picker"
+# Xvfb has no window manager: the main window gets the keyboard back.
+ui_focus_main
 ui_expect_new "Version author: Git Test <git-test@example.invalid> (git)" "git's author"
 ui_expect_new "Saved $FILE" "saved in the project's folder"
 ui_expect_new "Version recorded: block.mitcad " "a version recorded"
@@ -203,7 +228,7 @@ echo "ok   the display state is kept in .mitcad/local"
 expect_commits "$PROJECT" 2 "still two versions"
 expect_clean "$PROJECT" "git status is clean"
 
-echo "--- Autosave records no version; Save Version"
+echo "--- Autosave records no version; Save with Description"
 checksum=$(sha256sum "$FILE")
 ui_mark
 ui_step "undo Show Origin (Ctrl+Z)"      ui_key ctrl+z
@@ -214,10 +239,10 @@ expect_commits "$PROJECT" 2 "autosave recorded no version"
 echo "ok   the project file is as saved"
 expect_clean "$PROJECT" "git status is clean"
 ui_mark
-ui_step "save version (Ctrl+Alt+S)"      ui_key ctrl+alt+s
-ui_expect_new "Save Version dialog: Save block.mitcad: Undo Add Fillet1" \
+ui_step "save with description (Ctrl+Alt+S)" ui_key ctrl+alt+s
+ui_expect_new "Save with Description dialog: Save block.mitcad: Undo Add Fillet1" \
   "the dialog offers the automatic message, without the display state's step"
-ui_focus_dialog '^Save Version$'
+ui_focus_dialog '^Save with Description$'
 ui_step "type the description's summary" xdotool type --delay 20 "No fillet"
 ui_step "a new line (Enter)"             ui_key Return
 ui_step "and more"                       xdotool type --delay 20 "The plate without its rounding."
@@ -347,8 +372,7 @@ echo "--- Move to a Project of a file outside projects: its folder"
 SINGLE=$WORK/single
 mkdir -p "$SINGLE"
 ui_mark
-ui_step "save as (Ctrl+Shift+S)"         ui_key ctrl+shift+s
-ui_step "a folder outside projects"      type_path "Save As" "$SINGLE/part.mitcad"
+save_as_elsewhere "$SINGLE/part.mitcad"
 ui_expect_new "Saved $SINGLE/part.mitcad" "saved"
 ui_expect_new "Version status: none" "no version history there"
 ui_expect_new "Project indicator: not in a project" "the indicator says so"
@@ -375,8 +399,7 @@ echo "--- Move to a Project: into a new project"
 OTHER=$WORK/other
 mkdir -p "$OTHER"
 ui_mark
-ui_step "save as (Ctrl+Shift+S)"         ui_key ctrl+shift+s
-ui_step "another folder"                 type_path "Save As" "$OTHER/gear.mitcad"
+save_as_elsewhere "$OTHER/gear.mitcad"
 ui_expect_new "Saved $OTHER/gear.mitcad" "saved"
 ui_mark
 ui_step "move to a project (search)"     ui_command "Move to a Project"
@@ -405,10 +428,15 @@ CLI=${UI_CLI:-$(cd "$(dirname "$UI_APP")/.." && pwd)/tools/cli/mitcad-cli}
 "$CLI" project init "$KEEP" --no-history > "$WORK/cli.log" 2>&1 || { cat "$WORK/cli.log"; ui_fail "mitcad-cli project init"; }
 cp "$SINGLE/part.mitcad" "$KEEP/part.mitcad"
 ui_start_app --no-native-dialogs
-# open_project folder: Open Project of a folder typed into the folder dialog.
+# open_project folder: Open Project of a folder typed into the folder dialog
+# (the project picker's Another Folder..., mitcad#176).
 open_project() {
   ui_mark
   ui_step "open project (search)"        ui_command "Open Project"
+  ui_expect_new "Project picker Open a Project: a project, reading the projects" "the project picker"
+  ui_focus_dialog '^Open a Project$'
+  ui_step "another folder (Alt+A)"       ui_key alt+a
+  ui_expect_new "Project picker Open a Project: another folder" "the folder dialog instead"
   ui_focus_dialog '^Open Project$'
   type_text "$1"
   ui_key Return
@@ -502,13 +530,30 @@ ui_focus_dialog '^Version History - plate.mitcad$'
 ui_mark
 ui_step "save a copy (Alt+C)"            ui_key alt+c
 ui_expect_new "Save Copy As dialog: plate v8.mitcad" "named after the version"
+# In the project picker (mitcad#176): the version's project and folder,
+# the name offered.
+ui_expect_new "Project picker target bracket/plate v8.mitcad: free" "the project picker, the name offered" 20
+ui_focus_dialog '^Save a Copy in a Project$'
+ui_step "save (Enter)"                   ui_key Return
+ui_expect_new "Project picker Save a Copy in a Project: chose $PROJECT/plate v8.mitcad" "chosen in the picker"
+ui_expect_new "Saved a copy of plate.mitcad v8 ($v8) as $PROJECT/plate v8.mitcad" "saved in the project"
+ui_expect_new "Version recorded: plate v8.mitcad " "a version of its own"
+[ "$(file_d3 "$PROJECT/plate v8.mitcad")" = "[20.0]" ] || ui_fail "the copy has d3 $(file_d3 "$PROJECT/plate v8.mitcad")"
+expect_commits "$PROJECT" 12 "the copy in the project is a version"
+ui_focus_dialog '^Version History - plate.mitcad$'
+ui_mark
+ui_step "save a copy (Alt+C)"            ui_key alt+c
+ui_expect_new "Project picker target bracket/plate v8.mitcad: exists" "the name is taken now" 20
+ui_focus_dialog '^Save a Copy in a Project$'
+ui_step "another folder (Alt+A)"         ui_key alt+a
+ui_expect_new "Project picker Save a Copy in a Project: another folder" "the file dialog instead"
 ui_focus_dialog '^Save Copy As$'
 ui_step "a folder outside projects"      type_text "$COPIES/plate-v8.mitcad"
 ui_key Return
 ui_expect_new "Saved a copy of plate.mitcad v8 ($v8) as $COPIES/plate-v8.mitcad" "saved"
 [ "$(file_d3 "$COPIES/plate-v8.mitcad")" = "[20.0]" ] || ui_fail "the copy has d3 $(file_d3 "$COPIES/plate-v8.mitcad")"
 echo "ok   the copy is v8's design"
-expect_commits "$PROJECT" 11 "a copy outside the project is no version of it"
+expect_commits "$PROJECT" 12 "a copy outside the project is no version of it"
 
 echo "--- Version History: Restore, the unsaved change saved first"
 ui_focus_dialog '^Version History - plate.mitcad$'
@@ -560,7 +605,13 @@ ui_step "cancel (Esc)"                   ui_key Escape
 ui_focus_main
 ui_mark
 ui_step "save (Ctrl+S)"                  ui_key ctrl+s
-ui_step "a name in the project"          type_path "Save As" "$PROJECT/plate-v11.mitcad"
+# The project picker (mitcad#176): the version's project offered.
+ui_expect_new "Project picker target bracket/plate v11.mitcad: free" "the project picker in the version's project" 20
+ui_focus_dialog '^Save in a Project$'
+ui_step "a name in the project"          type_text "plate-v11"
+ui_expect_new "Project picker target bracket/plate-v11.mitcad: free" "the name typed"
+ui_step "save (Enter)"                   ui_key Return
+ui_focus_main
 ui_expect_new "Saved $PROJECT/plate-v11.mitcad" "Save asks for a name"
 ui_expect_new "Version recorded: plate-v11.mitcad " "a file of its own in the project"
 [ "$(file_d3 "$PROJECT/plate-v11.mitcad")" = "[36.0]" ] || ui_fail "the file has d3 $(file_d3 "$PROJECT/plate-v11.mitcad")"

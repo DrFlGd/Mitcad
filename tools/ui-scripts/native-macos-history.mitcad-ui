@@ -213,6 +213,11 @@ native-action solid.new_component
 expect-log 'Command New Component started'
 native-type input_name 'EmptyTimeline'
 native-click commandOk
+# The root has modelled bodies: asked first (mitcad#171).
+expect-log 'Hybrid assembly question: Root has' 30
+focus-dialog '^Hybrid Assembly$'
+button '^Continue as Is$'
+focus-main
 expect-log 'New component EmptyTimeline' 30
 expect-model-bodies 3 6000
 native-select native.history.F1

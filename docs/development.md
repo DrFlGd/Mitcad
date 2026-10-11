@@ -228,10 +228,41 @@ tools\dev-env\msvc.cmd cmake --build --preset dev --target package
 powershell -ExecutionPolicy Bypass -File tools\installer-windows-test.ps1 -MesaDir C:\dev\mesa\bin
 ```
 
-`package` writes `mitcad-<version>-windows-x64.exe` (NSIS 3: installs to
-`Program Files\Mitcad`, Start menu shortcut, `.mitcad` file type,
-uninstalls the previous version, silent with `/S` and `/D=<dir>` last) and
-the same files as a `.zip`. Contents: `bin` (executables, Qt, vcpkg DLLs,
+`package` writes `mitcad-<version>-windows-x64.exe` (NSIS 3) and the same
+files as a `.zip`. The installer script is our own,
+[packaging/windows/NSIS.template.in](../packaging/windows/NSIS.template.in)
+(CPack finds it through `CPACK_MODULE_PATH`). It runs as the user
+(`RequestExecutionLevel user`) and installs either
+
+- **just for me** (the default): into `%LOCALAPPDATA%\Programs\Mitcad`,
+  with the Start menu shortcut, the `.mitcad` file type
+  ([filetype.nsh](../packaging/windows/filetype.nsh)) and the uninstall
+  entry under `HKCU`; no administrator rights, so no UAC prompt;
+- **for all users:** into `Program Files\Mitcad`, registered under `HKLM`
+  (32-bit view, as earlier releases). Only this choice asks for elevation:
+  the installer starts itself again elevated (`runas`) with `/AllUsers
+  /Elevated`.
+
+The page *Choose Users* after the licence offers the choice; it starts on
+*For all users* only when Mitcad is installed for all users and not for
+the current user.
+An earlier version in the same scope is uninstalled first (its own
+uninstaller, silently, in place). Silent installs: `/S` installs just for
+the current user, `/S /AllUsers` for all users (`/CurrentUser` says the
+default explicitly), and `/D=<dir>` (last, without quotes) sets the folder
+in both. A silent install whose `/D` is the folder of the installation
+for all users, which is what the updater of an earlier release runs,
+stays for all users. The installer writes the scope into
+`<dir>\installation.ini` (`[Installation]`, `Scope=user` or `all`), which
+the uninstaller and the [automatic updates](updates.md) read; an
+installation without it is an earlier release's, which was for all users.
+The uninstaller removes the files and the keys of its own scope only;
+for all users it elevates as the installer does. Exit codes: 0 done, 1
+cancelled, 2 aborted (also when the earlier version could not be
+uninstalled), 740 elevated but still without administrator rights, 1223
+elevation refused.
+
+Contents: `bin` (executables, Qt, vcpkg DLLs,
 VC++ runtime, `qt.conf`), `plugins` (via `windeployqt`), licences
 (`LICENSE`, `THIRD-PARTY-NOTICES.txt`, `licenses\` with the font and every
 vcpkg port's `copyright`), uninstaller. Never included: Mesa, Qt's
@@ -241,11 +272,20 @@ licences of Cycles and Open Image Denoise
 ([rendering.md](rendering.md#windows)).
 
 `tools/installer-windows-test.ps1` (ctest `app.installer-windows` once
-the installer exists) installs silently into a temp folder, checks files,
-runs `mitcad-cli` and `mitcad.exe --version` with a system-only `PATH`,
-with `-MesaDir` renders a screenshot and tests the automatic update
-([updates.md](updates.md#tests); `-NoUpdate` skips it), then uninstalls.
-It changes the registry's `.mitcad` file type: run it only in the VM.
+the installer exists) checks that the installer asks for no elevation,
+then in each scope (`-Scope both|user|all`) installs silently into a
+folder of the test's own and checks the scope's registration (uninstall
+entry, `installation.ini`, file type, Start menu shortcut, nothing in the
+other scope). Just for the current user it checks the files, runs
+`mitcad-cli` and `mitcad.exe --version` with a system-only `PATH` and,
+with `-MesaDir`, renders a screenshot; for all users it reinstalls with
+only `/D=` as an earlier release's updater does. With `-MesaDir` it tests
+the automatic update in both scopes ([updates.md](updates.md#tests);
+`-NoUpdate` skips it). Then it uninstalls and checks that no key of that
+scope is left. It changes the `.mitcad` file type under `HKCU` and `HKLM`
+and replaces an installation of either scope: run it only in the VM.
+Session 0 cannot show a UAC prompt, so the test runs with administrator
+rights and the elevation itself is not exercised.
 
 Signing a release: [updates.md](updates.md#signing-a-release).
 

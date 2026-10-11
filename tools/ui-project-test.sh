@@ -23,16 +23,28 @@
 #      history after the README's). Open It for a folder that is a project,
 #      Open It Instead for a remote that holds one, Create as Local for Now
 #      for a remote that cannot be reached.
-#   4. Open Project of each kind of folder: a Cloud project, a Local one, an
-#      older one without versions (its history starts), a folder inside a
-#      project, a git repository and a folder of designs and an empty
-#      folder (New Project with the folder fixed), a project inside another
-#      git repository (no versions); a project with several designs opens
+#   4. Open Project (mitcad#176: the project picker lists the projects, also
+#      one without versions; Another Folder... the folder dialog) of each
+#      kind of folder: a Cloud project, a Local one, an older one without
+#      versions (its history starts), a folder inside a project, a git
+#      repository and a folder of designs and an empty folder (New Project
+#      with the folder fixed), a project inside another git repository (no
+#      versions); a project with several designs opens
 #      the newest, then the one opened last (no design chooser: the
 #      Projects panel lists them); Open... and Open Recent of a design in a
-#      project.
-#   5. Move to a Project for a loose file: its own folder made a project,
-#      and another loose file moved into an existing project.
+#      project; New Design (Ctrl+N) there names a design in the Projects
+#      panel (mitcad#175: New and New Design are one command).
+#   5. Move to a Project for a loose file (an untitled design after Close,
+#      saved outside projects): its own folder made a project;
+#      another loose file moved into an existing project chosen in the
+#      project picker (mitcad#174): the projects with versions listed by
+#      name, a name clash shown in it, a Cloud project's folder chosen, the
+#      version sent and the design selected in the Projects panel; and
+#      Another Folder... for a project typed into the folder dialog. Save
+#      As while a project is current: the picker's Another Folder...
+#   6. Insert Component (mitcad#176): a design of the current project (the
+#      open design not offered) linked, another project's as a copy, and a
+#      file through Another File...
 #
 # git's configuration and HOME are the test's own. Runs headless on Xvfb
 # (see ui-test-lib.sh); Qt's own file dialogs (--no-native-dialogs), so
@@ -104,6 +116,38 @@ type_text() { ui_type_text "$1"; }
 # type_path title path: the path typed into Qt's file dialog (ui_type_path), accepted.
 type_path() {
   ui_type_path "$1" "$2"
+}
+
+# picker_listed title: waits until the project picker titled so has read the
+# projects since the mark ("Project picker <title>: <n> projects: ..."),
+# and gives them.
+picker_listed() {
+  local line=""
+  for _ in $(seq 1 100); do
+    line=$(tail -n +$((UI_MARK + 1)) "$UI_LOG" | grep "^Project picker $1: [0-9]* projects: " | tail -1)
+    [ -n "$line" ] && break
+    sleep 0.2
+  done
+  echo "${line:-the project picker $1 listed no projects}"
+}
+
+# picked_project root kind: the key the project picker logs the project at
+# root by (the name the Projects panel shows, or its folder when two
+# listed projects have the same name).
+picked_project() {
+  grep "^Project picker project .*: $2, $1\$" "$UI_LOG" | tail -1 | sed 's/^Project picker project \(.*\): [a-z ]*, .*$/\1/'
+}
+
+# save_as_elsewhere path: Save As while a project is current: the project
+# picker (mitcad#176), then Another Folder... and the path typed into the
+# file dialog.
+save_as_elsewhere() {
+  ui_step "save as (Ctrl+Shift+S)"       ui_key ctrl+shift+s
+  ui_expect_new "Project picker Save in a Project: a place, reading the projects" "the project picker"
+  ui_focus_dialog '^Save in a Project$'
+  ui_step "another folder (Alt+A)"       ui_key alt+a
+  ui_expect_new "Project picker Save in a Project: another folder" "the file dialog instead"
+  ui_step "outside projects"             type_path "Save As" "$1"
 }
 
 # opened path description [seconds]: waits until a design opened (the
@@ -426,10 +470,15 @@ cp "$ROBOT/Robot arm.mitcad" "$DESIGNS/b.mitcad"
 EMPTY_FOLDER=$WORK/empty-folder
 mkdir -p "$EMPTY_FOLDER"
 ui_start_app --no-native-dialogs
-# open_project folder: Open Project of a folder typed into the folder dialog.
+# open_project folder: Open Project of a folder typed into the folder dialog
+# (the project picker's Another Folder..., mitcad#176).
 open_project() {
   ui_mark
   ui_step "open project (search)"        ui_command "Open Project"
+  ui_expect_new "Project picker Open a Project: a project, reading the projects" "the project picker"
+  ui_focus_dialog '^Open a Project$'
+  ui_step "another folder (Alt+A)"       ui_key alt+a
+  ui_expect_new "Project picker Open a Project: another folder" "the folder dialog instead"
   ui_step "type the folder"              type_path "Open Project" "$1"
   ui_expect_new "Open Project: $1: $2" "$3"
 }
@@ -478,7 +527,7 @@ ui_expect_new "(newest)" "several designs: the newest opens" 20
 chosen=$(grep -o "Open Project: [ab]\.mitcad (newest)" "$UI_LOG" | tail -1 | sed 's/Open Project: //; s/ (newest)//')
 [ -n "$chosen" ] || ui_fail "no design opened"
 opened "$DESIGNS/$chosen" "the newest design opened"
-ui_expect_new "Projects tree: Local/designs (local, current): a.mitcad v1" "the Projects panel lists the designs" 20
+ui_expect_new "Projects tree: designs (local, current): a.mitcad v1" "the Projects panel lists the designs" 20
 expect_git "$DESIGNS" "ls-files" ".gitattributes
 .gitignore
 .mitcad/project.json
@@ -487,9 +536,23 @@ b.mitcad" "the designs are in the first version"
 ui_key ctrl+q
 expect_exit "exited"
 
-echo "--- Open Project: the design opened last opens"
+echo "--- Open Project: chosen in the project picker; the design opened last opens"
 ui_start_app --no-native-dialogs
-open_project "$DESIGNS" project "the folder of designs is a project now"
+ui_mark
+ui_step "open project (search)"          ui_command "Open Project"
+ui_expect_new "Project picker Open a Project: a project, reading the projects" "the project picker (mitcad#176)"
+listed=$(picker_listed "Open a Project")
+designs=$(picked_project "$DESIGNS" local)
+[ -n "$designs" ] || ui_fail "the folder of designs is not listed: $listed"
+[ -n "$(picked_project "$GEAR" cloud)" ] || ui_fail "the Cloud project is not listed: $listed"
+[ -n "$(picked_project "$OUTER/inner" "no versions")" ] || ui_fail "the project without versions is not listed: $listed"
+echo "ok   the projects listed, also one without versions"
+ui_focus_dialog '^Open a Project$'
+ui_step "the folder of designs"          ui_click_logged "Project picker row $designs"
+ui_expect_new "Project picker selected $designs" "selected"
+ui_step "open (Enter)"                   ui_key Return
+ui_expect_new "Project picker Open a Project: chose $DESIGNS" "chosen in the picker"
+ui_expect_new "Open Project: $DESIGNS: project" "the folder of designs is a project now"
 ui_expect_new "Open Project: $chosen (opened last)" "the design opened last" 20
 opened "$DESIGNS/$chosen" "opened"
 
@@ -508,13 +571,25 @@ ui_step "the second (2)"                 ui_key 2
 opened "$DESIGNS/" "Open Recent opened the other project's design" 20
 ui_expect_new "Project: local designs at $DESIGNS" "its project is the current one"
 
+echo "--- New Design (Ctrl+N) with a current project: named in the Projects panel"
+ui_mark
+ui_step "new design (Ctrl+N)"            ui_key ctrl+n
+ui_expect_new "New Design: in $DESIGNS" "a design of the current project, not an untitled one"
+ui_expect_new "Projects panel: naming a new design in " "named in the Projects panel" 20
+ui_step "cancel (Escape)"                ui_key Escape
+ui_expect_new "Projects panel: new design cancelled" "cancelled: nothing made"
+ui_focus_main
+if tail -n +$((UI_MARK + 1)) "$UI_LOG" | grep -q "New document"; then
+  ui_fail "New Design in a project opened an untitled design"
+fi
+
 echo "--- Move to a Project: a loose file's folder made a project"
 LOOSE=$WORK/loose
 mkdir -p "$LOOSE"
 ui_mark
-ui_step "new design (Ctrl+N)"            ui_key ctrl+n
-ui_step "save as (Ctrl+Shift+S)"         ui_key ctrl+shift+s
-ui_step "outside projects"               type_path "Save As" "$LOOSE/part.mitcad"
+ui_step "close: untitled (Ctrl+W)"       ui_key ctrl+w
+ui_expect_new "Document closed" "an untitled design"
+save_as_elsewhere "$LOOSE/part.mitcad"
 ui_focus_main
 ui_expect_new "Saved $LOOSE/part.mitcad" "saved"
 ui_expect_new "Project indicator: not in a project" "a loose file"
@@ -535,26 +610,154 @@ expect_git "$LOOSE" "ls-tree --name-only $(in_git "$LOOSE" rev-list --max-parent
   "the design in the first version"
 expect_clean "$LOOSE" "git status is clean"
 
-echo "--- Move to a Project: into an existing project"
+echo "--- Move to a Project: into an existing project (the project picker, mitcad#174)"
 STRAY=$WORK/stray
-mkdir -p "$STRAY"
+mkdir -p "$STRAY" "$GEAR/parts"
 ui_mark
-ui_step "new design (Ctrl+N)"            ui_key ctrl+n
-ui_step "save as (Ctrl+Shift+S)"         ui_key ctrl+shift+s
-ui_step "outside projects"               type_path "Save As" "$STRAY/bolt.mitcad"
+ui_step "close: untitled (Ctrl+W)"       ui_key ctrl+w
+ui_expect_new "Document closed" "an untitled design"
+save_as_elsewhere "$STRAY/bolt.mitcad"
 ui_focus_main
 ui_expect_new "Project indicator: not in a project" "a loose file"
 indicator_choose "Move to a Project..."
 ui_focus_dialog '^Move to a Project$'
 ui_step "an existing project (Alt+E)"    ui_key alt+e
-ui_step "the project's folder"           type_path "Choose a Project" "$ROBOT"
-ui_expect_new "Moved $STRAY/bolt.mitcad to $ROBOT/bolt.mitcad" "moved" 20
+ui_expect_new "Project picker Choose a Project: a place, reading the projects" "the project picker, no folder dialog"
+listed=$(picker_listed "Choose a Project")
+robot=$(picked_project "$ROBOT" local)
+gear=$(picked_project "$GEAR" cloud)
+[ -n "$robot" ] || ui_fail "the Local project is not listed: $listed"
+[ -n "$gear" ] || ui_fail "the Cloud project is not listed: $listed"
+echo "ok   the projects listed by their names: $robot (local), $gear (cloud)"
+tail -n +$((UI_MARK + 1)) "$UI_LOG" | grep -q "^Project picker project .*, $OUTER/inner\$" && ui_fail "a project without versions is offered: $listed"
+echo "ok   only projects with versions"
+ui_focus_dialog '^Choose a Project$'
+ui_step "the Local project"              ui_click_logged "Project picker row $robot"
+ui_expect_new "Project picker selected $robot" "selected"
+ui_expect_new "Project picker target $robot/bolt.mitcad: free" "the design's name offered, free there"
+ui_step "the name field"                 ui_click_logged "Project picker name"
+ui_step "a name the project has"         type_text "Robot arm"
+ui_expect_new "Project picker target $robot/Robot arm.mitcad: exists" "the clash shown in the dialog"
+ui_step "another name"                   type_text "bolt"
+ui_expect_new "Project picker target $robot/bolt.mitcad: free" "free again"
+ui_step "the Cloud project"              ui_click_logged "Project picker row $gear"
+ui_step "its folders (+)"                ui_key plus
+ui_sync
+ui_step "its folder parts"               ui_click_logged "Project picker row $gear/parts/"
+ui_expect_new "Project picker selected $gear/parts/" "a folder in the project"
+ui_expect_new "Project picker target $gear/parts/bolt.mitcad: free" "the place in the folder"
+ui_step "move (Enter)"                   ui_key Return
+ui_expect_new "Project picker Choose a Project: chose $GEAR/parts/bolt.mitcad" "chosen in the picker"
+ui_expect_new "Moved $STRAY/bolt.mitcad to $GEAR/parts/bolt.mitcad" "moved" 20
 ui_focus_main
 [ ! -e "$STRAY/bolt.mitcad" ] || ui_fail "the file it came from is still there"
 echo "ok   the file it came from is gone"
-expect_git "$ROBOT" "log -1 --format=%s" "Save bolt.mitcad" "recorded in the project"
+expect_git "$GEAR" "log -1 --format=%s" "Save bolt.mitcad" "recorded in the Cloud project"
+ui_expect_new "Remote push: sent 1 version(s) to origin/main" "sent as Save's versions are" 20
+expect_sent "$GEAR" "$EMPTY" "the remote has the moved design"
+ui_expect_new "Project indicator: gear, cloud" "the indicator: gear"
+for _ in $(seq 1 100); do
+  tail -n +$((UI_MARK + 1)) "$UI_LOG" | grep -q "^Projects panel selected .*parts/bolt\.mitcad\$" && break
+  sleep 0.2
+done
+tail -n +$((UI_MARK + 1)) "$UI_LOG" | grep -q "^Projects panel selected .*parts/bolt\.mitcad\$" ||
+  ui_fail "the Projects panel does not show the moved design selected"
+echo "ok   the Projects panel shows the moved design selected"
+
+echo "--- Move to a Project: Another Folder... for a project not listed"
+NUTS=$WORK/nuts
+mkdir -p "$NUTS"
+ui_mark
+ui_step "close: untitled (Ctrl+W)"       ui_key ctrl+w
+ui_expect_new "Document closed" "an untitled design"
+save_as_elsewhere "$NUTS/nut.mitcad"
+ui_focus_main
+ui_expect_new "Project indicator: not in a project" "a loose file"
+indicator_choose "Move to a Project..."
+ui_focus_dialog '^Move to a Project$'
+ui_step "an existing project (Alt+E)"    ui_key alt+e
+ui_expect_new "Project picker Choose a Project: a place, reading the projects" "the project picker"
+ui_focus_dialog '^Choose a Project$'
+ui_step "another folder (Alt+A)"         ui_key alt+a
+ui_expect_new "Project picker Choose a Project: another folder" "the folder dialog instead"
+ui_step "the project's folder"           type_path "Choose a Project Folder" "$ROBOT"
+ui_expect_new "Moved $NUTS/nut.mitcad to $ROBOT/nut.mitcad" "moved" 20
+ui_focus_main
+[ ! -e "$NUTS/nut.mitcad" ] || ui_fail "the file it came from is still there"
+echo "ok   the file it came from is gone"
+expect_git "$ROBOT" "log -1 --format=%s" "Save nut.mitcad" "recorded in the project"
 ui_expect_new "Project indicator: Robot arm, local, v1" "the indicator: Robot arm"
+
+echo "--- Insert Component: a design chosen in the project picker (mitcad#176)"
+# Designs with a body (the projects' designs so far are empty, and an
+# empty design is no component): one in each project and one outside.
+cat > "$WORK/block.json" << 'JSON'
+[
+  {"cmd": "sketch.create"},
+  {"cmd": "sketch.add_rectangle", "sketch": "F1", "corner": [0, 0], "width": 30, "height": 20},
+  {"cmd": "add_feature", "def": {"type": "extrude",
+    "profiles": [{"sketch": "F1", "region": "r{c1[c4,c2],c2[c1,c3],c3[c2,c4],c4[c3,c1]}"}],
+    "extent": {"type": "distance", "distance": 10}, "operation": "new_body"}}
+]
+JSON
+"$CLI" run "$WORK/block.json" --save "$WORK/block.mitcad" > "$WORK/cli.log" 2>&1 ||
+  { cat "$WORK/cli.log"; ui_fail "mitcad-cli: a design with a body"; }
+cp "$WORK/block.mitcad" "$ROBOT/plate.mitcad"
+in_git "$ROBOT" add plate.mitcad
+in_git "$ROBOT" commit -qm "Add plate.mitcad"
+cp "$WORK/block.mitcad" "$GEAR/pin.mitcad"
+in_git "$GEAR" add pin.mitcad
+in_git "$GEAR" commit -qm "Add pin.mitcad"
+ui_mark
+ui_step "insert component (search)"      ui_command "Insert Component"
+ui_expect_new "Project picker Insert from a Project: a design, reading the projects" "the project picker"
+listed=$(picker_listed "Insert from a Project")
+case "$listed" in
+"Project picker Insert from a Project: "*" projects: $robot (local)"*) echo "ok   the current project first" ;;
+*) ui_fail "the current project is not first: $listed" ;;
+esac
+ui_focus_dialog '^Insert from a Project$'
+ui_expect_new "Project picker row $robot/plate.mitcad at " "the current project expanded"
+tail -n +$((UI_MARK + 1)) "$UI_LOG" | grep -q "^Project picker row $robot/nut\.mitcad at " &&
+  ui_fail "the open design is offered"
+echo "ok   the open design is not offered"
+ui_step "a design of the project"        ui_click_logged "Project picker row $robot/plate.mitcad"
+ui_expect_new "Project picker selected $robot/plate.mitcad" "selected"
+ui_step "insert (Enter)"                 ui_key Return
+ui_expect_new "Project picker Insert from a Project: chose $ROBOT/plate.mitcad" "chosen in the picker"
+ui_focus_dialog '^Insert Component$'
+ui_step "linked (Enter)"                 ui_key Return
+ui_focus_main
+ui_expect_new "(linked) from plate.mitcad" "inserted, linked"
+ui_mark
+ui_step "insert component (search)"      ui_command "Insert Component"
+listed=$(picker_listed "Insert from a Project")
+ui_focus_dialog '^Insert from a Project$'
+ui_step "another project"                ui_click_logged "Project picker row $gear"
+ui_step "its designs (+)"                ui_key plus
+ui_sync
+ui_step "its design"                     ui_click_logged "Project picker row $gear/pin.mitcad"
+ui_expect_new "Project picker selected $gear/pin.mitcad" "a design of another project"
+ui_step "insert (Enter)"                 ui_key Return
+ui_expect_new "Project picker Insert from a Project: chose $GEAR/pin.mitcad" "chosen in the picker"
+ui_focus_dialog '^Insert Component$'
+ui_step "a copy (Alt+C)"                 ui_key alt+c
+ui_focus_main
+ui_expect_new "(copy) from pin.mitcad" "inserted as a copy"
+ui_mark
+ui_step "insert component (search)"      ui_command "Insert Component"
+ui_expect_new "Project picker Insert from a Project: a design, reading the projects" "the project picker"
+ui_focus_dialog '^Insert from a Project$'
+ui_step "another file (Alt+A)"           ui_key alt+a
+ui_expect_new "Project picker Insert from a Project: another file" "the file dialog instead"
+ui_step "a design's file"                type_path "Insert Component" "$WORK/block.mitcad"
+ui_focus_dialog '^Insert Component$'
+ui_step "linked (Enter)"                 ui_key Return
+ui_focus_main
+ui_expect_new "(linked) from block.mitcad" "inserted from the file dialog"
 ui_key ctrl+q
+ui_focus_dialog '^Mitcad$'
+ui_step "don't save (D)"                 ui_key d
 expect_exit "exited"
 
 ui_finish "UI project test"

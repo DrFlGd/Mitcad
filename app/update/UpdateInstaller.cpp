@@ -99,6 +99,8 @@ Installation Installation::detect() {
       QFileInfo::exists(bin.filePath(kUpdater))) {
     installation.kind = Kind::WindowsInstaller;
     installation.location = root;
+    const QSettings scope(QDir(root).filePath(QStringLiteral("installation.ini")), QSettings::IniFormat);
+    installation.allUsers = scope.value(QStringLiteral("Installation/Scope")).toString() != QStringLiteral("user");
   } else {
     installation.reason = QStringLiteral("not installed by the installer (the portable .zip or a development build)");
   }
@@ -126,7 +128,9 @@ Installation Installation::detect() {
 QString Installation::describe() const {
   switch (kind) {
   case Kind::WindowsInstaller:
-    return QStringLiteral("installed in %1").arg(QDir::toNativeSeparators(location));
+    return QStringLiteral("installed in %1 %2")
+        .arg(QDir::toNativeSeparators(location),
+             allUsers ? QStringLiteral("for all users") : QStringLiteral("for the current user"));
   case Kind::AppImage:
     return QStringLiteral("the AppImage %1").arg(location);
   case Kind::NotifyOnly:
@@ -179,6 +183,8 @@ bool stageUpdate(const Installation& installation, const QString& file, const QS
                         QDir::toNativeSeparators(file),
                         QStringLiteral("--dir"),
                         QDir::toNativeSeparators(installation.location),
+                        QStringLiteral("--scope"),
+                        installation.allUsers ? QStringLiteral("all") : QStringLiteral("user"),
                         QStringLiteral("--restart"),
                         QDir::toNativeSeparators(QDir(installation.location).filePath(QStringLiteral("bin/mitcad.exe"))),
                         QStringLiteral("--log"),

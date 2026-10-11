@@ -239,7 +239,14 @@ qt_add_executable(mitcad
   projects/ProjectsPanel.cpp
   projects/ProjectsPanel.hpp
   projects/ProjectsTree.cpp
-  projects/ProjectsTree.hpp)
+  projects/ProjectsTree.hpp
+  # The project picker: a place, a design or a project among the listed
+  # projects instead of a file dialog (mitcad#174, mitcad#176).
+  projects/ProjectPicker.cpp
+  projects/ProjectPicker.hpp
+  # Hybrid assemblies: moving the root's features into a component (mitcad#171).
+  framework/HybridAssembly.cpp
+  framework/HybridAssembly.hpp)
 
 # Toolbar and command icons (own drawings, MIT), rendered with Qt SVG.
 file(GLOB MITCAD_ICONS RELATIVE "${CMAKE_CURRENT_SOURCE_DIR}" CONFIGURE_DEPENDS icons/*.svg)
@@ -379,7 +386,7 @@ if(WIN32)
   # Qt, the C++ runtime linked in, so that it runs from the temp folder.
   add_executable(mitcad-updater WIN32 update/UpdaterWindows.cpp)
   set_target_properties(mitcad-updater PROPERTIES MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
-  target_link_libraries(mitcad-updater PRIVATE shell32 mitcad_warnings)
+  target_link_libraries(mitcad-updater PRIVATE shell32 advapi32 mitcad_warnings)
   add_dependencies(mitcad mitcad-updater)
 endif()
 
@@ -550,6 +557,11 @@ if(BUILD_TESTING)
                    --output "${CMAKE_CURRENT_BINARY_DIR}/render-worker-gpu-test.png")
   set_tests_properties(app.render_worker_gpu PROPERTIES SKIP_RETURN_CODE 77
     PASS_REGULAR_EXPRESSION "render-compare (CUDA|OPTIX|HIP|METAL|ONEAPI) ")
+  # Each takes seconds; a hung GPU (mitcad#146) fails them in two minutes,
+  # not at ctest's default of 25.
+  set_tests_properties(app.render_worker app.render_updates app.render_worker_environment
+                       app.render_worker_fallback app.render_worker_device_failure app.render_worker_gpu
+    PROPERTIES TIMEOUT 120)
   # On Windows the worker finds Qt's DLLs through PATH, as app.unit does.
   if(WIN32)
     set_tests_properties(app.render_worker app.render_updates app.render_worker_environment

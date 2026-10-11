@@ -104,18 +104,37 @@ std::vector<NamedWire> face_loops(const TopoDS_Face& face,
 // How a pipe shell turns its section along the spine. `Support`: with the
 // normal of the faces of `support` the spine's edges lie on (each edge
 // carries its curve on one of them; see `on_faces`).
+// `Auxiliary` (mitcad#161): with the normal towards `auxiliary`, a curve
+// beside the spine (see `normal_spine`).
 struct PipeMode {
-  enum class Kind { CorrectedFrenet, Binormal, Fixed, Support };
+  enum class Kind { CorrectedFrenet, Binormal, Fixed, Support, Auxiliary };
   Kind kind = Kind::CorrectedFrenet;
   gp_Dir binormal;
   gp_Ax2 fixed;
   TopoDS_Shape support;
+  TopoDS_Wire auxiliary;
 };
 
 // A copy of the wire whose edges each carry their curve on the first of
 // the faces they lie on, within `tolerance` (a pipe shell's `Support`
 // mode). Throws when an edge lies on none of them.
 TopoDS_Wire on_faces(const TopoDS_Wire& wire, const std::vector<TopoDS_Face>& faces, double tolerance);
+
+// Whether every edge of the wire lies on one of the faces within
+// `tolerance` (as `on_faces` takes them).
+bool lies_on_faces(const TopoDS_Wire& wire, const std::vector<TopoDS_Face>& faces, double tolerance);
+
+// A curve beside a wire that runs beside faces (mitcad#161: a sweep along
+// a thread's crest guided by its flank): through the points `offset` off
+// the wire's points along the normal of the faces at their points nearest
+// to them, taken at right angles to the wire. A pipe shell's `Auxiliary`
+// mode then turns its section with the faces' normal, as `Support` does
+// for a wire on the faces.
+TopoDS_Wire normal_spine(const TopoDS_Wire& wire, const std::vector<TopoDS_Face>& faces, double offset);
+
+// The unit normal of the faces (a compound; with their orientation) at
+// their point nearest to `point`, or nothing where none is found.
+std::optional<gp_Dir> guide_normal(const TopoDS_Shape& faces, const gp_Pnt& point);
 
 // Keeps a section at its angle to the spine: a fixed binormal along the
 // normal of a planar spine, else the corrected Frenet frame.

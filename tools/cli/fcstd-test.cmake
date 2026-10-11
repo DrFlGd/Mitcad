@@ -224,4 +224,6 @@ expect("import-fcstd history"
   "feature Helix \\(F3\\): fallback base PartDesign::AdditiveHelix"
   "body Plate \\(F2\\.b0\\): solid, volume 7200\\.000 mm3")
 run(ok "${CLI}" info "${WORK}/history.mitcad")
-expect("info history" "F2 Pad \\(extrude\\): ok" "F3 Helix \\(base\\): ok" "Plate \\(F2\\.b0\\): volume 7200\\.000 mm3")
+# The fallback is a warning standing in for the helix (mitcad#170).
+expect("info history" "F2 Pad \\(extrude\\): ok" "F3 Helix \\(base\\): warning: Stands in for Helix \\(not replayed: "
+       "Plate \\(F2\\.b0\\): volume 7200\\.000 mm3")

@@ -11,16 +11,19 @@
 #   2. File > New Design names a design in place in the panel: recorded as
 #      a version, opened, bold as the open design. New Folder and New
 #      Design in the folder from the context menu.
-#   3. Save of an untitled design starts in the panel's selected folder.
+#   3. Save of an untitled design: the project picker starts in the
+#      panel's selected folder (mitcad#176).
 #   4. Rename (F2) of the open design and a drag into another folder: each
 #      a version; the open design follows its new path.
 #   5. Delete (Del, confirmed) of a design, and of the open design, which
 #      closes; the history keeps them. A double-click opens a design.
 #   6. A Cloud project added with Add Existing Project Folder is listed
-#      under its location (the shared folder's) with its sync state;
-#      Remove from List takes it out and deletes nothing.
-#   7. Open Project opens the design opened last; the panel stays shown at
-#      the next start. The Floating layout has the panel in a card.
+#      at the top of the tree (mitcad#173: no location row above it), shown
+#      by its shared folder's path, with its sync state; Remove from List
+#      takes it out and deletes nothing.
+#   7. Open Project (the project picker) opens the design opened last;
+#      the panel stays shown at the next start. The Floating layout has
+#      the panel in a card.
 #
 # git's configuration and HOME are the test's own. Runs headless on Xvfb
 # (see ui-test-lib.sh); Qt's own file dialogs (--no-native-dialogs), so
@@ -116,7 +119,9 @@ ui_expect_new "New Project: created $SHOP: version " "made" 20
 ui_focus_main
 ui_expect_new "Projects panel: shown" "the panel shows the project"
 ui_expect_new "Open Project: no designs in $SHOP" "no design named after the folder"
-ui_expect_new "Projects tree: Local/Shop (local, current): no designs" "an empty Local project" 20
+ui_expect_new "Projects tree: Shop (local, current): no designs" "an empty Local project" 20
+ui_expect_log "Projects top rows: Shop" "the project at the top, no row above it"
+ui_expect_log "Projects names: Shop = Shop" "a Local project shown by its folder's name"
 expect_git "$SHOP" "ls-files" ".gitattributes
 .gitignore
 .mitcad/project.json" "only the project's own files"
@@ -124,55 +129,60 @@ expect_git "$SHOP" "ls-files" ".gitattributes
 echo "--- File > New Design, named in the panel"
 ui_mark
 ui_step "new design (search)"            ui_command "New Design"
-ui_expect_new "Projects panel: naming a new design in Local/Shop" "named in place" 20
+ui_expect_new "Projects panel: naming a new design in Shop" "named in place" 20
 name_it "bracket"
 ui_expect_new "Projects panel: new_design recorded as " "recorded" 20
 opened "$SHOP/bracket.mitcad" "the new design opened"
 expect_git "$SHOP" "log -1 --format=%s" "Add bracket.mitcad" "a version of its own"
-ui_expect_new "Projects tree: Local/Shop (local, current): bracket.mitcad v1, open" "listed, the open one" 20
+ui_expect_new "Projects tree: Shop (local, current): bracket.mitcad v1, open" "listed, the open one" 20
 
 echo "--- New Folder and New Design in it (context menu)"
-row "Local/Shop"
+row "Shop"
 ui_mark
-ui_step "right-click the project"        ui_click_logged "Projects row Local/Shop" 3
+ui_step "right-click the project"        ui_click_logged "Projects row Shop" 3
 ui_step "new folder"                     ui_menu_choose "New Folder"
-ui_expect_new "Projects panel: naming a new folder in Local/Shop" "named in place" 20
+ui_expect_new "Projects panel: naming a new folder in Shop" "named in place" 20
 name_it "parts"
 ui_expect_new "Projects panel: create_folder recorded as " "recorded" 20
 expect_git "$SHOP" "log -1 --format=%s" "Add folder parts" "a version of its own"
-ui_expect_new "Projects tree: Local/Shop (local, current): parts/ | bracket.mitcad v1, open" "the folder listed" 20
-row "Local/Shop/parts/"
+ui_expect_new "Projects tree: Shop (local, current): parts/ | bracket.mitcad v1, open" "the folder listed" 20
+row "Shop/parts/"
 ui_mark
-ui_step "right-click the folder"         ui_click_logged "Projects row Local/Shop/parts/" 3
+ui_step "right-click the folder"         ui_click_logged "Projects row Shop/parts/" 3
 ui_step "new design"                     ui_menu_choose "New Design"
-ui_expect_new "Projects panel: naming a new design in Local/Shop/parts/" "in the folder" 20
+ui_expect_new "Projects panel: naming a new design in Shop/parts/" "in the folder" 20
 name_it "plate"
 opened "$SHOP/parts/plate.mitcad" "the new design opened"
 expect_git "$SHOP" "log -1 --format=%s" "Add parts/plate.mitcad" "a version of its own"
-ui_expect_new "Projects tree: Local/Shop (local, current): parts/ | bracket.mitcad v1 | parts/plate.mitcad v1, open" \
+ui_expect_new "Projects tree: Shop (local, current): parts/ | bracket.mitcad v1 | parts/plate.mitcad v1, open" \
   "in its folder" 20
 
 echo "--- Save of an untitled design starts in the selected folder"
 ui_mark
-ui_step "new (Ctrl+N)"                   ui_key ctrl+n
-ui_expect_new "New document" "an untitled design"
-row "Local/Shop/parts/"
-ui_step "select the folder"              ui_click_logged "Projects row Local/Shop/parts/"
+ui_step "close (Ctrl+W)"                 ui_key ctrl+w
+ui_expect_new "Document closed" "an untitled design (New Design would name one here)"
+row "Shop/parts/"
+ui_step "select the folder"              ui_click_logged "Projects row Shop/parts/"
 # Logged when the selection changes: the folder may be selected already
 # (the new design's row went, its folder stayed selected).
-ui_expect_log "Projects panel selected Local/Shop/parts/" "selected"
+ui_expect_log "Projects panel selected Shop/parts/" "selected"
 ui_step "save (Ctrl+S)"                  ui_key ctrl+s
-ui_step "only a name"                    ui_type_path "Save As" "gear.mitcad"
+# The project picker (mitcad#176), the selected folder preselected.
+ui_expect_new "Project picker target Shop/parts/Untitled.mitcad: free" "the picker starts in the selected folder" 20
+ui_focus_dialog '^Save in a Project$'
+ui_step "only a name"                    ui_type_text "gear"
+ui_expect_new "Project picker target Shop/parts/gear.mitcad: free" "the name typed"
+ui_step "save (Enter)"                   ui_key Return
 ui_focus_main
 ui_expect_new "Saved $SHOP/parts/gear.mitcad" "saved in the selected folder" 20
 ui_expect_new "parts/gear.mitcad v1, open" "listed" 20
 
 echo "--- Rename (F2) of the open design: it follows"
-row "Local/Shop/parts/gear.mitcad"
+row "Shop/parts/gear.mitcad"
 ui_mark
-ui_step "select it"                      ui_click_logged "Projects row Local/Shop/parts/gear.mitcad"
+ui_step "select it"                      ui_click_logged "Projects row Shop/parts/gear.mitcad"
 ui_step "rename (F2)"                    ui_key F2
-ui_expect_new "Projects panel: renaming Local/Shop/parts/gear.mitcad" "renamed in place" 20
+ui_expect_new "Projects panel: renaming Shop/parts/gear.mitcad" "renamed in place" 20
 name_it "cog"
 ui_expect_new "Projects panel: move recorded as " "recorded" 20
 ui_expect_new "Projects panel: the open design follows: $SHOP/parts/gear.mitcad -> $SHOP/parts/cog.mitcad" \
@@ -180,24 +190,24 @@ ui_expect_new "Projects panel: the open design follows: $SHOP/parts/gear.mitcad 
 expect_git "$SHOP" "log -1 --format=%s" "Move parts/gear.mitcad to parts/cog.mitcad" "a version of its own"
 [ -f "$SHOP/parts/cog.mitcad" ] && [ ! -e "$SHOP/parts/gear.mitcad" ] || ui_fail "the file was not renamed"
 echo "ok   the file renamed"
-ui_expect_new "Projects row Local/Shop/parts/cog.mitcad at " "the panel shows the new name" 20
+ui_expect_new "Projects row Shop/parts/cog.mitcad at " "the panel shows the new name" 20
 
 echo "--- A drag moves a design within the project"
 ui_mark
-ui_step "drag it onto the project"       ui_drag_logged "Projects row Local/Shop/parts/cog.mitcad" "Projects row Local/Shop"
+ui_step "drag it onto the project"       ui_drag_logged "Projects row Shop/parts/cog.mitcad" "Projects row Shop"
 ui_expect_new "Projects panel: drag parts/cog.mitcad to cog.mitcad" "dropped on the project" 20
 ui_expect_new "Projects panel: the open design follows: $SHOP/parts/cog.mitcad -> $SHOP/cog.mitcad" "it follows" 20
 expect_git "$SHOP" "log -1 --format=%s" "Move parts/cog.mitcad to cog.mitcad" "a version of its own"
-ui_expect_new "Projects row Local/Shop/cog.mitcad at " "the panel shows it in the project's top" 20
+ui_expect_new "Projects row Shop/cog.mitcad at " "the panel shows it in the project's top" 20
 ui_focus_main
 ui_step "save (Ctrl+S)"                  ui_key ctrl+s
 ui_expect_new "Saved $SHOP/cog.mitcad" "Save writes the new path" 20
 expect_clean "$SHOP" "git status is clean"
 
 echo "--- Delete (Del): a design, then the open one, which closes"
-row "Local/Shop/bracket.mitcad"
+row "Shop/bracket.mitcad"
 ui_mark
-ui_step "select bracket"                 ui_click_logged "Projects row Local/Shop/bracket.mitcad"
+ui_step "select bracket"                 ui_click_logged "Projects row Shop/bracket.mitcad"
 ui_step "delete (Del)"                   ui_key Delete
 ui_expect_new "Delete dialog: bracket.mitcad (1 designs)" "asked first"
 ui_focus_dialog '^Delete$'
@@ -208,10 +218,10 @@ ui_expect_new "Projects panel: delete recorded as " "recorded" 20
 expect_git "$SHOP" "log -1 --format=%s" "Delete bracket.mitcad" "a version of its own"
 expect_git "$SHOP" "log --format=%s -- bracket.mitcad" "Delete bracket.mitcad
 Add bracket.mitcad" "the history keeps it"
-ui_expect_new "Projects tree: Local/Shop (local, current): parts/ | cog.mitcad v" "bracket is no longer listed" 20
-row "Local/Shop/cog.mitcad"
+ui_expect_new "Projects tree: Shop (local, current): parts/ | cog.mitcad v" "bracket is no longer listed" 20
+row "Shop/cog.mitcad"
 ui_mark
-ui_step "select cog"                     ui_click_logged "Projects row Local/Shop/cog.mitcad"
+ui_step "select cog"                     ui_click_logged "Projects row Shop/cog.mitcad"
 ui_step "delete (Del)"                   ui_key Delete
 ui_expect_new "Delete dialog: cog.mitcad (1 designs, open)" "asked: it is open"
 ui_focus_dialog '^Delete$'
@@ -219,9 +229,9 @@ ui_step "delete (Alt+D)"                 ui_key alt+d
 ui_focus_main
 ui_expect_new "Projects panel: closed the deleted design $SHOP/cog.mitcad" "it closed" 20
 [ ! -e "$SHOP/cog.mitcad" ] || ui_fail "cog.mitcad is still there"
-ui_expect_new "Projects tree: Local/Shop (local, current): parts/ | parts/plate.mitcad v1" "what is left" 20
-row "Local/Shop/parts/plate.mitcad"
-ui_double_click_expect "Projects row Local/Shop/parts/plate.mitcad" "Opened $SHOP/parts/plate.mitcad" \
+ui_expect_new "Projects tree: Shop (local, current): parts/ | parts/plate.mitcad v1" "what is left" 20
+row "Shop/parts/plate.mitcad"
+ui_double_click_expect "Projects row Shop/parts/plate.mitcad" "Opened $SHOP/parts/plate.mitcad" \
   "a double-click opens a design"
 ui_focus_main
 
@@ -231,21 +241,26 @@ git init -q --bare "$WORK/remotes/team.git"
 TEAM=$WORK/team
 "$CLI" project create "$TEAM" --author "Ada Tester <ada@example.invalid>" --url "$WORK/remotes/team.git" \
   > "$WORK/cli.log" 2>&1 || { cat "$WORK/cli.log"; ui_fail "mitcad-cli project create"; }
-row "Local"
+row "Shop"
 ui_mark
-ui_step "right-click Local"              ui_click_logged "Projects row Local" 3
+ui_step "right-click Shop"               ui_click_logged "Projects row Shop" 3
 ui_step "add existing project folder"    ui_menu_choose "Add Existing Project Folder..."
 ui_step "type the folder"                ui_type_path "Add Existing Project Folder" "$TEAM"
 ui_focus_main
 ui_expect_new "Projects panel: added $TEAM" "added to the list"
-ui_expect_new "Projects tree: $WORK/remotes/team (cloud, synced): no designs" \
-  "under the shared folder's location, synced" 20
-row "$WORK/remotes/team"
+ui_expect_new "Projects tree: team (cloud, synced): no designs" "keyed by its folder's name, synced" 20
+# No location row above it: the project's own row, shown by the shared
+# folder's path (sorted before Shop: '/' comes before 'S').
+ui_expect_new "Projects top rows: team | Shop" "only the projects at the top" 20
+ui_expect_new "Projects names: team = $WORK/remotes/team.git | Shop = Shop" \
+  "the Cloud project shown by its shared folder's path" 20
+row "team"
 ui_mark
-ui_step "right-click it"                 ui_click_logged "Projects row $WORK/remotes/team" 3
+ui_step "right-click it"                 ui_click_logged "Projects row team" 3
 ui_step "remove from list"               ui_menu_choose "Remove from List"
 ui_expect_new "Projects panel: removed $TEAM from the list" "removed"
-ui_expect_new "Projects panel: 1 project: Local/Shop" "only Shop is listed" 20
+ui_expect_new "Projects panel: 1 project: Shop" "only Shop is listed" 20
+ui_expect_new "Projects top rows: Shop" "only Shop at the top" 20
 [ -f "$TEAM/.mitcad/project.json" ] || ui_fail "the project's folder was touched"
 echo "ok   nothing deleted"
 ui_key ctrl+q
@@ -254,10 +269,15 @@ expect_exit "exited"
 echo "--- The next start: the panel shown; Open Project opens the design opened last"
 ui_start_app --no-native-dialogs
 UI_MARK=0 # a new log
-ui_expect_log "Projects panel: 1 project: Local/Shop" "the panel is shown again" 20
+ui_expect_log "Projects panel: 1 project: Shop" "the panel is shown again" 20
 ui_mark
 ui_step "open project (search)"          ui_command "Open Project"
-ui_step "type the folder"                ui_type_path "Open Project" "$SHOP"
+# The project picker lists it (mitcad#176): no folder dialog.
+ui_expect_new "Project picker Open a Project: 1 projects: Shop (local)" "the project listed" 20
+ui_focus_dialog '^Open a Project$'
+ui_expect_new "Project picker selected Shop" "selected"
+ui_step "open (Enter)"                   ui_key Return
+ui_expect_new "Project picker Open a Project: chose $SHOP" "chosen in the picker"
 ui_expect_new "Open Project: parts/plate.mitcad (opened last)" "the design opened last" 20
 opened "$SHOP/parts/plate.mitcad" "opened"
 ui_key ctrl+q
@@ -266,12 +286,12 @@ expect_exit "exited"
 echo "--- Floating: the Projects card"
 ui_start_app --no-native-dialogs --chrome=floating
 UI_MARK=0 # a new log
-row "Local/Shop"
-ui_expect_log "Projects panel: 1 project: Local/Shop" "the projects listed in the card"
+row "Shop"
+ui_expect_log "Projects panel: 1 project: Shop" "the projects listed in the card"
 # Not the current project: collapsed until opened.
-ui_double_click_expect "Projects row Local/Shop" "Projects row Local/Shop/parts/plate.mitcad at " \
+ui_double_click_expect "Projects row Shop" "Projects row Shop/parts/plate.mitcad at " \
   "a double-click on the project shows its designs"
-ui_double_click_expect "Projects row Local/Shop/parts/plate.mitcad" "Opened $SHOP/parts/plate.mitcad" \
+ui_double_click_expect "Projects row Shop/parts/plate.mitcad" "Opened $SHOP/parts/plate.mitcad" \
   "a double-click in the card opens a design"
 ui_key ctrl+q
 expect_exit "exited"

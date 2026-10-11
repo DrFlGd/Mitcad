@@ -79,6 +79,9 @@ pub(crate) mod dressup_copies;
 // Assembly constraints (mitcad#148).
 pub mod constraint_set;
 
+// Placeholders of imported items that did not come in (mitcad#170).
+pub mod placeholder;
+
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
@@ -139,6 +142,8 @@ pub use joint::{
 };
 // Assembly constraints (mitcad#148).
 pub use constraint_set::{ConstraintRow, ConstraintSetDef, ConstraintType};
+// Placeholders of imported items that did not come in (mitcad#170).
+pub use placeholder::PlaceholderDef;
 
 use crate::assembly::Assembly;
 use crate::datum::Datum;
@@ -257,6 +262,8 @@ feature_types! {
     Joint(JointDef), AsBuiltJoint(AsBuiltJointDef), JointOrigin(JointOriginDef), RigidGroup(RigidGroupDef),
     // Assembly constraints (mitcad#148).
     ConstraintSet(ConstraintSetDef),
+    // Placeholders of imported items that did not come in (mitcad#170).
+    Placeholder(PlaceholderDef),
 }
 
 /// Brings a feature definition in an earlier form up to date before it is

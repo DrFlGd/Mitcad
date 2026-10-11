@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: MIT
-# check-all sources: app/render
-# File > Render Image (mitcad#48, docs/rendering.md "Final render") through
+# check-all sources: app/render app/view
+# Render Image (mitcad#48, docs/rendering.md "Final render") through
 # the real UI, on a red 60 x 40 x 20 mm block with a 16 mm hole through it:
 #   - The dialog changes the render settings' output section (each change
 #     a model command): a fixed aspect at 320 x 240, a transparent
@@ -84,8 +84,10 @@ ui_start_app --open "$WORK/block.mitcad" --no-native-dialogs
 ui_expect_log "Opened $WORK/block.mitcad" "the block opened"
 ui_step "hide the layout grid" ui_command "Layout Grid"
 
-echo "--- Render Image"
-ui_step "File > Render Image..." ui_command "Render Image"
+echo "--- Render Image, from the ribbon's MAKE group (mitcad#175)"
+ui_expect_log "Ribbon SOLID/MAKE at" "the MAKE group is in the ribbon"
+ui_step "open the MAKE menu" ui_click_logged "Ribbon SOLID/MAKE"
+ui_step "Render Image (first entry)" ui_key Down Return
 ui_expect_log "Render image dialog opened" "the dialog opened"
 ui_focus_dialog '^Render Image$'
 ui_expect_log "Render image field output.width at" "the dialog logs its fields"
@@ -186,7 +188,7 @@ assert max(abs(a - b) for a, b in zip(d["box_a"], d["box_b"])) <= 12, "the boxes
 echo "ok   the image's silhouette matches the view"
 
 echo "--- A named view"
-ui_step "File > Render Image..." ui_command "Render Image"
+ui_step "Render Image (search)" ui_command "Render Image"
 ui_focus_dialog '^Render Image$'
 ui_mark
 ui_step "Camera: Front" ui_choose "Render image camera" 1

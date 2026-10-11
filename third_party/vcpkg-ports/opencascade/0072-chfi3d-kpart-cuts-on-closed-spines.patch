@@ -1,0 +1,138 @@
+Mitcad's patch to OCCT 8.0.1, under OCCT's licence:
+SPDX-License-Identifier: LGPL-2.1-only WITH OCCT-exception-1.0
+
+Chamfers and fillets on closed edges: the pieces of an analytic blend cut
+over a gap by a face beyond (0055, 0071) on a closed spine, where the cut
+is a conic and where the other contact runs along a closed edge
+(mitcad#121): e.g. a ring standing on a block near its side, its foot
+chamfered as wide as the ring is high, the chamfer's contact on the block
+passing the side, which cuts the chamfer's cone; or a hole's rim near the
+block's side, bevelled.
+
+- ChFi3d_KPartCutCurve: the intersection lines of the blend and the face
+  beyond are taken whether or not the intersection gives their p-curves
+  (the arcs' p-curves are projected below anyway). A cone and a plane
+  intersect in an analytic conic, a hyperbola, which comes without them
+  and unbounded: such lines are not closed and have no ends to compare.
+  Before, the cut was not found and the gap was left to the walking,
+  whose chamfer rolling on an edge is not implemented.
+- ChFi3d_FillKPartGaps: on a closed spine whose gaps were filled, a piece
+  whose lines run across their period's end (from SplitKPart: the end's
+  parameter before the start's) gets its end a period later. The data
+  structure takes the parameters as they come, and the piece's face was
+  built on the other part of its circles (inside out).
+- runsAlongEdgePart (0054): a closed edge counts too. The contact of a
+  closed spine along a closed edge comes in pieces, each along a part of
+  the edge, so the face whose far edge it is (the ring's side) goes.
+diff --git a/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_0.cxx b/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_0.cxx
+index 890ed2a..11ba5b6 100644
+--- a/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_0.cxx
++++ b/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_0.cxx
+@@ -2922,9 +2922,11 @@ static bool runsAlongEdgePart(const occ::handle<Geom_Curve>& C,
+                               bool&                          Inner2,
+                               double&                        W2)
+ {
++  // (A closed edge too: the contact of a closed spine along it comes in
++  // pieces, each along a part of it.)
+   TopoDS_Vertex V1, V2;
+   TopExp::Vertices(E, V1, V2);
+-  if (V1.IsNull() || V2.IsNull() || V1.IsSame(V2))
++  if (V1.IsNull() || V2.IsNull())
+   {
+     return false;
+   }
+diff --git a/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_2.cxx b/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_2.cxx
+index 08e4fbb..ea1b015 100644
+--- a/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_2.cxx
++++ b/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_2.cxx
+@@ -4018,11 +4018,10 @@ static bool ChFi3d_KPartCutCurve(const occ::handle<Geom_Surface>& S,
+   const int    across = 3 - Coord;
+   for (int i = 1; i <= anInter.NbLines(); i++)
+   {
+-    if (!anInter.HasLineOnS1(i) || !anInter.HasLineOnS2(i))
+-    {
+-      continue;
+-    }
++    // (The arcs' p-curves are made below; an analytic line, e.g. a conic
++    // of a cone and a plane, comes without them.)
+     const occ::handle<Geom_Curve> C = anInter.Line(i);
++    const bool bounded = !Precision::IsInfinite(C->FirstParameter()) && !Precision::IsInfinite(C->LastParameter());
+     // The parameter of a point on the line: its projection, or an end of
+     // the line (the intersection may be split into lines meeting there).
+     const auto paramOn = [&](const gp_Pnt& P, double& t) {
+@@ -4033,7 +4032,7 @@ static bool ChFi3d_KPartCutCurve(const occ::handle<Geom_Surface>& S,
+         d = aPr.LowerDistance();
+         t = aPr.LowerDistanceParameter();
+       }
+-      if (!C->IsPeriodic())
++      if (!C->IsPeriodic() && bounded)
+       {
+         for (const double te : {C->FirstParameter(), C->LastParameter()})
+         {
+@@ -4079,7 +4078,7 @@ static bool ChFi3d_KPartCutCurve(const occ::handle<Geom_Surface>& S,
+       }
+       anArcs.Append(aRound);
+     }
+-    else if (C->Value(C->FirstParameter()).Distance(C->Value(C->LastParameter())) <= tol3d)
++    else if (bounded && C->Value(C->FirstParameter()).Distance(C->Value(C->LastParameter())) <= tol3d)
+     {
+       // From the later point to the line's end, on from its start to the
+       // earlier point; reversed where it should run from P2 to P1.
+@@ -5325,6 +5324,7 @@ static void ChFi3d_FillKPartGaps(TopOpeBRepDS_DataStructure&
+                                  const ChFiDS_Map&                                   EFMap,
+                                  const double                                        tol3d)
+ {
++  bool aFilled = false;
+   if (Spine->IsPeriodic())
+   {
+     // The pieces of a closed spine come in no order (SplitKPart cuts the
+@@ -5414,6 +5414,7 @@ static void ChFi3d_FillKPartGaps(TopOpeBRepDS_DataStructure&
+         {
+           LSD.InsertAfter(j, aPieces.Value(i));
+         }
++        aFilled = true;
+         j += aPieces.Length();
+         break;
+       }
+@@ -5432,6 +5433,7 @@ static void ChFi3d_FillKPartGaps(TopOpeBRepDS_DataStructure&
+                                                                   tol3d);
+       if (!G.IsNull())
+       {
++        aFilled = true;
+         LSD.InsertAfter(j, G);
+         j++;
+         break;
+@@ -5454,12 +5456,33 @@ static void ChFi3d_FillKPartGaps(TopOpeBRepDS_DataStructure&
+       {
+         continue;
+       }
++      aFilled = true;
+       LSD.InsertAfter(j, G2);
+       LSD.InsertAfter(j, G1);
+       j += 2;
+       break;
+     }
+   }
++  if (Spine->IsPeriodic() && aFilled)
++  {
++    // A piece of a closed spine whose lines run across their period's end
++    // holds the end before the start (SplitKPart); the curves in the data
++    // structure need it after the start (with the gaps filled, the piece is
++    // no longer joined to a walked one that takes its ends as they come).
++    for (int j = 1; j <= LSD.Length(); j++)
++    {
++      for (int s = 1; s <= 2; s++)
++      {
++        ChFiDS_FaceInterference&       FI = LSD.ChangeValue(j)->ChangeInterference(s);
++        const occ::handle<Geom_Curve>& Cl =
++          FI.LineIndex() > 0 ? DStr.Curve(FI.LineIndex()).Curve() : occ::handle<Geom_Curve>();
++        if (!Cl.IsNull() && Cl->IsPeriodic() && FI.LastParameter() < FI.FirstParameter())
++        {
++          FI.SetLastParameter(FI.LastParameter() + Cl->Period());
++        }
++      }
++    }
++  }
+ }
+ 
+ //=======================================================================

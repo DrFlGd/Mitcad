@@ -318,21 +318,37 @@ QString repositoryNameOf(const QString& url) {
   return repositoryPath(path).section(QLatin1Char('/'), -1);
 }
 
-QString ownerAndRepositoryOf(const QString& url) {
+QString repositoryAddressOf(const QString& url) {
   const CloudAddress address = parseCloudAddress(url);
-  const bool known = address.service == CloudService::GitHub || address.service == CloudService::GitLab ||
-                     address.service == CloudService::Forgejo;
-  if (known && !address.owner.isEmpty() && !address.repository.isEmpty()) {
-    return QStringLiteral("%1/%2").arg(address.owner, address.repository);
-  }
-  if (const std::optional<HostPath> parsed = hostPath(url)) {
-    // Another server: the last two parts of the path.
-    const QStringList parts = repositoryPath(parsed->path).split(QLatin1Char('/'), Qt::SkipEmptyParts);
-    if (parts.size() >= 2) {
-      return QStringLiteral("%1/%2").arg(parts.at(parts.size() - 2), parts.last());
+  switch (address.service) {
+  case CloudService::GitHub:
+  case CloudService::GitLab:
+  case CloudService::Forgejo: {
+    const QString host = cloudServiceHost(address.service, address.server);
+    if (!host.isEmpty() && !address.owner.isEmpty() && !address.repository.isEmpty()) {
+      return QStringLiteral("%1/%2/%3").arg(host, address.owner, address.repository);
     }
+    break;
   }
-  return repositoryNameOf(url);
+  case CloudService::SharedFolder:
+    // The folder's path as this computer writes it.
+    return QDir::toNativeSeparators(QDir::cleanPath(QDir::fromNativeSeparators(address.folder)));
+  case CloudService::Other:
+    break;
+  }
+  // Another server: its host and the repository's path, without the user,
+  // the port and ".git".
+  if (const std::optional<HostPath> parsed = hostPath(url)) {
+    const QString path = repositoryPath(parsed->path);
+    return path.isEmpty() ? parsed->host : QStringLiteral("%1/%2").arg(parsed->host, path);
+  }
+  // Anything else: as given, without its scheme.
+  QString text = url.trimmed();
+  const qsizetype scheme = text.indexOf(QStringLiteral("://"));
+  if (scheme >= 0) {
+    text = text.mid(scheme + 3);
+  }
+  return repositoryPath(text);
 }
 
 QString addressHost(const QString& url) {

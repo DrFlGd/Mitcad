@@ -1097,6 +1097,15 @@ fn a_body_s_features_are_replayed_in_dependency_order() {
     assert!(gear.notes[0].contains("not translated"), "{gear:?}");
     let base = def_of(&doc, &gear.features[0]);
     assert_eq!(base["replaces"], json!(["F2.b0"]));
+    // The timeline says what the report says (mitcad#170).
+    let note = doc
+        .import_note(gear.features[0].parse().unwrap())
+        .unwrap_or_default();
+    assert_eq!(
+        note,
+        format!("Stands in for {} ({})", gear.label, gear.notes.join("; ")),
+        "{gear:?}"
+    );
     let pad2 = feature(&report, "Pad2");
     let def = def_of(&doc, &pad2.features[0]);
     assert_eq!(def["operation"], "join");
@@ -2097,4 +2106,105 @@ fn parameters_changed_after_the_import() {
         "{:?}",
         report.warnings
     );
+}
+
+#[test]
+fn a_suppressed_feature_becomes_a_placeholder() {
+    // mitcad#170: the suppressed feature is not replayed; a suppressed
+    // placeholder named after it stands at its place with the report's
+    // note, and the pad after it continues on the pad before it.
+    let xml = document(&[
+        (
+            "PartDesign::Body",
+            "Body",
+            format!(
+                "{}{}{}{}",
+                label("Plate"),
+                shape("Body.brp"),
+                links(
+                    "Group",
+                    "App::PropertyLinkList",
+                    &["Sketch", "Pad", "Gear", "Sketch2", "Pad2"]
+                ),
+                link("Tip", "Pad2")
+            ),
+        ),
+        (
+            "Sketcher::SketchObject",
+            "Sketch",
+            rectangle_sketch(0.0, 0.0, 40.0, 30.0),
+        ),
+        (
+            "PartDesign::Pad",
+            "Pad",
+            format!(
+                "{}{}{}{}",
+                link_sub("Profile", "Sketch", &[]),
+                float("Length", 10.0),
+                enumeration("Type", 0),
+                shape("Pad.brp")
+            ),
+        ),
+        (
+            "PartDesign::FeaturePython",
+            "Gear",
+            format!(
+                "{}{}{}",
+                link("BaseFeature", "Pad"),
+                flag("Suppressed", true),
+                shape("Gear.brp")
+            ),
+        ),
+        (
+            "Sketcher::SketchObject",
+            "Sketch2",
+            rectangle_sketch(5.0, 5.0, 10.0, 10.0),
+        ),
+        (
+            "PartDesign::Pad",
+            "Pad2",
+            format!(
+                "{}{}{}{}",
+                link_sub("Profile", "Sketch2", &[]),
+                link("BaseFeature", "Gear"),
+                float("Length", 5.0),
+                shape("Pad2.brp")
+            ),
+        ),
+    ]);
+    let file = fcstd(
+        &xml,
+        None,
+        &[
+            ("Body.brp", b"6 body"),
+            ("Pad.brp", b"6 pad"),
+            ("Gear.brp", b"6 pad"),
+            ("Pad2.brp", b"10 pad2"),
+        ],
+    );
+    let (doc, report) = import_with(file, Vec::new(), MockKernel::default(), false);
+    let gear = feature(&report, "Gear");
+    assert_eq!(gear.outcome, ObjectOutcome::Skipped, "{gear:?}");
+    assert!(
+        gear.notes[0].starts_with("suppressed in FreeCAD"),
+        "{gear:?}"
+    );
+    let placeholder = doc
+        .features()
+        .find(|f| f.name == "Gear")
+        .unwrap_or_else(|| panic!("no placeholder: {:?}", doc.features().collect::<Vec<_>>()));
+    assert_eq!(placeholder.def.type_name(), "placeholder");
+    assert!(placeholder.suppressed);
+    assert_eq!(
+        doc.import_note(placeholder.uid),
+        Some(crate::timeline_notes::sentence(&gear.notes[0]).as_str())
+    );
+    // Between the pads.
+    let names: Vec<&str> = doc.features().map(|f| f.name.as_str()).collect();
+    let at = |name: &str| names.iter().position(|n| *n == name).unwrap();
+    let pad = feature(&report, "Pad");
+    let pad2 = feature(&report, "Pad2");
+    let named = |uid: &str| doc.feature(uid.parse().unwrap()).unwrap().name.clone();
+    assert!(at(&named(&pad.features[0])) < at("Gear"), "{names:?}");
+    assert!(at("Gear") < at(&named(&pad2.features[0])), "{names:?}");
 }

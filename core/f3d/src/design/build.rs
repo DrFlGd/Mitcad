@@ -24,6 +24,11 @@ mod placements;
 mod profiles;
 // The items that made the bodies feature inputs name (mitcad#96).
 mod producers;
+// Assembly relationships: constraints and tangent contacts (mitcad#155).
+mod relationships;
+// The parts of a timeline item in other components (mitcad#169).
+mod parts;
+pub use parts::item_parts;
 
 /// Helpers for the decoder's tests.
 #[cfg(test)]
@@ -922,6 +927,29 @@ impl Builder<'_> {
     /// One profile reference per selected profile, with the sketch from
     /// the profile source (the profile itself is not decoded).
     fn profiles(&self, fid: u64) -> Option<Vec<Reference>> {
+        self.sketch_profiles(fid, 0)
+    }
+
+    /// An extrusion's profiles: those of [`Self::profiles`], then the faces
+    /// its profile slot selects (planar faces of bodies, extruded as they
+    /// are, mitcad#169), each of which takes one of the selected profiles'
+    /// entries too.
+    fn extrude_profiles(&self, fid: u64) -> Option<Vec<Reference>> {
+        let faces: Vec<Reference> = decode::extent_slots(self.seg, fid)
+            .into_iter()
+            .filter(|s| s.role == decode::PROFILE_ROLE)
+            .flat_map(|s| s.inputs)
+            .filter(|&i| self.seg.guid_of(i) == Some(FACE_REF))
+            .filter_map(|i| face_input(self.seg, i))
+            .collect();
+        let mut out = self.sketch_profiles(fid, faces.len()).unwrap_or_default();
+        out.extend(faces);
+        (!out.is_empty()).then_some(out)
+    }
+
+    /// The selected profiles of a sketch (see [`Self::profiles`]), less
+    /// `faces` entries.
+    fn sketch_profiles(&self, fid: u64, faces: usize) -> Option<Vec<Reference>> {
         let seg = self.seg;
         let mut sketch_id = None;
         let sources = inputs_of(seg, fid, PROFILE_SOURCE)
@@ -943,6 +971,7 @@ impl Builder<'_> {
             })
             .sum();
         let sketch_id = sketch_id?;
+        let count = count.saturating_sub(faces);
         if count == 0 {
             return None;
         }
@@ -1261,7 +1290,7 @@ impl Builder<'_> {
                 if let Some(p) = pr("ProfileOffset") {
                     x.start_extent = Some(def("OffsetStartDefinition", offset, p));
                 }
-                x.profile = self.profiles(fid);
+                x.profile = self.extrude_profiles(fid);
                 // The selected profiles' loops (mitcad#96).
                 if let Some(loops) = self.profile_loops(fid) {
                     x.other.insert("_f3d_profile_loops".to_owned(), loops);
@@ -1802,6 +1831,9 @@ impl Builder<'_> {
             // The occurrence an insert, a fastener or a paste made
             // (mitcad#75).
             _ if seg.is_kind_of(fid, OCCURRENCE_ITEM) => self.occurrence_item(it),
+            // The constraints of assembly relationships (mitcad#155).
+            Some("GeometricRelationshipFeature") => self.geometric_relationship(it),
+            _ if it.class == TANGENT_RELATIONSHIP => self.tangent_relationship(it),
             _ => Detail::empty(),
         }
     }
@@ -1925,8 +1957,20 @@ pub fn build(seg: &Segment, dec: &Decoded, file: &str, segment_dir: &str) -> Dum
         .filter_map(|c| Some((c.id, c.name.clone().filter(|n| !n.is_empty())?)))
         .collect();
     let owners = item_owners(seg);
+    let item_parts = parts::item_parts(seg);
     let mut tl_items = Vec::new();
+    // The parts of items in other components follow their items, numbered
+    // after the timeline's items (mitcad#169).
+    let mut next_index = items.len() as i64;
+    let mut entries: Vec<(&TimelineEntry, Option<TimelineEntry>)> = Vec::new();
     for it in items {
+        entries.push((it, None));
+        for part in parts::part_entries(seg, it, &item_parts, &b.pos_of, &owners) {
+            entries.push((it, Some(part)));
+        }
+    }
+    for (master, part) in &entries {
+        let it = part.as_ref().unwrap_or(master);
         let owner = owners.get(&it.id).copied();
         let mut f3d = ItemF3d {
             class: Some(it.class.clone()),
@@ -1946,6 +1990,13 @@ pub fn build(seg: &Segment, dec: &Decoded, file: &str, segment_dir: &str) -> Dum
         if it.class == COMPONENT_FROM_BODIES {
             f3d.made_result_no = made_result(seg, it.id);
         }
+        let index = if part.is_some() {
+            f3d.part_of = Some(master.pos as i64);
+            next_index += 1;
+            next_index - 1
+        } else {
+            it.pos as i64
+        };
         if let Some(ex) = &it.extrude {
             f3d.extrude = Some(ExtrudeF3d {
                 operation_code: Some(ex.operation_code),
@@ -2001,7 +2052,7 @@ pub fn build(seg: &Segment, dec: &Decoded, file: &str, segment_dir: &str) -> Dum
             n => n.clone(),
         };
         tl_items.push(TimelineItem {
-            index: Some(it.pos as i64),
+            index: Some(index),
             name: Some(name),
             object_type: object_type.map(|t| Some(t.to_string())),
             component: owner

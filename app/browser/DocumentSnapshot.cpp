@@ -107,12 +107,14 @@ DocumentSnapshot DocumentSnapshot::read(const CommandContext& model) {
     feature.type = text(f, "type");
     feature.status = text(f, "status");
     feature.error = text(f, "error");
+    feature.importNote = text(f, "import");
     feature.component = f.value(QStringLiteral("component")).toString(kRoot);
     feature.suppressed = f.value(QStringLiteral("suppressed")).toBool();
     feature.dof = f.value(QStringLiteral("dof")).toInt(-1);
     feature.index = i;
     feature.visible = f.value(QStringLiteral("visible")).toBool(true);
     feature.visibleSet = f.value(QStringLiteral("visible_set")).toBool();
+    feature.sketches = f.value(QStringLiteral("sketches")).toVariant().toStringList();
     // A joint origin's light bulb is construction geometry's (mitcad#55).
     if (feature.isSketch() || feature.isConstruction() || feature.type == QStringLiteral("joint_origin")) {
       snapshot.featureShown.insert(feature.uid, feature.visible);
@@ -199,6 +201,17 @@ QVector<const DocumentSnapshot::Feature*> DocumentSnapshot::failures() const {
     }
   }
   return failed;
+}
+
+QVector<const DocumentSnapshot::Feature*> DocumentSnapshot::warnings() const {
+  QVector<const Feature*> warned;
+  for (const Feature& feature : features) {
+    if (feature.status != QStringLiteral("error") &&
+        (feature.status == QStringLiteral("warning") || !feature.importNote.isEmpty())) {
+      warned.append(&feature);
+    }
+  }
+  return warned;
 }
 
 QJsonObject DocumentSnapshot::shownAnalysis() const {
@@ -309,6 +322,8 @@ QString featureIcon(const QString& type) {
       {QStringLiteral("rigid_group"), QStringLiteral("rigid-group")},
       // Assembly constraints (mitcad#148).
       {QStringLiteral("constraint_set"), QStringLiteral("constraint")},
+      // Placeholders of imported items that did not come in (mitcad#170).
+      {QStringLiteral("placeholder"), QStringLiteral("feature")},
   };
   return icons.value(type, QStringLiteral("feature"));
 }

@@ -69,11 +69,12 @@ QString repositoryNameFor(const QString& folderName);
 // ("bracket" of git@github.com:me/bracket.git), for a folder's name.
 QString repositoryNameOf(const QString& url);
 
-// A Cloud project's default name in the Projects panel (mitcad#152): the
-// owner and the repository ("acme/gripper" of
-// git@github.com:acme/gripper.git, "group/sub/part" on GitLab), the last
-// two parts of another server's path, a shared folder's repository name.
-QString ownerAndRepositoryOf(const QString& url);
+// A Cloud project's default name in the Projects panel (mitcad#152,
+// #173): the repository's address without the scheme
+// ("github.com/acme/gripper" of git@github.com:acme/gripper.git,
+// "gitlab.com/group/sub/part" on GitLab, another server's host and path
+// without ".git"), a shared folder's path.
+QString repositoryAddressOf(const QString& url);
 
 // The host of an SSH or web address (git@host:owner/repo.git,
 // ssh://git@host/..., https://host/...); empty for a folder.

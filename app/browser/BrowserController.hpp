@@ -7,6 +7,7 @@
 #include <QString>
 #include <QStringList>
 
+#include "../framework/HybridAssembly.hpp"
 #include "BrowserPanel.hpp"
 #include "DocumentSnapshot.hpp"
 
@@ -35,6 +36,10 @@ public:
   bool markerDragActive() const { return m_markerDepth >= 0; }
   // The status bar's summary of failed features; a click goes to them.
   QToolButton* failures() const { return m_failures; }
+  // Beside it, yellow: features with warnings, the import's fallbacks,
+  // partial items and placeholders among them (mitcad#170); a click goes
+  // to them.
+  QToolButton* warnings() const { return m_warnings; }
 
   // After the model or the origin's visibility changed.
   void refresh(const DocumentSnapshot& snapshot);
@@ -60,10 +65,27 @@ private:
   void follow(Sender* sender, void (Sender::*signal)(Args...), void (BrowserController::*slot)(Args...),
               bool dropWhenBusy = false);
   void pickItems(const Selection& items);
+  // Rows picked in the browser: the items of the rows, and the features of
+  // the feature rows under sketches (mitcad#177). Their features are
+  // selected in the timeline too.
+  void pickRows(const Selection& items, const QStringList& features);
+  // Selects the items; the browser shows the rows of these features too.
+  void pick(const Selection& items, const QStringList& features);
+  // What selecting features selects: their sketches, datums or bodies, or
+  // the features themselves (a command that takes features; one that
+  // made no body).
+  Selection featureItems(const QStringList& uids) const;
   void editFeature(const QString& uid);
   void markerDragged(int position);
   void browserMenu(const BrowserNode& node, const QPoint& at);
   void timelineMenu(const QString& uid, const QPoint& at);
+  // A feature's menu, the same in the timeline and on its rows under
+  // sketches in the browser (mitcad#177): `row` is the browser's row, or
+  // none in the timeline.
+  void featureMenu(const QString& uid, const QPoint& at, const BrowserNode& row);
+  void findInTimeline(const QString& uid);
+  // A slow second click on a browser row (mitcad#177).
+  void renameClicked(const BrowserNode& node);
   // Timeline groups (P9): a group's menu, and grouping features.
   void groupMenu(const QString& name, const QPoint& at);
   void groupFeatures(const QStringList& uids);
@@ -79,6 +101,12 @@ private:
   void setMarker(int position);
   void markerDragFinished(int position);
   void newComponent(const BrowserNode& node);
+  // Hybrid assemblies (mitcad#171): the question before a component is made
+  // in a root with modelled bodies, and Move to Component.
+  HybridModel hybridModel();
+  void componentsFromBodies(const BrowserNode& node);
+  void moveToComponent(const QJsonObject& selection);
+  void moveHistory(const QString& uid);
   void paste(bool asNew);
   void changeUnits();
   void reveal(const QString& uid);
@@ -92,6 +120,7 @@ private:
   BrowserPanel* m_browser = nullptr;
   TimelineWidget* m_timeline = nullptr;
   QToolButton* m_failures = nullptr;
+  QToolButton* m_warnings = nullptr;
   QPointer<ParametersDialog> m_parameters;
   QPointer<AppearanceDialog> m_appearances;
   DocumentSnapshot m_snapshot;
@@ -101,8 +130,15 @@ private:
   QString m_clipboardName;
   int m_markerDepth = -1; // undo depth when a marker drag began
   int m_markerStart = 0;
+  // While a pick of features runs: the features whose browser rows show it.
+  bool m_picking = false;
+  QStringList m_pickedFeatures;
+  // The selection shown in the browser, and the features whose rows show it.
+  Selection m_shownItems;
+  QStringList m_shownFeatures;
   QString m_loggedFailures;
   QString m_loggedWarnings;
+  QString m_loggedBadge; // the warnings badge (mitcad#170)
   QString m_loggedDof;
   QString m_loggedJoints;
 };

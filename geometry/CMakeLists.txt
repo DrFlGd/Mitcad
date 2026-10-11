@@ -198,6 +198,12 @@ if(BUILD_TESTING)
   # A chamfer whose pieces meet at a vertex of the edge they reach, with the
   # port's patches 0090 and 0091 (mitcad#160).
   target_sources(test_geometry PRIVATE tests/test_chamfer_kernel.cpp)
+  # Shells whose wall makes a narrow face vanish, with the port's patch 0100
+  # (mitcad#172).
+  target_sources(test_geometry PRIVATE tests/test_shell_vanishing.cpp)
+  # Walked roundings that are true rolling balls, with the port's patches
+  # 0075-0077 (mitcad#121).
+  target_sources(test_geometry PRIVATE tests/test_fillet_rolling_ball.cpp)
   target_link_libraries(test_geometry PRIVATE mitcad_geometry_analysis)
   target_link_libraries(test_geometry PRIVATE mitcad_geometry mitcad_warnings)
   add_test(NAME geometry COMMAND test_geometry)

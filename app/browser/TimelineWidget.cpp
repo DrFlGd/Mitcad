@@ -464,12 +464,14 @@ protected:
       // A folded group shows the worst of its features.
       bool failed = false;
       bool warned = false;
+      bool noted = false; // an import note on a feature that is not built (mitcad#170)
       bool off = true;
       const int last = head ? m_groups[item.group].last : i;
       for (int k = i; k <= last; ++k) {
         const DocumentSnapshot::Feature& member = m_items[k].feature;
         failed = failed || member.status == QStringLiteral("error");
         warned = warned || member.status == QStringLiteral("warning");
+        noted = noted || !member.importNote.isEmpty();
         off = off && (member.suppressed || k >= m_marker);
       }
       const bool selected = run.contains(feature.uid);
@@ -480,6 +482,10 @@ protected:
         border = colors.errorBorder;
       } else if (warned) {
         fill = colors.warningFill;
+        border = colors.warningBorder;
+      } else if (noted) {
+        // A placeholder of an item the import skipped: suppressed, with a
+        // yellow outline.
         border = colors.warningBorder;
       }
       if (selected) {
@@ -750,9 +756,14 @@ protected:
       } else if (feature.status == QStringLiteral("error") || feature.status == QStringLiteral("warning")) {
         tip += QStringLiteral("<br>%1").arg(feature.error.toHtmlEscaped());
       } else if (feature.suppressed) {
-        tip += tr("<br>Suppressed");
+        // A placeholder says why the import skipped its item (mitcad#170).
+        tip += feature.error.isEmpty() ? tr("<br>Suppressed")
+                                       : tr("<br>Suppressed: %1").arg(feature.error.toHtmlEscaped());
       } else if (i >= m_marker) {
         tip += tr("<br>Rolled back");
+        if (!feature.error.isEmpty()) {
+          tip += QStringLiteral("<br>%1").arg(feature.error.toHtmlEscaped());
+        }
       }
       QToolTip::showText(help->globalPos(), tip, this, cell(i));
       if (tip != m_loggedTip) {
@@ -1137,7 +1148,22 @@ void TimelineWidget::groupRenamed(const QString& name, const QString& newName) {
 
 QStringList TimelineWidget::selectedFeatures() const { return m_strip->selectedRun(); }
 
-void TimelineWidget::setSelectedFeatures(const QStringList& uids) { m_strip->selectFeatures(uids); }
+void TimelineWidget::setSelectedFeatures(const QStringList& uids) {
+  const QStringList before = m_strip->selectedRun();
+  m_strip->selectFeatures(uids);
+  // Logged when it changed (the browser's rows select here, mitcad#177).
+  const QStringList after = m_strip->selectedRun();
+  if (after != before) {
+    qDebug().noquote() << QStringLiteral("Timeline selected: %1")
+                              .arg(after.isEmpty() ? QStringLiteral("nothing") : after.join(QStringLiteral(", ")));
+    // The first in sight, unless a folded group or the filter hides it.
+    const int first = after.isEmpty() ? -1 : m_strip->indexOf(after.first());
+    if (first >= 0 && !m_strip->hidden(first)) {
+      const QRect cell = m_strip->cell(first);
+      m_scroll->ensureVisible(cell.center().x(), cell.center().y(), kItem * 2, 0);
+    }
+  }
+}
 
 void TimelineWidget::selectFeature(const QString& uid) {
   // A feature the filter hides shows everything again (mitcad#98).

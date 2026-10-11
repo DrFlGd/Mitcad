@@ -56,12 +56,28 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         pass
 
 
+class Server(http.server.ThreadingHTTPServer):
+    def shutdown_request(self, request):
+        # A lingering close: read what the client still sends until it
+        # closes the connection (it does once it has the whole response).
+        # Closing a socket with unread data resets the connection, and on
+        # Windows the client then loses the end of a response still on its
+        # way: a 111 MB download stopped 5 kB short (mitcad#118).
+        try:
+            request.settimeout(10)
+            while request.recv(65536):
+                pass
+        except OSError:
+            pass
+        super().shutdown_request(request)
+
+
 def main():
     folder, cert, key, log, port_file = sys.argv[1:6]
     Handler.log_path = log
     open(log, "a", encoding="utf-8").close()
     handler = functools.partial(Handler, directory=folder)
-    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), handler)
+    server = Server(("127.0.0.1", 0), handler)
     context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
     context.load_cert_chain(cert, key)
     server.socket = context.wrap_socket(server.socket, server_side=True)

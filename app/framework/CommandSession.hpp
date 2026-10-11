@@ -242,6 +242,13 @@ private:
   // OK of an inspection that keeps an analysis in the document: adds it,
   // or changes the one edited; false when the model refuses it.
   bool keepAnalysis();
+  // OK of a command that makes a component in a root with modelled bodies
+  // (mitcad#171): asks whether the root's features move into a component
+  // first. False when the user cancels; `done` when the move did the
+  // command's work (Create Components from Bodies). A new feature whose
+  // references moved goes into their component (m_addTo).
+  bool askBeforeComponent(const Built& built, bool& done);
+  QJsonObject addFeatureCommand(const Built& built) const;
   QJsonObject bodyVolumes() const;
   void logVolumes(const QJsonObject& before) const;
   // Sketch commands: applied for the preview, taken back on a change.
@@ -252,6 +259,7 @@ private:
   const CommandDef& m_def;
   CommandHost& m_host;
   QString m_editUid;
+  QString m_addTo; // the component a new feature goes into (mitcad#171)
   bool m_deferStartRollback = false;
   QJsonObject m_startRollback;
   bool m_markerMoved = false; // the edit rolled the marker back

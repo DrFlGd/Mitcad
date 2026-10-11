@@ -352,6 +352,67 @@ way along it.
   of it kept for the wall, whose other pieces are gone too. Before, the
   walk got stuck (Path failed), or the edge's parts stayed with the face at
   the end.
+- `0071-chfi3d-kpart-cut-by-several-faces-beyond.patch`: an analytic blend
+  whose contact passes over a hole or cut-out whose outline is made of
+  several faces (a slot through a wall rounded at its top edge: its
+  straight sides, then its rounded end) is cut by those faces in turn,
+  one piece per face; a face that cuts the blend along a section (a plane
+  square to a straight spine) gives no piece, and the pieces beside it
+  share only part of that section, the rest being that face's edge with
+  the blend (`ChFi3d_FilDS`). A gap across the start of a closed spine is
+  filled too, and a cut whose end is the start of a closed intersection
+  line is found the other way round. Before, such gaps were left to the
+  walking, which rolled on the hole's edge and failed.
+- `0072-chfi3d-kpart-cuts-on-closed-spines.patch`: the cuts of 0055 and
+  0071 on closed spines and conic cuts (a ring standing near a block's side
+  chamfered at its foot as wide as it is high, the side cutting the
+  chamfer's cone; a hole's rim near the side bevelled): intersection lines
+  without p-curves (a cone and a plane meet in a hyperbola) are used, a
+  piece whose lines run across their period's end gets its end a period
+  later once the gaps are filled, and a contact along a part of a closed
+  edge counts as such (0054), so the face whose far edge it is goes.
+  Before, the cut was not found and the chamfer was left to a walking
+  that is not implemented for chamfers.
+- `0073-chfi3d-kpart-pieces-over-a-hole-are-one-face.patch`: the pieces of
+  an edge's analytic blend over a hole or cut-out of its face (cut there by
+  the faces beyond, 0055, 0057, 0071) are one face with the hole cut out:
+  where a run of pieces returns to the faces it left, all on one surface,
+  the pieces share one surface in the data structure and get no sections
+  between them. Pieces split where a contact passes from one face to
+  another keep their own faces. Before, the blend was a face per piece.
+- `0074-chfi3d-walked-blend-cut-by-the-face-at-the-end.patch`: 0059 for a
+  walked blend: where the walk stops short of the spine's end vertex
+  because the contact on one face leaves it across an edge into the face
+  at that vertex, the blend is walked on with that face's surface
+  unbounded until the other contact reaches its face's edge at the vertex,
+  and that piece is cut by the face at the end (`ChFi3d_KPartCutPiece`);
+  the stripe ends in a point there, with no corner at the vertex. The
+  case: the rounding of an inside corner between a wall and another wall
+  whose top edge is rounded, the first wall's contact leaving it across
+  its top edge before the corner's edge reaches the top. Before, the
+  corner at the vertex gave an invalid result or failed.
+- `0075-blendfunc-constrad-rolling-ball-section.patch`: the walked
+  constant-radius blend between two surfaces (`BlendFunc_ConstRad`, and
+  `BlendFunc_ConstRadInv` for its ends on restrictions) is a true rolling
+  ball: the ball's centre lies at the radius along both surfaces' unit
+  normals, and each section is its arc in the plane through the centre
+  that holds both contact normals. The guide's parameter only picks the
+  ball (the contact points' mid-point in the guide's normal plane). Before,
+  both contact points lay in the guide's normal plane with the normals
+  projected into it, which is the rolling ball only where the normals are
+  square to the edge (0.014 off between a plate and a rod tilted by 40
+  degrees, radius 2). Analytic blends were rolling balls already.
+- `0076-chfi3d-extension-rolls-on-the-faces-own-surface.patch`: past the
+  end of a spine, where a contact leaves its face with no face beyond, the
+  blend rolls on the face's own surface, unbounded, when it is a cylinder,
+  cone, sphere or torus, instead of on its tangent plane at the edge
+  (`ChFi3d_BuildPlane`), so that it meets the piece before it.
+- `0077-chfi3d-walk-past-the-spine-ends-before-a-singular-section.patch`:
+  the walk into the straight extensions of the guide past the spine's ends
+  stops where a rolling ball's contacts run twice as fast along the guide
+  as at the spine's end, before the guide's planes come tangent to the
+  centre's curve and the sections get singular (where the approximation
+  failed).
 
 The patches 0090 and later fix memory errors (mitcad#160).
 
@@ -374,10 +435,37 @@ The patches 0090 and later fix memory errors (mitcad#160).
   its four counts already did: an interference with a wrong index can no
   longer write outside it.
 
+The patches 0100 and later change OCCT's offset (`TKOffset`, mitcad#172);
+`geometry/tests/test_shell_vanishing.cpp` rebuilds the cases with exact
+volumes, partly with OCCT alone.
+
+- `0100-brepoffset-faces-vanishing-within-the-offset.patch`: a face whose
+  offset vanishes within the offset distance (offset inside: a chamfer
+  strip narrower than what the offsets of the faces beside it take from
+  it, a convex rounding of a radius smaller than the wall; outside, the
+  same concave) is dropped, and the offsets of the faces on both sides of
+  it are intersected with each other instead, as if they were neighbours
+  (`FindVanishingFaces`, `BRepOffset_Inter3d::ConnexIntAcrossVanished` and
+  `ConnexIntByArcAcrossVanished`); the walks round the faces' wires skip
+  its edges (`BRepOffset_Inter2d::ConnexIntByInt`). It finds faces of four
+  edges whose offset turns inside out between two opposite edges all
+  along them, also several in a row (a strip and the cones at its
+  corners); a face that vanishes only in parts stays, and with the arc
+  join one with a tube along an edge. Before, the shell failed (the thick
+  solid had fewer faces than the body), a closed offset had no solid, or
+  the solid was wrong: the inverted rounding kept, or with the arc join
+  the body itself, unshelled. A thick solid to which the offset
+  contributes no face is no longer done. The private methods
+  `BuildOffsetByArc`, `BuildOffsetByInter`, `Intersection3D`,
+  `IntersectEdges` and `ToContext` of `BRepOffset_MakeOffset` and three
+  methods of `BRepOffset_Inter2d` and `BRepOffset_Inter3d` get parameters;
+  no class gets members.
+
 Each patch has a report for OCCT, with a reproduction that uses OCCT alone
 and measurements: mitcad#84 (0006), mitcad#90 (0007), mitcad#91 (0008) and
 mitcad#92 (0009); for 0010 to 0019 and 0050 and later, mitcad#121 and the tests in
-`geometry/tests/test_fillet_overflow.cpp`, which use OCCT's fillet alone
+`geometry/tests/test_fillet_overflow.cpp` (for 0075 to 0077 also
+`geometry/tests/test_fillet_rolling_ball.cpp`), which use OCCT's fillet alone
 where they can; for 0020 to 0023, mitcad#122 and
 `geometry/tests/test_fillet_kernel.cpp`; for 0024 to 0026, mitcad#133
 and `geometry/tests/test_fillet_ends.cpp`; for 0030 to 0032, mitcad#132

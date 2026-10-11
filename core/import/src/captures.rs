@@ -64,9 +64,32 @@ pub(crate) struct Captures {
     steps: HashMap<OccurrenceUid, Vec<(Option<i64>, Transform)>>,
     /// The same in the occurrence's parent, for the items with an index.
     local_steps: HashMap<OccurrenceUid, Vec<(i64, Transform)>>,
+    /// The parts of items in other components (mitcad#169), by index:
+    /// the index of their item, whose point of the timeline they are at
+    /// (their own indices come after the timeline's items).
+    parts: HashMap<i64, i64>,
 }
 
 impl Captures {
+    /// The point of the timeline of the item at `index`: its own index,
+    /// or for a part of an item in another component that item's.
+    pub fn timeline_at(&self, index: i64) -> i64 {
+        self.parts.get(&index).copied().unwrap_or(index)
+    }
+
+    /// The indices of the parts of the item at `index` in other
+    /// components, in order.
+    pub fn parts_of(&self, index: i64) -> Vec<i64> {
+        let mut parts: Vec<i64> = self
+            .parts
+            .iter()
+            .filter(|&(_, &of)| of == index)
+            .map(|(&part, _)| part)
+            .collect();
+        parts.sort_unstable();
+        parts
+    }
+
     /// Where the file places an occurrence at the end of its timeline:
     /// its last captured placement, else its stored transform (`stored`).
     pub fn final_placement(&self, occurrence: OccurrenceUid, stored: Transform) -> Transform {
@@ -82,6 +105,7 @@ impl Captures {
         occurrence: OccurrenceUid,
         index: i64,
     ) -> Option<Transform> {
+        let index = self.timeline_at(index);
         let world = self.world_after(occurrence, index)?;
         let parent = assembly
             .occurrence(occurrence)
@@ -136,6 +160,7 @@ impl Captures {
     /// its stored transform. None for an occurrence that neither places
     /// (it stays at its stored transform).
     pub fn placement_at(&self, occurrence: OccurrenceUid, index: i64) -> Option<Transform> {
+        let index = self.timeline_at(index);
         if let Some(steps) = self.local_steps.get(&occurrence) {
             return steps
                 .iter()
@@ -171,6 +196,9 @@ pub(crate) fn read(dump: &Dump, components: &Components, assembly: &Assembly) ->
     let mut out = Captures::default();
     let mut snapshots = Vec::new();
     for (position, item) in dump.timeline_items().iter().enumerate() {
+        if let (Some(index), Some(of)) = (item.index, item.f3d.as_ref().and_then(|f| f.part_of)) {
+            out.parts.insert(index, of);
+        }
         if item.object_type() != Some("Snapshot") {
             continue;
         }

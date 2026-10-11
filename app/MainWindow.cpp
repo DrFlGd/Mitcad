@@ -301,6 +301,7 @@ MainWindow::MainWindow(bool demo, QWidget* parent, bool nativeUi)
   createPanels();
   if (!m_nativeUi && chromeStyle() == ChromeStyle::Docked) {
     statusBar()->insertPermanentWidget(0, m_controller->failures());
+    statusBar()->insertPermanentWidget(1, m_controller->warnings());
   } else if (auto* titleBar = findChild<TitleBar*>()) {
     // Beside the document's name in the title bar row.
     titleBar->setIndicator(m_indicator);
@@ -480,7 +481,7 @@ void MainWindow::registerCommands() {
   m_viewController->registerCommands();
   // Import, export and the INSERT group (U6).
   registerFileCommands();
-  // New Project, Save Version, Start Version History (P12d).
+  // New Project, Save with Description, Start Version History (P12d).
   registerVersionCommands();
   // Component libraries (mitcad#64, mitcad#63).
   registerLibraryCommands();
@@ -813,6 +814,13 @@ void MainWindow::createFloatingPanels() {
   failures->setAutoRaise(false);
   failures->setIconSize(QSize(12, 12));
   browserCard->addHeaderWidget(failures);
+  // The warnings' badge beside it, yellow (mitcad#170).
+  QToolButton* warnings = m_controller->warnings();
+  setWarningStyleSheet(warnings, QStringLiteral("QToolButton { color: %1; border: 1px solid %1; "
+                                                "border-radius: 9px; padding: 0px 6px; }"));
+  warnings->setAutoRaise(false);
+  warnings->setIconSize(QSize(12, 12));
+  browserCard->addHeaderWidget(warnings);
   browserCard->setContent(m_controller->browser(), QMargins(6, 0, 6, 8));
 
   auto* timelineCard = new GlassCard;
@@ -3390,6 +3398,33 @@ bool MainWindow::saveAs() {
   if (m_nativeUi && m_session) {
     showHint(tr("Finish the current command before saving."));
     return false;
+  }
+  // In a project with versions: the project, folder and name chosen in the
+  // project picker (mitcad#176); Another Folder... and a design in no
+  // project: the file dialog.
+  const std::pair<QString, QString> place = saveAsProjectPlace();
+  if (!place.first.isEmpty()) {
+    ProjectPickerOptions options;
+    options.title = tr("Save in a Project");
+    options.text = tr("The project and the folder for %1, and its name there:").arg(documentName());
+    options.acceptText = tr("&Save");
+    options.otherText = tr("&Another Folder...");
+    options.root = place.first;
+    options.folder = place.second;
+    options.name = m_filePath.isEmpty() ? documentName() : QFileInfo(m_filePath).completeBaseName();
+    // Its own file is no clash, unless the window is read-only (a copy).
+    options.ownFile = windowReadOnly() ? QString() : m_filePath;
+    const std::optional<ProjectPickerResult> picked = pickInProjects(this, options);
+    if (!picked) {
+      return false;
+    }
+    if (!picked->other) {
+      if (!writeFile(picked->path)) {
+        return false;
+      }
+      showDesignInPanel(picked->path);
+      return true;
+    }
   }
   QFileDialog dialog(this, tr("Save As"), fileDialogDirectory(),
                      tr("Mitcad designs (*.%1)").arg(kFileSuffix));

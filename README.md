@@ -114,7 +114,7 @@ configure stops and names the script. The renderer is the
 executable `mitcad-render` next to `mitcad` (only it links the renderer's
 libraries), and View > Rendered appears whenever it is there, with View
 > Render Environment for the design's light (with lights of one's own),
-background, ground and exposure, and File > Render Image (and `mitcad-cli render`) for a final
+background, ground and exposure, and Render Image (and `mitcad-cli render`) for a final
 image file at a chosen size and quality; the AppImage, the Windows
 installer and the macOS bundle include it.
 

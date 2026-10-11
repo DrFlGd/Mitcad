@@ -19,8 +19,18 @@ the system's OpenSSL on Linux).
   `%TEMP%\mitcad-update` and verified; the window closes (asking to save);
   after Mitcad has quit (a `QCoreApplication` post routine)
   `mitcad-updater.exe`, copied next to the download because the installer
-  replaces `bin`, runs it silently (`/S /D=<install dir>`, UAC prompts as
-  usual) and restarts Mitcad.
+  replaces `bin`, runs it silently into the same folder and scope as the
+  running installation and restarts Mitcad. The scope comes from the
+  installation's `installation.ini`
+  ([development.md](development.md#windows-installer)): an installation
+  just for the current user is updated with `/S /CurrentUser /D=<install
+  dir>` as the user, without a UAC prompt; one for all users (Program
+  Files) with `/S /AllUsers /D=<install dir>`, elevated (UAC asks) unless
+  the user has administrator rights already. An installation of an
+  earlier release has no `installation.ini` and was for all users, so it
+  keeps updating there; its own updater runs `/S /D=<install dir>`, which
+  the installer recognises as the folder of the installation for all
+  users, elevating itself.
 - **Install, AppImage in a writable folder:** downloaded next to the
   running file as a hidden `.<name>.update`, verified, made executable,
   and after quit renamed atomically over the old file and started.
@@ -225,9 +235,10 @@ No test contacts any host but the machine itself.
 - `tools/installer-windows-test.ps1 -MesaDir ...`, and the ctest
   `app.installer-windows` (configured with `MITCAD_MESA_DIR`, run once
   `package` has made the build's installer, skipped otherwise): an
-  installed Mitcad refuses a tampered download, then updates itself from
-  a local manifest served over HTTPS, saving the changed design, and
-  starts again as the new version.
+  installation just for the current user refuses a tampered download,
+  then, as one for all users does, updates itself from a local manifest
+  served over HTTPS, saving the changed design, starts again as the new
+  version and stays registered in its scope only.
 - `tools/appimage-test.sh`, and the ctest `app.appimage` (run once
   `appimage` has made the build's AppImage, skipped otherwise): the real
   AppImage, signed as the `linux-x64` download with a key made for the

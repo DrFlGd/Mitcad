@@ -892,12 +892,20 @@ void cloudAddressTests() {
   CHECK(repositoryNameFor(QStringLiteral("  My  Part (v2) ")) == QStringLiteral("my-part-v2"));
   CHECK(repositoryNameOf(QStringLiteral("git@github.com:me/bracket.git")) == QStringLiteral("bracket"));
   CHECK(repositoryNameOf(QStringLiteral("/srv/git/bracket.git/")) == QStringLiteral("bracket"));
-  CHECK(ownerAndRepositoryOf(QStringLiteral("git@github.com:acme/gripper.git")) == QStringLiteral("acme/gripper"));
-  CHECK(ownerAndRepositoryOf(QStringLiteral("https://gitlab.com/group/sub/part")) ==
-        QStringLiteral("group/sub/part"));
-  CHECK(ownerAndRepositoryOf(QStringLiteral("https://code.example.org/git/team/arm.git")) ==
-        QStringLiteral("team/arm"));
-  CHECK(ownerAndRepositoryOf(QStringLiteral("/srv/git/bracket.git")) == QStringLiteral("bracket"));
+  CHECK(repositoryAddressOf(QStringLiteral("git@github.com:acme/gripper.git")) ==
+        QStringLiteral("github.com/acme/gripper"));
+  CHECK(repositoryAddressOf(QStringLiteral("https://gitlab.com/group/sub/part")) ==
+        QStringLiteral("gitlab.com/group/sub/part"));
+  CHECK(repositoryAddressOf(QStringLiteral("https://codeberg.org/acme/arm.git")) ==
+        QStringLiteral("codeberg.org/acme/arm"));
+  CHECK(repositoryAddressOf(QStringLiteral("https://code.example.org/git/team/arm.git")) ==
+        QStringLiteral("code.example.org/git/team/arm"));
+  CHECK(repositoryAddressOf(QStringLiteral("ssh://git@Example.org:2222/team/arm.git/")) ==
+        QStringLiteral("example.org/team/arm"));
+  CHECK(repositoryAddressOf(QStringLiteral("/srv/git/bracket.git/")) ==
+        QDir::toNativeSeparators(QStringLiteral("/srv/git/bracket.git")));
+  CHECK(repositoryAddressOf(QStringLiteral("file:///srv/git/bracket.git")) ==
+        QDir::toNativeSeparators(QStringLiteral("/srv/git/bracket.git")));
   CHECK(addressHost(QStringLiteral("ssh://git@Example.org:2222/x.git")) == QStringLiteral("example.org"));
   CHECK(addressHost(QStringLiteral("C:\\x")).isEmpty());
   CHECK(isSshAddress(QStringLiteral("git@github.com:me/x.git")) && !isSshAddress(QStringLiteral("https://h/x")));

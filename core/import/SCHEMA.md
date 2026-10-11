@@ -139,8 +139,20 @@ convert values as follows:
   `start_point` and `end_point`; a body `_f3d.edge_points` (middle points
   of some of its edges); a cylindrical face `geometry` (`Cylinder`:
   origin, axis as the file's surface has it, radius), `point_on_face` and
-  `normal_at_point`; `found` says where, or why not ([README.md](README.md),
-  *Limits*).
+  `normal_at_point`; a face of another surface type its `geometry`
+  (`Plane`, `Cone`, `Sphere`, `Torus` with their data, `NurbsSurface` for
+  any free-form surface, type only), `point_on_face` and
+  `normal_at_point`, and a free-form one `_f3d.face_points` (more points
+  inside it, spread over it, cm; mitcad#161); `found` says where, or why
+  not ([README.md](README.md), *Limits*). Sweeps' guide surfaces are
+  found too. An input found in another component's history than the
+  item's has `_f3d.component` (that component's `_f3d.object_id`): its
+  geometry is in that component's coordinates (mitcad#161). The faces an extrusion's profile selects are such face
+  references among its `profile`s (mitcad#169). A feature that carries
+  out a timeline item in another component's feature list (a cut through
+  the bodies of two components) comes as an item of its own right after
+  its item, with an `index` after the timeline's items and
+  `_f3d.part_of`, the item's index (mitcad#169).
 - **External dumps** come from other tools that read a design and write
   more than the decoder: feature inputs as B-rep fingerprints, bodies
   after each timeline item (`steps`), final bodies with faces (`final`),
@@ -548,6 +560,8 @@ parentheses.
 | RigidGroup | occurrences, includeChildren. The stream decoder (mitcad#81): the file stores a rigid group as an as-built joint of motion type 11; it gives `occurrences` (`occurrence` references as a joint's; with "include children" the members' children are listed too) and `_f3d.placements` (each member with the group's frame in its component) |
 | Snapshot | a captured position. The stream decoder (mitcad#75) gives `positions`: per occurrence it places `occurrence` (an `occurrence` reference as a joint's, the path from the item's component) and `transform`, the occurrence's placement in that component (mat4, cm; the identity where none is stored). The stored occurrence transforms are older than the captured positions: the file's joints and as-built joints hold at the last captured placements *(the designs read)*. Some paths name top-level occurrences by ids no occurrence has (`null` with their `path_guids`). A captured position of joints' values stores them as parameters; its `positions` are not decoded (the occurrences' `placements` name it) |
 | GroundOccurrence | the stream decoder: `occurrence`, the grounded occurrence (as a joint's `occurrenceOne`); the occurrence tree's node gets `isGrounded` |
+| GeometricRelationship | an item of assembly constraints. The stream decoder (mitcad#155) gives `rows`, one per constraint in order: `type` (`align`, `center` or `angle`; absent when the constraint is not decoded), `geometry` (per frame `point`, `axis`, `plane` or `circle`: side one's first, a centring's two faces per side), `sense` (`aligned`: the frames' z axes the same way, `opposed`, `either`), `occurrenceOne`/`Two` (`occurrence` references as a joint's; an empty path the item's component's own geometry), `entitiesOne`/`Two` (each side's faces or edges by their names), `offset` or `angle` (parameter references), and `_f3d`: `record` and `constraint` (object ids), `type_code`, `frames` (mat4, cm, in the component the side's path ends in: a plane's origin on it and z its normal, an axis's z along it, a circle's centre and normal), `points` (the points picked on the faces and edges, cm), `selections`, `values` (the stored maximum, minimum and value; the maximum and minimum are not used in the files read), `flags`, `inputs`, `key_points`. Where the file places the occurrences after the item, two planes hold `(o2 − o1)·z1 = offset`, a point or an axis and a plane `(o1 − o2)·z2 = offset`, two axes are collinear, two circles share their axis with their planes `offset` apart, a centring's two pairs of faces share their middle plane, an angle's z axes are at `angle` *(the designs read)* |
+| TangentRelationship | a contact between two bodies. The stream decoder (mitcad#155) gives `occurrenceOne`/`Two` (as a joint's), `bodyOne`/`Two` (body references by their names and the items that made them), `pointOne`/`Two` (the point picked on each body's face, cm, in its component) and `faceOne`/`Two` (those faces by their names) |
 | Canvas | imageFilename, opacity, isDisplayedThrough, planarEntity, transform |
 | any other type | `{}`; everything is in `props` |
 

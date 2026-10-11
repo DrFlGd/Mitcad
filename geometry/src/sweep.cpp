@@ -841,7 +841,7 @@ ShapePtr trimmed(const Shape& sweep, const Target& target, const TopoDS_Shape& t
   return fused(kept, "the sweep to its target");
 }
 
-ShapePtr fused(const std::vector<ShapePtr>& parts, const char* what) {
+ShapePtr fused(const std::vector<ShapePtr>& parts, const char* what, bool merge, double fuzzy) {
   if (parts.empty()) {
     throw std::invalid_argument(std::string(what) + ": nothing to fuse");
   }
@@ -858,12 +858,17 @@ ShapePtr fused(const std::vector<ShapePtr>& parts, const char* what) {
   fuse.SetArguments(arguments);
   fuse.SetTools(tools);
   fuse.SetNonDestructive(true);
+  if (fuzzy > 0.0) {
+    fuse.SetFuzzyValue(fuzzy);
+  }
   detail::build(fuse);
   if (!fuse.IsDone() || fuse.HasErrors()) {
     throw std::runtime_error(std::string(what) + ": the parts could not be fused");
   }
   // Merge faces in one plane or surface.
-  fuse.SimplifyResult();
+  if (merge) {
+    fuse.SimplifyResult();
+  }
   FaceNamer namer(fuse.Shape());
   for (const ShapePtr& part : parts) {
     namer.carry(fuse, *part);

@@ -31,8 +31,12 @@ sleep 2500
 screenshot '${MITCAD_TEST_REPLACEMENT}/Open.png'
 expect-file '${MITCAD_TEST_REPLACEMENT}/Open-verified' 20
 
+# New Design (mitcad#175) in the Cloud project: the AppKit frontend asks
+# for the name (no Projects panel), then the open design would be replaced.
 mark
-menu 'File/New'
+menu 'File/New Design'
+focus-dialog '^New Design$'
+button '^OK$'
 focus-dialog '^Save changes to part\.mitcad\?$'
 button "^Don't Save$"
 expect-log 'needs a choice before the release: asked' 30
@@ -43,9 +47,10 @@ focus-dialog '^Save part\.mitcad before the sync\?$'
 button '^Cancel$'
 expect-log 'Sync cancelled'
 focus-main
+expect-log 'New Design cancelled'
 expect-model-bodies 1 64800
 expect-undo-depth ${originalUndo} 0
-expect-no-log 'Imported exchange.step|New document|Document closed|Autosave removed'
+expect-no-log 'Imported exchange.step|New document|New Design: made|Document closed|Autosave removed'
 sleep 2500
 screenshot '${MITCAD_TEST_REPLACEMENT}/New.png'
 expect-file '${MITCAD_TEST_REPLACEMENT}/New-verified' 20

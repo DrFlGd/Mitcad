@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: MIT
-# check-all sources: app/files
+# check-all sources: app/files app/projects
 # Files (U6) through the File menu, on the demo block (60 x 40 x 20 mm):
 #   - STEP, STL and DXF round trips: File > Export writes the block (its
 #     sketch for DXF), File > Import brings the file back: a base feature
@@ -187,10 +187,10 @@ ui_step "undo the insert (Ctrl+Z)"         ui_key ctrl+z
 ui_expect_new "Undo: Insert plate.dxf" "one undo step; the document is as saved"
 
 echo "--- Insert Component"
-ui_step "new (Ctrl+N)"                     ui_key ctrl+n
+ui_step "new design (Ctrl+N)"              ui_key ctrl+n
 ui_expect_log "New document" "an empty document"
 ui_mark
-ui_step "File > Insert Component"          file_menu m
+ui_step "Insert Component (search)"        ui_command "Insert Component"
 type_into_dialog 'Insert Component' "$WORK/block.mitcad"
 ui_focus_dialog '^Insert Component$'
 ui_step "linked (Enter)"                   ui_key Return

@@ -24,6 +24,10 @@ use super::face_refs::{kernel_error, require_faces};
 use super::reference::FaceRef;
 use crate::sweeps::GuideSurface;
 use crate::topo::FaceName;
+// Paths and guide surfaces on other components' bodies (mitcad#161).
+use super::geom_ref::PathRef;
+use crate::links::OccurrenceLink;
+use std::collections::BTreeMap;
 
 /// How much of a path a sweep or a pipe covers.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -170,6 +174,12 @@ pub struct SweepDef<P = ParamId> {
     pub operation: Operation,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub participants: Vec<BodyUid>,
+    /// Bodies of other components that the path's edges and the guide
+    /// surfaces are on (mitcad#161), each with where it is seen (as a
+    /// combine's `tool_links`): read in its component and moved into the
+    /// sweep's coordinates by the placements at its point of the timeline.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub body_links: BTreeMap<BodyUid, OccurrenceLink>,
 }
 
 fn is_perpendicular(orientation: &SweepOrientation) -> bool {
@@ -209,7 +219,33 @@ impl<P> SweepDef<P> {
             flip: self.flip,
             operation: self.operation,
             participants: self.participants.clone(),
+            body_links: self.body_links.clone(),
         })
+    }
+}
+
+impl SweepDef {
+    /// The bodies a link may name: the path's and the guide surfaces'.
+    fn linkable(&self, body: BodyUid) -> bool {
+        matches!(&self.path, CurvePath::Path(PathRef::Edges { body: b, .. }) if *b == body)
+            || self.guide_surfaces.iter().any(|f| f.body == body)
+    }
+
+    /// A body the path or a guide surface is on: of the sweep's component,
+    /// or of another one moved into its coordinates by its link.
+    fn input_body<K: Kernel>(
+        &self,
+        ctx: &mut EvalContext<'_, K>,
+        uid: BodyUid,
+    ) -> Result<K::Shape, String> {
+        let Some(link) = self.body_links.get(&uid) else {
+            return ctx.body(uid);
+        };
+        let (component, transform) = ctx.linked(link).map_err(|e| format!("body {uid}: {e}"))?;
+        let shape = ctx.body_in(component, uid)?;
+        ctx.kernel
+            .transform_shape(&shape, &transform, None)
+            .map_err(|e| format!("body {uid}: {e}"))
     }
 }
 
@@ -250,6 +286,11 @@ impl FeatureInfo for SweepDef {
                 }
                 face.check(ctx).map_err(|e| format!("guide surface: {e}"))?;
             }
+        }
+        if let Some(body) = self.body_links.keys().find(|b| !self.linkable(**b)) {
+            return Err(format!(
+                "body {body} is linked but neither the path's nor a guide surface's"
+            ));
         }
         Ok(())
     }
@@ -301,7 +342,16 @@ impl<K: Kernel> Evaluate<K> for SweepDef {
     fn evaluate(&self, ctx: &mut EvalContext<'_, K>) -> Result<FeatureOutput<K::Shape>, String> {
         let (sketch, regions) = profile_regions(ctx, &self.profiles)?;
         let participants = participant_bodies(ctx, self.operation, &self.participants)?;
-        let mut path = self.path.resolve(ctx).map_err(|e| format!("path: {e}"))?;
+        let mut path = match &self.path {
+            CurvePath::Path(PathRef::Edges { body, edges })
+                if self.body_links.contains_key(body) =>
+            {
+                let shape = self.input_body(ctx, *body)?;
+                path::resolve_edges_on(ctx, *body, &shape, edges)
+            }
+            path => path.resolve(ctx),
+        }
+        .map_err(|e| format!("path: {e}"))?;
         if self.flip {
             path = path::reversed_path(path);
         }
@@ -313,7 +363,7 @@ impl<K: Kernel> Evaluate<K> for SweepDef {
         // The guide surfaces' bodies, each face checked.
         let mut surfaces: Vec<(K::Shape, &FaceName)> = Vec::new();
         for face in &self.guide_surfaces {
-            let shape = ctx.body(face.body)?;
+            let shape = self.input_body(ctx, face.body)?;
             require_faces(ctx, face.body, &shape, std::slice::from_ref(&face.face))?;
             surfaces.push((shape, &face.face));
         }

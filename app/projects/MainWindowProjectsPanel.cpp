@@ -90,12 +90,16 @@ void MainWindow::registerProjectsPanelCommands() {
   design.id = QStringLiteral("file.new_design");
   design.name = tr("New Design...");
   design.icon = QStringLiteral("add");
-  design.tooltip = tr("A new design in the selected folder of the project, named first and recorded as a version");
+  design.tooltip = tr("A new design: in the current project's selected folder, named first and recorded as a "
+                      "version; outside projects an untitled one");
   design.kind = CommandDef::Kind::Action;
   design.mode = CommandDef::Mode::Any;
   design.tab.clear(); // the File menu
-  design.keywords = {QStringLiteral("design"), QStringLiteral("part"), QStringLiteral("project"),
-                     QStringLiteral("folder"), QStringLiteral("new")};
+  // New and New Design are one command (mitcad#175).
+  design.shortcut = QKeySequence(QKeySequence::New);
+  design.keywords = {QStringLiteral("design"), QStringLiteral("part"),     QStringLiteral("project"),
+                     QStringLiteral("folder"), QStringLiteral("new"),      QStringLiteral("untitled"),
+                     QStringLiteral("document"), QStringLiteral("blank")};
   design.run = [this] { newDesign(); };
   m_registry->add(design);
 }
@@ -328,42 +332,24 @@ QString MainWindow::projectsPanelFolder() const {
 // New Design
 
 void MainWindow::newDesign() {
-  QString root;
+  if (!m_project.hasHistory()) {
+    // New and New Design are one command (mitcad#175): without a current
+    // project an untitled design, as New was.
+    qInfo().noquote() << QStringLiteral("New Design: no project, an untitled design");
+    newDocument();
+    return;
+  }
+  const QString root = m_project.root;
   QString folder;
   if (m_projectsPanel != nullptr) {
+    // The panel's selected folder when it is the current project's.
     const QString selected = m_projectsPanel->selectedRoot();
     const ProjectRow* row = m_projectsPanel->project(selected);
     const bool usable =
         row != nullptr && (row->kind == ProjectRow::Kind::Local || row->kind == ProjectRow::Kind::Cloud);
-    if (m_project.hasHistory()) {
-      root = m_project.root;
-      if (usable && sameFolderPath(selected, root)) {
-        folder = m_projectsPanel->selectedFolder();
-      }
-    } else if (usable) {
-      root = row->root;
+    if (usable && sameFolderPath(selected, root)) {
       folder = m_projectsPanel->selectedFolder();
     }
-  } else if (m_project.hasHistory()) {
-    root = m_project.root;
-  }
-  if (root.isEmpty()) {
-    qInfo().noquote() << QStringLiteral("New Design: no project");
-    QMessageBox box(QMessageBox::Information, tr("New Design"), tr("New Design adds a design to a project."),
-                    QMessageBox::Cancel, this);
-    box.setInformativeText(tr("Make a project with New Project, or open one with Open Project. New (Ctrl+N) starts "
-                              "a design in no project."));
-    QPushButton* make = box.addButton(tr("New &Project..."), QMessageBox::AcceptRole);
-    QPushButton* open = box.addButton(tr("&Open Project..."), QMessageBox::AcceptRole);
-    box.setDefaultButton(make);
-    prepareModal(&box);
-    execDialog(&box);
-    if (box.clickedButton() == make) {
-      newProject();
-    } else if (box.clickedButton() == open) {
-      openProjectFolder();
-    }
-    return;
   }
   qInfo().noquote() << QStringLiteral("New Design: in %1%2")
                            .arg(root, folder.isEmpty() ? QString() : QStringLiteral(", folder %1").arg(folder));
@@ -473,17 +459,28 @@ void MainWindow::createDesignInProject(const QString& root, const QString& path)
     qInfo().noquote() << QStringLiteral("New Design cancelled");
     return;
   }
+  const QString file = QDir::cleanPath(QDir(root).filePath(path));
+  // The open design's versions are sent and its edit lock released before
+  // the new design is made (mitcad#175): a release that needs a choice
+  // (Resolve Sync, Keep Lock) keeps the design and makes nothing.
+  const bool wasReadOnly = windowReadOnly();
+  if (!m_locks->designClosing(file, false)) {
+    qInfo().noquote() << QStringLiteral("New Design cancelled");
+    return;
+  }
   const std::optional<QJsonObject> answer =
       projectWrite(root, {{QStringLiteral("cmd"), QStringLiteral("new_design")}, {QStringLiteral("path"), path}},
                    tr("New Design"));
   refreshProjectsPanel();
   if (!answer) {
+    // Refused: the open design stays, and takes its lock again.
+    m_locks->designOpened(m_filePath, wasReadOnly);
     return;
   }
-  const QString file = QDir::cleanPath(QDir(root).filePath(path));
   qInfo().noquote() << QStringLiteral("New Design: made %1").arg(file);
   QString error;
   if (!openFile(file, error)) {
+    m_locks->designOpened(m_filePath, wasReadOnly); // the open design stays
     if (!error.isEmpty()) {
       sheetWarning(this, tr("New Design"), tr("Could not open %1:\n%2").arg(QDir::toNativeSeparators(file), error));
     }

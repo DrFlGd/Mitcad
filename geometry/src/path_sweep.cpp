@@ -417,6 +417,13 @@ ShapePtr parallel_sweep(const SweepSpec& spec, const std::vector<detail::SweepFa
 // How far a path may be from the guide surface it lies on, mm.
 constexpr double kOnGuide = 1.0e-4;
 
+// How far the curve that gives a path beside its guide surfaces their
+// normal runs from the path (mm; mitcad#161).
+constexpr double kBesideGuide = 1.0;
+
+// The tolerance of the swept surfaces (`detail::pipe_shell`'s default), mm.
+constexpr double kPipeTolerance = 1.0e-4;
+
 // The faces of a sweep's guide surfaces (every piece of each name).
 std::vector<TopoDS_Face> guide_faces(const std::vector<GuideFace>& guide) {
   std::vector<TopoDS_Face> faces;
@@ -433,6 +440,133 @@ std::vector<TopoDS_Face> guide_faces(const std::vector<GuideFace>& guide) {
     }
   }
   return faces;
+}
+
+// Guided sweeps that pass over themselves (mitcad#161).
+
+// Where a sweep of sections reaching `reach` from the spine passes over
+// itself (a thread's profile taller than its pitch, swept along the
+// thread): the arc lengths that cut the spine into pieces none of which
+// comes back within two reaches of itself, {0, length} when it does not.
+std::vector<double> overlap_cuts(const Spine& spine, double reach) {
+  const double length = spine.length();
+  if (reach <= 0.0 || length <= 4.0 * reach) {
+    return {0.0, length};
+  }
+  const double step = std::max(std::min(reach / 2.0, length / 16.0), length / 4000.0);
+  const int n = static_cast<int>(std::ceil(length / step));
+  std::vector<gp_Pnt> points;
+  for (int i = 0; i <= n; ++i) {
+    points.push_back(spine.point(length * i / n));
+  }
+  // The shortest stretch of the spine between two points farther apart
+  // along it than four reaches but within two reaches of each other.
+  double shortest = length;
+  for (int i = 0; i <= n; ++i) {
+    for (int j = i + 1; j <= n; ++j) {
+      const double along = length * (j - i) / n;
+      if (along > 4.0 * reach && along < shortest && points[i].Distance(points[j]) < 2.0 * reach) {
+        shortest = along;
+      }
+    }
+  }
+  if (shortest >= length) {
+    return {0.0, length};
+  }
+  // (Pieces shorter than that stretch: as few as there can be.)
+  const int pieces = static_cast<int>(std::ceil(length / (0.9 * shortest)));
+  std::vector<double> cuts;
+  for (int k = 0; k <= pieces; ++k) {
+    cuts.push_back(length * k / pieces);
+  }
+  return cuts;
+}
+
+// The perpendicular sweep along guide surfaces (mitcad#157): the frames
+// follow the faces' normal, on a path on them (whose curves carry their
+// curves on the faces they lie on) or beside them (their normal at the
+// points nearest to it, mitcad#161). A sweep that passes over itself is
+// swept in pieces, each section placed by the frames where its piece
+// starts, and the pieces are fused. `at`: the profile's arc length along
+// `part`.
+ShapePtr guided_sweep(const SweepSpec& spec, const std::vector<detail::SweepFace>& faces,
+                      const TopoDS_Wire& part, double at, const Range& range) {
+  const std::vector<TopoDS_Face> support = guide_faces(spec.guide);
+  BRep_Builder builder;
+  TopoDS_Compound compound;
+  builder.MakeCompound(compound);
+  for (const TopoDS_Face& face : support) {
+    builder.Add(compound, face);
+  }
+  const auto mode_on = [&](const TopoDS_Wire& piece, TopoDS_Wire& spine) {
+    PipeMode mode;
+    if (detail::lies_on_faces(piece, support, kOnGuide)) {
+      spine = detail::on_faces(piece, support, kOnGuide);
+      mode.kind = PipeMode::Kind::Support;
+      mode.support = compound;
+    } else {
+      spine = piece;
+      mode.kind = PipeMode::Kind::Auxiliary;
+      mode.auxiliary = detail::normal_spine(piece, support, kBesideGuide);
+    }
+    return mode;
+  };
+  const Spine whole(part);
+  const double s0 = std::clamp(at, 0.0, whole.length());
+  const std::vector<double> cuts =
+      range.around ? std::vector<double>{0.0, whole.length()} : overlap_cuts(whole, reach(faces, whole.point(s0)));
+  // The frame of the tangent and the faces' normal at an arc length.
+  const auto frame = [&](double s) {
+    const gp_Pnt p = whole.point(s);
+    const gp_Dir t = whole.tangent(s);
+    const std::optional<gp_Dir> n = detail::guide_normal(compound, p);
+    if (!n) {
+      throw std::invalid_argument("the guide surface's normal is not found beside the path");
+    }
+    const gp_Vec across = gp_Vec(*n) - gp_Vec(t) * n->Dot(t);
+    if (across.Magnitude() <= 1.0e-6) {
+      throw std::invalid_argument("the path runs along the guide surface's normal");
+    }
+    return gp_Ax3(p, t, gp_Dir(across));
+  };
+  std::vector<ShapePtr> parts;
+  for (const detail::SweepFace& face : faces) {
+    const auto [first, last] = cap_order(range, detail::cap_names(spec.feature, "start", face),
+                                         detail::cap_names(spec.feature, "end", face));
+    const std::vector<NamedWire> loops = detail::face_loops(face.face, face.edges);
+    for (std::size_t k = 0; k + 1 < cuts.size(); ++k) {
+      const double a = cuts[k];
+      const double b = cuts[k + 1];
+      const bool whole_part = cuts.size() == 2;
+      TopoDS_Wire spine;
+      const PipeMode mode = mode_on(whole_part ? part : whole.part(a, b), spine);
+      // The sections where the piece starts, unless the profile is on it.
+      const bool here = s0 >= a && s0 <= b;
+      gp_Trsf move;
+      if (!here) {
+        move.SetDisplacement(frame(s0), frame(a));
+      }
+      const auto loop = [&](std::size_t l) {
+        return here ? loops[l] : moved(loops[l], gp_GTrsf(move), false);
+      };
+      const ShapePtr outer = detail::pipe_shell(loop(0), spine, mode, k == 0 ? first : NameList{},
+                                                k + 2 == cuts.size() ? last : NameList{});
+      std::vector<ShapePtr> holes;
+      for (std::size_t l = 1; l < loops.size(); ++l) {
+        holes.push_back(detail::pipe_shell(loop(l), spine, mode, {}, {}));
+      }
+      parts.push_back(detail::with_holes(outer, holes, "the sweep"));
+    }
+  }
+  if (cuts.size() == 2) {
+    return detail::fused(parts, "the sweep");
+  }
+  // Pieces of a sweep that passes over itself: the sides of turns over each
+  // other lie on one surface, swept apart within the pipe's tolerance
+  // (exactly, the boolean left the overlaps twice), and keep their faces
+  // apart (merging the swept faces of neighbouring pieces made invalid
+  // faces).
+  return detail::fused(parts, "the sweep", false, kPipeTolerance);
 }
 
 } // namespace
@@ -497,35 +631,24 @@ ShapePtr sweep(const SweepSpec& spec) {
       mode.fixed = gp_Ax2(path.point(at), path.tangent(at));
       result = parallel_sweep(spec, faces, part, mode, at, range);
     } else {
-      PipeMode mode = detail::perpendicular_mode(path);
-      TopoDS_Wire spine = part;
       if (on_surface) {
-        // The frames follow the guide faces' normal: the path's curves
-        // carry their curves on the faces they lie on.
-        const std::vector<TopoDS_Face> support = guide_faces(spec.guide);
-        spine = detail::on_faces(part, support, kOnGuide);
-        BRep_Builder builder;
-        TopoDS_Compound compound;
-        builder.MakeCompound(compound);
-        for (const TopoDS_Face& face : support) {
-          builder.Add(compound, face);
+        result = guided_sweep(spec, faces, part, at - range.from, range);
+      } else {
+        const PipeMode mode = detail::perpendicular_mode(path);
+        std::vector<ShapePtr> parts;
+        for (const detail::SweepFace& face : faces) {
+          const auto [first, last] = cap_order(range, detail::cap_names(spec.feature, "start", face),
+                                               detail::cap_names(spec.feature, "end", face));
+          const std::vector<NamedWire> loops = detail::face_loops(face.face, face.edges);
+          const ShapePtr outer = detail::pipe_shell(loops.front(), part, mode, first, last);
+          std::vector<ShapePtr> holes;
+          for (std::size_t l = 1; l < loops.size(); ++l) {
+            holes.push_back(detail::pipe_shell(loops[l], part, mode, {}, {}));
+          }
+          parts.push_back(detail::with_holes(outer, holes, "the sweep"));
         }
-        mode.kind = PipeMode::Kind::Support;
-        mode.support = compound;
+        result = detail::fused(parts, "the sweep");
       }
-      std::vector<ShapePtr> parts;
-      for (const detail::SweepFace& face : faces) {
-        const auto [first, last] = cap_order(range, detail::cap_names(spec.feature, "start", face),
-                                             detail::cap_names(spec.feature, "end", face));
-        const std::vector<NamedWire> loops = detail::face_loops(face.face, face.edges);
-        const ShapePtr outer = detail::pipe_shell(loops.front(), spine, mode, first, last);
-        std::vector<ShapePtr> holes;
-        for (std::size_t l = 1; l < loops.size(); ++l) {
-          holes.push_back(detail::pipe_shell(loops[l], spine, mode, {}, {}));
-        }
-        parts.push_back(detail::with_holes(outer, holes, "the sweep"));
-      }
-      result = detail::fused(parts, "the sweep");
     }
     return detail::finished(*result, "the sweep");
   });
@@ -1324,14 +1447,14 @@ NamedWire off_cylinders(const NamedWire& loop, const TopoDS_Face& face, const gp
       if (in_plane && off_axis.Magnitude() > Precision::Confusion()) {
         const gp_Vec out = off_axis.Normalized();
         const double t = gp_Vec(axis.Location(), center).Dot(along);
-        for (const double side : {-1.0, 1.0}) {
-          const gp_Pnt touch = center.Translated(out * (side * circle.Radius()));
+        for (const double sign : {-1.0, 1.0}) {
+          const gp_Pnt touch = center.Translated(out * (sign * circle.Radius()));
           double u = ElCLib::Parameter(circle, touch);
           const double first = curve.FirstParameter();
           while (u < first) {
             u += kTwoPi;
           }
-          const double radius = off_axis.Magnitude() + side * circle.Radius();
+          const double radius = off_axis.Magnitude() + sign * circle.Radius();
           for (const AxialCylinder& c : cylinders) {
             if (u <= curve.LastParameter() + 1.0e-9 && std::abs(c.radius - radius) <= 1.0e-4 &&
                 c.from < t + rise && c.to > t) {

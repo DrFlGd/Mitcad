@@ -759,7 +759,8 @@ int faces_matching(const Shape& shape, const std::string& name) {
 
 void test_dressups_of_circles_built_as_rings() {
   // A hole 0.5 mm from the block's side: bevelling or rounding its rim by
-  // 1 mm runs over the side face, which OCCT's dressups cannot; the
+  // 1 mm runs over the side face. OCCT's chamfer runs on over it and the
+  // side cuts its cone (the port's patch 0072); where OCCT cannot, the
   // section revolved about the hole's axis is cut away instead.
   const ShapePtr drill = extrude("F4", {circle(5, 5.5, 20, 5)}, -1, 21);
   const ShapePtr holed = boolean(BooleanOp::Cut, {block().get()}, *drill).pieces.at(0).shape;
@@ -770,7 +771,7 @@ void test_dressups_of_circles_built_as_rings() {
   const ShapePtr bevelled = chamfer("F5", *holed, {bevel});
   CHECK(mitcad::geometry::detail::is_valid(bevelled->occt()));
   CHECK(faces_matching(*bevelled, "F5:chamfer(" + rim + ")") >= 1);
-  CHECK(bevelled->notes().size() == 1 && bevelled->notes().front().find("ring") != std::string::npos);
+  CHECK(bevelled->notes().empty());
   // What it takes away: the block's part of the cone the bevel bounds.
   const TopoDS_Shape cone =
       BRepPrimAPI_MakeCone(gp_Ax2(gp_Pnt(5.5, 20, 19), gp_Dir(0, 0, 1)), 5, 6, 1).Shape();

@@ -31,7 +31,7 @@ class FinalRender;
 
 class RenderFrameOverlay;
 
-// File > Render Image (mitcad#48, docs/rendering.md "Final render"): the
+// Render Image (mitcad#48, docs/rendering.md "Final render"): the
 // render settings' `output` section (size, aspect, samples, time limit,
 // denoising, transparency, format; each change a model command and an undo
 // step, as in Render Environment), the camera (the current view or a named

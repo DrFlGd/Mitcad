@@ -144,6 +144,10 @@ pub fn import_fcstd_file<K: Kernel>(
         doc, mut report, ..
     } = importer;
     result?;
+    // The outcomes on the timeline, as the report says them (mitcad#170).
+    let mut notes = crate::timeline_notes::freecad_notes(&report);
+    notes.retain(|(uid, _)| doc.feature(*uid).is_some());
+    let _ = doc.set_import_notes(&notes);
     if let Some(label) = &options.undo_label {
         doc.merge_undo(depth, label);
     }

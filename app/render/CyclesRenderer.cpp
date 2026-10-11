@@ -375,9 +375,9 @@ public:
           changes.instanced += geometry.users;
         }
       }
-    }
-    if (changes.restarted) {
-      restart();
+      if (changes.restarted) {
+        restart();
+      }
     }
     return changes;
   }
@@ -404,9 +404,8 @@ public:
       buildWorld(s);
       buildGround(s);
       buildLights(s);
-
+      restart();
     }
-    restart();
     return warning;
   }
 
@@ -462,8 +461,8 @@ public:
                       [](const LightData& light) { return light.camera; })) {
         buildLights(*m_session->scene);
       }
+      restart();
     }
-    restart();
   }
 
   void setSamples(int samples) override {
@@ -473,11 +472,9 @@ public:
       const std::lock_guard<std::mutex> schedule(m_scheduleMutex);
       planDenoising();
     }
-    {
-      const ccl::thread_scoped_lock lock(m_session->scene->mutex);
-      m_session->scene->integrator->set_aa_samples(m_samples);
-      applyStage(*m_session->scene->integrator, 0);
-    }
+    const ccl::thread_scoped_lock lock(m_session->scene->mutex);
+    m_session->scene->integrator->set_aa_samples(m_samples);
+    applyStage(*m_session->scene->integrator, 0);
     m_session->set_samples(m_samples);
     restart();
   }
@@ -497,12 +494,10 @@ public:
 
   void setFinal(bool denoise, double timeLimit) override {
     m_params.time_limit = std::max(0.0, timeLimit);
-    {
-      const ccl::thread_scoped_lock lock(m_session->scene->mutex);
-      m_session->scene->integrator->set_use_denoise(denoise);
-      m_denoise = denoise;
-      updatePasses(*m_session->scene);
-    }
+    const ccl::thread_scoped_lock lock(m_session->scene->mutex);
+    m_session->scene->integrator->set_use_denoise(denoise);
+    m_denoise = denoise;
+    updatePasses(*m_session->scene);
     m_session->set_time_limit(m_params.time_limit);
     restart();
   }
@@ -1410,6 +1405,11 @@ private:
     }
   }
 
+  // Restarts the render with the change just made, under the scene's lock
+  // as the change was (mitcad#146): Cycles updates the scene between two
+  // batches of samples, and an update without the reset (another set of
+  // passes, another size) would have the kernels write past the render
+  // buffers, which only the reset makes anew.
   void restart() {
     if (m_width <= 0 || m_height <= 0) {
       return; // no view yet
@@ -1428,10 +1428,7 @@ private:
       m_shownDenoised = false;
       m_stageChanged = false;
     }
-    {
-      const ccl::thread_scoped_lock lock(m_session->scene->mutex);
-      applyStage(*m_session->scene->integrator, 0);
-    }
+    applyStage(*m_session->scene->integrator, 0);
     m_session->reset(m_params, buffer);
     if (!m_running) {
       m_running = true;

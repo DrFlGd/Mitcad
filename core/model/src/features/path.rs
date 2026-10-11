@@ -273,11 +273,33 @@ fn edge_curves<K: Kernel>(
     edges: &[EdgeName],
 ) -> Result<Vec<PathCurve>, String> {
     let shape = ctx.body(body)?;
+    edge_curves_of(ctx, body, &shape, edges)
+}
+
+/// A path of edges of `shape`, the shape of `body` as the caller reads it
+/// (a body of another component moved into the feature's coordinates,
+/// mitcad#161), joined as [`CurvePath::resolve`] joins them.
+pub(crate) fn resolve_edges_on<K: Kernel>(
+    ctx: &mut EvalContext<'_, K>,
+    body: BodyUid,
+    shape: &K::Shape,
+    edges: &[EdgeName],
+) -> Result<Vec<PathCurve>, String> {
+    chain(edge_curves_of(ctx, body, shape, edges)?)
+}
+
+/// [`edge_curves`] of a given shape of the body.
+fn edge_curves_of<K: Kernel>(
+    ctx: &mut EvalContext<'_, K>,
+    body: BodyUid,
+    shape: &K::Shape,
+    edges: &[EdgeName],
+) -> Result<Vec<PathCurve>, String> {
     let mut pieces = Vec::new();
     for edge in edges {
         let curves = ctx
             .kernel
-            .curves_of(&shape, &TopoName::Edge(edge.clone()))
+            .curves_of(shape, &TopoName::Edge(edge.clone()))
             .map_err(|e| format!("path: {e}"))?;
         let mut curves = curves.into_iter();
         match (curves.next(), curves.next()) {

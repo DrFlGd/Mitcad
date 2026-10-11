@@ -522,6 +522,9 @@ fn symmetric_full_length(seg: &Segment, d: &[u8], from: usize) -> Option<bool> {
 /// The object an input slot's role ([`ExtentSlot::role`]) is read after.
 const SLOT_KEY: &str = "2DF7DA30-A4E4-4260-AFD1-D9C7154CB44B";
 
+/// The role of an extrusion's profile slot ([`ExtentSlot`]).
+pub const PROFILE_ROLE: u32 = 65;
+
 /// An extrusion's input slot (mitcad#96): a [`BODY_INPUT`] object the item
 /// refers to, `u32 n | n refs | ... | ref 2DF7DA30 | u32 0 | u32 role |
 /// ...` after its root part *(the corpus' extrusions of every class

@@ -1,0 +1,44 @@
+Mitcad's patch to OCCT 8.0.1, under OCCT's licence:
+SPDX-License-Identifier: LGPL-2.1-only WITH OCCT-exception-1.0
+
+Fillets: past the end of a spine, where a contact leaves its face and no
+face follows, the blend rolls on the face's own surface (unbounded) when
+that surface is a cylinder, cone, sphere or torus (mitcad#121, with 0075).
+
+ChFi3d_BuildPlane continued the walk on the plane tangent to the face at
+the point where the previous piece's contact crossed the face's edge ("till
+the output on the other face"). The previous piece rolled on the surface
+itself, often past that edge already (with the overflow patches), so the
+two pieces solved for different balls where they meet: a gap between their
+sections (0.03 in a rounding round a chamfered bar with radius 3, which
+made the face builder drop part of a planar face with the rolling ball of
+0075; 0.015 before it). On an elementary surface the face's own surface,
+made into a face without edges, continues exactly; other surfaces keep the
+tangent plane (their natural bounds could stop the walk).
+diff --git a/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_2.cxx b/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_2.cxx
+index 25eb8c8..5e6b1d6 100644
+--- a/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_2.cxx
++++ b/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_2.cxx
+@@ -1969,6 +1969,22 @@ static void ChFi3d_BuildPlane(TopOpeBRepDS_DataStructure&         DStr,
+     const occ::handle<Geom2d_Curve> Hc =
+       BRep_Tool::CurveOnSurface(SD->Vertex(isfirst, ons).Arc(), F, u, v);
+     Hc->Value(SD->Vertex(isfirst, ons).ParameterOnArc()).Coord(u, v);
++    // On an elementary surface the ball rolls on past the face's boundary on
++    // the face's own surface, unbounded: the blend before it rolled on that
++    // surface, and on its tangent plane the two would not meet.
++    const GeomAbs_SurfaceType aType = HS->GetType();
++    if (aType == GeomAbs_Cylinder || aType == GeomAbs_Cone || aType == GeomAbs_Sphere
++        || aType == GeomAbs_Torus)
++    {
++      TopoDS_Face NewF = BRepLib_MakeFace(BRep_Tool::Surface(F), Precision::Confusion());
++      if (!NewF.IsNull())
++      {
++        NewF.Orientation(F.Orientation());
++        pons.SetCoord(u, v);
++        HS->Initialize(NewF);
++        return;
++      }
++    }
+     BRepLProp_SLProps theProp(*HS, u, v, 1, 1.e-12);
+     if (theProp.IsNormalDefined())
+     {

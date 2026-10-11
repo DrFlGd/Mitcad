@@ -847,9 +847,15 @@ impl<K: Kernel> Importer<'_, '_, K> {
         // Not replayed: unchanged, suppressed, or the stored shape.
         if suppressed {
             report.outcome = ObjectOutcome::Skipped;
-            report
-                .notes
-                .push(format!("suppressed in FreeCAD; not replayed: {last}"));
+            let note = format!("suppressed in FreeCAD; not replayed: {last}");
+            // A placeholder shows it on the timeline (mitcad#170).
+            let _ = self.doc.add_import_placeholder(
+                Some(object.label()),
+                &object.type_name,
+                &crate::timeline_notes::sentence(&note),
+                Some(component),
+            );
+            report.notes.push(note);
             return (report, target.current.clone());
         }
         if self.unchanged(object, &target.current, &target.place) {

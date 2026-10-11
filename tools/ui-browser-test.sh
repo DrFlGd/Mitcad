@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: MIT
-# check-all sources: app/browser
+# check-all sources: app/browser app/framework/HybridAssembly.cpp
 # The browser (U3) through the real UI, on a part with a component placed
 # 40 mm along X:
 #   - The rows' layout (mitcad#10): a compact width; each light bulb just
@@ -241,6 +241,11 @@ ui_expect_new "Deleted Bracket:2" "the occurrence deleted"
 ui_mark
 ui_step "right-click Root"               ui_click_logged "Browser Root" 3
 ui_step "choose New Component"           ui_menu_choose "New Component"
+# The root has a modelled body: asked first (mitcad#171, ui-hybrid-test.sh).
+ui_expect_new "Hybrid assembly question: Root has" "asked about a hybrid assembly"
+ui_focus_dialog '^Hybrid Assembly$'
+ui_step "continue as is (Alt+O)"         ui_key alt+o
+ui_focus_main
 ui_expect_new "New component in Root" "a new component"
 tail -n +$((UI_MARK + 1)) "$UI_LOG" | grep -qE "Browser radio Root/Component[0-9]+:1 at" ||
   ui_fail "the new component has no row"

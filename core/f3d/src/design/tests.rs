@@ -2609,3 +2609,375 @@ fn combine_with_body_removals_in_other_components() {
     assert_eq!(c["targetBody"]["_f3d"]["entities"][0][0]["tag"], "2");
     assert_eq!(c["toolBodies"][0]["_f3d"]["entities"][0][0]["tag"], "1");
 }
+
+// Assembly relationships (mitcad#155).
+
+/// A design with two occurrences of Pin (80 and 83) placed by the
+/// placements 630 and 635, and the classes of relationships; `row_version`
+/// is the class version of the rows' base class, `constraint_version` that
+/// of the constraints.
+fn relationship_sample(row_version: u32, constraint_version: u32) -> Doc {
+    const ROOT_GUID: &str = "22222222-0000-0000-0000-000000000002";
+    const PIN_GUID: &str = "55555555-0000-0000-0000-000000000005";
+    const OCC_B: &str = "b0b0b0b0-0000-0000-0000-000000000083";
+    let mut d = sample();
+    for (g, p, v) in [
+        (PLACEMENT, ROOT, 5),
+        (CONTEXT_PATH, ROOT, 1),
+        (CONTEXT_LEVEL, ROOT, 4),
+        (GEOMETRIC_RELATIONSHIP, ROOT, 1),
+        (TANGENT_RELATIONSHIP, ROOT, 0),
+        (RELATION_ROW, ROOT, row_version),
+        (ALIGN_ROW, RELATION_ROW, 0),
+        (GEOM_CONSTRAINT, ROOT, constraint_version),
+        (CONSTRAINT_DATA, ROOT, 0),
+        (VALUE_DATA, CONSTRAINT_DATA, 1),
+        (ALIGN_DATA, VALUE_DATA, 0),
+        (KEY_POINT, ROOT, 3),
+    ] {
+        d.class(g, p, v);
+    }
+    d.objects.retain(|o| ![2, 3, 5, 80, 82].contains(&o.0));
+    d.obj(
+        2,
+        COMPONENT,
+        cat(&[&[0, 0], &s16(ROOT_GUID), &s16("Bracket")]),
+    );
+    d.obj(5, COMPONENT, cat(&[&[0, 0], &s16(PIN_GUID), &s16("Pin")]));
+    let t = [
+        1.0, 0.0, 0.0, 10.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0,
+    ];
+    for (id, guid) in [(80, OCC_A), (83, OCC_B)] {
+        d.obj(
+            id,
+            OCCURRENCE,
+            cat(&[
+                &[0, 0],
+                &r(5),
+                &[0],
+                &f64s(&t),
+                &u32b(0),
+                &r(81),
+                &s16(guid),
+            ]),
+        );
+    }
+    d.obj(82, OCCURRENCE, cat(&[&[0, 0], &r(2), &[1]]));
+    d.obj(
+        3,
+        TIMELINE,
+        cat(&[&[0, 0], &r(1), &u32b(3), &r(10), &r(20), &r(600)]),
+    );
+    for (id, path, level, guid) in [(630, 631, 632, OCC_A), (635, 636, 637, OCC_B)] {
+        d.obj(
+            id,
+            PLACEMENT,
+            cat(&[&[0, 0], &[0; 4], &[1], &r(600), &r(path)]),
+        );
+        d.obj(
+            path,
+            CONTEXT_PATH,
+            cat(&[&[0, 0], &[1], &u32b(1), &r(level)]),
+        );
+        d.obj(
+            level,
+            CONTEXT_LEVEL,
+            context_level(guid, PIN_GUID, ROOT_GUID),
+        );
+    }
+    // The offset parameter.
+    d.obj(650, PARAMETER_HOLDER, cat(&[&[1], &u32b(1), &r(600), &[0]]));
+    d.obj(
+        651,
+        PARAMETER,
+        parameter(20, Some(650), "-0.5 mm", "Offset", "", "mm", "d20", -0.05),
+    );
+    d
+}
+
+/// Two frames: side one's plane z = 0.6 facing up, side two's z = 0
+/// facing down (cm).
+const REL_FRAMES: [[f64; 16]; 2] = [
+    [
+        1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.6, 0.0, 0.0, 0.0, 1.0,
+    ],
+    [
+        1.0, 0.0, 0.0, 0.0, 0.0, -1.0, 0.0, 0.0, 0.0, 0.0, -1.0, 0.0, 0.0, 0.0, 0.0, 1.0,
+    ],
+];
+
+/// The relationship item 600 with one row 610 and a health object.
+fn relationship_item(d: &mut Doc, row: Vec<u8>) {
+    d.obj(610, RELATION_ROW, row);
+    d.obj(
+        600,
+        GEOMETRIC_RELATIONSHIP,
+        cat(&[
+            &[0, 0],
+            &r(610),
+            &r(630),
+            &r(635),
+            &tail(-1, "GeometricRelationship", 1, "", [0, 0, 0], 601),
+        ]),
+    );
+    d.obj(601, HEALTH, vec![0, 0]);
+}
+
+/// The data part of a constraint: two points, the sense, two planes and
+/// their frames.
+fn relation_data(sense: u32) -> Vec<u8> {
+    cat(&[
+        &u32b(2),
+        &f64s(&[0.4, -0.4, 0.6, -1.2, -0.5, 0.0]),
+        &u32b(sense),
+        &u32b(2),
+        &u32b(2),
+        &u32b(2),
+        &u32b(2),
+        &[0],
+        &f64s(&REL_FRAMES[0]),
+        &[0],
+        &f64s(&REL_FRAMES[1]),
+    ])
+}
+
+fn relationship_rows(d: &Doc) -> Value {
+    let (m, b) = d.streams();
+    let v = serde_json::to_value(Design::parse(&m, b).unwrap().dump("x", "Design1")).unwrap();
+    let item = &v["timeline"]["items"][2];
+    assert_eq!(item["objectType"], "GeometricRelationship");
+    item["detail"]["rows"].clone()
+}
+
+/// A relationship's row (mitcad#155): an alignment of two planes with an
+/// offset parameter, its constraint of class version 7 referring to its
+/// data record; the sides' occurrences by the placements' paths.
+#[test]
+fn relationship_rows_from_data_records() {
+    let mut d = relationship_sample(4, 7);
+    // The row: its own fields, then the base's (sense, key points, side
+    // one's placement, the constraint, the inputs, side two's).
+    let row = cat(&[
+        &[0, 0],
+        &[0],
+        &u32b(5),
+        &[0, 0],
+        &r(650),
+        &u32b(1),
+        &u32b(0),
+        &u32b(1),
+        &r(630),
+        &r(620),
+        &u32b(0),
+        &u32b(0),
+        &u32b(0),
+        &u32b(1),
+        &r(635),
+        &[1, 0, 0],
+    ]);
+    d.objects.retain(|o| o.0 != 610);
+    d.obj(
+        620,
+        GEOM_CONSTRAINT,
+        cat(&[&[0, 0], &r(621), &[0], &u32b(0)]),
+    );
+    d.obj(
+        621,
+        ALIGN_DATA,
+        cat(&[
+            &[0, 0],
+            &u32b(5),
+            &[0, 0, 0, 0],
+            &f64s(&[0.0, 0.0, -0.05]),
+            &relation_data(1),
+            &s16("Constraint 1"),
+            &r(620),
+            &[0],
+            &u32b(2),
+            &s16("Face"),
+            &s16("Face"),
+            &u32b(2),
+            &[1, 1],
+        ]),
+    );
+    relationship_item(&mut d, row);
+    // The row is of the derived class.
+    let c = d.class_index(ALIGN_ROW);
+    d.objects.iter_mut().find(|o| o.0 == 610).unwrap().1 = c;
+    let rows = relationship_rows(&d);
+    let row = &rows[0];
+    assert_eq!(row["type"], "align");
+    assert_eq!(row["geometry"], json!(["plane", "plane"]));
+    assert_eq!(row["sense"], "aligned");
+    assert_eq!(row["offset"]["name"], "d20");
+    assert_eq!(row["occurrenceOne"]["_f3d"]["path"], json!([80]));
+    assert_eq!(row["occurrenceTwo"]["_f3d"]["path"], json!([83]));
+    assert_eq!(row["_f3d"]["type_code"], 5);
+    assert_eq!(row["_f3d"]["values"], json!([0.0, 0.0, -0.05]));
+    assert_eq!(row["_f3d"]["frames"][0][2], json!([0.0, 0.0, 1.0, 0.6]));
+    assert_eq!(row["_f3d"]["frames"][1][2], json!([0.0, 0.0, -1.0, 0.0]));
+    assert_eq!(row["_f3d"]["selections"], json!(["Face", "Face"]));
+}
+
+/// A row of an older file (mitcad#155): the constraint of class version 6
+/// holds its data itself, its sense and type at its end.
+#[test]
+fn relationship_rows_with_their_own_data() {
+    let mut d = relationship_sample(3, 6);
+    let row = cat(&[
+        &[0, 0],
+        &r(630),
+        &u32b(2),
+        &r(635),
+        &[0, 0],
+        &[0, 0],
+        &u32b(0),
+        &r(650),
+        &[0, 0],
+        &r(620),
+        &u32b(0),
+        &u32b(0),
+        &[0],
+        &u32b(6),
+        &[1, 0, 0],
+    ]);
+    d.obj(
+        620,
+        GEOM_CONSTRAINT,
+        cat(&[
+            &[0, 0],
+            &[0, 0, 1],
+            &s16("Constraint 1"),
+            &u32b(0),
+            &relation_data(1),
+            &f64s(&[0.0, 0.0]),
+            &[0; 20],
+            &u32b(2),
+            &s16("Face"),
+            &s16("Face"),
+            &u32b(2),
+            &u32b(6),
+            &u32b(2),
+            &[1, 1],
+        ]),
+    );
+    relationship_item(&mut d, row);
+    let rows = relationship_rows(&d);
+    let row = &rows[0];
+    assert_eq!(row["type"], "align");
+    assert_eq!(row["geometry"], json!(["plane", "plane"]));
+    // The sense at the end (2, opposed), not the number after the points.
+    assert_eq!(row["sense"], "opposed");
+    assert_eq!(row["_f3d"]["type_code"], 6);
+    assert_eq!(row["offset"]["value"], -0.05);
+    assert_eq!(row["occurrenceOne"]["_f3d"]["path"], json!([80]));
+}
+
+/// A tangent relationship (mitcad#155): each side's occurrence and the
+/// point picked on its face.
+#[test]
+fn tangent_relationship() {
+    let mut d = relationship_sample(4, 7);
+    d.objects.retain(|o| o.0 != 3);
+    d.obj(
+        3,
+        TIMELINE,
+        cat(&[&[0, 0], &r(1), &u32b(3), &r(10), &r(20), &r(700)]),
+    );
+    for (id, p) in [(710, [1.0, 2.0, 3.0]), (711, [4.0, 5.0, 6.0])] {
+        d.obj(
+            id,
+            KEY_POINT,
+            cat(&[&[0, 0], &[0; 21], &f64s(&p), &u32b(11)]),
+        );
+    }
+    d.obj(
+        700,
+        TANGENT_RELATIONSHIP,
+        cat(&[
+            &[0, 0],
+            &r(710),
+            &r(711),
+            &u32b(2),
+            &r(630),
+            &r(635),
+            &tail(-1, "Tangent Relationship", 1, "", [0, 0, 0], 701),
+        ]),
+    );
+    d.obj(701, HEALTH, vec![0, 0]);
+    let (m, b) = d.streams();
+    let v = serde_json::to_value(Design::parse(&m, b).unwrap().dump("x", "Design1")).unwrap();
+    let item = &v["timeline"]["items"][2];
+    assert_eq!(item["objectType"], "TangentRelationship");
+    let t = &item["detail"];
+    assert_eq!(t["pointOne"], json!([1.0, 2.0, 3.0]));
+    assert_eq!(t["pointTwo"], json!([4.0, 5.0, 6.0]));
+    assert_eq!(t["occurrenceOne"]["_f3d"]["path"], json!([80]));
+    assert_eq!(t["occurrenceTwo"]["_f3d"]["path"], json!([83]));
+}
+
+/// mitcad#169: an extrusion of component Bracket that also cuts Pin's
+/// bodies has a second extrusion in Pin's feature list, with its own
+/// operation; the design's table of item parts links the two. The part
+/// comes as an item of its own right after the timeline's items, at its
+/// item's point of the timeline, named after it.
+#[test]
+fn parts_of_items_in_other_components() {
+    let mut d = sample();
+    d.class(FEATURE_LIST, ROOT, 0);
+    d.class(ITEM_PARTS, ROOT, 0);
+    // Bracket's feature list: its manager and both timeline items.
+    d.obj(100, FEATURE_LIST, cat(&[&[0, 0], &r(1), &r(10), &r(20)]));
+    // Pin's manager and feature list with the part.
+    d.obj(101, FEATURE_MANAGER, cat(&[&[0, 0], &r(5)]));
+    d.obj(102, FEATURE_LIST, cat(&[&[0, 0], &r(101), &r(25)]));
+    d.obj(
+        25,
+        EXTRUDE,
+        cat(&[
+            &[0, 0],
+            &[0, 0, 0],
+            &u32b(2),
+            &u32b(1),
+            &u32b(2),
+            &[0, 1],
+            &u32b(0),
+            &f64s(&[0.0, 0.0, 1.0]),
+            &[0, 0],
+            &r(70),
+            &r(71),
+            &tail(9, "Extrude", 1, "", [0, 0, 0], 26),
+        ]),
+    );
+    d.obj(26, HEALTH, vec![0, 0]);
+    let key = "0262235f-99d9-4433-a71f-3e56970b4c63";
+    d.obj(
+        103,
+        ITEM_PARTS,
+        cat(&[
+            &[0, 0],
+            &u32b(1),
+            &s16(key),
+            &r(20),
+            &u32b(1),
+            &s16(key),
+            &u32b(2),
+            &r(20),
+            &r(25),
+        ]),
+    );
+    let (m, b) = d.streams();
+    let v = serde_json::to_value(Design::parse(&m, b).unwrap().dump("x", "Design1")).unwrap();
+    let items = v["timeline"]["items"].as_array().unwrap();
+    assert_eq!(items.len(), 3);
+    let part = &items[2];
+    assert_eq!(part["index"], 2);
+    assert_eq!(part["name"], "Boss");
+    assert_eq!(part["objectType"], "ExtrudeFeature");
+    assert_eq!(part["component"], "Pin");
+    assert_eq!(part["_f3d"]["part_of"], 1);
+    assert_eq!(part["_f3d"]["result_no"], 9);
+    assert_eq!(part["_f3d"]["object_id"], 25);
+    assert_eq!(part["_f3d"]["extrude"]["operation"], "Cut");
+    assert!(items[1]["_f3d"].get("part_of").is_none());
+}

@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: MIT
-# check-all sources: app/files
+# check-all sources: app/files app/projects
 # Project files through the real UI: Save As with a typed path, reopen with
 # --open, Save (Ctrl+S) after a parameter change, the title's "*" through
-# undo and redo, the unsaved-changes prompt on New and on exit, and Open
-# through the file dialog.
+# undo and redo, the unsaved-changes prompt on New Design (an untitled
+# design outside projects) and on exit, and Open through the file dialog.
+# The File menu's entries in their groups (mitcad#175).
 #
 # Runs headless on Xvfb (see ui-test-lib.sh). The app uses Qt's own file
 # dialog (--no-native-dialogs), so a path can be typed into it.
@@ -85,9 +86,23 @@ expect_exit() {
 
 ui_start_display
 
-echo "--- Save As"
+echo "--- The File menu (mitcad#175)"
 ui_start_app --demo --no-native-dialogs
 expect_title "Untitled - Mitcad"
+# New and New Design are one entry; 3D Print, Insert Component and Render
+# Image are on the ribbon only; the project commands in a submenu.
+project_menu="New Project | Open Project | Open from Cloud | - | Sync | Check for Newer Versions | Open in Browser"
+project_menu="$project_menu | - | Move to a Project | Project Settings"
+file_menu="New Design | Open | Open Recent > | Open Read-Only | Close | - | Save | Save As | Save with Description"
+file_menu="$file_menu | Version History | - | Project > [$project_menu] | - | Import | Export | - | Recover Documents"
+file_menu="$file_menu | - | Exit"
+ui_mark
+ui_step "file menu (Alt+F)"              ui_key alt+f
+ui_expect_new "File menu: $file_menu" "the File menu's groups and the Project submenu"
+ui_step "close it (Escape)"              ui_key Escape
+focus_main
+
+echo "--- Save As"
 ui_step "fit (F6)"                       ui_key F6
 ui_step "fillet (F)"                     ui_key f
 ui_step "pick a face of the body"        ui_view_click 50 50
@@ -125,7 +140,7 @@ expect_title "block.mitcad - Mitcad"
 expect_file '[p["value"] for p in doc["parameters"] if p["name"] == "d3"]' "[35.0]" \
   "changed parameter saved"
 
-echo "--- Unsaved changes: Cancel on New, Save on exit"
+echo "--- Unsaved changes: Cancel on New Design, Save on exit"
 # Undo takes back the last command of this session: the change of d3.
 ui_step "undo the change of d3 (Ctrl+Z)" ui_key ctrl+z
 expect_title "block.mitcad* - Mitcad"
@@ -133,12 +148,12 @@ ui_step "redo: the state saved (Ctrl+Y)" ui_key ctrl+y
 expect_title "block.mitcad - Mitcad"
 ui_step "undo again (Ctrl+Z)"            ui_key ctrl+z
 expect_title "block.mitcad* - Mitcad"
-ui_step "new (Ctrl+N)"                   ui_key ctrl+n
+ui_step "new design (Ctrl+N)"            ui_key ctrl+n
 focus_dialog '^Mitcad$'
 ui_step "cancel (Esc)"                   ui_key Escape
 focus_main
 expect_title "block.mitcad* - Mitcad"
-grep -q "New document" "$UI_LOG" && ui_fail "New went ahead after Cancel"
+grep -q "New document" "$UI_LOG" && ui_fail "New Design went ahead after Cancel"
 ui_step "exit (Ctrl+Q)"                  ui_key ctrl+q
 focus_dialog '^Mitcad$'
 ui_key Return # Save, the default button
@@ -147,7 +162,7 @@ grep -qF "Saved $FILE" "$UI_LOG" || ui_fail "not saved on exit"
 expect_file '[p["value"] for p in doc["parameters"] if p["name"] == "d3"]' "[20.0]" \
   "undo saved on exit"
 
-echo "--- Open dialog, Don't Save on New"
+echo "--- Open dialog, Don't Save on New Design"
 ui_start_app --no-native-dialogs
 expect_title "Untitled - Mitcad"
 ui_step "open (Ctrl+O)"                  ui_key ctrl+o
@@ -158,11 +173,12 @@ expect_title "block.mitcad - Mitcad"
 checksum=$(sha256sum "$FILE")
 ui_step "create a sketch on XY"          ui_create_sketch xy
 expect_title "block.mitcad* - Mitcad"
-ui_step "new (Ctrl+N)"                   ui_key ctrl+n
+ui_step "new design (Ctrl+N)"            ui_key ctrl+n
 focus_dialog '^Mitcad$'
 ui_step "don't save (D)"                 ui_key d
 focus_main
 ui_expect_log "New document" "new document after Don't Save"
+ui_expect_log "New Design: no project, an untitled design" "outside projects New Design is New"
 expect_title "Untitled - Mitcad"
 [ "$(sha256sum "$FILE")" = "$checksum" ] || ui_fail "the file changed after Don't Save"
 echo "ok   file unchanged"

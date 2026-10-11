@@ -105,21 +105,21 @@ struct Limit {
 
 /// Distances below this hold a joint where the file places the
 /// occurrences, mm (relative to the size of the placements).
-const LINEAR: f64 = 1e-6;
+pub(crate) const LINEAR: f64 = 1e-6;
 /// Rotation matrix entries within this hold a joint.
-const ANGULAR: f64 = 1e-7;
+pub(crate) const ANGULAR: f64 = 1e-7;
 /// The most faces and edges tried as a side's geometry.
 const MAX_ENTITIES: usize = 8;
 
 /// The item's detail as JSON.
-fn detail(item: &TimelineItem) -> Value {
+pub(crate) fn detail(item: &TimelineItem) -> Value {
     item.detail
         .as_ref()
         .and_then(|d| serde_json::to_value(d).ok())
         .unwrap_or(Value::Null)
 }
 
-fn vec3(v: &Value) -> Option<Vec3> {
+pub(crate) fn vec3(v: &Value) -> Option<Vec3> {
     serde_json::from_value(v.clone()).ok()
 }
 
@@ -136,7 +136,7 @@ fn raw_value(v: &Value) -> Option<f64> {
 
 /// A frame through `origin` with axes `x` and `z` (unit, at right angles);
 /// None when they are not.
-fn frame(origin: Vec3, x: Vec3, z: Vec3) -> Option<Transform> {
+pub(crate) fn frame(origin: Vec3, x: Vec3, z: Vec3) -> Option<Transform> {
     let (x, z) = (geom::unit(x)?, geom::unit(z)?);
     if geom::dot(x, z).abs() > 1e-6 || !origin.iter().all(|v| v.is_finite()) {
         return None;
@@ -149,13 +149,13 @@ fn frame(origin: Vec3, x: Vec3, z: Vec3) -> Option<Transform> {
 }
 
 /// A frame's origin and x, y, z axes.
-fn parts(t: &Transform) -> [Vec3; 4] {
+pub(crate) fn parts(t: &Transform) -> [Vec3; 4] {
     let column = |c: usize| -> Vec3 { std::array::from_fn(|r| t.linear[r][c]) };
     [t.translation, column(0), column(1), column(2)]
 }
 
 /// A 4x4 matrix of the dump (cm) as a rigid transform in millimetres.
-fn matrix(v: &Value) -> Option<Transform> {
+pub(crate) fn matrix(v: &Value) -> Option<Transform> {
     components::transform(&serde_json::from_value(v.clone()).ok()?)
 }
 
@@ -174,7 +174,7 @@ fn geometry_frame(g: &Value) -> Option<Transform> {
 
 /// Whether two placements or frames agree within [`LINEAR`] and
 /// [`ANGULAR`].
-fn same(a: &Transform, b: &Transform) -> bool {
+pub(crate) fn same(a: &Transform, b: &Transform) -> bool {
     let size = a
         .translation
         .iter()
@@ -186,7 +186,7 @@ fn same(a: &Transform, b: &Transform) -> bool {
 
 /// How far two placements are apart, for messages: the distance of their
 /// origins (mm) and the angle of the turn between them.
-fn gap(a: &Transform, b: &Transform) -> String {
+pub(crate) fn gap(a: &Transform, b: &Transform) -> String {
     let d = geom::distance(a.translation, b.translation);
     // The trace of aᵀ·b is 1 + 2 cos(angle).
     let trace: f64 = (0..3)
@@ -221,7 +221,7 @@ fn fixed_plane(t: &Transform) -> Value {
 }
 
 /// Why a joint whose sides have the same occurrence path is left out.
-fn same_sides(path: &[OccurrenceUid]) -> String {
+pub(crate) fn same_sides(path: &[OccurrenceUid]) -> String {
     if path.is_empty() {
         "both sides are the component's own geometry".to_owned()
     } else {
@@ -252,7 +252,7 @@ fn counted(reasons: &[String]) -> String {
         .join("; ")
 }
 
-fn path_text(path: &[OccurrenceUid]) -> String {
+pub(crate) fn path_text(path: &[OccurrenceUid]) -> String {
     path.iter()
         .map(ToString::to_string)
         .collect::<Vec<_>>()
@@ -423,6 +423,15 @@ impl<K: crate::ImportKernel> Importer<'_, K> {
             Some("GroundOccurrence") => self.ground_item(at, item),
             Some("Snapshot") => self.capture_item(at, index, item),
             Some("RigidGroup") => self.rigid_group_item(at, index, item),
+            // Assembly relationships (mitcad#155): their own counts.
+            Some("GeometricRelationship") => {
+                self.relationship_item(at, index, item);
+                return;
+            }
+            Some("TangentRelationship") => {
+                self.tangent_item(at, index, item);
+                return;
+            }
             _ => Err("not an assembly item".to_owned()),
         };
         if let Err(reason) = result {
@@ -434,7 +443,7 @@ impl<K: crate::ImportKernel> Importer<'_, K> {
     /// An occurrence reference of a joint item (`label` in messages) as
     /// Mitcad's path, with the component it starts in
     /// (`context_component`, else the item's).
-    fn occurrence_path(
+    pub(crate) fn occurrence_path(
         &self,
         item: &TimelineItem,
         side: &Value,
@@ -470,7 +479,7 @@ impl<K: crate::ImportKernel> Importer<'_, K> {
     }
 
     /// The component an occurrence path from `component` ends in.
-    fn path_end(&self, component: ComponentUid, path: &[OccurrenceUid]) -> ComponentUid {
+    pub(crate) fn path_end(&self, component: ComponentUid, path: &[OccurrenceUid]) -> ComponentUid {
         path.last()
             .and_then(|o| self.doc.assembly().occurrence(*o))
             .map_or(component, |o| o.component)
@@ -504,7 +513,7 @@ impl<K: crate::ImportKernel> Importer<'_, K> {
     }
 
     /// The occurrences' placements in their parents at the marker.
-    fn placements(&self) -> HashMap<OccurrenceUid, Transform> {
+    pub(crate) fn placements(&self) -> HashMap<OccurrenceUid, Transform> {
         let a = self.doc.assembly();
         a.occurrences
             .iter()
@@ -542,7 +551,7 @@ impl<K: crate::ImportKernel> Importer<'_, K> {
 
     /// Adds a definition to `component`; kept when it moves no occurrence
     /// elsewhere than where the file places it.
-    fn add_unmoved(
+    pub(crate) fn add_unmoved(
         &mut self,
         def: &Value,
         name: Option<&str>,
@@ -561,7 +570,7 @@ impl<K: crate::ImportKernel> Importer<'_, K> {
 
     /// The frame `geometry` gives in `component` (with `frame_override`), as
     /// a joint resolves it at the marker.
-    fn resolved_frame(
+    pub(crate) fn resolved_frame(
         &self,
         component: ComponentUid,
         geometry: &Value,
@@ -586,7 +595,7 @@ impl<K: crate::ImportKernel> Importer<'_, K> {
     /// in one pass where the kernel has it (mitcad#87: finding each by its
     /// name takes as long as the whole list on large bodies), kept while
     /// the body's shape is the same.
-    fn body_frame_entities(&self, body: BodyUid) -> std::sync::Arc<Vec<FrameEntity>> {
+    pub(crate) fn body_frame_entities(&self, body: BodyUid) -> std::sync::Arc<Vec<FrameEntity>> {
         let version = self.doc.body_version(body).unwrap_or_default();
         if let Some((v, entities)) = self.frame_entities.borrow().get(&body)
             && *v == version
@@ -828,7 +837,7 @@ impl<K: crate::ImportKernel> Importer<'_, K> {
     /// where the file places its occurrences right after the item at
     /// `index` (`after`; levels without placements of their own where they
     /// are at the marker).
-    fn path_world(&self, path: &[OccurrenceUid], index: i64, after: bool) -> Transform {
+    pub(crate) fn path_world(&self, path: &[OccurrenceUid], index: i64, after: bool) -> Transform {
         let a = self.doc.assembly();
         path.iter().fold(Transform::IDENTITY, |t, o| {
             let at = after

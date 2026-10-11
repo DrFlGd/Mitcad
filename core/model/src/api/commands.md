@@ -154,6 +154,10 @@ Shared rules:
 - A face or edge that a later edit removed is explained (`face X no
   longer exists after Fillet2`, `... does not exist because Fillet1 is
   suppressed`).
+- A feature an importer left a note on (a fallback, a partial item) is
+  `warning` too, and a placeholder of an item the file had suppressed or
+  failed is suppressed with that note ([The import's outcomes on the
+  timeline](#the-imports-outcomes-on-the-timeline)).
 - A feature that succeeds with a caveat has warnings (`timeline` status
   `warning`): a fillet or chamfer built 0.1 % smaller than asked (at the
   exact size it takes a face away, which OCCT cannot build) or built as
@@ -651,7 +655,16 @@ Shell: the `faces` are removed (none: a closed void); the wall runs
 negative). `tangent_chain` (default true) also removes faces tangent to a
 removed one; `rounded` rounds the outer corners. The outside of the wall
 keeps the face names; the inside is `<shell>:offset(<face>)` and the end
-of the wall where a removed face was `<shell>:offset_cap(<face>)`.
+of the wall where a removed face was `<shell>:offset_cap(<face>)`. A face
+whose surface is only C0 continuous (a B-spline with a crease in its
+parametrisation, as imported bodies have them) is split at the creases
+first, so its wall comes in pieces (`#k`) under the face's name. A face
+that vanishes at the wall's thickness (a strip narrower, or a convex
+rounding tighter, than the wall) has no inside face: the insides of the
+faces beside it meet (mitcad#172, the OCCT port's patch 0100). One that
+vanishes only in parts still makes the shell fail, and so does a wall
+the kernel cannot close (an open face ending smoothly in a kept one,
+without the tangent chain), which before came back as the body itself.
 
 ```json
 {"type": "draft", "body": "F2.b0", "faces": ["F2:side(c1[c4,c2])"],
@@ -772,11 +785,25 @@ revolutions and loft weights are unitless values. Examples:
   instead of a rail. The profile keeps its place in the frame of the
   path's tangent and the surface's normal where the path runs, so it turns
   with the surface (a thread's profile swept along a helical edge of the
-  thread's flank keeps its angle to the flank). Each path curve must lie
-  on one of the faces within 1e-4 mm (else `the path must lie on the guide
-  surface`); the orientation must be perpendicular; twist and taper are
-  ignored. The path is usually an edge of the faces, or sketch curves on
-  them.
+  thread's flank keeps its angle to the flank). A path on the faces
+  (within 1e-4 mm) takes their normal where it runs; a path beside them
+  (mitcad#161: a thread's crest guided by its flank) takes their normal
+  at their points nearest to it. The orientation must be perpendicular;
+  twist and taper are ignored. The path is usually an edge of the faces,
+  or sketch curves on them. A sweep that passes over itself (a profile
+  taller than a helix's pitch) is swept in pieces that do not, each from
+  the profile placed in the frame where it starts, and the pieces are
+  fused.
+- `body_links` (mitcad#161): bodies of other components the path's edges
+  and the guide surfaces are on, each with where it is seen, `{"F2.b0":
+  {"source": "O1", "target": "O2"}}` (an `OccurrenceLink`, as a combine's
+  `tool_links`, [Geometry of other
+  components](#geometry-of-other-components)): the body is read in its
+  component and moved into the sweep's coordinates by the occurrences'
+  placements at the sweep's point of the timeline. A link for a body
+  neither the path nor a guide surface is on is refused; another
+  component's body without a link fails the sweep (`body F2.b0 (from
+  Extrude1) belongs to A; …`).
 - `extent`: `{"type": "full"}` (default: the whole path both ways from the
   profile, once round a closed path) or `{"type": "partial", "fraction":
   f1, "fraction2": f2}`: f1 of the path's part beyond the profile, f2 of
@@ -1796,8 +1823,8 @@ timeline marker.
 | Query | Fields | Result |
 |---|---|---|
 | `document` | | `features`, `marker`, `bodies` (count), `undo`, `redo` (labels or null), `undo_depth`, `units` {`length`, `angle`}, `warnings` (what loading the file changed, such as renamed parameters), `revision`, `modified` (not the state last marked saved), `display` {`origin`, `isolated`}; with components `components`, `occurrences` (counts), `active_component` |
-| `timeline` | | `marker`, `groups` (when any: `name`, `features` in timeline order) and `features`: `uid`, `name`, `type`, `suppressed`, `status` (`ok`, `warning`, `error`, `suppressed`, `rolled_back`, `pending` before the first recompute), `error` (the error, or the warnings joined with `; `), `component` (when not the root), for a sketch before the marker `dof` (0 when fully constrained), for a sketch or construction feature `visible` and `visible_set` (its light bulb was set) |
-| `feature` | `uid` | `uid`, `name`, `type`, `suppressed`, `status`, `error`, `visible`, `visible_set`, `warnings` (when any), `def` (parameters by name) |
+| `timeline` | | `marker`, `groups` (when any: `name`, `features` in timeline order) and `features`: `uid`, `name`, `type`, `suppressed`, `status` (`ok`, `warning`, `error`, `suppressed`, `rolled_back`, `pending` before the first recompute), `error` (the error, or the import note and the warnings joined with `; `), `import` (what the importer said about it, when it did: a fallback, a partial item, a placeholder; see [The import's outcomes on the timeline](#the-imports-outcomes-on-the-timeline)), `component` (when not the root), for a sketch before the marker `dof` (0 when fully constrained), for a sketch or construction feature `visible` and `visible_set` (its light bulb was set), for a feature that uses sketches `sketches` (their uids in timeline order: profiles, paths, guides, curves or points it refers to, also while it is suppressed or after the marker; the browser lists the feature under each, mitcad#177) |
+| `feature` | `uid` | `uid`, `name`, `type`, `suppressed`, `status`, `error`, `visible`, `visible_set`, `warnings` (when any), `import` (the import note, when any), `def` (parameters by name) |
 | `parameters` | | `name`, `expression`, `unit` (`""` for unitless), `value` (mm or rad), `text` (the value in its unit, `"12.5 mm"`), `comment`, `kind` (`user`, `model`), `owner` (the feature of a model parameter), `dependencies` (names its expression uses), `favorite` |
 | `evaluate` | `expression`, `kind`: `length` (default), `angle` or `unitless` | `value` (mm or rad), `text` (in the document's unit, `"40 mm"`), `references` (parameter names used), `expression` (with decimal points: `"d1 * 1,5"` gives `"d1 * 1.5"`) |
 | `appearances` | | the library's and the document's appearances with their parameters ([Appearances](#appearances)) |
@@ -2040,7 +2067,9 @@ Examples: `tools/cli/tests/f6_*.json`.
   else is in it. `components_from_bodies` adds, per body, a
   `component_from_bodies` feature in the body's component: the body moves
   into a new component named after it, where it is, keeping its id and
-  name; later features on it belong to that component.
+  name; later features on it belong to that component. The features
+  that made a body can move into a component with it instead
+  ([Moving features into components](#moving-features-into-components)).
 - **Placements.** An occurrence's transform is rigid (rows of a rotation
   and a translation, `[[r00, r01, r02, tx], …]`, in its parent's
   coordinates). Timeline features place occurrences of their own
@@ -2459,11 +2488,13 @@ tests `constraint_tests.rs`, `core/solver/tests/rigid_constraints.rs`,
 | `joints` | | also `constraints`: every constraint set in timeline order: `uid`, `name`, `type`, `component`, `rows` (`row` from 1, `type`, `a` and `b` {`occurrence`, `path`}, `holds` at the marker, `value` of a row with limits), `status`, `error`, `state` (`placed`, `satisfied`, or the status), `moved`, `solved` (every row holds) |
 | `constraint_row` | `a`, `b` (references; `occurrence` from `component`, uids or names), `a2`, `b2`, `type` (optional), `component` (the active one when left out) | `kinds` {`a`, `b`: `point`, `plane`, `axis`, `circle`, `cylinder`, `sphere`}, `types` (those the references fit, the likeliest first: two circles an insert, a circle and a cylinder an axis insert, a cylinder or sphere with a plane, or spheres, a tangent, else an align), `type` (the first), `measures` (in the component at the marker: `offset` a's origin above b's plane or a points' distance, `angle` between the z axes, `twist` a's x axis about b's z); with `type`: `fits` and `error` |
 
+The `.f3d` import brings the file's assembly relationships in as
+constraint sets (mitcad#155, *Assembly relationships* in the [import
+README](../../../import/README.md#assembly-relationships)).
+
 Not yet: a tangent's contact passing to the second body's other faces
 ("all faces"), cones and tori in tangents, symmetry and motion
-constraints, and the `.f3d` import of the file's stored assembly
-relationships (their items are skipped, *Items without a translation* in
-the [import README](../../../import/README.md)).
+constraints.
 
 ## Import and export
 
@@ -2701,7 +2732,10 @@ take the placements the file gives them at the end of its timeline; the
 file's joints, as-built joints, joint origins, rigid groups and ground
 items come in as [joint features](#joints) where they hold there (else as
 as-built joints, with a warning), other assembly relationships are
-skipped. One undo step (`Import part.f3d`). The bridge handles the command
+skipped. The fallbacks, partial items and items suppressed or failed in
+the file show on the timeline with the report's notes ([The import's
+outcomes on the timeline](#the-imports-outcomes-on-the-timeline)).
+One undo step (`Import part.f3d`). The bridge handles the command
 (`core/ffi/src/f3d_import.rs`), not the model, because it needs the
 file's bodies built with OCCT.
 
@@ -2790,7 +2824,7 @@ first, then those the file's history suggests without them.
 | Align (not in the API) | `move` (`free`) or `align` | |
 | `ScaleFeature` | `scale` | `inputEntities` (bodies), `point` (origin point → origin, vertex, else fixed), `isUniform`, `scaleFactor`, `xScale`, `yScale`, `zScale` |
 | `Box/Cylinder/Sphere/TorusFeature` | `box`, `cylinder`, `sphere`, `torus` | sizes from `parameters.model` by `createdBy`; the placement (not in the API) from the body: a fixed plane |
-| `SweepFeature` | `sweep` | `profile` → `profiles` (as for extrude), `path` → `path`, `guideRail` → `guide_rail`, `orientation` (Perpendicular/ParallelOrientationType), `twistAngle` → `twist_angle`, `taperAngle` → `taper_angle`, `profileScaling` (SweepProfileScale/Stretch/NoScalingOption) → `profile_scaling`, `distanceOne`/`distanceTwo` → `extent` `partial` unless both 1, `isDirectionFlipped` → `flip` (with a guide rail the other way first; then the other direction where a partial extent or a rail makes it differ), `operation`, `participantBodies`; `guideSurfaces` → `guide_surfaces` (mitcad#157: each face found by its fingerprint, as other face inputs; a `guideRail` given with them is not used; perpendicular only; faces without geometry, as the stream decoder gives them, → fallback); `extent` FullExtents and `isSolid` false → fallback. From the stream decoder, which gives a profile's sketch only and neither `orientation`, `profileScaling` nor `isDirectionFlipped`, the history picks among the sketch's regions, `distanceTwo` 0 as none or as given, both directions, perpendicular then parallel (scale, then stretch and none with a rail) |
+| `SweepFeature` | `sweep` | `profile` → `profiles` (as for extrude), `path` → `path`, `guideRail` → `guide_rail`, `orientation` (Perpendicular/ParallelOrientationType), `twistAngle` → `twist_angle`, `taperAngle` → `taper_angle`, `profileScaling` (SweepProfileScale/Stretch/NoScalingOption) → `profile_scaling`, `distanceOne`/`distanceTwo` → `extent` `partial` unless both 1, `isDirectionFlipped` → `flip` (with a guide rail the other way first; then the other direction where a partial extent or a rail makes it differ), `operation`, `participantBodies`; `guideSurfaces` → `guide_surfaces` (mitcad#157: each face found by its fingerprint, as other face inputs, with every piece of it the replay splits; a `guideRail` given with them is not used; perpendicular only; faces without geometry → fallback); a path or guide surface on another component's body → `body_links` (mitcad#161), the sweep in its profile's component; a path edge the replay splits → its pieces in order; `extent` FullExtents and `isSolid` false → fallback. From the stream decoder, which gives a profile's sketch only and neither `orientation`, `profileScaling` nor `isDirectionFlipped`, the history picks among the sketch's regions, `distanceTwo` 0 as none or as given, both directions, perpendicular then parallel (scale, then stretch and none with a rail) |
 | `LoftFeature` | `loft` | `loftSections[]` by `index`: `entity` a profile → `profile`, a face → `face`, a path of a body's edges (`PathEntity` items of `BRepEdge`s, or one edge; the section of tangent and smooth conditions) → `face`, the face of that body the edges go round (each of them borders it and it has no others), a sketch point, a construction point or a vertex → `point`; first and last `endCondition`: `LoftFreeEndCondition` → none, `LoftPointSharpEndCondition` → `point_sharp`, `LoftDirectionEndCondition` → `direction` (`angle`, `weight`), `LoftTangentEndCondition` → `tangent`, `LoftSmoothEndCondition` → `smooth`, `LoftPointTangentEndCondition` → `point_tangent` (`weight`); `centerLineOrRails` with `isCenterLine` → `centerline`, else `rails`; `isClosed` → `closed`; `operation`, `participantBodies` (the IR has no ruled loft). A loft with end conditions or rails is kept when it matches the history within 0.5 % (see [loft](#loft)). A profile without its area (the stream decoder gives its sketch only) is each of the sketch's regions in turn, the history picking, at most twelve choices of all sections |
 | `PipeFeature` | `pipe` | `path`, `sectionType` (Circular/Square/TriangularPipeSectionType) → `section`, `sectionSize` → `size`, `isHollow` with `sectionThickness` → `thickness`, `distanceOne`/`distanceTwo` → `extent`, `operation`, `participantBodies`. Without `sectionType` and `isHollow` (the stream decoder): a solid circle first, then hollow with `sectionThickness`, square and triangular, the history picking |
 | `CoilFeature` | | not translated (fallback): the sizes are known (`parameters.model` by `role`), not the coil type, section, direction and placement ([README](../../../import/README.md), *Limits*) |
@@ -2804,7 +2838,9 @@ first, then those the file's history suggests without them.
 | `JointOrigin` | `joint_origin` | in the owning component: `geometry` → geometry that gives the frame before `angle` and `offsetZ` (`"origin"` for the component's origin point, a face or edge, else a fixed plane), `angle` → `angle`, `offsetZ` → `offset`; checked against the file's frame, else that frame fixed |
 | `GroundOccurrence` | | `occurrence` → the occurrence is grounded |
 | `Snapshot` (captured position) | `capture_position` | one per component whose occurrences it places: `positions[]` (`occurrence` paths from the item's component, `transform` there; for a captured position of joints' values, the occurrences whose `_f3d.placements` name it) → each occurrence at its placement in its parent; positions inside components of other documents and of grounded occurrences are left out (`partial`) |
-| Items the stream decoder names by their class only (`ComponentInsert`, `GeometricRelationship`, `Group`, `FlangeFeature`, ...) | | those without geometry are skipped with what they are, the others are not translated (fallback) with the reason ([core/import/README.md](../../../import/README.md#items-without-a-translation)) |
+| `GeometricRelationship` | `constraint_set` | in the component its rows' paths start in, a row per decoded constraint (`rows[]`): side two → `a`, side one → `b` (a point or an axis on a plane: it → `a`, the plane → `b`); each frame (`_f3d.frames`) on geometry of the component the path ends in that gives its plane, axis, circle or point (nearest the picked point first), else fixed geometry with the frame; on a component of another document fixed geometry there; two planes, a plane and a circle, a point or an axis on a plane, two axes → `align`, two circles → `insert`, a centring → `center` (`a`, `a2`, `b`, `b2`), an angle → `angle`; `flip` and the sign of `offset` (the parameter, negated where Mitcad's normal is the other way) from the references where the file places the occurrences; rows that do not hold there, sides inside components of other documents and circles on components of other documents are left out with the reason ([core/import/README.md](../../../import/README.md#assembly-relationships)) |
+| `TangentRelationship` | `constraint_set` | one `tangent` row between the planar, cylindrical or spherical faces the file's points lie on (`flip` where they touch inside); else left out with the reason |
+| Items the stream decoder names by their class only (`ComponentInsert`, `Group`, `FlangeFeature`, ...) | | those without geometry are skipped with what they are, the others are not translated (fallback) with the reason ([core/import/README.md](../../../import/README.md#items-without-a-translation)) |
 
 ### FreeCAD import (.FCStd)
 
@@ -3194,6 +3230,58 @@ to the assembly and by name, a missing one; hidden, grounded and
 suppressed occurrences), and `iam.corpus`
 ([tools/cli/iam-corpus.cmake](../../../../tools/cli/iam-corpus.cmake),
 every `.iam` under `MITCAD_IPT_CORPUS`).
+
+### The import's outcomes on the timeline
+
+The importers that replay a history (the `.f3d` and `.ipt` imports,
+FreeCAD documents) leave on the features they make what their report
+says of them (mitcad#170): an **import note**, in the definition state
+and the design file (a feature's `import_note`), so that a saved import
+shows it when it is opened again.
+
+- A fallback's base feature (`base` with `replaces`; one per component
+  that changed) says which items it stands in for, each with the report's
+  note as the reason: `Stands in for Extrude5 (its result is not in the
+  file's history)`; items in a row with the same reason share it
+  (`Stands in for Fillet2, Fillet3 (the import was stopped)`), and after
+  eight the rest are counted (`and 37 more items (see the import
+  report)`). A base feature the import added for another reason (the
+  bodies brought to a history state exactly, the stored bodies at the
+  end) has the report's warning about it.
+- An item that came in partly (`partial`) has `Partly imported: ` and the
+  report's note (`left out: 3 constraints ...`).
+- An item skipped because it was suppressed or failed in the file (the
+  `.f3d` import's `suppressed in the file`, `the file keeps no result for
+  it ...`, `failed in the file: ...`; FreeCAD's `suppressed in FreeCAD`)
+  becomes a **placeholder** at its place: `{"type": "placeholder",
+  "item_type": "ExtrudeFeature"}`, suppressed, named after the item (when
+  the name is free, else `Placeholder<n>`), its note the report's note.
+  It builds nothing; unsuppressed, it warns that it builds nothing. Items
+  skipped for having no geometry (occurrences, groups, relationships the
+  import does not translate) get none.
+
+A feature with a note has the status `warning` while it builds (the
+note first in `error`, before its evaluation's warnings); a placeholder
+stays `suppressed` with the note as its `error`; a failed feature shows
+its error. The `timeline` and `feature` queries give the note as
+`import`. A command that changes the feature's definition or one of its
+dimensions (the parameters it owns) clears the note when the feature then
+does not fail; renaming, suppressing and moving it do not, and undo
+brings the note back. The report's texts are the source: the timeline's
+notes are made from the report at the end of the import.
+
+| Command (Rust, `Document`) | Fields | Result |
+|---|---|---|
+| `set_import_notes` | `[(uid, note)]` (an empty note removes it) | one undo step `Import notes`, no recompute |
+| `add_import_placeholder` | `name`, `item_type`, `note`, `component` | the placeholder, suppressed with the note (`Add <name>`) |
+| `import_note`, `import_notes` | `uid` | the note of a feature; every feature's |
+
+Tests: `core.model` (`document::import_notes`: status, message, save
+and reopen, an edit clearing the note), `core.import`
+(`timeline_note_tests`: fallbacks, partial sketches and placeholders of an
+`.f3d` design; `a_suppressed_feature_becomes_a_placeholder` and the
+fallback's note of a FreeCAD Body), and
+[tools/ui-import-status-test.sh](../../../../tools/ui-import-status-test.sh).
 
 ## Files and version history
 
@@ -3728,7 +3816,8 @@ commands).
 
 **The display name** (mitcad#152) is `local`'s `name`: the name the
 Projects panel shows for the project on this computer instead of its
-default (the folder's name; a Cloud project's `owner/repository`). It is
+default (the folder's name; a Cloud project's repository address
+without the scheme, `github.com/owner/repository`). It is
 kept in `.mitcad/local/name.json` (`{"name": "…"}`, ignored by git like
 the rest of `.mitcad/local/`; no file without a name), so it stays with
 the folder across restarts and moves, and is never recorded as a version
@@ -4515,8 +4604,78 @@ both as an `OccurrenceLink` (`{"source": "O1", "target": "O2"}`):
 
 The `sketch` query shows `plane_link`. A combine's tools may be bodies of
 another component the same way (`tool_links`, [combine](#combine),
-mitcad#104). Tests: `core/model/src/link_tests.rs`,
+mitcad#104), and a sweep's path and guide surfaces (`body_links`,
+[sweep](#sweep), mitcad#161). Tests: `core/model/src/link_tests.rs`,
 `core/model/src/links.rs`.
+
+## Moving features into components
+
+A design often starts in the root: sketches, extrudes and fillets made
+there, and components only later. The root then holds modelled bodies
+and components (a hybrid assembly), and Create Components from Bodies
+moves a body into a component without the features that made it.
+`move_to_component` (mitcad#171, `document/move_features.rs`) moves the
+features themselves into new components placed where they were, as if
+they had been made there:
+
+- **Everything** (no `bodies`, `features` or `groups`): every modelled
+  feature of `component` (default the root) goes into one new component,
+  placed in it at the identity and grounded; the component keeps only
+  components and the features that place or relate them (Move and
+  Position of occurrences, joints, rigid groups, assembly constraints).
+  A feature that makes a component (a new-component operation, Component
+  from Bodies) goes too when it uses what goes; the component it made
+  stays placed where it is.
+- **Bodies, features, groups:** `bodies` and `features` go into one new
+  component with the features that made those bodies; `groups` (lists of
+  bodies) into a component each, named after the body when it is one
+  (otherwise `Component<n>`; `name` or `names` choose). Which features go
+  follows the last recompute (the bodies each feature set, removed or
+  read) and the references (for features after the marker, suppressed or
+  failed): a feature goes with the features it refers to, those that
+  refer to it and those that work on the same bodies.
+- **Conflicts:** a feature that would belong to two components, or
+  works on a body that stays (a combine or a cut through bodies of two
+  groups, a sketch on a face of a body that stays, a sketch two groups
+  use), refuses the move with the reason (`Combine1 ties Body1, Body2,
+  which would go into different components; …`), unless `"together":
+  true` keeps such bodies in one component (a body that would stay goes
+  along). A feature that stays and uses what would go, which no
+  occurrence path can follow (a Move of occurrences about an edge of a
+  moving body), refuses it in every case.
+- **Nothing moves:** features keep their uids, timeline order,
+  parameters and the topological names of what they make. References
+  from elsewhere take the new occurrence into their paths: sketch planes
+  and projections of other components and combines' tools
+  ([Geometry of other components](#geometry-of-other-components)),
+  joint and constraint origins, Isolate; a moved feature's own links are
+  seen from the new occurrence. The move is refused when a feature that
+  worked fails after it, or a definition that checked no longer does.
+- `move_history_into_component` with `feature`, a `component_from_bodies`:
+  the features that made its bodies go into the component it made, which
+  then has their history (Paste New copies it), and the feature goes.
+  Refused when one of them also works on a body that stays.
+- Each command is one undo step (`Move Features of Root into Component1`,
+  `Move History into Body1`).
+
+| Command | Fields | Result |
+|---|---|---|
+| `move_to_component` | `component` (default the root), `bodies`, `features`, or `groups`; `name` or `names`; `together` (default false) | `components`: `component`, `occurrence`, `name`, `bodies`, `features` |
+| `move_history_into_component` | `feature` | `component`, `name`, `features` |
+| `set_hybrid_assembly` | `allowed` (default true) | |
+
+| Query | Fields | Result |
+|---|---|---|
+| `move_to_component` | as the command (without names and `together`) | `component`, `name`, `everything`, `bodies` (the component's at the marker: `uid`, `name`), `hybrid_assembly`, `groups` (`bodies`, `features` with names), `conflicts` (`feature`, `name`, `groups` (indices), `staying` bodies, `message`), `together` (the groups with the conflicts' bodies kept together, or null), `problems` |
+| `feature_references` | `def` (a definition as `add_feature` takes it) | `features` it refers to, `components` they are in |
+
+The application asks before it makes a component in a root with
+modelled bodies (`app/framework/HybridAssembly.cpp`): Move into a New
+Component, Continue as Is or Cancel. "Don't ask again for this design"
+runs `set_hybrid_assembly` (undo step `Allow Hybrid Assembly`); the
+`document` query has `"hybrid_assembly": true` then, and the design file keeps
+`"hybrid_assembly": true`. Tests: `core/model/src/move_features_tests.rs`,
+`tools/ui-hybrid-test.sh`.
 
 ## Adding to the API
 

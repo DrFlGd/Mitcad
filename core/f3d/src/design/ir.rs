@@ -371,6 +371,11 @@ record! {
         /// that component's history operation for it (its own
         /// `result_no` is -1).
         "made_result_no" => made_result_no: i32,
+        /// A part of a timeline item in another component (mitcad#169):
+        /// the item's index. The part is a feature of that component that
+        /// makes the item's change there; it follows the item, with an
+        /// index after the timeline's items.
+        "part_of" => part_of: i64,
     }
 }
 
@@ -996,6 +1001,14 @@ record! {
         "producer" => producer: i64,
         /// A body: its index among the bodies its producer made.
         "body_index" => body_index: i64,
+        /// An edge or face found in another component's history than
+        /// the item's (mitcad#161): that component (`components[]._f3d.
+        /// object_id`), in whose coordinates its geometry is.
+        "component" => component: u64,
+        /// A free-form face found (mitcad#161): more points inside it,
+        /// spread over it (cm), by which the import finds every piece of
+        /// it where the replay splits the face.
+        "face_points" => face_points: Vec<Vec3>,
     }
 }
 

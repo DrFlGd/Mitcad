@@ -35,7 +35,7 @@ use serde::Deserialize;
 use serde_json::Value;
 
 use super::{ApiError, read_json};
-use crate::document::{Document, status_message, status_text};
+use crate::document::{Document, noted_message, noted_status};
 use crate::ids::OccurrenceUid;
 use crate::kernel::Kernel;
 use crate::topo::{EdgeName, FaceName, RegionKey};
@@ -266,8 +266,9 @@ impl<K: Kernel> Document<K> {
             };
             let status = self.status(entry.uid);
             let warnings = self.warnings(entry.uid);
-            let text = status_text(status, warnings);
-            let message = status_message(status, warnings).unwrap_or_default();
+            let text = noted_status(status, warnings, self.import_note(entry.uid));
+            let message =
+                noted_message(status, warnings, self.import_note(entry.uid)).unwrap_or_default();
             if let Some(expected) = expect.status.as_ref().filter(|s| s.as_str() != text) {
                 return fail(format!("{wanted} to be {expected}, got {text} {message}"));
             }

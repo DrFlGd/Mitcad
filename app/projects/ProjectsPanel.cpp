@@ -284,8 +284,8 @@ protected:
       m_panel.openCurrent();
       return;
     }
-    // A Cloud project, or its host and owner above it: its settings
-    // (mitcad#152) instead of expanding the row.
+    // A Cloud project: its settings (mitcad#152) instead of expanding the
+    // row.
     if (item != nullptr && event->button() == Qt::LeftButton && m_panel.settingsOnDoubleClick(item)) {
       return;
     }
@@ -458,7 +458,7 @@ ProjectsPanel::ProjectsPanel(Host host, QWidget* parent) : QWidget(parent), m_ho
   });
   m_settings = action("settings", tr("Project Settings"), tr("The selected project's settings"), [this] {
     // The project of the selected row: the project itself, a folder or a
-    // design in it, a location holding one project (mitcad#153).
+    // design in it (mitcad#153).
     QTreeWidgetItem* item = m_tree->currentItem();
     const QString root = settingsRoot(item);
     qInfo().noquote() << QStringLiteral("Projects panel: settings of %1%2")
@@ -642,41 +642,20 @@ void ProjectsPanel::rebuild() {
   const QString current = m_host.currentRoot ? m_host.currentRoot() : QString();
   m_building = true;
   m_tree->clear();
-  QStringList locations;
+  // The projects at the top, nothing above them (mitcad#173), by the name
+  // shown.
+  QVector<const ProjectRow*> rows;
   for (const ProjectRow& row : std::as_const(m_rows)) {
-    if (!locations.contains(row.location)) {
-      locations << row.location;
-    }
+    rows << &row;
   }
-  std::sort(locations.begin(), locations.end(), [](const QString& a, const QString& b) {
-    if ((a == localLocation()) != (b == localLocation())) {
-      return a == localLocation();
-    }
-    return a.compare(b, Qt::CaseInsensitive) < 0;
+  std::sort(rows.begin(), rows.end(), [](const ProjectRow* a, const ProjectRow* b) {
+    const int byName = a->name.compare(b->name, Qt::CaseInsensitive);
+    return byName != 0 ? byName < 0 : a->root < b->root;
   });
-  for (const QString& location : std::as_const(locations)) {
-    auto* item = new QTreeWidgetItem(m_tree);
-    item->setText(kName, location);
-    item->setIcon(kName, themeIcon(location == localLocation() ? QStringLiteral("home") : QStringLiteral("web")));
-    item->setData(kName, kTypeRole, static_cast<int>(RowType::Location));
-    item->setData(kName, kPathRole, location);
-    item->setData(kName, kKeyRole, location);
-    item->setFlags(Qt::ItemIsEnabled | Qt::ItemIsSelectable);
-    QVector<const ProjectRow*> rows;
-    for (const ProjectRow& row : std::as_const(m_rows)) {
-      if (row.location == location) {
-        rows << &row;
-      }
-    }
-    std::sort(rows.begin(), rows.end(), [](const ProjectRow* a, const ProjectRow* b) {
-      return a->name.compare(b->name, Qt::CaseInsensitive) < 0;
-    });
-    for (const ProjectRow* row : std::as_const(rows)) {
-      QTreeWidgetItem* projectRow = addProjectRow(item, *row);
-      const bool open = m_revealed.contains(row->root) || sameRoot(row->root, current);
-      projectRow->setExpanded(m_expanded.value(keyOf(projectRow), open));
-    }
-    item->setExpanded(m_expanded.value(location, true));
+  for (const ProjectRow* row : std::as_const(rows)) {
+    QTreeWidgetItem* projectRow = addProjectRow(*row, projectKeyOf(*row));
+    const bool open = m_revealed.contains(row->root) || sameRoot(row->root, current);
+    projectRow->setExpanded(m_expanded.value(keyOf(projectRow), open));
   }
   QTreeWidgetItem* select = nullptr;
   if (!m_reveal.isEmpty()) {
@@ -724,20 +703,37 @@ void ProjectsPanel::rebuild() {
   }
 }
 
-QTreeWidgetItem* ProjectsPanel::addProjectRow(QTreeWidgetItem* location, const ProjectRow& row) {
-  // Keyed by the folder's name, which a display name does not change.
-  const QString projectKey = QStringLiteral("%1/%2").arg(location->text(kName), row.folderName);
-  auto* top = new QTreeWidgetItem(location);
+QString ProjectsPanel::projectKeyOf(const ProjectRow& row) const {
+  // The folder's name, which a display name does not change.
+  int same = 0;
+  for (const ProjectRow& other : m_rows) {
+    same += other.folderName == row.folderName ? 1 : 0;
+  }
+  return same > 1 ? row.root : row.folderName;
+}
+
+QTreeWidgetItem* ProjectsPanel::addProjectRow(const ProjectRow& row, const QString& projectKey) {
+  // Local and Cloud told apart by the icon and the tooltip (mitcad#173).
+  const bool cloud = row.kind == ProjectRow::Kind::Cloud || row.noRemoteChosen;
+  auto* top = new QTreeWidgetItem(m_tree);
   top->setText(kName, row.name);
-  top->setIcon(kName, themeIcon(QStringLiteral("new-project")));
+  top->setIcon(kName, themeIcon(cloud ? QStringLiteral("remote-open") : QStringLiteral("home")));
   top->setData(kName, kTypeRole, static_cast<int>(RowType::Project));
   top->setData(kName, kRootRole, row.root);
   top->setData(kName, kPathRole, QString());
   top->setData(kName, kKeyRole, projectKey);
   top->setFlags(Qt::ItemIsEnabled | Qt::ItemIsSelectable);
-  QStringList tip{QDir::toNativeSeparators(row.root)};
+  QStringList tip;
+  if (row.kind == ProjectRow::Kind::Cloud) {
+    tip << tr("Cloud project: its versions are also in a remote repository");
+  } else if (row.noRemoteChosen) {
+    tip << tr("Cloud project: no remote chosen");
+  } else if (row.kind == ProjectRow::Kind::Local) {
+    tip << tr("Local project: its versions are on this computer");
+  }
+  tip << tr("Folder: %1").arg(QDir::toNativeSeparators(row.root));
   if (!row.remoteUrl.isEmpty()) {
-    tip << row.remoteUrl;
+    tip << tr("Remote: %1").arg(row.remoteUrl);
   }
   if (row.kind == ProjectRow::Kind::NoHistory) {
     tip << (row.problem.isEmpty() ? tr("The project keeps no versions")
@@ -879,8 +875,19 @@ void ProjectsPanel::logTree() {
     m_loggedProjects = counted;
     qInfo().noquote() << counted;
   }
-  // The names shown (mitcad#152): `Local/Shop = Shop`, a Cloud project's
-  // `owner/repository`, `(set)` for a display name.
+  // The rows at the top of the tree (mitcad#173): the projects' keys, in
+  // their order; nothing else.
+  QStringList topRows;
+  for (int i = 0; i < m_tree->topLevelItemCount(); ++i) {
+    topRows << keyOf(m_tree->topLevelItem(i));
+  }
+  const QString top = QStringLiteral("Projects top rows: %1").arg(topRows.join(QStringLiteral(" | ")));
+  if (!topRows.isEmpty() && top != m_loggedTopRows) {
+    m_loggedTopRows = top;
+    qInfo().noquote() << top;
+  }
+  // The names shown (mitcad#152, #173): `Shop = Shop`, a Cloud project's
+  // `gripper = github.com/acme/gripper`, `(set)` for a display name.
   const QString named = QStringLiteral("Projects names: %1").arg(names.join(QStringLiteral(" | ")));
   if (!names.isEmpty() && named != m_loggedNames) {
     m_loggedNames = named;
@@ -966,13 +973,6 @@ void ProjectsPanel::updateActions() {
 }
 
 QString ProjectsPanel::settingsRoot(const QTreeWidgetItem* item) const {
-  if (typeOf(item) == RowType::Location) {
-    // A location holding one project: that one's.
-    if (item->childCount() != 1) {
-      return {};
-    }
-    item = item->child(0);
-  }
   if (item == nullptr || typeOf(item) == RowType::NewItem) {
     return {};
   }
@@ -982,9 +982,7 @@ QString ProjectsPanel::settingsRoot(const QTreeWidgetItem* item) const {
 }
 
 bool ProjectsPanel::settingsOnDoubleClick(QTreeWidgetItem* item) {
-  const RowType type = typeOf(item);
-  if ((type != RowType::Project && type != RowType::Location) ||
-      (type == RowType::Location && pathOf(item) == localLocation())) {
+  if (typeOf(item) != RowType::Project) {
     return false;
   }
   const QString root = settingsRoot(item);
@@ -1082,7 +1080,6 @@ QString ProjectsPanel::folderFor(const QTreeWidgetItem* item) const {
     return pathOf(item);
   case RowType::Design:
     return dirOf(pathOf(item));
-  case RowType::Location:
   case RowType::Project:
     break;
   }
@@ -1309,7 +1306,6 @@ void ProjectsPanel::openCurrent() {
     }
     item->setExpanded(!item->isExpanded());
     break;
-  case RowType::Location:
   case RowType::Folder:
     item->setExpanded(!item->isExpanded());
     break;
@@ -1422,7 +1418,6 @@ bool ProjectsPanel::dropTarget(const QTreeWidgetItem* dragged, const QTreeWidget
   case RowType::Design:
     target = dirOf(pathOf(over));
     break;
-  case RowType::Location:
   case RowType::NewItem:
     return false;
   }
@@ -1454,6 +1449,45 @@ void ProjectsPanel::dropped(QTreeWidgetItem* dragged, QTreeWidgetItem* over) {
   const QString to = joinPath(folder, lastPart(from));
   qInfo().noquote() << QStringLiteral("Projects panel: drag %1 to %2").arg(from, to);
   emit moveRequested(rootOf(dragged), from, to, typeOf(dragged) == RowType::Folder);
+}
+
+// ---------------------------------------------------------------------------
+// A design revealed from outside the panel (mitcad#174)
+
+void ProjectsPanel::revealDesign(const QString& root, const QString& path) {
+  if (root.isEmpty() || path.isEmpty()) {
+    return;
+  }
+  m_revealDesignRoot = QDir::cleanPath(root);
+  m_revealDesignPath = path;
+  // Each rebuild ends with contentHeightChanged: the design is selected
+  // once a read lists it.
+  connect(this, &ProjectsPanel::contentHeightChanged, this, &ProjectsPanel::selectRevealedDesign,
+          Qt::UniqueConnection);
+  reveal(root);
+  selectRevealedDesign();
+}
+
+void ProjectsPanel::selectRevealedDesign() {
+  if (m_revealDesignPath.isEmpty() || m_building) {
+    return;
+  }
+  for (QTreeWidgetItemIterator it(m_tree); *it != nullptr; ++it) {
+    QTreeWidgetItem* item = *it;
+    if (typeOf(item) != RowType::Design || pathOf(item) != m_revealDesignPath ||
+        !sameRoot(rootOf(item), m_revealDesignRoot)) {
+      continue;
+    }
+    m_revealDesignRoot.clear();
+    m_revealDesignPath.clear();
+    disconnect(this, &ProjectsPanel::contentHeightChanged, this, &ProjectsPanel::selectRevealedDesign);
+    for (QTreeWidgetItem* up = item->parent(); up != nullptr; up = up->parent()) {
+      up->setExpanded(true);
+    }
+    m_tree->setCurrentItem(item);
+    m_tree->scrollToItem(item);
+    return;
+  }
 }
 
 } // namespace mitcad

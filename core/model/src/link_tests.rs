@@ -197,6 +197,73 @@ fn a_projection_of_a_sibling_components_face_follows_it() {
     assert_eq!(corners(&doc).first(), Some(&[110.0, -50.0]));
 }
 
+/// A sweep of B guided by a face of A's block (mitcad#161: a nut's thread
+/// swept along the mating part's flank): the face's body is read in A and
+/// moved by its link; without the link the sweep fails, and a link for a
+/// body neither the path nor a guide surface is on is refused.
+#[test]
+fn a_sweep_takes_guide_surfaces_of_another_component_by_their_link() {
+    let (mut doc, body, face, b) = siblings();
+    let path = doc.add_sketch(SketchPlane::Xy).unwrap().uid;
+    command(
+        &mut doc,
+        json!({"cmd": "sketch.add_line", "sketch": path, "start": [0, 0], "end": [40, 0]}),
+    );
+    let profile = doc.add_sketch(SketchPlane::Yz).unwrap().uid;
+    let region = doc
+        .add_rectangle(profile, [-1.0, -1.0], &num(2.0), &num(2.0))
+        .unwrap()
+        .region;
+    let sweep = |links: Value| {
+        json!({"cmd": "add_feature", "def": {"type": "sweep",
+               "profiles": [{"sketch": profile, "region": region}],
+               "path": {"sketch": path, "curves": ["c1"]},
+               "guide_surfaces": [{"body": body, "face": face}],
+               "body_links": links, "operation": "new_body"}})
+    };
+    let unlinked = command(&mut doc, sweep(json!({})))["uid"].clone();
+    let status = doc
+        .status(unlinked.as_str().unwrap().parse().unwrap())
+        .unwrap()
+        .clone();
+    assert!(
+        status.error().is_some_and(|e| e.contains("belongs to A")),
+        "{status:?}"
+    );
+    doc.undo();
+
+    let link = json!({body.to_string(): {"source": "O1"}});
+    let uid: FeatureUid = command(&mut doc, sweep(link.clone()))["uid"]
+        .as_str()
+        .unwrap()
+        .parse()
+        .unwrap();
+    assert!(doc.status(uid).unwrap().is_ok(), "{:?}", doc.status(uid));
+    assert_eq!(doc.feature(uid).unwrap().component, b);
+    let spec = doc
+        .kernel()
+        .specs
+        .borrow()
+        .last()
+        .cloned()
+        .unwrap_or_default();
+    assert!(spec.ends_with(&format!("surfaces {face}")), "{spec}");
+    let def = query(&doc, json!({"query": "feature", "uid": uid.to_string()}));
+    assert_eq!(def["def"]["body_links"], link, "{def}");
+
+    let error = rejected(
+        &mut doc,
+        json!({"cmd": "add_feature", "def": {"type": "sweep",
+               "profiles": [{"sketch": profile, "region": region}],
+               "path": {"sketch": path, "curves": ["c1"]},
+               "body_links": {body.to_string(): {"source": "O1"}}, "operation": "new_body"}}),
+    );
+    assert!(
+        error.contains("neither the path's nor a guide surface's"),
+        "{error}"
+    );
+}
+
 #[test]
 fn a_construction_plane_of_another_component_needs_a_link() {
     let mut doc = Document::new(MockKernel::default());

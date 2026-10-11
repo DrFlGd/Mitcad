@@ -2,7 +2,7 @@
 #pragma once
 
 // The final render to an image file (mitcad#48, docs/rendering.md "Final
-// render"), as File > Render Image and `mitcad-cli render` ask for it: the
+// render"), as Render Image and `mitcad-cli render` ask for it: the
 // scene, the camera framed for the image, the job file and the render
 // worker in its batch mode (mitcad-render --batch). Qt Core and Gui and
 // OCCT, no widgets, so that the command line tool shares it.

@@ -4,8 +4,8 @@
 // into shared memory (RenderProtocol.hpp), so that a crash or an
 // out-of-memory in the renderer ends only it, and so that only it loads
 // the renderer's libraries. The application starts it for View > Rendered,
-// and with --batch for a final render to an image file (File > Render
-// Image, mitcad-cli render; mitcad#48).
+// and with --batch for a final render to an image file (Render Image,
+// mitcad-cli render; mitcad#48).
 
 #include <algorithm>
 #include <array>

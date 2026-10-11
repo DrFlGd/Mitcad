@@ -529,6 +529,10 @@ fn safe_command(command: &str) -> bool {
             | "sketch.edit_offset"
             | "sketch.project"
             | "sketch.set_dimension_text"
+            // Move Features into a Component (mitcad#171).
+            | "move_to_component"
+            | "move_history_into_component"
+            | "set_hybrid_assembly"
     )
 }
 
@@ -626,6 +630,9 @@ fn safe_query(query: &str) -> bool {
             | "configurations"
             | "library_parts"
             | "parts_list"
+            // Move Features into a Component (mitcad#171).
+            | "move_to_component"
+            | "feature_references"
     )
 }
 

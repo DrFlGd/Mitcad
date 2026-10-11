@@ -231,7 +231,8 @@ fn commands_build_a_part_and_queries_describe_it() {
         json!({"marker": 2, "features": [
             {"uid": "F1", "name": "Sketch1", "type": "sketch", "suppressed": false, "status": "ok", "error": null,
              "dof": 0, "visible": false, "visible_set": false},
-            {"uid": "F2", "name": "Extrude1", "type": "extrude", "suppressed": false, "status": "ok", "error": null}
+            {"uid": "F2", "name": "Extrude1", "type": "extrude", "suppressed": false, "status": "ok", "error": null,
+             "sketches": ["F1"]}
         ]})
     );
     assert_eq!(

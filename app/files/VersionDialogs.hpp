@@ -23,8 +23,9 @@ struct VersionSettings;
 // cancelled.
 std::optional<VersionSettings> askVersionAuthor(QWidget* parent, const VersionSettings& settings);
 
-// File > Save Version: the description of the version (`automatic`: the
-// message Save would write). Empty when the description is left empty.
+// File > Save with Description: the description of the version
+// (`automatic`: the message Save would write). Empty when the description
+// is left empty.
 std::optional<QString> askVersionDescription(QWidget* parent, const QString& file, const QString& automatic);
 
 // Save over a file that changed outside Mitcad since it was opened or saved

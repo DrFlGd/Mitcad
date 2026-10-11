@@ -9,11 +9,13 @@
 #include <BRepBuilderAPI_MakeVertex.hxx>
 #include <BRepBuilderAPI_NurbsConvert.hxx>
 #include <BRepExtrema_DistShapeShape.hxx>
+#include <BRep_Tool.hxx>
 #include <GeomConvert.hxx>
 #include <Geom_BSplineSurface.hxx>
 #include <Geom_CylindricalSurface.hxx>
 #include <Geom_RectangularTrimmedSurface.hxx>
 #include <Precision.hxx>
+#include <TopoDS.hxx>
 #include <gp_Ax3.hxx>
 
 #include "check.hpp"
@@ -94,8 +96,11 @@ void test_shell() {
   chain.inside = 1;
   const ShapePtr opened = shell("F5", *rounded, chain);
   CHECK(faces_named(*opened, side("F2", 1, 1)) == 0);
+  // Without the chain, the open front ends smoothly into the kept rounding,
+  // where the offset cannot close the wall: an error (before the port's
+  // patch 0100, the kernel's offset gave the block itself, unshelled).
   chain.tangent_chain = false;
-  CHECK(faces_named(*shell("F5", *rounded, chain), side("F2", 1, 1)) == 1);
+  CHECK(throws_with([&] { shell("F5", *rounded, chain); }, "shell failed"));
 
   // Rounded outside (K45 shell_rounded): the Minkowski sum of the block and a
   // 2 mm ball below the open top, less the block.
@@ -107,6 +112,31 @@ void test_shell() {
   const double above = 2400 * t + kPi * t * t / 4 * 200 + 2.0 / 3 * kPi * t * t * t;
   CHECK_NEAR(volume(*smooth), full - above - kBlock);
   CHECK(faces_named(*smooth, side("F2", 1, 0)) == 1);
+
+  // A pin with B-spline faces (as imported bodies have them): the side is a
+  // rational B-spline whose knots repeat as often as its degree, only C0
+  // continuous, which the kernel's offset refuses; the shell splits it at
+  // the creases, and the pieces keep the side's name (mitcad#158).
+  const ShapePtr pin = extrude("F2", {circle(5, 0, 0, 10)}, 0, 20);
+  BRepBuilderAPI_NurbsConvert nurbs(pin->occt(), true);
+  std::vector<Shape::NamedFace> named;
+  bool creased = false;
+  for (int i = 0; i < pin->face_count(); ++i) {
+    const TopoDS_Shape face = nurbs.ModifiedShape(pin->face(i));
+    named.push_back({face, pin->face_names(i)});
+    creased = creased || BRep_Tool::Surface(TopoDS::Face(face))->Continuity() == GeomAbs_C0;
+  }
+  CHECK(creased);
+  const Shape spline_pin(nurbs.Shape(), named);
+  ShellSpec cup;
+  cup.faces = {"F2:end(r{c5})"};
+  cup.inside = 1;
+  const ShapePtr cupped = shell("F5", spline_pin, cup);
+  CHECK_NEAR_TOL(volume(*cupped), kPi * (100.0 * 20.0 - 81.0 * 19.0), 1e-6);
+  CHECK(cupped->find_faces("F2:side(c5)").size() >= 1);
+  CHECK(!cupped->find_faces("F5:offset(F2:side(c5))").empty());
+  CHECK(faces_named(*cupped, "F2:end(r{c5})") == 0);
+  CHECK(edge_names_unique(*cupped));
 
   ShellSpec none = open;
   none.inside = 0;

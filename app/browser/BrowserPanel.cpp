@@ -27,6 +27,7 @@
 #include "../framework/ChromeStyle.hpp"
 #include "../framework/GlassCard.hpp"
 #include "../framework/Icons.hpp"
+#include "../framework/TestSync.hpp"
 #include "../framework/Theme.hpp"
 
 namespace mitcad {
@@ -48,6 +49,9 @@ constexpr int kName = 0;
 // (whether it is active); none when not set.
 constexpr int kEyeRole = Qt::UserRole + 1;
 constexpr int kRadioRole = Qt::UserRole + 2;
+// A feature row whose result is in other components than its sketch
+// (mitcad#177): their names.
+constexpr int kLinkedRole = Qt::UserRole + 3;
 // The space between a light bulb and the icon, and between the name and
 // the radio button.
 constexpr int kGap = 4;
@@ -88,6 +92,35 @@ public:
 private:
   QIcon m_eye;
   QIcon m_icon;
+};
+
+// The icon of a feature row whose result is in another component than its
+// sketch (mitcad#177): the feature's icon with a small component in its
+// lower right corner.
+class LinkedIconEngine : public QIconEngine {
+public:
+  LinkedIconEngine(QIcon icon, QIcon badge) : m_icon(std::move(icon)), m_badge(std::move(badge)) {}
+
+  void paint(QPainter* painter, const QRect& rect, QIcon::Mode mode, QIcon::State state) override {
+    m_icon.paint(painter, rect, Qt::AlignCenter, mode, state);
+    const int side = std::max(6, rect.height() * 3 / 5);
+    m_badge.paint(painter, QRect(rect.right() + 1 - side, rect.bottom() + 1 - side, side, side), Qt::AlignCenter,
+                  mode, QIcon::Off);
+  }
+
+  QPixmap pixmap(const QSize& size, QIcon::Mode mode, QIcon::State state) override {
+    QPixmap pixmap(size);
+    pixmap.fill(Qt::transparent);
+    QPainter painter(&pixmap);
+    paint(&painter, QRect(QPoint(), size), mode, state);
+    return pixmap;
+  }
+
+  QIconEngine* clone() const override { return new LinkedIconEngine(m_icon, m_badge); }
+
+private:
+  QIcon m_icon;
+  QIcon m_badge;
 };
 
 // Draws a row: the style's item with the light bulb in its decoration,
@@ -356,13 +389,25 @@ SelectionItem BrowserNode::item() const {
 }
 
 // The tree: clicks on a light bulb or a radio button do not select the row,
-// F2 renames and Delete deletes.
+// F2 renames and Delete deletes. A slow second click on the name of the row
+// that is selected and current renames it too (mitcad#177): when the
+// double-click interval has passed without a second click, so that a
+// double-click keeps its own action, and not after a drag.
 class BrowserTree : public QTreeWidget {
 public:
   explicit BrowserTree(BrowserPanel& panel)
       : QTreeWidget(&panel), m_panel(panel), m_delegate(chromeStyle() == ChromeStyle::Floating ? new SidebarDelegate(this)
                                                                             : new BrowserDelegate(this)) {
     setItemDelegate(m_delegate);
+    m_renameTimer.setSingleShot(true);
+    QObject::connect(&m_renameTimer, &QTimer::timeout, this, [this] { emit m_panel.renameClicked(m_renameNode); });
+    TestSync::watch(&m_renameTimer); // UI tests wait for the rename to start
+  }
+
+  // Forgets a slow second click that has not yet started a rename.
+  void cancelSlowClick() {
+    m_renameTimer.stop();
+    m_renamePress = false;
   }
 
   bool cancelEdit() {
@@ -386,13 +431,38 @@ public:
 
 protected:
   void mousePressEvent(QMouseEvent* event) override {
-    if (event->button() == Qt::LeftButton && clickPart(event->position().toPoint())) {
+    cancelSlowClick();
+    const QPoint at = event->position().toPoint();
+    if (event->button() == Qt::LeftButton && clickPart(at)) {
       return;
     }
+    // A press on the name of the row already selected and current, without
+    // modifiers: perhaps the slow second click that renames it.
+    QTreeWidgetItem* item = itemAt(at);
+    m_renamePress = event->button() == Qt::LeftButton && event->modifiers() == Qt::NoModifier && item != nullptr &&
+                    item == currentItem() && item->isSelected() && (item->flags() & Qt::ItemIsEditable) &&
+                    state() != QAbstractItemView::EditingState && partsOf(item).name.contains(at);
+    m_pressAt = at;
     QTreeWidget::mousePressEvent(event);
   }
 
+  void mouseReleaseEvent(QMouseEvent* event) override {
+    const bool slowClick = m_renamePress && event->button() == Qt::LeftButton;
+    m_renamePress = false;
+    QTreeWidget::mouseReleaseEvent(event);
+    const QPoint at = event->position().toPoint();
+    QTreeWidgetItem* item = itemAt(at);
+    if (slowClick && item != nullptr && item == currentItem() &&
+        (at - m_pressAt).manhattanLength() < QApplication::startDragDistance()) {
+      // Renamed once the time for a double-click has passed.
+      m_renameNode = m_panel.nodeOf(item);
+      m_renameTimer.start(QApplication::doubleClickInterval());
+    }
+  }
+
   void mouseDoubleClickEvent(QMouseEvent* event) override {
+    // A double-click keeps its own action: no slow second click.
+    cancelSlowClick();
     // A quick second click on a light bulb is a click of its own.
     if (event->button() == Qt::LeftButton && clickPart(event->position().toPoint())) {
       return;
@@ -410,6 +480,7 @@ protected:
   }
 
   void keyPressEvent(QKeyEvent* event) override {
+    cancelSlowClick();
     QTreeWidgetItem* item = currentItem();
     if (item != nullptr && state() != QAbstractItemView::EditingState) {
       if (event->key() == Qt::Key_F2) {
@@ -447,6 +518,12 @@ private:
 
   BrowserPanel& m_panel;
   BrowserDelegate* m_delegate;
+  // A slow second click (mitcad#177): the press that may be one, where it
+  // was, and the row it renames when the timer fires.
+  bool m_renamePress = false;
+  QPoint m_pressAt;
+  QTimer m_renameTimer;
+  BrowserNode m_renameNode;
 };
 
 BrowserPanel::BrowserPanel(QWidget* parent) : QWidget(parent), m_tree(new BrowserTree(*this)) {
@@ -566,6 +643,9 @@ QString BrowserPanel::keyOf(const BrowserNode& node) const {
     return QStringLiteral("joints") + at;
   case BrowserNode::Type::Joint:
     return QStringLiteral("joint:") + node.uid + at;
+  case BrowserNode::Type::Feature:
+    // One row under each sketch it uses.
+    return QStringLiteral("feature:%1<%2").arg(node.uid, node.sketch) + at;
   case BrowserNode::Type::None:
     break;
   }
@@ -590,6 +670,7 @@ QTreeWidgetItem* BrowserPanel::addRow(QTreeWidgetItem* parent, const BrowserNode
                          node.type == BrowserNode::Type::Sketch ||
                          node.type == BrowserNode::Type::Datum ||
                          node.type == BrowserNode::Type::Analysis || node.type == BrowserNode::Type::Joint ||
+                         node.type == BrowserNode::Type::Feature ||
                          (node.type == BrowserNode::Type::NamedView &&
                           node.uid.startsWith(QStringLiteral("named:")));
   if (renamable) {
@@ -607,7 +688,7 @@ QTreeWidgetItem* BrowserPanel::addRow(QTreeWidgetItem* parent, const BrowserNode
 
 void BrowserPanel::addComponentRows(QTreeWidgetItem* parent, const DocumentSnapshot& snapshot,
                                     const QString& component, const QString& occurrence,
-                                    bool shown) {
+                                    bool shown, const SketchUses& uses) {
   const auto gray = [](QTreeWidgetItem* item, bool visible) {
     if (!visible) {
       item->setForeground(kName, kHiddenText);
@@ -695,6 +776,9 @@ void BrowserPanel::addComponentRows(QTreeWidgetItem* parent, const DocumentSnaps
       } else {
         gray(row, shown && node.visible);
       }
+      if (sketches) {
+        addFeatureRows(row, snapshot, *feature, occurrence, shown, uses);
+      }
     }
   }
 
@@ -748,6 +832,52 @@ void BrowserPanel::addComponentRows(QTreeWidgetItem* parent, const DocumentSnaps
     // A constraint set's rows nested under it (mitcad#148).
     if (feature->type == QStringLiteral("constraint_set")) {
       addConstraintRows(snapshot, *feature, row, shown && !failed);
+    }
+  }
+}
+
+void BrowserPanel::addFeatureRows(QTreeWidgetItem* parent, const DocumentSnapshot& snapshot,
+                                  const DocumentSnapshot::Feature& sketch, const QString& occurrence, bool shown,
+                                  const SketchUses& uses) {
+  for (const DocumentSnapshot::Feature* feature : uses.features.value(sketch.uid)) {
+    BrowserNode node;
+    node.type = BrowserNode::Type::Feature;
+    node.uid = feature->uid;
+    node.sketch = sketch.uid;
+    node.occurrence = occurrence;
+    node.component = sketch.component;
+    node.featureType = feature->type;
+    node.name = feature->name;
+    // The row follows the sketch it uses; a result in another component (a
+    // new component's bodies) is marked as linked there.
+    QSet<QString> elsewhere = uses.resultComponents.value(feature->uid);
+    elsewhere.insert(feature->component);
+    elsewhere.remove(sketch.component);
+    QStringList linked;
+    for (const QString& component : std::as_const(elsewhere)) {
+      linked << snapshot.componentName(component);
+    }
+    linked.sort();
+    const bool failed = feature->status == QStringLiteral("error");
+    // Rolled back or suppressed: grey, as the timeline draws it faint.
+    const bool off = feature->suppressed || feature->index >= snapshot.marker;
+    QString tip = failed               ? QStringLiteral("%1: %2").arg(feature->name, feature->error)
+                  : feature->suppressed ? tr("%1: suppressed").arg(feature->name)
+                  : off                 ? tr("%1: rolled back").arg(feature->name)
+                                        : tr("%1 uses %2").arg(feature->name, sketch.name);
+    if (!linked.isEmpty()) {
+      tip += tr("; its result is in %1").arg(linked.join(QStringLiteral(", ")));
+    }
+    QTreeWidgetItem* row = addRow(parent, node, featureIcon(feature->type), tip);
+    if (!linked.isEmpty()) {
+      row->setIcon(kName, QIcon(new LinkedIconEngine(themeIcon(featureIcon(feature->type)),
+                                                     themeIcon(QStringLiteral("component")))));
+      row->setData(kName, kLinkedRole, linked.join(QStringLiteral(", ")));
+    }
+    if (failed) {
+      row->setForeground(kName, kFailedText);
+    } else if (off || !shown) {
+      row->setForeground(kName, kHiddenText);
     }
   }
 }
@@ -861,7 +991,23 @@ void BrowserPanel::rebuild(const DocumentSnapshot& snapshot, bool originShown) {
     }
   }
 
-  addComponentRows(rootItem, snapshot, rootNode.uid, QString(), true);
+  // The features under each sketch they use (mitcad#177): those without rows
+  // of their own (sketches, construction geometry and joints have theirs),
+  // in timeline order, also suppressed or after the marker.
+  SketchUses uses;
+  for (const DocumentSnapshot::Feature& feature : snapshot.features) {
+    if (feature.isSketch() || feature.isConstruction() || feature.isJoint()) {
+      continue;
+    }
+    for (const QString& sketch : feature.sketches) {
+      uses.features[sketch].append(&feature);
+    }
+  }
+  for (auto it = snapshot.bodies.cbegin(); it != snapshot.bodies.cend(); ++it) {
+    uses.resultComponents[it.key().section(QLatin1Char('.'), 0, 0)].insert(it.value().component);
+  }
+
+  addComponentRows(rootItem, snapshot, rootNode.uid, QString(), true, uses);
 
   // The occurrences, each with its component's rows.
   std::function<void(QTreeWidgetItem*, const QVector<DocumentSnapshot::Occurrence>&, bool)> place =
@@ -897,7 +1043,7 @@ void BrowserPanel::rebuild(const DocumentSnapshot& snapshot, bool originShown) {
             item->setForeground(kName, kHiddenText);
           }
           item->setData(kName, kRadioRole, snapshot.activeComponent == occurrence.component);
-          addComponentRows(item, snapshot, occurrence.component, occurrence.path, visible);
+          addComponentRows(item, snapshot, occurrence.component, occurrence.path, visible, uses);
           place(item, occurrence.children, visible);
         }
       };
@@ -957,23 +1103,30 @@ int BrowserPanel::contentHeight() const {
   return rows * std::max(row, 20) + 2 * m_tree->frameWidth();
 }
 
-void BrowserPanel::showSelection(const Selection& items) {
+void BrowserPanel::showSelection(const Selection& items, const QStringList& features) {
   QSet<QString> keys;
   for (const SelectionItem& item : items) {
     keys.insert(itemKey(item));
   }
+  const QSet<QString> picked(features.cbegin(), features.cend());
   const QSignalBlocker blocker(m_tree);
+  // Scrolled to: the first row of an item, else the first feature row (which
+  // opens its sketch's row).
   QTreeWidgetItem* first = nullptr;
-  for (auto it = m_nodes.cbegin(); it != m_nodes.cend(); ++it) {
-    const SelectionItem item = it.value().item();
-    const bool on = item.isValid() && keys.contains(itemKey(item));
-    it.key()->setSelected(on);
-    if (on && first == nullptr) {
-      first = it.key();
+  QTreeWidgetItem* firstFeature = nullptr;
+  for (QTreeWidgetItemIterator it(m_tree); *it != nullptr; ++it) {
+    const BrowserNode node = nodeOf(*it);
+    const SelectionItem item = node.item();
+    const bool feature = node.type == BrowserNode::Type::Feature;
+    const bool on = feature ? picked.contains(node.uid) : item.isValid() && keys.contains(itemKey(item));
+    (*it)->setSelected(on);
+    QTreeWidgetItem*& firstOfKind = feature ? firstFeature : first;
+    if (on && firstOfKind == nullptr) {
+      firstOfKind = *it;
     }
   }
-  if (first != nullptr) {
-    m_tree->scrollToItem(first);
+  if (first != nullptr || firstFeature != nullptr) {
+    m_tree->scrollToItem(first != nullptr ? first : firstFeature);
   }
   m_tree->viewport()->update();
   logSelection();
@@ -1013,6 +1166,12 @@ bool BrowserPanel::reveal(const QString& feature) {
   QSet<QString> keys;
   for (const BrowserNode& node : nodesOfFeature(feature)) {
     keys.insert(keyOf(node));
+  }
+  // Its rows under the sketches it uses (mitcad#177).
+  for (auto it = m_nodes.cbegin(); it != m_nodes.cend(); ++it) {
+    if (it.value().type == BrowserNode::Type::Feature && it.value().uid == feature) {
+      keys.insert(keyOf(it.value()));
+    }
   }
   return revealKeys(keys);
 }
@@ -1081,13 +1240,21 @@ void BrowserPanel::selectionChanged() {
   }
   logSelection();
   Selection items;
+  QStringList features;
   for (QTreeWidgetItem* row : m_tree->selectedItems()) {
-    const SelectionItem item = nodeOf(row).item();
+    const BrowserNode node = nodeOf(row);
+    if (node.type == BrowserNode::Type::Feature) {
+      if (!features.contains(node.uid)) {
+        features.append(node.uid);
+      }
+      continue;
+    }
+    const SelectionItem item = node.item();
     if (item.isValid() && !items.contains(item)) {
       items.append(item);
     }
   }
-  emit itemsPicked(items);
+  emit rowsPicked(items, features);
 }
 
 void BrowserPanel::itemEdited(QTreeWidgetItem* item, int column) {
@@ -1136,6 +1303,10 @@ void BrowserPanel::logLayout() {
     }
     if (!parts.radio.isEmpty()) {
       lines << QStringLiteral("Browser radio %1 at %2").arg(node.path, at(parts.radio));
+    }
+    // A feature row whose result is in another component (mitcad#177).
+    if (const QString linked = item->data(kName, kLinkedRole).toString(); !linked.isEmpty()) {
+      lines << QStringLiteral("Browser linked %1 to %2").arg(node.path, linked);
     }
   }
   const QString logged = lines.join(QLatin1Char('\n'));

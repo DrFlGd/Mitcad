@@ -5,15 +5,18 @@
 // it as it ends (app/update/UpdateInstaller.hpp):
 //
 //   mitcad-updater.exe --wait <pid> --installer <file> --dir <installation>
-//                      --restart <mitcad.exe> --log <file>
+//                      --scope user|all --restart <mitcad.exe> --log <file>
 //
 // It waits for that process to end, runs the installer silently into the
-// installation folder (/S /D=<dir>; the installer asks for elevation as a
-// manual installation does), and starts Mitcad again, also when the
-// installer failed or the elevation was refused: Mitcad then tells so from
-// the log's last line. Win32 only, with the C++ runtime linked statically,
-// so that it runs on its own in the temp folder; never elevated itself, so
-// Mitcad starts again as the user.
+// installation folder and its scope (mitcad#118): an installation just for
+// the current user with /S /CurrentUser /D=<dir>, as the user, so without a
+// UAC prompt; one for all users (Program Files) with /S /AllUsers /D=<dir>,
+// elevated (verb runas, UAC asks) unless this process has administrator
+// rights already. Then it starts Mitcad again, also when the installer
+// failed or the elevation was refused: Mitcad then tells so from the log's
+// last line. Win32 only, with the C++ runtime linked statically, so that it
+// runs on its own in the temp folder; never elevated itself, so Mitcad
+// starts again as the user.
 
 #include <windows.h>
 
@@ -56,16 +59,47 @@ std::wstring option(const std::vector<std::wstring>& arguments, const wchar_t* n
   return std::wstring();
 }
 
+// Whether this process has administrator rights: the Administrators group
+// is enabled in its token (an elevated one, or no UAC), as the installer's
+// own check (UserInfo::GetAccountType) sees it.
+bool isAdministrator() {
+  SID_IDENTIFIER_AUTHORITY authority = SECURITY_NT_AUTHORITY;
+  PSID administrators = nullptr;
+  if (!AllocateAndInitializeSid(&authority, 2, SECURITY_BUILTIN_DOMAIN_RID, DOMAIN_ALIAS_RID_ADMINS, 0, 0, 0, 0, 0,
+                                0, &administrators)) {
+    return false;
+  }
+  BOOL member = FALSE;
+  if (!CheckTokenMembership(nullptr, administrators, &member)) {
+    member = FALSE;
+  }
+  FreeSid(administrators);
+  return member != FALSE;
+}
+
 // Runs the installer and waits for it; its exit code, or nothing when it
-// did not start.
-bool runInstaller(const std::wstring& installer, const std::wstring& dir, DWORD& exitCode) {
+// did not start. `scope`: "user", "all" or empty (the installer decides,
+// as for an updater of an earlier release).
+bool runInstaller(const std::wstring& installer, const std::wstring& dir, const std::wstring& scope,
+                  DWORD& exitCode) {
+  const bool allUsers = scope == L"all";
+  const bool elevate = allUsers && !isAdministrator();
   // NSIS: /D must come last and without quotes, also with spaces.
-  const std::wstring parameters = L"/S /D=" + dir;
-  note(L"Running " + installer + L" " + parameters);
+  std::wstring parameters = L"/S ";
+  if (allUsers) {
+    parameters += L"/AllUsers ";
+  } else if (scope == L"user") {
+    parameters += L"/CurrentUser ";
+  }
+  parameters += L"/D=" + dir;
+  note(L"Running " + installer + L" " + parameters +
+       (elevate ? std::wstring(L" (for all users, asking for administrator rights)")
+                : allUsers ? std::wstring(L" (for all users, with administrator rights)")
+                           : std::wstring(L" (as the user)")));
   SHELLEXECUTEINFOW info = {};
   info.cbSize = sizeof(info);
   info.fMask = SEE_MASK_NOCLOSEPROCESS | SEE_MASK_NOASYNC;
-  info.lpVerb = L"open";
+  info.lpVerb = elevate ? L"runas" : L"open";
   info.lpFile = installer.c_str();
   info.lpParameters = parameters.c_str();
   info.nShow = SW_SHOWNORMAL;
@@ -98,8 +132,10 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
   const std::wstring installer = option(arguments, L"--installer");
   const std::wstring dir = option(arguments, L"--dir");
   const std::wstring restart = option(arguments, L"--restart");
-  if (installer.empty() || dir.empty() || restart.empty()) {
-    note(L"Usage: mitcad-updater --wait <pid> --installer <file> --dir <folder> --restart <exe> --log <file>");
+  const std::wstring scope = option(arguments, L"--scope");
+  if (installer.empty() || dir.empty() || restart.empty() || (!scope.empty() && scope != L"user" && scope != L"all")) {
+    note(L"Usage: mitcad-updater --wait <pid> --installer <file> --dir <folder> --scope user|all --restart <exe> "
+         L"--log <file>");
     return 2;
   }
 
@@ -117,7 +153,7 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
   }
 
   DWORD exitCode = 1;
-  runInstaller(installer, dir, exitCode);
+  runInstaller(installer, dir, scope, exitCode);
 
   STARTUPINFOW startup = {};
   startup.cb = sizeof(startup);

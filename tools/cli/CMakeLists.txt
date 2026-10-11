@@ -238,10 +238,11 @@ if(BUILD_TESTING)
   set_tests_properties(cli.info_f3d PROPERTIES FIXTURES_REQUIRED cli_f3d_saved PASS_REGULAR_EXPRESSION
     "F1 Base1 \\(base\\): ok.*Body1 \\(F1\\.b0\\): volume 1000\\.000 mm3.*Body2 \\(F2\\.b0\\): volume 6283\\.185 mm3")
   # Without --bodies-only the timeline import (T1): this file has no
-  # timeline, so its stored bodies come in as one base feature.
+  # timeline, so its stored bodies come in as one base feature, with the
+  # report's warning about it as its import note (mitcad#170).
   add_test(NAME cli.import_f3d_timeline COMMAND mitcad-cli import-f3d "${exchange}/bodies.f3d")
   set_tests_properties(cli.import_f3d_timeline PROPERTIES FIXTURES_REQUIRED cli_f3d PASS_REGULAR_EXPRESSION
-    "bodies\\.f3d: 0 timeline items.*F1 Stored bodies \\(base\\): ok.*Body1 \\(F1\\.b0\\): volume 1000\\.000 mm3")
+    "bodies\\.f3d: 0 timeline items.*F1 Stored bodies \\(base\\): warning: Nothing replayed: the file's bodies come in as they are \\(F1\\).*Body1 \\(F1\\.b0\\): volume 1000\\.000 mm3")
   # After an import whose geometry kernel hung (mitcad#82): the exit status
   # of the import (1 when every try hung, 0 when one finished) while the
   # threads the hang watchdog gave up still run, not a crash at exit.
@@ -429,6 +430,8 @@ if(BUILD_TESTING)
     COMMAND "${CMAKE_COMMAND}" "-DCLI=$<TARGET_FILE:mitcad-cli>" "-DWORKER=$<TARGET_FILE:mitcad-render>"
             "-DSCRIPT=${scripts}/render_scene.json" "-DWORK=${CMAKE_CURRENT_BINARY_DIR}/render"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/render-test.cmake")
+  # Seconds normally; a hung GPU fails it in two minutes (mitcad#146).
+  set_tests_properties(cli.render PROPERTIES TIMEOUT 120)
 
   # Joints between occurrences (mitcad#55): joints placed on the geometry
   # kernel's faces and edges, saved and opened again.

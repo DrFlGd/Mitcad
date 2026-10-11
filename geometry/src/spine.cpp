@@ -5,6 +5,7 @@
 #include <cmath>
 #include <exception>
 #include <limits>
+#include <optional>
 #include <stdexcept>
 
 #include <BRepAdaptor_Curve.hxx>
@@ -21,6 +22,11 @@
 #include <BRepOffsetAPI_ThruSections.hxx>
 #include <BRepTools.hxx>
 #include <BRepTools_WireExplorer.hxx>
+#include <BRepFill_TypeOfContact.hxx>
+#include <GeomAPI_PointsToBSpline.hxx>
+#include <ShapeAnalysis_Surface.hxx>
+#include <TopoDS_Compound.hxx>
+#include <gp_Pnt2d.hxx>
 #include <BRep_Builder.hxx>
 #include <BRep_Tool.hxx>
 #include <GCPnts_AbscissaPoint.hxx>
@@ -573,6 +579,125 @@ TopoDS_Wire on_faces(const TopoDS_Wire& wire, const std::vector<TopoDS_Face>& fa
   return result;
 }
 
+// Paths beside guide surfaces (mitcad#161).
+
+bool lies_on_faces(const TopoDS_Wire& wire, const std::vector<TopoDS_Face>& faces, double tolerance) {
+  for (TopExp_Explorer e(wire, TopAbs_EDGE); e.More(); e.Next()) {
+    const TopoDS_Edge& edge = TopoDS::Edge(e.Current());
+    if (BRep_Tool::Degenerated(edge)) {
+      continue;
+    }
+    double first = 0.0;
+    double last = 0.0;
+    const occ::handle<Geom_Curve> curve = BRep_Tool::Curve(edge, first, last);
+    if (curve.IsNull()) {
+      return false;
+    }
+    const bool on = std::any_of(faces.begin(), faces.end(), [&](const TopoDS_Face& face) {
+      return !curve_on(face, curve, first, last, tolerance).IsNull();
+    });
+    if (!on) {
+      return false;
+    }
+  }
+  return true;
+}
+
+// The unit normal of the faces (with their orientation) at their point
+// nearest to `point`, or nothing where none is found.
+std::optional<gp_Dir> guide_normal(const TopoDS_Shape& faces, const gp_Pnt& point) {
+  BRepExtrema_DistShapeShape distance(BRepBuilderAPI_MakeVertex(point).Vertex(), faces);
+  if (!distance.IsDone() || distance.NbSolution() < 1) {
+    return std::nullopt;
+  }
+  const gp_Pnt on = distance.PointOnShape2(1);
+  // The face the nearest point lies on (one of those at an edge or a
+  // vertex), by the gap to its surface.
+  std::optional<gp_Dir> best;
+  double gap = std::numeric_limits<double>::infinity();
+  for (TopExp_Explorer f(faces, TopAbs_FACE); f.More(); f.Next()) {
+    const TopoDS_Face& face = TopoDS::Face(f.Current());
+    const occ::handle<Geom_Surface> surface = BRep_Tool::Surface(face);
+    if (surface.IsNull()) {
+      continue;
+    }
+    ShapeAnalysis_Surface analysis(surface);
+    const gp_Pnt2d uv = analysis.ValueOfUV(on, Precision::Confusion());
+    if (analysis.Gap() >= gap) {
+      continue;
+    }
+    gp_Pnt p;
+    gp_Vec du;
+    gp_Vec dv;
+    surface->D1(uv.X(), uv.Y(), p, du, dv);
+    const gp_Vec n = du.Crossed(dv);
+    if (n.Magnitude() <= gp::Resolution()) {
+      continue;
+    }
+    gap = analysis.Gap();
+    best = face.Orientation() == TopAbs_REVERSED ? gp_Dir(n.Reversed()) : gp_Dir(n);
+  }
+  return best;
+}
+
+TopoDS_Wire normal_spine(const TopoDS_Wire& wire, const std::vector<TopoDS_Face>& faces, double offset) {
+  BRep_Builder builder;
+  TopoDS_Compound compound;
+  builder.MakeCompound(compound);
+  for (const TopoDS_Face& face : faces) {
+    builder.Add(compound, face);
+  }
+  std::vector<gp_Pnt> points;
+  for (BRepTools_WireExplorer e(wire); e.More(); e.Next()) {
+    const TopoDS_Edge& edge = e.Current();
+    if (BRep_Tool::Degenerated(edge)) {
+      continue;
+    }
+    BRepAdaptor_Curve curve(edge);
+    const double first = curve.FirstParameter();
+    const double last = curve.LastParameter();
+    const double length = GCPnts_AbscissaPoint::Length(curve);
+    // Every half millimetre, at least 16 points an edge.
+    const int n = std::clamp(static_cast<int>(std::ceil(length / 0.5)), 16, 4000);
+    const bool reversed = edge.Orientation() == TopAbs_REVERSED;
+    // The points of each edge after the first start after its first point
+    // (the previous edge's last).
+    for (int i = points.empty() ? 0 : 1; i <= n; ++i) {
+      const double s = static_cast<double>(i) / n;
+      const double t = reversed ? last - (last - first) * s : first + (last - first) * s;
+      gp_Pnt p;
+      gp_Vec d;
+      curve.D1(t, p, d);
+      if (d.Magnitude() <= gp::Resolution()) {
+        continue;
+      }
+      const gp_Dir tangent(reversed ? d.Reversed() : d);
+      const std::optional<gp_Dir> normal = guide_normal(compound, p);
+      if (!normal) {
+        throw std::invalid_argument("the guide surface's normal is not found beside the path");
+      }
+      // At right angles to the path.
+      const gp_Vec across = gp_Vec(*normal) - gp_Vec(tangent) * normal->Dot(tangent);
+      if (across.Magnitude() <= 1.0e-6) {
+        throw std::invalid_argument("the path runs along the guide surface's normal");
+      }
+      points.push_back(p.Translated(gp_Vec(gp_Dir(across)) * offset));
+    }
+  }
+  if (points.size() < 2) {
+    throw std::invalid_argument("the path is too short for its guide surface");
+  }
+  NCollection_Array1<gp_Pnt> array(1, static_cast<int>(points.size()));
+  for (std::size_t i = 0; i < points.size(); ++i) {
+    array.SetValue(static_cast<int>(i) + 1, points[i]);
+  }
+  GeomAPI_PointsToBSpline fit(array, 3, 8, GeomAbs_C2, 1.0e-6);
+  if (!fit.IsDone()) {
+    throw std::runtime_error("the guide surface's normal along the path could not be built");
+  }
+  return BRepBuilderAPI_MakeWire(BRepBuilderAPI_MakeEdge(fit.Curve()).Edge()).Wire();
+}
+
 void name_caps(FaceNamer& namer, const TopoDS_Shape& section, const NameList& names) {
   if (names.empty() || section.IsNull()) {
     return;
@@ -669,6 +794,11 @@ ShapePtr pipe_shell_with(const NamedWire& loop, const TopoDS_Wire& spine, const 
     if (!pipe.SetMode(mode.support)) {
       throw std::invalid_argument("the path does not lie on the guide surface");
     }
+    break;
+  case PipeMode::Kind::Auxiliary:
+    // The normal towards the curve beside the spine, met in the plane at
+    // right angles to the spine (`normal_spine` puts its points there).
+    pipe.SetMode(mode.auxiliary, false, BRepFill_NoContact);
     break;
   }
   pipe.SetTransitionMode(transition);

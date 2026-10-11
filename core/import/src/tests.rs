@@ -4279,7 +4279,7 @@ fn named_items_without_geometry_are_skipped_and_others_say_why_they_fall_back() 
         note(2)
     );
     assert!(
-        note(3).starts_with("no geometry: an assembly relationship"),
+        note(3).starts_with("its constraints were not decoded"),
         "{}",
         note(3)
     );
@@ -5002,6 +5002,12 @@ fn a_sizing_offset_that_takes_long_gives_way_to_the_next_definition() {
 
 // Joints, as-built joints, joint origins and ground items (mitcad#55).
 mod joint_tests;
+
+// Assembly relationships as constraint sets (mitcad#155).
+mod relationship_tests;
+
+// The import's outcomes on the timeline (mitcad#170).
+mod timeline_note_tests;
 
 /// The learning dump (mitcad#96): the item the history settled is written
 /// with its candidates and answer in the file's terms.
@@ -6208,4 +6214,93 @@ fn a_combine_operation_read_from_its_record_is_not_guessed() {
     assert_eq!(guessed, Outcome::Parametric, "{text}");
     let (read, text) = outcome(true);
     assert_ne!(read, Outcome::Parametric, "{text}");
+}
+
+#[test]
+fn a_part_of_an_item_in_another_component_is_replayed_after_it() {
+    // mitcad#169: the item changed no body of its own component (no result
+    // of its own); its part in the other component is an item of its own
+    // after the timeline's items, at the item's point of the timeline.
+    let mut item = extrude(1, 0, "NewBodyFeatureOperation", "d2");
+    item["_f3d"]["result_no"] = json!(-1);
+    item["_f3d"]["flags"] = json!("000001");
+    let mut part = extrude(2, 0, "NewBodyFeatureOperation", "d2");
+    part["name"] = json!("Extrude1");
+    part["_f3d"]["part_of"] = json!(1);
+    let mut doc = Document::new(MockKernel::default());
+    let report = import(
+        &mut doc,
+        &timeline_dump(vec![rectangle_sketch(0), item, part]),
+    );
+    assert_eq!(
+        report.items[1].outcome,
+        Outcome::Skipped,
+        "{}",
+        report.text()
+    );
+    assert_eq!(
+        report.items[1].note.as_deref(),
+        Some("it changed no body of its own component; its change in another component is item 2")
+    );
+    assert_eq!(
+        report.items[2].outcome,
+        Outcome::Parametric,
+        "{}",
+        report.text()
+    );
+    assert!(
+        report.items[2]
+            .note
+            .as_deref()
+            .is_some_and(|n| n.starts_with("part of item 1: its change in this component")),
+        "{}",
+        report.text()
+    );
+    assert_eq!(doc.bodies().len(), 1);
+}
+
+#[test]
+fn a_sketch_whose_points_lie_off_its_frame_is_placed_where_they_are() {
+    // mitcad#169: a sketch on a face keeps its points 1.6 mm along its
+    // normal from its stored frame; the sketch goes where they are.
+    let mut sketch = rectangle_sketch(0);
+    sketch["detail"]["referencePlane"] = json!({"kind": "face"});
+    for p in sketch["detail"]["points"].as_array_mut().unwrap() {
+        p["xyz"][2] = json!(0.16);
+    }
+    let mut doc = Document::new(MockKernel::default());
+    let report = import(&mut doc, &timeline_dump(vec![sketch]));
+    assert_ne!(
+        report.items[0].outcome,
+        Outcome::Skipped,
+        "{}",
+        report.text()
+    );
+    let uid = report.items[0]
+        .features
+        .iter()
+        .filter_map(|f| f.parse::<mitcad_model::FeatureUid>().ok())
+        .find(|uid| doc.sketch_output(*uid).is_some())
+        .expect("the sketch");
+    let origin = doc.sketch_output(uid).unwrap().frame.origin;
+    assert!((origin[2] - 1.6).abs() < 1e-9, "{origin:?}");
+}
+
+/// A modelled thread's groove found where the faces cross a segment one
+/// pitch long at the pitch radius (mitcad#161): its middle, also where the
+/// groove runs across the segment's ends; none for two grooves.
+#[test]
+fn a_thread_groove_middle_comes_from_the_crossings() {
+    use crate::ops::groove_middle;
+    // Out at 0.2, in at 0.7: the groove's middle is at 0.45.
+    let middle = groove_middle(&[(0.2, false), (0.7, true)]).unwrap();
+    assert!((middle - 0.45).abs() < 1e-12, "{middle}");
+    // In at 0.3, out at 0.8: the groove runs from 0.8 round to 0.3, its
+    // middle at 0.05.
+    let middle = groove_middle(&[(0.3, true), (0.8, false)]).unwrap();
+    assert!((middle - 0.05).abs() < 1e-12, "{middle}");
+    assert_eq!(
+        groove_middle(&[(0.1, false), (0.2, true), (0.5, false), (0.6, true)]),
+        None
+    );
 }

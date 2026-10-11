@@ -33,6 +33,10 @@ use crate::convert::{self, Options};
 use crate::design::ir::EntityName;
 
 mod topology;
+// Points inside faces of any surface type (mitcad#161).
+pub mod surface;
+// Sampled helices on the cubic through their samples (mitcad#161).
+mod smooth;
 
 /// A name on an entity of a blob.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -657,8 +661,10 @@ impl<'a> NamedState<'a> {
     }
 
     /// A planar face's plane. `Err` for other faces. The point is the mean
-    /// of the boundary's points projected onto the plane, which lies in a
-    /// convex face (mirror planes and split tools, mitcad#67).
+    /// of the boundary's points projected onto the plane where that lies in
+    /// the face (a convex face: mirror planes and split tools, mitcad#67),
+    /// else a point inside the face ([`point_inside`]: a face with a hole
+    /// round its middle, mitcad#158).
     pub fn plane(&self, index: usize) -> Result<PlaneGeometry, String> {
         let f = &self.faces[index];
         let body = self.bodies[f.body].record;
@@ -668,7 +674,7 @@ impl<'a> NamedState<'a> {
             f.entity,
             &Options::default(),
             self.view,
-            16,
+            PLANE_SAMPLES,
         )
         .map_err(|e| e.0)?;
         let Surface::Plane { origin, normal, .. } = face.surface else {
@@ -689,6 +695,8 @@ impl<'a> NamedState<'a> {
             mean,
             brep::scale(normal, brep::dot(brep::sub(mean, origin), normal)),
         );
+        let edges: Vec<&[P3]> = face.boundary.chunks(PLANE_SAMPLES).collect();
+        let point = point_inside(normal, &edges, point);
         let normal = if face.reversed {
             brep::scale(normal, -1.0)
         } else {
@@ -707,6 +715,100 @@ impl<'a> NamedState<'a> {
             out.normal = brep::normalize(rotate(normal));
         }
         Ok(out)
+    }
+
+    /// A face of any other surface type than planes and cylinders
+    /// (mitcad#161): its surface's type and analytic data and a point
+    /// inside it (mm, in its component's coordinates; [`surface`]).
+    pub fn surface_point(&self, index: usize) -> Result<SurfacePoint, String> {
+        let f = &self.faces[index];
+        let body = self.bodies[f.body].record;
+        let face = convert::face_surface(
+            self.file,
+            body,
+            f.entity,
+            &Options::default(),
+            self.view,
+            SURFACE_SAMPLES,
+        )
+        .map_err(|e| e.0)?;
+        let edges: Vec<&[P3]> = face.boundary.chunks(SURFACE_SAMPLES).collect();
+        let inside = surface::point_inside_face(&face.surface, face.reversed, &edges)?;
+        let mut out = SurfacePoint {
+            kind: match &face.surface {
+                Surface::Plane { .. } => "Plane",
+                Surface::Cone { half_angle, .. } if *half_angle == 0.0 => "Cylinder",
+                Surface::Cone { .. } => "Cone",
+                Surface::Sphere { .. } => "Sphere",
+                Surface::Torus { .. } => "Torus",
+                _ => "NurbsSurface",
+            },
+            point: inside.point,
+            normal: inside.normal,
+            origin: None,
+            axis: None,
+            radius: None,
+            half_angle: None,
+            minor: None,
+            spread: inside.spread,
+        };
+        match face.surface {
+            Surface::Cone {
+                origin,
+                axis,
+                radius,
+                half_angle,
+                ..
+            } => {
+                (out.origin, out.axis, out.radius) = (Some(origin), Some(axis), Some(radius));
+                out.half_angle = Some(half_angle);
+            }
+            Surface::Sphere { center, radius, .. } => {
+                (out.origin, out.radius) = (Some(center), Some(radius));
+            }
+            Surface::Torus {
+                center,
+                axis,
+                major,
+                minor,
+                ..
+            } => {
+                (out.origin, out.axis) = (Some(center), Some(axis));
+                (out.radius, out.minor) = (Some(major), Some(minor));
+            }
+            _ => {}
+        }
+        if let Some(tr) = &face.transform {
+            let rotate = |p: P3| {
+                [
+                    brep::dot(tr.m[0], p),
+                    brep::dot(tr.m[1], p),
+                    brep::dot(tr.m[2], p),
+                ]
+            };
+            let scale = brep::norm(tr.m[0]);
+            out.point = brep::add(rotate(out.point), tr.t);
+            out.normal = brep::normalize(rotate(out.normal));
+            for p in &mut out.spread {
+                *p = brep::add(rotate(*p), tr.t);
+            }
+            out.origin = out.origin.map(|o| brep::add(rotate(o), tr.t));
+            out.axis = out.axis.map(|a| brep::normalize(rotate(a)));
+            out.radius = out.radius.map(|r| r * scale);
+            out.minor = out.minor.map(|r| r * scale);
+        }
+        Ok(out)
+    }
+
+    /// The kind of a face's surface ([`Surface::kind`]), or why it is not
+    /// known.
+    pub fn surface_kind(&self, index: usize) -> String {
+        let f = &self.faces[index];
+        let body = self.bodies[f.body].record;
+        match convert::face_surface(self.file, body, f.entity, &Options::default(), self.view, 2) {
+            Ok(face) => face.surface.kind().to_owned(),
+            Err(e) => format!("({})", e.0),
+        }
     }
 
     /// The body a body recipe names (index into [`Self::bodies`]): the one
@@ -766,6 +868,34 @@ impl<'a> NamedState<'a> {
             None => p,
         };
         let scale = transform.map_or(1.0, |tr| brep::norm(tr.m[0]));
+        // A helix known by its samples (mitcad#161): on the cubic through
+        // them, as the builder interpolates it.
+        if let Curve::Interpolated { params, points } = &curve
+            && params.len() >= 3
+        {
+            let m = 0.5 * (t[0] + t[1]);
+            let rotate = |v: P3| match &transform {
+                Some(tr) => [
+                    brep::dot(tr.m[0], v),
+                    brep::dot(tr.m[1], v),
+                    brep::dot(tr.m[2], v),
+                ],
+                None => v,
+            };
+            let (_, ahead) = smooth::point(params, points, m);
+            let ahead = rotate(ahead);
+            return Ok(EdgeGeometry {
+                mid: apply(smooth::point(params, points, m).0),
+                length: scale * smooth::length(params, points, t[0], t[1]),
+                start: apply(smooth::point(params, points, t[0]).0),
+                end: apply(smooth::point(params, points, t[1]).0),
+                direction: brep::normalize(if along {
+                    ahead
+                } else {
+                    brep::scale(ahead, -1.0)
+                }),
+            });
+        }
         let length = scale
             * match &curve {
                 Curve::Line { .. } => t[1] - t[0],
@@ -802,10 +932,171 @@ impl<'a> NamedState<'a> {
     }
 }
 
+/// Points along each edge of a planar face for [`NamedState::plane`].
+const PLANE_SAMPLES: usize = 16;
+
+/// Points along each edge of a face for [`NamedState::surface_point`]
+/// (a thread flank's helical edges run round several turns).
+const SURFACE_SAMPLES: usize = 64;
+
+/// A face's surface and a point inside it ([`NamedState::surface_point`]),
+/// mm, in its component's coordinates.
+#[derive(Clone, Debug, PartialEq)]
+pub struct SurfacePoint {
+    /// The surface's type as dumps name it (`Cone`, `Sphere`, `Torus`,
+    /// `NurbsSurface` for every free-form surface).
+    pub kind: &'static str,
+    pub point: P3,
+    /// The face's normal at `point`, with the face's orientation.
+    pub normal: P3,
+    /// A cone's or torus' point on the axis, a sphere's centre.
+    pub origin: Option<P3>,
+    pub axis: Option<P3>,
+    /// A cone's radius at `origin`, a sphere's radius, a torus' major
+    /// radius.
+    pub radius: Option<f64>,
+    pub half_angle: Option<f64>,
+    /// A torus' minor radius.
+    pub minor: Option<f64>,
+    /// More points inside a free-form face, spread over it
+    /// ([`surface::Inside::spread`]).
+    pub spread: Vec<P3>,
+}
+
+/// A point inside a planar face whose edges run along the polylines
+/// `edges` (each edge's points in order, the loops in any order and
+/// direction), in the plane through `guess` with the normal `normal`:
+/// `guess` where it lies in the face, else, of the middles of the face's
+/// stretches along lines across it, the one farthest from the edges (the
+/// face's points by the even-odd rule over all its loops, so a hole's loop
+/// takes its inside out of the face). `guess` when the edges enclose
+/// nothing.
+pub(crate) fn point_inside(normal: P3, edges: &[&[P3]], guess: P3) -> P3 {
+    // The plane's own axes, from the guess.
+    let any = if normal[0].abs() < 0.9 {
+        [1.0, 0.0, 0.0]
+    } else {
+        [0.0, 1.0, 0.0]
+    };
+    let u = brep::normalize(brep::cross(normal, any));
+    let v = brep::cross(normal, u);
+    let flat = |p: P3| {
+        let d = brep::sub(p, guess);
+        (brep::dot(d, u), brep::dot(d, v))
+    };
+    let segments: Vec<((f64, f64), (f64, f64))> = edges
+        .iter()
+        .flat_map(|e| e.windows(2).map(|w| (flat(w[0]), flat(w[1]))))
+        .filter(|(a, b)| a != b)
+        .collect();
+    // Where a line at height y crosses the edges, in order along it (each
+    // segment counts its lower end and not its upper one).
+    let crossings = |y: f64| {
+        let mut xs: Vec<f64> = segments
+            .iter()
+            .filter(|((_, ya), (_, yb))| (*ya <= y) != (*yb <= y))
+            .map(|((xa, ya), (xb, yb))| xa + (y - ya) / (yb - ya) * (xb - xa))
+            .collect();
+        xs.sort_by(f64::total_cmp);
+        xs
+    };
+    // The guess is inside where an odd number of crossings lie past it.
+    let through = crossings(0.0);
+    if through.iter().filter(|&&x| x > 0.0).count() % 2 == 1 {
+        return guess;
+    }
+    let (low, high) = segments
+        .iter()
+        .flat_map(|(a, b)| [a.1, b.1])
+        .fold((f64::INFINITY, f64::NEG_INFINITY), |(l, h), y| {
+            (l.min(y), h.max(y))
+        });
+    if high <= low || !(high - low).is_finite() {
+        return guess;
+    }
+    // How far a point is from the nearest edge.
+    let clearance = |x: f64, y: f64| {
+        segments
+            .iter()
+            .map(|((xa, ya), (xb, yb))| {
+                let (dx, dy) = (xb - xa, yb - ya);
+                let t = (((x - xa) * dx + (y - ya) * dy) / (dx * dx + dy * dy)).clamp(0.0, 1.0);
+                (x - xa - t * dx).hypot(y - ya - t * dy)
+            })
+            .fold(f64::INFINITY, f64::min)
+    };
+    // The middles of the stretches inside on lines across the face
+    // (heights between the sampled points' to stay off vertices); the one
+    // farthest from the edges.
+    const LINES: usize = 32;
+    let mut best: Option<(f64, f64, f64)> = None;
+    for k in 0..LINES {
+        let y = low + (high - low) * (k as f64 + 0.5) / LINES as f64;
+        let xs = crossings(y);
+        if xs.len() % 2 != 0 {
+            continue;
+        }
+        for pair in xs.chunks(2) {
+            let x = 0.5 * (pair[0] + pair[1]);
+            let c = clearance(x, y);
+            if best.is_none_or(|(b, _, _)| c > b) {
+                best = Some((c, x, y));
+            }
+        }
+    }
+    match best {
+        Some((_, x, y)) => brep::add(guess, brep::add(brep::scale(u, x), brep::scale(v, y))),
+        None => guess,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::testdata;
+
+    /// A face with a hole round the mean of its edges' points (a ring):
+    /// the point lies between the hole and the outside, and a convex face
+    /// keeps the mean (mitcad#158).
+    #[test]
+    fn a_planar_face_point_lies_inside_the_face() {
+        let circle = |r: f64| -> Vec<P3> {
+            (0..=64)
+                .map(|i| {
+                    let a = std::f64::consts::TAU * i as f64 / 64.0;
+                    [r * a.cos(), r * a.sin(), 15.0]
+                })
+                .collect()
+        };
+        let (outer, hole) = (circle(13.0), circle(5.0));
+        let edges: Vec<&[P3]> = vec![&outer, &hole];
+        let p = point_inside([0.0, 0.0, 1.0], &edges, [0.0, 0.0, 15.0]);
+        let r = (p[0] * p[0] + p[1] * p[1]).sqrt();
+        assert!((r - 9.0).abs() < 0.5 && (p[2] - 15.0).abs() < 1e-9, "{p:?}");
+        // A square keeps its middle; a guess outside an L comes inside it.
+        let square: Vec<P3> = vec![
+            [0.0, 0.0, 0.0],
+            [4.0, 0.0, 0.0],
+            [4.0, 4.0, 0.0],
+            [0.0, 4.0, 0.0],
+            [0.0, 0.0, 0.0],
+        ];
+        let p = point_inside([0.0, 0.0, 1.0], &[&square], [2.0, 2.0, 0.0]);
+        assert_eq!(p, [2.0, 2.0, 0.0]);
+        let ell: Vec<P3> = vec![
+            [0.0, 0.0, 0.0],
+            [10.0, 0.0, 0.0],
+            [10.0, 1.0, 0.0],
+            [1.0, 1.0, 0.0],
+            [1.0, 10.0, 0.0],
+            [0.0, 10.0, 0.0],
+            [0.0, 0.0, 0.0],
+        ];
+        let p = point_inside([0.0, 0.0, 1.0], &[&ell], [3.0, 3.0, 0.0]);
+        let inside = (p[1] > 0.0 && p[1] < 1.0 && p[0] > 0.0 && p[0] < 10.0)
+            || (p[0] > 0.0 && p[0] < 1.0 && p[1] > 0.0 && p[1] < 10.0);
+        assert!(inside, "{p:?}");
+    }
 
     fn n(tag: &str, ops: &[i64]) -> EntityName {
         EntityName {

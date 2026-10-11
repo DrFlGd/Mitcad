@@ -27,9 +27,15 @@ const USAGE: &str = "usage: mitcad-f3d-inspect <command> ...
                               components; --json prints the dump IR
                               (core/import/SCHEMA.md; an array for an
                               .f3z package)
+  names <file> <entry>        the named faces of a history blob (its entry
+                              name or the end of it) at each state,
+                              newest first, with their surface types
   objects <file> <class> [n]  the design stream's objects of a class (GUID
                               or its first digits; id:<n> for one object)
-                              in hex, the first n";
+                              in hex, the first n
+  off-timeline <file>...      features of the components' feature lists
+                              that the timeline does not list, and the
+                              item each is a part of";
 
 fn open(path: &str) -> Result<F3dFile, String> {
     F3dFile::open(Path::new(path)).map_err(|e| format!("{path}: {e}"))
@@ -163,6 +169,55 @@ fn cmd_dump(path: &str, entry: &str, max: Option<usize>) -> Result<(), String> {
     }
     if let Some(t) = &f.truncated {
         println!("stopped: {t}");
+    }
+    Ok(())
+}
+
+/// The faces of a history blob at each state with their names (mitcad#161:
+/// where a feature input's names are): one line per face, `state k`
+/// headers from the stored state (0) back.
+fn cmd_names(path: &str, entry: &str) -> Result<(), String> {
+    use mitcad_f3d::names::NamedState;
+    for (name, doc) in documents(path)? {
+        for blob in doc
+            .body_blobs()
+            .into_iter()
+            .filter(|b| b.entry.ends_with(entry))
+        {
+            let data = doc.read(&blob.entry).map_err(|e| e.to_string())?;
+            let file = AsmFile::parse(&data).map_err(|e| e.to_string())?;
+            let history = History::parse(&file).map_err(|e| e.to_string())?;
+            let steps = history.as_ref().map_or(0, |h| h.states.len());
+            println!("{name}{}", blob.entry);
+            for k in 0..=steps {
+                let view = history.as_ref().map(|h| h.view(k));
+                let state = NamedState::new(&file, view.as_ref());
+                let id = history
+                    .as_ref()
+                    .and_then(|h| h.states.get(k))
+                    .map_or("-".to_owned(), |s| s.id.to_string());
+                println!(
+                    "state {k} (before {id}): {} bodies, {} faces, {} edges",
+                    state.bodies.len(),
+                    state.faces.len(),
+                    state.edges.len()
+                );
+                for (i, f) in state.faces.iter().enumerate() {
+                    let names: Vec<String> = f
+                        .names
+                        .iter()
+                        .map(|n| format!("{}:{}{:?}", n.kind_type, n.tag, n.ops))
+                        .collect();
+                    println!(
+                        "  face {i} (entity {}, body {}) {}: {}",
+                        f.entity,
+                        f.body,
+                        state.surface_kind(i),
+                        names.join(" ")
+                    );
+                }
+            }
+        }
     }
     Ok(())
 }
@@ -589,6 +644,52 @@ fn cmd_design(path: &str, json: bool) -> Result<(), String> {
     Ok(())
 }
 
+/// The features of the components' feature lists that the timeline does
+/// not list (mitcad#169), one line each: file, object id, type, result
+/// number, and the timeline item it is a part of by the design's table of
+/// item parts and that item's type (`-` for none).
+fn cmd_off_timeline(files: &[String]) -> Result<(), String> {
+    use mitcad_f3d::design::{self, classes, decode};
+    use std::collections::HashMap;
+    for path in files {
+        for (label, doc) in design::documents(Path::new(path))? {
+            let Some(s) = design::find_design_streams(&doc).map_err(|e| e.to_string())? else {
+                continue;
+            };
+            let seg = design::Segment::parse(&s.meta, s.bulk).map_err(|e| e.to_string())?;
+            let dec = decode::decode(&seg);
+            let timeline: HashMap<u64, usize> =
+                dec.timeline.iter().map(|t| (t.id, t.pos)).collect();
+            let part_of: HashMap<u64, u64> = design::build::item_parts(&seg)
+                .into_iter()
+                .flat_map(|(item, features)| features.into_iter().map(move |f| (f, item)))
+                .collect();
+            for list in seg.objects_of(classes::FEATURE_LIST) {
+                for r in seg.ref_ids(seg.data(list)) {
+                    if timeline.contains_key(&r) {
+                        continue;
+                    }
+                    let Some(o) = seg.object(r) else { continue };
+                    let Some(name) = seg.guid(o).and_then(classes::known_name) else {
+                        continue;
+                    };
+                    let Some(tail) = decode::feature_tail(&seg, o) else {
+                        continue;
+                    };
+                    let item = part_of.get(&r).and_then(|i| timeline.get(i));
+                    let item_type = item.and_then(|&p| dec.timeline[p].type_name).unwrap_or("-");
+                    let item = item.map_or("-".to_owned(), ToString::to_string);
+                    println!(
+                        "{path}{label}\t{r}\t{name}\t{}\t{item}\t{item_type}",
+                        tail.result_no
+                    );
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
 /// The design stream's objects of one class in hex, for studying a record
 /// layout: id, version, length, references (offset and target class) and
 /// the bytes, 32 a line.
@@ -621,6 +722,17 @@ fn cmd_objects(path: &str, class: &str, max: Option<usize>) -> Result<(), String
                 d.len(),
                 seg.sub_start(o)
             );
+            // The class and its bases with their versions (each its own
+            // part of the object's fields).
+            let chain: Vec<String> = seg
+                .chain(g)
+                .iter()
+                .map(|c| {
+                    let v = seg.class_by_guid(c).map_or(0, |r| r.version);
+                    format!("{c} v{v}")
+                })
+                .collect();
+            println!("  chain {}", chain.join(" < "));
             for (p, r) in seg.refs_in(d, 0, d.len()) {
                 let t = seg.guid_of(r.id).unwrap_or("?");
                 println!("  ref @{p}..{} -> {} {}", r.end, r.id, &t[..8.min(t.len())]);
@@ -659,6 +771,8 @@ fn run(args: &[String]) -> Result<(), String> {
         }
         [cmd, file] if cmd == "design" => cmd_design(file, false),
         [cmd, file, flag] if cmd == "design" && flag == "--json" => cmd_design(file, true),
+        [cmd, file, entry] if cmd == "names" => cmd_names(file, entry),
+        [cmd, files @ ..] if cmd == "off-timeline" && !files.is_empty() => cmd_off_timeline(files),
         [cmd, file, class] if cmd == "objects" => cmd_objects(file, class, None),
         [cmd, file, class, n] if cmd == "objects" => cmd_objects(file, class, n.parse().ok()),
         _ => Err(USAGE.to_string()),

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: MIT
-# check-all sources: app/commands app/sketch
+# check-all sources: app/commands app/sketch app/framework/HybridAssembly.cpp
 # The CREATE group (U4) through the real UI, with the volumes the model
 # reports (analytic, or tools/cli/tests/f1_*.json):
 #   - Extrude: a thin extrusion (walls centred on the profile), edited to
@@ -299,6 +299,11 @@ primitive "Torus" "$(awk 'BEGIN { printf "%.6f", 2 * 3.14159265358979^2 * 20 * 2
 ui_step "new component (search)"           ui_command "New Component"
 ui_step "name it Bracket"                  ui_type_in "Panel New Component input name" "Bracket"
 ui_step "OK (Enter)"                       ui_key Return
+# The root has modelled bodies: asked first (mitcad#171, ui-hybrid-test.sh).
+ui_expect_log "Hybrid assembly question: Root has" "asked about a hybrid assembly"
+ui_focus_dialog '^Hybrid Assembly$'
+ui_step "continue as is (Alt+O)"           ui_key alt+o
+ui_focus_main
 ui_expect_log "New component Bracket" "component made"
 ui_expect_log "Browser Root/Bracket:1 at" "the browser shows it"
 

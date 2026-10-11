@@ -10,7 +10,6 @@
 
 #include <QDir>
 #include <QFile>
-#include <QFileDialog>
 #include <QFileInfo>
 #include <QJsonArray>
 #include <QMessageBox>
@@ -21,6 +20,7 @@
 #include "../framework/CommandRegistry.hpp"
 #include "../framework/Dialogs.hpp"
 #include "../framework/Json.hpp"
+#include "../projects/ProjectsPanel.hpp"
 #include "LiveController.hpp"
 #include "LockController.hpp"
 #include "ProjectDialogs.hpp"
@@ -265,7 +265,21 @@ void MainWindow::openProjectFolder(const QString& given, bool ask) {
   }
   QString folder = given;
   if (folder.isEmpty()) {
-    folder = dialogDirectory(this, tr("Open Project"), projectsDirectory());
+    // The projects the Projects panel lists (mitcad#176); Another Folder...
+    // the folder dialog, for a folder not listed (made a project below).
+    ProjectPickerOptions options;
+    options.mode = ProjectPickerOptions::Mode::Project;
+    options.title = tr("Open a Project");
+    options.text = tr("The project to open:");
+    options.acceptText = tr("&Open");
+    options.otherText = tr("&Another Folder...");
+    options.root = panelProjectSelection().first;
+    const std::optional<ProjectPickerResult> picked = pickInProjects(this, options);
+    if (!picked) {
+      qInfo().noquote() << QStringLiteral("Open Project cancelled");
+      return;
+    }
+    folder = picked->other ? dialogDirectory(this, tr("Open Project"), projectsDirectory()) : picked->root;
     if (folder.isEmpty()) {
       qInfo().noquote() << QStringLiteral("Open Project cancelled");
       return;
@@ -513,7 +527,29 @@ void MainWindow::moveToProject() {
     return;
   }
   if (*target == MoveTarget::ExistingProject) {
-    const QString folder = dialogDirectory(this, tr("Choose a Project"), projectsDirectory());
+    // The projects the Projects panel lists, a folder in one and the name
+    // there (mitcad#174): no folder dialog for a project the list has.
+    const std::pair<QString, QString> selected = panelProjectSelection();
+    ProjectPickerOptions options;
+    options.title = tr("Choose a Project");
+    options.text = tr("The project and the folder %1 moves into, and its name there:").arg(documentName());
+    options.acceptText = tr("&Move");
+    options.otherText = tr("&Another Folder...");
+    options.root = selected.first;
+    options.folder = selected.second;
+    options.name = path.isEmpty() ? documentName() : QFileInfo(path).completeBaseName();
+    options.ownFile = path;
+    const std::optional<ProjectPickerResult> picked = pickInProjects(this, options);
+    if (!picked) {
+      qInfo().noquote() << QStringLiteral("Move to a Project cancelled");
+      return;
+    }
+    if (!picked->other) {
+      moveIntoProject(picked->root, picked->path);
+      return;
+    }
+    // Another Folder...: a project the list does not have.
+    const QString folder = dialogDirectory(this, tr("Choose a Project Folder"), projectsDirectory());
     if (folder.isEmpty()) {
       qInfo().noquote() << QStringLiteral("Move to a Project cancelled");
       return;
@@ -526,6 +562,8 @@ void MainWindow::moveToProject() {
                        .arg(QDir::toNativeSeparators(folder)));
       return;
     }
+    // One of the known projects from now on.
+    ProjectsSettings::remember(project.root);
     moveIntoProject(project.root);
     return;
   }
@@ -549,47 +587,106 @@ void MainWindow::moveToProject() {
   handleNewProject(askNewProject(this, options), path.isEmpty() ? documentName() : path);
 }
 
-bool MainWindow::moveIntoProject(const QString& root) {
+bool MainWindow::moveIntoProject(const QString& root, const QString& chosen) {
   const QString from = m_filePath;
-  if (from.isEmpty()) {
-    // An untitled design: saved in the project, under a name asked for.
-    m_projectDir = root;
-    qInfo().noquote() << QStringLiteral("Move to a Project: %1 saved in %2").arg(documentName(), root);
-    return saveAs();
-  }
-  const QString name = QFileInfo(from).fileName();
-  QString target = QDir(root).filePath(name);
-  if (!from.isEmpty() && QFileInfo(target).absoluteFilePath() != QFileInfo(from).absoluteFilePath() &&
-      QFileInfo::exists(target)) {
-    // Another design of that name there: a name of its own.
-    QFileDialog dialog(this, tr("Move to a Project"), root, tr("Mitcad designs (*.mitcad)"));
-    dialog.setAcceptMode(QFileDialog::AcceptSave);
-    dialog.setDefaultSuffix(QStringLiteral("mitcad"));
-    dialog.selectFile(name);
-    if (execDialog(&dialog) != QDialog::Accepted || dialog.selectedFiles().isEmpty()) {
-      qInfo().noquote() << QStringLiteral("Move to a Project cancelled");
-      return false;
+  QString project = root;
+  QString target = chosen;
+  if (target.isEmpty()) {
+    const QString name = from.isEmpty() ? documentName() + QStringLiteral(".mitcad") : QFileInfo(from).fileName();
+    target = QDir(root).filePath(name);
+    const bool own = !from.isEmpty() && sameFolderPath(QFileInfo(target).absoluteFilePath(), from);
+    if (from.isEmpty() || (!own && QFileInfo::exists(target))) {
+      // An untitled design's name, or another design of that name there: a
+      // name of its own, asked in the project picker (mitcad#174).
+      ProjectPickerOptions options;
+      options.title = from.isEmpty() ? tr("Save in a Project") : tr("Choose a Project");
+      options.text = from.isEmpty() ? tr("The name of %1 in the project, and its folder:").arg(documentName())
+                                    : tr("%1 is in the project already: another name, or another folder.").arg(name);
+      options.acceptText = from.isEmpty() ? tr("&Save") : tr("&Move");
+      options.root = root;
+      options.name = QFileInfo(name).completeBaseName();
+      options.ownFile = from;
+      const std::optional<ProjectPickerResult> picked = pickInProjects(this, options);
+      if (!picked || picked->other) {
+        qInfo().noquote() << QStringLiteral("Move to a Project cancelled");
+        return false;
+      }
+      project = picked->root;
+      target = picked->path;
     }
-    target = dialog.selectedFiles().constFirst();
+  }
+  if (from.isEmpty()) {
+    qInfo().noquote() << QStringLiteral("Move to a Project: %1 saved in %2").arg(documentName(), project);
   }
   const bool same = !from.isEmpty() && sameFolderPath(QFileInfo(target).absoluteFilePath(), from);
   if (!writeFile(target)) {
     return false;
   }
+  const QString absolute = QFileInfo(target).absoluteFilePath();
   if (!from.isEmpty() && !same) {
     // The design is the project's now; the file it came from goes.
     if (!QFile::remove(from)) {
       showError(tr("Moved %1 into the project %2, but could not remove the file it came from.")
-                    .arg(QFileInfo(from).fileName(), QDir::toNativeSeparators(root)));
+                    .arg(QFileInfo(from).fileName(), QDir::toNativeSeparators(project)));
+      showDesignInPanel(absolute);
       return true;
     }
-    qInfo().noquote() << QStringLiteral("Moved %1 to %2").arg(from, QFileInfo(target).absoluteFilePath());
-  } else {
-    qInfo().noquote() << QStringLiteral("Recorded %1 in the project %2").arg(QFileInfo(target).absoluteFilePath(), root);
+    qInfo().noquote() << QStringLiteral("Moved %1 to %2").arg(from, absolute);
+  } else if (!from.isEmpty()) {
+    qInfo().noquote() << QStringLiteral("Recorded %1 in the project %2").arg(absolute, project);
   }
   showHint(tr("%1 is in the project %2 now: every save records a version.")
-               .arg(QFileInfo(target).fileName(), QFileInfo(root).fileName()));
+               .arg(QFileInfo(target).fileName(), QFileInfo(project).fileName()));
+  // The panel shows it, selected.
+  showDesignInPanel(absolute);
   return true;
+}
+
+std::pair<QString, QString> MainWindow::panelProjectSelection() const {
+  if (m_projectsPanel == nullptr) {
+    return {};
+  }
+  const ProjectRow* row = m_projectsPanel->project(m_projectsPanel->selectedRoot());
+  if (row == nullptr || (row->kind != ProjectRow::Kind::Local && row->kind != ProjectRow::Kind::Cloud)) {
+    return {};
+  }
+  return {row->root, m_projectsPanel->selectedFolder()};
+}
+
+std::pair<QString, QString> MainWindow::saveAsProjectPlace() const {
+  if (!m_filePath.isEmpty()) {
+    // A design of a project with versions: its project and folder.
+    if (m_project.hasHistory() && isInside(m_filePath, m_project.root)) {
+      return {m_project.root, folderInProject(m_project.root, QFileInfo(m_filePath).absolutePath())};
+    }
+    return {};
+  }
+  // An untitled design of a project's folder (an opened version).
+  if (!m_projectDir.isEmpty()) {
+    const ProjectState state = projectOfInspection(inspectFolder(m_projectDir));
+    if (state.hasHistory()) {
+      return {state.root, folderInProject(state.root, m_projectDir)};
+    }
+  }
+  if (!m_project.hasHistory()) {
+    return {};
+  }
+  // An untitled design while a project is current: the panel's selection,
+  // else the current project's top.
+  const std::pair<QString, QString> selected = panelProjectSelection();
+  if (!selected.first.isEmpty()) {
+    return selected;
+  }
+  return {m_project.root, QString()};
+}
+
+void MainWindow::showDesignInPanel(const QString& path) {
+  if (m_projectsPanel == nullptr || !m_project.hasHistory() || !isInside(path, m_project.root)) {
+    return;
+  }
+  setProjectsPanelShown(true, true);
+  const QString file = QDir::cleanPath(QFileInfo(path).absoluteFilePath());
+  m_projectsPanel->revealDesign(m_project.root, QDir(m_project.root).relativeFilePath(file));
 }
 
 // ---------------------------------------------------------------------------

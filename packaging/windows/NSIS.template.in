@@ -1,0 +1,636 @@
+; SPDX-License-Identifier: MIT
+; Mitcad's NSIS installer script, a template CPack fills in (its CPACK_*
+; variables between at signs). cmake/Packaging.cmake points CPACK_MODULE_PATH
+; here, so CPack takes this file instead of its own NSIS.template.in;
+; docs/development.md#windows-installer describes the installer.
+;
+; Installs either
+;   just for the current user (the default): %LOCALAPPDATA%\Programs\Mitcad,
+;     the Start menu shortcut, the .mitcad file type and the uninstall entry
+;     under HKCU; no administrator rights, so no UAC prompt;
+;   or for all users: Program Files\Mitcad and HKLM, as releases before
+;     per-user installations did. Only this choice asks for elevation: the
+;     installer runs as the user (RequestExecutionLevel user) and starts
+;     itself again elevated (verb runas) with /AllUsers /Elevated.
+; Command line:
+;   /S                silent; installs for the current user unless
+;   /AllUsers         installs for all users (elevates when needed),
+;   /CurrentUser      installs for the current user (the default),
+;   /D=<dir>          the folder; last, without quotes. A silent install whose
+;                     /D is the folder of the all-users installation (what the
+;                     updater of an earlier release passes) installs for all
+;                     users.
+; The scope is written into <dir>\installation.ini ([Installation] Scope=user
+; or all), which the uninstaller and Mitcad's automatic updates
+; (app/update/UpdateInstaller.cpp) read; an installation without it is an
+; earlier release's, which was always for all users.
+; An earlier version installed in the same scope is uninstalled first (its
+; own uninstaller, silently). Exit codes: 0 done, 1 cancelled, 2 aborted
+; (also: the earlier version could not be uninstalled), 740 elevated but
+; still no administrator rights, 1223 the elevation was refused.
+
+  Unicode true
+
+  !define VERSION "@CPACK_PACKAGE_VERSION@"
+  !define PATCH "@CPACK_PACKAGE_VERSION_PATCH@"
+  !define INST_DIR "@CPACK_TEMPORARY_DIRECTORY@"
+
+  !define MITCAD_UNINSTALL_KEY "Software\Microsoft\Windows\CurrentVersion\Uninstall\@CPACK_PACKAGE_INSTALL_REGISTRY_KEY@"
+  !define MITCAD_VENDOR_KEY "Software\@CPACK_PACKAGE_VENDOR@\@CPACK_PACKAGE_INSTALL_REGISTRY_KEY@"
+  !define MITCAD_UNINSTALLER "@CPACK_NSIS_UNINSTALL_NAME@.exe"
+  !define MITCAD_SCOPE_FILE "installation.ini"
+  ; Button_SetElevationRequiredState: the shield on the Next button.
+  !define MITCAD_BCM_SETSHIELD 0x160C
+
+;--------------------------------
+; Variables. CPack's generated shortcut commands use STARTMENU_FOLDER and
+; MUI_TEMP.
+
+  Var MUI_TEMP
+  Var STARTMENU_FOLDER
+  ; 1: for all users (HKLM, Program Files), 0: just for the current user.
+  Var MitcadAllUsers
+  ; 1 when this process has administrator rights (an elevated token).
+  Var MitcadIsAdmin
+  ; 1 in the copy started elevated (/Elevated): the pages before the
+  ; folder were shown by the first one.
+  Var MitcadElevated
+  ; 1 when /D gave the folder.
+  Var MitcadDirGiven
+  Var MitcadResult
+  Var MitcadExitCode
+  Var MitcadTemp
+  Var MitcadJustMeButton
+  Var MitcadAllUsersButton
+
+;--------------------------------
+; General
+
+  !include "MUI.nsh"
+  !include "LogicLib.nsh"
+  !include "nsDialogs.nsh"
+
+  Name "@CPACK_NSIS_PACKAGE_NAME@"
+  OutFile "@CPACK_TOPLEVEL_DIRECTORY@/@CPACK_OUTPUT_FILE_NAME@"
+  SetCompressor @CPACK_NSIS_COMPRESSOR@
+  ; No InstallDir: $INSTDIR is empty in .onInit unless /D gave it, and the
+  ; scope decides the default.
+
+  ; Runs as the user; elevation only for an installation for all users.
+  RequestExecutionLevel user
+
+@CPACK_NSIS_DEFINES@
+@CPACK_NSIS_MANIFEST_DPI_AWARE_CODE@
+@CPACK_NSIS_BRANDING_TEXT_CODE@
+@CPACK_NSIS_CRC_CHECK_CODE@
+
+;--------------------------------
+; Helpers shared by the installer and the uninstaller.
+
+!macro MitcadTrimSlash VAR
+  StrCpy $MitcadTemp ${VAR} 1 -1
+  ${If} $MitcadTemp == "\"
+    StrCpy ${VAR} ${VAR} -1
+  ${EndIf}
+!macroend
+
+!macro MitcadSharedFunctions UN
+; Pushes 1 when the command line has the switch on the stack (as a word of
+; its own, any case), else 0. NSIS has taken /D= and _?= off $CMDLINE.
+Function ${UN}MitcadHasSwitch
+  Exch $R0
+  Push $R1
+  Push $R2
+  Push $R3
+  StrCpy $R0 " $R0"
+  StrLen $R1 $R0
+  StrCpy $R2 0
+  ${Do}
+    StrCpy $R3 $CMDLINE $R1 $R2
+    ${If} $R3 == ""
+      StrCpy $R0 0
+      ${Break}
+    ${EndIf}
+    ${If} $R3 == $R0
+      IntOp $R3 $R2 + $R1
+      StrCpy $R3 $CMDLINE 1 $R3
+      ${If} $R3 == ""
+      ${OrIf} $R3 == " "
+        StrCpy $R0 1
+        ${Break}
+      ${EndIf}
+    ${EndIf}
+    IntOp $R2 $R2 + 1
+  ${Loop}
+  Pop $R3
+  Pop $R2
+  Pop $R1
+  Exch $R0
+FunctionEnd
+
+Function ${UN}MitcadCheckAdmin
+  UserInfo::GetAccountType
+  Pop $MitcadTemp
+  ${If} $MitcadTemp == "Admin"
+    StrCpy $MitcadIsAdmin 1
+  ${Else}
+    StrCpy $MitcadIsAdmin 0
+  ${EndIf}
+FunctionEnd
+
+; Starts this program again elevated (ShellExecuteEx, verb runas) with the
+; parameters in $MitcadTemp and waits for it. $MitcadResult: "ran" (its exit
+; code in $MitcadExitCode), "refused" (the user said no to UAC) or "failed"
+; (the error in $MitcadExitCode).
+Function ${UN}MitcadRunElevated
+  Push $1
+  Push $2
+  Push $3
+  Push $4
+  Push $5
+  ; SHELLEXECUTEINFOW: cbSize, fMask (SEE_MASK_NOCLOSEPROCESS |
+  ; SEE_MASK_NOASYNC), hwnd, lpVerb, lpFile, lpParameters, lpDirectory,
+  ; nShow (SW_SHOWNORMAL), hInstApp, lpIDList, lpClass, hkeyClass,
+  ; dwHotKey, hIcon, hProcess.
+  System::Call '*(&l4, i 0x140, p $HWNDPARENT, w "runas", w "$EXEPATH", w "$MitcadTemp", p 0, i 1, p 0, p 0, p 0, p 0, i 0, p 0, p 0) p .r1'
+  System::Call 'shell32::ShellExecuteExW(p r1) i .r2 ?e'
+  Pop $3
+  StrCpy $MitcadExitCode $3
+  ${If} $2 == 0
+    ${If} $3 == 1223
+      StrCpy $MitcadResult "refused"
+    ${Else}
+      StrCpy $MitcadResult "failed"
+    ${EndIf}
+  ${Else}
+    System::Call '*$1(i, i, p, p, p, p, p, i, p, p, p, p, i, p, p .r4)'
+    ${If} $4 == 0
+      StrCpy $MitcadResult "failed"
+    ${Else}
+      ; The elevated copy shows the pages from here on.
+      ${If} $HWNDPARENT != 0
+        HideWindow
+      ${EndIf}
+      System::Call 'kernel32::WaitForSingleObject(p r4, i -1)'
+      StrCpy $5 1
+      System::Call 'kernel32::GetExitCodeProcess(p r4, *i .r5)'
+      System::Call 'kernel32::CloseHandle(p r4)'
+      StrCpy $MitcadExitCode $5
+      StrCpy $MitcadResult "ran"
+    ${EndIf}
+  ${EndIf}
+  System::Free $1
+  Pop $5
+  Pop $4
+  Pop $3
+  Pop $2
+  Pop $1
+FunctionEnd
+!macroend
+!insertmacro MitcadSharedFunctions ""
+!insertmacro MitcadSharedFunctions "un."
+
+;--------------------------------
+; The scope (installer)
+
+; "C:\dir\Uninstall.exe" (an UninstallString) on the stack -> C:\dir.
+Function MitcadFolderOfUninstaller
+  Exch $0
+  Push $1
+  Push $2
+  StrCpy $1 $0 1
+  ${If} $1 == "$\""
+    StrCpy $0 $0 "" 1
+  ${EndIf}
+  StrCpy $1 $0 1 -1
+  ${If} $1 == "$\""
+    StrCpy $0 $0 -1
+  ${EndIf}
+  StrLen $1 "\${MITCAD_UNINSTALLER}"
+  IntOp $1 0 - $1
+  StrCpy $2 $0 "" $1
+  ${If} $2 == "\${MITCAD_UNINSTALLER}"
+    StrCpy $0 $0 $1
+  ${Else}
+    StrCpy $0 ""
+  ${EndIf}
+  Pop $2
+  Pop $1
+  Exch $0
+FunctionEnd
+
+; The folder of the installation registered under ROOT (HKCU or HKLM), or "".
+; Earlier releases wrote no InstallLocation, only the UninstallString.
+!macro MitcadRegisteredDir ROOT VAR
+  ReadRegStr ${VAR} ${ROOT} "${MITCAD_UNINSTALL_KEY}" "InstallLocation"
+  ${If} ${VAR} == ""
+    ReadRegStr ${VAR} ${ROOT} "${MITCAD_UNINSTALL_KEY}" "UninstallString"
+    ${If} ${VAR} != ""
+      Push ${VAR}
+      Call MitcadFolderOfUninstaller
+      Pop ${VAR}
+    ${EndIf}
+  ${EndIf}
+  !insertmacro MitcadTrimSlash ${VAR}
+!macroend
+
+; Sets the shell context (SHCTX, $SMPROGRAMS) for the scope and, unless /D
+; gave the folder, the scope's default: the folder of the installation
+; registered there, else Program Files\Mitcad or
+; %LOCALAPPDATA%\Programs\Mitcad.
+Function MitcadApplyScope
+  ${If} $MitcadAllUsers == 1
+    SetShellVarContext all
+  ${Else}
+    SetShellVarContext current
+  ${EndIf}
+  ${If} $MitcadDirGiven == 1
+    Return
+  ${EndIf}
+  ${If} $MitcadAllUsers == 1
+    !insertmacro MitcadRegisteredDir HKLM $MitcadResult
+    ${If} $MitcadResult == ""
+      StrCpy $MitcadResult "$PROGRAMFILES64\@CPACK_PACKAGE_INSTALL_DIRECTORY@"
+    ${EndIf}
+  ${Else}
+    !insertmacro MitcadRegisteredDir HKCU $MitcadResult
+    ${If} $MitcadResult == ""
+      StrCpy $MitcadResult "$LOCALAPPDATA\Programs\@CPACK_PACKAGE_INSTALL_DIRECTORY@"
+    ${EndIf}
+  ${EndIf}
+  StrCpy $INSTDIR $MitcadResult
+FunctionEnd
+
+; Starts the installer again elevated for all users and quits with its exit
+; code; returns when that was refused or failed.
+Function MitcadElevate
+  StrCpy $MitcadTemp "/AllUsers /Elevated"
+  ${If} ${Silent}
+    StrCpy $MitcadTemp "/S $MitcadTemp"
+  ${EndIf}
+  ${If} $MitcadDirGiven == 1
+    StrCpy $MitcadTemp "$MitcadTemp /D=$INSTDIR"
+  ${EndIf}
+  Call MitcadRunElevated
+  ${If} $MitcadResult == "ran"
+    SetErrorLevel $MitcadExitCode
+    Quit
+  ${EndIf}
+FunctionEnd
+
+; Uninstalls an earlier version registered in the chosen scope with its own
+; uninstaller, silently and in place. $MitcadResult: "ok", "failed" or
+; "cancel". A registration whose uninstaller is gone (an installation
+; deleted by hand) is passed over: this installation replaces it.
+Function MitcadUninstallPrevious
+  StrCpy $MitcadResult "ok"
+  ReadRegStr $0 SHCTX "${MITCAD_UNINSTALL_KEY}" "UninstallString"
+  ReadRegStr $1 SHCTX "${MITCAD_UNINSTALL_KEY}" "DisplayName"
+  ${If} $0 == ""
+    Return
+  ${EndIf}
+  Push $0
+  Call MitcadFolderOfUninstaller
+  Pop $2
+  ${If} $2 == ""
+    Return
+  ${EndIf}
+  ${IfNot} ${FileExists} "$2\${MITCAD_UNINSTALLER}"
+    Return
+  ${EndIf}
+  MessageBox MB_YESNOCANCEL|MB_ICONEXCLAMATION \
+    "$1 is already installed in $2.$\n$\nDo you want to uninstall the old version before installing the new one?" \
+    /SD IDYES IDYES mitcad_uninstall IDNO mitcad_done
+  StrCpy $MitcadResult "cancel"
+  Return
+mitcad_uninstall:
+  ClearErrors
+  ExecWait '"$2\${MITCAD_UNINSTALLER}" /S _?=$2' $3
+  ${If} ${Errors}
+  ${OrIf} $3 != 0
+    MessageBox MB_OK|MB_ICONSTOP "Uninstalling the earlier version failed." /SD IDOK
+    StrCpy $MitcadResult "failed"
+  ${EndIf}
+mitcad_done:
+FunctionEnd
+
+Function .onInit
+  StrCpy $MitcadDirGiven 0
+  ${If} $INSTDIR != ""
+    StrCpy $MitcadDirGiven 1
+    !insertmacro MitcadTrimSlash $INSTDIR
+  ${EndIf}
+  Call MitcadCheckAdmin
+  Push "/Elevated"
+  Call MitcadHasSwitch
+  Pop $MitcadElevated
+  Push "/AllUsers"
+  Call MitcadHasSwitch
+  Pop $0
+  Push "/CurrentUser"
+  Call MitcadHasSwitch
+  Pop $1
+  StrCpy $MitcadAllUsers 0
+  ${If} $0 == 1
+    StrCpy $MitcadAllUsers 1
+  ${ElseIf} $1 != 1
+    ; No switch: just for the current user, unless /D names the folder of
+    ; the installation for all users (an update of it), or, on the pages,
+    ; Mitcad is installed for all users and not for the current user.
+    !insertmacro MitcadRegisteredDir HKLM $2
+    !insertmacro MitcadRegisteredDir HKCU $3
+    ${If} $MitcadDirGiven == 1
+      ${If} $2 != ""
+      ${AndIf} $INSTDIR == $2
+        StrCpy $MitcadAllUsers 1
+      ${EndIf}
+    ${ElseIf} $3 == ""
+    ${AndIf} $2 != ""
+      ${IfNot} ${Silent}
+        StrCpy $MitcadAllUsers 1
+      ${EndIf}
+    ${EndIf}
+  ${EndIf}
+  Call MitcadApplyScope
+
+  ${If} $MitcadAllUsers == 1
+  ${AndIf} $MitcadIsAdmin == 0
+    ${If} $MitcadElevated == 1
+      MessageBox MB_OK|MB_ICONSTOP "Installing for all users needs administrator rights." /SD IDOK
+      SetErrorLevel 740
+      Quit
+    ${ElseIf} ${Silent}
+      Call MitcadElevate
+      SetErrorLevel $MitcadExitCode
+      Quit
+    ${EndIf}
+    ; With pages, the scope page asks.
+  ${EndIf}
+
+  ${If} ${Silent}
+    Call MitcadUninstallPrevious
+    ${If} $MitcadResult != "ok"
+      SetErrorLevel 2
+      Quit
+    ${EndIf}
+  ${EndIf}
+FunctionEnd
+
+;--------------------------------
+; Pages
+
+  !define MUI_HEADERIMAGE
+  !define MUI_ABORTWARNING
+
+@CPACK_NSIS_INSTALLER_MUI_ICON_CODE@
+@CPACK_NSIS_INSTALLER_ICON_CODE@
+@CPACK_NSIS_INSTALLER_MUI_WELCOMEFINISH_CODE@
+@CPACK_NSIS_INSTALLER_MUI_UNWELCOMEFINISH_CODE@
+
+  @CPACK_NSIS_INSTALLER_WELCOME_TITLE_CODE@
+  @CPACK_NSIS_INSTALLER_WELCOME_TITLE_3LINES_CODE@
+  !define MUI_PAGE_CUSTOMFUNCTION_PRE MitcadSkipWhenElevated
+  !insertmacro MUI_PAGE_WELCOME
+
+  !define MUI_PAGE_CUSTOMFUNCTION_PRE MitcadSkipWhenElevated
+  @CPACK_NSIS_LICENSE_PAGE@
+
+  Page custom MitcadScopePage MitcadScopePageLeave
+
+  !define MUI_PAGE_CUSTOMFUNCTION_LEAVE MitcadDirectoryLeave
+  !insertmacro MUI_PAGE_DIRECTORY
+
+  !define MUI_STARTMENUPAGE_REGISTRY_ROOT "SHCTX"
+  !define MUI_STARTMENUPAGE_REGISTRY_KEY "${MITCAD_VENDOR_KEY}"
+  !define MUI_STARTMENUPAGE_REGISTRY_VALUENAME "Start Menu Folder"
+  !insertmacro MUI_PAGE_STARTMENU Application $STARTMENU_FOLDER
+
+  !insertmacro MUI_PAGE_INSTFILES
+  @CPACK_NSIS_INSTALLER_FINISH_TITLE_CODE@
+  @CPACK_NSIS_INSTALLER_FINISH_TITLE_3LINES_CODE@
+  !define MUI_FINISHPAGE_RUN
+  !define MUI_FINISHPAGE_RUN_FUNCTION MitcadRunApp
+  !insertmacro MUI_PAGE_FINISH
+
+  !insertmacro MUI_UNPAGE_CONFIRM
+  !insertmacro MUI_UNPAGE_INSTFILES
+
+  ; English only: the pages of our own are English, as Mitcad is.
+  !insertmacro MUI_LANGUAGE "English"
+
+;--------------------------------
+; Page functions (after the pages: MUI_HEADER_TEXT needs the variables
+; the first page declares)
+
+Function MitcadSkipWhenElevated
+  ${If} $MitcadElevated == 1
+    Abort
+  ${EndIf}
+FunctionEnd
+
+Function MitcadUpdateShield
+  ${NSD_GetState} $MitcadAllUsersButton $MitcadTemp
+  GetDlgItem $MitcadResult $HWNDPARENT 1
+  ${If} $MitcadTemp == 1
+  ${AndIf} $MitcadIsAdmin == 0
+    SendMessage $MitcadResult ${MITCAD_BCM_SETSHIELD} 0 1
+  ${Else}
+    SendMessage $MitcadResult ${MITCAD_BCM_SETSHIELD} 0 0
+  ${EndIf}
+FunctionEnd
+
+Function MitcadScopeClicked
+  Pop $MitcadTemp
+  Call MitcadUpdateShield
+FunctionEnd
+
+Function MitcadScopePage
+  ${If} $MitcadElevated == 1
+    Abort
+  ${EndIf}
+  !insertmacro MUI_HEADER_TEXT "Choose Users" "Choose for whom to install @CPACK_NSIS_PACKAGE_NAME@."
+  nsDialogs::Create 1018
+  Pop $MitcadTemp
+  ${If} $MitcadTemp == error
+    Abort
+  ${EndIf}
+  ${NSD_CreateLabel} 0 0 100% 20u "Install @CPACK_NSIS_PACKAGE_NAME@ just for you, or for everyone who uses this computer."
+  Pop $MitcadTemp
+  ${NSD_CreateRadioButton} 10u 26u 280u 12u "&Just for me"
+  Pop $MitcadJustMeButton
+  ${NSD_CreateLabel} 22u 40u 268u 20u "Into your own folder (AppData\Local\Programs). No administrator rights are needed."
+  Pop $MitcadTemp
+  ${NSD_CreateRadioButton} 10u 66u 280u 12u "For &all users"
+  Pop $MitcadAllUsersButton
+  ${NSD_CreateLabel} 22u 80u 268u 20u "Into Program Files. Windows asks for administrator rights."
+  Pop $MitcadTemp
+  ${If} $MitcadAllUsers == 1
+    ${NSD_Check} $MitcadAllUsersButton
+  ${Else}
+    ${NSD_Check} $MitcadJustMeButton
+  ${EndIf}
+  ${NSD_OnClick} $MitcadJustMeButton MitcadScopeClicked
+  ${NSD_OnClick} $MitcadAllUsersButton MitcadScopeClicked
+  Call MitcadUpdateShield
+  nsDialogs::Show
+FunctionEnd
+
+Function MitcadScopePageLeave
+  ${NSD_GetState} $MitcadAllUsersButton $MitcadTemp
+  ${If} $MitcadTemp == 1
+    StrCpy $MitcadAllUsers 1
+  ${Else}
+    StrCpy $MitcadAllUsers 0
+  ${EndIf}
+  Call MitcadApplyScope
+  ${If} $MitcadAllUsers == 1
+  ${AndIf} $MitcadIsAdmin == 0
+    Call MitcadElevate
+    ${If} $MitcadResult == "refused"
+      MessageBox MB_OK|MB_ICONEXCLAMATION "Installing for all users needs administrator rights. Choose Just for me to install without them."
+    ${Else}
+      MessageBox MB_OK|MB_ICONSTOP "The installer could not be started with administrator rights (error $MitcadExitCode)."
+    ${EndIf}
+    Abort
+  ${EndIf}
+  GetDlgItem $MitcadTemp $HWNDPARENT 1
+  SendMessage $MitcadTemp ${MITCAD_BCM_SETSHIELD} 0 0
+FunctionEnd
+
+Function MitcadDirectoryLeave
+  Call MitcadUninstallPrevious
+  ${If} $MitcadResult == "cancel"
+    Quit
+  ${ElseIf} $MitcadResult != "ok"
+    Abort
+  ${EndIf}
+FunctionEnd
+
+; "Run Mitcad" on the last page. An elevated installer starts Mitcad through
+; the shell, so that it runs as the user and not elevated.
+Function MitcadRunApp
+  ${If} $MitcadIsAdmin == 1
+    Exec '"$WINDIR\explorer.exe" "$INSTDIR\bin\mitcad.exe"'
+  ${Else}
+    Exec '"$INSTDIR\bin\mitcad.exe"'
+  ${EndIf}
+FunctionEnd
+
+;--------------------------------
+; Installer
+
+Section "-Core installation"
+  SetOutPath "$INSTDIR"
+@CPACK_NSIS_EXTRA_PREINSTALL_COMMANDS@
+@CPACK_NSIS_FULL_INSTALL@
+
+  ; For whom: the uninstaller and Mitcad's updates read it.
+  ${If} $MitcadAllUsers == 1
+    WriteINIStr "$INSTDIR\${MITCAD_SCOPE_FILE}" "Installation" "Scope" "all"
+  ${Else}
+    WriteINIStr "$INSTDIR\${MITCAD_SCOPE_FILE}" "Installation" "Scope" "user"
+  ${EndIf}
+  FlushINI "$INSTDIR\${MITCAD_SCOPE_FILE}"
+
+  ; HKCU or HKLM (SHCTX follows the scope).
+  WriteRegStr SHCTX "${MITCAD_VENDOR_KEY}" "" "$INSTDIR"
+  WriteUninstaller "$INSTDIR\${MITCAD_UNINSTALLER}"
+  WriteRegStr SHCTX "${MITCAD_UNINSTALL_KEY}" "DisplayName" "@CPACK_NSIS_DISPLAY_NAME@"
+  WriteRegStr SHCTX "${MITCAD_UNINSTALL_KEY}" "DisplayVersion" "@CPACK_PACKAGE_VERSION@"
+  WriteRegStr SHCTX "${MITCAD_UNINSTALL_KEY}" "Publisher" "@CPACK_PACKAGE_VENDOR@"
+  WriteRegStr SHCTX "${MITCAD_UNINSTALL_KEY}" "DisplayIcon" "$INSTDIR\@CPACK_NSIS_INSTALLED_ICON_NAME@"
+  WriteRegStr SHCTX "${MITCAD_UNINSTALL_KEY}" "InstallLocation" "$INSTDIR"
+  WriteRegStr SHCTX "${MITCAD_UNINSTALL_KEY}" "UninstallString" '"$INSTDIR\${MITCAD_UNINSTALLER}"'
+  WriteRegStr SHCTX "${MITCAD_UNINSTALL_KEY}" "QuietUninstallString" '"$INSTDIR\${MITCAD_UNINSTALLER}" /S'
+  WriteRegDWORD SHCTX "${MITCAD_UNINSTALL_KEY}" "NoModify" 1
+  WriteRegDWORD SHCTX "${MITCAD_UNINSTALL_KEY}" "NoRepair" 1
+
+  !insertmacro MUI_STARTMENU_WRITE_BEGIN Application
+  CreateDirectory "$SMPROGRAMS\$STARTMENU_FOLDER"
+@CPACK_NSIS_CREATE_ICONS@
+@CPACK_NSIS_CREATE_ICONS_EXTRA@
+  CreateShortCut "$SMPROGRAMS\$STARTMENU_FOLDER\Uninstall.lnk" "$INSTDIR\${MITCAD_UNINSTALLER}"
+  !insertmacro MUI_STARTMENU_WRITE_END
+
+@CPACK_NSIS_EXTRA_INSTALL_COMMANDS@
+SectionEnd
+
+;--------------------------------
+; Uninstaller
+
+; The scope comes from installation.ini; without it (or with /AllUsers) for
+; all users. For all users without administrator rights it starts itself
+; again elevated.
+Function un.onInit
+  Call un.MitcadCheckAdmin
+  Push "/Elevated"
+  Call un.MitcadHasSwitch
+  Pop $MitcadElevated
+  ReadINIStr $MitcadTemp "$INSTDIR\${MITCAD_SCOPE_FILE}" "Installation" "Scope"
+  StrCpy $MitcadAllUsers 1
+  ${If} $MitcadTemp == "user"
+    StrCpy $MitcadAllUsers 0
+  ${EndIf}
+  Push "/AllUsers"
+  Call un.MitcadHasSwitch
+  Pop $0
+  Push "/CurrentUser"
+  Call un.MitcadHasSwitch
+  Pop $1
+  ${If} $0 == 1
+    StrCpy $MitcadAllUsers 1
+  ${ElseIf} $1 == 1
+    StrCpy $MitcadAllUsers 0
+  ${EndIf}
+  ${If} $MitcadAllUsers == 1
+    SetShellVarContext all
+  ${Else}
+    SetShellVarContext current
+  ${EndIf}
+
+  ${If} $MitcadAllUsers == 1
+  ${AndIf} $MitcadIsAdmin == 0
+    ${If} $MitcadElevated == 1
+      MessageBox MB_OK|MB_ICONSTOP "Uninstalling for all users needs administrator rights." /SD IDOK
+      SetErrorLevel 740
+      Quit
+    ${EndIf}
+    StrCpy $MitcadTemp "/AllUsers /Elevated _?=$INSTDIR"
+    ${If} ${Silent}
+      StrCpy $MitcadTemp "/S $MitcadTemp"
+    ${EndIf}
+    Call un.MitcadRunElevated
+    ${If} $MitcadResult == "ran"
+      SetErrorLevel $MitcadExitCode
+      Quit
+    ${EndIf}
+    MessageBox MB_OK|MB_ICONSTOP "Uninstalling @CPACK_NSIS_PACKAGE_NAME@ for all users needs administrator rights." /SD IDOK
+    SetErrorLevel $MitcadExitCode
+    Quit
+  ${EndIf}
+FunctionEnd
+
+Section "Uninstall"
+  ; The Start menu folder before its registry value goes.
+  !insertmacro MUI_STARTMENU_GETFOLDER Application $MUI_TEMP
+
+@CPACK_NSIS_EXTRA_UNINSTALL_COMMANDS@
+
+@CPACK_NSIS_DELETE_FILES@
+@CPACK_NSIS_DELETE_DIRECTORIES@
+  Delete "$INSTDIR\${MITCAD_SCOPE_FILE}"
+  Delete "$INSTDIR\${MITCAD_UNINSTALLER}"
+  RMDir "$INSTDIR"
+
+  ${If} $MUI_TEMP != ""
+@CPACK_NSIS_DELETE_ICONS@
+@CPACK_NSIS_DELETE_ICONS_EXTRA@
+    Delete "$SMPROGRAMS\$MUI_TEMP\Uninstall.lnk"
+    RMDir "$SMPROGRAMS\$MUI_TEMP"
+  ${EndIf}
+
+  ; Only this scope's keys (SHCTX); the user's settings stay.
+  DeleteRegKey SHCTX "${MITCAD_UNINSTALL_KEY}"
+  DeleteRegKey SHCTX "${MITCAD_VENDOR_KEY}"
+  DeleteRegKey /ifempty SHCTX "Software\@CPACK_PACKAGE_VENDOR@"
+SectionEnd

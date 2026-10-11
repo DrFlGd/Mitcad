@@ -1,13 +1,12 @@
 // SPDX-License-Identifier: MIT
-// The main window's File menu (U6): New, New Design (mitcad#145,
-// projects/MainWindowProjectsPanel.cpp), New Project, Open Read-Only, Open
-// Project, Open from Cloud (mitcad#89, MainWindowProjects.cpp), Open (designs,
-// and any file Import takes, as a new document), Open Recent, Recover
-// Documents (P8c, MainWindowAutosave.cpp), Close, Save, Save As, Save
-// Version (P12d), Version History (P12e), Sync, Project Settings, Import,
-// Export, Insert Component; the INSERT
-// group's Insert Mesh and Insert DXF, and Insert Component in the ASSEMBLE
-// group; files dropped on the window.
+// The main window's File menu (U6, mitcad#175): New Design (New too,
+// mitcad#145, projects/MainWindowProjectsPanel.cpp), Open (designs, and any
+// file Import takes, as a new document), Open Recent, Open Read-Only, Close,
+// Save, Save As, Save with Description (P12d), Version History (P12e), the
+// Project submenu (mitcad#89, MainWindowProjects.cpp), Import, Export,
+// Recover Documents (P8c, MainWindowAutosave.cpp); the INSERT group's Insert
+// Mesh and Insert DXF, and Insert Component in the ASSEMBLE group; files
+// dropped on the window.
 #include "../MainWindow.hpp"
 
 #include <algorithm>
@@ -64,6 +63,32 @@ QStringList selectedBodies(const Selection& selection) {
     }
   }
   return uids;
+}
+
+// A menu's entries as the log shows them (mitcad#175): the names without
+// their underlined letters and dots, "-" for a separator, a submenu as
+// "Name > [its entries]" (`collapsed`: "Name >" only).
+QString menuEntries(const QMenu* menu, const QMenu* collapsed) {
+  QStringList entries;
+  for (QAction* action : menu->actions()) {
+    if (action->isSeparator()) {
+      entries << QStringLiteral("-");
+      continue;
+    }
+    if (!action->isVisible()) {
+      continue;
+    }
+    QString name = action->text().remove(QLatin1Char('&')).trimmed();
+    while (name.endsWith(QLatin1Char('.'))) {
+      name.chop(1);
+    }
+    if (const QMenu* submenu = action->menu()) {
+      name += submenu == collapsed ? QStringLiteral(" >")
+                                   : QStringLiteral(" > [%1]").arg(menuEntries(submenu, collapsed));
+    }
+    entries << name;
+  }
+  return entries.join(QStringLiteral(" | "));
 }
 
 } // namespace
@@ -128,7 +153,8 @@ void MainWindow::registerFileCommands() {
                         QStringLiteral("save as"), QStringLiteral("3mf"), QStringLiteral("usdz"),
                         QStringLiteral("augmented reality")};
   m_registry->add(exportDef);
-  // 3D Print (mitcad#13, MainWindowPrint.cpp): the MAKE group and the File menu.
+  // 3D Print (mitcad#13, MainWindowPrint.cpp): the MAKE group, next to
+  // Render Image.
   CommandDef print = def("make.print3d", tr("3D Print..."), "print-3d",
                          tr("Sends the selected bodies, or all visible ones, to a slicer as 3MF or STL files"),
                          [this] { print3d(); });
@@ -148,6 +174,10 @@ void MainWindow::registerFileCommands() {
 }
 
 void MainWindow::createFileMenu() {
+  // mitcad#175: the document commands, saving and versions, the Project
+  // submenu, import and export, recovery, Exit. 3D Print and Insert
+  // Component are on the ribbon (MAKE, ASSEMBLE), Render Image too (MAKE)
+  // and in View > Visual Style.
   QMenu* file = menuBar()->addMenu(tr("&File"));
   file->setObjectName(QStringLiteral("fileMenu"));
   auto add = [this, file](const QString& text, const QKeySequence& shortcut, auto slot) {
@@ -155,63 +185,60 @@ void MainWindow::createFileMenu() {
     action->setShortcut(shortcut);
     return action;
   };
-  const auto command = [this, file](const char* id, const QString& text) {
+  const auto command = [this](QMenu* menu, const char* id, const QString& text) {
     QAction* action = m_registry->action(QString::fromLatin1(id));
     action->setText(text);
-    file->addAction(action);
+    menu->addAction(action);
   };
-  add(tr("&New"), QKeySequence::New, &MainWindow::newDocument);
-  // A design in a project, named first (mitcad#145, the Projects panel).
-  command("file.new_design", tr("Ne&w Design..."));
-  // Local and Cloud projects (P12d, mitcad#89).
-  command("file.new_project", tr("New &Project..."));
+  // New and New Design are one command (Ctrl+N): a design of the current
+  // project, named in the Projects panel (mitcad#145), else an untitled
+  // one.
+  command(file, "file.new_design", tr("&New Design..."));
   add(tr("&Open..."), QKeySequence::Open, &MainWindow::openDocument);
-  command("file.open_read_only", tr("Open Rea&d-Only..."));
-  command("file.open_project", tr("Open Pro&ject..."));
-  command("file.open_remote", tr("Open from C&loud..."));
   m_recentMenu = file->addMenu(tr("Open &Recent"));
   connect(m_recentMenu, &QMenu::aboutToShow, this, &MainWindow::updateRecentMenu);
   updateRecentMenu();
-  command("file.recover", tr("Recover Doc&uments..."));
+  command(file, "file.open_read_only", tr("Open Rea&d-Only..."));
   add(tr("&Close"), QKeySequence(Qt::CTRL | Qt::Key_W), &MainWindow::closeDocument);
   file->addSeparator();
   add(tr("&Save"), QKeySequence::Save, &MainWindow::save);
   // QKeySequence::SaveAs has no key on Windows.
   add(tr("Save &As..."), QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_S), &MainWindow::saveAs);
-  // Versions (P12d): Save records one in a project; Save Version with a
-  // description; Version History (P12e) lists them.
-  command("file.save_version", tr("Save &Version..."));
-  command("file.version_history", tr("Version &History..."));
-  // The current project (P12 remote, mitcad#89): its versions shared, its
+  // Versions (P12d): Save records one in a project; Save with Description
+  // one with a description written; Version History (P12e) lists them.
+  command(file, "file.save_version", tr("Save &with Description..."));
+  command(file, "file.version_history", tr("Version &History..."));
+  file->addSeparator();
+  // Local and Cloud projects (P12d, P12 remote, mitcad#89): made or opened;
+  // the current one's versions shared; a loose design moved into one; its
   // settings.
+  QMenu* project = file->addMenu(tr("&Project"));
+  project->setObjectName(QStringLiteral("fileProjectMenu"));
+  command(project, "file.new_project", tr("&New Project..."));
+  command(project, "file.open_project", tr("&Open Project..."));
+  command(project, "file.open_remote", tr("Open from C&loud..."));
+  project->addSeparator();
+  command(project, "file.sync", tr("&Sync"));
+  command(project, "file.check_remote", tr("&Check for Newer Versions"));
+  command(project, "file.remote_browser", tr("Open in &Browser"));
+  project->addSeparator();
+  command(project, "file.move_to_project", tr("&Move to a Project..."));
+  command(project, "file.project_settings", tr("Project Se&ttings..."));
   file->addSeparator();
-  command("file.sync", tr("S&ync"));
-  command("file.project_settings", tr("Project Se&ttings..."));
+  command(file, "file.import", tr("&Import..."));
+  command(file, "file.export", tr("&Export..."));
   file->addSeparator();
-  QAction* importAction = m_registry->action(QStringLiteral("file.import"));
-  importAction->setText(tr("&Import..."));
-  file->addAction(importAction);
-  QAction* exportAction = m_registry->action(QStringLiteral("file.export"));
-  exportAction->setText(tr("&Export..."));
-  file->addAction(exportAction);
-  QAction* printAction = m_registry->action(QStringLiteral("make.print3d"));
-  printAction->setText(tr("&3D Print..."));
-  file->addAction(printAction);
-  // The final render (mitcad#48), when the render worker is there. Its
-  // underlined letter: &I is Import's, so Image's g (and Project Se&ttings).
-  if (QAction* render = m_registry->action(QStringLiteral("file.render_image"))) {
-    render->setText(tr("Render Ima&ge..."));
-    file->addAction(render);
-  }
-  QAction* component = m_registry->action(QStringLiteral("insert.component"));
-  component->setText(tr("Insert Co&mponent..."));
-  file->addAction(component);
+  command(file, "file.recover", tr("Recover Doc&uments..."));
 #ifndef Q_OS_MACOS
   // macOS moves Quit to the application menu.
   file->addSeparator();
 #endif
   // QuitRole: "Quit Mitcad" (Cmd+Q) in the application menu on macOS.
   add(tr("E&xit"), QKeySequence::Quit, &MainWindow::close)->setMenuRole(QAction::QuitRole);
+  // For the UI tests: the entries as the menu opens.
+  connect(file, &QMenu::aboutToShow, this, [this, file] {
+    qDebug().noquote() << QStringLiteral("File menu: %1").arg(menuEntries(file, m_recentMenu));
+  });
 }
 
 void MainWindow::addRecentFile(const QString& path) {
@@ -679,6 +706,25 @@ void MainWindow::insertComponent(const QString& given) {
     return;
   }
   QString path = given;
+  if (path.isEmpty() && m_project.hasHistory()) {
+    // In a project: a design of the listed projects, the current one first
+    // (mitcad#176); Another File... the file dialog.
+    ProjectPickerOptions options;
+    options.mode = ProjectPickerOptions::Mode::Design;
+    options.title = tr("Insert from a Project");
+    options.text = tr("The design to insert as a component:");
+    options.acceptText = tr("&Insert");
+    options.otherText = tr("&Another File...");
+    options.root = m_project.root;
+    options.ownFile = m_filePath;
+    const std::optional<ProjectPickerResult> picked = pickInProjects(this, options);
+    if (!picked) {
+      return;
+    }
+    if (!picked->other) {
+      path = picked->path;
+    }
+  }
   if (path.isEmpty()) {
     path = dialogOpenFileName(this, tr("Insert Component"), fileDialogDirectory(),
                                         tr("Mitcad designs (*.mitcad)"));

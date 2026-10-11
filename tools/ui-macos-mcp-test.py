@@ -238,7 +238,7 @@ def run(app, cli, out, ui):
         if ui == "native":
             script += "expect-native-history\n"
         script += "command view.fit\nscreenshot-view '${MITCAD_MCP_TEST_OUT}/edited.png'\n"
-        script += "expect-file '${MITCAD_MCP_TEST_WORK}/replace' 60\nmenu 'File/New'\n"
+        script += "expect-file '${MITCAD_MCP_TEST_WORK}/replace' 60\nmenu 'File/New Design'\n"
         script += "focus-dialog '^Save changes to .*'\nbutton \"^Don't Save$\"\nexpect-model-bodies 0 0\n"
         script += "screenshot-view '${MITCAD_MCP_TEST_OUT}/replaced.png'\n"
         script += "expect-file '${MITCAD_MCP_TEST_WORK}/finish' 60\nquit\n"

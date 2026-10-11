@@ -2140,8 +2140,10 @@ impl<K: crate::ImportKernel> Importer<'_, K> {
                     if let Some(d) = diameters {
                         def["diameters"] = d.clone();
                     }
-                    // In tenths of a degree, as the measurement goes.
-                    if let Some(a) = angle.map(|a| (a.to_degrees() * 10.0).round() / 10.0)
+                    // In ten-thousandths of a degree: the groove found
+                    // where the faces cross (mitcad#161) places the flanks
+                    // within a micrometre.
+                    if let Some(a) = angle.map(|a| (a.to_degrees() * 1e4).round() / 1e4)
                         && a != 0.0
                     {
                         def["angle"] = json!(format!("{a} deg"));
@@ -2343,14 +2345,26 @@ impl<K: crate::ImportKernel> Importer<'_, K> {
                 continue;
             };
             let mut inside = vec![false; points.len()];
+            // Per angle, the groove's middle exactly where one body's faces
+            // cross the segment (mitcad#161: the samples alone placed a
+            // thread's flanks up to 0.015 mm off, too far for a sweep
+            // along the flank to find it).
+            let mut exact: Vec<Option<f64>> = vec![None; segments.len()];
+            let mut crossed_by = vec![0usize; segments.len()];
             for (body, _) in state {
                 // Where the segments cross the body's faces (mitcad#68: a
                 // classifier of every point took seconds on a stored
                 // thread's spline faces), else the points classified.
                 let crossed: Result<Vec<bool>, _> = segments
                     .iter()
-                    .map(|(from, to)| {
+                    .enumerate()
+                    .map(|(k, (from, to))| {
                         let crossings = kernel.segment_crossings(&body.shape, *from, *to)?;
+                        if !crossings.is_empty() {
+                            crossed_by[k] += 1;
+                            exact[k] =
+                                groove_middle(&crossings).map(|f| middle - pitch / 2.0 + f * pitch);
+                        }
                         Ok((0..SAMPLES)
                             .map(|j| inside_at(&crossings, (j as f64 + 0.5) / SAMPLES as f64))
                             .collect::<Vec<bool>>())
@@ -2400,7 +2414,10 @@ impl<K: crate::ImportKernel> Importer<'_, K> {
                 {
                     break;
                 }
-                let groove = cy.atan2(cx) / TAU * pitch;
+                let groove = match exact[k] {
+                    Some(s) if crossed_by[k] == 1 => s,
+                    _ => cy.atan2(cx) / TAU * pitch,
+                };
                 let theta = k as f64 * PI / 2.0;
                 angles.push(theta - sign * (groove - base) * TAU / pitch);
             }
@@ -3041,6 +3058,38 @@ fn thread_diameters(info: Option<&Map<String, Value>>) -> Option<Value> {
 /// ([`Kernel::segment_crossings`]): before a crossing that enters it, out;
 /// after the last, as that one left it. A segment that crosses nothing
 /// counts as outside.
+/// The middle of the one stretch outside the material along a segment one
+/// pitch long whose crossings are `crossings` ([`Kernel::segment_crossings`]
+/// with the inside before the first as [`inside_at`] takes it), as a
+/// fraction of the way, the stretch taken round the ends (a groove across
+/// the segment's ends); None unless there is exactly one stretch outside.
+pub(crate) fn groove_middle(crossings: &[(f64, bool)]) -> Option<f64> {
+    // The stretches outside: from where the segment leaves the material
+    // to where it enters it again.
+    let mut outside: Vec<(f64, f64)> = Vec::new();
+    let mut from = (!inside_at(crossings, 0.0)).then_some(0.0);
+    for &(at, entering) in crossings {
+        match (entering, from) {
+            (true, Some(start)) => {
+                outside.push((start, at));
+                from = None;
+            }
+            (false, None) => from = Some(at),
+            _ => return None,
+        }
+    }
+    if let Some(start) = from {
+        outside.push((start, 1.0));
+    }
+    let (a, b) = match outside.as_slice() {
+        [one] => *one,
+        // One stretch round the ends (both ends were set exactly so).
+        [(start, b), (a, end)] if *start == 0.0 && *end == 1.0 => (*a, b + 1.0),
+        _ => return None,
+    };
+    Some((0.5 * (a + b)).rem_euclid(1.0))
+}
+
 pub(crate) fn inside_at(crossings: &[(f64, bool)], t: f64) -> bool {
     match crossings.iter().find(|(at, _)| *at > t) {
         Some((_, entering)) => !entering,

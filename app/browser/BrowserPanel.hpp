@@ -5,6 +5,8 @@
 #include <QPoint>
 #include <QSet>
 #include <QString>
+#include <QStringList>
+#include <QVector>
 #include <QWidget>
 
 #include "../framework/Selection.hpp"
@@ -37,13 +39,17 @@ struct BrowserNode {
     Analysis, // uid: its name
     Joints,   // a component's joints (mitcad#55); joint origins are Datum rows in it
     Joint,    // uid: a joint, as-built joint or rigid group
+    // A feature under a sketch it uses (mitcad#177): uid: the feature,
+    // sketch: that sketch; one row under each sketch it uses.
+    Feature,
   };
 
   Type type = Type::None;
   QString uid;
   QString occurrence; // the occurrence path ("O1/O4"); empty in the root
   QString component;  // the component the row belongs to
-  QString featureType; // sketches and datums: construction_plane, ...
+  QString featureType; // sketches, datums and features: construction_plane, ...
+  QString sketch;     // a feature row: the sketch it is under
   QString name;       // as shown
   QString path;       // the names from the root, "Root/Bodies/Body1"
   bool visible = true; // its light bulb
@@ -60,11 +66,13 @@ struct BrowserNode {
 
 // The browser, docked on the left: the document settings, named
 // views, the origin and the component tree with each occurrence's bodies,
-// sketches, construction geometry and joints, and the analyses kept in the
-// document. A row reads: expand arrow, light
-// bulb (an eye; shows and hides), icon, name and, for a component, the
-// radio button that activates it. Selecting rows selects in the view and
-// the other way round; what the rows do is the BrowserController's.
+// sketches (each with the features that use it under it, mitcad#177),
+// construction geometry and joints, and the analyses kept in the document.
+// A row reads: expand arrow, light bulb (an eye; shows and hides), icon,
+// name and, for a component, the radio button that activates it. Selecting
+// rows selects in the view and the timeline, and the other way round; a
+// slow second click on a selected row renames it in place, as F2 does.
+// What the rows do is the BrowserController's.
 class BrowserPanel : public QWidget {
   Q_OBJECT
 
@@ -83,12 +91,14 @@ public:
 
   // Rebuilds the rows, keeping what was expanded, selected and scrolled to.
   void rebuild(const DocumentSnapshot& snapshot, bool originShown);
-  // Selects the rows of these items (from the view); others are deselected.
-  void showSelection(const Selection& items);
+  // Selects the rows of these items (from the view) and the feature rows
+  // of these features (picked in the timeline or here); others are
+  // deselected. Emits nothing.
+  void showSelection(const Selection& items, const QStringList& features = {});
   // The rows of a feature: its sketch or datum, or the bodies it made.
   QVector<BrowserNode> nodesOfFeature(const QString& feature) const;
-  // Expands to, selects and scrolls to the rows of a feature; false when
-  // it has none (Find in Browser).
+  // Expands to, selects and scrolls to the rows of a feature, its rows under
+  // its sketches too; false when it has none (Find in Browser).
   bool reveal(const QString& feature);
   // The same for the row of a body (of a face, edge or vertex picked in
   // the view), a sketch or a datum.
@@ -108,10 +118,16 @@ public:
 signals:
   // The rows in sight changed in number.
   void contentHeightChanged();
+  // Rows were selected: the items of the rows that stand for one, and the
+  // features of the feature rows under sketches (mitcad#177).
+  void rowsPicked(const mitcad::Selection& items, const QStringList& features);
+  // The items of rows another presentation selected.
   void itemsPicked(const mitcad::Selection& items);
   void eyeClicked(const mitcad::BrowserNode& node);
   void activateClicked(const mitcad::BrowserNode& node);
   void renamed(const mitcad::BrowserNode& node, const QString& name);
+  // A slow second click on a selected row that can be renamed (mitcad#177).
+  void renameClicked(const mitcad::BrowserNode& node);
   void doubleClicked(const mitcad::BrowserNode& node);
   void deleteRequested(const mitcad::BrowserNode& node);
   void contextMenuRequested(const mitcad::BrowserNode& node, const QPoint& globalPosition);
@@ -119,10 +135,22 @@ signals:
 private:
   friend class BrowserTree;
 
+  // The features under each sketch (mitcad#177), by the sketch's uid, and
+  // the components each feature's bodies are in, by the feature's uid.
+  struct SketchUses {
+    QHash<QString, QVector<const DocumentSnapshot::Feature*>> features;
+    QHash<QString, QSet<QString>> resultComponents;
+  };
+
   QTreeWidgetItem* addRow(QTreeWidgetItem* parent, const BrowserNode& node, const QString& icon,
                           const QString& tooltip = QString());
   void addComponentRows(QTreeWidgetItem* parent, const DocumentSnapshot& snapshot,
-                        const QString& component, const QString& occurrence, bool shown);
+                        const QString& component, const QString& occurrence, bool shown,
+                        const SketchUses& uses);
+  // The rows of the features that use a sketch, under its row (mitcad#177).
+  void addFeatureRows(QTreeWidgetItem* parent, const DocumentSnapshot& snapshot,
+                      const DocumentSnapshot::Feature& sketch, const QString& occurrence, bool shown,
+                      const SketchUses& uses);
   // A constraint set's rows under its row (mitcad#148).
   void addConstraintRows(const DocumentSnapshot& snapshot, const DocumentSnapshot::Feature& feature,
                          QTreeWidgetItem* parent, bool shown);

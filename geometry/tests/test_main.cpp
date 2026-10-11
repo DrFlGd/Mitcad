@@ -149,6 +149,12 @@ int main() {
   // A chamfer whose pieces meet at a vertex of the edge they reach, with the
   // port's patches 0090 and 0091 (mitcad#160).
   test::chamfer_kernel_tests();
+  // Shells whose wall makes a narrow face vanish, with the port's patch 0100
+  // (mitcad#172).
+  test::shell_vanishing_tests();
+  // Walked roundings that are true rolling balls, with the port's patches
+  // 0075-0077 (mitcad#121).
+  test::fillet_rolling_ball_tests();
   for (const std::string& change : mitcad::geometry::input_changes()) {
     std::fprintf(stderr, "%s\n", change.c_str());
   }

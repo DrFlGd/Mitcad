@@ -355,3 +355,55 @@ fn dependents_and_the_reorder_check_tell_before_the_command() {
             .is_err()
     );
 }
+
+#[test]
+fn the_timeline_lists_the_sketches_each_feature_uses() {
+    let mut doc = part();
+    // Sketch2 (F5) on Plane1 with a square, Loft1 (F6) from Sketch1 to it.
+    command(&mut doc, json!({"cmd": "sketch.create", "plane": "F4"}));
+    command(
+        &mut doc,
+        json!({"cmd": "sketch.add_rectangle", "sketch": "F5", "corner": [10, 10], "width": 20, "height": 20}),
+    );
+    command(
+        &mut doc,
+        json!({"cmd": "add_feature", "def": {"type": "loft", "sections": [
+                   {"type": "profile", "sketch": "F1", "region": REGION},
+                   {"type": "profile", "sketch": "F5", "region": REGION}],
+               "operation": "new_body"}}),
+    );
+    let sketches = |doc: &Document<MockKernel>| -> Vec<(Value, Value)> {
+        query(doc, json!({"query": "timeline"}))["features"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|f| {
+                (
+                    f["uid"].clone(),
+                    f.get("sketches").cloned().unwrap_or(Value::Null),
+                )
+            })
+            .collect()
+    };
+    // Both extrusions under Sketch1, the loft under both sketches in
+    // timeline order; the sketches and the plane use none.
+    assert_eq!(
+        sketches(&doc),
+        [
+            (json!("F1"), Value::Null),
+            (json!("F2"), json!(["F1"])),
+            (json!("F3"), json!(["F1"])),
+            (json!("F4"), Value::Null),
+            (json!("F5"), Value::Null),
+            (json!("F6"), json!(["F1", "F5"])),
+        ]
+    );
+    // Rolled back and suppressed features keep them.
+    command(&mut doc, json!({"cmd": "set_marker", "position": 2}));
+    command(
+        &mut doc,
+        json!({"cmd": "suppress_feature", "uid": "F2", "suppressed": true}),
+    );
+    assert_eq!(sketches(&doc)[1].1, json!(["F1"]));
+    assert_eq!(sketches(&doc)[5].1, json!(["F1", "F5"]));
+}

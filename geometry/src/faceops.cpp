@@ -24,9 +24,12 @@
 #include <GeomAPI_ProjectPointOnSurf.hxx>
 #include <Geom_Surface.hxx>
 #include <NCollection_List.hxx>
+#include <ShapeBuild_ReShape.hxx>
+#include <ShapeUpgrade_ShapeDivideContinuity.hxx>
 #include <TopExp.hxx>
 #include <TopExp_Explorer.hxx>
 #include <TopoDS.hxx>
+#include <TopoDS_Iterator.hxx>
 #include <TopoDS_Shell.hxx>
 #include <TopoDS_Solid.hxx>
 
@@ -116,6 +119,50 @@ auto step(const std::string& what, Step&& run) -> decltype(run()) {
   }
 }
 
+// Why the geometry kernel's offset of a shell failed, for the error.
+std::string offset_failure(const BRepOffset_MakeOffset& offset) {
+  switch (offset.Error()) {
+  case BRepOffset_BadNormalsOnGeometry:
+    return "shell failed; a face's normals cannot be computed everywhere";
+  case BRepOffset_C0Geometry:
+    return "shell failed; a face's surface has a crease (it is only C0 continuous)";
+  case BRepOffset_NotConnectedShell:
+    return "shell failed; the body's faces are not connected";
+  case BRepOffset_CannotTrimEdges:
+    return "shell failed; the offset faces' edges cannot be trimmed";
+  case BRepOffset_CannotFuseVertices:
+    return "shell failed; the offset faces' vertices cannot be joined";
+  case BRepOffset_CannotExtentEdge:
+    return "shell failed; the offset faces' edges cannot be extended";
+  case BRepOffset_MixedConnectivity:
+    return "shell failed; faces meet partly smoothly and partly at an angle along an edge";
+  case BRepOffset_UnknownError:
+    // The offset faces leave gaps or do not close up the wall: mostly a
+    // face that vanishes at this thickness (a strip narrower, or a convex
+    // rounding tighter, than the wall), which the kernel cannot drop.
+    return "shell failed; the offset faces do not close up (a face narrower or more tightly "
+           "curved than the wall may vanish at this thickness)";
+  default:
+    return "shell failed; the thickness may be too large for the body";
+  }
+}
+
+// Runs the kernel's offset of a shell, giving a failure it raises without
+// a message one (mitcad#158: an offset of stored B-spline roundings that
+// fails to extend an edge). Other failures, out of memory among them, go
+// on as they are.
+template <class Offset>
+void named_failure(Offset&& offset) {
+  try {
+    offset();
+  } catch (const Standard_Failure& failure) {
+    if (std::string(failure.what()).empty()) {
+      throw Standard_Failure("the geometry kernel's offset raised an error");
+    }
+    throw;
+  }
+}
+
 // One solid of an offset or thick solid result; throws if there is none.
 TopoDS_Shape single_solid(const TopoDS_Shape& shape, const char* operation) {
   TopExp_Explorer it(shape, TopAbs_SOLID);
@@ -164,25 +211,76 @@ void name_generated_from_edges(detail::FaceNamer& namer, Operation& operation, c
   }
 }
 
+// The body with each face whose surface is only C0 continuous split at its
+// creases into C1 pieces that keep the face's names, or null when no face
+// has one. OCCT's offset refuses C0 surfaces (BRepOffset_C0Geometry), though
+// the face is often smooth: a stored body's B-splines whose knots repeat as
+// often as their degree, such as rational arcs. Each piece offsets on its
+// own, which gives the same wall (mitcad#158). `removed` (faces of the body)
+// becomes the pieces of those faces.
+ShapePtr split_at_creases(const Shape& body, std::set<int>& removed) {
+  bool creased = false;
+  for (int i = 0; i < body.face_count() && !creased; ++i) {
+    const occ::handle<Geom_Surface> surface = BRep_Tool::Surface(body.face(i));
+    creased = !surface.IsNull() && surface->Continuity() == GeomAbs_C0;
+  }
+  if (!creased) {
+    return nullptr;
+  }
+  ShapeUpgrade_ShapeDivideContinuity divide(body.occt());
+  divide.SetSurfaceCriterion(GeomAbs_C1);
+  step("shell failed while splitting faces at their creases", [&] { divide.Perform(); });
+  const TopoDS_Shape split = divide.Result();
+  if (split.IsNull()) {
+    return nullptr;
+  }
+  const occ::handle<ShapeBuild_ReShape> context = divide.GetContext();
+  std::vector<Shape::NamedFace> faces;
+  std::vector<TopoDS_Shape> removed_pieces;
+  for (int i = 0; i < body.face_count(); ++i) {
+    for (TopExp_Explorer it(context->Apply(body.face(i)), TopAbs_FACE); it.More(); it.Next()) {
+      faces.push_back({it.Current(), body.face_names(i)});
+      if (removed.count(i) > 0) {
+        removed_pieces.push_back(it.Current());
+      }
+    }
+  }
+  ShapePtr out = std::make_shared<Shape>(split, faces);
+  std::set<int> pieces;
+  for (const TopoDS_Shape& piece : removed_pieces) {
+    const int index = out->face_index(piece);
+    if (index < 0) {
+      return nullptr;
+    }
+    pieces.insert(index);
+  }
+  removed = pieces;
+  return out;
+}
+
 // The wall between the body's surface and its offset by `offset` (negative
 // inside), with the removed faces open. The outside of the wall keeps the
 // face names; the inside is offset(<face>).
-ShapePtr thick_solid(const std::string& feature, const Shape& input, const std::set<int>& removed,
+ShapePtr thick_solid(const std::string& feature, const Shape& input, const std::set<int>& removed_faces,
                      double offset, GeomAbs_JoinType join) {
   // OCCT's offset widens the tolerances of its input's sub-shapes.
   const ShapePtr copy = detail::working_copy(input);
-  const Shape& body = *copy;
+  std::set<int> removed = removed_faces;
+  const ShapePtr split = split_at_creases(*copy, removed);
+  const Shape& body = split ? *split : *copy;
   NCollection_List<TopoDS_Shape> closing;
   for (int f : removed) {
     closing.Append(body.face(f));
   }
   BRepOffsetAPI_MakeThickSolid maker;
   detail::interruptible([&](const Message_ProgressRange& range) {
-    maker.MakeThickSolidByJoin(body.occt(), closing, offset, kTolerance, BRepOffset_Skin, false, false,
-                               join, false, range);
+    named_failure([&] {
+      maker.MakeThickSolidByJoin(body.occt(), closing, offset, kTolerance, BRepOffset_Skin, false,
+                                 false, join, false, range);
+    });
   });
   if (!maker.IsDone()) {
-    throw std::runtime_error("shell failed; the thickness may be too large for the body");
+    throw std::runtime_error(offset_failure(maker.MakeOffset()));
   }
   const TopoDS_Shape result = single_solid(maker.Shape(), "the shell");
   detail::FaceNamer namer(result);
@@ -241,13 +339,31 @@ ShapePtr offset_body(const std::string& feature, const Shape& input, double offs
                      GeomAbs_JoinType join, bool inner) {
   // OCCT's offset widens the tolerances of its input's sub-shapes.
   const ShapePtr copy = detail::working_copy(input);
-  const Shape& body = *copy;
+  std::set<int> none;
+  const ShapePtr split = split_at_creases(*copy, none);
+  const Shape& body = split ? *split : *copy;
+  // OCCT's offset makes a solid of its closed shell only for a solid: a
+  // compound holding one (as dress-ups give their bodies) is offset as
+  // that solid, else the result has no solid.
+  TopoDS_Shape solid = body.occt();
+  if (solid.ShapeType() == TopAbs_COMPOUND) {
+    TopoDS_Iterator it(solid);
+    if (it.More() && it.Value().ShapeType() == TopAbs_SOLID) {
+      const TopoDS_Shape only = it.Value();
+      it.Next();
+      if (!it.More()) {
+        solid = only;
+      }
+    }
+  }
   BRepOffsetAPI_MakeOffsetShape maker;
   detail::interruptible([&](const Message_ProgressRange& range) {
-    maker.PerformByJoin(body.occt(), offset, kTolerance, BRepOffset_Skin, false, false, join, false, range);
+    named_failure([&] {
+      maker.PerformByJoin(solid, offset, kTolerance, BRepOffset_Skin, false, false, join, false, range);
+    });
   });
   if (!maker.IsDone()) {
-    throw std::runtime_error("shell failed; the thickness may be too large for the body");
+    throw std::runtime_error(offset_failure(maker.MakeOffset()));
   }
   const TopoDS_Shape result = single_solid(maker.Shape(), "the shell");
   detail::FaceNamer namer(result);

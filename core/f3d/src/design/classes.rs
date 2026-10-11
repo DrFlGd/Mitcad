@@ -225,7 +225,7 @@ pub const ITEM_TYPES: &[(&str, &str)] = &[
     ("CopyPasteFeature", "CopyPasteOccurrence"),
     ("DerivedInstanceFeature", "DerivedInstance"),
     ("GeometricRelationshipFeature", "GeometricRelationship"),
-    ("Feature(62E501B2)", "AssemblyRelationship"),
+    ("Feature(62E501B2)", "TangentRelationship"),
     ("SnapshotFeature", "Snapshot"),
     ("ContextFeature", "Context"),
     // Items that move or copy bodies between components.
@@ -403,3 +403,51 @@ pub const REVOLVE_PROFILE: &str = "63D2920D-7EC2-49C4-9F08-315197F9E657";
 pub const COMPONENT_FROM_BODIES: &str = "56225BC7-69B7-446A-9AEA-6AA25BC7806E";
 /// A base feature: bodies as they are, with an item tail of its own.
 pub const BASE_FEATURE: &str = "D7015B81-AB4D-4C89-BED7-AA4411E1964A";
+
+// Assembly relationships (mitcad#155). Their own data: [`super::build`]'s
+// `relationships` module.
+
+/// A relationship item (`GeometricRelationshipFeature`).
+pub const GEOMETRIC_RELATIONSHIP: &str = "D0F69AAA-7BA0-4C9C-8A6D-7D01ADB39593";
+/// A tangent relationship item: a contact between two bodies.
+pub const TANGENT_RELATIONSHIP: &str = "62E501B2-B398-4176-87AD-28F56269D7C9";
+/// One constraint of a relationship item: its inputs and placements (the
+/// base class of the rows; older files store rows of this class).
+pub const RELATION_ROW: &str = "A2D4EE52-1B04-42D2-836A-2219A0972213";
+/// A row with an offset or angle parameter (planes, axes, points, circles).
+pub const ALIGN_ROW: &str = "019B95B1-BD83-4A94-9490-F43DD0E6B624";
+/// A row of two faces on each side (a centring).
+pub const CENTER_ROW: &str = "70E7FDEC-6434-433F-BB02-B8059512B02B";
+/// A row of an angle.
+pub const ANGLE_ROW: &str = "D24DAEB6-3BD6-4E98-9AA6-44AC73FED8E1";
+/// A constraint (rows refer to it): in class version 7 a reference to its
+/// data record, in versions 3 to 6 the data itself.
+pub const GEOM_CONSTRAINT: &str = "239CEEDA-7044-4EFB-9014-D8C643BC0E9B";
+/// Base class of a constraint's data record.
+pub const CONSTRAINT_DATA: &str = "E498D957-D80F-49A9-987E-001433852257";
+/// A data record with a value between optional limits (the base of
+/// [`ALIGN_DATA`] and [`ANGLE_DATA`]).
+pub const VALUE_DATA: &str = "1C131D3C-1FD1-492E-9972-1CEEABA99DC8";
+/// The data of an [`ALIGN_ROW`].
+pub const ALIGN_DATA: &str = "123F7725-50F0-4CD9-B4BC-1FF66D221799";
+/// The data of a [`CENTER_ROW`].
+pub const CENTER_DATA: &str = "9DEB695F-803B-4C31-95AA-CA24B16A807E";
+/// The data of an [`ANGLE_ROW`].
+pub const ANGLE_DATA: &str = "5326F5F0-9C10-4DEC-A017-52D0D8D04D63";
+/// A relationship (its constraints in order); relationship items refer to
+/// it.
+pub const RELATIONSHIP: &str = "B28DF3D0-D15C-42DE-A8BF-5D41200CDC00";
+/// A tangent relationship item's relationship.
+pub const TANGENT: &str = "A8AE5003-9BA3-42C1-8765-32314E3D4BDA";
+
+// The parts of a timeline item in other components (mitcad#169).
+
+/// The design's table of the features that carry out one timeline item
+/// (one object per design): `u32 n | n × (str16 key | ref item)` and then
+/// `u32 n | n × (str16 key | u32 m | m × ref feature)`, the second list
+/// the item with the features that make its changes in other components'
+/// feature lists (a cut through the bodies of two components is one
+/// timeline item and one feature per component; a component made from
+/// bodies lists its occurrence item and base feature). Read by
+/// [`super::build`]'s `item_parts`.
+pub const ITEM_PARTS: &str = "12D00AC0-B828-48C8-9740-80C4D992DB65";

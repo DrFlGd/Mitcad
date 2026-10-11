@@ -47,6 +47,112 @@ impl Blobs {
     }
 }
 
+// Inputs on other components' bodies (mitcad#161).
+
+/// A timeline item's ASM state and owner, for finding inputs in other
+/// components' histories.
+#[derive(Clone, Copy, Debug, Default)]
+struct Point {
+    /// Its `_f3d.result_no`, when it has a state.
+    result: Option<i64>,
+    /// The component that owns it (`_f3d.component`).
+    owner: Option<u64>,
+}
+
+/// The timeline's items as [`Point`]s, in order, and the history blobs'
+/// components (worked out once a lookup needs them).
+struct Timeline {
+    points: Vec<Point>,
+    links: std::sync::OnceLock<Vec<Option<u64>>>,
+}
+
+impl Timeline {
+    fn new(items: &[TimelineItem]) -> Self {
+        let points = items
+            .iter()
+            .map(|item| {
+                let f = item.f3d.as_ref();
+                Point {
+                    result: f
+                        .and_then(|f| f.result_no)
+                        .filter(|&r| r > 0)
+                        .map(i64::from),
+                    owner: f.and_then(|f| f.component),
+                }
+            })
+            .collect();
+        Timeline {
+            points,
+            links: std::sync::OnceLock::new(),
+        }
+    }
+
+    /// The component (object id) of each history blob: the one whose
+    /// items name most of the blob's operations, where that blob is also
+    /// the one whose operations its items name most (the numbers count
+    /// per component, so components' items name other blobs' numbers too).
+    fn links(&self, blobs: &[Blob]) -> &[Option<u64>] {
+        self.links.get_or_init(|| {
+            let counts: Vec<HashMap<u64, usize>> = blobs
+                .iter()
+                .map(|b| {
+                    let ops: std::collections::HashSet<i64> =
+                        b.history.states.iter().map(|s| s.id).collect();
+                    let mut count: HashMap<u64, usize> = HashMap::new();
+                    for p in &self.points {
+                        if let (Some(r), Some(o)) = (p.result, p.owner)
+                            && ops.contains(&r)
+                        {
+                            *count.entry(o).or_default() += 1;
+                        }
+                    }
+                    count
+                })
+                .collect();
+            let best = |count: &HashMap<u64, usize>| {
+                let most = count.values().copied().max()?;
+                let mut top = count.iter().filter(|(_, n)| **n == most).map(|(c, _)| *c);
+                match (top.next(), top.next()) {
+                    (Some(c), None) => Some((c, most)),
+                    _ => None,
+                }
+            };
+            counts
+                .iter()
+                .enumerate()
+                .map(|(b, count)| {
+                    let (c, n) = best(count)?;
+                    // No other blob whose operations the component's items
+                    // name as often.
+                    let rival = counts
+                        .iter()
+                        .enumerate()
+                        .any(|(o, other)| o != b && other.get(&c).is_some_and(|&m| m >= n));
+                    (!rival).then_some(c)
+                })
+                .collect()
+        })
+    }
+
+    /// The state of blob `b` at the item at `position` of the timeline:
+    /// its position in the blob's states (newest first; the state after
+    /// it is `view(k)`) of the last item before it whose operation the
+    /// blob holds, of the blob's component. None when the blob has no
+    /// component or none of its items comes before.
+    fn state_at(&self, blobs: &[Blob], b: usize, position: usize) -> Option<usize> {
+        let component = self.links(blobs).get(b).copied().flatten()?;
+        let blob = &blobs[b];
+        self.points[..position.min(self.points.len())]
+            .iter()
+            .rev()
+            .filter(|p| p.owner == Some(component))
+            .find_map(|p| {
+                let r = p.result?;
+                blob.history.states.iter().position(|s| s.id == r)
+            })
+    }
+}
+
 /// How many inputs were found.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Resolved {
@@ -78,11 +184,13 @@ fn named_entities(detail: &mut Detail) -> Vec<&mut Fingerprint> {
             .flat_map(|s| s.edges.iter_mut().flatten())
             .collect(),
         Detail::Thread(t) => t.input_cylindrical_faces.iter_mut().flatten().collect(),
-        // The face an extrusion's extent goes up to (mitcad#96).
+        // The face an extrusion's extent goes up to (mitcad#96), and the
+        // faces its profile selects (mitcad#169).
         Detail::Extrude(x) => [&mut x.extent_one, &mut x.extent_two]
             .into_iter()
             .flatten()
             .filter_map(|d| d.entity.as_mut())
+            .chain(x.profile.iter_mut().flatten())
             .collect(),
         // A shell's removed faces and offset faces (mitcad#154).
         Detail::Shell(s) => s.input_entities.iter_mut().flatten().collect(),
@@ -129,7 +237,37 @@ fn locate(
             fp.normal_at_point = Some(p.normal);
             return Ok(());
         }
-        let g = state.cylinder(i)?;
+        let g = match state.cylinder(i) {
+            Ok(g) => g,
+            // Any other surface (mitcad#161: a thread's flank, a spline).
+            Err(_) => {
+                let s = state.surface_point(i)?;
+                fp.geometry = Some(Geometry {
+                    geometry_type: Some(s.kind.to_owned()),
+                    origin: s.origin.map(cm),
+                    axis: s.axis,
+                    radius: s.radius.map(|r| r / 10.0),
+                    major_radius: s.minor.and(s.radius).map(|r| r / 10.0),
+                    minor_radius: s.minor.map(|r| r / 10.0),
+                    half_angle: s.half_angle,
+                    ..Geometry::default()
+                });
+                if s.minor.is_some() {
+                    // A torus has major and minor radii only.
+                    if let Some(g) = fp.geometry.as_mut() {
+                        g.radius = None;
+                    }
+                }
+                fp.point_on_face = Some(cm(s.point));
+                fp.normal_at_point = Some(s.normal);
+                if !s.spread.is_empty()
+                    && let Some(f) = fp.f3d.as_mut()
+                {
+                    f.face_points = Some(s.spread.into_iter().map(cm).collect());
+                }
+                return Ok(());
+            }
+        };
         fp.geometry = Some(Geometry {
             geometry_type: Some("Cylinder".to_owned()),
             origin: Some(cm(g.origin)),
@@ -335,17 +473,34 @@ pub fn resolve(dump: &mut Dump, doc: &F3dFile) -> Resolved {
         return out;
     };
     let blobs = Blobs::default();
-    for item in items.iter_mut() {
-        resolve_item(item, &blobs, doc, &mut out);
+    let timeline = Timeline::new(items);
+    for (position, item) in items.iter_mut().enumerate() {
+        let at = At {
+            blobs: &blobs,
+            doc,
+            timeline: &timeline,
+            position,
+        };
+        resolve_item(item, &at, &mut out);
     }
     out
 }
 
-/// [`resolve`] for one item (with the history's blobs once one needs them).
-fn resolve_item(item: &mut TimelineItem, blobs: &Blobs, doc: &F3dFile, out: &mut Resolved) {
+/// Where an item's inputs are looked for: the history's blobs (read once
+/// one needs them), the timeline and the item's position in it.
+struct At<'a> {
+    blobs: &'a Blobs,
+    doc: &'a F3dFile,
+    timeline: &'a Timeline,
+    position: usize,
+}
+
+/// [`resolve`] for one item.
+fn resolve_item(item: &mut TimelineItem, at: &At, out: &mut Resolved) {
+    let (blobs, doc) = (at.blobs, at.doc);
     let result = item.f3d.as_ref().and_then(|f| f.result_no);
     resolve_bodies(item, blobs, doc, out);
-    resolve_path_edges(item, blobs, doc, out);
+    resolve_path_edges(item, at, out);
     let Some(detail) = item.detail.as_mut() else {
         return;
     };
@@ -353,12 +508,15 @@ fn resolve_item(item: &mut TimelineItem, blobs: &Blobs, doc: &F3dFile, out: &mut
         let blobs = blobs.get(doc);
         expand_faces(blobs, result, detail, out);
     }
+    // Faces of other components only where an item may take them (an
+    // extrusion's extent or profile): a fillet's, chamfer's, thread's or
+    // shell's inputs are on the bodies it changes.
+    let others = matches!(detail, Detail::Extrude(_));
     let edges = named_entities(detail);
     if edges.is_empty() {
         return;
     }
-    let blobs = blobs.get(doc);
-    find_named(blobs, result, edges, true, out);
+    find_named(at, result, edges, true, others, out);
 }
 
 // Inputs found on several threads (mitcad#103).
@@ -375,7 +533,8 @@ pub fn resolve_on(dump: &mut Dump, doc: &F3dFile, threads: usize) -> Resolved {
         return Resolved::default();
     };
     let blobs = Blobs::default();
-    let queue = std::sync::Mutex::new(items.iter_mut());
+    let timeline = Timeline::new(items);
+    let queue = std::sync::Mutex::new(items.iter_mut().enumerate());
     let found = std::sync::Mutex::new(Resolved::default());
     let work = || {
         let mut out = Resolved::default();
@@ -384,10 +543,16 @@ pub fn resolve_on(dump: &mut Dump, doc: &F3dFile, threads: usize) -> Resolved {
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .next();
-            let Some(item) = next else {
+            let Some((position, item)) = next else {
                 break;
             };
-            resolve_item(item, &blobs, doc, &mut out);
+            let at = At {
+                blobs: &blobs,
+                doc,
+                timeline: &timeline,
+                position,
+            };
+            resolve_item(item, &at, &mut out);
         }
         let mut found = found
             .lock()
@@ -411,50 +576,55 @@ pub fn resolve_on(dump: &mut Dump, doc: &F3dFile, threads: usize) -> Resolved {
 }
 
 /// An input [`find_named`] looks for: the first state it was found in
-/// (blob entry, states before the item), else why not.
-struct Input<'f, 'b> {
+/// (blob index, states before the state the pass starts from), else why
+/// not.
+struct Input<'f> {
     fp: &'f mut Fingerprint,
     twin: (usize, usize),
     entities: Vec<Vec<EntityName>>,
     why: String,
-    hit: Option<(&'b str, usize)>,
+    hit: Option<(usize, usize)>,
 }
 
+/// An input not found yet, with its place among the item's inputs of the
+/// same names ([`locate`]).
+type Left<'f> = Vec<(&'f mut Fingerprint, (usize, usize))>;
+
 /// Finds named edges and faces in the history state before the item
-/// whose state is `result`, else up to [`EARLIER`] states before it.
+/// whose state is `result`, else up to [`EARLIER`] states before it; what
+/// is in none of them, in the other components' histories at the item's
+/// point of the timeline (mitcad#161: a sweep along an edge of another
+/// component's body), else up to [`EARLIER`] states before that.
 ///
 /// With `twins`, inputs of the same names take the edges that fit them
 /// one each ([`locate`]; fillets and chamfers).
 fn find_named(
-    blobs: &[Blob],
+    at: &At,
     result: Option<i32>,
-    mut edges: Vec<&mut Fingerprint>,
+    edges: Vec<&mut Fingerprint>,
     twins: bool,
+    others: bool,
     out: &mut Resolved,
 ) {
-    let Some(result) = result.filter(|&r| r > 0) else {
-        note(&mut edges, "the item has no ASM state");
-        out.not_found += edges.len();
-        return;
-    };
+    let blobs = at.blobs.get(at.doc);
+    let result = result.filter(|&r| r > 0);
     // The blobs that hold the item's state, with its position (newest
     // first).
-    let at: Vec<(&Blob, usize)> = blobs
-        .iter()
-        .filter_map(|b| {
-            let pos = b
-                .history
-                .states
-                .iter()
-                .position(|s| s.id == i64::from(result))?;
-            Some((b, pos))
-        })
-        .collect();
-    if at.is_empty() {
-        note(&mut edges, &format!("no ASM history holds state {result}"));
-        out.not_found += edges.len();
-        return;
-    }
+    let own: Vec<(usize, usize)> = match result {
+        Some(result) => blobs
+            .iter()
+            .enumerate()
+            .filter_map(|(i, b)| {
+                let pos = b
+                    .history
+                    .states
+                    .iter()
+                    .position(|s| s.id == i64::from(result))?;
+                Some((i, pos))
+            })
+            .collect(),
+        None => Vec::new(),
+    };
     // Inputs with the same names: each the k-th of n.
     let keys: Vec<String> = edges
         .iter()
@@ -476,73 +646,156 @@ fn find_named(
             (k, keys.iter().filter(|x| **x == keys[i]).count())
         })
         .collect();
-    // The state just before the item; for what is not there, the earlier
-    // ones (some inputs name faces as an earlier state had them).
-    let mut left: Vec<(&mut Fingerprint, (usize, usize))> = edges.into_iter().zip(twins).collect();
-    for earlier in [0..1, 1..EARLIER + 1] {
-        if left.is_empty() {
-            break;
+    let mut left: Left = edges.into_iter().zip(twins).collect();
+    match result {
+        None => note_left(&mut left, "the item has no ASM state"),
+        Some(r) if own.is_empty() => {
+            note_left(&mut left, &format!("no ASM history holds state {r}"))
         }
-        // Each input takes the first state (in this order) it is found in,
-        // and the first reason it is not. The states are named one at a
-        // time: all of them at once (up to EARLIER per blob, on each of
-        // the threads of `resolve_on`) took gigabytes on large designs and
-        // ran the process out of memory (mitcad#132).
-        let mut inputs: Vec<Input> = left
-            .into_iter()
-            .filter_map(|(fp, twin)| {
-                let f = fp.f3d.as_mut()?;
-                let entities = f.entities.clone().unwrap_or_default();
-                let why = f.found.take().unwrap_or_default();
-                Some(Input {
-                    fp,
-                    twin,
-                    entities,
-                    why,
-                    hit: None,
-                })
-            })
-            .collect();
-        let views = earlier
-            .flat_map(|e| at.iter().map(move |&(b, pos)| (b, e, pos + 1 + e)))
-            .filter(|(b, _, k)| *k <= b.history.states.len());
-        for (b, e, k) in views {
-            if inputs.iter().all(|i| i.hit.is_some()) {
-                break;
-            }
-            let view: View = b.history.view(k);
-            let state = NamedState::new(&b.file, Some(&view));
-            for input in inputs.iter_mut().filter(|i| i.hit.is_none()) {
-                match locate(&state, input.fp, &input.entities, input.twin) {
-                    Ok(()) => input.hit = Some((b.entry.as_str(), e)),
-                    Err(err) if input.why.is_empty() => input.why = err,
-                    Err(_) => {}
+        Some(r) => {
+            // The state just before the item; for what is not there, the
+            // earlier ones (some inputs name faces as an earlier state had
+            // them).
+            for earlier in [0..1, 1..EARLIER + 1] {
+                if left.is_empty() {
+                    break;
                 }
+                let views = earlier
+                    .flat_map(|e| own.iter().map(move |&(b, pos)| (b, e, pos + 1 + e)))
+                    .filter(|&(b, _, k)| k <= blobs[b].history.states.len());
+                left = search(blobs, left, views, out, &|b, e| {
+                    let entry = &blobs[b].entry;
+                    match e {
+                        0 => format!("{entry} before state {r}"),
+                        e => format!("{entry} {e} states before state {r}"),
+                    }
+                });
             }
         }
-        let mut still = Vec::new();
-        for Input {
-            fp, twin, why, hit, ..
-        } in inputs
-        {
-            let f = fp.f3d.as_mut().expect("named");
-            match hit {
-                Some((entry, e)) => {
-                    f.found = Some(match e {
-                        0 => format!("{entry} before state {result}"),
-                        e => format!("{entry} {e} states before state {result}"),
-                    });
-                    out.found += 1;
-                }
-                None => {
-                    f.found = Some(why);
-                    still.push((fp, twin));
-                }
-            }
+    }
+    if left.is_empty() || !others {
+        out.not_found += left.len();
+        return;
+    }
+    // Other components' histories at the item's point of the timeline:
+    // the state after the last item of the blob's component before it.
+    let links = at.timeline.links(blobs);
+    let other_blobs: Vec<(usize, usize)> = (0..blobs.len())
+        .filter(|b| !own.iter().any(|(o, _)| o == b))
+        .filter_map(|b| Some((b, at.timeline.state_at(blobs, b, at.position)?)))
+        .collect();
+    let views = (0..=EARLIER)
+        .flat_map(|e| other_blobs.iter().map(move |&(b, k)| (b, e, k + e)))
+        .filter(|&(b, _, k)| k <= blobs[b].history.states.len());
+    let position = at.position;
+    let mut found = Vec::new();
+    left = search_marked(blobs, left, views, &mut found, &|b, e| {
+        let entry = &blobs[b].entry;
+        match e {
+            0 => format!("{entry} (another component's history) at item {position}"),
+            e => format!("{entry} (another component's history) {e} states before item {position}"),
         }
-        left = still;
+    });
+    for (fp, b) in found {
+        if let Some(f) = fp.f3d.as_mut() {
+            f.component = links[b];
+        }
+        out.found += 1;
     }
     out.not_found += left.len();
+}
+
+/// One pass of [`find_named`]: each input looks for its entity in the
+/// states `views` give (blob, states before the pass's first state,
+/// steps back from the blob's last state), in that order, and takes the
+/// first it is in; `found` says where. Returns the inputs not found,
+/// with the first reason.
+fn search<'f>(
+    blobs: &[Blob],
+    left: Left<'f>,
+    views: impl Iterator<Item = (usize, usize, usize)>,
+    out: &mut Resolved,
+    found: &dyn Fn(usize, usize) -> String,
+) -> Left<'f> {
+    let mut hits = Vec::new();
+    let left = search_marked(blobs, left, views, &mut hits, found);
+    out.found += hits.len();
+    left
+}
+
+/// [`search`], giving each input found with its blob.
+fn search_marked<'f>(
+    blobs: &[Blob],
+    left: Left<'f>,
+    views: impl Iterator<Item = (usize, usize, usize)>,
+    hits: &mut Vec<(&'f mut Fingerprint, usize)>,
+    found: &dyn Fn(usize, usize) -> String,
+) -> Left<'f> {
+    // Each input takes the first state (in this order) it is found in, and
+    // the first reason it is not. The states are named one at a time: all
+    // of them at once (up to EARLIER per blob, on each of the threads of
+    // `resolve_on`) took gigabytes on large designs and ran the process out
+    // of memory (mitcad#132).
+    let mut inputs: Vec<Input> = left
+        .into_iter()
+        .filter_map(|(fp, twin)| {
+            let f = fp.f3d.as_mut()?;
+            let entities = f.entities.clone().unwrap_or_default();
+            let why = f.found.take().unwrap_or_default();
+            Some(Input {
+                fp,
+                twin,
+                entities,
+                why,
+                hit: None,
+            })
+        })
+        .collect();
+    for (b, e, k) in views {
+        if inputs.iter().all(|i| i.hit.is_some()) {
+            break;
+        }
+        let blob = &blobs[b];
+        let view: View = blob.history.view(k);
+        let state = NamedState::new(&blob.file, Some(&view));
+        for input in inputs.iter_mut().filter(|i| i.hit.is_none()) {
+            match locate(&state, input.fp, &input.entities, input.twin) {
+                Ok(()) => input.hit = Some((b, e)),
+                Err(err) if input.why.is_empty() => input.why = err,
+                Err(_) => {}
+            }
+        }
+    }
+    let mut still = Vec::new();
+    for Input {
+        fp, twin, why, hit, ..
+    } in inputs
+    {
+        let f = fp.f3d.as_mut().expect("named");
+        match hit {
+            Some((b, e)) => {
+                f.found = Some(found(b, e));
+                hits.push((fp, b));
+            }
+            None => {
+                f.found = Some(why);
+                still.push((fp, twin));
+            }
+        }
+    }
+    still
+}
+
+/// Notes why the inputs left were not found (the first reason each
+/// keeps).
+fn note_left(left: &mut Left, why: &str) {
+    for (fp, _) in left.iter_mut() {
+        if let Some(f) = fp.f3d.as_mut()
+            && f.found.is_none()
+        {
+            f.found = Some(why.to_owned());
+        }
+    }
 }
 
 /// JSON pointers to the edge references with names and no geometry yet in
@@ -581,7 +834,7 @@ fn named_refs(v: &Value, at: &str, kind: &str, out: &mut Vec<String>) {
 /// The edges of sweeps' and pipes' paths and guide rails and of lofts'
 /// sections, centre lines and rails (mitcad#34), and of patterns' axes and
 /// directions (mitcad#67), found as fillet edges are.
-fn resolve_path_edges(item: &mut TimelineItem, blobs: &Blobs, doc: &F3dFile, out: &mut Resolved) {
+fn resolve_path_edges(item: &mut TimelineItem, at: &At, out: &mut Resolved) {
     let object_type = item.object_type().map(str::to_owned);
     if !matches!(
         object_type.as_deref(),
@@ -611,6 +864,12 @@ fn resolve_path_edges(item: &mut TimelineItem, blobs: &Blobs, doc: &F3dFile, out
     ) {
         named_refs(&v, "", "face", &mut pointers);
     }
+    // A sweep's guide surfaces (mitcad#161).
+    if object_type.as_deref() == Some("SweepFeature")
+        && let Some(faces) = v.get("guideSurfaces")
+    {
+        named_refs(faces, "/guideSurfaces", "face", &mut pointers);
+    }
     if pointers.is_empty() {
         return;
     }
@@ -622,8 +881,7 @@ fn resolve_path_edges(item: &mut TimelineItem, blobs: &Blobs, doc: &F3dFile, out
         })
         .collect();
     let result = item.f3d.as_ref().and_then(|f| f.result_no);
-    let blobs = blobs.get(doc);
-    find_named(blobs, result, fps.iter_mut().collect(), false, out);
+    find_named(at, result, fps.iter_mut().collect(), false, true, out);
     for (p, fp) in pointers.iter().zip(&fps) {
         if let Some(slot) = v.pointer_mut(p) {
             *slot = serde_json::to_value(fp).expect("serializes");
@@ -735,15 +993,6 @@ fn resolve_bodies(item: &mut TimelineItem, blobs: &Blobs, doc: &F3dFile, out: &m
     if let Value::Object(map) = v {
         let object_type = item.object_type().map(str::to_owned);
         item.detail = Some(Detail::typed(object_type.as_deref(), map));
-    }
-}
-
-/// Notes why fingerprints were not found.
-fn note(fps: &mut [&mut Fingerprint], why: &str) {
-    for fp in fps.iter_mut() {
-        if let Some(f) = fp.f3d.as_mut() {
-            f.found = Some(why.to_owned());
-        }
     }
 }
 

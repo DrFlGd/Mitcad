@@ -1,0 +1,181 @@
+Mitcad's patch to OCCT 8.0.1, under OCCT's licence:
+SPDX-License-Identifier: LGPL-2.1-only WITH OCCT-exception-1.0
+
+Fillets and chamfers: the pieces of an edge's analytic blend over a hole
+or cut-out of its face, cut there by the faces beyond (0055, 0057, 0071),
+are one face with the hole cut out (mitcad#121). Before, the blend was a
+face per piece, with edges between them across the blend.
+
+- ChFi3d_Builder::PerformSetOfKPart: of an edge's pieces in order along
+  the spine, a run from a piece through pieces whose contact on one side
+  lies on other faces (cut there by the faces beyond) to a piece whose
+  contacts lie on the faces of the first again, all on one surface (the
+  same analytic surface and parametrization, ChFi3d_SameAnalyticSurface),
+  gets one surface index in the data structure. Pieces split where a
+  contact passes from one face to another keep their own faces.
+- ChFi3d_FilDS: a piece on the surface of the one before it adds no
+  solid-surface interference and gets no section between them; the rest
+  of a section shared in part (0071) is still its edge with the face
+  beyond.
+diff --git a/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_0.cxx b/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_0.cxx
+index 11ba5b6..20cfc4f 100644
+--- a/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_0.cxx
++++ b/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_0.cxx
+@@ -3502,7 +3502,12 @@ void ChFi3d_FilDS(const int                         SolidIndex,
+                                                 TopOpeBRepDS_SURFACE,
+                                                 Isurf);
+ 
+-    SolidInterfs.Append(SSI);
++    // (A piece on the surface of the one before it adds nothing.)
++    const bool aMergedWithPrev = j > 1 && SeqFil(j - 1)->Surf() == Fd->Surf();
++    if (!aMergedWithPrev)
++    {
++      SolidInterfs.Append(SSI);
++    }
+ 
+     const ChFiDS_FaceInterference& Fi1 = Fd->InterferenceOnS1();
+     const ChFiDS_FaceInterference& Fi2 = Fd->InterferenceOnS2();
+@@ -3723,7 +3728,7 @@ void ChFi3d_FilDS(const int                         SolidIndex,
+     {
+       // ---- Interference between Fillets ------
+ 
+-      if (!isInDS1)
++      if (!isInDS1 && !aMergedWithPrev)
+       { // eap, Apr 29 2002, occ 293
+ 
+         if (Degene && isVertex1)
+@@ -4057,6 +4062,8 @@ void ChFi3d_FilDS(const int                         SolidIndex,
+ 
+       // eap, Apr 29 2002, occ 293
+       aPartOnNext = false;
++      // (No section before a piece on the same surface: one face.)
++      const bool aMergedWithNext = j < SeqFil.Length() && SeqFil(j + 1)->Surf() == Fd->Surf();
+       ChFi3d_PartSection aPart;
+       if (!isInDS2 && PartSection(DStr, SolidIndex, SeqFil, j, tol3d, aPart))
+       {
+@@ -4079,6 +4086,7 @@ void ChFi3d_FilDS(const int                         SolidIndex,
+         // The section on this SurfData's surface, to the nearer point.
+         const gp_Pnt2d uvShort = aPart.NextShort ? ParametersNear(Sd, CPn.Point(), uvL) : uvL;
+         const int      Ishort  = aPart.NextShort ? In : Il;
++        if (!aMergedWithNext)
+         {
+           occ::handle<Geom_Curve> C3d;
+           double                  tolreached;
+@@ -4173,7 +4181,7 @@ void ChFi3d_FilDS(const int                         SolidIndex,
+           aPartUV = ParametersNear(Sn, CPl.Point(), uvN);
+         }
+       }
+-      else if (!isInDS2)
++      else if (!isInDS2 && !aMergedWithNext)
+       {
+ 
+         occ::handle<Geom_Curve> C3d;
+diff --git a/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_2.cxx b/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_2.cxx
+index ea1b015..2636a3e 100644
+--- a/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_2.cxx
++++ b/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_2.cxx
+@@ -6051,6 +6051,48 @@ static bool ChFi3d_KPartCutToEnd(
+   return true;
+ }
+ 
++// Whether two surfaces of analytic blends are one surface with one
++// parametrization (copies, as the pieces of one blend have).
++static bool ChFi3d_SameAnalyticSurface(const occ::handle<Geom_Surface>& S1, const occ::handle<Geom_Surface>& S2)
++{
++  if (S1.IsNull() || S2.IsNull() || S1->DynamicType() != S2->DynamicType())
++  {
++    return false;
++  }
++  const GeomAdaptor_Surface A1(S1), A2(S2);
++  if (A1.GetType() != A2.GetType())
++  {
++    return false;
++  }
++  const double tol     = Precision::Confusion();
++  const auto   samePos = [&](const gp_Ax3& a, const gp_Ax3& b) {
++    return a.Location().Distance(b.Location()) <= tol && a.Direction().IsEqual(b.Direction(), Precision::Angular())
++           && a.XDirection().IsEqual(b.XDirection(), Precision::Angular())
++           && a.YDirection().IsEqual(b.YDirection(), Precision::Angular());
++  };
++  switch (A1.GetType())
++  {
++    case GeomAbs_Plane:
++      return samePos(A1.Plane().Position(), A2.Plane().Position());
++    case GeomAbs_Cylinder:
++      return samePos(A1.Cylinder().Position(), A2.Cylinder().Position())
++             && std::abs(A1.Cylinder().Radius() - A2.Cylinder().Radius()) <= tol;
++    case GeomAbs_Cone:
++      return samePos(A1.Cone().Position(), A2.Cone().Position())
++             && std::abs(A1.Cone().RefRadius() - A2.Cone().RefRadius()) <= tol
++             && std::abs(A1.Cone().SemiAngle() - A2.Cone().SemiAngle()) <= Precision::Angular();
++    case GeomAbs_Sphere:
++      return samePos(A1.Sphere().Position(), A2.Sphere().Position())
++             && std::abs(A1.Sphere().Radius() - A2.Sphere().Radius()) <= tol;
++    case GeomAbs_Torus:
++      return samePos(A1.Torus().Position(), A2.Torus().Position())
++             && std::abs(A1.Torus().MajorRadius() - A2.Torus().MajorRadius()) <= tol
++             && std::abs(A1.Torus().MinorRadius() - A2.Torus().MinorRadius()) <= tol;
++    default:
++      return false;
++  }
++}
++
+ void ChFi3d_Builder::PerformSetOfKPart(occ::handle<ChFiDS_Stripe>& Stripe, const bool Simul)
+ {
+   TopOpeBRepDS_DataStructure&      DStr  = myDS->ChangeDS();
+@@ -6225,6 +6267,44 @@ void ChFi3d_Builder::PerformSetOfKPart(occ::handle<ChFiDS_Stripe>& Stripe, const
+         }
+       }
+       NCollection_List<int> li;
++      // The pieces cut by faces beyond over a gap (ChFi3d_FillKPartGaps)
++      // and the pieces on either side of it, whose contacts lie on the
++      // same faces, are one surface: one face, with no edges between them
++      // (as a blend over a hole of its face is one face with the hole cut).
++      NCollection_Array1<bool> aJoin(1, std::max(1, LSD.Length()));
++      aJoin.Init(false);
++      for (int a = 1; !Simul && a < LSD.Length(); a++)
++      {
++        const occ::handle<ChFiDS_SurfData>& A = LSD.Value(a);
++        for (int s = 1; s <= 2; s++)
++        {
++          int b = a + 1;
++          while (b <= LSD.Length() && LSD.Value(b)->Index(3 - s) == A->Index(3 - s)
++                 && LSD.Value(b)->Index(s) != A->Index(s))
++          {
++            b++;
++          }
++          if (b == a + 1 || b > LSD.Length() || LSD.Value(b)->Index(1) != A->Index(1)
++              || LSD.Value(b)->Index(2) != A->Index(2))
++          {
++            continue;
++          }
++          bool aSame = true;
++          for (int i = a + 1; i <= b && aSame; i++)
++          {
++            const occ::handle<ChFiDS_SurfData>& P = LSD.Value(i - 1);
++            const occ::handle<ChFiDS_SurfData>& Q = LSD.Value(i);
++            aSame = P->Orientation() == Q->Orientation()
++                    && std::abs(P->LastSpineParam() - Q->FirstSpineParam()) <= Precision::PConfusion()
++                    && ChFi3d_SameAnalyticSurface(DStr.Surface(P->Surf()).Surface(),
++                                                  DStr.Surface(Q->Surf()).Surface());
++          }
++          for (int i = a + 1; i <= b && aSame; i++)
++          {
++            aJoin(i) = true;
++          }
++        }
++      }
+       for (int j = 1; j <= LSD.Length(); j++)
+       {
+         occ::handle<ChFiDS_SurfData>& curSD = LSD.ChangeValue(j);
+@@ -6232,6 +6312,10 @@ void ChFi3d_Builder::PerformSetOfKPart(occ::handle<ChFiDS_Stripe>& Stripe, const
+         {
+           SimulKPart(curSD);
+         }
++        else if (aJoin(j))
++        {
++          curSD->ChangeSurf(LSD.Value(j - 1)->Surf());
++        }
+         SeqSurf.Append(curSD);
+         if (!Simul)
+         {

@@ -1120,11 +1120,30 @@ void test_guide_surfaces() {
   prism.guide.clear();
   CHECK(near(end_box(*sweep(prism)).max.X(), 4, 1e-6));
 
-  // The path must lie on the guide surface; a rail or the parallel
-  // orientation do not go with it.
+  // A path beside the guide surface (mitcad#161: a thread's crest guided
+  // by its flank) takes the surface's normal at its nearest points: the
+  // helix of radius 11 through the rectangle's middle beside the cylinder
+  // makes the same screw motion.
+  thread.path = {{"c1", helix3(11, 5, 2)}};
+  const ShapePtr beside = sweep(thread);
+  CHECK(BRepCheck_Analyzer(beside->occt()).IsValid());
+  CHECK_NEAR_TOL(precise_volume(*beside), 4 * 2 * kPi * 2 * 11, 1e-5);
+  CHECK(near(bounding_box(*beside).max.Z(), 11, 1e-3));
+
+  // A profile taller than the pitch (6 against 5): the turns overlap, and
+  // the sweep is their union, a ring of radii 10 and 12 over 2 * 5 + 6 - 5
+  // of height at each angle: V = pi (12^2 - 10^2) 11 (not twice the
+  // screw solid of one turn).
+  SweepSpec tall = thread;
+  tall.regions = {rectangle(1, 10, -3, 2, 6)};
+  tall.path = {{"E{F2:side(c1)}", helix3(10, 5, 2)}};
+  const ShapePtr overlapping = sweep(tall);
+  CHECK(BRepCheck_Analyzer(overlapping->occt()).IsValid());
+  CHECK_NEAR_TOL(precise_volume(*overlapping), kPi * (144 - 100) * 11, 1e-4);
+  CHECK(faces_with(*overlapping, "F5:start(") == 1 && faces_with(*overlapping, "F5:end(") == 1);
+
+  // A rail or the parallel orientation do not go with guide surfaces.
   prism.guide = {{twisted, "F3:twisted"}};
-  prism.path = {{"c1", line3(gp_Pnt(0.5, 0, 0), gp_Pnt(0.5, 0, length))}};
-  CHECK(throws_with([&] { sweep(prism); }, "must lie on the guide surface"));
   prism.path = {{"c1", line3(gp_Pnt(0, 0, 0), gp_Pnt(0, 0, length))}};
   prism.orientation = SweepOrientation::Parallel;
   CHECK(throws_with([&] { sweep(prism); }, "parallel orientation"));

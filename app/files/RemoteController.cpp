@@ -905,8 +905,8 @@ void RemoteController::sync() {
   if (!repo) {
     qInfo().noquote() << QStringLiteral("Sync: no project with versions");
     sheetInformation(&m_window, tr("Sync"),
-                             tr("Sync shares the versions of a Cloud project's designs: make one with File > New "
-                                "Project, or share a Local project in File > Project Settings."));
+                             tr("Sync shares the versions of a Cloud project's designs: make one with File > "
+                                "Project > New Project, or share a Local project in its Project Settings."));
     return;
   }
   refreshStatus();

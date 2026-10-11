@@ -42,6 +42,12 @@ mod joints;
 // Library components and configuration tables (mitcad#64).
 mod library_parts;
 pub use library_parts::{LibraryChange, LibraryPart, PartsListRow};
+// Move Features into a Component (mitcad#171).
+mod move_features;
+pub use move_features::{MoveConflict, MoveGroup, MovePlan, MovedGroup, PlannedGroup};
+// What the importers say about the features they made (mitcad#170).
+mod import_notes;
+pub(crate) use import_notes::{status_message as noted_message, status_text as noted_status};
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fmt;
@@ -175,6 +181,14 @@ pub struct DocState {
     pub(crate) render: RenderSettings,
     /// The configuration table (mitcad#64): sizes of the design.
     pub(crate) configurations: crate::configurations::Configurations,
+    /// A component made where modelled bodies are does not offer to move
+    /// them into a component first (mitcad#171: "don't ask again").
+    pub(crate) hybrid_assembly: bool,
+    /// What an importer said about the features it made (mitcad#170): a
+    /// fallback's base feature, an item that came in partly, a placeholder
+    /// of a skipped item. Shown as the feature's warning until an edit of
+    /// its definition builds.
+    pub(crate) import_notes: BTreeMap<FeatureUid, String>,
 }
 
 impl Default for DocState {
@@ -196,6 +210,8 @@ impl Default for DocState {
             appearances: Vec::new(),
             render: RenderSettings::default(),
             configurations: Default::default(),
+            hybrid_assembly: false,
+            import_notes: BTreeMap::new(),
         }
     }
 }
@@ -502,6 +518,7 @@ impl DocState {
             .retain(|body, _| !removed.contains(&body.feature));
         self.feature_visibility
             .retain(|uid, _| !removed.contains(uid));
+        self.import_notes.retain(|uid, _| !removed.contains(uid));
         self.release_components(removed);
         order
     }
@@ -697,18 +714,21 @@ pub struct TimelineItem<'a> {
     pub status: Option<&'a FeatureStatus>,
     /// What a feature that succeeded built with caveats (P9).
     pub warnings: &'a [String],
+    /// What the importer that made it said (mitcad#170).
+    pub import_note: Option<&'a str>,
 }
 
 impl TimelineItem<'_> {
-    /// `ok`, `warning` (succeeded with warnings), `error`, `suppressed`,
-    /// `rolled_back`, or `pending` before the first recompute.
+    /// `ok`, `warning` (succeeded with warnings or with an import note),
+    /// `error`, `suppressed`, `rolled_back`, or `pending` before the first
+    /// recompute.
     pub fn status_text(&self) -> &'static str {
-        status_text(self.status, self.warnings)
+        import_notes::status_text(self.status, self.warnings, self.import_note)
     }
 
-    /// The error of a failed feature, or its warnings.
+    /// The error of a failed feature, or its import note and warnings.
     pub fn message(&self) -> Option<String> {
-        status_message(self.status, self.warnings)
+        import_notes::status_message(self.status, self.warnings, self.import_note)
     }
 }
 
@@ -1201,6 +1221,7 @@ impl<K: Kernel> Document<K> {
                 entry,
                 status: self.status(entry.uid),
                 warnings: self.warnings(entry.uid),
+                import_note: self.import_note(entry.uid),
             })
             .collect()
     }
@@ -1342,6 +1363,11 @@ impl<K: Kernel> Document<K> {
         } else {
             None
         };
+        // An edited definition that builds clears its import note
+        // (mitcad#170).
+        if let Some(result) = &result {
+            next.settle_import_notes(&self.state, result);
+        }
         self.commit(label, next);
         if let Some(result) = result {
             self.set_result(result);

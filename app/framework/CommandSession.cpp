@@ -14,6 +14,7 @@
 #include <QtLogging>
 
 #include "Diagnostics.hpp"
+#include "HybridAssembly.hpp"
 #include "Json.hpp"
 #include "ManipulatorOverlay.hpp"
 #include "ModelShapes.hpp"
@@ -1949,6 +1950,18 @@ bool CommandSession::commitAsync() {
     qDebug().noquote() << QStringLiteral("%1: OK refused").arg(m_def.name);
     return false;
   }
+  // A component in a root with modelled bodies (mitcad#171).
+  bool doneByMove = false;
+  if (!m_def.inspect && !askBeforeComponent(m_def.build(m_state, m_host), doneByMove)) {
+    qDebug().noquote() << QStringLiteral("%1: OK not done").arg(m_def.name);
+    return false;
+  }
+  if (doneByMove) {
+    m_host.refreshScene();
+    qDebug().noquote() << QStringLiteral("Done %1").arg(m_def.name);
+    finish(true);
+    return true;
+  }
   m_committing = true;
   m_presenter->setOkEnabled(false);
   const auto failed = [this](const CommandHost::AsyncResult& result) {
@@ -2071,8 +2084,7 @@ bool CommandSession::commitAsync() {
     const QJsonObject command = isEditing()
         ? QJsonObject{{QStringLiteral("cmd"), QStringLiteral("edit_feature")},
                       {QStringLiteral("uid"), m_editUid}, {QStringLiteral("def"), built.def}}
-        : QJsonObject{{QStringLiteral("cmd"), QStringLiteral("add_feature")},
-                      {QStringLiteral("def"), built.def}};
+        : addFeatureCommand(built);
     commandSequenceAsync(QJsonArray{command}, [this, failed, before, description, depth](const CommandHost::AsyncResult& result) {
       if (result.succeeded() && m_cancelRequested) {
         undoToDepthAsync(depth, [this, failed](const CommandHost::AsyncResult&) {
@@ -2198,6 +2210,18 @@ bool CommandSession::commit() {
     qDebug().noquote() << QStringLiteral("%1: OK refused").arg(m_def.name);
     return false;
   }
+  // A component in a root with modelled bodies (mitcad#171).
+  bool doneByMove = false;
+  if (!askBeforeComponent(m_def.build(m_state, m_host), doneByMove)) {
+    qDebug().noquote() << QStringLiteral("%1: OK not done").arg(m_def.name);
+    return false;
+  }
+  if (doneByMove) {
+    m_host.refreshScene();
+    qDebug().noquote() << QStringLiteral("Done %1").arg(m_def.name);
+    finish(true);
+    return true;
+  }
   if (m_def.modelCommand) {
     const Built built = m_def.build(m_state, m_host);
     const QString label = built.def.value(QStringLiteral("label")).toString(m_def.name);
@@ -2247,8 +2271,7 @@ bool CommandSession::commit() {
     return false;
   }
   const QJsonObject before = bodyVolumes();
-  QJsonObject command{{QStringLiteral("cmd"), QStringLiteral("add_feature")},
-                      {QStringLiteral("def"), built.def}};
+  QJsonObject command = addFeatureCommand(built);
   if (isEditing()) {
     command = {{QStringLiteral("cmd"), QStringLiteral("edit_feature")},
                {QStringLiteral("uid"), m_editUid},
@@ -2275,6 +2298,83 @@ bool CommandSession::commit() {
   logVolumes(before);
   finish(true);
   return true;
+}
+
+bool CommandSession::askBeforeComponent(const Built& built, bool& done) {
+  done = false;
+  m_addTo.clear();
+  if (isEditing() || m_def.sketchCommand || m_def.inspect || !built.error.isEmpty()) {
+    return true;
+  }
+  ComponentRequest request;
+  bool makes = false;
+  if (m_def.modelCommand) {
+    for (const QJsonValue& value : built.def.value(QStringLiteral("commands")).toArray()) {
+      const QJsonObject command = value.toObject();
+      const QString name = command.value(QStringLiteral("cmd")).toString();
+      if (name == QStringLiteral("create_component")) {
+        makes = true;
+        request.kind = ComponentRequest::Kind::NewComponent;
+      } else if (name == QStringLiteral("components_from_bodies")) {
+        makes = true;
+        request.kind = ComponentRequest::Kind::FromBodies;
+        request.bodies = command.value(QStringLiteral("bodies")).toArray();
+      }
+    }
+  } else {
+    makes = built.def.value(QStringLiteral("operation")).toString() == QStringLiteral("new_component") ||
+            built.def.value(QStringLiteral("new_component")).toBool();
+    request.kind = ComponentRequest::Kind::Feature;
+  }
+  if (!makes) {
+    return true;
+  }
+  try {
+    request.parent = m_host.queryObject({{QStringLiteral("query"), QStringLiteral("components")}})
+                         .value(QStringLiteral("active"))
+                         .toString();
+  } catch (const std::exception&) {
+    return true;
+  }
+  HybridModel model;
+  model.query = [this](const QJsonObject& query) { return m_host.queryObject(query); };
+  model.run = [this](const QJsonObject& command, QJsonObject* result) { return m_host.runCommand(command, result); };
+  const ComponentAnswer answer = askHybridAssembly(m_host.viewer().window(), model, request);
+  switch (answer.outcome) {
+  case ComponentAnswer::Outcome::Cancel:
+    return false;
+  case ComponentAnswer::Outcome::Done:
+    done = true;
+    return true;
+  case ComponentAnswer::Outcome::Proceed:
+    break;
+  }
+  if (!answer.moved.isEmpty() && request.kind == ComponentRequest::Kind::Feature) {
+    // What the feature uses went into the new component: it goes there too.
+    try {
+      const QJsonArray components =
+          m_host.queryObject({{QStringLiteral("query"), QStringLiteral("feature_references")},
+                              {QStringLiteral("def"), built.def}})
+              .value(QStringLiteral("components"))
+              .toArray();
+      if (components.contains(answer.moved)) {
+        m_addTo = answer.moved;
+        qDebug().noquote() << QStringLiteral("%1 goes into %2 with what it uses").arg(m_def.name, m_addTo);
+      }
+    } catch (const std::exception&) {
+      // Added where the user is, the model says what it misses.
+    }
+  }
+  m_host.refreshScene();
+  return true;
+}
+
+QJsonObject CommandSession::addFeatureCommand(const Built& built) const {
+  QJsonObject command{{QStringLiteral("cmd"), QStringLiteral("add_feature")}, {QStringLiteral("def"), built.def}};
+  if (!m_addTo.isEmpty()) {
+    command.insert(QStringLiteral("component"), m_addTo);
+  }
+  return command;
 }
 
 bool CommandSession::keepAnalysis() {

@@ -9,7 +9,7 @@ face's appearance as a physically based material with its texture
 (mitcad#46, mitcad#53, [Materials](#materials)), and the light, background, ground
 and exposure of the document's render settings (mitcad#47,
 [Environment](#environment)) with lights of the user's own and the
-bodies' coloured reflections on the ground (mitcad#54, [Lights](#lights)). File > Render Image and `mitcad-cli render`
+bodies' coloured reflections on the ground (mitcad#54, [Lights](#lights)). Render Image (the MAKE group) and `mitcad-cli render`
 render a finished image to a file at a chosen size and quality
 (mitcad#48, [Final render](#final-render)). It is
 part of every build on every platform (mitcad#141): there is no option to
@@ -137,7 +137,11 @@ file) simply has no rendered view (the log says `No render worker
   display updates (and denoised batches with them), and with Cycles'
   automatic minimum of 64 samples it would stop no pixel early at the
   application's sample counts. New scene nodes are tagged (`tag_update`)
-  so that a running session sees them.
+  so that a running session sees them. Every change resets the session
+  while it still holds the scene's lock (`restart`, mitcad#146): Cycles
+  updates the scene between batches, and an update without its reset
+  (another set of passes, as the ground's catcher passes) would have the
+  kernels write past the render buffers.
 - **Scene**: `RenderMode` sends the shown bodies (`OcctViewer::
   shownBodies`) as scene updates ([Scene updates](#scene-updates)), only
   while the model is idle (`MainWindow::whenIdle`), and again whenever the
@@ -670,9 +674,9 @@ Decisions and limits:
 
 ## Final render
 
-File > Render Image (`file.render_image`, also in View > Visual Style)
-and `mitcad-cli render` render the visible bodies to an image file at the
-size and quality of the render settings' `output` section (commands.md
+Render Image (`file.render_image`, the ribbon's MAKE group and View >
+Visual Style) and `mitcad-cli render` render the visible bodies to an
+image file at the size and quality of the render settings' `output` section (commands.md
 "Render output"): the same scene, environment, ground and film as the
 rendered view, in the render worker's batch mode, not the interactive
 one.
@@ -806,7 +810,7 @@ without any GPU device renders on the CPU, as before.
   the CPU and each GPU the worker lists (`mitcad-render --list-devices`,
   asked once per run of the application); a device chosen earlier that
   is not there now stays as "Not found: <id>". A change starts a running
-  rendered view's worker again on the new device. File > Render Image
+  rendered view's worker again on the new device. Render Image
   takes the same setting into its job (`"device"`); `mitcad-cli render`
   takes `--device auto|cpu|cuda|<id>` (default `auto`; it does not read
   the application's settings) and `--list-devices`.
@@ -1157,7 +1161,7 @@ GPU (tested with the build of `--cuda` on the GTX 1060 below).
   in the Qt UI, selects CPU rendering and denoising, checks progressive
   shared-memory frames through 16 samples and the rendered viewport
   screenshot, then leaves the mode and checks that the bundled worker ends.
-- `tools/ui-render-image-test.sh`: File > Render Image on the red block
+- `tools/ui-render-image-test.sh`: Render Image (the MAKE group) on the red block
   (no ground): a size preset of 3840 x 2160 with 65536 samples renders in
   the worker's batch mode while the app stays usable, and Cancel ends the
   worker; then 320 x 240, 8 samples, a transparent background: the view

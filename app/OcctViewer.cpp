@@ -2225,8 +2225,11 @@ void OcctViewer::logCamera() {
   m_loggedCamera = text;
   updateCubeArrows();
   // Only on request: every place of the cube's corner is tried. Before the
-  // camera's line, so that the places are there when a test reads it.
-  if (qEnvironmentVariableIsSet("MITCAD_LOG_ORIENTATION_CUBE")) {
+  // camera's line, so that the places are there when a test reads it. Not
+  // before the view has its window: picking then crashes in OCCT's selector
+  // (a design opened at start-up, before the window appears). The resize
+  // that shows the window logs the camera again.
+  if (qEnvironmentVariableIsSet("MITCAD_LOG_ORIENTATION_CUBE") && !m_view->Window().IsNull() && isVisible()) {
     logOrientationCube();
   }
   qDebug().noquote() << text;

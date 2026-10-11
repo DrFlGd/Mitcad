@@ -151,5 +151,11 @@ void shapefix_tests();
 // A chamfer whose pieces meet at a vertex of the edge they reach, with the
 // port's patches 0090 and 0091 (mitcad#160).
 void chamfer_kernel_tests();
+// Shells whose wall makes a narrow face vanish, with the port's patch 0100
+// (mitcad#172).
+void shell_vanishing_tests();
+// Walked roundings that are true rolling balls, with the port's patches
+// 0075-0077 (mitcad#121).
+void fillet_rolling_ball_tests();
 
 } // namespace test

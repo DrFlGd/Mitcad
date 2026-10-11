@@ -1,0 +1,120 @@
+Mitcad's patch to OCCT 8.0.1, under OCCT's licence:
+SPDX-License-Identifier: LGPL-2.1-only WITH OCCT-exception-1.0
+
+Fillets: the walk past an end of the spine stops before its sections get
+singular (mitcad#121, with 0075).
+
+Past the spine's ends the guide (ChFiDS_ElSpine) is extended by straight
+lines, so that the blend reaches the faces that cut it there. A rolling
+ball's centre does not follow that line: where the edge is curved, the
+guide's normal planes turn away from the ball's section plane, and where a
+plane comes tangent to the centre's curve the sections are singular (the
+contacts run ever faster along the guide, the walk ends in tangency
+points). No surface approximates the line through that (a rounding round a
+cone and a cylinder on one axis, its extension 15 long on a circle of
+radius 17, failed with "Failed approximation").
+
+ChFi3d_CutSingularExtension, at the end of the walked blend's ComputeData
+(after the walk is continued into the extensions): on an open spine, from
+the last point within the spine outwards, the line is ended at the first
+point where the contacts run twice as fast along the guide as at the
+spine's end (the guide's plane has turned 60 degrees from the ball's), or
+where the walk reached a tangency point. Within the spine nothing changes;
+the extension that is kept still runs past the end.
+diff --git a/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_6.cxx b/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_6.cxx
+index 2a4d6f1..10897e8 100644
+--- a/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_6.cxx
++++ b/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_6.cxx
+@@ -386,6 +386,84 @@ static void UpdateLine(occ::handle<BRepBlend_Line>& Line, const bool isfirst)
+   }
+ }
+ 
++//=======================================================================
++// function : ChFi3d_CutSingularExtension
++// purpose  : Past an end of its spine a rolling ball's walk follows the
++//            guide's straight extension, while the curve of the ball's
++//            centre turns away from it; where the guide's normal plane
++//            comes tangent to that curve the sections meet a singular
++//            point (tangency points, steps getting tiny), and no surface
++//            approximates the line through it. That part only extends the
++//            blend to be cut by the faces at the end: past the spine, the
++//            line is ended before the point where the contacts run twice
++//            as fast along the guide as at the spine's end (or reach a
++//            tangency point).
++//=======================================================================
++
++static void ChFi3d_CutSingularExtension(occ::handle<BRepBlend_Line>&     Lin,
++                                        const occ::handle<ChFiDS_Spine>& Spine)
++{
++  if (Lin.IsNull() || Spine.IsNull() || Spine->IsPeriodic() || Lin->NbPoints() < 4)
++  {
++    return;
++  }
++  const double SpF = Spine->FirstParameter(1);
++  const double SpL = Spine->LastParameter(Spine->NbEdges());
++  // The speed of the contact points along the guide.
++  auto Speed = [](const Blend_Point& P) {
++    return P.IsTangencyPoint() ? RealLast()
++                               : std::max(P.TangentOnS1().Magnitude(), P.TangentOnS2().Magnitude());
++  };
++  // The end of the line: past the spine's end, from where the contacts run
++  // twice as fast as at the end of the spine (the guide's plane has turned
++  // 60 degrees from the ball's).
++  int nb = Lin->NbPoints();
++  int i0 = 0;
++  for (int i = 1; i <= nb && Lin->Point(i).Parameter() <= SpL; i++)
++  {
++    i0 = i;
++  }
++  if (i0 >= 2 && i0 < nb && !Lin->Point(i0).IsTangencyPoint())
++  {
++    const double v0 = Speed(Lin->Point(i0));
++    for (int i = i0 + 1; i <= nb; i++)
++    {
++      if (Speed(Lin->Point(i)) > 2. * v0)
++      {
++        if (i - 1 >= i0)
++        {
++          Lin->Remove(i, nb);
++          UpdateLine(Lin, false);
++        }
++        break;
++      }
++    }
++  }
++  // The start of the line.
++  nb = Lin->NbPoints();
++  i0 = 0;
++  for (int i = nb; i >= 1 && Lin->Point(i).Parameter() >= SpF; i--)
++  {
++    i0 = i;
++  }
++  if (i0 > 1 && i0 <= nb - 1 && !Lin->Point(i0).IsTangencyPoint())
++  {
++    const double v0 = Speed(Lin->Point(i0));
++    for (int i = i0 - 1; i >= 1; i--)
++    {
++      if (Speed(Lin->Point(i)) > 2. * v0)
++      {
++        if (i + 1 <= i0)
++        {
++          Lin->Remove(1, i);
++          UpdateLine(Lin, true);
++        }
++        break;
++      }
++    }
++  }
++}
++
+ //=======================================================================
+ // function : CompleteData
+ // purpose  : Calculates curves and CommonPoints from the data
+@@ -2341,6 +2419,7 @@ bool ChFi3d_Builder::ComputeData(occ::handle<ChFiDS_SurfData>&           Data,
+       //  modified by eap Fri Feb  8 11:45:10 2002 ___END___
+     }
+   }
++  ChFi3d_CutSingularExtension(Lin, Spine);
+   Nbpnt = Lin->NbPoints();
+   First = Lin->Point(1).Parameter();
+   Last  = Lin->Point(Nbpnt).Parameter();

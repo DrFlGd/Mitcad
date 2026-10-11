@@ -12,7 +12,7 @@
 #     the lights each time).
 #   - Reflections on the ground: below the block the ground is reddish (the
 #     shadow catcher's colours, not grey), in the view and in an image of
-#     File > Render Image saved as PNG.
+#     Render Image saved as PNG.
 #   - The lights are saved in the file.
 #
 # Runs headless on Xvfb (see ui-test-lib.sh).
@@ -280,7 +280,7 @@ check "the ground below the block is reddish" \
 echo "--- Render Image: the same in a PNG"
 ui_step "Close" ui_click_logged "Render settings close"
 ui_focus_main
-ui_step "File > Render Image..." ui_command "Render Image"
+ui_step "Render Image (search)" ui_command "Render Image"
 ui_expect_log "Render image dialog opened" "the dialog opened"
 ui_focus_dialog '^Render Image$'
 ui_expect_log "Render image field output.width at" "the dialog logs its fields"

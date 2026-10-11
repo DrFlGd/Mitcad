@@ -206,10 +206,28 @@ expect_new_view "$before" "the resize restarted the render"
 [ "$(grep -c "Render frame memory [0-9]*: " "$UI_LOG")" -gt "$memories" ] ||
   ui_fail "the larger view got no larger frame memory"
 echo "ok   a larger frame memory: $(grep -o "Render frame memory [0-9]*: .*" "$UI_LOG" | tail -1)"
-read -r _ _ _ _ vw vh <<< "$(grep -o "View area [0-9]* [0-9]* [0-9]* [0-9]*" "$UI_LOG" | tail -1)"
+# The window may reach its size in steps, each a view of its own
+# (mitcad#146): the view of the final size is the newest one with frames of
+# the view area last logged, once neither changes for a second.
+sized=
+stable=0
+for _ in $(seq 1 150); do
+  read -r _ _ _ _ vw vh <<< "$(grep -o "View area [0-9]* [0-9]* [0-9]* [0-9]*" "$UI_LOG" | tail -1)"
+  view=$(grep -oE "Render frame view [0-9]+ ${vw}x${vh} samples " "$UI_LOG" |
+    awk -v after="$before" '$4 > after { view = $4 } END { print view }')
+  if [ -n "$view" ] && [ "$view" = "$(last_view)" ] && [ "$view ${vw}x${vh}" = "$sized" ]; then
+    stable=$((stable + 1))
+    [ "$stable" -ge 5 ] && break
+  else
+    stable=0
+  fi
+  sized="$view ${vw}x${vh}"
+  sleep 0.2
+done
+[ "$stable" -ge 5 ] ||
+  ui_fail "no frames of the view area ${vw} x ${vh}: $(grep "Render frame view " "$UI_LOG" | tail -1)"
+NEW_VIEW=$view
 expect_done "$NEW_VIEW" "the larger view refined"
-grep -qE "Render frame view $NEW_VIEW ${vw}x${vh} samples " "$UI_LOG" ||
-  ui_fail "the frames are not ${vw} x ${vh}: $(grep "Render frame view $NEW_VIEW " "$UI_LOG" | tail -1)"
 echo "ok   the frames are ${vw} x ${vh}"
 
 echo "--- The worker dies"

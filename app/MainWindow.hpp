@@ -31,6 +31,7 @@
 #include "framework/ModelWorker.hpp"
 #include "mitcad/geometry/shape.hpp"
 #include "mitcad_bridge/lib.h"
+#include "projects/ProjectPicker.hpp"
 #include "rust/cxx.h"
 #include "sketch/SketchController.hpp"
 
@@ -437,7 +438,7 @@ private:
   // version history (a folder with .mitcad/project.json at the root of a
   // git repository) records a version; autosave never does.
   void registerVersionCommands();
-  // File > Save Version: a version with a description.
+  // File > Save with Description: a version with a description.
   bool saveVersion();
   // The project with version history a file is in; none with the reason.
   std::optional<rust::Box<Project>> versionedProject(const QString& path, QString* why = nullptr) const;
@@ -483,9 +484,26 @@ private:
   void openReadOnly();
   // File > Project Settings.
   void showProjectSettings();
-  // Move to a Project: a loose design into a new or an existing project.
+  // Move to a Project: a loose design into a new or an existing project
+  // (an existing one chosen in the project picker, mitcad#174).
   void moveToProject();
-  bool moveIntoProject(const QString& root);
+  // The design moved (or an untitled design saved) into the project at
+  // `root`: to `target` (the picker's place), else under its name in the
+  // project's top, its name asked in the picker when another design has it
+  // there (an untitled design's always).
+  bool moveIntoProject(const QString& root, const QString& target = QString());
+  // The project picker in the window (mitcad#174, mitcad#176): the project
+  // with versions and its folder (relative) selected in the Projects
+  // panel, none ("", "") else.
+  std::pair<QString, QString> panelProjectSelection() const;
+  // Where Save As offers a place in the picker: the design's project and
+  // folder, an untitled design's project folder, else the panel's
+  // selection or the current project; none ("") for a design in no project
+  // with versions (the file dialog).
+  std::pair<QString, QString> saveAsProjectPlace() const;
+  // A design saved or moved into a project shows selected in the Projects
+  // panel.
+  void showDesignInPanel(const QString& path);
   // Open Recent's label of a design: "bracket.mitcad - Robot arm".
   QString recentLabel(const QString& path) const;
   // The Projects panel (mitcad#145, projects/MainWindowProjectsPanel.cpp):
@@ -507,9 +525,9 @@ private:
   void showProjectInPanel(const QString& root);
   // Its projects read again (after Save, a sync, the focus back).
   void refreshProjectsPanel();
-  // File > New Design: a design named in place in the panel's selected
-  // folder of the current project (else of the selected project), made as
-  // a version and opened.
+  // File > New Design (Ctrl+N): a design named in place in the panel's
+  // selected folder of the current project, made as a version and opened;
+  // without a current project an untitled design (newDocument, mitcad#175).
   void newDesign();
   // What the panel asks for (paths relative to the project at `root`).
   void createDesignInProject(const QString& root, const QString& path);

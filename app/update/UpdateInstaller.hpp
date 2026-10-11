@@ -24,6 +24,11 @@ struct Installation {
   Kind kind = Kind::NotifyOnly;
   // The installation folder (Windows) or the AppImage file (Linux).
   QString location;
+  // Windows: installed for all users (Program Files, HKLM; an update asks
+  // for elevation) rather than just for the current user (mitcad#118). The
+  // installer's installation.ini says which; an installation without it is
+  // an earlier release's, which was always for all users.
+  bool allUsers = false;
   // Why it can only announce (for the log).
   QString reason;
 
@@ -41,8 +46,9 @@ struct Installation {
 // Arranges for the verified download `file` to replace the installation once
 // Mitcad has quit, and for the new version to start then: on Windows
 // mitcad-updater.exe, copied next to the download, waits for this process
-// to end, runs the installer silently into the installation folder and
-// starts Mitcad; an AppImage is replaced by the download (an atomic rename)
+// to end, runs the installer silently into the installation folder and its
+// scope (elevated only for all users) and starts Mitcad; an AppImage is
+// replaced by the download (an atomic rename)
 // and started. The settings remember the update (updates/installing,
 // updates/installingFrom, updates/installLog), so that the next start tells
 // how it went. False with the reason when it cannot be arranged.

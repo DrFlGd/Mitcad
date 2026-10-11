@@ -150,3 +150,8 @@ pub use kernel::NewFace;
 #[cfg(test)]
 mod constraint_tests;
 pub mod constraints;
+
+// Move Features into a Component (mitcad#171).
+pub use document::{MoveConflict, MoveGroup, MovePlan, MovedGroup, PlannedGroup};
+#[cfg(test)]
+mod move_features_tests;

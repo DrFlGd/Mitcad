@@ -157,6 +157,42 @@ pub struct DesignReport {
     /// Where the process ran low on memory (mitcad#80), when it did.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub low_memory: Option<LowMemoryReport>,
+    /// The file's assembly relationships (mitcad#155).
+    #[serde(skip_serializing_if = "RelationshipReport::is_empty")]
+    pub relationships: RelationshipReport,
+}
+
+/// How the file's assembly relationships came in (mitcad#155;
+/// `relationships.rs`).
+#[derive(Debug, Clone, Default, PartialEq, Serialize)]
+pub struct RelationshipReport {
+    /// Relationship items that came in as constraint sets.
+    pub sets: usize,
+    /// The constraints (rows) of the relationship items.
+    pub rows: usize,
+    /// Of them, those that came in as constraint rows.
+    pub translated: usize,
+    /// Of their sides, those on fixed geometry (no face or edge of the
+    /// component gives the file's plane, axis or point).
+    pub fixed_sides: usize,
+    /// Of their sides, those on a component of another document (fixed
+    /// geometry of the empty component standing for it).
+    pub inserted_sides: usize,
+    /// Tangent relationships.
+    pub tangents: usize,
+    /// Rows and tangent relationships left out, by why.
+    pub left_out: BTreeMap<String, usize>,
+}
+
+impl RelationshipReport {
+    fn is_empty(&self) -> bool {
+        *self == Self::default()
+    }
+
+    /// Counts a row or tangent relationship left out.
+    pub fn skipped(&mut self, why: &str) {
+        *self.left_out.entry(why.to_owned()).or_default() += 1;
+    }
 }
 
 /// The light bulbs of the imported sketches and construction features
@@ -365,6 +401,22 @@ impl DesignReport {
                 j.positions,
                 j.rigid_groups,
                 j.skipped
+            );
+        }
+        let r = &self.relationships;
+        if !r.is_empty() {
+            let _ = writeln!(
+                out,
+                "  relationships: {} constraint sets, {} of {} constraints as rows ({} sides on \
+                 fixed geometry, {} on components of other documents), {} tangent relationships, \
+                 {} left out",
+                r.sets,
+                r.translated,
+                r.rows,
+                r.fixed_sides,
+                r.inserted_sides,
+                r.tangents,
+                r.left_out.values().sum::<usize>()
             );
         }
         for item in &self.items {

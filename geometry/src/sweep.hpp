@@ -114,8 +114,10 @@ ShapePtr split_keep(const Shape& solid, const TopoDS_Shape& tool, const NameList
                     const std::function<bool(const Shape&)>& keep, const char* what);
 
 // Fuses the solids into one shape (several solids if they do not touch),
-// merging the faces that end up in one plane or surface; names carry.
-ShapePtr fused(const std::vector<ShapePtr>& parts, const char* what);
+// merging the faces that end up in one plane or surface unless `merge` is
+// false; names carry. `fuzzy`: how far apart faces still count as one
+// (the parts' own tolerance; 0: exact).
+ShapePtr fused(const std::vector<ShapePtr>& parts, const char* what, bool merge = true, double fuzzy = 0.0);
 
 // The shape with its split names numbered (FaceNamer::finish) and checked.
 ShapePtr finished(const Shape& shape, const char* what);

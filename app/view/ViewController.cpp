@@ -405,7 +405,8 @@ ViewController::ViewController(OcctViewer& viewer, CommandRegistry& registry, Do
 
 void ViewController::registerCommands() {
   const auto add = [this](const char* id, const QString& name, const char* icon, std::function<void()> run,
-                          const QStringList& keywords = {}, const QString& tooltip = QString()) {
+                          const QStringList& keywords = {}, const QString& tooltip = QString(),
+                          const char* ribbonGroup = nullptr) {
     CommandDef def;
     def.id = QString::fromLatin1(id);
     def.name = name;
@@ -413,6 +414,12 @@ void ViewController::registerCommands() {
     def.kind = CommandDef::Kind::Action;
     def.mode = CommandDef::Mode::Any;
     def.tab.clear(); // the View menu, the command search and shortcuts
+    if (ribbonGroup != nullptr) {
+      // Also a button of the SOLID tab's group.
+      def.tab = QStringLiteral("SOLID");
+      def.group = QString::fromLatin1(ribbonGroup);
+      def.pinned = true;
+    }
     def.keywords = keywords;
     def.keywords << QStringLiteral("view");
     def.tooltip = tooltip;
@@ -455,11 +462,13 @@ void ViewController::registerCommands() {
         {QStringLiteral("render"), QStringLiteral("lighting"), QStringLiteral("light"), QStringLiteral("studio"),
          QStringLiteral("hdr"), QStringLiteral("exposure"), QStringLiteral("ground"), QStringLiteral("shadow")},
         tr("The rendered view's light, background, ground and exposure, kept in the design"));
-    // The final render to an image file (mitcad#48): the File menu too.
+    // The final render to an image file (mitcad#48): a button of the
+    // ribbon's MAKE group next to 3D Print (mitcad#175), and View > Visual
+    // Style.
     add("file.render_image", tr("Render Image..."), "render-image", [this] { showRenderImage(); },
         {QStringLiteral("render"), QStringLiteral("image"), QStringLiteral("picture"), QStringLiteral("png"),
          QStringLiteral("jpeg"), QStringLiteral("exr"), QStringLiteral("photo"), QStringLiteral("cycles")},
-        tr("Renders the view or a named view to an image file at a chosen size and quality"));
+        tr("Renders the view or a named view to an image file at a chosen size and quality"), "MAKE");
   }
   add("view.grid", tr("Layout Grid"), "grid", [this] { setGridShown(!m_settings.gridShown); },
       {QStringLiteral("grid")}, tr("Shows the grid on the ground or sketch plane"));
@@ -1352,7 +1361,7 @@ void ViewController::showShortcutOverview() {
                                         {tr("Tab"), tr("The next value box of a sketch tool")},
                                         {deleteKeys, tr("Delete the selection")},
                                         {tr("F2"), tr("Rename in the browser")},
-                                        {fileKeys, tr("New, Open, Save, Save As")}}) {
+                                        {fileKeys, tr("New Design, Open, Save, Save As")}}) {
     new QTreeWidgetItem(keys, {key, what});
   }
   // The commands with shortcuts, by tab and group.

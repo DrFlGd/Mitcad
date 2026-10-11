@@ -298,6 +298,16 @@ pub fn resolve_cylinder_surface<K: Kernel>(
 /// A face by its fingerprint: the face with the same surface type through
 /// `point_on_face`, preferring the area that is closest.
 pub fn resolve_face<K: Kernel>(doc: &Document<K>, fp: &Fingerprint) -> Option<(BodyUid, FaceName)> {
+    resolve_face_where(doc, fp, &|_| true)
+}
+
+/// [`resolve_face`] among the bodies `keep` keeps (mitcad#161: those of
+/// the component the decoder found the face in).
+pub fn resolve_face_where<K: Kernel>(
+    doc: &Document<K>,
+    fp: &Fingerprint,
+    keep: &dyn Fn(BodyUid) -> bool,
+) -> Option<(BodyUid, FaceName)> {
     let point = mm3(fp.point_on_face?);
     let area = fp.area.map(|a| a * 100.0);
     let surface = fp
@@ -308,12 +318,15 @@ pub fn resolve_face<K: Kernel>(doc: &Document<K>, fp: &Fingerprint) -> Option<(B
     let kernel = doc.kernel();
     let mut best: Option<(f64, BodyUid, FaceName)> = None;
     for body in doc.bodies() {
+        if !keep(body.uid) {
+            continue;
+        }
         crate::tick();
         let Ok(faces) = kernel.faces(body.shape) else {
             continue;
         };
         for face in faces {
-            if surface.is_some_and(|s| s != face.surface) {
+            if surface.is_some_and(|s| !same_surface_kind(s, &face.surface)) {
                 continue;
             }
             let Some(name) = face.names.first().and_then(|n| n.parse::<FaceName>().ok()) else {
@@ -336,6 +349,268 @@ pub fn resolve_face<K: Kernel>(doc: &Document<K>, fp: &Fingerprint) -> Option<(B
     }
     best.map(|(_, b, f)| (b, f))
 }
+
+/// Whether a face of the replay's surface type `kind` can be a face of
+/// the dump's type `wanted` ([`surface_kind`]): the same type, or any
+/// free-form surface for a free-form one (mitcad#161: the file's spline
+/// or ruled thread flank is the replay's swept surface).
+fn same_surface_kind(wanted: &str, kind: &str) -> bool {
+    const FREE_FORM: [&str; 6] = [
+        "bspline",
+        "bezier",
+        "revolution",
+        "extrusion",
+        "offset",
+        "other",
+    ];
+    wanted == kind || (FREE_FORM.contains(&wanted) && FREE_FORM.contains(&kind))
+}
+
+// Faces and edges the replay splits (mitcad#161).
+
+/// Every face of `body` that a face fingerprint covers: those of its
+/// surface type through `point_on_face` or one of `_f3d.face_points`
+/// (the replay may split a face of the file, a thread's flank one face
+/// per turn), each name once; the first through `point_on_face`.
+pub fn face_pieces<K: Kernel>(doc: &Document<K>, body: BodyUid, fp: &Fingerprint) -> Vec<FaceName> {
+    let Some(shape) = doc.body_shape(body) else {
+        return Vec::new();
+    };
+    let surface = fp
+        .geometry
+        .as_ref()
+        .and_then(|g| g.geometry_type.as_deref())
+        .map(surface_kind);
+    let points: Vec<Vec3> = fp
+        .point_on_face
+        .into_iter()
+        .chain(
+            fp.f3d
+                .as_ref()
+                .and_then(|f| f.face_points.clone())
+                .into_iter()
+                .flatten(),
+        )
+        .map(mm3)
+        .collect();
+    let kernel = doc.kernel();
+    let Ok(faces) = kernel.faces(shape) else {
+        return Vec::new();
+    };
+    // (position of the first point on it, name)
+    let mut found: Vec<(usize, FaceName)> = Vec::new();
+    for face in faces {
+        if surface.is_some_and(|s| !same_surface_kind(s, &face.surface)) {
+            continue;
+        }
+        let Some(name) = face.names.first().and_then(|n| n.parse::<FaceName>().ok()) else {
+            continue;
+        };
+        if found.iter().any(|(_, n)| *n == name) {
+            continue;
+        }
+        crate::tick();
+        let on = points.iter().position(|&p| {
+            kernel
+                .face_point_normal(shape, &name, p)
+                .is_ok_and(|near| geom::distance(near.point, p) <= 1e-3)
+        });
+        if let Some(k) = on {
+            found.push((k, name));
+        }
+    }
+    found.sort_by_key(|(k, _)| *k);
+    let mut pieces: Vec<FaceName> = found.into_iter().map(|(_, n)| n).collect();
+    // The pieces between them that no point falls on: other pieces of the
+    // same face of the replay (its name but for the piece numbers) that go
+    // on smoothly across an edge from one found (a split face's pieces
+    // meet without a crease).
+    let same_face =
+        |a: &FaceName, b: &FaceName| a.feature == b.feature && a.role == b.role && a.key == b.key;
+    let middles = kernel.edge_middles(shape).unwrap_or_default();
+    let mut grew = true;
+    while grew {
+        grew = false;
+        for m in &middles {
+            let Ok(edge) = m.name.parse::<EdgeName>() else {
+                continue;
+            };
+            let [a, b] = edge.faces();
+            let (inner, outer) = match (pieces.contains(a), pieces.contains(b)) {
+                (true, false) => (a, b),
+                (false, true) => (b, a),
+                _ => continue,
+            };
+            if !pieces.iter().any(|p| same_face(p, outer)) {
+                continue;
+            }
+            crate::tick();
+            let normal = |f: &FaceName| kernel.face_point_normal(shape, f, m.point).ok();
+            if let (Some(i), Some(o)) = (normal(inner), normal(outer))
+                && geom::dot(i.normal, o.normal) > SMOOTH
+            {
+                pieces.push(outer.clone());
+                grew = true;
+            }
+        }
+    }
+    pieces
+}
+
+/// An edge of the file that the replay splits into several (a thread's
+/// helical edge, one edge per turn in the replay), by its fingerprint: the
+/// connected edges of one body that `keep` keeps from `start_point` to
+/// `end_point`, each going on smoothly from the one before (the file's
+/// edge is one curve), whose lengths add up to `length` and whose middle
+/// (half way along them) is `mid_point`, in order; within 1e-3 mm (the
+/// length within 1e-3 of it). None for a closed edge, or where no chain or
+/// several fit.
+pub fn resolve_edge_chain<K: Kernel>(
+    doc: &Document<K>,
+    fp: &Fingerprint,
+    keep: &dyn Fn(BodyUid) -> bool,
+) -> Option<(BodyUid, Vec<EdgeName>)> {
+    let (start, end) = (mm3(fp.start_point.flatten()?), mm3(fp.end_point.flatten()?));
+    let (mid, length) = (mm3(fp.mid_point?), mm(fp.length?));
+    let tolerance = 1e-3 * length.max(1.0);
+    let near = |a: Vec3, b: Vec3| geom::distance(a, b) <= 1e-3;
+    let kernel = doc.kernel();
+    let mut found: Vec<(BodyUid, Vec<EdgeName>)> = Vec::new();
+    for body in doc.bodies() {
+        if !keep(body.uid) {
+            continue;
+        }
+        crate::tick();
+        let Ok(curves) = kernel.edge_geometries(body.shape) else {
+            continue;
+        };
+        let lengths: std::collections::HashMap<String, f64> = kernel
+            .edge_middles(body.shape)
+            .unwrap_or_default()
+            .into_iter()
+            .map(|m| (m.name, m.length))
+            .collect();
+        // Each open edge: its name, ends, length and the unit tangents at
+        // its ends along it.
+        let edges: Vec<(EdgeName, [Vec3; 2], f64, [Vec3; 2])> = curves
+            .into_iter()
+            .filter_map(|(name, curve)| {
+                let name = name?;
+                let ends = match curve {
+                    mitcad_model::datum::CurveGeometry::Line { start, end }
+                    | mitcad_model::datum::CurveGeometry::Circle { start, end, .. }
+                    | mitcad_model::datum::CurveGeometry::Other { start, end, .. } => [start, end],
+                };
+                let length = *lengths.get(&name)?;
+                if near(ends[0], ends[1]) {
+                    return None;
+                }
+                let name: EdgeName = name.parse().ok()?;
+                let one = std::slice::from_ref(&name);
+                let at = |f: f64| {
+                    kernel.path_point(
+                        body.shape,
+                        one,
+                        mitcad_model::datum::PathParameter::Fraction(f),
+                    )
+                };
+                let (a, b) = (at(0.0).ok()?, at(1.0).ok()?);
+                // The path runs from the edge's start where it starts there.
+                let ([a, b], ends) = if near(a.point, ends[0]) {
+                    ([a.tangent, b.tangent], ends)
+                } else {
+                    ([b.tangent, a.tangent], [ends[1], ends[0]])
+                };
+                Some((name, ends, length, [a, b]))
+            })
+            .collect();
+        // Depth first from the edges at `start`, along edges that go on
+        // smoothly end to end, as long as the lengths stay within `length`.
+        // (chain, the free end, the tangent going on there, the length)
+        let going = |i: usize, k: usize| -> (Vec3, Vec3) {
+            let (_, ends, _, tangents) = &edges[i];
+            if k == 0 {
+                (ends[1], tangents[1])
+            } else {
+                (ends[0], geom::scale(tangents[0], -1.0))
+            }
+        };
+        let coming = |i: usize, k: usize| -> Vec3 {
+            let tangents = &edges[i].3;
+            if k == 0 {
+                tangents[0]
+            } else {
+                geom::scale(tangents[1], -1.0)
+            }
+        };
+        let mut stack: Vec<(Vec<usize>, Vec3, Vec3, f64)> = edges
+            .iter()
+            .enumerate()
+            .filter_map(|(i, (_, ends, l, _))| {
+                let k = (0..2).find(|&k| near(ends[k], start))?;
+                let (at, tangent) = going(i, k);
+                Some((vec![i], at, tangent, *l))
+            })
+            .collect();
+        let mut steps = 0;
+        while let Some((chain, at, tangent, sum)) = stack.pop() {
+            steps += 1;
+            if steps > CHAIN_STEPS {
+                break;
+            }
+            if sum > length + tolerance {
+                continue;
+            }
+            if chain.len() > 1 && near(at, end) && (sum - length).abs() <= tolerance {
+                let names: Vec<EdgeName> = chain.iter().map(|&i| edges[i].0.clone()).collect();
+                let middle = kernel.path_point(
+                    body.shape,
+                    &names,
+                    mitcad_model::datum::PathParameter::Fraction(0.5),
+                );
+                if crate::tracing() {
+                    eprintln!(
+                        "import: edge chain of {} edges in {}, middle {:?}",
+                        names.len(),
+                        body.uid,
+                        middle.as_ref().map(|m| m.point)
+                    );
+                }
+                if middle.is_ok_and(|m| near(m.point, mid)) {
+                    found.push((body.uid, names));
+                }
+                continue;
+            }
+            for (i, (_, ends, l, _)) in edges.iter().enumerate() {
+                if chain.contains(&i) {
+                    continue;
+                }
+                let Some(k) = (0..2).find(|&k| near(ends[k], at)) else {
+                    continue;
+                };
+                if geom::dot(coming(i, k), tangent) < SMOOTH {
+                    continue;
+                }
+                let mut next = chain.clone();
+                next.push(i);
+                let (at, tangent) = going(i, k);
+                stack.push((next, at, tangent, sum + l));
+            }
+        }
+    }
+    match found.len() {
+        1 => found.pop(),
+        _ => None,
+    }
+}
+
+/// How many partial chains [`resolve_edge_chain`] looks at, at most, in a
+/// body.
+const CHAIN_STEPS: usize = 20_000;
+
+/// The cosine of the angle between the tangents of two edges of a chain
+/// at the vertex they share, at least (0.1 degrees).
+const SMOOTH: f64 = 0.999_998_5;
 
 /// Mitcad's name of a surface type of the dump's geometry.
 fn surface_kind(kind: &str) -> &'static str {
@@ -372,11 +647,23 @@ fn edge_middles<K: Kernel>(kernel: &K, shape: &K::Shape) -> Vec<(EdgeName, Vec3,
 /// An edge by its fingerprint: the edge through `mid_point` with the same
 /// length.
 pub fn resolve_edge<K: Kernel>(doc: &Document<K>, fp: &Fingerprint) -> Option<(BodyUid, EdgeName)> {
+    resolve_edge_where(doc, fp, &|_| true)
+}
+
+/// [`resolve_edge`] among the bodies `keep` keeps (mitcad#161).
+pub fn resolve_edge_where<K: Kernel>(
+    doc: &Document<K>,
+    fp: &Fingerprint,
+    keep: &dyn Fn(BodyUid) -> bool,
+) -> Option<(BodyUid, EdgeName)> {
     let mid = mm3(fp.mid_point?);
     let length = fp.length.map(mm);
     let kernel = doc.kernel();
     let mut best: Option<(f64, BodyUid, EdgeName)> = None;
     for body in doc.bodies() {
+        if !keep(body.uid) {
+            continue;
+        }
         crate::tick();
         for (name, at, len) in edge_midpoints(kernel, body.shape) {
             let d = geom::distance(at, mid);

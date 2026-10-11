@@ -9,6 +9,9 @@
 
 use mitcad_f3d::design::ir::{PipeDetail, Reference, SweepDetail, TimelineItem};
 use mitcad_model::{EdgeName, FeatureUid};
+// Inputs on other components' bodies (mitcad#161).
+use mitcad_f3d::design::ir::Fingerprint;
+use mitcad_model::{BodyUid, ComponentUid};
 use serde_json::{Map, Value, json};
 
 use crate::features::profiles_of;
@@ -147,13 +150,14 @@ impl<K: crate::ImportKernel> Importer<'_, K> {
                     curves.push(curve.clone());
                 }
                 Some(Reference::Edge(fp)) => {
-                    let (b, edge) = refs::resolve_edge(self.doc, &fp)
+                    let (b, found) = self
+                        .edge_input(&fp)
                         .ok_or_else(|| format!("an edge of its {what} was not found"))?;
                     let b = b.to_string();
                     if *body.get_or_insert_with(|| b.clone()) != b {
                         return Err(format!("its {what} runs over several bodies"));
                     }
-                    edges.push(edge.to_string());
+                    edges.extend(found.iter().map(ToString::to_string));
                 }
                 _ => return Err(format!("its {what} is not sketch curves or edges")),
             }
@@ -232,14 +236,179 @@ impl<K: crate::ImportKernel> Importer<'_, K> {
             if fp.point_on_face.is_none() {
                 return Err("its guide surfaces' geometry was not decoded".to_owned());
             }
-            let (body, face) = refs::resolve_face(self.doc, &fp)
-                .ok_or_else(|| "a guide surface was not found".to_owned())?;
-            let face = json!({"body": body.to_string(), "face": face.to_string()});
-            if !out.contains(&face) {
-                out.push(face);
+            let keep = self.input_bodies(&fp);
+            let Some((body, face)) = refs::resolve_face_where(self.doc, &fp, &keep) else {
+                self.trace_nearest_faces(&fp, &keep);
+                return Err("a guide surface was not found".to_owned());
+            };
+            // Every piece of it where the replay splits it (mitcad#161).
+            let mut pieces = refs::face_pieces(self.doc, body, &fp);
+            if !pieces.contains(&face) {
+                pieces.insert(0, face);
+            }
+            for face in pieces {
+                let face = json!({"body": body.to_string(), "face": face.to_string()});
+                if !out.contains(&face) {
+                    out.push(face);
+                }
             }
         }
         Ok(Value::Array(out))
+    }
+
+    // Inputs on other components' bodies (mitcad#161).
+
+    /// The bodies a fingerprint's entity is looked for among: those of the
+    /// component the decoder found it in when it gives one
+    /// (`_f3d.component`, another component's history), else all.
+    fn input_bodies(&self, fp: &Fingerprint) -> impl Fn(BodyUid) -> bool + '_ {
+        let component = fp
+            .f3d
+            .as_ref()
+            .and_then(|f| f.component)
+            .map(|c| self.components.of_object(c));
+        move |b| match component {
+            Some(c) => c.is_some() && self.doc.body_component(b) == c,
+            None => true,
+        }
+    }
+
+    /// Traces how far the faces of the bodies `keep` keeps are from a face
+    /// fingerprint's point, when the face is not found (`MITCAD_IMPORT_TRACE`).
+    fn trace_nearest_faces(&self, fp: &Fingerprint, keep: &dyn Fn(BodyUid) -> bool) {
+        if !crate::tracing() {
+            return;
+        }
+        let points = fp.point_on_face.into_iter().chain(
+            fp.f3d
+                .as_ref()
+                .and_then(|f| f.face_points.clone())
+                .into_iter()
+                .flatten(),
+        );
+        let kernel = self.doc.kernel();
+        for point in points.map(crate::geom::mm3) {
+            let mut nearest: Option<(f64, String)> = None;
+            for body in self.doc.bodies().iter().filter(|b| keep(b.uid)) {
+                for face in kernel.faces(body.shape).unwrap_or_default() {
+                    let Some(name) = face.names.first().and_then(|n| n.parse().ok()) else {
+                        continue;
+                    };
+                    if let Ok(near) = kernel.face_point_normal(body.shape, &name, point) {
+                        let d = crate::geom::distance(near.point, point);
+                        if nearest.as_ref().is_none_or(|(n, _)| d < *n) {
+                            nearest = Some((d, format!("{} {name} ({})", body.uid, face.surface)));
+                        }
+                    }
+                }
+            }
+            if let Some((d, face)) = nearest {
+                eprintln!(
+                    "import: [{:.2}] guide surface: {face} is {d:.6} mm from {point:?}",
+                    crate::trace_clock(),
+                );
+            }
+        }
+    }
+
+    /// An edge input: the edge its fingerprint names, or the edges the
+    /// replay split it into ([`refs::resolve_edge_chain`]), in order.
+    fn edge_input(&self, fp: &Fingerprint) -> Option<(BodyUid, Vec<EdgeName>)> {
+        let keep = self.input_bodies(fp);
+        if let Some((body, edge)) = refs::resolve_edge_where(self.doc, fp, &keep) {
+            return Some((body, vec![edge]));
+        }
+        let chain = refs::resolve_edge_chain(self.doc, fp, &keep);
+        if chain.is_none() && crate::tracing() {
+            self.trace_edges_near(fp, &keep);
+        }
+        chain
+    }
+
+    /// Traces the edges of the bodies `keep` keeps with an end near an edge
+    /// fingerprint's ends, when the edge is not found (`MITCAD_IMPORT_TRACE`).
+    fn trace_edges_near(&self, fp: &Fingerprint, keep: &dyn Fn(BodyUid) -> bool) {
+        let ends: Vec<[f64; 3]> = [fp.start_point.flatten(), fp.end_point.flatten()]
+            .into_iter()
+            .flatten()
+            .map(crate::geom::mm3)
+            .collect();
+        eprintln!(
+            "import: edge input: ends {ends:?}, middle {:?}, length {:?}",
+            fp.mid_point.map(crate::geom::mm3),
+            fp.length.map(crate::geom::mm)
+        );
+        let kernel = self.doc.kernel();
+        for body in self.doc.bodies().iter().filter(|b| keep(b.uid)) {
+            let middles = kernel.edge_middles(body.shape).unwrap_or_default();
+            for (name, curve) in kernel.edge_geometries(body.shape).unwrap_or_default() {
+                let (a, b) = match &curve {
+                    mitcad_model::datum::CurveGeometry::Line { start, end }
+                    | mitcad_model::datum::CurveGeometry::Circle { start, end, .. }
+                    | mitcad_model::datum::CurveGeometry::Other { start, end, .. } => {
+                        (*start, *end)
+                    }
+                };
+                let gap = ends
+                    .iter()
+                    .flat_map(|e| [crate::geom::distance(*e, a), crate::geom::distance(*e, b)])
+                    .fold(f64::INFINITY, f64::min);
+                if gap < 0.5 {
+                    let length = name
+                        .as_ref()
+                        .and_then(|n| middles.iter().find(|m| &m.name == n))
+                        .map(|m| m.length);
+                    eprintln!(
+                        "import: edge input: {} {name:?} ({}) {a:?} -> {b:?}, length {length:?}, {gap:.6} mm from an end",
+                        body.uid,
+                        curve.kind()
+                    );
+                }
+            }
+        }
+    }
+
+    /// The links of the bodies a sweep's path and guide surfaces are on
+    /// that belong to another component than `own` (the profile sketch's,
+    /// where the sweep goes): the occurrence paths to the body's component
+    /// and to `own`, each placed once, as a combine's `tool_links`.
+    fn body_links(&self, own: ComponentUid, def: &Value) -> Result<Map<String, Value>, String> {
+        let assembly = self.doc.assembly();
+        let only_path = |c| match assembly.paths_to(c).as_slice() {
+            [path] => Ok(path
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+                .join("/")),
+            _ => Err(format!(
+                "its path or guide surfaces are on another component, and {} is not placed once",
+                assembly.name(c)
+            )),
+        };
+        let bodies = def["path"]["body"].as_str().into_iter().chain(
+            def["guide_surfaces"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(|f| f["body"].as_str()),
+        );
+        let mut links = Map::new();
+        for body in bodies {
+            let Some(c) = body
+                .parse::<BodyUid>()
+                .ok()
+                .and_then(|uid| self.doc.body_component(uid))
+            else {
+                continue;
+            };
+            if c != own && !links.contains_key(body) {
+                links.insert(
+                    body.to_owned(),
+                    json!({"source": only_path(c)?, "target": only_path(own)?}),
+                );
+            }
+        }
+        Ok(links)
     }
 
     /// A unitless value (a fraction, a weight): the imported parameter's
@@ -351,6 +520,18 @@ impl<K: crate::ImportKernel> Importer<'_, K> {
             }
             if !is_zero(&d.taper_angle) {
                 base["taper_angle"] = self.value(&d.taper_angle).ok_or("no taper angle")?;
+            }
+        }
+        // A path or guide surfaces on another component's body (mitcad#161):
+        // the sweep goes where its profile is and links the body.
+        if let Some(own) = self
+            .doc
+            .feature(self.sketches[&sketch].uid)
+            .map(|f| f.component)
+        {
+            let links = self.body_links(own, &base)?;
+            if !links.is_empty() {
+                base["body_links"] = Value::Object(links);
             }
         }
         // The stream decoder gives neither the direction nor the orientation

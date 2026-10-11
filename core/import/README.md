@@ -41,9 +41,11 @@ Entry points:
 | `sweeps.rs` | Sweeps, pipes and lofts (*Sweeps, pipes and lofts* below). |
 | `components.rs` | Components and occurrences. |
 | `joints.rs` | Joints, as-built joints, joint origins, rigid groups and ground items (*Joints* below). |
+| `relationships.rs` | Assembly relationships as constraint sets, tangent relationships as tangent rows (*Assembly relationships* below). |
 | `refs.rs` | Fingerprints resolved against the replay (bodies by volume and name, or by points on their edges, surface bodies by name or area, faces through `point_on_face`, edges by midpoint and length), planar faces, the edges a fillet consumed, the faces a replace face replaced, the final comparison. |
 | `history.rs` | The bodies stored in the file (`StoredGeometry`: the ASM history states and the stored design) and matching of body sets (volume, area, centre of mass, face count). |
 | `report.rs` | The import report (JSON and text). |
+| `timeline_notes.rs` | The report's outcomes on the timeline (mitcad#170): import notes on fallbacks' base features, partial items and placeholders of items suppressed or failed in the file (*The outcomes on the timeline* below). |
 
 ### The history as the reference
 
@@ -309,6 +311,37 @@ just before the item (its `_f3d.result_no`) and finds them there
   the fingerprint, and the import finds the face through the point.
 - Moves also get their transform, splits an origin or construction plane
   as the tool.
+- **Inputs on other components' bodies** (mitcad#161): an extrusion's
+  extent or profile face, a sweep's, pipe's or loft's path, rail and
+  guide surfaces and a pattern's, mirror's or split's inputs that are in
+  no state of the item's own history are looked for in the other
+  components' histories at the item's point of the timeline: the state
+  after the last item of that history's component before it, else up to
+  24 states earlier. A history blob belongs to the component whose items
+  name most of its operations (where that blob is also the one whose
+  operations the component's items name most). Result numbers follow
+  the timeline only within a component, and the names' operation numbers
+  need not be states of the history they are in (a component's history
+  may start later in the numbering than its names). Such an input gets
+  `_f3d.component` (the component's object id): its geometry is in that
+  component's coordinates, and the import looks for it among that
+  component's bodies. Fillets', chamfers', threads' and shells' inputs
+  are on the bodies they change and are not looked for elsewhere. Backup
+  corpus: 21 items of 17 files get such inputs.
+- **Faces of any surface type** (mitcad#161): besides planes and
+  cylinders, a face gets its surface type (`Cone`, `Sphere`, `Torus`,
+  else `NurbsSurface`, with the analytic data) and a point inside it: on
+  a free-form surface (a B-spline, a thread flank's ruled surface) the
+  point of its parameters farthest inside the face's edges taken into
+  them, on one of the rulings a ruled surface was built from, where it is
+  exact; on a cone, sphere or torus half way across the face as for a
+  cylinder. A free-form face also gets `_f3d.face_points`, points spread
+  over it. The import takes any free-form face of the replay for a
+  free-form face of the file.
+- **Helical edges** (mitcad#161): an edge on a helix the decoder knows by
+  samples gets its middle, ends, direction and length from the cubic
+  through the samples (the straight segments between them were up to
+  0.1 mm off a thread's helix and 0.15 % short).
 - Combines, splits, patterns, mirrors and holes (mitcad#67): their
   selections (list inputs of bodies, faces, edges, features and planes),
   as SCHEMA.md §5.3 lists; the import builds them first and then, where
@@ -428,7 +461,16 @@ The translation (`ops.rs`, `commands.md` *From the dump IR*):
   classifying the points against every spline face of a stored thread
   took about 5 s a thread, the crossings take milliseconds (mitcad#68). The
   reference bolt and a corpus design's nut, both on axes along +Z, start
-  where Mitcad's angle 0 does.
+  where Mitcad's angle 0 does. The groove's middle at each angle is the
+  middle of the stretch between the crossings where the segment leaves
+  and enters the material, and the angle is kept to 1e-4° (mitcad#161:
+  the 48 samples a pitch and tenths of a degree placed a thread's flanks
+  up to 0.015 mm off, too far for a sweep guided by the flank to find
+  it; now within a micrometre). Region probes (*What the history
+  settles*) classify their points the same way, by where a segment from
+  each point along the sketch's normal out of the body crosses it (they
+  took a minute for a sketch of 80 regions beside a stored thread of 720
+  spline faces).
   Whitworth and NPT threads fall back (Mitcad models only 60° threads).
   A tapped hole with a modelled thread gets a modelled `thread` on its
   walls (angle 0: the walls do not exist before the hole).
@@ -461,13 +503,31 @@ The decoder reads their inputs (SCHEMA.md, *SweepFeature*, *PipeFeature*,
 Not decoded: a sweep's orientation, direction and rail scaling, a pipe's
 section type and whether it is hollow, closed lofts and participant
 bodies. Edges of other components (through their occurrences) are
-recognised and make the item fall back. Guide surfaces come as faces
-named by their recipes only; `sweeps.rs` translates them into
-`guide_surfaces` (mitcad#157) when each has its geometry (a point on it,
-as external dumps give faces) and is found among the bodies, so the
-stream decoder's guide-surface sweeps still fall back ("its guide
-surfaces' geometry was not decoded"). A guide rail given beside guide
+recognised and make the item fall back. Guide surfaces are found in the
+history as other face inputs are (mitcad#161, *Named inputs*): a point
+inside each, and more points spread over a free-form one; `sweeps.rs`
+translates them into `guide_surfaces` (mitcad#157): the face through the
+point among the bodies of the component the decoder found it in, and
+every piece of it where the replay splits it (the faces through the
+other points, and pieces of the same face that go on smoothly across an
+edge). A path or guide surface on another component's body (the file's
+assembly context: a nut's thread swept along the mating part's flank)
+links that body (`body_links`, as a combine's `tool_links`), and the
+sweep goes into its profile's component. A path edge the replay splits
+(a thread's helix, one edge per turn) is found as the chain of edges
+that go on smoothly from its start to its end with its length and
+middle (`refs::resolve_edge_chain`). A guide rail given beside guide
 surfaces is not used.
+
+The corpus case (backup f262, item 9: a profile across a nut's thread
+swept along the crest of the mating part's thread, guided by its flank)
+now gets its inputs, links and definitions, and still falls back: the
+profile is taller than the thread's pitch, so the sweep passes over
+itself six times, and the geometry does not build it (the pipe shell
+makes a self-intersecting solid; swept in pieces, the pieces' union
+fails or loses pieces on the real thread, `sweep:
+NCollection_IndexedDataMap::FindFromKey`, invalid wires). The
+definitions take the item's time (about 50 s of the import).
 
 `sweeps.rs` translates them with what the history settles: a profile's
 region (a sweep's sets as for extrusions; a loft's one region per
@@ -498,7 +558,9 @@ candidates against the next state:
   (linked), and that region is extruded (outwards first; inwards first for
   a cut; on the side of the state's new body). These are tried before the
   last sketch before the item. A join that touches no body is also tried
-  as a new body when the state has one more.
+  as a new body when the state has one more. The faces the decoder reads
+  in the profile (*Parts of items, face profiles and sketch heights*
+  below) come before these guesses.
 - **Profiles.** The decoder reads the loops of the profiles an extrusion
   or revolution selected (`_f3d_profile_loops`, mitcad#96: the file's
   curve ids, which piece of each curve, outer loop or hole, the pieces a
@@ -781,6 +843,37 @@ items or other components can precede items the timeline puts earlier)
 continues on those bodies: its first definition that leaves them unchanged
 (a join of material they already hold) is taken, verified by them. Without
 a history the same holds after the fallback to the stored design.
+
+### The outcomes on the timeline
+
+The report's outcomes stay with the features (mitcad#170, the model's
+import notes, [commands.md](../model/src/api/commands.md#the-imports-outcomes-on-the-timeline)),
+made from the report itself at the end of the import, so that the
+timeline and the report say the same:
+
+- Each fallback records the base features it made (one per component that
+  changed, `Importer::note_bases`) and the items they stand in for
+  (`Importer::stands_in`: the item that settled it and the waiting items
+  it took). Their note is `Stands in for <item> (<the item's note>)` for
+  each item, the waiting items' `; in the fallback of <base>` left out.
+  A fallback item whose base feature no call site recorded is found by
+  its `features`. Base features whose uid a later undone try reused are
+  left alone (only base features get these notes).
+- A base feature made for another reason (the bodies brought to a state
+  exactly, the stored bodies at the end) gets the report's warning about
+  it (`Importer::base_warning`, which writes both).
+- A `partial` item's features get `Partly imported: <its note>`.
+- An item skipped as suppressed in the file, as one the file keeps no
+  result for, or as failed in the file gets a suppressed `placeholder`
+  at its place in its component (`Importer::placeholder`), its note the
+  item's note; items of no geometry (`Class::NoGeometry`) get none. The
+  placeholder is not in the item's `features` (it builds nothing), so the
+  report and the coverage counts are as before.
+
+The FreeCAD import does the same from its report
+(`timeline_notes::freecad_notes`: fallbacks with their notes, partial
+sketches and features) and adds a placeholder for a feature suppressed in
+FreeCAD (`suppressed in FreeCAD; not replayed: ...`).
 
 ### Time limit, stop and hangs
 
@@ -1275,10 +1368,12 @@ uses of other components comes along:
   but one cuts keeping their tools); all now give their states.
 
 These need each component placed once (one occurrence on the way from the
-root); else the feature falls back. Other features that work on bodies of
-two components at once fall back too: the base feature takes the item's
-history state in each component, and later items continue
-parametrically.
+root); else the feature falls back. A feature that changes the bodies of
+two components at once is one feature per component in the file (*Parts
+of items, face profiles and sketch heights* below), each replayed in its
+own component. Other features that work on bodies of two components at
+once fall back: the base feature takes the item's history state in each
+component, and later items continue parametrically.
 
 **Occurrence placements.** The transform the file stores for an
 occurrence is where the item that made it put it; joints, captured
@@ -1300,6 +1395,71 @@ occurrence elsewhere at an item's point in the timeline than the
 placements say, the copy does not follow it and the item falls back.
 Joints come in only where they hold where the file places the
 occurrences (*Joints*); occurrence moves are not replayed (*Limits*).
+
+### Parts of items, face profiles and sketch heights
+
+Three readings of mitcad#169 (a design whose base body is moved into a
+component of its own after a lid's first body was extruded from a sketch
+on it):
+
+- **Parts of items in other components.** A feature that changes the
+  bodies of several components (screw holes cut through a lid and the
+  base under it) is one timeline item, owned by one component, and one
+  feature more of the item's class in the feature list of each other
+  component it changes, with its own inputs (the same profile, that
+  component's bodies), its own item tail and its own operation in that
+  component's history, which no timeline item names. The design's table
+  of item parts (class `12D00AC0`, `classes::ITEM_PARTS`) lists each such
+  item with its features. The decoder gives every part with a result as
+  an item of its own right after its item, numbered after the timeline's
+  items, named after the item, with `_f3d.part_of` (the item's index) and
+  its own `component` and `result_no`; the import replays it in its
+  component like any item, at its item's point of the timeline
+  (`Captures::timeline_at`: placements, stops). The item itself, when its
+  own component's bodies did not change (result number -1), is skipped
+  with a note naming its parts. Before, the parts' operations were states
+  no item names, which a base feature brought the replay through before
+  the next item of that component. Corpora: every off-timeline extrusion
+  with a result of its own is such a part (`mitcad-f3d-inspect
+  off-timeline`): `MITCAD_F3D_CORPUS` 5 extrusions in 2 designs, the
+  backup corpus 69 in 11 designs, of which 12 (7 designs) are parts of
+  extrusions and given as items, and 57 (4 printed-circuit designs) parts
+  of a PCB item, which has no translation; besides, a fillet, a chamfer
+  and a revolution are given as parts too, and the threads of holes
+  (parts of another class) are not.
+- **Faces in an extrusion's profile.** The profile slot (role 65) can
+  select planar faces of bodies besides or instead of sketch profiles; the
+  decoder gives each as a face reference among the extrusion's
+  `profile`s (it takes one of the selected profile entries), found in the
+  history by its names like the face of an extent. Faces together with
+  sketch profiles are projected into the extrusion's sketch (linked; a
+  face of another component through the occurrence placing it once,
+  which needs the face found in that component's history, mitcad#161),
+  and the sketch's regions on them join the selected regions; only into a
+  sketch no other feature uses yet, since the projections split its
+  regions. Faces alone go into one sketch on the first face, before the
+  faces guessed by their areas. Corpora: `MITCAD_F3D_CORPUS` 28
+  extrusions of faces only and 3 with sketch profiles too, the backup
+  corpus 87 and 10.
+- **Sketches lying off their frame.** A sketch on a face can keep its
+  points at the face's height in its own coordinates while its stored
+  frame lies in a parallel plane through the origin (in the design
+  above, 1.6 mm below the base's top face, so the lid's first body came
+  out 1.6 mm too low). Where more than half of a sketch's points share
+  one height off the frame, the frame moves there (`plane_height`). Four
+  files of the corpora have such a sketch, all the same design's.
+
+Coverage, the 56 files of both corpora these touch, before and after
+(`--time-limit 300`; one large design left out): parametric 2734 → 2777,
+fallbacks 647 → 626, history matches 1642 → 1685, base features that
+bring the bodies to a state 89 → 81, no item that came in parametric
+before falls back. One part falls back where its operation was a state
+no item named before ("does not cut into any participant body"). The
+design above: its two parts parametric and the base feature before the
+base's second fillet gone; the lid's first body still falls back until
+the face its profile selects, on the root's body, is found in another
+component's history (mitcad#161); with that lookup it comes in
+parametric (no fallback left, 66 items parametric, 38 history matches).
 
 ### Joints
 
@@ -1448,6 +1608,93 @@ that do not 1 to 3 ms (2.3 to 3.0 s each before: each definition tried
 added, recomputed and taken back, and every face and edge found by its
 name).
 
+### Assembly relationships
+
+`relationships.rs` (mitcad#155) brings the file's assembly relationships
+in as Mitcad's constraint sets (`commands.md`, *Assembly constraints*):
+what the decoder reads of them (`core/f3d/src/design/build/relationships.rs`,
+SCHEMA.md §5.3 `GeometricRelationship`, `TangentRelationship`).
+
+**What the file stores** *(read from the corpora's relationship items: the
+occurrence placements the file stores after each item satisfy the decoded
+rows)*. A relationship item holds one or more constraints, each a row: the
+two sides' occurrences (by their placements), the faces or edges picked
+on each side, the points picked on them, an `Offset` or `Angle`
+parameter, and a constraint whose data gives the kind of each picked
+entity (a point, an axis, a plane or a circle) with its frame in the
+component the side's path ends in, and a sense (the frames' z axes the
+same way, opposed, or either). Older files keep the same data in the
+constraint itself (its class versions 3 to 6) with type codes one
+higher. Where the file places the occurrences, two planes hold `(o2 −
+o1)·z1 = offset` (side two's plane that far along side one's normal), a
+point or an axis on a plane `(o1 − o2)·z2 = offset`, two axes are
+collinear, two circles share their axis with their planes `offset` apart,
+a centring's two pairs of faces share their middle plane, and an angle's
+axes are at its angle. Of the 282 rows of the corpora (75 in the 37 items
+of `MITCAD_F3D_CORPUS`, 207 in 109 items of a second corpus, a backup of
+designs), 183 have both sides in the occurrence tree: 125 hold where the
+file places the occurrences right after their item, 24 after a later
+item that moved them, 34 never (in four large assemblies whose parts
+later items moved or replaced). The other 99 have a side inside a
+component of another document or on an occurrence that is not in the
+occurrence tree. A frame stored as none is the identity (a circle
+centred on its component's origin holds so).
+
+**Translation.** One `constraint_set` per item in its component, a row per
+constraint (side two `a`, side one `b`; a point or an axis on a plane is
+`a`, the plane `b`): two planes or a plane and a circle `align`, a point
+or an axis on a plane `align` with the offset above it, two axes (or an
+axis and a circle) `align` (concentric), two circles `insert`, a
+centring `center` (`a`, `a2` side one's faces, `b`, `b2` side two's), an
+angle `angle`. Each frame goes on geometry of the side's component at the
+item's point of the timeline that gives its plane, axis, circle or point
+(planar faces through its origin across z, cylindrical and conical faces
+about z, circular edges centred on it, spheres centred on it; the one
+nearest the point picked on it first), else on fixed geometry with the
+frame (the item `partial`). A side on a component of another document
+(an empty component here) is fixed geometry of it with the file's frame;
+a circle there has no edge to go on and the row is left out, as is a
+side inside a component of another document. `flip` and the sign of the
+offset come from the references as Mitcad resolves them where the file
+places the occurrences (the `constraint_row` query's measures): planes,
+circles and axes must be parallel there (within 1e-5 rad) and the offset
+the parameter or its negative (within 1e-4 mm); the offset stays the
+file's parameter.
+
+**Checked when added.** The set is added; every occurrence must stay
+where it was, where the file places it after the item, or where it ends
+(within 1e-4 mm and 1e-5 in rotation: the file's placements and frames
+agree to a few 1e-5 mm), else the rows are added one by one and those
+that move an occurrence, or that the joint solver cannot hold together
+with the earlier ones, are left out with the reason. The report counts
+the sets, rows, rows translated, their sides on fixed geometry and on
+components of other documents, the tangent relationships and the rows
+left out by reason (`relationships`).
+
+**Tangent relationships** (the decoder's `TangentRelationship`, a contact
+between two bodies). A `tangent` row between the faces of the sides'
+components that the file's points lie on, where they are planar,
+cylindrical or spherical (Mitcad's tangent rows take those), `flip`
+tried for a contact inside; else left out with the reason. The three of
+the corpora pick a plane and a cylinder: in one design they touch where
+the file places the occurrences right after the item (gap 0), in the
+other (two versions) they overlap by 0.36 mm there; later items move the
+parts apart (31 mm and 6.6 mm at the end), so none holds where the file
+places them at the end and all three are left out with those gaps in
+the note.
+
+In the corpora (every relationship file, `--time-limit 60`):
+
+| | Items | Rows | As rows | Left out: inside another document | does not hold at the end placements | occurrence not in the tree | circle on another document | the solver cannot hold with the others |
+|---|---|---|---|---|---|---|---|---|
+| `MITCAD_F3D_CORPUS` | 37 relationships (15 sets: 11 parametric, 4 partial), 1 tangent | 75 | 24 (29 sides on components of other documents) | 30 | 21 | 0 | 0 | 0 |
+| Backup corpus | 109 relationships (53 sets: 35 parametric, 18 partial), 2 tangents | 207 | 74 (100 sides on components of other documents, 2 on fixed geometry) | 52 | 51 | 17 | 5 | 8 |
+
+Before mitcad#155 every relationship item was skipped. The rows the
+solver cannot hold with the others fix one rotation twice where the
+file's frames differ by a few 1e-7 rad (the solver's tolerance is 1e-10
+of the size).
+
 ### Items without a translation
 
 The decoder names timeline items whose own data it does not read by
@@ -1462,9 +1709,10 @@ their class (`core/f3d/src/design/classes.rs`, `ITEM_TYPES` and
   (`RectangularOccurrencePattern`, `CircularOccurrencePattern`: their
   copies are occurrences of the tree, each placed by its stored transform;
   Mitcad has no pattern of occurrences, so they do not follow the
-  pattern's quantities and distances), assembly relationships
-  (`GeometricRelationship`, `AssemblyRelationship`, motion links, contact
-  sets), assembly contexts (`Context`),
+  pattern's quantities and distances), motion links and contact sets
+  (assembly relationships and tangent relationships come in as
+  constraint sets: *Assembly relationships*), assembly contexts
+  (`Context`),
   canvases, timeline groups (`Group`, named by their own name; their items
   follow them) and mesh bodies (`MeshFeature`; meshes are left out).
 - **Changes bodies, not translated**: the history states stand in for
@@ -2308,6 +2556,41 @@ items before it come in differently now that their sketches are
 complete. It is left out of the backup numbers above; it is a kernel
 crash, not decoding (open).
 
+#### Shells after the descriptions (mitcad#158)
+
+With the removed faces read (above), the shells whose body was not found
+came in as follows:
+
+- the labelled example (a box hollowed from its top face, sharp, inside,
+  wall 200 mm) is parametric and matches its history state;
+- a removed face with a hole round its middle (a planar ring) was not
+  found: the decoder gave the mean of the face's edge points as its
+  `point_on_face`, which lies in the hole. A planar face's point is now
+  the mean only where that lies in the face, else the point of the face
+  farthest from its edges along lines across it
+  (`mitcad_f3d::names::point_inside`);
+- stored bodies (after a fallback) with only C0 continuous B-spline
+  faces: the kernel's offset refused them; the shell now splits such
+  faces at their creases first (`geometry/src/faceops.cpp`,
+  `split_at_creases`);
+- the rest fail in the kernel's offset, which cannot drop a face that
+  vanishes at the wall's thickness: a 0.17 mm chamfer strip left between
+  a 3 mm rounding and the bottom under a 0.8 mm wall (two designs), and a
+  convex rounding of about 0.45 mm under a 2 mm wall (one design, stored
+  in both corpora). The same shells come out at thinner walls (0.3 mm and
+  0.4 mm). On two designs whose bodies before the shell are stored ones
+  (after fallbacks), the offset raises an exception extending an edge of
+  the stored B-spline roundings, or gives a shape whose edges fail the
+  check (that design's state before the shell cannot be rebuilt, so it
+  could not be confirmed either way). The shell's error now says which
+  of these it met.
+
+With the OCCT port's patch 0100 (mitcad#172) the kernel's offset drops
+such faces and joins the faces beside them: the shells with vanishing
+faces (two designs of one family, and the design stored in both corpora)
+are parametric. Three of the four match their history states; the
+other's state cannot be rebuilt (its input comes after a fallback).
+
 #### Where the descriptions and our reading disagree
 
 - **Symmetric extrusions' side kinds.** The cadmpeg description gives
@@ -2336,6 +2619,14 @@ crash, not decoding (open).
   names its profile's sketch (its profile source input, mitcad#96); ezf3d
   finds neither. ezf3d gives a parameter to the feature before it by
   position; we follow the parameter's holder, which names it.
+- **Scopes no timeline item lists.** The cadmpeg description calls them
+  internal operation operands or history carriers whose state chain
+  bridges listed scopes. The off-timeline extrusions of the corpora are
+  real features: the parts of timeline items in other components, which
+  the design's table of item parts names (mitcad#169, *Parts of items,
+  face profiles and sketch heights*). Their records also hold the number
+  of the operation before theirs in their component (seen on the parts
+  looked at; not decoded), which may be the chain the description means.
 
 ## FreeCAD import (.FCStd)
 

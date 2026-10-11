@@ -1,26 +1,30 @@
 // SPDX-License-Identifier: MIT
 #pragma once
 
-// The Projects panel (mitcad#145): the projects, their folders and designs
-// in one tree, location -> project -> folders -> designs:
+// The Projects panel (mitcad#145, #173): the projects, their folders and
+// designs in one tree, project -> folders -> designs. A project row is its
+// repository's root; nothing groups the projects, and below a project are
+// only the folders and designs it holds:
 //
-//   Local
-//     Robot arm                    Local
-//       parts
-//         bracket                  v3 · Changed
-//       base                       v12
-//   github.com/acme
-//     acme/gripper                 Cloud · ↑2
-//       finger                     v4 · Locked: Alex
+//   github.com/acme/gripper        Cloud · ↑2
+//     finger                       v4 · Locked: Alex
+//   Robot arm                      Local
+//     parts
+//       bracket                    v3 · Changed
+//     base                         v12
 //
 // A project row has its name (a display name set in Project Settings, else
-// a Cloud project's owner/repository, else the folder's name), its kind
-// and its sync state (as the project indicator shows it), a design row its
-// version, whether it changed since then and its edit lock; the open
-// design is bold. A double-click on a Cloud project (or on its location
-// when it holds only that one) asks for its settings. The projects are the known ones
-// (ProjectsSettings) and those of the projects folder; their trees come
-// from the core's `project_tree` on a thread of their own (ProjectsTree).
+// a Cloud project's repository address without the scheme, else the
+// folder's name; sorted by it), an icon and a tooltip that tell Local from
+// Cloud, and its sync state (as the project indicator shows it); a design
+// row has its version, whether it changed since then and its edit lock;
+// the open design is bold. A double-click on a Cloud project asks for its
+// settings. The rows' keys (the logs, the expanded rows, the selection)
+// start with the project's folder's name (its whole path when two listed
+// projects have folders of the same name), which a display name does not
+// change. The projects are the known ones (ProjectsSettings) and those of
+// the projects folder; their trees come from the core's `project_tree` on
+// a thread of their own (ProjectsTree).
 //
 // The panel only shows and asks: what to open, make, rename, move or
 // delete goes to the window through the signals (MainWindow, in
@@ -67,7 +71,7 @@ public:
   };
 
   // The kinds of rows.
-  enum class RowType { Location = 1, Project, Folder, Design, NewItem };
+  enum class RowType { Project = 1, Folder, Design, NewItem };
 
   explicit ProjectsPanel(Host host, QWidget* parent = nullptr);
   ~ProjectsPanel() override;
@@ -80,6 +84,10 @@ public:
   void updateMarks();
   // Expands and selects a project (once it is read).
   void reveal(const QString& root);
+  // Expands to and selects a design (`path` relative to the project at
+  // `root`) once it is listed: a design moved or saved into a project from
+  // outside the panel (mitcad#174).
+  void revealDesign(const QString& root, const QString& path);
   // Names a new design or folder in place, in `folder` (relative, "" the
   // project's top) of the project at `root`; once named, newDesignRequested
   // or newFolderRequested.
@@ -154,7 +162,11 @@ private:
   void startRead();
   void readFinished(RemoteTask* task);
   void rebuild();
-  QTreeWidgetItem* addProjectRow(QTreeWidgetItem* location, const ProjectRow& row);
+  // A project's row at the top of the tree, with its folders and designs.
+  QTreeWidgetItem* addProjectRow(const ProjectRow& row, const QString& projectKey);
+  // The key of a project's row: its folder's name, the whole path when
+  // another listed project's folder has the same name.
+  QString projectKeyOf(const ProjectRow& row) const;
   void applyMarks();
   void logTree();
   void scheduleLayoutLog();
@@ -171,11 +183,11 @@ private:
   // The folder a new design or folder goes in for a row.
   QString folderFor(const QTreeWidgetItem* item) const;
   // The project whose settings the settings button opens for a row: the
-  // project of a project, folder or design row, the one project of a
-  // location; "" none (or not a Local or Cloud project).
+  // project of a project, folder or design row; "" none (or not a Local or
+  // Cloud project).
   QString settingsRoot(const QTreeWidgetItem* item) const;
-  // A double-click on a Cloud project, or on a location holding one:
-  // its settings asked for (true); else false (the row expands).
+  // A double-click on a Cloud project: its settings asked for (true); else
+  // false (the row expands).
   bool settingsOnDoubleClick(QTreeWidgetItem* item);
 
   void startNew(bool folder, const QString& root, const QString& parent);
@@ -225,9 +237,14 @@ private:
   QHash<QString, QString> m_loggedTrees; // by project key
   QString m_loggedProjects;
   QString m_loggedNames;
+  QString m_loggedTopRows;
   QString m_loggedLayout;
   QString m_loggedSelection;
   bool m_layoutLogPending = false;
+  // A design to select once it is listed (revealDesign).
+  QString m_revealDesignRoot;
+  QString m_revealDesignPath;
+  void selectRevealedDesign();
 };
 
 } // namespace mitcad

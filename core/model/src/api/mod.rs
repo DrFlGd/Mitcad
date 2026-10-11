@@ -22,6 +22,8 @@ mod cache;
 mod joints;
 // Configuration tables and library parts (mitcad#64).
 mod libraries;
+// Move Features into a Component (mitcad#171).
+mod move_features;
 
 use std::fmt;
 
@@ -29,7 +31,7 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 
 use crate::document::{
-    AnalysisDef, Document, ModelError, NamedView, PreviewReport, status_message, status_text,
+    AnalysisDef, Document, ModelError, NamedView, PreviewReport, noted_message, noted_status,
 };
 use crate::expr::{DEFAULT_DECIMALS, Unit, value_to_expression};
 use crate::features::{FeatureDef, ValueInput};
@@ -429,6 +431,10 @@ enum Query {
     // A row of assembly constraints before it is added: its references' kinds,
     // the types they fit and what they measure (mitcad#148).
     ConstraintRow(Box<joints::ConstraintRowQuery>),
+    // Move Features into a Component (mitcad#171): what a move would do,
+    // and what a definition refers to.
+    MoveToComponent(move_features::MoveSelection),
+    FeatureReferences(Box<move_features::ReferencesQuery>),
 }
 
 fn names(names: &[String]) -> Value {
@@ -476,6 +482,11 @@ impl<K: Kernel> Document<K> {
             .get("cmd")
             .and_then(Value::as_str)
             .is_some_and(|cmd| libraries::COMMANDS.contains(&cmd));
+        // Move Features into a Component (mitcad#171).
+        let is_move = value
+            .get("cmd")
+            .and_then(Value::as_str)
+            .is_some_and(|cmd| move_features::COMMANDS.contains(&cmd));
         let mut result = if is_sketch {
             let command = sketch::parse_sketch_command(value)?;
             self.run_sketch_command(command)?
@@ -485,6 +496,8 @@ impl<K: Kernel> Document<K> {
             self.run_joint_command(parse(value, "command")?)?
         } else if is_library {
             self.run_library_command(parse(value, "command")?)?
+        } else if is_move {
+            self.run_move_command(parse(value, "command")?)?
         } else {
             self.run_document_command(parse(value, "command")?)?
         };
@@ -858,6 +871,10 @@ impl<K: Kernel> Document<K> {
                     "revision": self.revision(),
                     "modified": self.is_modified(),
                 });
+                // A hybrid assembly allowed without asking (mitcad#171).
+                if self.hybrid_assembly() {
+                    value["hybrid_assembly"] = json!(true);
+                }
                 let assembly = self.assembly();
                 if !assembly.is_empty() {
                     value["components"] = json!(assembly.components.len());
@@ -927,12 +944,17 @@ impl<K: Kernel> Document<K> {
                     .expect("names never fail");
                 let status = self.status(uid);
                 let warnings = self.warnings(uid);
+                let note = self.import_note(uid);
                 let mut value = json!({"uid": uid, "name": entry.name, "type": entry.def.type_name(),
                        "suppressed": entry.suppressed,
-                       "status": status.map(|s| status_text(Some(s), warnings)),
-                       "error": status_message(status, warnings), "def": def});
+                       "status": status.map(|s| noted_status(Some(s), warnings, note)),
+                       "error": noted_message(status, warnings, note), "def": def});
                 if !warnings.is_empty() {
                     value["warnings"] = json!(warnings);
+                }
+                // What the importer said about it (mitcad#170).
+                if let Some(note) = note {
+                    value["import"] = json!(note);
                 }
                 if !entry.component.is_root() {
                     value["component"] = json!(entry.component);
@@ -1040,6 +1062,9 @@ impl<K: Kernel> Document<K> {
             Query::PartsList => self.parts_list_json(),
             // Assembly constraints (mitcad#148).
             Query::ConstraintRow(query) => self.constraint_row_json(&query)?,
+            // Move Features into a Component (mitcad#171).
+            Query::MoveToComponent(selection) => self.move_plan_json(&selection)?,
+            Query::FeatureReferences(query) => self.feature_references_json(&query),
         };
         Ok(result.to_string())
     }
@@ -1070,6 +1095,7 @@ impl<K: Kernel> Document<K> {
 
     fn timeline_json(&self) -> Value {
         let used = self.state().used_sketches();
+        let sketches = self.state().sketches_used_by();
         let features: Vec<Value> = self
             .timeline()
             .into_iter()
@@ -1087,6 +1113,11 @@ impl<K: Kernel> Document<K> {
                 if !item.entry.component.is_root() {
                     value["component"] = json!(item.entry.component);
                 }
+                // What the importer said about it (mitcad#170): also in
+                // `error`, first.
+                if let Some(note) = item.import_note {
+                    value["import"] = json!(note);
+                }
                 // A sketch's or construction feature's light bulb, and
                 // whether it was set or follows the default (mitcad#7).
                 if let Some(visible) = self.state().feature_shown(item.entry, &used) {
@@ -1097,6 +1128,11 @@ impl<K: Kernel> Document<K> {
                 // fully constrained one).
                 if let Some(sketch) = self.sketch_output(item.entry.uid) {
                     value["dof"] = json!(sketch.solved.status.dof);
+                }
+                // The sketches it uses: the browser lists it under each
+                // (mitcad#177).
+                if let Some(uses) = sketches.get(&item.entry.uid) {
+                    value["sketches"] = json!(uses);
                 }
                 value
             })

@@ -502,6 +502,17 @@ impl CopyReferences<'_> {
                     .map(|tool| tools.get(tool).copied().unwrap_or_else(|| self.body(*tool)))
                     .collect();
             }
+            // A sweep's path and guide surfaces on other components' bodies
+            // (mitcad#161): the bodies' references are copied as other
+            // references are (renamed when the copy has them).
+            (FeatureDef::Sweep(copy), FeatureDef::Sweep(original)) => {
+                copy.body_links.clear();
+                for (body, link) in &original.body_links {
+                    let (link, internal) = self.link(link, component)?;
+                    let mapped = if internal { self.body(*body) } else { *body };
+                    copy.body_links.insert(mapped, link);
+                }
+            }
             (FeatureDef::Sketch(copy), FeatureDef::Sketch(original)) => {
                 if let Some(link) = &original.plane_link {
                     let (link, internal) = self.link(link, component)?;

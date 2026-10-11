@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT
 #include "BrowserController.hpp"
 
+#include <algorithm>
 #include <functional>
 #include <tuple>
 #include <utility>
@@ -87,8 +88,19 @@ BrowserController::BrowserController(DocumentHost& host, QWidget* window)
   m_failures->setIcon(themeIcon(QStringLiteral("warning")));
   setErrorStyleSheet(m_failures, QStringLiteral("QToolButton { color: %1; }"));
   m_failures->hide();
+  // Features with warnings, the import's among them (mitcad#170): yellow.
+  m_warnings = new QToolButton(window);
+  m_warnings->setObjectName(QStringLiteral("warningsBadge"));
+  m_warnings->setAutoRaise(true);
+  m_warnings->setFocusPolicy(Qt::NoFocus);
+  m_warnings->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
+  m_warnings->setIcon(themeIcon(QStringLiteral("warning")));
+  setWarningStyleSheet(m_warnings, QStringLiteral("QToolButton { color: %1; }"));
+  m_warnings->hide();
 
   follow(m_browser, &BrowserPanel::itemsPicked, &BrowserController::pickItems);
+  follow(m_browser, &BrowserPanel::rowsPicked, &BrowserController::pickRows);
+  follow(m_browser, &BrowserPanel::renameClicked, &BrowserController::renameClicked, true);
   follow(m_browser, &BrowserPanel::eyeClicked, &BrowserController::toggleVisibility);
   follow(m_browser, &BrowserPanel::activateClicked, &BrowserController::activate);
   follow(m_browser, &BrowserPanel::renamed, &BrowserController::rename);
@@ -113,20 +125,22 @@ BrowserController::BrowserController(DocumentHost& host, QWidget* window)
   follow(m_timeline, &TimelineWidget::markerDragged, &BrowserController::markerDragged);
   follow(m_timeline, &TimelineWidget::markerDragFinished, &BrowserController::markerDragFinished);
 
-  connect(m_failures, &QToolButton::clicked, this, [this] {
-    const QVector<const DocumentSnapshot::Feature*> failed = m_snapshot.failures();
-    if (failed.size() == 1) {
-      reveal(failed.first()->uid);
+  // A click on a badge goes to its feature, or lists them to go to.
+  const auto listed = [this](QToolButton* button, const QVector<const DocumentSnapshot::Feature*>& features) {
+    if (features.size() == 1) {
+      reveal(features.first()->uid);
       return;
     }
     Menu menu(m_window);
-    for (const DocumentSnapshot::Feature* feature : failed) {
+    for (const DocumentSnapshot::Feature* feature : features) {
       const QString uid = feature->uid;
       menu.add(featureIcon(feature->type), QStringLiteral("%1: %2").arg(feature->name, feature->error),
                [this, uid] { reveal(uid); });
     }
-    menu.exec(m_failures->mapToGlobal(QPoint(0, 0)));
-  });
+    menu.exec(button->mapToGlobal(QPoint(0, 0)));
+  };
+  connect(m_failures, &QToolButton::clicked, this, [this, listed] { listed(m_failures, m_snapshot.failures()); });
+  connect(m_warnings, &QToolButton::clicked, this, [this, listed] { listed(m_warnings, m_snapshot.warnings()); });
 }
 
 // ---------------------------------------------------------------------------
@@ -150,7 +164,18 @@ void BrowserController::refresh(const DocumentSnapshot& snapshot) {
   }
 }
 
-void BrowserController::showSelection(const Selection& items) { m_browser->showSelection(items); }
+void BrowserController::showSelection(const Selection& items) {
+  // A pick of features shows their rows under the sketches too (mitcad#177),
+  // also when the same selection is shown again; another selection (in the
+  // view) does not.
+  if (m_picking) {
+    m_shownFeatures = m_pickedFeatures;
+  } else if (items != m_shownItems) {
+    m_shownFeatures.clear();
+  }
+  m_shownItems = items;
+  m_browser->showSelection(items, m_shownFeatures);
+}
 
 bool BrowserController::cancelEditing() {
   return m_browser->cancelEditing() || m_timeline->cancelEditing();
@@ -189,6 +214,27 @@ void BrowserController::updateFailures() {
   if (warned != m_loggedWarnings) {
     m_loggedWarnings = warned;
     qDebug().noquote() << QStringLiteral("Feature warnings: %1").arg(warned.isEmpty() ? QStringLiteral("none") : warned);
+  }
+  // The yellow badge beside the failures' (mitcad#170): those, and what the
+  // import left a note on (a placeholder of a skipped item is suppressed).
+  const QVector<const DocumentSnapshot::Feature*> noted = m_snapshot.warnings();
+  QStringList badge;
+  for (const DocumentSnapshot::Feature* feature : noted) {
+    badge << QStringLiteral("%1: %2").arg(feature->name, feature->error);
+  }
+  m_warnings->setVisible(!noted.isEmpty());
+  m_warnings->setText(tr("%n warning(s)", nullptr, static_cast<int>(noted.size())));
+  m_warnings->setToolTip(badge.join(QLatin1Char('\n')));
+  const QString badged = badge.join(QStringLiteral("; "));
+  if (badged != m_loggedBadge) {
+    m_loggedBadge = badged;
+    qDebug().noquote() << QStringLiteral("Warnings badge: %1").arg(badged.isEmpty() ? QStringLiteral("none") : badged);
+    TestSync::singleShot(300, m_warnings, [this] {
+      if (m_warnings->isVisible()) {
+        const QPoint at = GlassCard::mapToHost(m_warnings, m_warnings->rect().center());
+        qDebug().noquote() << QStringLiteral("Warnings button at %1,%2").arg(at.x()).arg(at.y());
+      }
+    });
   }
   // The sketches' degrees of freedom the browser shows (P9).
   QStringList dofs;
@@ -367,6 +413,7 @@ void BrowserController::rename(const BrowserNode& node, const QString& name) {
   case BrowserNode::Type::Sketch:
   case BrowserNode::Type::Datum:
   case BrowserNode::Type::Joint:
+  case BrowserNode::Type::Feature:
     command = cmd("rename_feature", {{QStringLiteral("uid"), node.uid}, {QStringLiteral("name"), name}});
     break;
   case BrowserNode::Type::NamedView:
@@ -402,6 +449,7 @@ void BrowserController::browserDoubleClicked(const BrowserNode& node) {
   case BrowserNode::Type::Sketch:
   case BrowserNode::Type::Datum:
   case BrowserNode::Type::Joint:
+  case BrowserNode::Type::Feature:
     m_host.editFeature(node.uid);
     break;
   case BrowserNode::Type::Body:
@@ -433,6 +481,7 @@ void BrowserController::deleteNode(const BrowserNode& node) {
   case BrowserNode::Type::Sketch:
   case BrowserNode::Type::Datum:
   case BrowserNode::Type::Joint:
+  case BrowserNode::Type::Feature:
     deleteFeature(node.uid);
     break;
   case BrowserNode::Type::Component:
@@ -464,6 +513,13 @@ void BrowserController::newComponent(const BrowserNode& node) {
   if (!canChange()) {
     return;
   }
+  // Made in the root with modelled bodies: a hybrid assembly (mitcad#171).
+  ComponentRequest request;
+  request.kind = ComponentRequest::Kind::NewComponent;
+  request.parent = node.uid;
+  if (askHybridAssembly(m_window, hybridModel(), request).outcome == ComponentAnswer::Outcome::Cancel) {
+    return;
+  }
   QJsonArray commands;
   if (node.uid != m_snapshot.activeComponent) {
     // It is made in the component the menu was opened on.
@@ -472,6 +528,63 @@ void BrowserController::newComponent(const BrowserNode& node) {
   commands.append(cmd("create_component"));
   if (m_host.runModelCommands(commands, tr("New Component"))) {
     qDebug().noquote() << QStringLiteral("New component in %1").arg(node.name);
+  }
+}
+
+HybridModel BrowserController::hybridModel() {
+  HybridModel model;
+  model.query = [this](const QJsonObject& query) { return m_host.model().queryObject(query); };
+  model.run = [this](const QJsonObject& command, QJsonObject* result) {
+    return m_host.runModelCommand(command, result);
+  };
+  return model;
+}
+
+// Create Components from Bodies on a body: asked first when the body is
+// one of the root's (mitcad#171); moved, it takes the features that made
+// it along.
+void BrowserController::componentsFromBodies(const BrowserNode& node) {
+  if (!canChange()) {
+    return;
+  }
+  ComponentRequest request;
+  request.kind = ComponentRequest::Kind::FromBodies;
+  request.bodies = QJsonArray{node.uid};
+  const ComponentAnswer answer = askHybridAssembly(m_window, hybridModel(), request);
+  if (answer.outcome != ComponentAnswer::Outcome::Proceed) {
+    return;
+  }
+  QJsonObject result;
+  if (m_host.runModelCommand(cmd("components_from_bodies", {{QStringLiteral("bodies"), QJsonArray{node.uid}}}),
+                             &result)) {
+    qDebug().noquote() << QStringLiteral("Component from %1").arg(node.name);
+  }
+}
+
+void BrowserController::moveToComponent(const QJsonObject& selection) {
+  if (canChange()) {
+    mitcad::moveToComponent(m_window, hybridModel(), selection);
+  }
+}
+
+// The features that made a component-from-bodies' bodies go into its
+// component, and the step goes (mitcad#171).
+void BrowserController::moveHistory(const QString& uid) {
+  const DocumentSnapshot::Feature* feature = m_snapshot.feature(uid);
+  if (feature == nullptr || !canChange()) {
+    return;
+  }
+  const QString name = feature->name;
+  QJsonObject result;
+  if (m_host.runModelCommand(cmd("move_history_into_component", {{QStringLiteral("feature"), uid}}), &result)) {
+    QStringList names;
+    for (const QJsonValue& f : result.value(QStringLiteral("features")).toArray()) {
+      const DocumentSnapshot::Feature* moved = m_snapshot.feature(f.toString());
+      names << (moved != nullptr ? moved->name : f.toString());
+    }
+    qDebug().noquote() << QStringLiteral("Moved %1 into %2 instead of %3")
+                              .arg(names.join(QStringLiteral(", ")),
+                                   result.value(QStringLiteral("name")).toString(), name);
   }
 }
 
@@ -605,11 +718,8 @@ void BrowserController::browserMenu(const BrowserNode& node, const QPoint& at) {
       }
     });
   };
-  const auto findInTimeline = [&](const QString& feature) {
-    menu.add(QStringLiteral("timeline"), tr("Find in Timeline"), [this, feature] {
-      m_timeline->selectFeature(feature);
-      qDebug().noquote() << QStringLiteral("Found %1 in the timeline").arg(feature);
-    });
+  const auto timelineEntry = [&](const QString& feature) {
+    menu.add(QStringLiteral("timeline"), tr("Find in Timeline"), [this, feature] { findInTimeline(feature); });
   };
   const bool plane = item.kind == SelectKind::Plane;
 
@@ -620,6 +730,15 @@ void BrowserController::browserMenu(const BrowserNode& node, const QPoint& at) {
       menu.add(QStringLiteral("radio-on"), tr("Activate Component"), [this, node] { activate(node); });
     }
     menu.add(QStringLiteral("component"), tr("New Component"), [this, node] { newComponent(node); });
+    // Its modelled bodies with their features into a component of their
+    // own (mitcad#171).
+    for (const DocumentSnapshot::Component& c : std::as_const(m_snapshot.components)) {
+      if (c.uid == node.uid && !c.linked && !c.bodies.isEmpty()) {
+        menu.add(QStringLiteral("component"), tr("Move Features into a Component"), [this, node] {
+          moveToComponent({{QStringLiteral("component"), node.uid}});
+        });
+      }
+    }
     if (!root) {
       menu.add(QStringLiteral("copy"), tr("Copy"), [this, node] {
         m_clipboard = node.occurrence;
@@ -670,13 +789,11 @@ void BrowserController::browserMenu(const BrowserNode& node, const QPoint& at) {
     menu.separator();
     visibility();
     isolate();
-    menu.add(QStringLiteral("component"), tr("Create Components from Bodies"), [this, node] {
-      QJsonObject result;
-      if (canChange() &&
-          m_host.runModelCommand(cmd("components_from_bodies", {{QStringLiteral("bodies"), QJsonArray{node.uid}}}),
-                                 &result)) {
-        qDebug().noquote() << QStringLiteral("Component from %1").arg(node.name);
-      }
+    menu.add(QStringLiteral("component"), tr("Create Components from Bodies"),
+             [this, node] { componentsFromBodies(node); });
+    // The body with the features that made it (mitcad#171).
+    menu.add(QStringLiteral("component"), tr("Move to Component..."), [this, node] {
+      moveToComponent({{QStringLiteral("component"), node.component}, {QStringLiteral("bodies"), QJsonArray{node.uid}}});
     });
     menu.add(QStringLiteral("appearance"), tr("Appearance..."), [this, node] {
       openAppearances({SelectionItem{SelectKind::Body, node.uid, QString(), QString()}});
@@ -684,7 +801,7 @@ void BrowserController::browserMenu(const BrowserNode& node, const QPoint& at) {
     menu.separator();
     renameEntry();
     menu.add(QStringLiteral("delete"), tr("Delete"), [this, node] { deleteNode(node); });
-    findInTimeline(feature);
+    timelineEntry(feature);
     break;
   }
   case BrowserNode::Type::Sketch:
@@ -695,7 +812,7 @@ void BrowserController::browserMenu(const BrowserNode& node, const QPoint& at) {
     visibility();
     renameEntry();
     menu.add(QStringLiteral("delete"), tr("Delete"), [this, node] { deleteNode(node); });
-    findInTimeline(node.uid);
+    timelineEntry(node.uid);
     break;
   case BrowserNode::Type::Datum:
     menu.add(QStringLiteral("edit"), tr("Edit %1").arg(node.name), [this, node] { m_host.editFeature(node.uid); });
@@ -707,7 +824,7 @@ void BrowserController::browserMenu(const BrowserNode& node, const QPoint& at) {
     visibility();
     renameEntry();
     menu.add(QStringLiteral("delete"), tr("Delete"), [this, node] { deleteNode(node); });
-    findInTimeline(node.uid);
+    timelineEntry(node.uid);
     break;
   case BrowserNode::Type::OriginDatum:
     if (plane) {
@@ -801,7 +918,7 @@ void BrowserController::browserMenu(const BrowserNode& node, const QPoint& at) {
     menu.separator();
     renameEntry();
     menu.add(QStringLiteral("delete"), tr("Delete"), [this, node] { deleteNode(node); });
-    findInTimeline(node.uid);
+    timelineEntry(node.uid);
     break;
   }
   case BrowserNode::Type::Analysis:
@@ -810,6 +927,10 @@ void BrowserController::browserMenu(const BrowserNode& node, const QPoint& at) {
     visibility();
     renameEntry();
     menu.add(QStringLiteral("delete"), tr("Delete"), [this, node] { deleteNode(node); });
+    break;
+  case BrowserNode::Type::Feature:
+    // The timeline's menu of the feature (mitcad#177).
+    featureMenu(node.uid, at, node);
     break;
   default:
     break;
@@ -823,6 +944,12 @@ void BrowserController::browserMenu(const BrowserNode& node, const QPoint& at) {
 // The timeline
 
 void BrowserController::featuresClicked(const QStringList& uids) {
+  // The browser shows the features' rows under their sketches too
+  // (mitcad#177); a command that takes features takes them instead.
+  pick(featureItems(uids), m_host.takesFeatures() ? QStringList() : uids);
+}
+
+Selection BrowserController::featureItems(const QStringList& uids) const {
   Selection items;
   const auto add = [&items](const SelectionItem& item) {
     if (item.isValid() && !items.contains(item)) {
@@ -833,8 +960,7 @@ void BrowserController::featuresClicked(const QStringList& uids) {
     for (const QString& uid : uids) {
       add({SelectKind::Feature, uid, QString(), QString()});
     }
-    m_host.pickItems(items);
-    return;
+    return items;
   }
   // Each feature's sketch, datum or bodies are selected. A feature that made
   // no body of its own (a fillet, a chamfer, a hole, a join) is selected as
@@ -852,7 +978,16 @@ void BrowserController::featuresClicked(const QStringList& uids) {
       add({SelectKind::Feature, uid, QString(), QString(), m_snapshot.firstOccurrence(feature->component)});
     }
   }
+  return items;
+}
+
+void BrowserController::pick(const Selection& items, const QStringList& features) {
+  // The main window shows the selection here at once (showSelection).
+  m_picking = true;
+  m_pickedFeatures = features;
   m_host.pickItems(items);
+  m_picking = false;
+  m_pickedFeatures.clear();
 }
 
 void BrowserController::deleteFeature(const QString& uid) {
@@ -914,7 +1049,50 @@ void BrowserController::reorder(const QString& uid, int index) {
   }
 }
 
-void BrowserController::pickItems(const Selection& items) { m_host.pickItems(items); }
+void BrowserController::pickItems(const Selection& items) { pickRows(items, QStringList()); }
+
+void BrowserController::pickRows(const Selection& items, const QStringList& features) {
+  // The features of the rows are selected in the timeline (mitcad#177),
+  // without its signal: sketches, datums, joints and the features under
+  // sketches; a body, a component or the origin's rows clear it.
+  QStringList uids = features;
+  for (const SelectionItem& item : items) {
+    if (item.kind != SelectKind::Body && item.kind != SelectKind::Component &&
+        m_snapshot.feature(item.owner) != nullptr && !uids.contains(item.owner)) {
+      uids.append(item.owner);
+    }
+  }
+  std::sort(uids.begin(), uids.end(), [this](const QString& a, const QString& b) {
+    const DocumentSnapshot::Feature* first = m_snapshot.feature(a);
+    const DocumentSnapshot::Feature* second = m_snapshot.feature(b);
+    return (first != nullptr ? first->index : -1) < (second != nullptr ? second->index : -1);
+  });
+  m_timeline->setSelectedFeatures(uids);
+  if (features.isEmpty()) {
+    pick(items, QStringList());
+    return;
+  }
+  // A feature row selects what the feature's cell in the timeline does.
+  Selection all = items;
+  for (const SelectionItem& item : featureItems(features)) {
+    if (!all.contains(item)) {
+      all.append(item);
+    }
+  }
+  pick(all, features);
+}
+
+void BrowserController::renameClicked(const BrowserNode& node) {
+  // Silently nothing while the model cannot change (a command, a sketch).
+  if (m_host.canChangeModel(false)) {
+    m_browser->startRename(node);
+  }
+}
+
+void BrowserController::findInTimeline(const QString& uid) {
+  m_timeline->selectFeature(uid);
+  qDebug().noquote() << QStringLiteral("Found %1 in the timeline").arg(uid);
+}
 
 void BrowserController::editFeature(const QString& uid) { m_host.editFeature(uid); }
 
@@ -958,7 +1136,9 @@ void BrowserController::markerDragFinished(int position) {
   qDebug().noquote() << QStringLiteral("Marker at %1 of %2").arg(position).arg(m_snapshot.features.size());
 }
 
-void BrowserController::timelineMenu(const QString& uid, const QPoint& at) {
+void BrowserController::timelineMenu(const QString& uid, const QPoint& at) { featureMenu(uid, at, BrowserNode()); }
+
+void BrowserController::featureMenu(const QString& uid, const QPoint& at, const BrowserNode& row) {
   const DocumentSnapshot::Feature* feature = m_snapshot.feature(uid);
   if (feature == nullptr) {
     return;
@@ -969,8 +1149,14 @@ void BrowserController::timelineMenu(const QString& uid, const QPoint& at) {
   menu.add(feature->isSketch() ? QStringLiteral("sketch") : QStringLiteral("edit"),
            feature->isSketch() ? tr("Edit Sketch") : tr("Edit Feature"),
            [this, uid] { m_host.editFeature(uid); });
-  menu.add(QStringLiteral("edit"), tr("Rename"), [this, uid] {
-    if (canChange()) {
+  // Renamed in place where the menu was opened.
+  menu.add(QStringLiteral("edit"), tr("Rename"), [this, uid, row] {
+    if (!canChange()) {
+      return;
+    }
+    if (row.isValid()) {
+      m_browser->startRename(row);
+    } else {
       m_timeline->startRename(uid);
     }
   });
@@ -987,6 +1173,19 @@ void BrowserController::timelineMenu(const QString& uid, const QPoint& at) {
              }
            });
   menu.add(QStringLiteral("delete"), tr("Delete"), [this, uid] { deleteFeature(uid); });
+  // Moving features into components (mitcad#171): a modelled feature with
+  // what goes with it, or the history of a component made from bodies.
+  if (feature->type == QStringLiteral("component_from_bodies")) {
+    menu.add(QStringLiteral("component"), tr("Move the Features That Made It into the Component"),
+             [this, uid] { moveHistory(uid); });
+  } else if (!feature->isJoint() && feature->type != QStringLiteral("move_occurrence") &&
+             feature->type != QStringLiteral("capture_position") &&
+             feature->type != QStringLiteral("constraint_set")) {
+    const QString component = feature->component;
+    menu.add(QStringLiteral("component"), tr("Move to Component..."), [this, uid, component] {
+      moveToComponent({{QStringLiteral("component"), component}, {QStringLiteral("features"), QJsonArray{uid}}});
+    });
+  }
   menu.separator();
   // Timeline groups (P9): the selected run (Shift+click), or this feature.
   QStringList run = m_timeline->selectedFeatures();
@@ -1011,14 +1210,19 @@ void BrowserController::timelineMenu(const QString& uid, const QPoint& at) {
     });
   }
   menu.add(QStringLiteral("marker"), tr("Roll History Marker Here"), [this, index] { setMarker(index + 1); });
-  menu.add(QStringLiteral("browser"), tr("Find in Browser"), [this, uid] {
-    const DocumentSnapshot::Feature* f = m_snapshot.feature(uid);
-    if (m_browser->reveal(uid)) {
-      qDebug().noquote() << QStringLiteral("Found %1 in the browser").arg(f != nullptr ? f->name : uid);
-    } else {
-      m_host.showStatus(tr("%1 has nothing in the browser.").arg(f != nullptr ? f->name : uid), false);
-    }
-  });
+  // Found in the other place.
+  if (row.isValid()) {
+    menu.add(QStringLiteral("timeline"), tr("Find in Timeline"), [this, uid] { findInTimeline(uid); });
+  } else {
+    menu.add(QStringLiteral("browser"), tr("Find in Browser"), [this, uid] {
+      const DocumentSnapshot::Feature* f = m_snapshot.feature(uid);
+      if (m_browser->reveal(uid)) {
+        qDebug().noquote() << QStringLiteral("Found %1 in the browser").arg(f != nullptr ? f->name : uid);
+      } else {
+        m_host.showStatus(tr("%1 has nothing in the browser.").arg(f != nullptr ? f->name : uid), false);
+      }
+    });
+  }
   menu.exec(at);
 }
 

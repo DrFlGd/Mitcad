@@ -348,7 +348,7 @@ pub struct LocalSettings {
     pub sync: SyncHere,
     /// The name the Projects panel shows for the project (trimmed, not
     /// empty); None: the default (the folder's name, a Cloud project's
-    /// owner/repository).
+    /// repository address without the scheme, github.com/owner/repository).
     pub name: Option<String>,
 }
 

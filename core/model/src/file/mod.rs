@@ -79,7 +79,8 @@
 //!
 //! Optional fields: `units` (millimetres and degrees), a parameter's
 //! `comment` and `owner` (the feature whose dimension it is), a feature's
-//! `"suppressed": true`, `"marker": n` (the number of features before the
+//! `"suppressed": true` and `import_note` (what the importer that made it
+//! said, mitcad#170), `"marker": n` (the number of features before the
 //! timeline marker, when it is not at the end) and `bodies`, whose entries
 //! may add `"visible": false`, a `"material"` and an `"appearance"` (F5).
 //! Feature coordinates are millimetres and radians, in the coordinates of
@@ -100,6 +101,9 @@
 //! sizes has `configurations` (`selectors`, `parameters`, `default`,
 //! `rows`; [`crate::configurations`]). Both are left out otherwise, so
 //! files without them are as before.
+//!
+//! A design that may be a hybrid assembly without asking (mitcad#171:
+//! "don't ask again for this design") has `"hybrid_assembly": true`.
 //!
 //! Named views (U5), when there are any: `views` (`name`, `eye`, `target`,
 //! `up`, `height`, `"perspective": true`).

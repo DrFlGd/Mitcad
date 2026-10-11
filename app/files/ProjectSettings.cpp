@@ -139,7 +139,8 @@ private:
   void writeAuthor();
   void writeDisplayName();
   // The name the Projects panel shows without a display name: a Cloud
-  // project's owner/repository, else the folder's name.
+  // project's repository address without the scheme, else the folder's
+  // name (mitcad#173).
   QString defaultName() const;
   void listAuthors();
   QJsonObject sharedChosen() const;
@@ -980,7 +981,7 @@ void ProjectSettingsDialog::writeLocal() {
 }
 
 QString ProjectSettingsDialog::defaultName() const {
-  const QString cloud = m_kind == QLatin1String("cloud") && !m_url.isEmpty() ? ownerAndRepositoryOf(m_url) : QString();
+  const QString cloud = m_kind == QLatin1String("cloud") && !m_url.isEmpty() ? repositoryAddressOf(m_url) : QString();
   return cloud.isEmpty() ? QFileInfo(m_root).fileName() : cloud;
 }
 

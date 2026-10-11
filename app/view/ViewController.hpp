@@ -102,7 +102,7 @@ public:
   void setRenderSettings(const QJsonObject& settings, const QString& documentFolder);
   // Render Environment (only with the render worker).
   void showRenderEnvironment();
-  // File > Render Image (mitcad#48; only with the render worker).
+  // Render Image (mitcad#48; only with the render worker).
   void showRenderImage();
   // The design's file name without its folder and extension (the rendered
   // image's default name).

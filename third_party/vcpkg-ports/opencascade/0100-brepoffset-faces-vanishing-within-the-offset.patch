@@ -1,0 +1,1558 @@
+Mitcad's patch to OCCT 8.0.1, under OCCT's licence:
+SPDX-License-Identifier: LGPL-2.1-only WITH OCCT-exception-1.0
+
+Offset: faces whose offset vanishes within the offset distance
+(mitcad#172). Offset inside, a face narrower than what the offsets of its
+neighbours take from it (a chamfer strip between faces meeting at an
+angle) or a convex rounding of a radius smaller than the offset turns
+inside out: the images of its edges cross. BRepOffset_MakeOffset kept
+such a face and failed (intersection join: the thick solid had fewer
+faces than the body; a closed offset no solid) or built a wrong solid (the
+inverted rounding kept; with the arc join, the thick solid came back as
+the body itself). Outside, the same holds for concave strips.
+
+The faces of four edges whose offset turns inside out between two
+opposite edges all along them are found before the offsets are built
+(FindVanishingFaces): at stations along one edge, the images of a point
+and of the nearest point of the opposite edge on the boundary of the
+face's offset (moved along the normal at smooth or free edges, where the
+offsets of the two faces meet at sharp ones) come in the opposite order.
+Such a face gets no offset. The faces beyond the two edges, past further
+vanishing faces in a row, have their offsets intersected with each other
+instead (BRepOffset_Inter3d::ConnexIntAcrossVanished for the intersection
+join, ConnexIntByArcAcrossVanished for the arc join); the intersection
+stands for the image of their edges to the vanishing faces. The edges to
+vanishing faces are left out of the walks round the wires of the faces
+(BRepOffset_Inter2d::ConnexIntByInt), so that the edges on both sides of
+them meet, and the smooth edges there are cut within their offsets
+instead of being extended. A face stays where it vanishes only in parts,
+where a free or open edge lies beyond it, and with the arc join where a
+tube runs along one of its edges. The complete intersection of planar
+shapes, which removes invalid faces its own way, and thickening are
+unchanged.
+
+A thick solid to which the offset contributes no face (the faces of the
+body alone, the offset having failed) is no longer done.
+
+diff --git a/src/ModelingAlgorithms/TKOffset/BRepOffset/BRepOffset_Inter2d.cxx b/src/ModelingAlgorithms/TKOffset/BRepOffset/BRepOffset_Inter2d.cxx
+index babef96..5f79e3a 100644
+--- a/src/ModelingAlgorithms/TKOffset/BRepOffset/BRepOffset_Inter2d.cxx
++++ b/src/ModelingAlgorithms/TKOffset/BRepOffset/BRepOffset_Inter2d.cxx
+@@ -1843,7 +1843,8 @@ bool BRepOffset_Inter2d::ConnexIntByInt(
+     theEdgeIntEdges,
+   NCollection_IndexedDataMap<TopoDS_Shape, NCollection_List<TopoDS_Shape>, TopTools_ShapeMapHasher>&
+                                theDMVV,
+-  const Message_ProgressRange& theRange)
++  const Message_ProgressRange& theRange,
++  const NCollection_Map<TopoDS_Shape, TopTools_ShapeMapHasher>* theVanished)
+ {
+ 
+   NCollection_DataMap<TopoDS_Shape, NCollection_List<TopoDS_Shape>, TopTools_ShapeMapHasher> MVE;
+@@ -1875,6 +1876,27 @@ bool BRepOffset_Inter2d::ConnexIntByInt(
+         break;
+       }
+     }
++    // Is one of the edges built at the vertex the edge to a face whose
++    // offset vanishes (its image being the intersection with the face
++    // beyond)? A smooth edge there is cut within its offset: the offset of
++    // the face it bounds gets shorter where the vanishing face leaves it.
++    bool bAcrossVanished = false;
++    if (theVanished && YaBuild)
++    {
++      for (itL.Initialize(L); itL.More() && !bAcrossVanished; itL.Next())
++      {
++        const TopoDS_Shape& aEB = itL.Value();
++        if (!Build.IsBound(aEB) || !Analyse.HasAncestor(aEB))
++        {
++          continue;
++        }
++        for (NCollection_List<TopoDS_Shape>::Iterator itA(Analyse.Ancestors(aEB)); itA.More();
++             itA.Next())
++        {
++          bAcrossVanished = bAcrossVanished || theVanished->Contains(itA.Value());
++        }
++      }
++    }
+     if (YaBuild)
+     {
+       for (itL.Initialize(L); itL.More(); itL.Next())
+@@ -1884,11 +1906,31 @@ bool BRepOffset_Inter2d::ConnexIntByInt(
+         {
+           continue;
+         }
++        if (theVanished && !Build.IsBound(EI) && Analyse.HasAncestor(EI))
++        {
++          // an edge to a face whose offset vanishes has no image
++          bool bDrop = false;
++          for (NCollection_List<TopoDS_Shape>::Iterator itA(Analyse.Ancestors(EI)); itA.More();
++               itA.Next())
++          {
++            bDrop = bDrop || theVanished->Contains(itA.Value());
++          }
++          if (bDrop)
++          {
++            continue;
++          }
++        }
+         TopoDS_Shape       aLocalShape = OFI.Generated(EI);
+         const TopoDS_Edge& OE          = TopoDS::Edge(aLocalShape);
+         if (!MES.IsBound(OE) && !Build.IsBound(EI))
+         {
+-          if (!ExtentEdge(OE, NE, Offset))
++          const NCollection_List<BRepOffset_Interval>& aLI = Analyse.Type(EI);
++          if (bAcrossVanished && !aLI.IsEmpty() && aLI.First().Type() == ChFiDS_Tangential)
++          {
++            // the offset edge as it is
++            NE = TopoDS::Edge(OE.EmptyCopied());
++          }
++          else if (!ExtentEdge(OE, NE, Offset))
+           {
+             return false;
+           }
+@@ -1925,15 +1967,70 @@ bool BRepOffset_Inter2d::ConnexIntByInt(
+     {
+       continue; // Protection from case when explorer does not contain edges.
+     }
+-    CurE = FirstE = wexp.Current();
++    // The edges of the wire in their order, but for the edges to faces whose
++    // offset vanishes, which have no image: the edges on both sides of them
++    // become consecutive, meeting at the image of their vertices
++    // (aDropV: for each edge kept, a vertex of the edges dropped before it).
++    NCollection_Sequence<TopoDS_Edge>   aSeq;
++    NCollection_Sequence<TopoDS_Vertex> aDropV;
++    {
++      TopoDS_Vertex aPendingV;
++      TopoDS_Edge   aPrevE, aFirstDropped, aLastE;
++      for (; wexp.More(); wexp.Next())
++      {
++        TopoDS_Edge aE    = wexp.Current();
++        bool        bDrop = false;
++        if (theVanished && !Build.IsBound(aE) && Analyse.HasAncestor(aE))
++        {
++          for (NCollection_List<TopoDS_Shape>::Iterator itA(Analyse.Ancestors(aE)); itA.More();
++               itA.Next())
++          {
++            bDrop = bDrop || theVanished->Contains(itA.Value());
++          }
++        }
++        if (bDrop)
++        {
++          if (aSeq.IsEmpty() && aFirstDropped.IsNull())
++          {
++            aFirstDropped = aE;
++          }
++          else if (aPendingV.IsNull() && !aPrevE.IsNull())
++          {
++            aPendingV = CommonVertex(aPrevE, aE);
++          }
++        }
++        else
++        {
++          aSeq.Append(aE);
++          aDropV.Append(aPendingV);
++          aPendingV.Nullify();
++        }
++        aPrevE = aE;
++        aLastE = aE;
++      }
++      if (aSeq.IsEmpty())
++      {
++        continue;
++      }
++      if (!aPendingV.IsNull())
++      {
++        aDropV(1) = aPendingV;
++      }
++      else if (!aFirstDropped.IsNull())
++      {
++        aDropV(1) = CommonVertex(aLastE, aFirstDropped);
++      }
++    }
++    int anIdx = 1;
++    CurE = FirstE = aSeq(1);
+     NCollection_IndexedMap<TopoDS_Shape, TopTools_ShapeMapHasher> Edges;
+ 
+     while (!end)
+     {
+-      wexp.Next();
+-      if (wexp.More())
++      ++anIdx;
++      if (anIdx <= aSeq.Length())
+       {
+-        NextE = wexp.Current();
++        NextE = aSeq(anIdx);
+       }
+       else
+       {
+@@ -1946,6 +2043,15 @@ bool BRepOffset_Inter2d::ConnexIntByInt(
+       }
+ 
+       TopoDS_Vertex Vref = CommonVertex(CurE, NextE);
++      if (Vref.IsNull())
++      {
++        Vref = aDropV(anIdx <= aSeq.Length() ? anIdx : 1);
++      }
++      if (Vref.IsNull())
++      {
++        CurE = NextE;
++        continue;
++      }
+ 
+       CurE  = Analyse.EdgeReplacement(FI, CurE);
+       NextE = Analyse.EdgeReplacement(FI, NextE);
+@@ -2087,7 +2193,7 @@ bool BRepOffset_Inter2d::ConnexIntByInt(
+           }
+         }
+       }
+-      CurE = wexp.Current();
++      CurE = anIdx <= aSeq.Length() ? aSeq(anIdx) : TopoDS_Edge();
+     }
+   }
+   return true;
+diff --git a/src/ModelingAlgorithms/TKOffset/BRepOffset/BRepOffset_Inter2d.hxx b/src/ModelingAlgorithms/TKOffset/BRepOffset/BRepOffset_Inter2d.hxx
+index f20c34a..0677271 100644
+--- a/src/ModelingAlgorithms/TKOffset/BRepOffset/BRepOffset_Inter2d.hxx
++++ b/src/ModelingAlgorithms/TKOffset/BRepOffset/BRepOffset_Inter2d.hxx
+@@ -21,6 +21,7 @@
+ #include <NCollection_IndexedMap.hxx>
+ #include <TopoDS_Shape.hxx>
+ #include <NCollection_DataMap.hxx>
++#include <NCollection_Map.hxx>
+ #include <NCollection_List.hxx>
+ #include <NCollection_IndexedDataMap.hxx>
+ #include <Message_ProgressRange.hxx>
+@@ -80,7 +81,8 @@ public:
+     NCollection_IndexedDataMap<TopoDS_Shape,
+                                NCollection_List<TopoDS_Shape>,
+                                TopTools_ShapeMapHasher>& theDMVV,
+-    const Message_ProgressRange&                         theRange);
++    const Message_ProgressRange&                         theRange,
++    const NCollection_Map<TopoDS_Shape, TopTools_ShapeMapHasher>* theVanished = nullptr);
+ 
+   //! Computes the intersection between the offset edges generated
+   //! from vertices and stored into AsDes as descendants of the <FI>.
+diff --git a/src/ModelingAlgorithms/TKOffset/BRepOffset/BRepOffset_Inter3d.cxx b/src/ModelingAlgorithms/TKOffset/BRepOffset/BRepOffset_Inter3d.cxx
+index ea27293..8606ce2 100644
+--- a/src/ModelingAlgorithms/TKOffset/BRepOffset/BRepOffset_Inter3d.cxx
++++ b/src/ModelingAlgorithms/TKOffset/BRepOffset/BRepOffset_Inter3d.cxx
+@@ -296,6 +296,11 @@ void BRepOffset_Inter3d::ConnexIntByArc(const NCollection_List<TopoDS_Shape>& /*
+ 
+         const TopoDS_Face& InitF1 = TopoDS::Face(Anc.First());
+         const TopoDS_Face& InitF2 = TopoDS::Face(Anc.Last());
++        if (!InitOffsetFace.HasImage(InitF1) || !InitOffsetFace.HasImage(InitF2))
++        {
++          // a face whose offset vanishes
++          continue;
++        }
+         F1                        = TopoDS::Face(InitOffsetFace.Image(InitF1).First());
+         F2                        = TopoDS::Face(InitOffsetFace.Image(InitF2).First());
+         if (!IsDone(F1, F2))
+@@ -451,7 +456,8 @@ void BRepOffset_Inter3d::ConnexIntByInt(
+   NCollection_DataMap<TopoDS_Shape, TopoDS_Shape, TopTools_ShapeMapHasher>&            Build,
+   NCollection_List<TopoDS_Shape>&                                                      Failed,
+   const Message_ProgressRange&                                                         theRange,
+-  const bool                                                                           bIsPlanar)
++  const bool                                                                           bIsPlanar,
++  const NCollection_Map<TopoDS_Shape, TopTools_ShapeMapHasher>*                        theVanished)
+ {
+   NCollection_IndexedMap<TopoDS_Shape, TopTools_ShapeMapHasher> VEmap;
+   TopoDS_Face                                                   F1, F2, OF1, OF2, NF1, NF2;
+@@ -722,6 +728,11 @@ void BRepOffset_Inter3d::ConnexIntByInt(
+     {
+       F1 = TopoDS::Face(itF1.Value());
+       F2 = TopoDS::Face(itF2.Value());
++      if (theVanished && (theVanished->Contains(F1) || theVanished->Contains(F2)))
++      {
++        // the offset of a vanishing face is not connected
++        continue;
++      }
+       //
+       OF1 = TopoDS::Face(MapSF(F1).Face());
+       OF2 = TopoDS::Face(MapSF(F2).Face());
+@@ -1042,6 +1053,133 @@ void BRepOffset_Inter3d::ConnexIntByInt(
+ 
+ //=================================================================================================
+ 
++void BRepOffset_Inter3d::ConnexIntAcrossVanished(
++  const NCollection_List<TopoDS_Shape>&                                                theAcross,
++  const NCollection_DataMap<TopoDS_Shape, BRepOffset_Offset, TopTools_ShapeMapHasher>& MapSF,
++  const BRepOffset_Analyse&                                                            Analyse,
++  NCollection_DataMap<TopoDS_Shape, TopoDS_Shape, TopTools_ShapeMapHasher>&            MES,
++  NCollection_DataMap<TopoDS_Shape, TopoDS_Shape, TopTools_ShapeMapHasher>&            Build,
++  NCollection_List<TopoDS_Shape>&                                                      Failed,
++  const TopAbs_State                                                                   theSide)
++{
++  BRep_Builder                             B;
++  NCollection_List<TopoDS_Shape>::Iterator it(theAcross);
++  for (; it.More(); it.Next())
++  {
++    TopoDS_Face F[2], NF[2];
++    TopoDS_Edge E[2];
++    for (int k = 0; k < 2; ++k)
++    {
++      if (k == 1)
++      {
++        it.Next();
++      }
++      F[k] = TopoDS::Face(it.Value());
++      it.Next();
++      E[k] = TopoDS::Edge(it.Value());
++      //
++      const TopoDS_Face OF = TopoDS::Face(MapSF(F[k]).Face());
++      if (!MES.IsBound(OF))
++      {
++        bool enlargeU      = true;
++        bool enlargeVfirst = true, enlargeVlast = true;
++        BRepOffset_Tool::CheckBounds(F[k], Analyse, enlargeU, enlargeVfirst, enlargeVlast);
++        BRepOffset_Tool::EnLargeFace(OF, NF[k], true, true, enlargeU, enlargeVfirst, enlargeVlast);
++        MES.Bind(OF, NF[k]);
++      }
++      else
++      {
++        NF[k] = TopoDS::Face(MES(OF));
++      }
++    }
++    //
++    NCollection_List<TopoDS_Shape> LInt1, LInt2;
++    if (!IsDone(NF[0], NF[1]))
++    {
++      // The section nearest to the edge of the vanishing faces, oriented as
++      // at an edge between the two faces (theSide: convex where the offset
++      // goes inside, concave where it goes outside).
++      BRepOffset_Tool::Inter3D(NF[0], NF[1], LInt1, LInt2, theSide, E[0], F[0], F[1]);
++      SetDone(NF[0], NF[1]);
++      if (LInt1.IsEmpty())
++      {
++        Failed.Append(E[0]);
++        continue;
++      }
++      Store(NF[0], NF[1], LInt1, LInt2);
++    }
++    else
++    {
++      // already intersected elsewhere: the common edges of both
++      const NCollection_List<TopoDS_Shape>& aLInt1 = myAsDes->Descendant(NF[0]);
++      const NCollection_List<TopoDS_Shape>& aLInt2 = myAsDes->Descendant(NF[1]);
++      for (NCollection_List<TopoDS_Shape>::Iterator it1(aLInt1); it1.More(); it1.Next())
++      {
++        for (NCollection_List<TopoDS_Shape>::Iterator it2(aLInt2); it2.More(); it2.Next())
++        {
++          if (it1.Value().IsSame(it2.Value()))
++          {
++            LInt1.Append(it1.Value());
++          }
++        }
++      }
++      if (LInt1.IsEmpty())
++      {
++        Failed.Append(E[0]);
++        continue;
++      }
++    }
++    for (int k = 0; k < 2; ++k)
++    {
++      TopoDS_Compound C;
++      B.MakeCompound(C);
++      if (Build.IsBound(E[k]))
++      {
++        for (TopExp_Explorer aExp(Build(E[k]), TopAbs_EDGE); aExp.More(); aExp.Next())
++        {
++          B.Add(C, aExp.Current());
++        }
++      }
++      for (NCollection_List<TopoDS_Shape>::Iterator itI(LInt1); itI.More(); itI.Next())
++      {
++        B.Add(C, itI.Value());
++      }
++      Build.Bind(E[k], C);
++    }
++  }
++}
++
++//=================================================================================================
++
++void BRepOffset_Inter3d::ConnexIntByArcAcrossVanished(const NCollection_List<TopoDS_Shape>& theAcross,
++                                                      const BRepAlgo_Image& InitOffsetFace)
++{
++  NCollection_List<TopoDS_Shape>::Iterator it(theAcross);
++  for (; it.More(); it.Next())
++  {
++    const TopoDS_Face& InitF1 = TopoDS::Face(it.Value());
++    it.Next();
++    const TopoDS_Edge& E1 = TopoDS::Edge(it.Value());
++    it.Next();
++    const TopoDS_Face& InitF2 = TopoDS::Face(it.Value());
++    it.Next();
++    if (!InitOffsetFace.HasImage(InitF1) || !InitOffsetFace.HasImage(InitF2))
++    {
++      continue;
++    }
++    const TopoDS_Face F1 = TopoDS::Face(InitOffsetFace.Image(InitF1).First());
++    const TopoDS_Face F2 = TopoDS::Face(InitOffsetFace.Image(InitF2).First());
++    if (!IsDone(F1, F2))
++    {
++      NCollection_List<TopoDS_Shape> LInt1, LInt2;
++      BRepOffset_Tool::Inter3D(F1, F2, LInt1, LInt2, mySide, E1, InitF1, InitF2);
++      Store(F1, F2, LInt1, LInt2);
++    }
++  }
++}
++
++//=================================================================================================
++
+ void BRepOffset_Inter3d::ContextIntByInt(
+   const NCollection_IndexedMap<TopoDS_Shape, TopTools_ShapeMapHasher>& ContextFaces,
+   const bool                                                           ExtentContext,
+@@ -1051,7 +1189,8 @@ void BRepOffset_Inter3d::ContextIntByInt(
+   NCollection_DataMap<TopoDS_Shape, TopoDS_Shape, TopTools_ShapeMapHasher>&            Build,
+   NCollection_List<TopoDS_Shape>&                                                      Failed,
+   const Message_ProgressRange&                                                         theRange,
+-  const bool                                                                           bIsPlanar)
++  const bool                                                                           bIsPlanar,
++  const NCollection_Map<TopoDS_Shape, TopTools_ShapeMapHasher>*                        theVanished)
+ {
+   NCollection_Map<TopoDS_Shape, TopTools_ShapeMapHasher> MV;
+   TopExp_Explorer                                        exp;
+@@ -1212,7 +1351,11 @@ void BRepOffset_Inter3d::ContextIntByInt(
+       itF.Initialize(Anc);
+       for (; itF.More(); itF.Next())
+       {
+-        const TopoDS_Face& F     = TopoDS::Face(itF.Value());
++        const TopoDS_Face& F = TopoDS::Face(itF.Value());
++        if (theVanished && theVanished->Contains(F))
++        {
++          continue;
++        }
+         OF                       = TopoDS::Face(MapSF(F).Face());
+         TopoDS_Shape aLocalShape = MapSF(F).Generated(E);
+         OE                       = TopoDS::Edge(aLocalShape);
+@@ -1351,6 +1494,11 @@ void BRepOffset_Inter3d::ContextIntByArc(
+       // OF1 parallel facee generated by the ancestor of E.
+       //---------------------------------------------------
+       const TopoDS_Shape SI = Analyse.Ancestors(E).First();
++      if (!InitOffsetFace.HasImage(SI))
++      {
++        // a face whose offset vanishes
++        continue;
++      }
+       OF1                   = TopoDS::Face(InitOffsetFace.Image(SI).First());
+       OE                    = TopoDS::Edge(InitOffsetEdge.Image(E).First());
+ 
+@@ -1464,6 +1612,11 @@ void BRepOffset_Inter3d::ContextIntByArc(
+         for (; itLF.More(); itLF.Next())
+         {
+           const TopoDS_Face& FEV = TopoDS::Face(itLF.Value());
++          if (!InitOffsetFace.HasImage(FEV))
++          {
++            // a face whose offset vanishes
++            continue;
++          }
+           //-------------------------------------------------
+           // OF1 parallel face generated by uneFace ancestor of V[i].
+           //-------------------------------------------------
+diff --git a/src/ModelingAlgorithms/TKOffset/BRepOffset/BRepOffset_Inter3d.hxx b/src/ModelingAlgorithms/TKOffset/BRepOffset/BRepOffset_Inter3d.hxx
+index 8ee97c4..4e14441 100644
+--- a/src/ModelingAlgorithms/TKOffset/BRepOffset/BRepOffset_Inter3d.hxx
++++ b/src/ModelingAlgorithms/TKOffset/BRepOffset/BRepOffset_Inter3d.hxx
+@@ -27,6 +27,7 @@
+ #include <TopoDS_Shape.hxx>
+ #include <NCollection_List.hxx>
+ #include <NCollection_DataMap.hxx>
++#include <NCollection_Map.hxx>
+ #include <TopAbs_State.hxx>
+ #include <BRepOffset_Offset.hxx>
+ class BRepAlgo_AsDes;
+@@ -76,7 +77,26 @@ public:
+     NCollection_DataMap<TopoDS_Shape, TopoDS_Shape, TopTools_ShapeMapHasher>&            Build,
+     NCollection_List<TopoDS_Shape>&                                                      Failed,
+     const Message_ProgressRange&                                                         theRange,
+-    const bool bIsPlanar = false);
++    const bool bIsPlanar = false,
++    const NCollection_Map<TopoDS_Shape, TopTools_ShapeMapHasher>* theVanished = nullptr);
++
++  //! Intersects the offsets of the faces on both sides of faces whose offset
++  //! vanishes (theAcross: face A, its edge to the vanishing faces, face B,
++  //! its edge), as if they were neighbours. The intersection is bound in
++  //! Build to both edges.
++  Standard_EXPORT void ConnexIntAcrossVanished(
++    const NCollection_List<TopoDS_Shape>&                                                theAcross,
++    const NCollection_DataMap<TopoDS_Shape, BRepOffset_Offset, TopTools_ShapeMapHasher>& MapSF,
++    const BRepOffset_Analyse&                                                            A,
++    NCollection_DataMap<TopoDS_Shape, TopoDS_Shape, TopTools_ShapeMapHasher>&            MES,
++    NCollection_DataMap<TopoDS_Shape, TopoDS_Shape, TopTools_ShapeMapHasher>&            Build,
++    NCollection_List<TopoDS_Shape>&                                                      Failed,
++    const TopAbs_State                                                                   theSide);
++
++  //! Intersects the offsets of the faces on both sides of faces whose offset
++  //! vanishes, joined by arcs (theAcross as for ConnexIntAcrossVanished).
++  Standard_EXPORT void ConnexIntByArcAcrossVanished(const NCollection_List<TopoDS_Shape>& theAcross,
++                                                    const BRepAlgo_Image& InitOffsetFace);
+ 
+   //! Computes intersection with not offset faces .
+   Standard_EXPORT void ContextIntByInt(
+@@ -88,7 +108,8 @@ public:
+     NCollection_DataMap<TopoDS_Shape, TopoDS_Shape, TopTools_ShapeMapHasher>&            Build,
+     NCollection_List<TopoDS_Shape>&                                                      Failed,
+     const Message_ProgressRange&                                                         theRange,
+-    const bool bIsPlanar = false);
++    const bool bIsPlanar = false,
++    const NCollection_Map<TopoDS_Shape, TopTools_ShapeMapHasher>* theVanished = nullptr);
+ 
+   //! Computes connections of the not offset faces that have to be connected by arcs
+   Standard_EXPORT void ContextIntByArc(
+diff --git a/src/ModelingAlgorithms/TKOffset/BRepOffset/BRepOffset_MakeOffset.cxx b/src/ModelingAlgorithms/TKOffset/BRepOffset/BRepOffset_MakeOffset.cxx
+index 7513284..16f8c82 100644
+--- a/src/ModelingAlgorithms/TKOffset/BRepOffset/BRepOffset_MakeOffset.cxx
++++ b/src/ModelingAlgorithms/TKOffset/BRepOffset/BRepOffset_MakeOffset.cxx
+@@ -64,10 +64,14 @@
+ #include <Geom_ConicalSurface.hxx>
+ #include <Geom_OffsetSurface.hxx>
+ #include <Geom_Plane.hxx>
++#include <Geom_RectangularTrimmedSurface.hxx>
++#include <Standard_ErrorHandler.hxx>
+ #include <Geom_SphericalSurface.hxx>
+ #include <Geom_TrimmedCurve.hxx>
+ #include <GeomAdaptor_Surface.hxx>
+ #include <GeomAPI_ProjectPointOnCurve.hxx>
++#include <Extrema_GenLocateExtPS.hxx>
++#include <Extrema_POnSurf.hxx>
+ #include <GeomFill_Generator.hxx>
+ #include <GeomLib.hxx>
+ #include <GeomLib_IsPlanarSurface.hxx>
+@@ -299,10 +303,39 @@ static bool TrimEdges(
+   NCollection_IndexedMap<TopoDS_Shape, TopTools_ShapeMapHasher>&                 theNewEdges,
+   NCollection_DataMap<TopoDS_Shape, TopoDS_Shape, TopTools_ShapeMapHasher>&      theETrimEInf,
+   NCollection_DataMap<TopoDS_Shape, NCollection_List<TopoDS_Shape>, TopTools_ShapeMapHasher>&
+-    theEdgesOrigins);
++    theEdgesOrigins,
++  const NCollection_Map<TopoDS_Shape, TopTools_ShapeMapHasher>* theVanished = nullptr);
+ 
+ static void AppendToList(NCollection_List<TopoDS_Shape>& theL, const TopoDS_Shape& theS);
+ 
++static void FindVanishingFaces(
++  const TopoDS_Shape&                                                       theShape,
++  const BRepOffset_Analyse&                                                 theAnalyse,
++  const GeomAbs_JoinType                                                    theJoin,
++  const NCollection_DataMap<TopoDS_Shape, double, TopTools_ShapeMapHasher>& theFaceOffset,
++  const double                                                              theOffset,
++  NCollection_Map<TopoDS_Shape, TopTools_ShapeMapHasher>&                   theVanished,
++  NCollection_List<TopoDS_Shape>&                                           theAcross);
++
++//! Whether the edge bounds a face whose offset vanishes.
++static bool IsEdgeToVanished(const BRepOffset_Analyse&                                     theAnalyse,
++                             const TopoDS_Shape&                                           theE,
++                             const NCollection_Map<TopoDS_Shape, TopTools_ShapeMapHasher>* theVanished)
++{
++  if (!theVanished || !theAnalyse.HasAncestor(theE))
++  {
++    return false;
++  }
++  for (NCollection_List<TopoDS_Shape>::Iterator it(theAnalyse.Ancestors(theE)); it.More(); it.Next())
++  {
++    if (theVanished->Contains(it.Value()))
++    {
++      return true;
++    }
++  }
++  return false;
++}
++
+ static BRepOffset_Error checkSinglePoint(const double                            theUParam,
+                                          const double                            theVParam,
+                                          const occ::handle<Geom_Surface>&        theSurf,
+@@ -916,13 +949,35 @@ void BRepOffset_MakeOffset::MakeOffsetShape(const Message_ProgressRange& theRang
+   //----------------------------
+   UpdateFaceOffset();
+ 
++  //--------------------------------------------------------------------
++  // Faces whose offset vanishes within the offset distance: they get no
++  // offset, and the offsets of the faces on both sides of them are
++  // intersected with each other instead (the complete intersection of
++  // planar shapes finds and removes such faces in its own way).
++  //--------------------------------------------------------------------
++  NCollection_Map<TopoDS_Shape, TopTools_ShapeMapHasher> aMFVanished;
++  NCollection_List<TopoDS_Shape>                         aLAcross;
++  if (!myThickening && !(myInter && myIsPlanar && myJoin == GeomAbs_Intersection)
++      && (std::abs(myOffset) > Precision::Confusion() || !myFaceOffset.IsEmpty()))
++  {
++    FindVanishingFaces(myFaceComp,
++                       myAnalyse,
++                       myJoin,
++                       myFaceOffset,
++                       myOffset,
++                       aMFVanished,
++                       aLAcross);
++  }
++  const NCollection_Map<TopoDS_Shape, TopTools_ShapeMapHasher>* pVanished =
++    aMFVanished.IsEmpty() ? nullptr : &aMFVanished;
++
+   if (myJoin == GeomAbs_Arc)
+   {
+-    BuildOffsetByArc(aPS.Next(aSteps(PIOperation_BuildOffsetBy)));
++    BuildOffsetByArc(aPS.Next(aSteps(PIOperation_BuildOffsetBy)), pVanished);
+   }
+   else if (myJoin == GeomAbs_Intersection)
+   {
+-    BuildOffsetByInter(aPS.Next(aSteps(PIOperation_BuildOffsetBy)));
++    BuildOffsetByInter(aPS.Next(aSteps(PIOperation_BuildOffsetBy)), pVanished, &aLAcross);
+   }
+   if (myError != BRepOffset_NoError)
+   {
+@@ -940,7 +995,7 @@ void BRepOffset_MakeOffset::MakeOffsetShape(const Message_ProgressRange& theRang
+                                            : "Connect offset faces by intersection");
+ 
+   BRepOffset_Inter3d Inter(myAsDes, Side, myTol);
+-  Intersection3D(Inter, aPSInter.Next(90));
++  Intersection3D(Inter, aPSInter.Next(90), pVanished, &aLAcross);
+   if (myError != BRepOffset_NoError)
+   {
+     return;
+@@ -1164,6 +1219,14 @@ void BRepOffset_MakeOffset::MakeThickSolid(const Message_ProgressRange& theRange
+     }
+     if (NbOF == NbF)
+     {
++      if (std::abs(myOffset) > Precision::Confusion())
++      {
++        // No face of the offset is in the solid: the faces of the shape
++        // alone, which is no thick solid (the offset failed).
++        myDone  = false;
++        myError = BRepOffset_UnknownError;
++        return;
++      }
+       myOffset = 0;
+     }
+   }
+@@ -1272,9 +1335,616 @@ void BRepOffset_MakeOffset::MakeOffsetFaces(
+   }
+ }
+ 
++namespace
++{
++//! Offset value of the face.
++static double FaceOffsetValue(
++  const TopoDS_Shape&                                                       theF,
++  const NCollection_DataMap<TopoDS_Shape, double, TopTools_ShapeMapHasher>& theFaceOffset,
++  const double                                                              theOffset)
++{
++  const double* pOffset = theFaceOffset.Seek(theF);
++  return pOffset ? *pOffset : theOffset;
++}
++
++//! Point, outward normal and surface parameters of the face at the
++//! parameter of its edge.
++static bool PointOnEdgeOfFace(const TopoDS_Edge& theE,
++                              const TopoDS_Face& theF,
++                              const double       theT,
++                              gp_Pnt&            theP,
++                              gp_Vec&            theN,
++                              gp_Pnt2d&          theUV)
++{
++  double                          aF, aL;
++  const occ::handle<Geom2d_Curve> aC2d = BRep_Tool::CurveOnSurface(theE, theF, aF, aL);
++  if (aC2d.IsNull())
++  {
++    return false;
++  }
++  const gp_Pnt2d aUV = aC2d->Value(theT);
++  theUV              = aUV;
++  BRepAdaptor_Surface aS(theF, false);
++  gp_Vec              aDU, aDV;
++  aS.D1(aUV.X(), aUV.Y(), theP, aDU, aDV);
++  theN = aDU.Crossed(aDV);
++  if (theN.Magnitude() < gp::Resolution())
++  {
++    return false;
++  }
++  theN.Normalize();
++  if (theF.Orientation() == TopAbs_REVERSED)
++  {
++    theN.Reverse();
++  }
++  // The 3d point of the edge itself (the surface point of the p-curve may
++  // differ by the edge's tolerance).
++  double                         aF3, aL3;
++  const occ::handle<Geom_Curve>& aC3d = BRep_Tool::Curve(theE, aF3, aL3);
++  if (!aC3d.IsNull())
++  {
++    theP = aC3d->Value(theT);
++  }
++  return true;
++}
++
++//! The other face of the edge in the analysis, or a null face.
++static TopoDS_Face OtherFace(const BRepOffset_Analyse& theAnalyse,
++                             const TopoDS_Edge&        theE,
++                             const TopoDS_Shape&       theF)
++{
++  if (!theAnalyse.HasAncestor(theE))
++  {
++    return TopoDS_Face();
++  }
++  const NCollection_List<TopoDS_Shape>& aLA = theAnalyse.Ancestors(theE);
++  if (aLA.Extent() != 2)
++  {
++    return TopoDS_Face();
++  }
++  for (NCollection_List<TopoDS_Shape>::Iterator it(aLA); it.More(); it.Next())
++  {
++    if (!it.Value().IsSame(theF))
++    {
++      return TopoDS::Face(it.Value());
++    }
++  }
++  return TopoDS_Face();
++}
++
++//! Solves the 3x3 system of the planes n_i . X = d_i; false if they are
++//! nearly parallel.
++static bool IntersectPlanes(const gp_Vec theN[3], const double theD[3], gp_Pnt& theX)
++{
++  const gp_Vec aC12 = theN[1].Crossed(theN[2]);
++  const double aDet = theN[0].Dot(aC12);
++  if (std::abs(aDet) < 1.e-9)
++  {
++    return false;
++  }
++  const gp_Vec aX = (aC12 * theD[0] + theN[2].Crossed(theN[0]) * theD[1]
++                     + theN[0].Crossed(theN[1]) * theD[2])
++                    / aDet;
++  theX            = gp_Pnt(aX.XYZ());
++  return true;
++}
++
++//! The surface of the face moved by theOffset along its outward normal, or
++//! null if it cannot be made (cached).
++static occ::handle<Geom_Surface> OffsetSurface(
++  const TopoDS_Face&                                                                       theF,
++  const double                                                                             theOffset,
++  NCollection_DataMap<TopoDS_Shape, occ::handle<Geom_Surface>, TopTools_ShapeMapHasher>& theCache)
++{
++  if (const occ::handle<Geom_Surface>* pS = theCache.Seek(theF))
++  {
++    return *pS;
++  }
++  occ::handle<Geom_Surface> aS = BRep_Tool::Surface(theF);
++  occ::handle<Geom_Surface> aOS;
++  if (!aS.IsNull())
++  {
++    occ::handle<Geom_RectangularTrimmedSurface> aRT =
++      occ::down_cast<Geom_RectangularTrimmedSurface>(aS);
++    if (!aRT.IsNull())
++    {
++      aS = aRT->BasisSurface();
++    }
++    try
++    {
++      OCC_CATCH_SIGNALS
++      aOS = new Geom_OffsetSurface(aS,
++                                   theF.Orientation() == TopAbs_REVERSED ? -theOffset : theOffset,
++                                   true);
++    }
++    catch (Standard_Failure const&)
++    {
++      aOS.Nullify();
++    }
++  }
++  theCache.Bind(theF, aOS);
++  return aOS;
++}
++
++//! Image of the point of parameter theT of the edge theE of the face theF on
++//! the boundary of the offset of theF: moved along the normal where the edge
++//! is smooth or free, else where the offsets of theF and of the face beyond
++//! the edge meet in the plane normal to the edge. False where it cannot be
++//! computed.
++static bool ImageOnOffsetBoundary(
++  const TopoDS_Edge&                                                                   theE,
++  const TopoDS_Face&                                                                   theF,
++  const double                                                                         theT,
++  const BRepOffset_Analyse&                                                            theAnalyse,
++  const GeomAbs_JoinType                                                               theJoin,
++  NCollection_DataMap<TopoDS_Shape, occ::handle<Geom_Surface>, TopTools_ShapeMapHasher>& theOffsetSurfaces,
++  const NCollection_DataMap<TopoDS_Shape, double, TopTools_ShapeMapHasher>& theFaceOffset,
++  const double                                                              theOffset,
++  gp_Pnt&                                                                   theP,
++  gp_Pnt&                                                                   theImage)
++{
++  gp_Vec   aNF;
++  gp_Pnt2d aUVF;
++  if (!PointOnEdgeOfFace(theE, theF, theT, theP, aNF, aUVF))
++  {
++    return false;
++  }
++  const double aDF = FaceOffsetValue(theF, theFaceOffset, theOffset);
++  theImage         = theP.Translated(aNF * aDF);
++  //
++  const NCollection_List<BRepOffset_Interval>& aLI = theAnalyse.Type(theE);
++  if (aLI.IsEmpty())
++  {
++    return true;
++  }
++  const ChFiDS_TypeOfConcavity aType = aLI.First().Type();
++  if (aType != ChFiDS_Convex && aType != ChFiDS_Concave)
++  {
++    return true;
++  }
++  if (theJoin == GeomAbs_Arc && aType == (theOffset < 0. ? ChFiDS_Concave : ChFiDS_Convex))
++  {
++    // a tube joins the offsets there
++    return true;
++  }
++  const TopoDS_Face aG = OtherFace(theAnalyse, theE, theF);
++  if (aG.IsNull())
++  {
++    return true;
++  }
++  gp_Pnt   aPG;
++  gp_Vec   aNG;
++  gp_Pnt2d aUVG;
++  if (!PointOnEdgeOfFace(theE, aG, theT, aPG, aNG, aUVG))
++  {
++    return false;
++  }
++  const double aDG = FaceOffsetValue(aG, theFaceOffset, theOffset);
++  // Plane normal to the edge
++  double                         aF3, aL3;
++  const occ::handle<Geom_Curve>& aC3d = BRep_Tool::Curve(theE, aF3, aL3);
++  if (aC3d.IsNull())
++  {
++    return false;
++  }
++  gp_Pnt aPE;
++  gp_Vec aTE;
++  aC3d->D1(theT, aPE, aTE);
++  if (aTE.Magnitude() < gp::Resolution())
++  {
++    return false;
++  }
++  aTE.Normalize();
++  gp_Vec aN[3] = {aNF, aNG, aTE};
++  double aD[3] = {aNF.Dot(gp_Vec(theP.XYZ())) + aDF,
++                  aNG.Dot(gp_Vec(theP.XYZ())) + aDG,
++                  aTE.Dot(gp_Vec(theP.XYZ()))};
++  gp_Pnt aX;
++  if (!IntersectPlanes(aN, aD, aX))
++  {
++    return true;
++  }
++  // Refine on the offset surfaces themselves where they are curved (by their
++  // tangent planes at the projections of the point).
++  const bool bPlanes = BRepAdaptor_Surface(theF, false).GetType() == GeomAbs_Plane
++                       && BRepAdaptor_Surface(aG, false).GetType() == GeomAbs_Plane;
++  const occ::handle<Geom_Surface> aSF =
++    bPlanes ? occ::handle<Geom_Surface>() : OffsetSurface(theF, aDF, theOffsetSurfaces);
++  const occ::handle<Geom_Surface> aSG =
++    bPlanes ? occ::handle<Geom_Surface>() : OffsetSurface(aG, aDG, theOffsetSurfaces);
++  if (!aSF.IsNull() && !aSG.IsNull())
++  {
++    const gp_Pnt        aX0 = aX;
++    GeomAdaptor_Surface aGA[2] = {GeomAdaptor_Surface(aSF), GeomAdaptor_Surface(aSG)};
++    // the offset surfaces share the parameters of the faces' surfaces
++    double aU[2] = {aUVF.X(), aUVG.X()};
++    double aV[2] = {aUVF.Y(), aUVG.Y()};
++    for (int anIter = 0; anIter < 4; ++anIter)
++    {
++      gp_Pnt aQ[2];
++      gp_Vec aNQ[2];
++      bool   bOk = true;
++      for (int k = 0; k < 2 && bOk; ++k)
++      {
++        Extrema_GenLocateExtPS aLoc(aGA[k]);
++        aLoc.Perform(aX, aU[k], aV[k]);
++        bOk = aLoc.IsDone();
++        if (!bOk)
++        {
++          break;
++        }
++        aLoc.Point().Parameter(aU[k], aV[k]);
++        gp_Vec aDU, aDV;
++        aGA[k].D1(aU[k], aV[k], aQ[k], aDU, aDV);
++        aNQ[k] = aDU.Crossed(aDV);
++        bOk    = aNQ[k].Magnitude() > gp::Resolution();
++        if (bOk)
++        {
++          aNQ[k].Normalize();
++        }
++      }
++      if (!bOk)
++      {
++        break;
++      }
++      gp_Vec aNI[3] = {aNQ[0], aNQ[1], aTE};
++      double aDI[3] = {aNQ[0].Dot(gp_Vec(aQ[0].XYZ())),
++                       aNQ[1].Dot(gp_Vec(aQ[1].XYZ())),
++                       aTE.Dot(gp_Vec(theP.XYZ()))};
++      gp_Pnt aXI;
++      if (!IntersectPlanes(aNI, aDI, aXI))
++      {
++        break;
++      }
++      if (aXI.Distance(aX0) > std::abs(aDF) + std::abs(aDG))
++      {
++        // off to another part of the surfaces: keep the tangent planes' point
++        aX = aX0;
++        break;
++      }
++      const bool bConverged = aXI.SquareDistance(aX) < Precision::SquareConfusion();
++      aX                    = aXI;
++      if (bConverged)
++      {
++        break;
++      }
++    }
++  }
++  theImage = aX;
++  return true;
++}
++
++//! Checks whether the offset of the face vanishes between the two edges:
++//! at each of several stations along theEA, the images of the point on theEA
++//! and of the nearest point on theEB lie in the opposite order on the offset
++//! (or coincide). Returns 1 where it vanishes at every station, 0 where it
++//! vanishes nowhere, -1 where only in parts or where it cannot be decided.
++static int VanishesBetween(
++  const TopoDS_Face&                                                                   theF,
++  const TopoDS_Edge&                                                                   theEA,
++  const TopoDS_Edge&                                                                   theEB,
++  const BRepOffset_Analyse&                                                            theAnalyse,
++  const GeomAbs_JoinType                                                               theJoin,
++  NCollection_DataMap<TopoDS_Shape, occ::handle<Geom_Surface>, TopTools_ShapeMapHasher>& theOffsetSurfaces,
++  const NCollection_DataMap<TopoDS_Shape, double, TopTools_ShapeMapHasher>& theFaceOffset,
++  const double                                                              theOffset)
++{
++  double                         aFA, aLA, aFB, aLB;
++  const occ::handle<Geom_Curve>& aCA = BRep_Tool::Curve(theEA, aFA, aLA);
++  const occ::handle<Geom_Curve>& aCB = BRep_Tool::Curve(theEB, aFB, aLB);
++  if (aCA.IsNull() || aCB.IsNull())
++  {
++    return -1;
++  }
++  const double aDF = std::abs(FaceOffsetValue(theF, theFaceOffset, theOffset));
++  const int    aNbStations = 5;
++  int          aNbVanished = 0, aNbKept = 0;
++  for (int i = 0; i < aNbStations; ++i)
++  {
++    const double aTA = aFA + (aLA - aFA) * (i + 0.5) / aNbStations;
++    gp_Pnt       aPA, aImA;
++    if (!ImageOnOffsetBoundary(theEA,
++                               theF,
++                               aTA,
++                               theAnalyse,
++                               theJoin,
++                               theOffsetSurfaces,
++                               theFaceOffset,
++                               theOffset,
++                               aPA,
++                               aImA))
++    {
++      return -1;
++    }
++    // The nearest point of theEB (inside it or at an end)
++    double                      aTB   = aFB;
++    double                      aDist = aPA.Distance(aCB->Value(aFB));
++    GeomAPI_ProjectPointOnCurve aProj(aPA, aCB, aFB, aLB);
++    if (aProj.NbPoints() > 0 && aProj.LowerDistance() < aDist)
++    {
++      aTB   = aProj.LowerDistanceParameter();
++      aDist = aProj.LowerDistance();
++    }
++    if (aPA.Distance(aCB->Value(aLB)) < aDist)
++    {
++      aTB   = aLB;
++      aDist = aPA.Distance(aCB->Value(aLB));
++    }
++    // Too wide a face to vanish at this offset
++    if (aDist > 10. * aDF)
++    {
++      return 0;
++    }
++    gp_Pnt aPB, aImB;
++    if (!ImageOnOffsetBoundary(theEB,
++                               theF,
++                               aTB,
++                               theAnalyse,
++                               theJoin,
++                               theOffsetSurfaces,
++                               theFaceOffset,
++                               theOffset,
++                               aPB,
++                               aImB))
++    {
++      return -1;
++    }
++    const gp_Vec aW(aPA, aPB);
++    const gp_Vec aWI(aImA, aImB);
++    if (aWI.Magnitude() < Precision::Confusion() || aWI.Dot(aW) < 0.)
++    {
++      ++aNbVanished;
++    }
++    else
++    {
++      ++aNbKept;
++    }
++  }
++  if (aNbVanished == aNbStations)
++  {
++    return 1;
++  }
++  return aNbKept == aNbStations ? 0 : -1;
++}
++
++//! The edges of the outer wire of the face in their order, or false if the
++//! face has another wire.
++static bool OrderedEdges(const TopoDS_Face& theF, NCollection_Sequence<TopoDS_Edge>& theEdges)
++{
++  int             aNbW = 0;
++  TopoDS_Iterator aItW(theF);
++  for (; aItW.More(); aItW.Next())
++  {
++    ++aNbW;
++  }
++  if (aNbW != 1)
++  {
++    return false;
++  }
++  const TopoDS_Wire      aW = BRepTools::OuterWire(theF);
++  BRepTools_WireExplorer aWExp(aW, theF);
++  for (; aWExp.More(); aWExp.Next())
++  {
++    theEdges.Append(aWExp.Current());
++  }
++  return true;
++}
++} // namespace
++
++//=======================================================================
++// function : FindVanishingFaces
++// purpose  : Finds the faces whose offset vanishes within the offset
++//           distance: strips of four edges whose offset turns inside out
++//           across two opposite edges all along them (a chamfer or a
++//           rounding narrower than the offset of the faces beside it),
++//           and for each such pair of edges the faces beyond them, whose
++//           offsets are to meet each other instead (theAcross: face A,
++//           its edge to the vanishing faces, face B, its edge).
++//=======================================================================
++static void FindVanishingFaces(
++  const TopoDS_Shape&                                                                  theShape,
++  const BRepOffset_Analyse&                                                            theAnalyse,
++  const GeomAbs_JoinType                                                               theJoin,
++  const NCollection_DataMap<TopoDS_Shape, double, TopTools_ShapeMapHasher>& theFaceOffset,
++  const double                                                              theOffset,
++  NCollection_Map<TopoDS_Shape, TopTools_ShapeMapHasher>&                   theVanished,
++  NCollection_List<TopoDS_Shape>&                                           theAcross)
++{
++  // Face -> the pairs of its opposite edges across which it vanishes
++  NCollection_IndexedDataMap<TopoDS_Shape, NCollection_List<TopoDS_Shape>, TopTools_ShapeMapHasher>
++                                                                                      aDMFPairs;
++  NCollection_DataMap<TopoDS_Shape, occ::handle<Geom_Surface>, TopTools_ShapeMapHasher> theOffsetSurfaces;
++  for (TopExp_Explorer aExpF(theShape, TopAbs_FACE); aExpF.More(); aExpF.Next())
++  {
++    const TopoDS_Face&                aF = TopoDS::Face(aExpF.Current());
++    NCollection_Sequence<TopoDS_Edge> aLE;
++    if (!OrderedEdges(aF, aLE) || aLE.Length() != 4)
++    {
++      continue;
++    }
++    if (theJoin == GeomAbs_Arc)
++    {
++      // a face with a tube along an edge stays (the tube would lose a side)
++      bool bTube = false;
++      for (int i = 1; i <= aLE.Length(); ++i)
++      {
++        const NCollection_List<BRepOffset_Interval>& aLI = theAnalyse.Type(aLE(i));
++        bTube = bTube
++                || (!aLI.IsEmpty()
++                    && aLI.First().Type() == (theOffset < 0. ? ChFiDS_Concave : ChFiDS_Convex));
++      }
++      if (bTube)
++      {
++        continue;
++      }
++    }
++    // The face vanishes where its offset turns inside out between two
++    // opposite edges all along them, whatever happens in the other direction.
++    NCollection_List<TopoDS_Shape> aPairs;
++    for (int i = 1; i <= 2; ++i)
++    {
++      const TopoDS_Edge& aEA = aLE(i);
++      const TopoDS_Edge& aEB = aLE(i + 2);
++      if (aEA.IsSame(aEB) || BRep_Tool::Degenerated(aEA) || BRep_Tool::Degenerated(aEB))
++      {
++        continue;
++      }
++      const int aRes = VanishesBetween(aF,
++                                       aEA,
++                                       aEB,
++                                       theAnalyse,
++                                       theJoin,
++                                       theOffsetSurfaces,
++                                       theFaceOffset,
++                                       theOffset);
++      if (aRes == 1)
++      {
++        aPairs.Append(aEA);
++        aPairs.Append(aEB);
++      }
++    }
++    if (!aPairs.IsEmpty())
++    {
++      aDMFPairs.Add(aF, aPairs);
++    }
++  }
++  //
++  // Faces beyond the vanishing ones: across each pair, past vanishing faces
++  // in a row, to the first face kept on each side. A face that cannot be
++  // closed this way (a free or open edge beyond it) stays.
++  for (int aRemove = 1; aRemove > 0;)
++  {
++    aRemove = 0;
++    for (int i = 1; i <= aDMFPairs.Extent() && !aRemove; ++i)
++    {
++      const TopoDS_Shape&                      aF = aDMFPairs.FindKey(i);
++      NCollection_List<TopoDS_Shape>::Iterator aItP(aDMFPairs(i));
++      for (; aItP.More() && !aRemove; aItP.Next())
++      {
++        TopoDS_Edge aE[2];
++        aE[0] = TopoDS::Edge(aItP.Value());
++        aItP.Next();
++        aE[1] = TopoDS::Edge(aItP.Value());
++        for (int k = 0; k < 2 && !aRemove; ++k)
++        {
++          TopoDS_Shape aCur = aF;
++          TopoDS_Edge  aEC  = aE[k];
++          for (int aGuard = 0; aGuard < 100; ++aGuard)
++          {
++            const TopoDS_Face aG = OtherFace(theAnalyse, aEC, aCur);
++            if (aG.IsNull())
++            {
++              // a free or open edge: aF cannot be closed
++              aRemove = i;
++              break;
++            }
++            const NCollection_List<TopoDS_Shape>* pGPairs = aDMFPairs.Seek(aG);
++            if (!pGPairs)
++            {
++              break;
++            }
++            // continue across aG by its pair holding aEC
++            TopoDS_Edge                              aENext;
++            NCollection_List<TopoDS_Shape>::Iterator aItG(*pGPairs);
++            for (; aItG.More(); aItG.Next())
++            {
++              const TopoDS_Shape& aE1 = aItG.Value();
++              aItG.Next();
++              const TopoDS_Shape& aE2 = aItG.Value();
++              if (aE1.IsSame(aEC))
++              {
++                aENext = TopoDS::Edge(aE2);
++              }
++              else if (aE2.IsSame(aEC))
++              {
++                aENext = TopoDS::Edge(aE1);
++              }
++            }
++            if (aENext.IsNull())
++            {
++              // aG vanishes in the other direction only
++              aRemove = i;
++              break;
++            }
++            aCur = aG;
++            aEC  = aENext;
++          }
++        }
++      }
++    }
++    if (aRemove)
++    {
++      aDMFPairs.RemoveFromIndex(aRemove);
++    }
++  }
++  //
++  for (int i = 1; i <= aDMFPairs.Extent(); ++i)
++  {
++    theVanished.Add(aDMFPairs.FindKey(i));
++  }
++  //
++  NCollection_Map<TopoDS_Shape, TopTools_ShapeMapHasher> aMEDone;
++  for (int i = 1; i <= aDMFPairs.Extent(); ++i)
++  {
++    const TopoDS_Shape&                      aF = aDMFPairs.FindKey(i);
++    NCollection_List<TopoDS_Shape>::Iterator aItP(aDMFPairs(i));
++    for (; aItP.More(); aItP.Next())
++    {
++      TopoDS_Edge aE[2];
++      aE[0] = TopoDS::Edge(aItP.Value());
++      aItP.Next();
++      aE[1] = TopoDS::Edge(aItP.Value());
++      TopoDS_Face aG[2];
++      for (int k = 0; k < 2; ++k)
++      {
++        TopoDS_Shape aCur = aF;
++        for (int aGuard = 0; aGuard < 100; ++aGuard)
++        {
++          aG[k] = OtherFace(theAnalyse, aE[k], aCur);
++          if (!theVanished.Contains(aG[k]))
++          {
++            break;
++          }
++          NCollection_List<TopoDS_Shape>::Iterator aItG(aDMFPairs.FindFromKey(aG[k]));
++          for (; aItG.More(); aItG.Next())
++          {
++            const TopoDS_Shape& aE1 = aItG.Value();
++            aItG.Next();
++            const TopoDS_Shape& aE2 = aItG.Value();
++            if (aE1.IsSame(aE[k]))
++            {
++              aE[k] = TopoDS::Edge(aE2);
++              break;
++            }
++            if (aE2.IsSame(aE[k]))
++            {
++              aE[k] = TopoDS::Edge(aE1);
++              break;
++            }
++          }
++          aCur = aG[k];
++        }
++      }
++      if (aG[0].IsSame(aG[1]) || (aMEDone.Contains(aE[0]) && aMEDone.Contains(aE[1])))
++      {
++        continue;
++      }
++      aMEDone.Add(aE[0]);
++      aMEDone.Add(aE[1]);
++      theAcross.Append(aG[0]);
++      theAcross.Append(aE[0]);
++      theAcross.Append(aG[1]);
++      theAcross.Append(aE[1]);
++    }
++  }
++}
++
+ //=================================================================================================
+ 
+-void BRepOffset_MakeOffset::BuildOffsetByInter(const Message_ProgressRange& theRange)
++void BRepOffset_MakeOffset::BuildOffsetByInter(
++  const Message_ProgressRange&                                  theRange,
++  const NCollection_Map<TopoDS_Shape, TopTools_ShapeMapHasher>* theVanished,
++  const NCollection_List<TopoDS_Shape>*                         theAcross)
+ {
+ #ifdef OCCT_DEBUG
+   if (ChronBuild)
+@@ -1337,6 +2007,14 @@ void BRepOffset_MakeOffset::BuildOffsetByInter(const Message_ProgressRange& theR
+     myError = BRepOffset_UserBreak;
+     return;
+   }
++  // Faces whose offset vanishes (MakeOffsetShape)
++  const NCollection_Map<TopoDS_Shape, TopTools_ShapeMapHasher> anEmptyMap;
++  const NCollection_List<TopoDS_Shape>                         anEmptyList;
++  const NCollection_Map<TopoDS_Shape, TopTools_ShapeMapHasher>& aMFVanished =
++    theVanished ? *theVanished : anEmptyMap;
++  const NCollection_List<TopoDS_Shape>& aLAcross = theAcross ? *theAcross : anEmptyList;
++  const NCollection_Map<TopoDS_Shape, TopTools_ShapeMapHasher>* pVanished =
++    aMFVanished.IsEmpty() ? nullptr : &aMFVanished;
+   //--------------------------------------------------------------------
+   // MES   : Map of OffsetShape -> Extended Shapes.
+   // Build : Map of Initial SS  -> OffsetShape build by Inter.
+@@ -1366,12 +2044,23 @@ void BRepOffset_MakeOffset::BuildOffsetByInter(const Message_ProgressRange& theR
+                         Build,
+                         Failed,
+                         aPSOuter.Next(aSteps(BuildOffsetByInter_ConnexIntByInt)),
+-                        myIsPlanar);
++                        myIsPlanar,
++                        pVanished);
+   if (!aPSOuter.More())
+   {
+     myError = BRepOffset_UserBreak;
+     return;
+   }
++  if (pVanished)
++  {
++    Inter3.ConnexIntAcrossVanished(aLAcross,
++                                   MapSF,
++                                   myAnalyse,
++                                   MES,
++                                   Build,
++                                   Failed,
++                                   myOffset < 0. ? TopAbs_OUT : TopAbs_IN);
++  }
+   // Intersection with caps.
+   Inter3.ContextIntByInt(myFaces,
+                          ExtentContext,
+@@ -1381,7 +2070,8 @@ void BRepOffset_MakeOffset::BuildOffsetByInter(const Message_ProgressRange& theR
+                          Build,
+                          Failed,
+                          aPSOuter.Next(aSteps(BuildOffsetByInter_ContextIntByInt)),
+-                         myIsPlanar);
++                         myIsPlanar,
++                         pVanished);
+   if (!aPSOuter.More())
+   {
+     myError = BRepOffset_UserBreak;
+@@ -1391,7 +2081,10 @@ void BRepOffset_MakeOffset::BuildOffsetByInter(const Message_ProgressRange& theR
+   NCollection_List<TopoDS_Shape> aLFaces;
+   for (Exp.Init(myFaceComp, TopAbs_FACE); Exp.More(); Exp.Next())
+   {
+-    aLFaces.Append(Exp.Current());
++    if (!aMFVanished.Contains(Exp.Current()))
++    {
++      aLFaces.Append(Exp.Current());
++    }
+   }
+   for (NCollection_List<TopoDS_Shape>::Iterator it(myAnalyse.NewFaces()); it.More(); it.Next())
+   {
+@@ -1407,7 +2100,8 @@ void BRepOffset_MakeOffset::BuildOffsetByInter(const Message_ProgressRange& theR
+                  Build,
+                  AsDes,
+                  AsDes2d,
+-                 aPSOuter.Next(aSteps(BuildOffsetByInter_IntersectEdges)));
++                 aPSOuter.Next(aSteps(BuildOffsetByInter_IntersectEdges)),
++                 pVanished);
+   if (myError != BRepOffset_NoError)
+   {
+     return;
+@@ -1434,7 +2128,8 @@ void BRepOffset_MakeOffset::BuildOffsetByInter(const Message_ProgressRange& theR
+                  AsDes2d,
+                  NewEdges,
+                  aETrimEInf,
+-                 anEdgesOrigins))
++                 anEdgesOrigins,
++                 pVanished))
+   {
+     myError = BRepOffset_CannotTrimEdges;
+     return;
+@@ -1734,6 +2429,12 @@ void BRepOffset_MakeOffset::BuildOffsetByInter(const Message_ProgressRange& theR
+             myInitOffsetEdge.Bind(anEdgeRef, aListNewEdge);
+           }
+         }
++        else if (pVanished && myAnalyse.HasAncestor(anEdgeRef)
++                 && (aMFVanished.Contains(myAnalyse.Ancestors(anEdgeRef).First())
++                     || aMFVanished.Contains(myAnalyse.Ancestors(anEdgeRef).Last())))
++        {
++          // an edge to a face whose offset vanishes
++        }
+         else
+         { // Free boundary.
+           TopoDS_Shape aNewEdge = MapSF(aFaceRef).Generated(anEdgeRef);
+@@ -1890,7 +2591,9 @@ void BRepOffset_MakeOffset::BuildFaceComp()
+ 
+ //=================================================================================================
+ 
+-void BRepOffset_MakeOffset::BuildOffsetByArc(const Message_ProgressRange& theRange)
++void BRepOffset_MakeOffset::BuildOffsetByArc(
++  const Message_ProgressRange&                                  theRange,
++  const NCollection_Map<TopoDS_Shape, TopTools_ShapeMapHasher>* theVanished)
+ {
+ #ifdef OCCT_DEBUG
+   if (ChronBuild)
+@@ -2078,7 +2781,7 @@ void BRepOffset_MakeOffset::BuildOffsetByArc(const Message_ProgressRange& theRan
+   //------------------------------------------------------------
+   if (!myFaces.IsEmpty())
+   {
+-    ToContext(MapSF);
++    ToContext(MapSF, theVanished);
+   }
+ 
+   //------------------------------------------------------
+@@ -2107,6 +2810,11 @@ void BRepOffset_MakeOffset::BuildOffsetByArc(const Message_ProgressRange& theRan
+       //------------------------------------------------
+       continue;
+     }
++    if (theVanished && theVanished->Contains(SI))
++    {
++      // nor are the faces whose offset vanishes
++      continue;
++    }
+ 
+     const TopoDS_Face& OF = It.Value().Face();
+     myInitOffsetFace.Bind(SI, OF);
+@@ -2124,7 +2832,7 @@ void BRepOffset_MakeOffset::BuildOffsetByArc(const Message_ProgressRange& theRan
+         //--------------------------------------------------------------------
+         const TopoDS_Edge&                           E = TopoDS::Edge(Exp.Current());
+         const NCollection_List<BRepOffset_Interval>& L = myAnalyse.Type(E);
+-        if (!L.IsEmpty() && L.First().Type() != RT)
++        if (!L.IsEmpty() && L.First().Type() != RT && !IsEdgeToVanished(myAnalyse, E, theVanished))
+         {
+           TopAbs_Orientation OO          = E.Orientation();
+           TopoDS_Shape       aLocalShape = It.Value().Generated(E);
+@@ -2169,7 +2877,8 @@ void BRepOffset_MakeOffset::SelfInter(
+ //=================================================================================================
+ 
+ void BRepOffset_MakeOffset::ToContext(
+-  NCollection_DataMap<TopoDS_Shape, BRepOffset_Offset, TopTools_ShapeMapHasher>& MapSF)
++  NCollection_DataMap<TopoDS_Shape, BRepOffset_Offset, TopTools_ShapeMapHasher>& MapSF,
++  const NCollection_Map<TopoDS_Shape, TopTools_ShapeMapHasher>*                  theVanished)
+ {
+   NCollection_DataMap<TopoDS_Shape, TopoDS_Shape, TopTools_ShapeMapHasher> Created;
+   NCollection_DataMap<TopoDS_Shape, TopoDS_Shape, TopTools_ShapeMapHasher> MEF;
+@@ -2216,6 +2925,11 @@ void BRepOffset_MakeOffset::ToContext(
+         const NCollection_List<TopoDS_Shape>& LEA = myAnalyse.Ancestors(E);
+         for (itl.Initialize(LEA); itl.More(); itl.Next())
+         {
++          if (theVanished && theVanished->Contains(itl.Value()))
++          {
++            // a face whose offset vanishes
++            continue;
++          }
+           const BRepOffset_Offset& OF = MapSF(itl.Value());
+           FacesToBuild.Add(itl.Value());
+           MEF.Bind(OF.Generated(E), CF);
+@@ -2276,7 +2990,7 @@ void BRepOffset_MakeOffset::ToContext(
+         OE                                             = BOF.Generated(E);
+         Or                                             = E.Orientation();
+         OE.Orientation(Or);
+-        if (!L.IsEmpty() && L.First().Type() != RT)
++        if (!L.IsEmpty() && L.First().Type() != RT && !IsEdgeToVanished(myAnalyse, E, theVanished))
+         {
+           if (Created.IsBound(OE))
+           {
+@@ -2852,8 +3566,11 @@ void BRepOffset_MakeOffset::CorrectConicalFaces()
+ 
+ //=================================================================================================
+ 
+-void BRepOffset_MakeOffset::Intersection3D(BRepOffset_Inter3d&          Inter,
+-                                           const Message_ProgressRange& theRange)
++void BRepOffset_MakeOffset::Intersection3D(
++  BRepOffset_Inter3d&                                           Inter,
++  const Message_ProgressRange&                                  theRange,
++  const NCollection_Map<TopoDS_Shape, TopTools_ShapeMapHasher>* theVanished,
++  const NCollection_List<TopoDS_Shape>*                         theAcross)
+ {
+ #ifdef OCCT_DEBUG
+   if (ChronBuild)
+@@ -2929,6 +3646,11 @@ void BRepOffset_MakeOffset::Intersection3D(BRepOffset_Inter3d&          Inter,
+       myError = BRepOffset_UserBreak;
+       return;
+     }
++    if (myJoin == GeomAbs_Arc && theVanished && theAcross)
++    {
++      // and between the faces on both sides of faces whose offset vanishes
++      Inter.ConnexIntByArcAcrossVanished(*theAcross, myInitOffsetFace);
++    }
+   }
+ #ifdef OCCT_DEBUG
+   if (ChronBuild)
+@@ -4678,7 +5400,8 @@ void BRepOffset_MakeOffset::IntersectEdges(
+   NCollection_DataMap<TopoDS_Shape, TopoDS_Shape, TopTools_ShapeMapHasher>&      theBuild,
+   occ::handle<BRepAlgo_AsDes>&                                                   theAsDes,
+   occ::handle<BRepAlgo_AsDes>&                                                   theAsDes2d,
+-  const Message_ProgressRange&                                                   theRange)
++  const Message_ProgressRange&                                                   theRange,
++  const NCollection_Map<TopoDS_Shape, TopTools_ShapeMapHasher>*                  theVanished)
+ {
+   double aTolF;
+   NCollection_IndexedDataMap<TopoDS_Shape, NCollection_List<TopoDS_Shape>, TopTools_ShapeMapHasher>
+@@ -4704,7 +5427,8 @@ void BRepOffset_MakeOffset::IntersectEdges(
+                                             myImageVV,
+                                             myEdgeIntEdges,
+                                             aDMVV,
+-                                            aPS1.Next()))
++                                            aPS1.Next(),
++                                            theVanished))
+     {
+       myError = BRepOffset_CannotExtentEdge;
+       return;
+@@ -4761,7 +5485,8 @@ bool TrimEdges(
+   NCollection_IndexedMap<TopoDS_Shape, TopTools_ShapeMapHasher>&                 theNewEdges,
+   NCollection_DataMap<TopoDS_Shape, TopoDS_Shape, TopTools_ShapeMapHasher>&      theETrimEInf,
+   NCollection_DataMap<TopoDS_Shape, NCollection_List<TopoDS_Shape>, TopTools_ShapeMapHasher>&
+-    theEdgesOrigins)
++    theEdgesOrigins,
++  const NCollection_Map<TopoDS_Shape, TopTools_ShapeMapHasher>* theVanished)
+ {
+   TopExp_Explorer Exp, Exp2, ExpC;
+   TopoDS_Shape    NE;
+@@ -4771,7 +5496,10 @@ bool TrimEdges(
+   NCollection_List<TopoDS_Shape> aLFaces;
+   for (Exp.Init(theShape, TopAbs_FACE); Exp.More(); Exp.Next())
+   {
+-    aLFaces.Append(Exp.Current());
++    if (!theVanished || !theVanished->Contains(Exp.Current()))
++    {
++      aLFaces.Append(Exp.Current());
++    }
+   }
+ 
+   NCollection_Map<TopoDS_Shape, TopTools_ShapeMapHasher> aMFGenerated;
+@@ -4876,6 +5604,20 @@ bool TrimEdges(
+         {
+           continue;
+         }
++        if (theVanished && Analyse.HasAncestor(aS))
++        {
++          // an edge to a face whose offset vanishes has no image
++          bool bDrop = false;
++          for (NCollection_List<TopoDS_Shape>::Iterator itA(Analyse.Ancestors(aS)); itA.More();
++               itA.Next())
++          {
++            bDrop = bDrop || theVanished->Contains(itA.Value());
++          }
++          if (bDrop)
++          {
++            continue;
++          }
++        }
+ 
+         NE = theMapSF(FI).Generated(aS);
+         //// modified by jgv, 19.12.03 for OCC4455 ////
+diff --git a/src/ModelingAlgorithms/TKOffset/BRepOffset/BRepOffset_MakeOffset.hxx b/src/ModelingAlgorithms/TKOffset/BRepOffset/BRepOffset_MakeOffset.hxx
+index b443b55..cdcbe36 100644
+--- a/src/ModelingAlgorithms/TKOffset/BRepOffset/BRepOffset_MakeOffset.hxx
++++ b/src/ModelingAlgorithms/TKOffset/BRepOffset/BRepOffset_MakeOffset.hxx
+@@ -158,9 +158,18 @@ private:
+ 
+   Standard_EXPORT void BuildFaceComp();
+ 
+-  Standard_EXPORT void BuildOffsetByArc(const Message_ProgressRange& theRange);
+-
+-  Standard_EXPORT void BuildOffsetByInter(const Message_ProgressRange& theRange);
++  //! theVanished: the faces whose offset vanishes (they get no offset).
++  Standard_EXPORT void BuildOffsetByArc(
++    const Message_ProgressRange&                                  theRange,
++    const NCollection_Map<TopoDS_Shape, TopTools_ShapeMapHasher>* theVanished = nullptr);
++
++  //! theVanished: the faces whose offset vanishes; theAcross: the faces on
++  //! both sides of them, whose offsets are intersected instead (face A, its
++  //! edge to the vanishing faces, face B, its edge).
++  Standard_EXPORT void BuildOffsetByInter(
++    const Message_ProgressRange&                                  theRange,
++    const NCollection_Map<TopoDS_Shape, TopTools_ShapeMapHasher>* theVanished = nullptr,
++    const NCollection_List<TopoDS_Shape>* theAcross = nullptr);
+ 
+   //! Make Offset faces
+   Standard_EXPORT void MakeOffsetFaces(
+@@ -169,8 +178,11 @@ private:
+ 
+   Standard_EXPORT void SelfInter(NCollection_Map<TopoDS_Shape, TopTools_ShapeMapHasher>& Modif);
+ 
+-  Standard_EXPORT void Intersection3D(BRepOffset_Inter3d&          Inter,
+-                                      const Message_ProgressRange& theRange);
++  Standard_EXPORT void Intersection3D(
++    BRepOffset_Inter3d&                                           Inter,
++    const Message_ProgressRange&                                  theRange,
++    const NCollection_Map<TopoDS_Shape, TopTools_ShapeMapHasher>* theVanished = nullptr,
++    const NCollection_List<TopoDS_Shape>* theAcross = nullptr);
+ 
+   Standard_EXPORT void Intersection2D(
+     const NCollection_IndexedMap<TopoDS_Shape, TopTools_ShapeMapHasher>& Modif,
+@@ -200,7 +212,8 @@ private:
+   Standard_EXPORT void MakeSolid(const Message_ProgressRange& theRange);
+ 
+   Standard_EXPORT void ToContext(
+-    NCollection_DataMap<TopoDS_Shape, BRepOffset_Offset, TopTools_ShapeMapHasher>& MapSF);
++    NCollection_DataMap<TopoDS_Shape, BRepOffset_Offset, TopTools_ShapeMapHasher>& MapSF,
++    const NCollection_Map<TopoDS_Shape, TopTools_ShapeMapHasher>* theVanished = nullptr);
+ 
+   //! Private method use to update the map face<->offset
+   Standard_EXPORT void UpdateFaceOffset();
+@@ -222,7 +235,8 @@ private:
+     NCollection_DataMap<TopoDS_Shape, TopoDS_Shape, TopTools_ShapeMapHasher>&      theBuild,
+     occ::handle<BRepAlgo_AsDes>&                                                   theAsDes,
+     occ::handle<BRepAlgo_AsDes>&                                                   theAsDes2d,
+-    const Message_ProgressRange&                                                   theRange);
++    const Message_ProgressRange&                                                   theRange,
++    const NCollection_Map<TopoDS_Shape, TopTools_ShapeMapHasher>* theVanished = nullptr);
+ 
+   //! Building of the splits of the offset faces for mode Complete
+   //! and joint type Intersection. This method is an advanced alternative

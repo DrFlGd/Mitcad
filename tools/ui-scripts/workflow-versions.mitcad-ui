@@ -70,9 +70,9 @@ expect-log 'Version status: files, main, v4'
 # the panel's card; it is recorded as a version and opens.
 mark
 command file.new_design
-expect-log 'Projects panel: naming a new design in Local/files' 20
+expect-log 'Projects panel: naming a new design in files' 20
 # A real click activates the floating card before typing into its editor.
-click-logged 'Projects row Local/files \(new\) at '
+click-logged 'Projects row files \(new\) at '
 key ctrl+a
 type 'gear'
 key Return

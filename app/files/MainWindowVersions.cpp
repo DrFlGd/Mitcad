@@ -2,12 +2,13 @@
 // Versions (P12d): in a project with version history (a folder with
 // .mitcad/project.json at the root of a git repository; core/vcs), Save
 // records a version of the saved file, a commit whose message is made of
-// the undo steps since the last save, and File > Save Version one with a
-// description. The author is the project's (its repository's or git's
-// configuration), else Preferences' default author, asked when none has
-// one. A file changed outside Mitcad since it was opened is noticed before
-// Save writes over it, and a file renamed outside Mitcad takes its display
-// state along and gets its rename recorded. Projects are made and opened
+// the undo steps since the last save, and File > Save with Description one
+// with a description written. The author is the project's (its
+// repository's or git's configuration), else Preferences' default author,
+// asked when none has one. A file changed outside Mitcad since it was
+// opened is noticed before Save writes over it, and a file renamed outside
+// Mitcad takes its display state along and gets its rename recorded.
+// Projects are made and opened
 // in files/MainWindowProjects.cpp (mitcad#89). Autosave never records a
 // version (files/Autosave.hpp). File > Version History (P12e,
 // files/VersionHistory.hpp) lists a file's versions and compares them;
@@ -109,12 +110,15 @@ void MainWindow::registerVersionCommands() {
   // New Project, Open Project, Open from Cloud, Project Settings, Move to a
   // Project (mitcad#89).
   registerProjectCommands();
-  CommandDef version = def("file.save_version", tr("Save Version..."), "save-version",
-                           tr("Saves the design and records a version of it with a description"),
+  // Save with Description (mitcad#175, Save Version before: Save records a
+  // version in a project too).
+  CommandDef version = def("file.save_version", tr("Save with Description..."), "save-version",
+                           tr("Saves the design and records a version of it with a description you write"),
                            [this] { saveVersion(); });
   version.shortcut = QKeySequence(Qt::CTRL | Qt::ALT | Qt::Key_S);
-  version.keywords = {QStringLiteral("version"), QStringLiteral("commit"), QStringLiteral("description"),
-                      QStringLiteral("milestone"), QStringLiteral("git")};
+  version.keywords = {QStringLiteral("version"),   QStringLiteral("commit"),       QStringLiteral("description"),
+                      QStringLiteral("milestone"), QStringLiteral("save version"), QStringLiteral("message"),
+                      QStringLiteral("git")};
   m_registry->add(version);
   // P12e.
   CommandDef versions = def("file.version_history", tr("Version History..."), "versions",
@@ -189,8 +193,8 @@ bool MainWindow::saveVersion() {
     return save();
   }
   if (m_filePath.isEmpty() || !versionedProject(m_filePath, &why)) {
-    qInfo().noquote() << QStringLiteral("Save Version: no version history for %1").arg(documentName());
-    QMessageBox box(QMessageBox::Question, tr("Save Version"),
+    qInfo().noquote() << QStringLiteral("Save with Description: no version history for %1").arg(documentName());
+    QMessageBox box(QMessageBox::Question, tr("Save with Description"),
                     tr("%1 has no version history.").arg(documentName()), QMessageBox::Cancel, this);
     box.setInformativeText(tr("Versions are kept for the designs of projects: Move to a Project puts it in "
                               "one."));
@@ -760,17 +764,41 @@ void MainWindow::restoreVersion(const QString& file, const FileVersion& version,
 
 void MainWindow::saveVersionCopy(QWidget* parent, const QString& file, const FileVersion& version) {
   const QFileInfo info(file);
-  QFileDialog dialog(parent, tr("Save Copy As"), info.absolutePath(), tr("Mitcad designs (*.mitcad)"));
-  dialog.setAcceptMode(QFileDialog::AcceptSave);
-  dialog.setDefaultSuffix(QStringLiteral("mitcad"));
   const QString suggested = QStringLiteral("%1 %2.mitcad").arg(info.completeBaseName(), version.label());
-  dialog.selectFile(suggested);
   qInfo().noquote() << QStringLiteral("Save Copy As dialog: %1").arg(suggested);
-  if (execDialog(&dialog) != QDialog::Accepted || dialog.selectedFiles().isEmpty()) {
-    qInfo().noquote() << QStringLiteral("Save Copy As cancelled");
-    return;
+  QString chosen;
+  // In its project: the project, folder and name chosen in the project
+  // picker (mitcad#176); Another Folder... the file dialog.
+  const ProjectState fileProject = projectOfFile(file);
+  if (fileProject.hasHistory()) {
+    ProjectPickerOptions options;
+    options.title = tr("Save a Copy in a Project");
+    options.text = tr("The project and the folder for the copy of %1 of %2, and its name there:")
+                       .arg(version.label(), info.fileName());
+    options.acceptText = tr("&Save");
+    options.otherText = tr("&Another Folder...");
+    options.root = fileProject.root;
+    options.folder = folderInProject(fileProject.root, info.absolutePath());
+    options.name = QFileInfo(suggested).completeBaseName();
+    const std::optional<ProjectPickerResult> picked = pickInProjects(parent, options);
+    if (!picked) {
+      qInfo().noquote() << QStringLiteral("Save Copy As cancelled");
+      return;
+    }
+    chosen = picked->other ? QString() : picked->path;
   }
-  const QString target = QFileInfo(dialog.selectedFiles().constFirst()).absoluteFilePath();
+  if (chosen.isEmpty()) {
+    QFileDialog dialog(parent, tr("Save Copy As"), info.absolutePath(), tr("Mitcad designs (*.mitcad)"));
+    dialog.setAcceptMode(QFileDialog::AcceptSave);
+    dialog.setDefaultSuffix(QStringLiteral("mitcad"));
+    dialog.selectFile(suggested);
+    if (execDialog(&dialog) != QDialog::Accepted || dialog.selectedFiles().isEmpty()) {
+      qInfo().noquote() << QStringLiteral("Save Copy As cancelled");
+      return;
+    }
+    chosen = dialog.selectedFiles().constFirst();
+  }
+  const QString target = QFileInfo(chosen).absoluteFilePath();
   const QString name = info.fileName();
   if (sameFile(target, file) || sameFile(target, m_filePath)) {
     sheetInformation(parent, tr("Save Copy As"),
@@ -804,6 +832,8 @@ void MainWindow::saveVersionCopy(QWidget* parent, const QString& file, const Fil
                              *author);
     }
   }
+  // The copy in the Projects panel.
+  refreshProjectsPanel();
   if (status.problem) {
     showError(status.status);
   } else {

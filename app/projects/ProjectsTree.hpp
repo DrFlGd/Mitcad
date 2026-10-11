@@ -4,10 +4,10 @@
 // What the Projects panel lists (mitcad#145): the projects known on this
 // computer and those in the projects folder, each with its folders and
 // designs as the core's `project_tree` gives them (commands.md,
-// "Projects"), grouped by location: Local, or a Cloud project's host and
-// owner ("github.com/acme", "gitlab.com/group/sub", a shared folder's
-// path). The trees are read on a thread of their own (readProjects); the
-// panel turns the answer into rows (projectRows) on the UI thread.
+// "Projects"). A project is its repository's root: nothing groups the
+// projects (mitcad#173). The trees are read on a thread of their own
+// (readProjects); the panel turns the answer into rows (projectRows) on
+// the UI thread.
 
 #include <QJsonObject>
 #include <QString>
@@ -45,13 +45,13 @@ struct ProjectRow {
   };
   Kind kind = Kind::Local;
   QString root; // the project's folder (absolute, '/')
-  // The name the panel shows (mitcad#152): the display name set in Project
-  // Settings, else the default: a Cloud project's owner/repository, the
+  // The name shown for the project (mitcad#152, #173): the display name set
+  // in Project Settings, else the default: a Cloud project's repository
+  // address without the scheme (github.com/owner/repository), else the
   // folder's name.
   QString name;
   QString folderName;  // the folder's name (the rows' keys)
   QString displayName; // set in Project Settings ("" none)
-  QString location;    // "Local", or a Cloud project's host and owner
   QString remoteUrl;
   // Remotes, but none followed (the indicator's "No remote chosen").
   bool noRemoteChosen = false;
@@ -63,15 +63,6 @@ struct ProjectRow {
   bool known = false; // in the list of known projects (else from the projects folder)
   QString problem;
 };
-
-// The location a Cloud project is grouped under: the service's host and
-// the owner for GitHub, GitLab and Forgejo / Gitea, the folder that holds
-// a shared folder's repository, the web address without the repository's
-// name for another server.
-QString cloudLocation(const QString& url);
-
-// The name of the Local location.
-QString localLocation();
 
 // What the panel lists, read with the core (no network, no writes): the
 // known projects (newest first), then the projects folder's projects that
@@ -85,8 +76,8 @@ QJsonObject readProjects(const QStringList& known, const QString& projectsFolder
 // The rows of readProjects' answer.
 QVector<ProjectRow> projectRows(const QJsonObject& answer);
 
-// A project's default name in the panel: a Cloud project's owner/repository
-// from its remote's address (ownerAndRepositoryOf), else the folder's name.
+// A project's default name in the panel: a Cloud project's repository
+// address without the scheme (repositoryAddressOf), else the folder's name.
 QString defaultProjectName(const QString& root, const QString& remoteUrl);
 
 // Whether any project is configured (mitcad#151): a known project whose

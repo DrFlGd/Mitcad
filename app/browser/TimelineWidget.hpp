@@ -24,7 +24,8 @@ class TimelineStrip;
 // timeline order (coloured by component), the history marker, and the
 // playback buttons that step it. Hovering shows a feature's name, a failed
 // feature is red and one with a warning yellow, with the message as its
-// tooltip. Dragging the marker rolls the model back and forward; dragging
+// tooltip; a placeholder of an item an import skipped (mitcad#170) is
+// suppressed with a yellow outline, the file's state in its tooltip. Dragging the marker rolls the model back and forward; dragging
 // a feature moves it in the timeline, and a place it cannot go shows red
 // while dragging. Timeline groups (P9) have a band over their features,
 // which a click folds into one folder cell (and a double-click on that
@@ -55,8 +56,10 @@ public:
   void showFilterMenu(const QPoint& globalPosition);
   // Selects a feature and scrolls to it (Find in Timeline).
   void selectFeature(const QString& uid);
-  // Mirrors an external selection exactly, without emitting a selection signal.
-  // Missing features are ignored; the selection stays in timeline order.
+  // Mirrors an external selection exactly (the browser's rows, mitcad#177),
+  // without emitting a selection signal; logs it and scrolls to it when it
+  // changed. Missing features are ignored; the selection stays in timeline
+  // order.
   void setSelectedFeatures(const QStringList& uids);
   QString selectedFeature() const;
   // The selected features (a Shift+click run or an external set), in timeline order.

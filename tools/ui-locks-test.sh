@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: MIT
-# check-all sources: app/files
+# check-all sources: app/files app/projects
 # check-all sources: core/vcs core/ffi/src/vcs.rs core/ffi/src/remote.rs core/ffi/src/diff.rs core/ffi/src/live.rs tools/cli
 # Edit locks of a Cloud project's designs (mitcad#89) with two (and three)
 # instances of Mitcad on clones of one bare repository in a folder (no
@@ -24,8 +24,9 @@
 #      read-only with its unsaved changes, Save as New Version records them
 #      (not sent: Send each version at once is off there), Sync asks
 #      before sending a file someone else holds (Cancel, then Send
-#      Anyway); Save As makes a copy that opens with a lock of its own;
-#      Open Read-Only opens a design without a lock.
+#      Anyway); Save As makes a copy (named in the project picker) that
+#      opens with a lock of its own; Open Read-Only opens a design without
+#      a lock.
 #   6. The lock's details from the indicator's menu; Project Settings: the
 #      remote accepts lock refs; edit locks turned off release the
 #      session's lock.
@@ -45,8 +46,9 @@
 #      live); the holder's Mitcad killed, its connection's will offers the
 #      lock, which is taken.
 #  11. Resolve Sync refuses replacing a design during exchange-file Open,
-#      New and Close. Its geometry, revision, filename and recovery data
-#      stay; allowing the next Open imports into a new untitled design.
+#      New Design (named in the Projects panel) and Close. Its geometry,
+#      revision, filename and recovery data stay; allowing the next Open
+#      imports into a new untitled design.
 #
 # git's configuration and HOME are the test's own. Runs headless on Xvfb
 # (see ui-test-lib.sh); Qt's own file dialogs (--no-native-dialogs).
@@ -440,7 +442,13 @@ ui_expect_new "Sync: push, 0 replayed, sent" "sent" 30
 echo "ok   the version is on the remote"
 ui_mark
 ui_step "save as (Ctrl+Shift+S)"        ui_key ctrl+shift+s
-ui_step "a copy"                        ui_type_path "Save As" "$A/copy.mitcad"
+# The project picker (mitcad#176): in a read-only window the design's own
+# name is taken (a copy is saved).
+ui_expect_new "/part.mitcad: exists" "the project picker, the own name taken" 20
+ui_focus_dialog '^Save in a Project$'
+ui_step "a copy"                        ui_type_text "copy"
+ui_expect_new "/copy.mitcad: free" "the copy's name free"
+ui_step "save (Enter)"                  ui_key Return
 ui_focus_main
 ui_expect_new "Saved $A/copy.mitcad" "saved as a copy" 20
 ui_expect_new "Edit lock taken: copy.mitcad" "the copy has a lock of its own" 20
@@ -720,7 +728,13 @@ for action in Open New Close; do
   ui_mark
   case "$action" in
     Open) ui_step "open the exchange file" ui_key ctrl+o ;;
-    New)  ui_step "new design"             ui_key ctrl+n ;;
+    New)
+      # New Design (Ctrl+N, mitcad#175) in the project: the name typed in
+      # the Projects panel, then the open design would be replaced.
+      ui_step "new design (Ctrl+N)"      ui_key ctrl+n
+      ui_expect_new "Projects panel: naming a new design in " "New Design names one in the panel" 20
+      ui_step "type its name"            xdotool type --delay 40 "fresh"
+      ui_step "take it (Enter)"          ui_key Return ;;
     Close) ui_step "close the design"      ui_key ctrl+w ;;
   esac
   ui_focus_dialog '^Mitcad$'
@@ -744,7 +758,8 @@ for action in Open New Close; do
   ui_sync
   title=$(xdotool getwindowname "$UI_WINDOW")
   [ "$title" = 'part.mitcad* - Mitcad' ] || ui_fail "$action changed the design's name: $title"
-  tail -n +$((UI_MARK + 1)) "$UI_LOG" | grep -qE 'Imported exchange.step|New document|Document closed|Autosave removed' &&
+  tail -n +$((UI_MARK + 1)) "$UI_LOG" |
+    grep -qE 'Imported exchange.step|New document|New Design: made|Document closed|Autosave removed' &&
     ui_fail "$action continued after refused replacement"
   diff -r "$WORK/replacement-before" "$MITCAD_AUTOSAVE_DIR" > "$WORK/replacement.diff" ||
     { cat "$WORK/replacement.diff"; ui_fail "$action changed recovery metadata, revision or geometry"; }

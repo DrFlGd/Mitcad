@@ -36,6 +36,8 @@ impl<K: Kernel> Document<K> {
             let status = match (item.status, item.message()) {
                 (Some(FeatureStatus::Failed(message)), _) => format!("error: {message}"),
                 (Some(FeatureStatus::Ok), Some(warnings)) => format!("warning: {warnings}"),
+                // A placeholder of an imported item (mitcad#170).
+                (Some(FeatureStatus::Suppressed), Some(note)) => format!("suppressed: {note}"),
                 _ => item.status_text().to_owned(),
             };
             let _ = writeln!(

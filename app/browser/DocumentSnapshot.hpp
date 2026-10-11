@@ -24,7 +24,10 @@ struct DocumentSnapshot {
     QString name;
     QString type;   // sketch, extrude, construction_plane, ...
     QString status; // ok, warning (ok with warnings, P9), error, suppressed, rolled_back, pending
-    QString error;  // the error, or the warnings
+    QString error;  // the error, or the import note and the warnings
+    // What the importer that made it said (mitcad#170): a fallback, an item
+    // that came in partly, a placeholder of a skipped item; also in `error`.
+    QString importNote;
     QString component; // C0 for the root
     int index = 0;
     // A sketch's degrees of freedom (P9: 0 is fully constrained); -1 when
@@ -36,6 +39,9 @@ struct DocumentSnapshot {
     // the user set it (set_feature_visible) or it follows that default.
     bool visible = true;
     bool visibleSet = false;
+    // The sketches it uses (profiles, paths, curves, points), in timeline
+    // order: the browser lists it under each (mitcad#177).
+    QStringList sketches;
 
     bool isSketch() const { return type == QStringLiteral("sketch"); }
     bool isConstruction() const { return type.startsWith(QStringLiteral("construction_")); }
@@ -120,6 +126,10 @@ struct DocumentSnapshot {
   bool isShown(const QString& feature) const { return featureShown.value(feature, false); }
   // Failed features before the marker.
   QVector<const Feature*> failures() const;
+  // Features with warnings that did not fail (mitcad#170): those that built
+  // with warnings and those an importer left a note on (a fallback's base
+  // feature, an item that came in partly, a placeholder of a skipped item).
+  QVector<const Feature*> warnings() const;
   // The analysis shown (one at a time), or an empty object.
   QJsonObject shownAnalysis() const;
   // An analysis by name, or an empty object.

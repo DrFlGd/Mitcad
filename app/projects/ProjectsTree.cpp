@@ -47,8 +47,6 @@ QJsonObject readOne(const QString& root, bool known, const QByteArray& treeJson)
 
 } // namespace
 
-QString localLocation() { return QStringLiteral("Local"); }
-
 bool sameRoot(const QString& a, const QString& b) {
 #ifdef _WIN32
   return clean(a).compare(clean(b), Qt::CaseInsensitive) == 0;
@@ -57,44 +55,8 @@ bool sameRoot(const QString& a, const QString& b) {
 #endif
 }
 
-QString cloudLocation(const QString& url) {
-  const CloudAddress address = parseCloudAddress(url);
-  switch (address.service) {
-  case CloudService::GitHub:
-  case CloudService::GitLab:
-  case CloudService::Forgejo: {
-    const QString host = cloudServiceHost(address.service, address.server);
-    return address.owner.isEmpty() ? host : QStringLiteral("%1/%2").arg(host, address.owner);
-  }
-  case CloudService::SharedFolder: {
-    // The folder the repository is in.
-    const QString folder = clean(address.folder);
-    const QString parent = QFileInfo(folder).absolutePath();
-    return QDir::toNativeSeparators(parent.isEmpty() ? folder : parent);
-  }
-  case CloudService::Other:
-    break;
-  }
-  // Another server: its web address without the scheme and the
-  // repository's name ("code.example.org/team").
-  QString page = addressWebPage(url);
-  if (!page.isEmpty()) {
-    const int scheme = page.indexOf(QStringLiteral("://"));
-    if (scheme >= 0) {
-      page = page.mid(scheme + 3);
-    }
-    while (page.endsWith(QLatin1Char('/'))) {
-      page.chop(1);
-    }
-    const int last = page.lastIndexOf(QLatin1Char('/'));
-    return last > 0 ? page.left(last) : page;
-  }
-  const QString host = addressHost(url);
-  return host.isEmpty() ? url : host;
-}
-
 QString defaultProjectName(const QString& root, const QString& remoteUrl) {
-  const QString cloud = remoteUrl.isEmpty() ? QString() : ownerAndRepositoryOf(remoteUrl);
+  const QString cloud = remoteUrl.isEmpty() ? QString() : repositoryAddressOf(remoteUrl);
   return cloud.isEmpty() ? QFileInfo(clean(root)).fileName() : cloud;
 }
 
@@ -184,7 +146,6 @@ QVector<ProjectRow> projectRows(const QJsonObject& answer) {
     row.folderName = QFileInfo(row.root).fileName();
     row.name = row.folderName;
     row.known = entry.value(QStringLiteral("known")).toBool();
-    row.location = localLocation();
     if (entry.value(QStringLiteral("missing")).toBool()) {
       row.kind = ProjectRow::Kind::Missing;
       rows << row;
@@ -214,7 +175,6 @@ QVector<ProjectRow> projectRows(const QJsonObject& answer) {
     if (remote.isObject()) {
       row.kind = ProjectRow::Kind::Cloud;
       row.remoteUrl = remote.toObject().value(QStringLiteral("url")).toString();
-      row.location = cloudLocation(row.remoteUrl);
     } else {
       row.kind = ProjectRow::Kind::Local;
       row.noRemoteChosen = !tree.value(QStringLiteral("remotes")).toArray().isEmpty();

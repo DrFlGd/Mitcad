@@ -213,7 +213,13 @@ design in a project.
   placement(source)`; the cache keys on those placements and the other
   component's bodies, `Read::Placement`, `Read::BodyIn`). A linked
   external component is read-only; its bodies are stored in a base
-  feature refreshed on open.
+  feature refreshed on open. Since a feature's component is only its
+  `FeatureEntry::component`, features made in the root can later move
+  into a new component placed at the identity (mitcad#171,
+  `document/move_features.rs`): their uids and topological names stay,
+  the occurrence paths that reach their geometry (links, joint origins)
+  take the new occurrence, and which features must go together follows
+  from what the last recompute read and changed.
 - **Joints** (mitcad#55, `core/model/src/joints.rs`, phases 1 to 3):
   timeline features of a component (`joint`, `as_built_joint`,
   `joint_origin`, `rigid_group`) that connect its occurrences. The one
@@ -539,7 +545,10 @@ not recompute.
 - **Browser, timeline, view** (`app/browser/`, `app/view/`): the model is
   read once per change; the view keeps AIS objects that did not change.
   Visibility is the model's: an unset sketch light bulb follows "hidden
-  while a feature uses it" (`document/browser.rs`).
+  while a feature uses it" (`document/browser.rs`). The browser lists each
+  feature under the sketches it uses (the `timeline` query's `sketches`,
+  from the same references), and its selection and the timeline's follow
+  each other (mitcad#177).
 - **Background computation** (`app/framework/ModelWorker`): the model runs
   on one long-lived worker thread (256 MB stack, OCCT crash handlers) as
   jobs, one at a time; opening, every model command, undo/redo and every
@@ -616,7 +625,7 @@ not recompute.
   (Preferences > Display, the user's settings), sent as the worker's
   first command; a device that is not there or fails hands over to the
   CPU, which renders the same scene and says why (`RenderDevices.cpp`).
-  The final render (File > Render Image, `mitcad-cli render`, mitcad#48)
+  The final render (Render Image, `mitcad-cli render`, mitcad#48)
   runs the same worker in a batch mode on a job file (scene, environment,
   camera, output settings): it writes the image file itself (PNG and
   JPEG with the view's exposure and view transform, OpenEXR as linear
@@ -1034,10 +1043,10 @@ just made).
   `testBroker`; `MainWindow::m_openingReadOnly` while Open Read-Only
   opens a design.
 - The **Projects panel** (mitcad#145, `app/projects/`) shows the projects,
-  their folders and designs: location (Local, or a Cloud project's host and
-  owner from `CloudAddress`, a shared folder's parent folder) → project →
-  folders → designs, with the sync state, versions, edit locks and changes
-  `project_tree` gives (no network). `ProjectsTree::readProjects` reads
+  their folders and designs: project → folders → designs (mitcad#173: a
+  project row is its repository's root, nothing groups the projects),
+  with the sync state, versions, edit locks and changes `project_tree`
+  gives (no network). `ProjectsTree::readProjects` reads
   the known projects (`ProjectsSettings` in the application settings,
   remembered by `setCurrentProject`) and the projects folder's on a
   `RemoteTask` thread, each with a `Project` of the thread's own; the
@@ -1057,17 +1066,19 @@ just made).
   In the Docked layout it is a dock split above the browser's (the view
   keeps its width); in the Floating one a card, which `FloatingLayout`
   stacks above the browser's card (upper left cards stack in the order
-  added). The AppKit frontend has no panel: File › New Design asks for a
-  name in a dialog there. Shown or hidden at the start (mitcad#151): the
+  added). The AppKit frontend has no panel: File › New Design in a project
+  asks for a name in a dialog there. Shown or hidden at the start (mitcad#151): the
   user's last choice (`ProjectsSettings::panelShown`, written only by a
   show or hide), else shown when `anyProjectConfigured` finds a project
   (folder entries only, nothing opened). A project row shows a display
   name (mitcad#152; the project's `local.name`, `.mitcad/local/name.json`,
-  per computer and never versioned), else a Cloud project's
-  `owner/repository` (`ownerAndRepositoryOf`), else the folder's name;
-  row keys keep the folder's name. Project Settings from the panel
+  per computer and never versioned), else a Cloud project's repository
+  address without the scheme (`repositoryAddressOf`:
+  `github.com/owner/repository`), else the folder's name; sorted by it,
+  Local and Cloud told apart by the icon and the tooltip; row keys keep
+  the folder's name. Project Settings from the panel
   (the settings button for the selected row's project, mitcad#153; a
-  double-click on a Cloud project or its location) is the current
+  double-click on a Cloud project) is the current
   project's `file.project_settings`, or the same dialog for another project
   without opening it (`panelProjectSettings`: its host refreshes the
   panel, pushes a recorded version in the background, and has no lock
@@ -1310,7 +1321,11 @@ but is modified and has no undo history.
 each step checked against what the file stores (the `.f3d` ASM history;
 FreeCAD's per-feature shapes). What cannot be translated or does not match
 falls back to a base feature of the stored bodies, and the replay
-continues on it. The `.f3d` history is matched by its solids; its surface
+continues on it. What the report says stays on the timeline as import
+notes in the definition state (mitcad#170, `core/model/src/document/import_notes.rs`):
+the fallbacks' base features and partial items show as warnings, and an
+item the file had suppressed or failed becomes a suppressed `placeholder`
+feature at its place. The `.f3d` history is matched by its solids; its surface
 bodies come in with the fallbacks as stored bodies, which joins and cuts
 without participants then leave alone. Both run over the `Kernel` trait,
 so they are testable on the mock kernel; the app runs them in the import
@@ -1321,7 +1336,9 @@ process.
   also use; formats in [ASM_FORMAT.md](../core/f3d/ASM_FORMAT.md) and
   [OGS_FORMAT.md](../core/f3d/OGS_FORMAT.md). The file's single timeline
   is split by component: each item goes into the component whose bodies
-  it changes, else the one that owns it, and a feature that uses another
+  it changes, else the one that owns it (an item that changes the bodies
+  of several components has a feature of its own in each other one,
+  replayed there, mitcad#169), and a feature that uses another
   component's sketch gets a copy moved by the occurrences' placements at
   its point of the timeline (features work only on their component's
   bodies). Occurrences take the placements the file gives them at the end

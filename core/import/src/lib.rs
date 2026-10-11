@@ -56,6 +56,8 @@ pub mod learn;
 mod profiles;
 // Bodies by the item that made them, consumed combine tools (mitcad#96).
 mod producers;
+// Assembly relationships as constraint sets (mitcad#155).
+mod relationships;
 
 use std::cell::Cell;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
@@ -647,6 +649,8 @@ pub(crate) struct Importer<'a, K: Kernel> {
     /// Timeline index → the fillets and chamfers made for it, which
     /// patterns and mirrors of the item repeat on their copies (mitcad#105).
     dressups: HashMap<i64, Vec<FeatureUid>>,
+    /// What the timeline's notes of the import are made of (mitcad#170).
+    notes: timeline_notes::Notes,
 }
 
 /// Where the edge guesses of a fillet or chamfer go on from, when they come
@@ -730,6 +734,7 @@ pub fn import_design<K: ImportKernel>(
         workers: Default::default(),
         learn: learn::store(options),
         dressups: HashMap::new(),
+        notes: Default::default(),
     };
     if !options.verify {
         importer.oracle.enabled = false;
@@ -737,6 +742,7 @@ pub fn import_design<K: ImportKernel>(
     importer.trace_states();
     importer.run();
     importer.light_bulbs();
+    importer.timeline_notes();
     importer.learn_write();
     let Importer { doc, report, .. } = importer;
     if let Some(label) = &options.undo_label {
@@ -845,6 +851,9 @@ pub use ahead::{
 
 // The geometric check of an item's change (mitcad#138).
 mod geometric;
+
+// The import's outcomes on the timeline (mitcad#170).
+mod timeline_notes;
 
 fn item_name(item: &TimelineItem) -> String {
     item.name().unwrap_or("?").to_owned()
@@ -1334,8 +1343,14 @@ fn classify(object_type: Option<&str>) -> Class {
         Some("Sketch") => Class::Sketch,
         Some("ConstructionPlane" | "ConstructionAxis" | "ConstructionPoint") => Class::Datum,
         Some(
-            "Joint" | "AsBuiltJoint" | "JointOrigin" | "GroundOccurrence" | "Snapshot"
-            | "RigidGroup",
+            "Joint"
+            | "AsBuiltJoint"
+            | "JointOrigin"
+            | "GroundOccurrence"
+            | "Snapshot"
+            | "RigidGroup"
+            | "GeometricRelationship"
+            | "TangentRelationship",
         ) => Class::Assembly,
         Some(t) if no_geometry(t).is_some() => Class::NoGeometry,
         _ => Class::Geometry,
@@ -1346,7 +1361,7 @@ fn classify(object_type: Option<&str>) -> Class {
 /// report; `None` for the types that may.
 fn no_geometry(object_type: &str) -> Option<&'static str> {
     Some(match object_type {
-        "MotionLink" | "ContactSet" | "GeometricRelationship" | "AssemblyRelationship" => {
+        "MotionLink" | "ContactSet" => {
             "no geometry: an assembly relationship (occurrences are placed by the occurrence tree)"
         }
         "Occurrence"
@@ -1611,6 +1626,10 @@ impl<'a, K: ImportKernel> Importer<'a, K> {
         }
         if item.is_suppressed == Some(true) {
             self.note(at, Outcome::Skipped, "suppressed in the file");
+            // A placeholder shows it on the timeline (mitcad#170).
+            if classify(object_type.as_deref()) != Class::NoGeometry {
+                self.placeholder(at);
+            }
             return;
         }
         let started = std::time::Instant::now();
@@ -1632,7 +1651,24 @@ impl<'a, K: ImportKernel> Importer<'a, K> {
                     .is_some_and(|f| f.chars().any(|c| c != '0'))
         });
         if class == Class::Geometry && (flagged || self.oracle.item_without_result(index)) {
-            self.note(at, Outcome::Skipped, NO_RESULT);
+            // An item whose change is all in other components' bodies has
+            // no result of its own; its parts there have (mitcad#169).
+            let parts = self.captures.parts_of(index);
+            let note = if parts.is_empty() {
+                NO_RESULT.to_owned()
+            } else {
+                format!(
+                    "it changed no body of its own component; its change in another component is \
+                     {}",
+                    parts
+                        .iter()
+                        .map(|p| format!("item {p}"))
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                )
+            };
+            self.note(at, Outcome::Skipped, note);
+            self.placeholder(at);
             self.deadline = None;
             return;
         }
@@ -1662,6 +1698,15 @@ impl<'a, K: ImportKernel> Importer<'a, K> {
                 };
                 self.geometry_item(at, index, item);
                 self.sketches.extend(originals);
+                // A part of an item in another component (mitcad#169).
+                if let Some(of) = item.f3d.as_ref().and_then(|f| f.part_of) {
+                    let report = &mut self.report.items[at];
+                    let part = format!("part of item {of}: its change in this component");
+                    report.note = Some(match report.note.take() {
+                        Some(n) if !n.is_empty() => format!("{part}; {n}"),
+                        _ => part,
+                    });
+                }
             }
         }
         self.deadline = None;
@@ -1890,6 +1935,9 @@ impl<'a, K: ImportKernel> Importer<'a, K> {
     /// about is where it stopped, and the items after it are not replayed
     /// either (in a try run again, the items from [`Options::stop_at`]).
     fn stopped(&self, index: i64) -> bool {
+        // (A part of an item in another component is at its item's point
+        // of the timeline, mitcad#169.)
+        let index = self.captures.timeline_at(index);
         let stopped = match self.options.stop_at {
             Some(at) => index >= at,
             None => self.stop_requested(),
@@ -2324,10 +2372,13 @@ impl<'a, K: ImportKernel> Importer<'a, K> {
     /// before item `name`.
     fn exact_before(&mut self, uid: FeatureUid, name: &str) {
         let base = self.doc.feature(uid).map(|f| f.name.clone());
-        self.report.warnings.push(format!(
-            "{} brings the bodies to the file's state before {name}",
-            base.unwrap_or_default()
-        ));
+        self.base_warning(
+            uid,
+            format!(
+                "{} brings the bodies to the file's state before {name}",
+                base.unwrap_or_default()
+            ),
+        );
     }
 
     /// After candidate `c` of the item gave history state `state` within
@@ -2379,12 +2430,15 @@ impl<'a, K: ImportKernel> Importer<'a, K> {
             Ok(Some(uid)) => {
                 let base = self.doc.feature(uid).map(|f| f.name.clone());
                 trace!("{name}: {uid} brings the bodies to state {state} exactly");
-                self.report.warnings.push(format!(
-                    "{} brings the bodies to the file's state after {name}, whose result \
-                     differs from it by {:.1e}",
-                    base.unwrap_or_default(),
-                    d
-                ));
+                self.base_warning(
+                    uid,
+                    format!(
+                        "{} brings the bodies to the file's state after {name}, whose result \
+                         differs from it by {:.1e}",
+                        base.unwrap_or_default(),
+                        d
+                    ),
+                );
             }
             Ok(None) => {}
             Err(e) => {
@@ -3157,15 +3211,19 @@ impl<'a, K: ImportKernel> Importer<'a, K> {
             self.oracle.cursor = Some(state);
             self.commit(Before::Keep, Some(state), None);
             self.note(at, Outcome::Skipped, FAILED_IN_FILE);
+            self.placeholder(at);
             let depth = self.doc.undo_depth();
             match self.fallback_to(state, None) {
                 Ok(Some(uid)) => {
                     let base = self.doc.feature(uid).map(|f| f.name.clone());
-                    self.report.warnings.push(format!(
-                        "{} brings the bodies to the file's state at {name}, which failed in \
-                         the file",
-                        base.unwrap_or_default()
-                    ));
+                    self.base_warning(
+                        uid,
+                        format!(
+                            "{} brings the bodies to the file's state at {name}, which failed \
+                             in the file",
+                            base.unwrap_or_default()
+                        ),
+                    );
                 }
                 Ok(None) => {}
                 Err(e) => {
@@ -3183,10 +3241,13 @@ impl<'a, K: ImportKernel> Importer<'a, K> {
                 self.report.items[at].features.push(uid.to_string());
                 self.note(at, Outcome::Fallback, last_error);
                 // Items waiting since a state that was not rebuilt.
+                let base = self.doc.feature(uid).map_or(label, |f| f.name.clone());
                 for p in std::mem::take(&mut self.pending) {
-                    let note = format!("{}; in the fallback of {label}", p.reason);
+                    let note = format!("{}; {}", p.reason, timeline_notes::in_fallback_of(&base));
                     self.note(p.report, Outcome::Fallback, note);
+                    self.stands_in(uid, p.report);
                 }
+                self.stands_in(uid, at);
             }
             Ok(None) => {
                 self.oracle.cursor = Some(state);
@@ -3984,9 +4045,9 @@ impl<'a, K: ImportKernel> Importer<'a, K> {
                 p.reason.clone()
             } else {
                 format!(
-                    "{}; in the fallback of {}",
+                    "{}; {}",
                     p.reason,
-                    base.as_ref().map_or("", |b| b.1.as_str())
+                    timeline_notes::in_fallback_of(base.as_ref().map_or("", |b| b.1.as_str()))
                 )
             };
             if i + 1 == count
@@ -3995,6 +4056,9 @@ impl<'a, K: ImportKernel> Importer<'a, K> {
                 self.report.items[p.report].features.push(uid.clone());
             }
             self.note(p.report, Outcome::Fallback, note);
+            if let Some(uid) = fallback {
+                self.stands_in(uid, p.report);
+            }
         }
     }
 
@@ -4015,6 +4079,7 @@ impl<'a, K: ImportKernel> Importer<'a, K> {
             Ok(uid) => {
                 self.at_final = true;
                 self.report.items[at].features.push(uid.to_string());
+                self.stands_in(uid, at);
                 self.note(
                     at,
                     Outcome::Fallback,
@@ -4299,6 +4364,7 @@ impl<'a, K: ImportKernel> Importer<'a, K> {
             self.doc.undo();
             return Err(e);
         }
+        self.note_bases(&uids);
         Ok(uids.first().copied())
     }
 
@@ -4455,15 +4521,21 @@ impl<'a, K: ImportKernel> Importer<'a, K> {
         if (solids_differ || sheets_differ) && self.options.fallback && !self.at_final {
             let replayed = self.doc.bodies().len();
             match self.replace_bodies(&finals, &sheets, Some("Stored bodies"), "stored design") {
-                Ok(Some(uid)) if replayed == 0 => self.report.warnings.push(format!(
-                    "nothing replayed: the file's bodies come in as they are ({uid})"
-                )),
-                Ok(Some(uid)) if !solids_differ => self.report.warnings.push(format!(
-                    "{uid} brings in the file's surface bodies as they are stored"
-                )),
-                Ok(Some(uid)) => self.report.warnings.push(format!(
-                    "the replay differs from the stored design; {uid} replaces the bodies that differ"
-                )),
+                Ok(Some(uid)) if replayed == 0 => self.base_warning(
+                    uid,
+                    format!("nothing replayed: the file's bodies come in as they are ({uid})"),
+                ),
+                Ok(Some(uid)) if !solids_differ => self.base_warning(
+                    uid,
+                    format!("{uid} brings in the file's surface bodies as they are stored"),
+                ),
+                Ok(Some(uid)) => self.base_warning(
+                    uid,
+                    format!(
+                        "the replay differs from the stored design; {uid} replaces the bodies \
+                         that differ"
+                    ),
+                ),
                 Ok(None) => {}
                 Err(e) => self
                     .report
@@ -4678,10 +4750,19 @@ fn def_component<K: Kernel>(
     {
         return c;
     }
+    // A sweep along another component's body (mitcad#161) goes where its
+    // profile is: the linked bodies do not count.
+    let linked: BTreeSet<String> = match def.get("body_links") {
+        Some(Value::Object(links)) if def["type"] == "sweep" => links.keys().cloned().collect(),
+        _ => BTreeSet::new(),
+    };
     let mut found = BTreeSet::new();
     let mut texts = Vec::new();
     strings(def, &mut texts);
     for text in texts {
+        if linked.contains(text) {
+            continue;
+        }
         if let Ok(body) = text.parse::<BodyUid>() {
             found.extend(doc.body_component(body));
         } else if let Ok(uid) = text.parse::<FeatureUid>()

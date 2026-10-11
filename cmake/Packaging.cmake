@@ -106,14 +106,16 @@ set(CPACK_ARCHIVE_COMPONENT_INSTALL OFF)
 # Only the CMake-installed files; never the build tree's Mesa or PDB files.
 set(CPACK_STRIP_FILES OFF)
 
-# NSIS: Start menu shortcut, "run Mitcad" on the last page, the .mitcad file
-# type, and an uninstall of an earlier version before the new one is put in.
+# NSIS, with an installer script of our own (packaging/windows/NSIS.template.in,
+# which CPack finds in CPACK_MODULE_PATH; mitcad#118): installs just for the
+# current user (the default, no elevation) or for all users (Program Files,
+# elevation), with the Start menu shortcut, "run Mitcad" on the last page,
+# the .mitcad file type and an uninstall of an earlier version in the same
+# scope before the new one is put in.
+set(CPACK_MODULE_PATH "${PROJECT_SOURCE_DIR}/packaging/windows" ${CMAKE_MODULE_PATH})
 set(CPACK_NSIS_DISPLAY_NAME "Mitcad ${PROJECT_VERSION}")
 set(CPACK_NSIS_PACKAGE_NAME "Mitcad")
 set(CPACK_NSIS_INSTALLED_ICON_NAME "bin\\\\mitcad.exe")
-set(CPACK_NSIS_ENABLE_UNINSTALL_BEFORE_INSTALL ON)
-set(CPACK_NSIS_MODIFY_PATH OFF)
-set(CPACK_NSIS_MUI_FINISHPAGE_RUN "mitcad.exe")
 set(CPACK_PACKAGE_EXECUTABLES "mitcad" "Mitcad")
 # NSIS wants backslashes; CPackConfig.cmake is parsed again, so they are doubled.
 string(REPLACE "/" "\\\\" mitcad_nsis_filetype "${PROJECT_SOURCE_DIR}/packaging/windows/filetype.nsh")
@@ -152,15 +154,16 @@ add_custom_target(update-manifest
 add_dependencies(update-manifest mitcad-release)
 
 # The installer and the automatic update in ctest, with Mesa (a build VM):
-# tools/installer-windows-test.ps1 installs, updates the installation from
-# a local HTTPS server and uninstalls. It changes the registry's .mitcad
-# file type (HKLM), so it runs only once `package` has made this build's
-# installer; skipped otherwise.
+# tools/installer-windows-test.ps1 installs just for the current user and
+# for all users, updates each installation from a local HTTPS server and
+# uninstalls. It changes the registry's .mitcad file type (HKCU and HKLM),
+# so it runs only once `package` has made this build's installer; skipped
+# otherwise.
 if(BUILD_TESTING AND MITCAD_MESA_DIR)
   add_test(NAME app.installer-windows
     COMMAND powershell -NoProfile -ExecutionPolicy Bypass
             -File "${PROJECT_SOURCE_DIR}/tools/installer-windows-test.ps1"
             -Build "${CMAKE_BINARY_DIR}" -MesaDir "${MITCAD_MESA_DIR}"
             -Out "${CMAKE_BINARY_DIR}/installer-test" -SkipStale)
-  set_tests_properties(app.installer-windows PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 900)
+  set_tests_properties(app.installer-windows PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 1800)
 endif()

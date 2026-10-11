@@ -79,7 +79,7 @@ std::optional<VersionSettings> askVersionAuthor(QWidget* parent, const VersionSe
 
 std::optional<QString> askVersionDescription(QWidget* parent, const QString& file, const QString& automatic) {
   QDialog dialog(parent);
-  dialog.setWindowTitle(QObject::tr("Save Version"));
+  dialog.setWindowTitle(QObject::tr("Save with Description"));
   auto* layout = new QVBoxLayout(&dialog);
   layout->addWidget(note(QObject::tr("Saves %1 and records a version with this description. Its first line "
                                      "is what the version list shows.")
@@ -100,10 +100,11 @@ std::optional<QString> askVersionDescription(QWidget* parent, const QString& fil
   }
   dialog.resize(520, 240);
   text->setFocus();
-  qInfo().noquote() << QStringLiteral("Save Version dialog: %1").arg(automatic.section(QLatin1Char('\n'), 0, 0));
+  qInfo().noquote() << QStringLiteral("Save with Description dialog: %1")
+                           .arg(automatic.section(QLatin1Char('\n'), 0, 0));
   prepareModal(&dialog);
   if (execDialog(&dialog) != QDialog::Accepted) {
-    qInfo().noquote() << QStringLiteral("Save Version cancelled");
+    qInfo().noquote() << QStringLiteral("Save with Description cancelled");
     return std::nullopt;
   }
   return text->toPlainText().trimmed();

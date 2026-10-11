@@ -247,6 +247,16 @@ const DECODER_ONLY: &[&str] = &[
     // The operation of a component made from bodies in the new component's
     // history (mitcad#156), checked against the history by the import.
     ".timeline.items[]._f3d.made_result_no",
+    // The constraints of assembly relationships and tangent relationships
+    // (mitcad#155), checked against the occurrences' placements by the
+    // import (`occurrenceOne`/`Two` are above).
+    ".timeline.items[].detail.rows",
+    ".timeline.items[].detail.bodyOne",
+    ".timeline.items[].detail.bodyTwo",
+    ".timeline.items[].detail.pointOne",
+    ".timeline.items[].detail.pointTwo",
+    ".timeline.items[].detail.faceOne",
+    ".timeline.items[].detail.faceTwo",
 ];
 
 /// Fields this decoder fills where the reference decoder has an empty
@@ -545,6 +555,34 @@ fn corpus_designs_match_the_reference_decoder() {
                 r,
                 "{label}: reference round trip"
             );
+            // The parts of items in other components are items of this
+            // decoder's only (mitcad#169), checked against the history by
+            // the import.
+            let mut v = v;
+            if let Some(items) = v
+                .pointer_mut("/timeline/items")
+                .and_then(Value::as_array_mut)
+            {
+                items.retain(|it| it.pointer("/_f3d/part_of").is_none());
+                // The faces an extrusion's profile selects (mitcad#169):
+                // the reference decoder gives each as one more profile of
+                // the extrusion's sketch.
+                for it in items.iter_mut() {
+                    let Some(profile) = it
+                        .pointer_mut("/detail/profile")
+                        .and_then(Value::as_array_mut)
+                    else {
+                        continue;
+                    };
+                    let Some(sketch) = profile.iter().find(|p| p["kind"] == "profile").cloned()
+                    else {
+                        continue;
+                    };
+                    for p in profile.iter_mut().filter(|p| p["kind"] == "face") {
+                        *p = sketch.clone();
+                    }
+                }
+            }
             let before = agreement.differ + agreement.missing + agreement.extra;
             agreement.compare(&label, "", "", &v, &current_names(&r));
             if agreement.differ + agreement.missing + agreement.extra == before {

@@ -10,7 +10,7 @@
 //! does it forgets the setting, in the same undo step, so the sketch hides
 //! or shows again (mitcad#7).
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::Arc;
 
 use super::{DocState, Document, ModelError, invalid};
@@ -42,6 +42,43 @@ impl DocState {
         for entry in &self.features {
             let references = entry.def.info().references().features;
             used.extend(references.intersection(&sketches).copied());
+        }
+        used
+    }
+
+    /// The sketches each feature uses, as [`DocState::used_sketches`]
+    /// counts them, in timeline order; features that use none are left
+    /// out. The browser lists a feature under each of its sketches
+    /// (mitcad#177).
+    pub(crate) fn sketches_used_by(&self) -> BTreeMap<FeatureUid, Vec<FeatureUid>> {
+        let order: HashMap<FeatureUid, usize> = self
+            .features
+            .iter()
+            .enumerate()
+            .filter(|(_, f)| matches!(f.def, FeatureDef::Sketch(_)))
+            .map(|(index, f)| (f.uid, index))
+            .collect();
+        let mut used = BTreeMap::new();
+        if order.is_empty() {
+            return used;
+        }
+        for entry in &self.features {
+            let mut sketches: Vec<(usize, FeatureUid)> = entry
+                .def
+                .info()
+                .references()
+                .features
+                .iter()
+                .filter(|uid| **uid != entry.uid)
+                .filter_map(|uid| order.get(uid).map(|index| (*index, *uid)))
+                .collect();
+            if !sketches.is_empty() {
+                sketches.sort_unstable();
+                used.insert(
+                    entry.uid,
+                    sketches.into_iter().map(|(_, uid)| uid).collect(),
+                );
+            }
         }
         used
     }

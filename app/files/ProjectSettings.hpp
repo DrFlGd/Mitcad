@@ -6,7 +6,8 @@
 //
 // - The display name the Projects panel shows on this computer (mitcad#152;
 //   `local.name`, .mitcad/local/name.json; empty: a Cloud project's
-//   owner/repository, else the folder's name; never renames anything).
+//   repository address, github.com/owner/repository, else the folder's
+//   name; never renames anything).
 // - The folder, the storage (Local -> Cloud: the Cloud section and Share,
 //   which sends the whole history; Cloud -> Local: Stop Syncing, the remote
 //   removed), the address with Change... and Open in Browser, the state

@@ -50,8 +50,16 @@ vcpkg_from_github(
         0059-chfi3d-kpart-blend-cut-by-the-face-at-the-end.patch
         0060-shapefix-intersecting-edges-once-per-face.patch
         0070-chfi3d-kpart-cut-to-end-where-the-narrow-face-vanishes.patch
+        0071-chfi3d-kpart-cut-by-several-faces-beyond.patch
+        0072-chfi3d-kpart-cuts-on-closed-spines.patch
+        0073-chfi3d-kpart-pieces-over-a-hole-are-one-face.patch
+        0074-chfi3d-walked-blend-cut-by-the-face-at-the-end.patch
+        0075-blendfunc-constrad-rolling-ball-section.patch
+        0076-chfi3d-extension-rolls-on-the-faces-own-surface.patch
+        0077-chfi3d-walk-past-the-spine-ends-before-a-singular-section.patch
         0090-chfi3d-double-interference-at-vertex-kind.patch
         0091-topopebrepbuild-point-uses-within-array.patch
+        0100-brepoffset-faces-vanishing-within-the-offset.patch
 )
 
 if (VCPKG_LIBRARY_LINKAGE STREQUAL "dynamic")

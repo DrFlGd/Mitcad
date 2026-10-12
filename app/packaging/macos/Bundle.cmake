@@ -104,6 +104,8 @@ endif()
 # --- Install: the bundle, its libraries, the licence texts ----------------------
 install(TARGETS mitcad BUNDLE DESTINATION .)
 install(TARGETS mitcad-render RUNTIME DESTINATION "${MITCAD_BUNDLE_DIR}/Contents/MacOS")
+install(DIRECTORY "${MITCAD_CYCLES_RUNTIME}/"
+        DESTINATION "${MITCAD_BUNDLE_DIR}/Contents/Resources/cycles")
 # The CLI target is declared after this directory. Its generated path is
 # resolved at generation time; DeployDeps below relocates this copy too.
 install(PROGRAMS "$<TARGET_FILE:mitcad-cli>" DESTINATION "${MITCAD_BUNDLE_DIR}/Contents/MacOS")
@@ -128,20 +130,29 @@ install(FILES "${MITCAD_OIDN_ROOT}/share/doc/OpenImageDenoise/LICENSE.txt"
               "${MITCAD_OIDN_ROOT}/share/doc/OpenImageDenoise/third-party-programs.txt"
         DESTINATION "${MITCAD_LICENSES_DIR}/openimagedenoise")
 set(MITCAD_RENDER_THIRD_PARTY_NOTES
-"The CPU render worker (mitcad-render, Contents/MacOS):
+"The CPU and Metal render worker (mitcad-render, Contents/MacOS):
   Cycles (https://projects.blender.org/blender/cycles): Apache-2.0, linked
-  statically into the worker (cycles/LICENSE). Its bundled sky model, atomic
-  operations and mikktspace: Apache-2.0, BSD and MIT (cycles/*license*.txt).
+  statically into the worker, with Metal runtime sources under
+  Contents/Resources/cycles (cycles/LICENSE). Mitcad updates its Metal resource
+  usage for the deployment target, exposes denoiser selection for diagnostics,
+  and ends waits for failed or cancelled Metal pipelines;
+  the patches are published in third_party/cycles/.
+  Its bundled sky model, atomic operations and mikktspace: Apache-2.0, BSD and
+  MIT (cycles/*license*.txt).
   Open Image Denoise (https://github.com/RenderKit/oidn): Apache-2.0, linked
-  dynamically, with its CPU device loaded at run time from Contents/Frameworks
+  dynamically, with its CPU/BNNS and Metal devices loaded at run time from Contents/Frameworks
   (openimagedenoise/LICENSE.txt and third-party-programs.txt). Mitcad's patch
   preserves the requested deployment target; published in third_party/oidn/.
+  The Metal module embeds OIDN's compiled Metal kernels; it needs no separate
+  kernel files. Its Metal, MetalPerformanceShaders and MetalPerformanceShadersGraph
+  dependencies, and CPU/BNNS's Accelerate dependency, are system frameworks.
   Embree, oneTBB, OpenImageIO: Apache-2.0. OpenColorIO, OpenEXR, Imath, libtiff,
   libjpeg-turbo and zstd: BSD-style. pugixml, cgltf, sse2neon and yaml-cpp: MIT.
   minizip-ng and zlib: zlib-style. OpenSSL: Apache-2.0. Library licence texts
   are collected below from vcpkg; sse2neon and cgltf are compiled headers.
-  ISPC (BSD-3-Clause) is a build tool only and is not shipped. Metal and
-  other GPU devices are disabled in this build.
+  ISPC (BSD-3-Clause) is a build tool only and is not shipped. Metal uses
+  Apple's system frameworks; those frameworks are not distributed here.
+  Open Image Denoise retains CPU/BNNS fallback; other GPU backends are disabled.
 
 ")
 
@@ -247,7 +258,7 @@ if(MITCAD_MACOS_DEPLOY)
   endif()
   list(APPEND mitcad_deploy_options "-libpath=${MITCAD_OIDN_ROOT}/lib")
   # Qt turns each additional binary into macdeployqt's -executable option,
-  # including the runtime-loaded module, and rewrites its Qt references.
+  # including both runtime-loaded OIDN modules, and rewrites Qt references.
   # Paths here are relative to the install prefix, macdeployqt's cwd.
   set(mitcad_render_deploy_modules "")
   foreach(mitcad_oidn_module IN LISTS MITCAD_OIDN_MODULES)

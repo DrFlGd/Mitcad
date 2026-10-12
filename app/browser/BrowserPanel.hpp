@@ -42,6 +42,11 @@ struct BrowserNode {
     // A feature under a sketch it uses (mitcad#177): uid: the feature,
     // sketch: that sketch; one row under each sketch it uses.
     Feature,
+    // Sheet metal (mitcad#210), under a sheet-metal body's row: its rules
+    // (uid: the rules feature) and its Flat Pattern (uid: the body; the
+    // light bulb shows it flat in place of the folded body).
+    SheetRules,
+    FlatPattern,
   };
 
   Type type = Type::None;
@@ -72,7 +77,8 @@ struct BrowserNode {
 // name and, for a component, the radio button that activates it. Selecting
 // rows selects in the view and the timeline, and the other way round; a
 // slow second click on a selected row renames it in place, as F2 does.
-// What the rows do is the BrowserController's.
+// Ctrl+F (Cmd+F) opens the timeline's search (mitcad#179). What the rows
+// do is the BrowserController's.
 class BrowserPanel : public QWidget {
   Q_OBJECT
 
@@ -131,6 +137,8 @@ signals:
   void doubleClicked(const mitcad::BrowserNode& node);
   void deleteRequested(const mitcad::BrowserNode& node);
   void contextMenuRequested(const mitcad::BrowserNode& node, const QPoint& globalPosition);
+  // Ctrl+F (Cmd+F on macOS) in the rows: the timeline's search (mitcad#179).
+  void searchRequested();
 
 private:
   friend class BrowserTree;
@@ -151,6 +159,9 @@ private:
   void addFeatureRows(QTreeWidgetItem* parent, const DocumentSnapshot& snapshot,
                       const DocumentSnapshot::Feature& sketch, const QString& occurrence, bool shown,
                       const SketchUses& uses);
+  // A sheet-metal body's rules and Flat Pattern under its row (mitcad#210).
+  void addSheetRows(QTreeWidgetItem* bodyRow, const DocumentSnapshot& snapshot, const BrowserNode& body,
+                    bool shown);
   // A constraint set's rows under its row (mitcad#148).
   void addConstraintRows(const DocumentSnapshot& snapshot, const DocumentSnapshot::Feature& feature,
                          QTreeWidgetItem* parent, bool shown);

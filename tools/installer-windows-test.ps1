@@ -18,7 +18,12 @@
 #   3. mitcad.exe --version loads Qt with its plugins. The render worker
 #      (mitcad#51): mitcad-render.exe, Open Image Denoise's DLLs and the
 #      renderer's licences are installed, and the worker renders its test
-#      scene headless.
+#      scene headless. A build with Cycles' CUDA device (mitcad#202) has
+#      every GPU kernel of the build folder in bin\cycles\lib and cuew's
+#      licence; a build configured with MITCAD_RENDER_REQUIRED_DEVICES
+#      naming CUDA (a release) must have them. The installed worker lists
+#      its devices (the CPU at least: the CUDA driver is loaded at run
+#      time, and a VM has no NVIDIA GPU).
 #   4. with -MesaDir: mitcad.exe --demo --screenshot renders the demo block
 #      (Mesa is copied next to the installed copy, as a VM has no GPU).
 #   5. with -MesaDir, the automatic update (mitcad#9) in each scope: the
@@ -211,6 +216,36 @@ function Test-Programs([string]$Install) {
                     'licenses\openimagedenoise\LICENSE.txt') {
     if (Test-Path (Join-Path $Install $file)) { Pass $file } else { Fail "$file is missing" }
   }
+  # The GPU kernels: every one of the build folder's (cycles\lib next to
+  # its mitcad-render.exe), and some when the build requires CUDA.
+  $builtWorker = Find-Built 'mitcad-render.exe', 'app\mitcad-render.exe'
+  # Open Image Denoise's other device modules next to it (CUDA's with -Cuda).
+  foreach ($module in @(if ($builtWorker) {
+      Get-ChildItem (Split-Path $builtWorker) -Filter 'OpenImageDenoise_device_*.dll' |
+        Where-Object { $_.Name -ne 'OpenImageDenoise_device_cpu.dll' }
+    })) {
+    if (Test-Path (Join-Path $bin $module.Name)) { Pass "bin\$($module.Name)" } else { Fail "bin\$($module.Name) is missing" }
+  }
+  $builtKernels = @(if ($builtWorker) {
+      Get-ChildItem (Join-Path (Split-Path $builtWorker) 'cycles\lib') -File -Filter '*.zst' -ErrorAction SilentlyContinue
+    })
+  $cache = Join-Path $Build 'CMakeCache.txt'
+  $requireCuda = (Test-Path $cache) -and
+    (Select-String -Path $cache -Pattern '^MITCAD_RENDER_REQUIRED_DEVICES:[A-Z]+=.*\bCUDA\b' -Quiet)
+  $installedKernels = Join-Path $bin 'cycles\lib'
+  $missingKernels = @($builtKernels | Where-Object { -not (Test-Path (Join-Path $installedKernels $_.Name)) })
+  $cubins = @($builtKernels | Where-Object { $_.Name -like 'kernel_sm_*.cubin.zst' })
+  if ($requireCuda -and $cubins.Count -eq 0) { Fail 'the build requires CUDA but has no CUDA kernels' }
+  if ($builtKernels.Count -gt 0) {
+    if ($missingKernels.Count -eq 0) {
+      $size = ($builtKernels | Measure-Object -Sum Length).Sum
+      Pass "$($builtKernels.Count) GPU kernels in bin\cycles\lib ($([math]::Round($size / 1MB, 1)) MB)"
+    } else { Fail "GPU kernels missing from bin\cycles\lib: $($missingKernels.Name -join ', ')" }
+    if (Test-Path (Join-Path $Install 'licenses\cycles\cuew-license.txt')) { Pass 'licenses\cycles\cuew-license.txt' }
+    else { Fail 'licenses\cycles\cuew-license.txt is missing' }
+  } else {
+    Pass 'no GPU kernels (a build without GPU devices)'
+  }
   $licenseFiles = @(Get-ChildItem (Join-Path $Install 'licenses\vcpkg') -Recurse -Filter copyright -ErrorAction SilentlyContinue)
   if ($licenseFiles.Count -gt 0) { Pass "$($licenseFiles.Count) vcpkg licence texts" } else { Fail 'no vcpkg licence texts' }
   foreach ($pattern in 'opengl32.dll', 'libgallium_wgl.dll', 'opengl32sw.dll', '*.pdb') {
@@ -248,6 +283,14 @@ function Test-Programs([string]$Install) {
   $renderText = (Get-Content $renderLog, (Join-Path $Out 'render-err.log') -Raw -ErrorAction SilentlyContinue) -join ''
   if ($proc.ExitCode -eq 0 -and $renderText -match 'render-bench 64x48 samples 2') { Pass 'mitcad-render.exe --bench 64x48' }
   else { Fail "mitcad-render.exe exit code $($proc.ExitCode) (see $renderLog)" }
+  # Its devices: a CUDA build starts without an NVIDIA driver too.
+  $devicesOut = Join-Path $Out 'devices.json'
+  $proc = Start-Process -FilePath (Join-Path $bin 'mitcad-render.exe') -ArgumentList '--list-devices' `
+    -RedirectStandardOutput $devicesOut -RedirectStandardError (Join-Path $Out 'devices-err.log') -Wait -PassThru
+  $devicesText = if (Test-Path $devicesOut) { (Get-Content $devicesOut -Raw) } else { '' }
+  $types = @(try { ($devicesText | ConvertFrom-Json).devices | ForEach-Object { $_.type } } catch { })
+  if ($proc.ExitCode -eq 0 -and $types -contains 'CPU') { Pass "mitcad-render.exe --list-devices: $($types -join ', ')" }
+  else { Fail "mitcad-render.exe --list-devices exit code $($proc.ExitCode), output '$devicesText'" }
 
   # 4. Rendering, when a software OpenGL is given (Mesa next to the
   # installed copy, also for the update test; removed before the uninstall).

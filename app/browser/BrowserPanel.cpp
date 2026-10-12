@@ -382,6 +382,12 @@ SelectionItem BrowserNode::item() const {
     // A feature, as the timeline gives it (Drive Joint takes it).
     item.kind = SelectKind::Feature;
     break;
+  case Type::SheetRules:
+    item.kind = SelectKind::Feature;
+    break;
+  case Type::FlatPattern:
+    item.kind = SelectKind::Body;
+    break;
   default:
     return SelectionItem();
   }
@@ -481,6 +487,10 @@ protected:
 
   void keyPressEvent(QKeyEvent* event) override {
     cancelSlowClick();
+    if (event->matches(QKeySequence::Find) && state() != QAbstractItemView::EditingState) {
+      emit m_panel.searchRequested(); // the timeline's search (mitcad#179)
+      return;
+    }
     QTreeWidgetItem* item = currentItem();
     if (item != nullptr && state() != QAbstractItemView::EditingState) {
       if (event->key() == Qt::Key_F2) {
@@ -646,6 +656,10 @@ QString BrowserPanel::keyOf(const BrowserNode& node) const {
   case BrowserNode::Type::Feature:
     // One row under each sketch it uses.
     return QStringLiteral("feature:%1<%2").arg(node.uid, node.sketch) + at;
+  case BrowserNode::Type::SheetRules:
+    return QStringLiteral("sheetrules:%1<%2").arg(node.uid, node.sketch) + at;
+  case BrowserNode::Type::FlatPattern:
+    return QStringLiteral("flat:") + node.uid + at;
   case BrowserNode::Type::None:
     break;
   }
@@ -726,6 +740,7 @@ void BrowserPanel::addComponentRows(QTreeWidgetItem* parent, const DocumentSnaps
                                     tr("%1 (%2), made by %3")
                                         .arg(node.name, uid, made != nullptr ? made->name : feature));
       gray(row, shown && body.visible);
+      addSheetRows(row, snapshot, node, shown && body.visible);
     }
   }
 
@@ -880,6 +895,68 @@ void BrowserPanel::addFeatureRows(QTreeWidgetItem* parent, const DocumentSnapsho
       row->setForeground(kName, kHiddenText);
     }
   }
+}
+
+void BrowserPanel::addSheetRows(QTreeWidgetItem* bodyRow, const DocumentSnapshot& snapshot, const BrowserNode& body,
+                                bool shown) {
+  const QJsonObject sheet = snapshot.sheet(body.uid);
+  if (sheet.isEmpty()) {
+    return;
+  }
+  const QString rules = sheet.value(QStringLiteral("rules")).toString();
+  const auto mm = [&sheet](const char* key) {
+    return QString::number(sheet.value(QLatin1String(key)).toDouble(), 'g', 6);
+  };
+  BrowserNode node;
+  node.type = BrowserNode::Type::SheetRules;
+  node.uid = rules;
+  node.sketch = body.uid; // the body it is listed under, for its key
+  node.occurrence = body.occurrence;
+  node.component = body.component;
+  node.featureType = QStringLiteral("sheet_rules");
+  node.name = QStringLiteral("%1 (%2 mm, R %3 mm, K %4)")
+                  .arg(sheet.value(QStringLiteral("rules_name")).toString(rules), mm("thickness"), mm("bend_radius"),
+                       mm("k_factor"));
+  QTreeWidgetItem* row =
+      addRow(bodyRow, node, QStringLiteral("sheet-rules"),
+             tr("Sheet rules %1: thickness %2 mm, bend radius %3 mm, K-factor %4; double-click to edit them for "
+                "every sheet that uses them")
+                 .arg(sheet.value(QStringLiteral("rules_name")).toString(rules), mm("thickness"), mm("bend_radius"),
+                      mm("k_factor")));
+  if (!shown) {
+    row->setForeground(kName, kHiddenText);
+  }
+  const QJsonValue flat = sheet.value(QStringLiteral("flat_pattern"));
+  if (flat.isObject()) {
+    const QJsonObject pattern = flat.toObject();
+    BrowserNode item;
+    item.type = BrowserNode::Type::FlatPattern;
+    item.uid = body.uid;
+    item.occurrence = body.occurrence;
+    item.component = body.component;
+    item.name = tr("Flat Pattern");
+    item.hasEye = true;
+    item.visible = pattern.value(QStringLiteral("shown")).toBool();
+    const bool valid = pattern.value(QStringLiteral("status")).toString() == QStringLiteral("valid");
+    QStringList reasons;
+    for (const QJsonValue& reason : pattern.value(QStringLiteral("diagnostics")).toArray()) {
+      reasons << reason.toString();
+    }
+    QTreeWidgetItem* flatRow = addRow(
+        bodyRow, item, QStringLiteral("flat-pattern"),
+        valid ? tr("Flat Pattern of %1: %2 mm2, %3 bend(s); the light bulb shows it flat")
+                    .arg(body.name)
+                    .arg(pattern.value(QStringLiteral("area")).toDouble(), 0, 'f', 2)
+                    .arg(pattern.value(QStringLiteral("bends")).toInt())
+              : tr("Flat Pattern of %1 is %2: %3")
+                    .arg(body.name, pattern.value(QStringLiteral("status")).toString(), reasons.join(QStringLiteral("; "))));
+    if (!valid) {
+      flatRow->setForeground(kName, kFailedText);
+    } else if (!shown) {
+      flatRow->setForeground(kName, kHiddenText);
+    }
+  }
+  bodyRow->setExpanded(m_expanded.value(keyOf(body), true));
 }
 
 void BrowserPanel::addConstraintRows(const DocumentSnapshot& snapshot, const DocumentSnapshot::Feature& feature,

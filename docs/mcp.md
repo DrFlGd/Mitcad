@@ -126,7 +126,7 @@ objects; fields below without a default are required.
 | `model_command` | `document`, `command` (native JSON object) | `document`, `applied`, native `result`, `state`, `timeline`, `bodies` |
 | `model_query` | `document`, `query` (native JSON object) | `document`, native JSON in `result` |
 | `document_save` | `document`, `path`, `overwrite` (default false) | `document`, canonical `path`, saved `state` |
-| `model_export` | `document`, `path`, `format`, optional `bodies` (array of names or UIDs), optional `sketch` | `document`, canonical `path`, native export `result` |
+| `model_export` | `document`, `path`, `format`, optional `bodies` (array of names or UIDs), optional `sketch`, or for DXF `flat_pattern` (a sheet-metal body: its Flat Pattern, mitcad#210) | `document`, canonical `path`, native export `result` |
 
 Each tool result includes both `structuredContent` and a text content
 block containing the same JSON. For example, `model_query` with

@@ -15,6 +15,8 @@ gp_Pnt2d point(const std::array<double, 2>& p) { return gp_Pnt2d(p[0], p[1]); }
 
 gp_Dir direction(const std::array<double, 3>& d) { return gp_Dir(d[0], d[1], d[2]); }
 
+} // namespace
+
 geometry::Segment to_geometry(const Segment& s) {
   geometry::Segment segment;
   segment.name = std::string(s.name);
@@ -61,7 +63,28 @@ geometry::Segment to_geometry(const Segment& s) {
   return segment;
 }
 
-} // namespace
+Segment from_geometry(const geometry::Segment& s) {
+  Segment result;
+  result.name = rust::String(s.name);
+  switch (s.kind) {
+  case geometry::SegmentKind::Line: result.kind = SegmentKind::Line; break;
+  case geometry::SegmentKind::Arc: result.kind = SegmentKind::Arc; break;
+  case geometry::SegmentKind::Circle: result.kind = SegmentKind::Circle; break;
+  case geometry::SegmentKind::Ellipse: result.kind = SegmentKind::Ellipse; break;
+  case geometry::SegmentKind::EllipseArc: result.kind = SegmentKind::EllipseArc; break;
+  case geometry::SegmentKind::BSpline: result.kind = SegmentKind::BSpline; break;
+  }
+  result.start = {s.start.X(), s.start.Y()}; result.end = {s.end.X(), s.end.Y()};
+  result.center = {s.center.X(), s.center.Y()}; result.radius = s.radius;
+  result.minor_radius = s.minor_radius; result.rotation = s.rotation;
+  result.start_angle = s.start_angle; result.end_angle = s.end_angle;
+  result.degree = static_cast<std::uint32_t>(s.degree); result.periodic = s.periodic;
+  for (const auto& p : s.poles) { result.poles.push_back(p.X()); result.poles.push_back(p.Y()); }
+  for (double w : s.weights) result.weights.push_back(w);
+  for (double k : s.knots) result.knots.push_back(k);
+  for (int m : s.multiplicities) result.multiplicities.push_back(static_cast<std::uint32_t>(m));
+  return result;
+}
 
 geometry::Frame to_geometry(const Frame& frame) {
   geometry::Frame result;

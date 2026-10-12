@@ -423,7 +423,12 @@ ProjectsPanel::ProjectsPanel(Host host, QWidget* parent) : QWidget(parent), m_ho
     connect(made, &QAction::triggered, this, run);
     return made;
   };
-  m_newDesign = action("add", tr("New Design"), tr("A new design in the selected folder, named here"), [this] {
+  QAction* newProject = action("add", tr("New Project"), tr("New Project: create a Local or Cloud project"), [this] {
+    emit commandRequested(QStringLiteral("file.new_project"));
+  });
+  newProject->setObjectName(QStringLiteral("projectsNewProject"));
+  m_newDesign = action("new-design", tr("New Design"),
+                       tr("New Design: a design in the selected project folder, named here"), [this] {
     QString root = selectedRoot();
     if (root.isEmpty() && m_host.currentRoot) {
       root = m_host.currentRoot();
@@ -432,6 +437,7 @@ ProjectsPanel::ProjectsPanel(Host host, QWidget* parent) : QWidget(parent), m_ho
       startNewDesign(root, sameRoot(root, selectedRoot()) ? selectedFolder() : QString());
     }
   });
+  m_newDesign->setObjectName(QStringLiteral("projectsNewDesign"));
   m_newFolder = action("folder", tr("New Folder"), tr("A new folder in the selected folder, named here"), [this] {
     QString root = selectedRoot();
     if (root.isEmpty() && m_host.currentRoot) {
@@ -506,6 +512,7 @@ ProjectsPanel::ProjectsPanel(Host host, QWidget* parent) : QWidget(parent), m_ho
   for (QAction* each : m_toolbar->actions()) {
     if (QWidget* button = m_toolbar->widgetForAction(each)) {
       button->setFocusPolicy(Qt::NoFocus);
+      button->setAccessibleName(each->text());
     }
   }
 
@@ -1356,7 +1363,7 @@ void ProjectsPanel::contextMenu(const QPoint& at) {
     menu.separator();
   }
   if (item != nullptr && type == RowType::Folder && healthy) {
-    menu.add(QStringLiteral("add"), tr("New Design"), [this, root, folder] { startNewDesign(root, folder); });
+    menu.add(QStringLiteral("new-design"), tr("New Design"), [this, root, folder] { startNewDesign(root, folder); });
     menu.add(QStringLiteral("folder"), tr("New Folder"), [this, root, folder] { startNewFolder(root, folder); });
     menu.add(QStringLiteral("edit"), tr("Rename"), [this] { renameCurrent(); });
     menu.add(QStringLiteral("delete"), tr("Delete"), [this] { deleteCurrent(); });
@@ -1366,14 +1373,14 @@ void ProjectsPanel::contextMenu(const QPoint& at) {
     return;
   }
   if (item != nullptr && type == RowType::Design && healthy) {
-    menu.add(QStringLiteral("add"), tr("New Design"), [this, root, folder] { startNewDesign(root, folder); });
+    menu.add(QStringLiteral("new-design"), tr("New Design"), [this, root, folder] { startNewDesign(root, folder); });
     menu.add(QStringLiteral("folder"), tr("New Folder"), [this, root, folder] { startNewFolder(root, folder); });
     menu.exec(m_tree->viewport()->mapToGlobal(at));
     return;
   }
   if (item != nullptr && type == RowType::Project && row != nullptr) {
     if (healthy) {
-      menu.add(QStringLiteral("add"), tr("New Design"), [this, root] { startNewDesign(root, QString()); });
+      menu.add(QStringLiteral("new-design"), tr("New Design"), [this, root] { startNewDesign(root, QString()); });
       menu.add(QStringLiteral("folder"), tr("New Folder"), [this, root] { startNewFolder(root, QString()); });
       menu.add(QString(), tr("Show in Folder"), [this, root] { emit showInFolderRequested(root); });
       menu.add(QStringLiteral("settings"), tr("Project Settings..."), [this, root] { emit projectSettingsRequested(root); });

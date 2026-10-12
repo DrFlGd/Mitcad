@@ -7,6 +7,7 @@
 //! The operations and profile handling here are shared by the other profile
 //! features (revolve, hole).
 
+use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
@@ -22,9 +23,11 @@ use crate::kernel::{
     BooleanOp, Bound, ExtrudeFeatureSpec, ExtrudeSide, ExtrudeStart, Kernel, SideEnd, ThinWall,
     WallLocation,
 };
+use crate::links::OccurrenceLink;
 use crate::parameters::ParamId;
 use crate::profile::{ProfileRegion, dot};
 use crate::topo::RegionKey;
+use crate::transform::Transform;
 
 /// A profile region of a sketch.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -171,7 +174,8 @@ impl Operation {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ExtrudeDef<P = ParamId> {
-    /// Regions of one sketch.
+    /// Regions of one sketch, a set (see [`selected_regions`]).
+    #[serde(deserialize_with = "profile_set")]
     pub profiles: Vec<ProfileRef>,
     #[serde(
         default = "Default::default",
@@ -188,6 +192,15 @@ pub struct ExtrudeDef<P = ParamId> {
     /// The bodies a Join, Cut or Intersect works on; empty for all bodies.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub participants: Vec<BodyUid>,
+    /// None preserves the legacy component-local participant behavior exactly.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cut_scope: Option<super::extrude_scope::CutScope>,
+    /// Bodies of other components that the extrusion's objects are or are
+    /// faces of (mitcad#104, as a combine's `tool_links`): each is read in
+    /// its component and moved into the extrusion's coordinates by the
+    /// placements at its point of the timeline.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub object_links: BTreeMap<BodyUid, OccurrenceLink>,
 }
 
 type Mapper<'a, P, Q, E> = dyn FnMut(&str, &P) -> Result<Q, E> + 'a;
@@ -296,6 +309,8 @@ impl<P> ExtrudeDef<P> {
             flip: self.flip,
             operation: self.operation,
             participants: self.participants.clone(),
+            cut_scope: self.cut_scope.clone(),
+            object_links: self.object_links.clone(),
         })
     }
 
@@ -332,10 +347,33 @@ pub(crate) fn profile_references(profiles: &[ProfileRef], references: &mut Refer
         .extend(profiles.iter().map(|p| p.sketch));
 }
 
-/// Checks that the profiles are distinct regions of one sketch before the
-/// feature. Region keys depend on the solved geometry, so evaluation finds
-/// them (or the best match when the sketch changed, see
-/// [`SketchOutput::resolve_region`]).
+/// Profile references as the set they stand for (mitcad#199): a reference
+/// listed again adds nothing and is dropped, the first one kept in its
+/// place.
+pub(crate) fn distinct_profiles(profiles: Vec<ProfileRef>) -> Vec<ProfileRef> {
+    let mut distinct: Vec<ProfileRef> = Vec::new();
+    for profile in profiles {
+        if !distinct.contains(&profile) {
+            distinct.push(profile);
+        }
+    }
+    distinct
+}
+
+/// Reads the `profiles` of a definition as a set ([`distinct_profiles`]):
+/// a list with a reference twice, as selection plumbing could give, is the
+/// feature it means and not an invalid one.
+pub(crate) fn profile_set<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Vec<ProfileRef>, D::Error> {
+    Vec::<ProfileRef>::deserialize(deserializer).map(distinct_profiles)
+}
+
+/// Checks that the profiles are regions of one sketch before the feature.
+/// Region keys depend on the solved geometry, so evaluation finds them (or
+/// the best match when the sketch changed, see
+/// [`SketchOutput::resolve_region`]). A region referenced more than once is
+/// no error: the references are a set ([`selected_regions`]).
 pub(crate) fn check_profiles(
     ctx: &CheckContext<'_>,
     profiles: &[ProfileRef],
@@ -344,16 +382,8 @@ pub(crate) fn check_profiles(
         return Err("no profiles selected".to_owned());
     };
     ctx.sketch(first.sketch)?;
-    for (i, profile) in profiles.iter().enumerate() {
-        if profile.sketch != first.sketch {
-            return Err("the profiles must come from one sketch".to_owned());
-        }
-        if profiles[..i].contains(profile) {
-            return Err(format!(
-                "profile {} is listed more than once",
-                profile.region
-            ));
-        }
+    if profiles.iter().any(|p| p.sketch != first.sketch) {
+        return Err("the profiles must come from one sketch".to_owned());
     }
     Ok(())
 }
@@ -376,29 +406,55 @@ pub(crate) fn check_participants(
     Ok(())
 }
 
-/// The evaluated sketch of the profiles and their regions: each by its key,
-/// or the best match when the sketch changed (it keeps the referenced key,
-/// so the faces made from it keep their names). Two references that now
-/// find the same region use it once.
+/// The area profile references select in an evaluated sketch (mitcad#199),
+/// as the regions handed to the kernel; preview and evaluation both use it.
+///
+/// A selectable area is one profile region: a face of the planar
+/// arrangement of the sketch's curves, with its holes, as the view shows
+/// and highlights it (a ring between two circles is one region, the disc
+/// inside it another). The selected area is the odd/even (XOR) composition
+/// of the selected regions: covered by an odd number of them it is
+/// extruded. Regions of one sketch never overlap, so that is each selected
+/// region once, in the order first listed, whatever the order or
+/// repetition of the list; a hole of a region stays a hole unless the
+/// region filling it is selected too (then the two fuse, as touching
+/// regions do). Toggling is the application's: a click on a selected
+/// region takes its reference out instead of listing it again.
+///
+/// Each reference finds its region by its key, or the best match when the
+/// sketch changed (the region keeps the referenced key, so the faces made
+/// from it keep their names); two references that find the same region,
+/// such as a key listed twice or an old key and the current one, use it
+/// once. Err: the first reference that finds no region.
+pub(crate) fn selected_regions<'a>(
+    sketch: &SketchOutput,
+    profiles: &'a [ProfileRef],
+) -> Result<Vec<ProfileRegion>, &'a ProfileRef> {
+    let mut regions: Vec<ProfileRegion> = Vec::new();
+    for p in profiles {
+        let region = sketch.resolve_region(&p.region).ok_or(p)?;
+        if !regions.iter().any(|r| r.loops == region.loops) {
+            regions.push(region);
+        }
+    }
+    Ok(regions)
+}
+
+/// The evaluated sketch of the profiles and the regions they select
+/// ([`selected_regions`]).
 pub(crate) fn profile_regions<K: Kernel>(
     ctx: &mut EvalContext<'_, K>,
     profiles: &[ProfileRef],
 ) -> Result<(Arc<SketchOutput>, Vec<ProfileRegion>), String> {
     let sketch_uid = profiles.first().ok_or("no profiles selected")?.sketch;
     let sketch = ctx.sketch(sketch_uid)?;
-    let mut regions: Vec<ProfileRegion> = Vec::new();
-    for p in profiles {
-        let region = sketch.resolve_region(&p.region).ok_or_else(|| {
-            format!(
-                "{} has no profile {}",
-                ctx.feature_name(sketch_uid),
-                p.region
-            )
-        })?;
-        if !regions.iter().any(|r| r.loops == region.loops) {
-            regions.push(region);
-        }
-    }
+    let regions = selected_regions(&sketch, profiles).map_err(|p| {
+        format!(
+            "{} has no profile {}",
+            ctx.feature_name(sketch_uid),
+            p.region
+        )
+    })?;
     Ok((sketch, regions))
 }
 
@@ -460,11 +516,20 @@ impl FeatureInfo for ExtrudeDef {
         for object in self.objects() {
             object.add_references(&mut references);
         }
+        if let Some(scope) = &self.cut_scope {
+            scope.add_references(&mut references);
+        }
         references
     }
 
     fn check(&self, ctx: &CheckContext<'_>) -> Result<(), String> {
         check_profiles(ctx, &self.profiles)?;
+        if let Some(scope) = &self.cut_scope {
+            if self.operation != Operation::Cut || !self.participants.is_empty() {
+                return Err("cut_scope requires Cut with no legacy participant list".to_owned());
+            }
+            scope.check(ctx)?;
+        }
         check_participants(ctx, self.operation, &self.participants)?;
         if let Start::Object { object, .. } = &self.start
             && !object.is_planar()
@@ -483,6 +548,13 @@ impl FeatureInfo for ExtrudeDef {
         for object in self.objects() {
             object.check(ctx)?;
         }
+        if let Some(body) = self
+            .object_links
+            .keys()
+            .find(|b| !self.objects().iter().any(|o| o.body() == Some(**b)))
+        {
+            return Err(format!("body {body} is linked but not an object's"));
+        }
         Ok(())
     }
 
@@ -498,19 +570,10 @@ impl FeatureInfo for ExtrudeDef {
                 ));
             }
             Extent::TwoSides { side1, side2 } => {
-                for side in [side1, side2] {
-                    if let Side::Distance { distance, .. } = side
-                        && value(*distance) < 0.0
-                    {
-                        return Err(format!(
-                            "the distances of a two-sided extrusion must not be negative, got {}",
-                            value(*distance)
-                        ));
-                    }
-                }
+                // The sign of a side's distance does not matter (see `tool`).
                 if let (Side::Distance { distance: d1, .. }, Side::Distance { distance: d2, .. }) =
                     (side1, side2)
-                    && !is_positive(value(*d1) + value(*d2))
+                    && !is_positive(value(*d1).abs() + value(*d2).abs())
                 {
                     return Err(
                         "the two extrude distances must add up to more than zero".to_owned()
@@ -542,6 +605,10 @@ impl FeatureInfo for ExtrudeDef {
     }
 
     fn tool_use(&self) -> Option<ToolUse> {
+        // A pattern must not silently replay an assembly cut only locally.
+        if self.cut_scope.is_some() {
+            return None;
+        }
         Some(ToolUse {
             operation: self.operation,
             participants: self.participants.clone(),
@@ -584,8 +651,97 @@ impl<'a> SideView<'a> {
 impl<K: Kernel> Evaluate<K> for ExtrudeDef {
     fn evaluate(&self, ctx: &mut EvalContext<'_, K>) -> Result<FeatureOutput<K::Shape>, String> {
         let (sketch, regions) = profile_regions(ctx, &self.profiles)?;
-        let participants = participant_bodies(ctx, self.operation, &self.participants)?;
-        let frame = sketch.frame;
+        let discovery = self
+            .cut_scope
+            .as_ref()
+            .map(|scope| scope.discover(ctx))
+            .transpose()?;
+        let through_all = matches!(
+            &self.extent,
+            Extent::ThroughAll { .. }
+                | Extent::TwoSides {
+                    side1: Side::ThroughAll { .. },
+                    ..
+                }
+                | Extent::TwoSides {
+                    side2: Side::ThroughAll { .. },
+                    ..
+                }
+        );
+        let participants = match &discovery {
+            Some(discovery) if through_all => discovery.in_source_frame(ctx)?,
+            Some(_) => Vec::new(),
+            None => participant_bodies(ctx, self.operation, &self.participants)?,
+        };
+        let uid = ctx.uid;
+        let tool = self.tool(
+            ctx,
+            &sketch,
+            &regions,
+            &participants,
+            &Transform::IDENTITY,
+            uid,
+        )?;
+        match (&self.cut_scope, discovery) {
+            (Some(scope), Some(discovery)) => scope.apply(ctx, discovery, tool),
+            _ => apply_operation(ctx, self.operation, participants, tool, "extrusion"),
+        }
+    }
+
+    /// The tool of an extrusion whose end depends on bodies (up to an
+    /// object, through all bodies) rebuilt with the profile moved by
+    /// `placement`: the copies of a pattern then end on the object as the
+    /// original does, where the moved tool would end where the object lies
+    /// moved too. An extrusion by distances only has the moved tool.
+    fn placed_tool(
+        &self,
+        ctx: &mut EvalContext<'_, K>,
+        feature: FeatureUid,
+        placement: &Transform,
+    ) -> Option<Result<K::Shape, String>> {
+        if self.cut_scope.is_some() || !self.depends_on_bodies() {
+            return None;
+        }
+        let (sketch, regions) = match profile_regions(ctx, &self.profiles) {
+            Ok(p) => p,
+            Err(e) => return Some(Err(e)),
+        };
+        let participants = match participant_bodies(ctx, self.operation, &self.participants) {
+            Ok(p) => p,
+            Err(e) => return Some(Err(e)),
+        };
+        // Objects the original took away are found as it found them.
+        let outer = ctx.objects_before.replace(feature);
+        let tool = self.tool(ctx, &sketch, &regions, &participants, placement, feature);
+        ctx.objects_before = outer;
+        Some(tool)
+    }
+}
+
+impl ExtrudeDef {
+    /// Whether the extrusion's start or an end is found from bodies.
+    fn depends_on_bodies(&self) -> bool {
+        let to_object = |side: &Side| !matches!(side, Side::Distance { .. });
+        !self.objects().is_empty()
+            || match &self.extent {
+                Extent::ThroughAll { .. } => true,
+                Extent::TwoSides { side1, side2 } => to_object(side1) || to_object(side2),
+                _ => false,
+            }
+    }
+
+    /// The extrusion's tool body for the sketch's frame moved by
+    /// `placement`, its faces named after `feature`.
+    fn tool<K: Kernel>(
+        &self,
+        ctx: &mut EvalContext<'_, K>,
+        sketch: &SketchOutput,
+        regions: &[ProfileRegion],
+        participants: &[(BodyUid, K::Shape)],
+        placement: &Transform,
+        feature: FeatureUid,
+    ) -> Result<K::Shape, String> {
+        let frame = placement.apply_frame(&sketch.frame);
         let normal = frame.normal();
         let mut direction = if self.flip {
             normal.map(|v| -v)
@@ -601,7 +757,7 @@ impl<K: Kernel> Evaluate<K> for ExtrudeDef {
             }
             Start::Object { object, offset } => {
                 let offset = offset.map(|id| ctx.param(id)).transpose()?.unwrap_or(0.0);
-                let target = object.resolve(ctx)?;
+                let target = object.resolve_linked(ctx, &self.object_links)?;
                 (ExtrudeStart::Object(Bound { target, offset }), 0.0)
             }
         };
@@ -666,16 +822,11 @@ impl<K: Kernel> Evaluate<K> for ExtrudeDef {
                             let d = ctx.positive(id)?;
                             if *full_length { d / 2.0 } else { d }
                         }
-                        Extent::TwoSides { .. } => {
-                            let d = ctx.param(id)?;
-                            if d < 0.0 {
-                                return Err(format!(
-                                    "{} must not be negative, got {d}",
-                                    ctx.param_name(id)
-                                ));
-                            }
-                            d
-                        }
+                        // Each side goes its own way by the distance's size:
+                        // the sign of a two-sided distance does not turn it
+                        // (a cut through all one way with a negative second
+                        // distance cuts that far the other way in the API
+                        // reference dumps).
                         _ => ctx.param(id)?.abs(),
                     };
                     if d == 0.0 && !two_sides {
@@ -686,15 +837,15 @@ impl<K: Kernel> Evaluate<K> for ExtrudeDef {
                 SideView::ToObject(object, offset) => {
                     let offset = offset.map(|id| ctx.param(id)).transpose()?.unwrap_or(0.0);
                     SideEnd::Target(Bound {
-                        target: object.resolve(ctx)?,
+                        target: object.resolve_linked(ctx, &self.object_links)?,
                         offset,
                     })
                 }
                 SideView::ThroughAll => {
-                    let bodies = if participants.is_empty() {
+                    let bodies = if participants.is_empty() && self.cut_scope.is_none() {
                         ctx.bodies()
                     } else {
-                        participants.clone()
+                        participants.to_vec()
                     };
                     // Both ways through all: the same length each way.
                     let both = matches!(
@@ -733,19 +884,15 @@ impl<K: Kernel> Evaluate<K> for ExtrudeDef {
         }
 
         let spec = ExtrudeFeatureSpec {
-            feature: ctx.uid,
+            feature,
             frame,
-            regions: &regions,
+            regions,
             direction,
             start,
             side1,
             side2,
         };
-        let tool = ctx
-            .kernel
-            .extrude_feature(&spec)
-            .map_err(|e| e.to_string())?;
-        apply_operation(ctx, self.operation, participants, tool, "extrusion")
+        ctx.kernel.extrude_feature(&spec).map_err(|e| e.to_string())
     }
 }
 

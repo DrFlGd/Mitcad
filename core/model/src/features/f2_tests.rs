@@ -477,3 +477,33 @@ fn split_face_pieces_keep_the_name() {
     assert_eq!(loaded.state(), b.doc.state());
     assert_eq!(loaded.to_json(), json);
 }
+
+#[test]
+fn split_body_by_several_tools_divides_the_pieces_each_reaches() {
+    let mut b = block();
+    let split = add!(
+        b,
+        json!({"type": "split_body", "bodies": [b.body],
+               "tool": {"type": "origin_plane", "plane": "yz"},
+               "more_tools": [{"type": "origin_plane", "plane": "xz"}]}),
+    )
+    .unwrap();
+    assert_eq!(status(&b, split), FeatureStatus::Ok);
+    // Two pieces by the first tool, each in two by the second.
+    let uids: Vec<BodyUid> = b.doc.bodies().iter().map(|v| v.uid).collect();
+    assert_eq!(
+        uids,
+        vec![
+            b.body,
+            BodyUid::new(split, 0),
+            BodyUid::new(split, 1),
+            BodyUid::new(split, 2)
+        ]
+    );
+    // The further tools are read back with the definition.
+    let def = b.doc.feature(split).unwrap().def.clone();
+    let crate::features::FeatureDef::SplitBody(def) = def else {
+        panic!("not a split");
+    };
+    assert_eq!(def.more_tools.len(), 1);
+}

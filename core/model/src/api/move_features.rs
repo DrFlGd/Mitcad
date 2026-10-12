@@ -6,8 +6,8 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 
 use super::ApiError;
-use crate::document::{Document, MoveGroup, PlannedGroup};
-use crate::features::{FeatureDef, ValueInput};
+use crate::document::{Document, MoveDestination, MoveGroup, MovePlan, PlannedGroup};
+use crate::features::{FeatureDef, OccurrencePath, ValueInput};
 use crate::ids::{BodyUid, ComponentUid, FeatureUid};
 use crate::kernel::Kernel;
 use crate::parameters::ParamId;
@@ -26,8 +26,16 @@ pub(crate) struct MoveSelection {
     features: Vec<FeatureUid>,
     #[serde(default)]
     groups: Vec<Vec<BodyUid>>,
+    #[serde(default)]
+    source_occurrence: Option<OccurrencePath>,
+    #[serde(default)]
+    destination: Option<MoveDestination>,
+    #[serde(default)]
+    together: bool,
 }
 
+// Parsed once per command and dropped: the size difference costs nothing.
+#[allow(clippy::large_enum_variant)]
 #[derive(Debug, Deserialize)]
 #[serde(tag = "cmd", rename_all = "snake_case", deny_unknown_fields)]
 pub(crate) enum MoveCommand {
@@ -49,6 +57,10 @@ pub(crate) enum MoveCommand {
         /// Bodies a feature ties go into one component.
         #[serde(default)]
         together: bool,
+        #[serde(default)]
+        source_occurrence: Option<OccurrencePath>,
+        #[serde(default)]
+        destination: Option<MoveDestination>,
     },
     MoveHistoryIntoComponent {
         feature: FeatureUid,
@@ -120,15 +132,44 @@ impl<K: Kernel> Document<K> {
                 name,
                 names,
                 together,
+                source_occurrence,
+                destination,
             } => {
                 let selection = MoveSelection {
                     component,
                     bodies,
                     features,
                     groups,
+                    source_occurrence,
+                    destination,
+                    together,
                 };
                 let source = self.move_source(&selection)?;
                 let groups = Self::move_groups(&selection)?;
+                if let Some(destination) = &selection.destination {
+                    if name.is_some() || !names.is_empty() {
+                        return Err(ApiError(
+                            "give the new name in destination, not name or names".to_owned(),
+                        ));
+                    }
+                    let moved = self.move_to_destination(
+                        source,
+                        &groups,
+                        selection.source_occurrence.as_ref(),
+                        destination,
+                        together,
+                    )?;
+                    return Ok(json!({"components": [{
+                        "component": moved.component, "occurrence": moved.occurrence,
+                        "name": self.assembly().name(moved.component), "created": moved.created,
+                        "bodies": moved.bodies, "features": moved.features,
+                    }]}));
+                }
+                if selection.source_occurrence.is_some() {
+                    return Err(ApiError(
+                        "source_occurrence requires an explicit destination".to_owned(),
+                    ));
+                }
                 let names = match (name, names.is_empty()) {
                     (Some(name), true) => vec![name],
                     (None, _) => names,
@@ -164,10 +205,24 @@ impl<K: Kernel> Document<K> {
     pub(crate) fn move_plan_json(&self, selection: &MoveSelection) -> Result<Value, ApiError> {
         let source = self.move_source(selection)?;
         let groups = Self::move_groups(selection)?;
-        let plan = self.plan_move_to_components(source, &groups)?;
+        let mut plan = self.plan_move_to_components(source, &groups)?;
+        let destinations = self.move_destinations_json(&plan, selection.source_occurrence.as_ref());
+        if let Some(destination) = &selection.destination
+            && let Err(error) = self.check_move_destination(
+                &plan,
+                selection.source_occurrence.as_ref(),
+                destination,
+            )
+        {
+            plan.problems.push(error.to_string());
+        }
         let body = |b: &BodyUid| json!({"uid": b, "name": self.body_name(*b)});
-        let feature =
-            |f: &FeatureUid| json!({"uid": f, "name": self.feature(*f).map(|e| e.name.clone())});
+        let feature = |f: &FeatureUid| {
+            json!({
+                "uid": f, "name": self.feature(*f).map(|e| e.name.clone()),
+                "type": self.feature(*f).map(|e| e.def.type_name()),
+            })
+        };
         let group = |g: &PlannedGroup| {
             json!({"bodies": g.bodies.iter().map(body).collect::<Vec<_>>(),
                    "features": g.features.iter().map(feature).collect::<Vec<_>>()})
@@ -188,7 +243,58 @@ impl<K: Kernel> Document<K> {
             })).collect::<Vec<_>>(),
             "together": plan.together.as_ref().map(|t| t.iter().map(group).collect::<Vec<_>>()),
             "problems": plan.problems,
+            "destinations": destinations,
+            "keep_together": selection.together,
         }))
+    }
+
+    fn move_destinations_json(
+        &self,
+        plan: &MovePlan,
+        source_occurrence: Option<&OccurrencePath>,
+    ) -> Vec<Value> {
+        let a = self.assembly();
+        let components =
+            std::iter::once(ComponentUid::ROOT).chain(a.components.iter().map(|c| c.uid));
+        let mut destinations = Vec::new();
+        for component in components {
+            for path in a.paths_to(component) {
+                let occurrence = OccurrencePath(path.clone());
+                let parent_occurrence =
+                    OccurrencePath(path[..path.len().saturating_sub(1)].to_vec());
+                let existing = MoveDestination::Existing {
+                    component,
+                    occurrence: occurrence.clone(),
+                };
+                let new = MoveDestination::New {
+                    parent: component,
+                    parent_occurrence: occurrence.clone(),
+                    name: None,
+                };
+                let reason = self
+                    .check_move_destination(plan, source_occurrence, &existing)
+                    .err()
+                    .map(|e| e.to_string());
+                let create_reason = self
+                    .check_move_destination(plan, source_occurrence, &new)
+                    .err()
+                    .map(|e| e.to_string());
+                let label = if path.is_empty() {
+                    a.root_name.clone()
+                } else {
+                    format!("{}/{}", a.root_name, a.path_name(&path))
+                };
+                destinations.push(json!({
+                    "component": component, "name": a.name(component),
+                    "occurrence": occurrence, "path": label,
+                    "parent_occurrence": parent_occurrence,
+                    "eligible": reason.is_none(), "reason": reason.unwrap_or_default(),
+                    "can_create": create_reason.is_none(),
+                    "create_reason": create_reason.unwrap_or_default(),
+                }));
+            }
+        }
+        destinations
     }
 
     /// The `feature_references` query: the features a definition refers

@@ -200,6 +200,7 @@ pub(crate) fn place_bodies<K: Kernel>(
     copy: bool,
 ) -> Result<FeatureOutput<K::Shape>, String> {
     let mut changes = Vec::new();
+    let mut sheets = std::collections::BTreeMap::new();
     for (j, body) in bodies.iter().enumerate() {
         let shape = ctx.body(*body)?;
         let instance = copy.then_some(Instance {
@@ -216,8 +217,12 @@ pub(crate) fn place_bodies<K: Kernel>(
             *body
         };
         changes.push(BodyChange::Set(uid, moved));
+        if !copy && transform.is_rigid() {
+            sheets.insert(uid, crate::sheet::SheetChange::Transform(*transform));
+        }
     }
     Ok(FeatureOutput {
+        sheets,
         changes,
         ..FeatureOutput::default()
     })

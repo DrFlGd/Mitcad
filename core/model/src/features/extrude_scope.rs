@@ -1,0 +1,557 @@
+// SPDX-License-Identifier: MIT
+//! Explicit assembly target scope for Extrude Cut (mitcad#200). Targets
+//! retain their component-local shapes and ownership; instances are never
+//! silently converted to independent geometry or shared-definition edits.
+
+use serde::{Deserialize, Serialize};
+
+use super::{
+    BodyChange, CheckContext, Env, EvalContext, FeatureEntry, FeatureOutput, OccurrencePath,
+    References,
+};
+use crate::assembly::{Assembly, inverse};
+use crate::fingerprint::Fingerprint;
+use crate::ids::{BodyUid, ComponentUid};
+use crate::kernel::{BooleanOp, BooleanOutput, Kernel, KernelError};
+use crate::recompute::Read;
+use crate::transform::Transform;
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ComponentTarget {
+    pub component: ComponentUid,
+    pub occurrence: OccurrencePath,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BodyTarget {
+    pub component: ComponentUid,
+    pub occurrence: OccurrencePath,
+    pub body: BodyUid,
+}
+
+impl BodyTarget {
+    fn target(&self) -> ComponentTarget {
+        ComponentTarget {
+            component: self.component,
+            occurrence: self.occurrence.clone(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
+pub enum TargetScope {
+    Automatic {
+        #[serde(default)]
+        excluded: Vec<ComponentTarget>,
+        #[serde(default)]
+        excluded_bodies: Vec<BodyTarget>,
+    },
+    Explicit {
+        included: Vec<ComponentTarget>,
+        #[serde(default)]
+        excluded_bodies: Vec<BodyTarget>,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CutScope {
+    pub context: ComponentTarget,
+    pub targets: TargetScope,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct CutBody {
+    pub body: BodyUid,
+    pub name: String,
+    pub checked: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct CutTargetRow {
+    pub component: ComponentUid,
+    pub occurrence: OccurrencePath,
+    pub name: String,
+    pub path_name: String,
+    pub intersects: bool,
+    pub eligible: bool,
+    pub checked: bool,
+    pub partial: bool,
+    pub reason: Option<String>,
+    pub bodies: Vec<CutBody>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct CutTargets {
+    pub mode: String,
+    pub rows: Vec<CutTargetRow>,
+    pub selected_components: usize,
+    pub selected_bodies: usize,
+    pub can_commit: bool,
+}
+
+impl CutScope {
+    pub(crate) fn stored_targets(&self) -> &[ComponentTarget] {
+        match &self.targets {
+            TargetScope::Automatic { excluded, .. } => excluded,
+            TargetScope::Explicit { included, .. } => included,
+        }
+    }
+
+    pub(crate) fn excluded_bodies(&self) -> &[BodyTarget] {
+        match &self.targets {
+            TargetScope::Automatic {
+                excluded_bodies, ..
+            }
+            | TargetScope::Explicit {
+                excluded_bodies, ..
+            } => excluded_bodies,
+        }
+    }
+
+    pub(crate) fn paths(&self) -> Vec<&OccurrencePath> {
+        std::iter::once(&self.context.occurrence)
+            .chain(self.stored_targets().iter().map(|t| &t.occurrence))
+            .chain(self.excluded_bodies().iter().map(|t| &t.occurrence))
+            .collect()
+    }
+
+    pub(crate) fn add_references(&self, refs: &mut References) {
+        for target in self.excluded_bodies() {
+            refs.body(target.body);
+        }
+    }
+
+    pub(crate) fn check(&self, ctx: &CheckContext<'_>) -> Result<(), String> {
+        let targets = self.stored_targets();
+        for (i, target) in targets.iter().enumerate() {
+            if targets[..i].contains(target) {
+                return Err("a cut-scope component is listed more than once".to_owned());
+            }
+        }
+        for (i, target) in self.excluded_bodies().iter().enumerate() {
+            if self.excluded_bodies()[..i].contains(target) {
+                return Err("a cut-scope body is listed more than once".to_owned());
+            }
+            ctx.body(target.body)?;
+        }
+        Ok(())
+    }
+
+    pub(crate) fn check_components(
+        &self,
+        assembly: &Assembly,
+        ctx: &CheckContext<'_>,
+        component: ComponentUid,
+    ) -> Result<(), String> {
+        if self.context.component != component {
+            return Err("cut_scope.context must name the extrusion's owning component".to_owned());
+        }
+        // Stored component identities also depend on their timeline creators.
+        // Missing paths are left to recompute, so a failed cut can be repaired
+        // after save/reopen instead of silently acquiring a different target.
+        for component in std::iter::once(self.context.component)
+            .chain(self.stored_targets().iter().map(|t| t.component))
+            .chain(self.excluded_bodies().iter().map(|t| t.component))
+        {
+            if let Some(creator) = assembly.component(component).and_then(|c| c.created_by) {
+                ctx.feature(creator)?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Stored component selection depends on its earlier geometry and maker.
+    /// Automatic discovery without a stored selection is a timeline-state read.
+    pub(crate) fn depends_on(&self, assembly: &Assembly, earlier: &FeatureEntry) -> bool {
+        self.stored_targets()
+            .iter()
+            .any(|t| t.component == earlier.component)
+            || std::iter::once(self.context.component)
+                .chain(self.stored_targets().iter().map(|t| t.component))
+                .chain(self.excluded_bodies().iter().map(|t| t.component))
+                .any(|component| {
+                    assembly
+                        .component(component)
+                        .is_some_and(|c| c.created_by == Some(earlier.uid))
+                })
+    }
+
+    fn checked(&self, target: &ComponentTarget) -> bool {
+        match &self.targets {
+            TargetScope::Automatic { excluded, .. } => !excluded.contains(target),
+            TargetScope::Explicit { included, .. } => included.contains(target),
+        }
+    }
+
+    fn mode(&self) -> &'static str {
+        match self.targets {
+            TargetScope::Automatic { .. } => "automatic",
+            TargetScope::Explicit { .. } => "explicit",
+        }
+    }
+
+    fn report(&self) -> CutTargets {
+        CutTargets {
+            mode: self.mode().to_owned(),
+            rows: Vec::new(),
+            selected_components: 0,
+            selected_bodies: 0,
+            can_commit: false,
+        }
+    }
+}
+
+/// Cache input for structural changes which shape and placement reads alone
+/// cannot detect (for example a hidden second occurrence or a new linked flag).
+pub(crate) fn assembly_key<S>(env: &Env<'_, S>) -> u128 {
+    let a = env.assembly;
+    let mut key = Fingerprint::new("extrude-cut-assembly-v1");
+    key.str(&a.root_name).u64(a.components.len() as u64);
+    for c in &a.components {
+        key.u32(c.uid.0)
+            .str(&c.name)
+            .bool(c.link.is_some())
+            .option(c.created_by, |k, uid| {
+                k.u64(uid.0);
+            });
+    }
+    key.u64(a.occurrences.len() as u64);
+    for o in &a.occurrences {
+        key.u32(o.uid.0)
+            .u32(o.parent.0)
+            .u32(o.component.0)
+            .u32(o.number)
+            .bool(env.placements.contains_key(&o.uid));
+    }
+    key.finish()
+}
+
+fn resolve<K: Kernel>(
+    ctx: &mut EvalContext<'_, K>,
+    target: &ComponentTarget,
+) -> Result<Transform, String> {
+    let actual =
+        crate::joints::path_component(ctx.env.assembly, ComponentUid::ROOT, &target.occurrence.0)?;
+    if actual != target.component {
+        return Err(format!(
+            "occurrence {} no longer places component {}",
+            target.occurrence, target.component
+        ));
+    }
+    let mut transform = Transform::IDENTITY;
+    for uid in &target.occurrence.0 {
+        let placed = ctx.placement(*uid);
+        if !ctx.env.placements.contains_key(uid) {
+            return Err(format!(
+                "occurrence {uid} is unavailable at this timeline position"
+            ));
+        }
+        transform = transform.after(&placed);
+    }
+    Ok(transform)
+}
+
+struct Candidate<S> {
+    target: ComponentTarget,
+    world: Transform,
+    shapes: Vec<(BodyUid, S)>,
+    row: CutTargetRow,
+}
+
+pub(crate) struct Discovery<S> {
+    source_world: Transform,
+    candidates: Vec<Candidate<S>>,
+}
+
+impl<S: Clone> Discovery<S> {
+    /// All available candidates, including unchecked and disabled rows: Through
+    /// All does not shrink when the user excludes the farthest component.
+    pub(crate) fn in_source_frame<K: Kernel<Shape = S>>(
+        &self,
+        ctx: &EvalContext<'_, K>,
+    ) -> Result<Vec<(BodyUid, S)>, String> {
+        let local = inverse(&self.source_world);
+        let mut bodies = Vec::new();
+        for c in &self.candidates {
+            let transform = local.after(&c.world);
+            for (uid, shape) in &c.shapes {
+                bodies.push((
+                    *uid,
+                    ctx.kernel
+                        .transform_shape(shape, &transform, None)
+                        .map_err(|e| e.to_string())?,
+                ));
+            }
+        }
+        Ok(bodies)
+    }
+}
+
+fn row(assembly: &Assembly, target: &ComponentTarget, reason: Option<String>) -> CutTargetRow {
+    CutTargetRow {
+        component: target.component,
+        occurrence: target.occurrence.clone(),
+        name: assembly.name(target.component),
+        path_name: if target.occurrence.is_empty() {
+            assembly.root_name.clone()
+        } else {
+            format!(
+                "{} / {}",
+                assembly.root_name,
+                assembly.path_name(&target.occurrence.0)
+            )
+        },
+        intersects: false,
+        eligible: reason.is_none(),
+        checked: false,
+        partial: false,
+        reason,
+        bodies: Vec::new(),
+    }
+}
+
+impl CutScope {
+    pub(crate) fn discover<K: Kernel>(
+        &self,
+        ctx: &mut EvalContext<'_, K>,
+    ) -> Result<Discovery<K::Shape>, String> {
+        ctx.reads.push(Read::Assembly(assembly_key(&ctx.env)));
+        // Missing path reads participate in failure-cache invalidation too.
+        for path in self.paths() {
+            for uid in &path.0 {
+                ctx.placement(*uid);
+            }
+        }
+        if self.context.component != ctx.component() {
+            return Err("cut_scope.context must name the extrusion's owning component".to_owned());
+        }
+        let source_world = resolve(ctx, &self.context)?;
+        let mut effective = ctx.env.assembly.clone();
+        effective
+            .occurrences
+            .retain(|o| ctx.env.placements.contains_key(&o.uid));
+        let components: Vec<_> = std::iter::once(ComponentUid::ROOT)
+            .chain(effective.components.iter().map(|c| c.uid))
+            .collect();
+        let mut candidates = Vec::new();
+        for component in components {
+            let shapes = ctx.bodies_in(component);
+            let paths = effective.paths_to(component);
+            for path in &paths {
+                let target = ComponentTarget {
+                    component,
+                    occurrence: OccurrencePath(path.clone()),
+                };
+                let readonly = effective
+                    .component(component)
+                    .is_some_and(|c| c.link.is_some())
+                    || path
+                        .iter()
+                        .filter_map(|uid| effective.occurrence(*uid))
+                        .any(|o| {
+                            effective
+                                .component(o.component)
+                                .is_some_and(|c| c.link.is_some())
+                        });
+                let reason = if readonly {
+                    Some(
+                        "Linked component is read-only; edit the source document instead."
+                            .to_owned(),
+                    )
+                } else if paths.len() != 1 {
+                    Some("Shared component definition has multiple occurrences; occurrence-specific cuts are not supported.".to_owned())
+                } else {
+                    None
+                };
+                let world = resolve(ctx, &target)?;
+                candidates.push(Candidate {
+                    row: row(&effective, &target, reason),
+                    target,
+                    world,
+                    shapes: shapes.clone(),
+                });
+            }
+        }
+        let mut report = self.report();
+        let mut error = None;
+        let stored: Vec<_> = self
+            .stored_targets()
+            .iter()
+            .cloned()
+            .chain(self.excluded_bodies().iter().map(BodyTarget::target))
+            .collect();
+        for target in stored {
+            if let Err(message) = resolve(ctx, &target) {
+                error.get_or_insert(message.clone());
+                if !report
+                    .rows
+                    .iter()
+                    .any(|r| r.component == target.component && r.occurrence == target.occurrence)
+                {
+                    report
+                        .rows
+                        .push(row(ctx.env.assembly, &target, Some(message)));
+                }
+            }
+        }
+        for body in self.excluded_bodies() {
+            if ctx.env.owners.get(&body.body) != Some(&body.component) {
+                let message = format!(
+                    "excluded body {} is unavailable in component {}",
+                    body.body, body.component
+                );
+                error.get_or_insert(message.clone());
+                report
+                    .rows
+                    .push(row(ctx.env.assembly, &body.target(), Some(message)));
+            }
+        }
+        if let Some(message) = error {
+            ctx.cut_targets = Some(report);
+            return Err(message);
+        }
+        Ok(Discovery {
+            source_world,
+            candidates,
+        })
+    }
+
+    pub(crate) fn apply<K: Kernel>(
+        &self,
+        ctx: &mut EvalContext<'_, K>,
+        discovery: Discovery<K::Shape>,
+        tool: K::Shape,
+    ) -> Result<FeatureOutput<K::Shape>, String> {
+        let mut report = self.report();
+        let mut output = FeatureOutput {
+            tool: Some(tool.clone()),
+            ..FeatureOutput::default()
+        };
+        let mut failed = None;
+        for mut candidate in discovery.candidates {
+            if matches!(&self.targets, TargetScope::Explicit { included, .. } if included.contains(&candidate.target))
+                && let Some(reason) = &candidate.row.reason
+            {
+                failed.get_or_insert_with(|| format!("{}: {reason}", candidate.row.path_name));
+            }
+            let local_tool = ctx
+                .kernel
+                .transform_shape(
+                    &tool,
+                    &inverse(&candidate.world).after(&discovery.source_world),
+                    None,
+                )
+                .map_err(|e| e.to_string())?;
+            let tool_bounds = ctx
+                .kernel
+                .bounding_box(&local_tool)
+                .map_err(|e| e.to_string())?;
+            let requested = self.checked(&candidate.target) && candidate.row.eligible;
+            let mut touched: Vec<(BodyUid, BooleanOutput<K::Shape>)> = Vec::new();
+            let mut boolean_failed = false;
+            for (uid, shape) in &candidate.shapes {
+                let bounds = ctx.kernel.bounding_box(shape).map_err(|e| e.to_string())?;
+                if let (Some(a), Some(b)) = (&tool_bounds, &bounds)
+                    && !a.overlaps(b, 1e-7)
+                {
+                    continue;
+                }
+                match ctx.kernel.boolean(BooleanOp::Cut, &[shape], &local_tool) {
+                    Ok(result) if result.touched.first() == Some(&true) => {
+                        touched.push((*uid, result))
+                    }
+                    Ok(_) => {}
+                    Err(error) => {
+                        boolean_failed = true;
+                        let detail = error.to_string();
+                        if KernelError::is_out_of_memory(&detail) || detail.contains("cancelled") {
+                            return Err(detail);
+                        }
+                        let message = format!("{}: {error}", candidate.row.path_name);
+                        if requested
+                            && !self
+                                .excluded_bodies()
+                                .iter()
+                                .any(|b| b.body == *uid && b.target() == candidate.target)
+                        {
+                            failed.get_or_insert(message.clone());
+                            candidate.row.eligible = false;
+                        }
+                        candidate.row.reason.get_or_insert(message);
+                        // An excluded body's failed intersection check does
+                        // not disable the other requested bodies in its row.
+                        candidate.row.bodies.push(CutBody {
+                            body: *uid,
+                            name: uid.to_string(),
+                            checked: false,
+                        });
+                    }
+                }
+            }
+            candidate.row.intersects = !touched.is_empty();
+            let selected = self.checked(&candidate.target) && candidate.row.eligible;
+            for (body, result) in touched {
+                let excluded = self
+                    .excluded_bodies()
+                    .iter()
+                    .any(|b| b.body == body && b.target() == candidate.target);
+                let checked = selected && !excluded;
+                candidate.row.bodies.push(CutBody {
+                    body,
+                    name: body.to_string(),
+                    checked,
+                });
+                if !checked {
+                    continue;
+                }
+                report.selected_bodies += 1;
+                let mut pieces = result.pieces.into_iter().filter(|p| p.sources.contains(&0));
+                match pieces.next() {
+                    None => output.changes.push(BodyChange::Remove(body)),
+                    Some(first) => {
+                        output.changes.push(BodyChange::Set(body, first.shape));
+                        output.owners.insert(body, candidate.target.component);
+                        for piece in pieces {
+                            let uid = ctx.new_body();
+                            output.changes.push(BodyChange::Set(uid, piece.shape));
+                            output.owners.insert(uid, candidate.target.component);
+                        }
+                    }
+                }
+            }
+            let checked_count = candidate.row.bodies.iter().filter(|b| b.checked).count();
+            candidate.row.bodies.sort_by_key(|b| b.body);
+            candidate.row.checked = checked_count > 0;
+            candidate.row.partial =
+                checked_count > 0 && checked_count != candidate.row.bodies.len();
+            if candidate.row.checked {
+                report.selected_components += 1;
+            }
+            if candidate.row.intersects
+                || self.stored_targets().contains(&candidate.target)
+                || self
+                    .excluded_bodies()
+                    .iter()
+                    .any(|b| b.target() == candidate.target)
+                || boolean_failed
+            {
+                report.rows.push(candidate.row);
+            }
+        }
+        if report.selected_bodies == 0 {
+            failed.get_or_insert_with(|| if matches!(&self.targets, TargetScope::Explicit { included, .. } if included.is_empty()) {
+                "No components selected".to_owned()
+            } else { "No eligible components intersect the cut".to_owned() });
+        }
+        report.can_commit = failed.is_none();
+        ctx.cut_targets = Some(report);
+        match failed {
+            Some(message) => Err(message),
+            None => Ok(output),
+        }
+    }
+}

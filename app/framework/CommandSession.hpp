@@ -99,6 +99,11 @@ public:
   // opens feature `uid` for editing, its input `input` taking the keyboard
   // (P6: a command whose inputs ask for another feature's edit).
   virtual void editInstead(const QString& uid, const QString& input) = 0;
+  // The occurrence the view places a sketch's profiles by (empty in the
+  // root component): profiles a command takes from elsewhere than a click
+  // (the newest, a loaded definition) are highlighted where they are shown,
+  // and a click on one is on the same entry (mitcad#199).
+  virtual QString profileOccurrence(const QString& /*sketch*/) const { return QString(); }
 };
 
 // A feature command from start to OK or Cancel: its inputs' state and
@@ -236,6 +241,14 @@ private:
   // those of the active input left out, to the view (mitcad#147).
   void updateGhosts();
   bool isReferable(const SelectionItem& item) const;
+  // Names the region a profile item means now (the model's `profile`
+  // query), each item asked once per resolver: selection inputs keep a
+  // region once however its key or occurrence is given (mitcad#199).
+  ItemResolver resolver() const;
+  // The selections filled from elsewhere than clicks (the definition
+  // edited, the selection before the command, `init`) in their canonical
+  // form: profiles placed where the view shows them, each region once.
+  void canonicalizeSelections();
   void finish(bool committed);
   // False when the roll-back stays (its computation was cancelled).
   bool rollForward();
@@ -266,6 +279,7 @@ private:
   int m_markerPosition = 0;   // where the edited feature is
   int m_originalMarker = 0;   // where the marker was before
   CommandState m_state;
+  Selection m_previewHighlights;
   QPointer<CommandPanel> m_panel; // only the legacy Qt frontend
   CommandPresenter* m_presenter = nullptr;
   QPointer<ManipulatorOverlay> m_manipulators;

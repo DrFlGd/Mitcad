@@ -37,6 +37,8 @@ CommandDef torusCommand(const CommandContext& context);
 CommandDef rectangularPatternCommand(const CommandContext& context);
 CommandDef circularPatternCommand(const CommandContext& context);
 CommandDef pathPatternCommand(const CommandContext& context);
+// PointPatternCommands.cpp
+CommandDef pointPatternCommand(const CommandContext& context);
 CommandDef mirrorCommand(const CommandContext& context);
 
 // FilletCommands.cpp

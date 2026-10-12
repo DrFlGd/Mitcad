@@ -169,6 +169,37 @@ BoundingBox bounding_box(const Shape& shape) {
   });
 }
 
+BoundingBox enclosing_box(const Shape& shape) {
+  return detail::run("enclosing box", [&] {
+    BoundingBox result;
+    if (shape.occt().IsNull()) {
+      return result;
+    }
+    if (const auto bounds = shape.bounds()) {
+      const auto& b = *bounds;
+      result.empty = false;
+      result.min = gp_Pnt(b[0], b[1], b[2]);
+      result.max = gp_Pnt(b[3], b[4], b[5]);
+      return result;
+    }
+    // The faces' control points, not the optimum of each curved face
+    // (OCCT's particle swarm: seconds for a body of thousands of spline
+    // faces), and the shape's tolerances: a box that holds the shape. Not
+    // kept: the shape's own box is the tight one.
+    Bnd_Box box;
+    BRepBndLib::Add(shape.occt(), box, false);
+    if (box.IsVoid()) {
+      return bounding_box(shape);
+    }
+    double xmin = 0, ymin = 0, zmin = 0, xmax = 0, ymax = 0, zmax = 0;
+    box.Get(xmin, ymin, zmin, xmax, ymax, zmax);
+    result.empty = false;
+    result.min = gp_Pnt(xmin, ymin, zmin);
+    result.max = gp_Pnt(xmax, ymax, zmax);
+    return result;
+  });
+}
+
 std::vector<FaceInfo> face_infos(const Shape& shape) {
   return detail::run("faces", [&] {
     std::vector<FaceInfo> faces;

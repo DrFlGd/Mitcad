@@ -392,11 +392,18 @@ void FinalRender::handle(const QJsonObject& event) {
     }
   }
   if (name == QLatin1String("ready")) {
-    m_deviceLabel = RenderDevice::fromJson(event.value(QStringLiteral("device")).toObject()).label();
+    const RenderDevice device = RenderDevice::fromJson(event.value(QStringLiteral("device")).toObject());
+    m_deviceLabel = device.label();
+    qInfo().noquote() << QStringLiteral("Render diagnostics: %1").arg(device.diagnostics());
     emit ready(event.value(QStringLiteral("renderer")).toString());
+  } else if (name == QLatin1String("denoiser")) {
+    const RenderDevice device = RenderDevice::fromJson(event.value(QStringLiteral("device")).toObject());
+    qInfo().noquote() << QStringLiteral("Render denoising diagnostics: %1").arg(device.diagnostics());
   } else if (name == QLatin1String("device")) {
     // The CPU took over (mitcad#50); a "warning" with the reason follows.
-    m_deviceLabel = RenderDevice::fromJson(event.value(QStringLiteral("device")).toObject()).label();
+    const RenderDevice device = RenderDevice::fromJson(event.value(QStringLiteral("device")).toObject());
+    m_deviceLabel = device.label();
+    qInfo().noquote() << QStringLiteral("Render diagnostics: %1").arg(device.diagnostics());
   } else if (name == QLatin1String("progress")) {
     const QJsonValue remaining = event.value(QStringLiteral("remaining"));
     emit progress(event.value(QStringLiteral("samples")).toInt(), event.value(QStringLiteral("total")).toInt(),

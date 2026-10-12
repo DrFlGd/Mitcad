@@ -24,6 +24,15 @@ mod kernel;
 mod parameters;
 mod profile;
 mod recompute;
+pub mod sheet;
+#[cfg(test)]
+mod sheet_tests;
+// Sheet-metal Unfold, Refold and Flat Patterns (mitcad#208).
+#[cfg(test)]
+mod sheet_flat_tests;
+// What the sheet-metal command UI asks of the model (mitcad#210).
+#[cfg(test)]
+mod sheet_ui_tests;
 pub mod sketch;
 pub mod topo;
 mod transform;
@@ -33,11 +42,15 @@ mod transform;
 mod component_tests;
 #[cfg(test)]
 mod document_tests;
+#[cfg(test)]
+mod point_pattern_tests;
 /// The mock kernel of the model tests; other crates' tests use it through
 /// the `testing` feature (the .f3d importer, T1).
 #[cfg(any(test, feature = "testing"))]
 pub mod testing;
 // Profile features (F1).
+#[cfg(test)]
+mod extrude_scope_tests;
 #[cfg(test)]
 mod profile_feature_tests;
 
@@ -55,6 +68,8 @@ pub use kernel::{
 };
 // .f3d import (T1d).
 pub use kernel::EdgeMiddle;
+// The faces a run of features made, copied by a pattern.
+pub use kernel::{AddedMaterial, FeatureChanges};
 // Replace face of curved faces (P5).
 pub use kernel::FacePoints;
 // FreeCAD import (.FCStd).
@@ -152,6 +167,11 @@ mod constraint_tests;
 pub mod constraints;
 
 // Move Features into a Component (mitcad#171).
+pub use document::AutoselectProfiles;
 pub use document::{MoveConflict, MoveGroup, MovePlan, MovedGroup, PlannedGroup};
 #[cfg(test)]
 mod move_features_tests;
+
+// Selected profile areas: toggled regions, sets of references (mitcad#199).
+#[cfg(test)]
+mod profile_selection_tests;

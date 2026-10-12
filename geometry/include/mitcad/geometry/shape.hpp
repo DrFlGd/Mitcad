@@ -23,6 +23,7 @@
 #include <mutex>
 #include <optional>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 #include <NCollection_IndexedMap.hxx>
@@ -190,6 +191,12 @@ private:
   LazyValue<std::array<double, 6>> m_bounds;
   LazyValue<std::shared_ptr<void>> m_boundaryIndex;
   LazyValue<bool> m_valid;
+  // A large shape's faces by each reference that matches one of their
+  // names (naming.hpp: the name, or the name before a "#k"), made the
+  // first time a face is looked for (mitcad#181: finding faces one by one
+  // on a body of 23 000 faces scanned every face's names each time).
+  using FaceIndex = std::unordered_map<std::string, std::vector<int>>;
+  LazyValue<std::shared_ptr<const FaceIndex>> m_faceIndex;
   bool m_unified = false;
   std::vector<std::string> m_notes;
   // Registered with the input check when made.

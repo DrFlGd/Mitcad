@@ -47,7 +47,7 @@ use std::path::{Path, PathBuf};
 use gix::ObjectId;
 use gix::bstr::ByteSlice;
 use mitcad_model::file::PROJECT_MARKER;
-use mitcad_model::file::settings::SharedSettings;
+use mitcad_model::file::settings::{LocalSettings, SharedSettings};
 use serde::Serialize;
 use serde_json::{Value, json};
 
@@ -291,6 +291,14 @@ fn create_options(command: &Value) -> Result<CreateOptions, VcsError> {
         }
         None => None,
     };
+    let local = match command.get("local").filter(|value| !value.is_null()) {
+        Some(changes) => {
+            let value = settings::merged(&LocalSettings::default().to_json(), changes);
+            let (local, _) = LocalSettings::from_json(&value, true).map_err(VcsError::Command)?;
+            Some(local)
+        }
+        None => None,
+    };
     Ok(CreateOptions {
         author: Identity::parse(text(command, "author")?)?,
         design,
@@ -298,6 +306,7 @@ fn create_options(command: &Value) -> Result<CreateOptions, VcsError> {
         url: optional(command, "url").map(str::to_owned),
         push: flag("push"),
         shared,
+        local,
     })
 }
 
@@ -327,6 +336,12 @@ pub fn run(
                        "default_branch": null, "head": null, "has_project": null,
                        "files": [], "latest": null, "versions": null})
             })?
+        }
+        "validate_create_project" => {
+            // The same strict settings parser, before UI helpers create a
+            // shared-folder remote. No folder or network work is performed.
+            create_options(&command)?;
+            (json!({"valid": true}), None)
         }
         "create_project" => {
             let dir = text(&command, "dir")?;

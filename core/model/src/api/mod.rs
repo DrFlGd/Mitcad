@@ -282,6 +282,24 @@ enum Command {
     DeleteRenderLight {
         id: String,
     },
+    // Sheet-metal Flat Patterns (mitcad#208, `document/flat_patterns.rs`).
+    SetFlatPattern {
+        body: BodyUid,
+        #[serde(default)]
+        stationary: Option<crate::sheet::PanelId>,
+        #[serde(default)]
+        x_axis: Option<crate::sheet::flat::FlatXAxis>,
+        #[serde(default)]
+        reference_side: Option<crate::sheet::SheetReferenceSide>,
+        /// Show the developed solid in place of the body (mitcad#210).
+        #[serde(default)]
+        shown: Option<bool>,
+    },
+    RemoveFlatPattern {
+        body: BodyUid,
+    },
+    // The Flat Pattern as a DXF drawing (mitcad#210, `exchange.rs`).
+    ExportFlatPatternDxf(exchange::ExportFlatPatternCommand),
 }
 
 fn yes() -> bool {
@@ -353,6 +371,15 @@ enum Query {
         #[serde(default)]
         hashes: bool,
     },
+    AutoselectProfiles,
+    SheetState {
+        #[serde(default)]
+        body: Option<BodyUid>,
+    },
+    SheetRules {
+        #[serde(default)]
+        feature: Option<FeatureUid>,
+    },
     Feature {
         uid: FeatureUid,
     },
@@ -370,6 +397,7 @@ enum Query {
     Measure(analysis::MeasureQuery),
     Interference(analysis::InterferenceQuery),
     Section(analysis::SectionQuery),
+    SectionPlane(crate::document::SectionAnalysis),
     CompareStep(analysis::CompareStepQuery),
     Threads,
     // The general sketch (S1, `sketch.rs`).
@@ -435,6 +463,44 @@ enum Query {
     // and what a definition refers to.
     MoveToComponent(move_features::MoveSelection),
     FeatureReferences(Box<move_features::ReferencesQuery>),
+    // The region a profile reference means now (mitcad#199): the
+    // application's selection inputs tell by it whether a click is on a
+    // selected region, whatever key the selection keeps for it.
+    Profile {
+        sketch: FeatureUid,
+        region: crate::topo::RegionKey,
+    },
+    // Sheet-metal Flat Patterns (mitcad#208): one body's, or all of them.
+    FlatPattern {
+        #[serde(default)]
+        body: Option<BodyUid>,
+    },
+    // The two-way flat correspondence of a body point or flat position.
+    FlatPoint {
+        body: BodyUid,
+        #[serde(default)]
+        flat: Option<[f64; 2]>,
+        #[serde(default)]
+        model: Option<[f64; 3]>,
+    },
+    // The command UI of sheet metal (mitcad#210, `document/flat_patterns.rs`):
+    // a picked face or edge as a semantic reference, the seam two panels
+    // share, and the sheet bodies with their rules and Flat Patterns.
+    SheetReference {
+        body: BodyUid,
+        #[serde(default)]
+        face: Option<String>,
+        #[serde(default)]
+        edge: Option<String>,
+        #[serde(default)]
+        at: Option<[f64; 3]>,
+    },
+    SheetSeam {
+        body: BodyUid,
+        stationary: crate::sheet::PanelId,
+        moving: crate::sheet::PanelId,
+    },
+    SheetBodies,
 }
 
 fn names(names: &[String]) -> Value {
@@ -487,7 +553,9 @@ impl<K: Kernel> Document<K> {
             .get("cmd")
             .and_then(Value::as_str)
             .is_some_and(|cmd| move_features::COMMANDS.contains(&cmd));
-        let mut result = if is_sketch {
+        let mut result = if let Some(rules) = inline_face_rules(&value) {
+            self.add_face_with_rules_command(rules, &value)?
+        } else if is_sketch {
             let command = sketch::parse_sketch_command(value)?;
             self.run_sketch_command(command)?
         } else if is_component {
@@ -830,16 +898,39 @@ impl<K: Kernel> Document<K> {
                 self.delete_render_light(&id)?;
                 json!({})
             }
+            // Sheet-metal Flat Patterns (mitcad#208).
+            Command::SetFlatPattern {
+                body,
+                stationary,
+                x_axis,
+                reference_side,
+                shown,
+            } => {
+                self.set_flat_pattern(body, stationary, x_axis, reference_side, shown)?;
+                json!({})
+            }
+            Command::RemoveFlatPattern { body } => {
+                self.remove_flat_pattern(body)?;
+                json!({})
+            }
+            Command::ExportFlatPatternDxf(command) => self.export_flat_pattern_command(command)?,
         })
     }
 
     /// Evaluates an `add_feature` or `edit_feature` command without
     /// committing it; the shapes are then available as preview handles.
     pub fn preview(&mut self, json: &str) -> Result<String, ApiError> {
-        let command: PreviewCommand = parse(read_json(json)?, "preview command")?;
-        let report = match command {
-            PreviewCommand::AddFeature { def, name } => self.preview_add(&def, name.as_deref())?,
-            PreviewCommand::EditFeature { uid, def } => self.preview_edit(uid, &def)?,
+        let value = read_json(json)?;
+        let report = if let Some(rules) = inline_face_rules(&value) {
+            let (rules, face, name) = face_with_rules(rules, &value)?;
+            self.preview_face_with_rules(&rules, &face, name.as_deref())?
+        } else {
+            match parse::<PreviewCommand>(value, "preview command")? {
+                PreviewCommand::AddFeature { def, name } => {
+                    self.preview_add(&def, name.as_deref())?
+                }
+                PreviewCommand::EditFeature { uid, def } => self.preview_edit(uid, &def)?,
+            }
         };
         let mut value = preview_json(&report);
         if let Some(datum) = self.preview_datum() {
@@ -933,6 +1024,9 @@ impl<K: Kernel> Document<K> {
                     })
                     .collect(),
             ),
+            Query::AutoselectProfiles => json!(self.autoselect_profiles()),
+            Query::SheetState { body } => crate::sheet::state_query(self.last_result(), body),
+            Query::SheetRules { feature } => crate::sheet::rules_query(self.last_result(), feature),
             Query::Feature { uid } => {
                 let entry = self
                     .feature(uid)
@@ -1009,6 +1103,13 @@ impl<K: Kernel> Document<K> {
             Query::Measure(query) => self.measure_json(&query)?,
             Query::Interference(query) => self.interference_json(&query)?,
             Query::Section(query) => self.section_json(&query)?,
+            Query::SectionPlane(query) => {
+                let plane = self.section_plane(&query).map_err(ApiError)?;
+                let occurrence = self
+                    .analysis_plane_occurrence(&query.plane, query.occurrence.as_ref())
+                    .map_err(ApiError)?;
+                json!({"origin": plane.origin, "normal": plane.normal, "occurrence": occurrence})
+            }
             Query::CompareStep(query) => self.compare_step_json(&query)?,
             Query::Threads => self.threads_json(),
             Query::Sketch { uid } => self.sketch_json(uid)?,
@@ -1065,6 +1166,32 @@ impl<K: Kernel> Document<K> {
             // Move Features into a Component (mitcad#171).
             Query::MoveToComponent(selection) => self.move_plan_json(&selection)?,
             Query::FeatureReferences(query) => self.feature_references_json(&query),
+            Query::Profile { sketch, region } => match self.profile_region(sketch, &region) {
+                Some((_, found)) => json!({"sketch": sketch, "region": found.key,
+                                           "exact": found.key == region}),
+                None => Value::Null,
+            },
+            // Sheet-metal Flat Patterns (mitcad#208).
+            Query::FlatPattern { body } => self.flat_pattern_json(body),
+            Query::FlatPoint { body, flat, model } => {
+                self.flat_point_json(body, flat, model).map_err(ApiError)?
+            }
+            Query::SheetReference {
+                body,
+                face,
+                edge,
+                at,
+            } => self
+                .sheet_reference_json(body, face.as_deref(), edge.as_deref(), at)
+                .map_err(ApiError)?,
+            Query::SheetSeam {
+                body,
+                stationary,
+                moving,
+            } => self
+                .sheet_seam_json(body, stationary, moving)
+                .map_err(ApiError)?,
+            Query::SheetBodies => self.sheet_bodies_json(),
         };
         Ok(result.to_string())
     }
@@ -1219,7 +1346,7 @@ fn profile_hash(frame: &SketchFrame, region: &ProfileRegion) -> String {
                     &mut hasher,
                     &[center[0], center[1], *radius, *start_angle, *end_angle],
                 ),
-                G::Circle { center, radius } => {
+                G::Circle { center, radius, .. } => {
                     numbers(&mut hasher, &[center[0], center[1], *radius]);
                 }
                 G::Ellipse {
@@ -1299,6 +1426,36 @@ fn preview_json(report: &PreviewReport) -> Value {
         "tool": report.tool,
     });
     // A pattern's elements (P9): rows of each element's transform.
+    if let Some(anchor) = &report.anchor {
+        value["anchor"] = json!(anchor);
+    }
+    if !report.instances.is_empty() {
+        value["instances"] = json!(
+            report
+                .instances
+                .iter()
+                .map(|i| {
+                    let path = i
+                        .path
+                        .iter()
+                        .map(ToString::to_string)
+                        .collect::<Vec<_>>()
+                        .join("/");
+                    json!({"body": i.body, "occurrence": path,
+                "transform": crate::assembly::matrix4(&i.transform), "visible": i.visible})
+                })
+                .collect::<Vec<_>>()
+        );
+    }
+    if !report.removed_instances.is_empty() {
+        value["removed_instances"] = json!(report.removed_instances.iter().map(|(path, body)| {
+            json!({"body":body,"occurrence":path.iter().map(ToString::to_string).collect::<Vec<_>>().join("/")})
+        }).collect::<Vec<_>>());
+    }
+    if let Some(targets) = &report.cut_targets {
+        value["cut_targets"] = json!(targets);
+    }
+    value["sheet_states"] = report.sheet_states.clone();
     if !report.elements.is_empty() {
         let elements: Vec<_> = report
             .elements
@@ -1348,4 +1505,81 @@ mod analysis_tests;
 mod appearance_tests;
 // Render settings of the document (mitcad#47).
 #[cfg(test)]
+mod autoselect_tests;
+#[cfg(test)]
 mod render_settings_tests;
+
+// A Face with new rules of its own (mitcad#210): `add_feature` (and its
+// preview) of a `sheet_face` whose `rules` is the rules' definition adds a
+// `sheet_rules` feature just before the Face, in one undo step.
+
+/// The rules' definition of such a command, or `None` for any other.
+fn inline_face_rules(value: &Value) -> Option<Value> {
+    if value.get("cmd").and_then(Value::as_str) != Some("add_feature") {
+        return None;
+    }
+    let def = value.get("def")?;
+    if def.get("type").and_then(Value::as_str) != Some("sheet_face") {
+        return None;
+    }
+    let mut rules = def.get("rules")?.as_object()?.clone();
+    rules.entry("type").or_insert_with(|| json!("sheet_rules"));
+    Some(Value::Object(rules))
+}
+
+type FaceFor = Box<dyn Fn(FeatureUid) -> Result<FeatureDef<ValueInput>, crate::ModelError>>;
+
+/// The rules' definition, the Face's for the rules' uid, and the Face's name.
+fn face_with_rules(
+    rules: Value,
+    command: &Value,
+) -> Result<(FeatureDef<ValueInput>, FaceFor, Option<String>), ApiError> {
+    let rules: FeatureDef<ValueInput> = parse(rules, "sheet rules")?;
+    if !matches!(rules, FeatureDef::SheetRules(_)) {
+        return Err(ApiError("a Face's own rules must be sheet_rules".into()));
+    }
+    let face = command["def"].clone();
+    // The Face itself must be valid apart from its rules.
+    let mut probe = face.clone();
+    probe["rules"] = json!("F1");
+    parse::<FeatureDef<ValueInput>>(probe, "feature definition")?;
+    let name = command
+        .get("name")
+        .and_then(Value::as_str)
+        .map(str::to_owned);
+    let make: FaceFor = Box::new(move |uid| {
+        let mut def = face.clone();
+        def["rules"] = json!(uid);
+        serde_json::from_value(def)
+            .map_err(|e| crate::ModelError::Invalid(format!("invalid feature definition: {e}")))
+    });
+    Ok((rules, make, name))
+}
+
+impl<K: Kernel> Document<K> {
+    fn add_face_with_rules_command(
+        &mut self,
+        rules: Value,
+        command: &Value,
+    ) -> Result<Value, ApiError> {
+        for key in command.as_object().into_iter().flat_map(|o| o.keys()) {
+            if !matches!(key.as_str(), "cmd" | "def" | "name" | "component") {
+                return Err(ApiError(format!("invalid command: unknown field `{key}`")));
+            }
+        }
+        let (rules, face, name) = face_with_rules(rules, command)?;
+        let component = command
+            .get("component")
+            .and_then(Value::as_str)
+            .map(|c| self.component_ref(c))
+            .transpose()?;
+        let added = self.add_face_with_rules(&rules, &face, name.as_deref(), component)?;
+        let rules = self
+            .features()
+            .take_while(|f| f.uid != added.uid)
+            .last()
+            .map(|f| f.uid);
+        Ok(json!({"uid": added.uid, "name": added.name, "rules": rules,
+                  "parameters": names(&added.parameters)}))
+    }
+}

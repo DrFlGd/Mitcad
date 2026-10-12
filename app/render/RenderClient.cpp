@@ -301,15 +301,19 @@ void RenderClient::handle(const QJsonObject& event) {
     for (const QJsonValue& value : event.value(QStringLiteral("devices")).toArray()) {
       devices << RenderDevice::fromJson(value.toObject()).label();
     }
-    qInfo().noquote() << QStringLiteral("Render device: %1 (asked for %2), denoising on the %3; devices: %4")
-                             .arg(m_deviceLabel, m_device,
-                                  device.denoisesOnDevice ? QStringLiteral("device") : QStringLiteral("CPU"),
-                                  devices.join(QStringLiteral(", ")));
+    qInfo().noquote() << QStringLiteral("Render device: %1 (asked for %2); devices: %3")
+                             .arg(m_deviceLabel, m_device, devices.join(QStringLiteral(", ")));
+    qInfo().noquote() << QStringLiteral("Render diagnostics: %1").arg(device.diagnostics());
     emit ready(event.value(QStringLiteral("renderer")).toString());
+  } else if (name == QLatin1String("denoiser")) {
+    const RenderDevice device = RenderDevice::fromJson(event.value(QStringLiteral("device")).toObject());
+    qInfo().noquote() << QStringLiteral("Render denoising diagnostics: %1").arg(device.diagnostics());
   } else if (name == QLatin1String("device")) {
     // The CPU took over (mitcad#50): from a device that is not there or
     // failed.
-    m_deviceLabel = RenderDevice::fromJson(event.value(QStringLiteral("device")).toObject()).label();
+    const RenderDevice device = RenderDevice::fromJson(event.value(QStringLiteral("device")).toObject());
+    m_deviceLabel = device.label();
+    qInfo().noquote() << QStringLiteral("Render diagnostics after fallback: %1").arg(device.diagnostics());
     const QString text = event.value(QStringLiteral("message")).toString();
     qWarning().noquote() << QStringLiteral("Render device fallback: %1").arg(text);
     emit deviceFallback(text);

@@ -75,7 +75,8 @@ enum class ValueKind { Length, Angle, Unitless };
 // coordinates of the design (placed by occurrences).
 struct Manipulator {
   // Toggle (P9): a dot at a pattern's instance that a click turns on or off.
-  enum class Kind { Arrow, Ring, Toggle };
+  // Marker: a labelled point from the preview, without pointer interaction.
+  enum class Kind { Arrow, Ring, Toggle, Marker };
   Kind kind = Kind::Arrow;
   gp_Pnt origin;
   // Arrow: the way the value grows, its handle at origin + value along it.
@@ -93,6 +94,13 @@ struct Manipulator {
   bool on = true;
 };
 
+// A labelled, non-interactive point from a successful feature preview,
+// in design coordinates (for example a pattern's inferred anchor).
+struct PreviewMarker {
+  QString label;
+  gp_Pnt point;
+};
+
 // One input of a feature command's panel.
 struct InputDef {
   enum class Type {
@@ -102,6 +110,7 @@ struct InputDef {
     Check,
     Flip,
     Text, // plain text, not evaluated (names, thread designations)
+    CutTargets, // persistent assembly-cut scope and preview-fed checklist
     List, // rows of the `children` inputs (fillet sets, hole positions)
   };
 
@@ -174,8 +183,16 @@ struct InputDef {
   // Shown only while this holds (for a list's input: of its row's state).
   std::function<bool(const CommandState&)> visible;
 
+  // A bold heading above the row, shown and hidden with it: the first
+  // input of a group of inputs (a thread's Extra clearance).
+  QString heading;
+
   InputDef& withTooltip(const QString& tip) {
     tooltip = tip;
+    return *this;
+  }
+  InputDef& withHeading(const QString& text) {
+    heading = text;
     return *this;
   }
   InputDef& withAccepts(std::function<bool(const SelectionItem&)> extra) {
@@ -262,6 +279,8 @@ public:
   QString text(const QString& id) const { return m_texts.value(key(id)); }
   void setText(const QString& id, const QString& typed) { m_texts[key(id)] = typed; }
   bool hasText(const QString& id) const { return m_texts.contains(key(id)); }
+  QJsonObject object(const QString& id) const { return m_objects.value(key(id)); }
+  void setObject(const QString& id, const QJsonObject& value) { m_objects[key(id)] = value; }
   // The expression to give the model: the text, with the document's unit
   // added to a bare number ("20" becomes "20 mm").
   QString expression(const QString& id) const {
@@ -301,6 +320,7 @@ private:
   QString m_prefix; // "<list>.<row>." in a row's state
   QHash<QString, Selection> m_items;
   QHash<QString, QString> m_texts;
+  QHash<QString, QJsonObject> m_objects;
   QHash<QString, QString> m_expressions;
   QHash<QString, double> m_values;
   QHash<QString, QString> m_choices;
@@ -387,6 +407,7 @@ struct CommandDef {
   // inputs' own defaults and the selection made before the command.
   std::function<void(CommandState&, const CommandContext&)> init;
   std::function<Built(const CommandState&, const CommandContext&)> build;
+  std::function<std::vector<PreviewMarker>(const QJsonObject&)> previewMarkers;
   // Fills the inputs from a definition to edit: the `feature` query's def,
   // with the feature's "uid" added (see CommandContext::valueText).
   std::function<void(const QJsonObject&, CommandState&, const CommandContext&)> load;

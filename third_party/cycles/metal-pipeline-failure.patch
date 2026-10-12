@@ -1,0 +1,202 @@
+# SPDX-License-Identifier: Apache-2.0
+# Cycles 5.2.0: stop waiting on cancelled, failed or missing Metal pipelines.
+# Original: https://projects.blender.org/blender/cycles/src/tag/v5.2.0/src/device/metal/
+# Copyright 2021-2022 Blender Foundation. Modification by Mitcad contributors.
+--- a/src/device/metal/kernel.h
++++ b/src/device/metal/kernel.h
+@@ -120,7 +120,7 @@
+ int get_loaded_kernel_count(const MetalDevice *device, MetalPipelineType pso_type);
+ bool should_load_kernels(const MetalDevice *device, MetalPipelineType pso_type);
+ bool load(MetalDevice *device, MetalPipelineType pso_type);
+-const MetalKernelPipeline *get_best_pipeline(const MetalDevice *device, DeviceKernel kernel);
++const MetalKernelPipeline *get_best_pipeline(MetalDevice *device, DeviceKernel kernel);
+ void wait_for_all();
+ bool is_benchmark_warmup();
+ 
+--- a/src/device/metal/kernel.mm
++++ b/src/device/metal/kernel.mm
+@@ -100,7 +100,7 @@
+   ~ShaderCache();
+ 
+   /* Get the fastest available pipeline for the specified kernel. */
+-  MetalKernelPipeline *get_best_pipeline(DeviceKernel kernel, const MetalDevice *device);
++  MetalKernelPipeline *get_best_pipeline(DeviceKernel kernel, MetalDevice *device);
+ 
+   /* Non-blocking request for a kernel, optionally specialized to the scene being rendered by
+    * device. */
+@@ -364,23 +364,57 @@
+   cond_var.notify_one();
+ }
+ 
+-MetalKernelPipeline *ShaderCache::get_best_pipeline(DeviceKernel kernel, const MetalDevice *device)
++MetalKernelPipeline *ShaderCache::get_best_pipeline(DeviceKernel kernel, MetalDevice *device)
+ {
+-  while (running && !device->has_error) {
++  int originating_device_id;
++  {
++    thread_scoped_lock lock(MetalDevice::existing_devices_mutex);
++    originating_device_id = device->device_id;
++  }
++  while (running && !device->has_error &&
++         !MetalDevice::is_device_cancelled(originating_device_id))
++  {
+     /* Search all loaded pipelines with matching kernels_md5 checksums. */
+     MetalKernelPipeline *best_match = nullptr;
++    string compilation_error;
++    string cached_generic_md5 = "none";
+     {
+       thread_scoped_lock lock(cache_mutex);
+       for (auto &candidate : pipelines[kernel]) {
+-        if (candidate->loaded &&
+-            candidate->kernels_md5 == device->kernels_md5[candidate->pso_type])
+-        {
++        if (candidate->pso_type == PSO_GENERIC) {
++          cached_generic_md5 = candidate->kernels_md5;
++        }
++        if (candidate->kernels_md5 != device->kernels_md5[candidate->pso_type]) {
++          continue;
++        }
++        if (candidate->loaded) {
+           /* Replace existing match if candidate is more specialized. */
+           if (!best_match || candidate->pso_type > best_match->pso_type) {
+             best_match = candidate.get();
+           }
++        }
++        else if (candidate->pso_type == PSO_GENERIC) {
++          /* Cached requests have finished compiling. A failed generic pipeline cannot
++           * become ready by waiting; a usable specialized pipeline may still replace it. */
++          compilation_error = candidate->error_str.empty() ?
++                                  string_printf("Failed to compile Metal pipeline %s",
++                                                device_kernel_as_string(kernel)) :
++                                  candidate->error_str;
+         }
+       }
++      if (!best_match && compilation_error.empty() && incomplete_requests == 0 &&
++          device->pending_frontend_requests->load() == 0)
++      {
++        /* Frontends are counted before dispatch and until every PSO request is queued.
++         * Backends publish their result under this mutex before decrementing their count.
++         * With both counts at zero, no requested pipeline can still make progress. */
++        compilation_error = string_printf(
++            "No matching Metal pipeline for %s (generic %s, cached generic %s, variants %d)",
++            device_kernel_as_string(kernel),
++            device->kernels_md5[PSO_GENERIC].c_str(),
++            cached_generic_md5.c_str(),
++            int(pipelines[kernel].size()));
++      }
+     }
+ 
+     if (best_match) {
+@@ -393,6 +427,11 @@
+       return best_match;
+     }
+ 
++    if (!compilation_error.empty()) {
++      device->set_error(compilation_error);
++      return nullptr;
++    }
++
+     /* Spin until a matching kernel is loaded, or we're shutting down. */
+     std::this_thread::sleep_for(std::chrono::milliseconds(100));
+   }
+@@ -587,9 +626,11 @@
+   function = [mtlLibrary newFunctionWithDescriptor:func_desc error:&error];
+ 
+   if (function == nil) {
+-    NSString *err = [error localizedDescription];
+-    string errors = [err UTF8String];
+-    metal_printf("Error getting function \"%s\": %s", function_name.c_str(), errors.c_str());
++    const char *message = error ? [[error localizedDescription] UTF8String] : nullptr;
++    error_str = string_printf("Failed to create Metal function %s: %s",
++                              function_name.c_str(),
++                              message ? message : "unknown Metal error");
++    metal_printf("%s", error_str.c_str());
+     return;
+   }
+ 
+@@ -781,6 +822,9 @@
+     }
+ 
+     if (!pipeline) {
++      this->error_str = string_printf("Failed to compile Metal pipeline %s: %s",
++                                     device_kernel_as_string(device_kernel),
++                                     error_str.c_str());
+       metal_printf(
+           "newComputePipelineStateWithDescriptor failed for \"%s\"%s. "
+           "Error:\n%s\n",
+@@ -904,7 +948,7 @@
+   return get_loaded_kernel_count(device, pso_type) != DEVICE_KERNEL_NUM;
+ }
+ 
+-const MetalKernelPipeline *MetalDeviceKernels::get_best_pipeline(const MetalDevice *device,
++const MetalKernelPipeline *MetalDeviceKernels::get_best_pipeline(MetalDevice *device,
+                                                                  DeviceKernel kernel)
+ {
+   return get_shader_cache(device->mtlDevice)->get_best_pipeline(kernel, device);
+--- a/src/device/metal/device_impl.h
++++ b/src/device/metal/device_impl.h
+@@ -6,6 +6,9 @@
+ 
+ #ifdef WITH_METAL
+ 
++#  include <atomic>
++#  include <memory>
++
+ #  include "bvh/bvh.h"
+ #  include "device/device.h"
+ #  include "device/metal/bvh.h"
+@@ -104,6 +107,11 @@
+ 
+   int device_id = 0;
+ 
++  /* Count scheduled MSL compilations as well as running ones. Shared ownership lets a
++   * cancelled device disappear before its asynchronous compilation returns. */
++  std::shared_ptr<std::atomic_int> pending_frontend_requests =
++      std::make_shared<std::atomic_int>(0);
++
+   static thread_mutex existing_devices_mutex;
+   static std::map<int, MetalDevice *> active_device_ids;
+ 
+--- a/src/device/metal/device_impl.mm
++++ b/src/device/metal/device_impl.mm
+@@ -473,8 +473,11 @@
+       /* If needed, load them asynchronously in order to responsively message progress to the user.
+        */
+       int this_device_id = this->device_id;
++      const auto pending_requests = pending_frontend_requests;
++      ++*pending_requests;
+       auto compile_kernels_fn = ^() {
+         compile_and_load(this_device_id, PSO_GENERIC);
++        --*pending_requests;
+       };
+ 
+       dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0),
+@@ -974,10 +977,12 @@
+   /* For responsive rendering, specialize the kernels in the background, and only if there isn't an
+    * existing "optimize_for_scene" request in flight. */
+   int this_device_id = this->device_id;
++  const auto pending_requests = pending_frontend_requests;
+   auto specialize_kernels_fn = ^() {
+     for (int level = 1; level <= int(specialization_level); level++) {
+       compile_and_load(this_device_id, MetalPipelineType(level));
+     }
++    --*pending_requests;
+   };
+ 
+   /* In normal use, we always compile the specialized kernels in the background. */
+@@ -995,6 +1000,7 @@
+ 
+   if (specialize_in_background) {
+     if (MetalDeviceKernels::num_incomplete_specialization_requests() == 0) {
++      ++*pending_requests;
+       dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0),
+                      specialize_kernels_fn);
+     }
+@@ -1003,6 +1009,7 @@
+     }
+   }
+   else {
++    ++*pending_requests;
+     specialize_kernels_fn();
+   }
+ }

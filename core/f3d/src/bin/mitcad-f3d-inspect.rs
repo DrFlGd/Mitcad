@@ -27,9 +27,10 @@ const USAGE: &str = "usage: mitcad-f3d-inspect <command> ...
                               components; --json prints the dump IR
                               (core/import/SCHEMA.md; an array for an
                               .f3z package)
-  names <file> <entry>        the named faces of a history blob (its entry
+  names <file> <entry> [-c]   the named faces of a history blob (its entry
                               name or the end of it) at each state,
-                              newest first, with their surface types
+                              newest first, with their surface types; -c adds
+                              each cylinder's axis, radius and seam
   objects <file> <class> [n]  the design stream's objects of a class (GUID
                               or its first digits; id:<n> for one object)
                               in hex, the first n
@@ -176,7 +177,7 @@ fn cmd_dump(path: &str, entry: &str, max: Option<usize>) -> Result<(), String> {
 /// The faces of a history blob at each state with their names (mitcad#161:
 /// where a feature input's names are): one line per face, `state k`
 /// headers from the stored state (0) back.
-fn cmd_names(path: &str, entry: &str) -> Result<(), String> {
+fn cmd_names(path: &str, entry: &str, cylinders: bool) -> Result<(), String> {
     use mitcad_f3d::names::NamedState;
     for (name, doc) in documents(path)? {
         for blob in doc
@@ -215,6 +216,35 @@ fn cmd_names(path: &str, entry: &str) -> Result<(), String> {
                         state.surface_kind(i),
                         names.join(" ")
                     );
+                    if cylinders && let Ok(c) = state.cylinder(i) {
+                        let v = |p: [f64; 3]| format!("({:.4}, {:.4}, {:.4})", p[0], p[1], p[2]);
+                        println!(
+                            "    cylinder origin {} axis {} r {:.4} seam {} {}{}",
+                            v(c.origin),
+                            v(c.axis),
+                            c.radius,
+                            v(c.ref_dir),
+                            if c.full { "full" } else { "part" },
+                            if c.internal { " internal" } else { "" }
+                        );
+                    }
+                }
+                // The closed edges: where each circle's seam vertex lies.
+                for i in 0..state.edges.len() {
+                    if cylinders
+                        && let Ok(g) = state.edge(i)
+                        && g.length > 0.0
+                        && mitcad_f3d::brep::dist(g.start, g.end) < 1e-6
+                    {
+                        let v = |p: [f64; 3]| format!("({:.4}, {:.4}, {:.4})", p[0], p[1], p[2]);
+                        println!(
+                            "  closed edge {i} (entity {}): start {} mid {} length {:.4}",
+                            state.edges[i].entity,
+                            v(g.start),
+                            v(g.mid),
+                            g.length
+                        );
+                    }
                 }
             }
         }
@@ -771,7 +801,8 @@ fn run(args: &[String]) -> Result<(), String> {
         }
         [cmd, file] if cmd == "design" => cmd_design(file, false),
         [cmd, file, flag] if cmd == "design" && flag == "--json" => cmd_design(file, true),
-        [cmd, file, entry] if cmd == "names" => cmd_names(file, entry),
+        [cmd, file, entry] if cmd == "names" => cmd_names(file, entry, false),
+        [cmd, file, entry, flag] if cmd == "names" && flag == "-c" => cmd_names(file, entry, true),
         [cmd, files @ ..] if cmd == "off-timeline" && !files.is_empty() => cmd_off_timeline(files),
         [cmd, file, class] if cmd == "objects" => cmd_objects(file, class, None),
         [cmd, file, class, n] if cmd == "objects" => cmd_objects(file, class, n.parse().ok()),

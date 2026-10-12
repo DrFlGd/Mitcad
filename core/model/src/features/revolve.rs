@@ -39,7 +39,8 @@ pub enum RevolveExtent<P = ParamId> {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct RevolveDef<P = ParamId> {
-    /// Regions of one sketch.
+    /// Regions of one sketch, a set (see `extrude::selected_regions`).
+    #[serde(deserialize_with = "super::extrude::profile_set")]
     pub profiles: Vec<ProfileRef>,
     /// A sketch line, an origin or construction axis, a straight edge or a
     /// fixed axis.

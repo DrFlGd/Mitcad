@@ -85,7 +85,11 @@ impl Builder {
 
     fn circle(&mut self, center: [f64; 2], radius: f64) -> EntityUid {
         let center = self.point(center);
-        self.curve(EntityKind::Circle { center, radius })
+        self.curve(EntityKind::Circle {
+            center,
+            radius,
+            start: 0.0,
+        })
     }
 
     fn arc(&mut self, center: [f64; 2], start: [f64; 2], end: [f64; 2]) -> EntityUid {
@@ -193,6 +197,32 @@ fn rectangles_on_collinear_edges_make_three_plain_regions() {
                 r.profile.key
             );
         }
+    }
+}
+
+#[test]
+fn edges_a_little_apart_in_a_small_sketch_still_coincide() {
+    // A small rectangle on the edge of a bigger one, the bigger one's edge
+    // 1.9e-7 mm off (the stored solution of an imported sketch): the
+    // notch is one region of one loop, not a region with a hole that
+    // touches the outline.
+    let mut b = Builder::new();
+    b.rectangle(0.0, 0.0, 8.0, 13.0);
+    b.polygon(&[
+        [-7.0, -5.0],
+        [15.0, -5.0],
+        [15.0, 13.0 + 1.9e-7],
+        [-7.0, 13.0 + 1.9e-7],
+    ]);
+    let regions = b.regions();
+    let mut areas: Vec<f64> = regions.iter().map(|r| r.area).collect();
+    areas.sort_by(f64::total_cmp);
+    assert_eq!(areas.len(), 2, "{:?}", keys(&regions));
+    assert!(close(areas[0], 104.0, 1e-6), "{areas:?}");
+    assert!(close(areas[1], 292.0, 1e-6), "{areas:?}");
+    for r in &regions {
+        assert!(r.holes.is_empty(), "{}", r.profile.key);
+        assert_eq!(r.profile.loops.len(), 1, "{}", r.profile.key);
     }
 }
 
@@ -387,6 +417,36 @@ fn a_circle_drawn_twice_bounds_its_regions_once() {
     b.circle([0.0, 0.0], 3.0 + 1e-4); // c4
     let regions = b.regions();
     assert_eq!(keys(&regions), ["r{c1}", "r{c2}", "r{c4}"]);
+}
+
+#[test]
+fn a_circle_starts_where_its_start_angle_says() {
+    use crate::profile::SegmentGeometry;
+    // A circle drawn here starts on the x axis and its JSON has no angle.
+    let mut b = Builder::new();
+    b.circle([1.0, 2.0], 3.0);
+    let region = &b.regions()[0];
+    let geometry = &region.profile.loops[0].segments[0].geometry;
+    assert!(matches!(geometry, SegmentGeometry::Circle { start, .. } if *start == 0.0));
+    let json = serde_json::to_value(&b.def.entities[1].kind).unwrap();
+    assert!(json.get("start_angle").is_none(), "{json}");
+    // One an import started elsewhere (a quarter turn) reaches the profile
+    // and the file, and its region is the same.
+    let mut b = Builder::new();
+    let center = b.point([1.0, 2.0]);
+    b.curve(EntityKind::Circle {
+        center,
+        radius: 3.0,
+        start: PI / 2.0,
+    });
+    let region = &b.regions()[0];
+    let geometry = &region.profile.loops[0].segments[0].geometry;
+    assert!(matches!(geometry, SegmentGeometry::Circle { start, .. } if *start == PI / 2.0));
+    assert!(close(region.area, PI * 9.0, 1e-9));
+    let json = serde_json::to_value(&b.def.entities[1].kind).unwrap();
+    assert_eq!(json["start_angle"], PI / 2.0);
+    let back: EntityKind = serde_json::from_value(json).unwrap();
+    assert_eq!(back, b.def.entities[1].kind);
 }
 
 #[test]
@@ -637,5 +697,137 @@ fn the_solver_reports_freedom_conflicts_and_driven_values() {
             .iter()
             .flatten()
             .any(|i| *i == SolverItem::Constraint(ConstraintUid(3)))
+    );
+}
+
+#[test]
+fn fixed_curves_that_miss_each_other_by_rounding_still_solve() {
+    // Two fixed elliptical arcs that share a point; the second ellipse
+    // passes 3e-6 mm from it (a linked curve's stored numbers are rounded).
+    let mut b = Builder::new();
+    let ellipse =
+        |b: &mut Builder, center: [f64; 2], minor: f64, start: [f64; 2], end: [f64; 2]| {
+            let (c, m) = (b.point(center), b.point([center[0] + 20.0, center[1]]));
+            let (s, e) = (b.point(start), b.point(end));
+            b.curve(EntityKind::EllipticalArc {
+                center: c,
+                major: m,
+                minor_radius: minor,
+                start: s,
+                end: e,
+            })
+        };
+    ellipse(&mut b, [0.0, 0.0], 10.0, [20.0, 0.0], [0.0, 10.0]);
+    ellipse(&mut b, [0.0, 20.0], 10.000_003, [0.0, 10.0], [20.0, 20.0]);
+    for e in &mut b.def.entities {
+        e.fixed = true;
+    }
+    let solved = solve(&b.def.entities, &b.def.constraints, &[]);
+    assert!(solved.is_ok(), "{:?}", solved.err().map(|e| e.message));
+}
+
+/// An imported sketch: a rectangle on a plate's top line and a triangle
+/// whose long side nearly lies on the rectangle's top (4e-8 mm off): the
+/// triangle outside the rectangle is two regions, the parts either side of
+/// it, which the top edge does not join.
+#[test]
+fn a_near_collinear_triangle_side_does_not_join_the_parts_either_side() {
+    let mut b = Builder::new();
+    b.rectangle(37.000000551342964, 0.0, 2.000000007, 3.0000000000000004);
+    b.line(
+        [40.000002961231466, 1.0000000148970964],
+        [8.482701646710629, 3.0000000000000004],
+    );
+    b.line(
+        [8.482701646710629, 3.0000000000000004],
+        [8.615016740606665, 2.991603653397221],
+    );
+    b.line(
+        [40.00000059604645, 3.0000000447034836],
+        [40.000002961231466, 1.0000000148970964],
+    );
+    b.line(
+        [40.00000059604645, 3.0000000447034836],
+        [8.482701646710629, 3.0000000000000004],
+    );
+    let regions = b.regions();
+    let mut areas: Vec<f64> = regions.iter().map(|r| r.area).collect();
+    areas.sort_by(f64::total_cmp);
+    assert!(
+        areas.iter().any(|a| close(*a, 25.80, 1e-3))
+            && areas.iter().any(|a| close(*a, 1.968, 1e-3)),
+        "{areas:?}: {:?}",
+        keys(&regions)
+    );
+}
+
+#[test]
+fn a_line_that_ends_tangent_to_arcs_bounds_a_region_with_them() {
+    // A concave arc (c1) closed on top by a line (c4) that ends at the top
+    // of two small arcs (c2, c3) that continue past it: each arc is cut where
+    // the line touches it and the lens stands between the line and the arc.
+    let mut b = Builder::new();
+    b.arc(
+        [0.0, 73.0],
+        [-6.217391304347393, 63.92563801864726],
+        [6.21739130434783, 63.92563801864755],
+    ); // c1
+    b.arc(
+        [6.5, 63.5131670194945],
+        [7.0, 63.51316701949448],
+        [6.217391304348286, 63.92563801864689],
+    ); // c2
+    b.arc(
+        [-6.5, 63.5131670194945],
+        [-6.217391304347392, 63.92563801864726],
+        [-7.0, 63.51316701949447],
+    ); // c3
+    b.line([-6.5, 64.01316701949488], [6.5, 64.01316701949448]); // c4
+    let regions = b.regions();
+    assert_eq!(regions.len(), 1, "{:?}", keys(&regions));
+    assert!(close(regions[0].area, 17.37, 1e-2), "{}", regions[0].area);
+}
+
+#[test]
+fn a_spline_that_follows_a_curve_within_the_tolerance_bounds_no_sliver() {
+    // A line and a spline between the same two points that stays within a
+    // micron of it (a projected edge fitted by a spline): the two are one
+    // edge, though the spline's parameter puts its middle elsewhere.
+    let spline_over_line = |bow: f64| {
+        let mut b = Builder::new();
+        let control = [[0.0, 0.0], [1.0, bow], [5.0, bow], [10.0, 0.0]].map(|p| b.point(p));
+        b.line([0.0, 0.0], [10.0, 0.0]); // c1
+        b.curve(EntityKind::Spline {
+            degree: 3,
+            control: control.to_vec(),
+            weights: Vec::new(),
+            knots: Vec::new(),
+        }); // c2
+        b.regions()
+    };
+    assert!(keys(&spline_over_line(4e-4)).is_empty());
+    // Further apart they bound a region.
+    assert_eq!(spline_over_line(4e-2).len(), 1);
+}
+
+#[test]
+fn of_a_spline_and_a_line_along_each_other_the_spline_bounds_the_region() {
+    let mut b = Builder::new();
+    let control = [[0.0, 0.0], [1.0, 4e-4], [5.0, 4e-4], [10.0, 0.0]].map(|p| b.point(p));
+    b.line([0.0, 0.0], [10.0, 0.0]); // c1
+    b.curve(EntityKind::Spline {
+        degree: 3,
+        control: control.to_vec(),
+        weights: Vec::new(),
+        knots: Vec::new(),
+    }); // c2
+    b.line([0.0, 0.0], [0.0, -5.0]); // c3
+    b.line([0.0, -5.0], [10.0, -5.0]); // c4
+    b.line([10.0, -5.0], [10.0, 0.0]); // c5
+    let keys = keys(&b.regions());
+    assert_eq!(keys.len(), 1, "{keys:?}");
+    assert!(
+        keys[0].contains("c2[") && !keys[0].contains("c1["),
+        "{keys:?}"
     );
 }

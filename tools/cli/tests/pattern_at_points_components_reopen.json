@@ -1,0 +1,31 @@
+[
+  {"comment": "SPDX-License-Identifier: MIT. Reopen the component pattern fixture: shared geometry, persistent occurrence IDs and lifecycle still hold."},
+  {"expect": {"feature": "F4", "status": "ok", "bodies": 1, "instances": 6, "world_volume": 384}},
+  {"expect": {"feature": "F5", "status": "ok"}},
+  {"expect": {"occurrence": "O1/O5", "body": "F1.b0", "volume": 64, "bbox": {"min": [-23, 43, 5], "max": [-15, 45, 9]}}},
+  {"expect": {"occurrence": "O1/O8", "body": "F1.b0", "bbox": {"min": [-10, 40, -10], "max": [-2, 42, -6]}}},
+  {"expect": {"query": {"query": "sketch", "uid": "F5"}, "result": {"frame": {"origin": [-15, 0, 0], "normal": [1, 0, 0]}}}},
+
+  {"comment": "After a fresh process opens the saved design, another source edit reaches every shared instance and the linked face observer."},
+  {"cmd": "edit_feature", "uid": "F1", "def": {"type": "box", "plane": "xy", "corner": [0, 0], "length": 2, "width": 4, "height": 10, "operation": "new_body"}},
+  {"expect": {"bodies": 1, "instances": 6, "world_volume": 480}},
+  {"expect": {"occurrence": "O1/O2", "body": "F1.b0", "volume": 80, "bbox": {"min": [100, 30, 35], "max": [110, 32, 39]}}},
+  {"expect": {"occurrence": "O1/O5", "body": "F1.b0", "volume": 80, "bbox": {"min": [-23, 43, 5], "max": [-13, 45, 9]}}},
+  {"expect": {"query": {"query": "sketch", "uid": "F5"}, "result": {"frame": {"origin": [-13, 0, 0], "normal": [1, 0, 0]}}}},
+  {"cmd": "suppress_feature", "uid": "F4"},
+  {"expect": {"feature": "F5", "status": "error", "error_contains": "unavailable", "instances": 2, "world_volume": 160}},
+  {"cmd": "undo"},
+  {"expect": {"feature": "F5", "status": "ok", "instances": 6, "world_volume": 480}},
+
+  {"comment": "Deleting the pattern and its linked dependent removes only the four generated occurrences. Undo restores their geometry and ownership."},
+  {"cmd": "delete_feature", "uid": "F4", "dependents": true},
+  {"expect": {"bodies": 1, "instances": 2, "world_volume": 160}},
+  {"cmd": "undo"},
+  {"expect": {"feature": "F4", "status": "ok", "instances": 6, "world_volume": 480}},
+  {"expect": {"feature": "F5", "status": "ok"}},
+  {"expect": {"occurrence": "O1/O7", "body": "F1.b0", "bbox": {"min": [-23, 63, 5], "max": [-13, 65, 9]}}},
+  {"cmd": "redo"},
+  {"expect": {"bodies": 1, "instances": 2, "world_volume": 160}},
+  {"cmd": "undo"},
+  {"expect": {"feature": "F5", "status": "ok", "instances": 6, "world_volume": 480}}
+]

@@ -23,17 +23,24 @@
 #include <QJsonArray>
 #include <QJsonObject>
 #include <QPixmap>
+#include <QSettings>
 #include <QString>
 #include <QTemporaryDir>
 
+#include "browser/TimelineSearch.hpp"
 #include "files/CloudAddress.hpp"
 #include "files/Print3d.hpp"
 #include "framework/Cursors.hpp"
 #include "framework/DesktopEntry.hpp"
 #include "framework/Numbers.hpp"
+#include "framework/Selection.hpp"
+#include "framework/ShortcutBindings.hpp"
+#include "render/RenderCamera.hpp"
 #include "render/RenderDevices.hpp"
 #include "render/RenderImage.hpp"
 #include "report/ReportText.hpp"
+#include "sketch/AutoConstraint.hpp"
+#include "view/ViewNavigation.hpp"
 
 namespace {
 
@@ -47,6 +54,87 @@ void check(bool condition, const char* expression, int line) {
 }
 
 #define CHECK(expr) check((expr), #expr, __LINE__)
+
+// Contexts, default-only alternatives and legacy settings (mitcad#187).
+void shortcutBindingTests() {
+  using namespace mitcad;
+  const auto make = [](const char* id, unsigned contexts, const QKeySequence& key) {
+    return ShortcutBinding{QString::fromLatin1(id), QString::fromLatin1(id), contexts, key, key, {}, false};
+  };
+  const QKeySequence m(Qt::Key_M);
+  ShortcutBinding model = make("solid.move", ModelShortcutContext, m);
+  ShortcutBinding sketch = make("sketch.move", SketchShortcutContext, m);
+  CHECK(shortcutConflicts({model, sketch}).isEmpty());
+  // Extrude/Revolve's profile selection makes the model action available
+  // in both states; a Model label alone does not make it exclusive.
+  ShortcutBinding profile = make("solid.extrude", ModelShortcutContext | SketchShortcutContext,
+                                QKeySequence(Qt::Key_E));
+  profile.primary = m;
+  CHECK(shortcutConflicts({profile, sketch}).size() == 1);
+  model.contexts |= CommandShortcutContext;
+  sketch.contexts |= CommandShortcutContext;
+  CHECK(shortcutConflicts({model, sketch}).size() == 1);
+
+  ShortcutBinding fit = make("view.fit", AllShortcutContexts, QKeySequence(Qt::CTRL | Qt::Key_0));
+  fit.alternates = {fit.primary, QKeySequence(Qt::Key_F6), QKeySequence(Qt::Key_F6)};
+  CHECK(fit.effectiveKeys().size() == 2); // same-command aliases are harmless
+  const auto f6 = make("solid.other", ModelShortcutContext, QKeySequence(Qt::Key_F6));
+  CHECK(shortcutConflicts({fit, f6}).size() == 1);
+  fit.primary = QKeySequence(Qt::CTRL | Qt::Key_9);
+  CHECK(shortcutConflicts({fit, f6}).isEmpty()); // proposed primary retires F6
+  fit.primary = QKeySequence();
+  CHECK(fit.effectiveKeys().isEmpty()); // clearing also removes alternatives
+  fit.primary = fit.defaultPrimary;
+  CHECK(fit.effectiveKeys().size() == 2); // restoring brings them back
+  ShortcutBinding alias = fit;
+  alias.primary = QKeySequence(Qt::Key_F6);
+  CHECK(shortcutConflicts({fit, alias}).isEmpty());
+
+  const auto fixed = fixedShortcutBindings();
+  for (const auto& reserved : fixed) {
+    ShortcutBinding custom = make("custom.action", AllShortcutContexts, QKeySequence());
+    custom.primary = reserved.primary;
+    const auto conflicts = shortcutConflicts({reserved, custom});
+    CHECK(conflicts.size() == 1);
+    CHECK(conflictingShortcutIds(conflicts) == QSet<QString>{custom.id});
+    CHECK(conflicts.front().description().contains(reserved.name));
+    custom.id = reserved.id;
+    CHECK(shortcutConflicts({reserved, custom}).isEmpty());
+  }
+
+  ShortcutBinding removeSketch = make("sketch.delete", SketchShortcutContext, QKeySequence(Qt::Key_Delete));
+#ifdef Q_OS_MACOS
+  removeSketch.alternates = {QKeySequence(Qt::Key_Backspace)};
+#endif
+  QList<ShortcutBinding> defaults = fixed;
+  defaults.append(removeSketch);
+  CHECK(shortcutConflicts(defaults).isEmpty());
+  removeSketch.contexts = ModelShortcutContext;
+  defaults.back() = removeSketch;
+  CHECK(!shortcutConflicts(defaults).isEmpty());
+
+  // A legacy custom assignment conflicting with a default is disabled,
+  // but remains persisted/editable and does not change the command list.
+  QTemporaryDir directory;
+  CHECK(directory.isValid());
+  QSettings settings(directory.filePath(QStringLiteral("shortcuts.ini")), QSettings::IniFormat);
+  const QString setting = QStringLiteral("shortcuts/solid.legacy");
+  settings.setValue(setting, QStringLiteral("F6"));
+  settings.sync();
+  QSettings reloaded(settings.fileName(), QSettings::IniFormat);
+  ShortcutBinding legacy = make("solid.legacy", ModelShortcutContext, QKeySequence(Qt::Key_K));
+  legacy.primary = QKeySequence(reloaded.value(setting).toString(), QKeySequence::PortableText);
+  const QList<ShortcutBinding> bindings{fit, legacy};
+  const auto disabled = conflictingShortcutIds(shortcutConflicts(bindings));
+  CHECK(disabled == QSet<QString>{legacy.id});
+  CHECK(bindings.size() == 2);
+  CHECK(reloaded.value(setting).toString() == QStringLiteral("F6"));
+  legacy.primary = legacy.defaultPrimary;
+  CHECK(shortcutConflicts({fit, legacy}).isEmpty());
+  ShortcutBinding another = make("solid.another", ModelShortcutContext, QKeySequence(Qt::Key_J));
+  another.primary = legacy.primary = QKeySequence(Qt::Key_B);
+  CHECK(conflictingShortcutIds(shortcutConflicts({legacy, another})).size() == 2);
+}
 
 // Numbers typed with a decimal comma or point (mitcad#2).
 void numberTests() {
@@ -458,6 +546,8 @@ void renderDeviceChoiceTests() {
   const DeviceInfo cpu{"CPU", "CPU", "A processor", false};
   const DeviceInfo cuda{"CUDA_GPU_0000:07:00", "CUDA", "A GPU", false};
   const DeviceInfo hip{"HIP_GPU_0000:08:00", "HIP", "Another GPU", true};
+  const DeviceInfo metal{"METAL_GPU", "METAL", "An Apple GPU", false, true, false, false};
+  const DeviceInfo metalRT{"METAL_RT_GPU", "METAL", "A newer Apple GPU", false, true, true, true};
   std::string message;
   CHECK(chooseDevice("auto", {cpu}, message).id == "CPU" && message.empty());
   CHECK(chooseDevice("", {cpu, hip, cuda}, message).id == cuda.id && message.empty());
@@ -468,6 +558,23 @@ void renderDeviceChoiceTests() {
   CHECK(chooseDevice("hip", {cpu, cuda, hip}, message).id == hip.id);
   CHECK(chooseDevice("CUDA_gone", {cpu, hip}, message).id == "CPU" &&
         message == "There is no render device \"CUDA_gone\"; rendering on the CPU");
+  CHECK(chooseDevice("auto", {cpu, metal}, message).id == metal.id && message.empty());
+  CHECK(chooseDevice("metal", {cpu, metal}, message).id == metal.id && message.empty());
+  CHECK(chooseDevice(metalRT.id, {cpu, metal, metalRT}, message).metalRT);
+  CHECK(chooseDevice("cpu", {cpu, metalRT}, message).type == "CPU" && message.empty());
+  CHECK(chooseDevice("METAL_missing", {cpu, metal}, message).type == "CPU" &&
+        message == "There is no render device \"METAL_missing\"; rendering on the CPU");
+  CHECK(chooseDevice("METAL", {cpu}, message).type == "CPU" &&
+        message == "There is no render device \"METAL\"; rendering on the CPU");
+  // Capability alone must not opt older Apple GPUs into MetalRT. Cycles'
+  // automatic policy also cannot opt in a device without the capability.
+  using mitcad::render::automaticRayTracing;
+  CHECK(!automaticRayTracing("METAL", false, false));
+  CHECK(!automaticRayTracing("METAL", true, false));
+  CHECK(!automaticRayTracing("METAL", false, true));
+  CHECK(automaticRayTracing("METAL", true, true));
+  CHECK(automaticRayTracing("OPTIX", true, false));
+  CHECK(!automaticRayTracing("CPU", false, true));
   // Without a list (none known yet) the CPU still is the choice.
   CHECK(chooseDevice("auto", {}, message).type == "CPU");
 }
@@ -479,11 +586,13 @@ public:
       : m_sink(sink), m_device(std::move(device)), m_error(std::move(startError)) {}
   std::string description() const override { return "fake on " + m_device.type; }
   mitcad::render::SceneChanges updateScene(const mitcad::render::SceneUpdate& update) override {
+    scene = update;
     meshes = static_cast<int>(update.meshes.size());
     bodies = static_cast<int>(update.bodies.size());
     return {};
   }
   void setView(const mitcad::render::ViewData& view) override {
+    camera = view;
     sequence = view.sequence;
     // A frame of the view.
     if (std::uint16_t* pixels = m_sink.beginFrame(1, 1, 1, 1, false).light) {
@@ -492,13 +601,17 @@ public:
     }
   }
   void setSamples(int count) override { samples = count; }
-  void setPreviews(const std::vector<int>&) override {}
+  void setPreviews(const std::vector<int>& counts) override { previews = counts; }
   std::string setEnvironment(const mitcad::render::EnvironmentData& environment) override {
+    world = environment;
     lights = static_cast<int>(environment.lights.size());
     return {};
   }
   void wait() override {}
-  void setFinal(bool, double) override {}
+  void setFinal(bool denoise, double seconds) override {
+    finalDenoise = denoise;
+    timeLimit = seconds;
+  }
   int currentSample() const override { return samples; }
   mitcad::render::DeviceInfo device() const override { return m_device; }
   std::string deviceError() const override {
@@ -510,6 +623,12 @@ public:
     m_error = why;
   }
 
+  mitcad::render::SceneUpdate scene;
+  mitcad::render::ViewData camera;
+  mitcad::render::EnvironmentData world;
+  std::vector<int> previews;
+  bool finalDenoise = false;
+  double timeLimit = 0.0;
   int meshes = 0;
   int bodies = 0;
   int lights = 0;
@@ -538,14 +657,19 @@ private:
 // renders, with what the device had (mitcad#50).
 void renderFallbackTests() {
   using mitcad::render::DeviceInfo;
-  const DeviceInfo gpu{"CUDA_GPU", "CUDA", "A GPU", false};
+  const std::vector<DeviceInfo> gpus = {
+      {"CUDA_GPU", "CUDA", "A GPU", false},
+      {"METAL_GPU", "METAL", "An Apple GPU", false, true, false, false},
+      {"METAL_RT_GPU", "METAL", "A newer Apple GPU", false, true, true, true}};
   struct Made {
     std::vector<FakeRenderer*> renderers;
+    std::vector<bool> cpuDenoising;
     std::vector<std::string> reports;
+    std::vector<DeviceInfo> reportedDevices;
     std::mutex mutex;
   };
   const auto factoryFor = [](Made& made, std::string gpuStartError, bool cpuStarts) {
-    return [&made, gpuStartError, cpuStarts](mitcad::render::FrameSink& sink, const DeviceInfo& device,
+    return [&made, gpuStartError, cpuStarts](mitcad::render::FrameSink& sink, const DeviceInfo& device, bool cpuDenoising,
                                              std::string& error) -> std::unique_ptr<mitcad::render::Renderer> {
       const bool onCpu = device.id.empty() || device.type == "CPU";
       if (onCpu && !cpuStarts) {
@@ -553,63 +677,291 @@ void renderFallbackTests() {
         return nullptr;
       }
       DeviceInfo on = device;
-      if (onCpu) {
+      if (onCpu && on.id.empty()) {
         on = DeviceInfo{"CPU", "CPU", "A processor", false};
+      }
+      if (cpuDenoising) {
+        on.denoiser.type = "CPU";
       }
       auto renderer = std::make_unique<FakeRenderer>(sink, on, onCpu ? std::string() : gpuStartError);
       made.renderers.push_back(renderer.get());
+      made.cpuDenoising.push_back(cpuDenoising);
       return renderer;
     };
   };
   const auto reportTo = [](Made& made) {
-    return [&made](const DeviceInfo&, const std::string& message) {
+    return [&made](const DeviceInfo& device, const std::string& message) {
       const std::lock_guard<std::mutex> lock(made.mutex);
       made.reports.push_back(message);
+      made.reportedDevices.push_back(device);
     };
+  };
+  mitcad::render::SceneUpdate first;
+  first.meshes = {{"a", {}}, {"b", {}}};
+  first.meshes[1].second.positions = {0, 0, 0, 10, 0, 0, 0, 10, 0};
+  first.meshes[1].second.indices = {0, 1, 2};
+  first.bodies.resize(2);
+  mitcad::render::SceneUpdate second;
+  second.meshes = {{"c", {}}};
+  second.released = {"a"};
+  second.bodies.resize(3);
+  second.bodies[0].mesh = "b";
+  second.bodies[0].material.metallic = 0.75f;
+  second.bodies[0].material.roughness = 0.25f;
+  second.bodies[0].transform[3] = 42.0f;
+  second.ground = false;
+  mitcad::render::SceneUpdate whole = second;
+  whole.meshes.insert(whole.meshes.begin(), first.meshes[1]);
+  whole.released.clear();
+  mitcad::render::ViewData view;
+  view.sequence = 7;
+  view.perspective = true;
+  view.eye = {12, -34, 56};
+  view.target = {1, 2, 3};
+  view.width = 96;
+  view.height = 64;
+  view.halfHeight = 75.0;
+  mitcad::render::EnvironmentData environment;
+  environment.preset = mitcad::render::EnvironmentData::Preset::Outdoor;
+  environment.strength = 0.5f;
+  environment.rotation = 0.25f;
+  environment.background = true;
+  environment.groundReflections = true;
+  environment.groundAtHeight = true;
+  environment.groundHeight = -12.0;
+  environment.lights.resize(2);
+  environment.lights[1].kind = mitcad::render::LightData::Kind::Sun;
+  environment.lights[1].power = 3.5f;
+  const auto settings = [&environment](mitcad::render::Renderer& renderer) {
+    renderer.setEnvironment(environment);
+    renderer.setSamples(16);
+    renderer.setPreviews({4, 8});
+    renderer.setFinal(true, 12.5);
+  };
+  const auto checkState = [&view, &environment, &first](const FakeRenderer& cpu) {
+    CHECK(cpu.samples == 16 && cpu.meshes == 2 && cpu.bodies == 3 && cpu.sequence == 7 && cpu.lights == 2);
+    CHECK(cpu.previews == std::vector<int>({4, 8}) && cpu.finalDenoise && cpu.timeLimit == 12.5);
+    CHECK(cpu.camera.perspective && cpu.camera.eye == view.eye && cpu.camera.target == view.target);
+    CHECK(cpu.camera.width == 96 && cpu.camera.height == 64 && cpu.camera.halfHeight == 75.0);
+    CHECK(cpu.world.preset == environment.preset && cpu.world.strength == 0.5f && cpu.world.rotation == 0.25f);
+    CHECK(cpu.world.background && cpu.world.groundReflections && cpu.world.groundAtHeight);
+    CHECK(cpu.world.groundHeight == -12.0);
+    if (cpu.world.lights.size() != 2 || cpu.scene.meshes.size() != 2 || cpu.scene.bodies.size() != 3) {
+      return;
+    }
+    CHECK(cpu.world.lights[1].kind == mitcad::render::LightData::Kind::Sun && cpu.world.lights[1].power == 3.5f);
+    CHECK(!cpu.scene.ground && cpu.scene.released.empty());
+    CHECK(cpu.scene.meshes[0].first == "b" && cpu.scene.meshes[1].first == "c");
+    CHECK(cpu.scene.meshes[0].second.positions == first.meshes[1].second.positions);
+    CHECK(cpu.scene.meshes[0].second.indices == first.meshes[1].second.indices);
+    CHECK(cpu.scene.bodies[0].material.metallic == 0.75f && cpu.scene.bodies[0].material.roughness == 0.25f);
+    CHECK(cpu.scene.bodies[0].mesh == "b" && cpu.scene.bodies[0].transform[3] == 42.0f);
   };
   CountingSink sink;
   std::string error;
-  {
-    // The GPU cannot start: the CPU renders, and the report says why.
-    Made made;
-    auto renderer = mitcad::render::makeDeviceRenderer(sink, gpu, factoryFor(made, "no kernel", true), reportTo(made),
-                                                       {}, error);
-    CHECK(renderer && renderer->device().type == "CPU");
-    CHECK(made.reports.size() == 1 && made.reports[0] == "Rendering on the CPU: A GPU (CUDA) failed (no kernel)");
+  for (const DeviceInfo& gpu : gpus) {
+    const std::string label = gpu.name + " (" + gpu.type + ")";
+    {
+      // A startup failure must still accept the requested scene/settings.
+      Made made;
+      auto renderer = mitcad::render::makeDeviceRenderer(sink, gpu, factoryFor(made, "no kernel", true), reportTo(made),
+                                                         {}, error);
+      CHECK(renderer && renderer->device().type == "CPU" && !renderer->device().metalRT);
+      settings(*renderer);
+      renderer->updateScene(whole);
+      renderer->setView(view);
+      renderer->wait();
+      checkState(*made.renderers.back());
+      CHECK(made.reports.size() == 1 && made.reports[0] == "Rendering on the CPU: " + label + " failed (no kernel)");
+      CHECK(made.reportedDevices.size() == 1 && made.reportedDevices[0].type == "CPU" && !made.reportedDevices[0].metalRT);
+    }
+    {
+      // Runtime failure replays all unreleased meshes and the last bodies,
+      // camera, lights, previews, denoising and final-render time limit.
+      Made made;
+      auto renderer =
+          mitcad::render::makeDeviceRenderer(sink, gpu, factoryFor(made, {}, true), reportTo(made), {}, error);
+      CHECK(renderer && renderer->device().type == gpu.type && renderer->device().metalRT == gpu.metalRT);
+      CHECK(made.reports.empty());
+      settings(*renderer);
+      renderer->updateScene(first);
+      renderer->updateScene(second);
+      renderer->setView(view);
+      made.renderers.front()->fail("out of memory");
+      renderer->wait();
+      CHECK(renderer->device().type == "CPU" && !renderer->device().metalRT && made.renderers.size() == 2);
+      CHECK(renderer->device().denoiser.type == "CPU");
+      CHECK(made.cpuDenoising == std::vector<bool>({false, true}));
+      checkState(*made.renderers.back());
+      // Join the watcher before checking its report: wait() can observe
+      // the replacement renderer before the callback has returned.
+      renderer.reset();
+      const std::lock_guard<std::mutex> lock(made.mutex);
+      CHECK(made.reports.size() == 1 && made.reports[0] == "Rendering on the CPU: " + label + " failed (out of memory)");
+      CHECK(made.reportedDevices.size() == 1 && made.reportedDevices[0].type == "CPU" && !made.reportedDevices[0].metalRT);
+    }
+    {
+      // Neither starts.
+      Made made;
+      auto renderer =
+          mitcad::render::makeDeviceRenderer(sink, gpu, factoryFor(made, "no kernel", false), reportTo(made), {}, error);
+      CHECK(!renderer && error == "no kernel; the CPU: no CPU");
+    }
   }
+  DeviceInfo denoisingGpu{"CUDA_GPU", "CUDA", "A GPU", false};
+  denoisingGpu.denoiser.id = denoisingGpu.id;
+  denoisingGpu.denoiser.type = "CUDA";
+  denoisingGpu.denoiser.name = denoisingGpu.name;
   {
-    // The GPU fails while rendering: the CPU gets the whole scene (the
-    // meshes of all updates not released, the last bodies), the view and
-    // the samples, and the wait lasts until it has rendered them.
+    // A GPU that also denoises on itself (mitcad#202): when it fails, the
+    // same GPU with CPU denoising takes over first, with what it had; when
+    // that one fails too, the CPU.
     Made made;
     auto renderer =
-        mitcad::render::makeDeviceRenderer(sink, gpu, factoryFor(made, {}, true), reportTo(made), {}, error);
-    CHECK(renderer && renderer->device().type == "CUDA" && made.reports.empty());
-    mitcad::render::SceneUpdate first;
-    first.meshes = {{"a", {}}, {"b", {}}};
-    first.bodies.resize(2);
-    mitcad::render::SceneUpdate second;
-    second.meshes = {{"c", {}}};
-    second.released = {"a"};
-    second.bodies.resize(3);
-    mitcad::render::ViewData view;
-    view.sequence = 7;
-    // The user's lights (mitcad#54) are part of the environment.
-    mitcad::render::EnvironmentData environment;
-    environment.lights.resize(2);
-    environment.lights[1].kind = mitcad::render::LightData::Kind::Sun;
-    renderer->setEnvironment(environment);
-    renderer->setSamples(16);
+        mitcad::render::makeDeviceRenderer(sink, denoisingGpu, factoryFor(made, {}, true), reportTo(made), {}, error);
+    CHECK(renderer && renderer->device().denoiser.type == "CUDA");
+    settings(*renderer);
     renderer->updateScene(first);
     renderer->updateScene(second);
+    renderer->setView(view);
+    made.renderers.front()->fail("Failed to create OIDN device");
+    renderer->wait();
+    CHECK(renderer->device().type == "CUDA" && renderer->device().denoiser.type == "CPU");
+    CHECK(made.renderers.size() == 2 && made.cpuDenoising == std::vector<bool>({false, true}));
+    checkState(*made.renderers.back());
+    {
+      const std::lock_guard<std::mutex> lock(made.mutex);
+      CHECK(made.reports.size() == 1 &&
+            made.reports[0] == "Denoising on the CPU: Open Image Denoise on A GPU (CUDA) failed "
+                               "(Failed to create OIDN device)");
+      CHECK(made.reportedDevices.size() == 1 && made.reportedDevices[0].type == "CUDA" &&
+            made.reportedDevices[0].denoiser.type == "CPU");
+    }
+    made.renderers.back()->fail("out of memory");
+    renderer->wait();
+    CHECK(renderer->device().type == "CPU" && renderer->device().denoiser.type == "CPU");
+    CHECK(made.cpuDenoising == std::vector<bool>({false, true, true}));
+    checkState(*made.renderers.back());
+    renderer.reset();
+    const std::lock_guard<std::mutex> lock(made.mutex);
+    CHECK(made.reports.size() == 2 && made.reports[1] == "Rendering on the CPU: A GPU (CUDA) failed (out of memory)");
+    CHECK(made.reportedDevices.size() == 2 && made.reportedDevices[1].type == "CPU");
+  }
+  {
+    // The same GPU with CPU denoising cannot start: the CPU, saying why
+    // the first one failed.
+    Made made;
+    const auto inner = factoryFor(made, {}, true);
+    const auto factory = [&inner](mitcad::render::FrameSink& target, const DeviceInfo& device, bool cpuDenoising,
+                                  std::string& why) -> std::unique_ptr<mitcad::render::Renderer> {
+      if (cpuDenoising && device.type != "CPU" && !device.id.empty()) {
+        why = "no kernel";
+        return nullptr;
+      }
+      return inner(target, device, cpuDenoising, why);
+    };
+    auto renderer = mitcad::render::makeDeviceRenderer(sink, denoisingGpu, factory, reportTo(made), {}, error);
+    settings(*renderer);
+    renderer->updateScene(whole);
+    renderer->setView(view);
+    made.renderers.front()->fail("Failed to create OIDN device");
+    renderer->wait();
+    CHECK(renderer->device().type == "CPU" && made.renderers.size() == 2);
+    checkState(*made.renderers.back());
+    renderer.reset();
+    const std::lock_guard<std::mutex> lock(made.mutex);
+    CHECK(made.reports.size() == 1 &&
+          made.reports[0] == "Rendering on the CPU: A GPU (CUDA) failed (Failed to create OIDN device)");
+  }
+  {
+    // A GPU that already denoises on the CPU fails in its path tracer: the
+    // CPU at once.
+    Made made;
+    DeviceInfo gpu = denoisingGpu;
+    gpu.denoiser.type = "CPU";
+    auto renderer = mitcad::render::makeDeviceRenderer(sink, gpu, factoryFor(made, {}, true), reportTo(made), {}, error);
+    settings(*renderer);
+    renderer->updateScene(whole);
     renderer->setView(view);
     made.renderers.front()->fail("out of memory");
     renderer->wait();
     CHECK(renderer->device().type == "CPU" && made.renderers.size() == 2);
-    const FakeRenderer* cpu = made.renderers.back();
-    CHECK(cpu->samples == 16 && cpu->meshes == 2 && cpu->bodies == 3 && cpu->sequence == 7 && cpu->lights == 2);
+    checkState(*made.renderers.back());
+    renderer.reset();
     const std::lock_guard<std::mutex> lock(made.mutex);
     CHECK(made.reports.size() == 1 && made.reports[0] == "Rendering on the CPU: A GPU (CUDA) failed (out of memory)");
+  }
+  {
+    // The test hook's failure is the path tracer's: the CPU at once, also
+    // for a GPU that denoises on itself.
+    Made made;
+    auto renderer = mitcad::render::makeDeviceRenderer(sink, denoisingGpu, factoryFor(made, {}, true), reportTo(made),
+                                                       "simulated", error);
+    renderer->setView(view);
+    renderer->wait();
+    CHECK(renderer->device().type == "CPU" && made.renderers.size() == 2);
+    renderer.reset();
+    const std::lock_guard<std::mutex> lock(made.mutex);
+    CHECK(made.reports.size() == 1 && made.reports[0] == "Rendering on the CPU: A GPU (CUDA) failed (simulated)");
+  }
+  {
+    // A denoising GPU can fail while the path tracer is already on the
+    // CPU. Retry with CPU denoising too, retaining the complete scene.
+    Made made;
+    DeviceInfo cpu{"CPU", "CPU", "A processor", false};
+    cpu.denoiser.type = "METAL";
+    auto renderer = mitcad::render::makeDeviceRenderer(sink, cpu, factoryFor(made, {}, true), reportTo(made), {}, error);
+    settings(*renderer);
+    renderer->updateScene(first);
+    renderer->updateScene(second);
+    renderer->setView(view);
+    made.renderers.front()->fail("OIDN device failed");
+    renderer->wait();
+    CHECK(renderer->device().type == "CPU" && renderer->device().denoiser.type == "CPU");
+    CHECK(made.cpuDenoising == std::vector<bool>({false, true}));
+    checkState(*made.renderers.back());
+    // A failed CPU retry is terminal: wait must not retry forever.
+    made.renderers.back()->fail("CPU OIDN unavailable");
+    renderer->wait();
+    CHECK(renderer->deviceError() == "CPU OIDN unavailable" && made.renderers.size() == 2);
+  }
+  {
+    // Initialization of a separate Metal denoiser can also fail before
+    // the CPU path tracer has received a scene.
+    Made made;
+    const auto cpuFactory = factoryFor(made, {}, true);
+    const auto factory = [&cpuFactory](mitcad::render::FrameSink& target, const DeviceInfo& device,
+                                       bool cpuDenoising, std::string& why) -> std::unique_ptr<mitcad::render::Renderer> {
+      if (!cpuDenoising) {
+        why = "OIDN device initialization failed";
+        return nullptr;
+      }
+      return cpuFactory(target, device, cpuDenoising, why);
+    };
+    auto renderer = mitcad::render::makeDeviceRenderer(sink, DeviceInfo{"CPU", "CPU", "A processor", false},
+                                                       factory, reportTo(made), {}, error);
+    CHECK(renderer && renderer->device().denoiser.type == "CPU");
+    CHECK(made.cpuDenoising == std::vector<bool>({true}));
+    settings(*renderer);
+    renderer->updateScene(whole);
+    renderer->setView(view);
+    renderer->wait();
+    checkState(*made.renderers.back());
+    CHECK(made.reports.size() == 1 && made.reports[0].find("OIDN device initialization failed") != std::string::npos);
+  }
+  {
+    // Explicit CPU selection remains CPU with Metal available.
+    Made made;
+    std::string message;
+    const DeviceInfo cpu = mitcad::render::chooseDevice("cpu", gpus, message);
+    auto renderer = mitcad::render::makeDeviceRenderer(sink, cpu, factoryFor(made, {}, true), reportTo(made), {}, error);
+    CHECK(renderer && renderer->device().type == "CPU" && !renderer->device().metalRT && made.renderers.size() == 1);
+    settings(*renderer);
+    renderer->updateScene(whole);
+    renderer->setView(view);
+    renderer->wait();
+    checkState(*made.renderers.back());
+    CHECK(made.reports.empty());
   }
   {
     // The test hook fails the first renderer, even on the CPU, after its
@@ -617,20 +969,13 @@ void renderFallbackTests() {
     Made made;
     auto renderer = mitcad::render::makeDeviceRenderer(sink, DeviceInfo{"CPU", "CPU", "A processor", false},
                                                        factoryFor(made, {}, true), reportTo(made), "simulated", error);
-    mitcad::render::ViewData view;
     view.sequence = 3;
     renderer->setView(view);
     renderer->wait();
     CHECK(made.renderers.size() == 2 && made.renderers.back()->sequence == 3);
+    renderer.reset();
     const std::lock_guard<std::mutex> lock(made.mutex);
     CHECK(made.reports.size() == 1 && made.reports[0] == "Rendering on the CPU: A processor failed (simulated)");
-  }
-  {
-    // Neither starts.
-    Made made;
-    auto renderer =
-        mitcad::render::makeDeviceRenderer(sink, gpu, factoryFor(made, "no kernel", false), reportTo(made), {}, error);
-    CHECK(!renderer && error == "no kernel; the CPU: no CPU");
   }
 }
 
@@ -917,30 +1262,479 @@ void cloudAddressTests() {
   CHECK(addressWebPage(QStringLiteral("git@github.com:me/x.git")) == QStringLiteral("https://github.com/me/x"));
 }
 
+// The timeline search's words and filters (mitcad#179).
+void timelineSearchTests() {
+  using mitcad::TimelineQuery;
+  using mitcad::TimelineSearchItem;
+  TimelineSearchItem fillet;
+  fillet.name = QStringLiteral("Fillet2");
+  fillet.type = QStringLiteral("fillet");
+  fillet.component = QStringLiteral("Left Arm");
+  TimelineSearchItem plane;
+  plane.name = QStringLiteral("Datum");
+  plane.type = QStringLiteral("construction_plane");
+  plane.component = QStringLiteral("Base");
+  plane.warned = true;
+  plane.rolledBack = true;
+  TimelineSearchItem broken = fillet;
+  broken.name = QStringLiteral("Fillet21");
+  broken.component = QStringLiteral("Base");
+  broken.failed = true;
+
+  // Words: the name or the type, ignoring case, all of them.
+  CHECK(TimelineQuery::parse(QStringLiteral("fillet2")).matches(fillet));
+  CHECK(TimelineQuery::parse(QStringLiteral("FILLET2")).matches(broken)); // a substring
+  CHECK(TimelineQuery::parse(QStringLiteral("construction plane")).matches(plane));
+  CHECK(TimelineQuery::parse(QStringLiteral("\"construction plane\"")).matches(plane));
+  CHECK(!TimelineQuery::parse(QStringLiteral("fillet plane")).matches(fillet));
+  CHECK(TimelineQuery::parse(QStringLiteral("  ")).isEmpty());
+  // Components: in: or component:, quoted names with spaces, alternatives.
+  CHECK(TimelineQuery::parse(QStringLiteral("fillet in:\"left arm\"")).matches(fillet));
+  CHECK(!TimelineQuery::parse(QStringLiteral("fillet in:\"left arm\"")).matches(broken));
+  CHECK(TimelineQuery::parse(QStringLiteral("component:base")).matches(broken));
+  CHECK(TimelineQuery::parse(QStringLiteral("in:arm in:base")).matches(plane));
+  CHECK(TimelineQuery::parse(QStringLiteral("in:arm in:base")).matches(fillet));
+  // A filter being typed (no value yet) is ignored.
+  CHECK(TimelineQuery::parse(QStringLiteral("fillet2 in:")).matches(fillet));
+  CHECK(TimelineQuery::parse(QStringLiteral("is:")).isEmpty());
+  // Statuses, abbreviated, alternatives; across kinds all apply.
+  CHECK(TimelineQuery::parse(QStringLiteral("is:failed")).matches(broken));
+  CHECK(!TimelineQuery::parse(QStringLiteral("is:failed")).matches(fillet));
+  CHECK(TimelineQuery::parse(QStringLiteral("is:f")).statuses == TimelineQuery::Failed);
+  CHECK(TimelineQuery::parse(QStringLiteral("status:error")).statuses == TimelineQuery::Failed);
+  CHECK(TimelineQuery::parse(QStringLiteral("is:note")).statuses == TimelineQuery::Warning);
+  CHECK(TimelineQuery::parse(QStringLiteral("is:rolled-back")).statuses == TimelineQuery::RolledBack);
+  CHECK(TimelineQuery::parse(QStringLiteral("is:rolled_back")).statuses == TimelineQuery::RolledBack);
+  CHECK(TimelineQuery::parse(QStringLiteral("is:sup")).statuses == TimelineQuery::Suppressed);
+  CHECK(TimelineQuery::parse(QStringLiteral("is:warning")).matches(plane));
+  CHECK(TimelineQuery::parse(QStringLiteral("is:failed is:warning")).matches(plane));
+  CHECK(TimelineQuery::parse(QStringLiteral("is:failed is:warning")).matches(broken));
+  CHECK(!TimelineQuery::parse(QStringLiteral("is:warning in:arm")).matches(plane));
+  // A status it does not know matches nothing and is reported.
+  const TimelineQuery unknown = TimelineQuery::parse(QStringLiteral("fillet is:broken"));
+  CHECK(unknown.unknown == QStringList{QStringLiteral("is:broken")});
+  CHECK(!unknown.matches(fillet));
+
+  // The field's menu adds and takes out filters.
+  using mitcad::toggleTimelineToken;
+  CHECK(mitcad::timelineComponentToken(QStringLiteral("Left Arm")) == QStringLiteral("in:\"Left Arm\""));
+  CHECK(mitcad::timelineStatusToken(TimelineQuery::RolledBack) == QStringLiteral("is:rolled-back"));
+  CHECK(toggleTimelineToken(QStringLiteral("fillet"), QStringLiteral("is:failed")) ==
+        QStringLiteral("fillet is:failed"));
+  CHECK(toggleTimelineToken(QStringLiteral("fillet IS:Failed in:base"), QStringLiteral("is:failed")) ==
+        QStringLiteral("fillet in:base"));
+  CHECK(toggleTimelineToken(QStringLiteral("in:\"left arm\" x"), QStringLiteral("in:\"Left Arm\"")) ==
+        QStringLiteral("x"));
+  CHECK(toggleTimelineToken(QString(), QStringLiteral("in:\"Left Arm\"")) == QStringLiteral("in:\"Left Arm\""));
+  CHECK(mitcad::hasTimelineToken(QStringLiteral("a component:Base"), QStringLiteral("in:base")));
+  CHECK(!mitcad::hasTimelineToken(QStringLiteral("base"), QStringLiteral("in:base")));
+}
+
+// The sketch's auto constraints while drawing (mitcad#189): the choices a
+// tool offers, its session's first and last entities through undo, the
+// constraints' definitions and the geometry that satisfies them.
+void autoConstraintTests() {
+  using namespace mitcad::sketch;
+  const auto s = [](const char* text) { return QString::fromLatin1(text); };
+  const auto nearV = [](const V2& a, const V2& b) { return dist(a, b) <= 1e-9; };
+
+  // What each tool offers, with short labels that do not name the reference.
+  CHECK(autoConstraintTypes(AutoKind::Line) == (QStringList{s("equal"), s("parallel"), s("perpendicular")}));
+  CHECK(autoConstraintTypes(AutoKind::Circular) ==
+        (QStringList{s("equal"), s("horizontal_vertical"), s("concentric")}));
+  CHECK(autoConstraintTypes(AutoKind::None).isEmpty());
+  CHECK(autoConstraintTypes().size() == 5);
+  CHECK(autoConstraintLabel(s("equal")) == s("Equal"));
+  CHECK(autoConstraintLabel(s("horizontal_vertical")) == s("Horizontal/Vertical alignment"));
+  CHECK(autoConstraintLabel(s("concentric")) == s("Concentric"));
+  CHECK(autoConstraintLabel(s("parallel")) == s("Parallel"));
+  CHECK(autoConstraintLabel(s("perpendicular")) == s("Perpendicular"));
+  for (const QString& type : autoConstraintTypes()) {
+    CHECK(!autoConstraintLabel(type).contains(s("first"), Qt::CaseInsensitive));
+    CHECK(!autoConstraintLabel(type).contains(s("last"), Qt::CaseInsensitive));
+  }
+
+  // A new session: Link to last, nothing checked, nothing drawn.
+  QSet<QString> existing;
+  const AutoConstraintSession::Exists exists = [&existing](const QString& id) { return existing.contains(id); };
+  AutoConstraintSession session;
+  session.reset(AutoKind::Circular);
+  CHECK(session.link() == AutoConstraintSession::Link::Last);
+  CHECK(session.checkedTypes().isEmpty());
+  CHECK(session.reference(exists).isEmpty());
+  // Only what the tool offers can be checked; parallel and perpendicular,
+  // concentric and the centre alignment exclude each other.
+  CHECK(!session.setChecked(s("parallel"), true));
+  CHECK(session.setChecked(s("equal"), true));
+  CHECK(!session.setChecked(s("equal"), true));
+  CHECK(session.setChecked(s("horizontal_vertical"), true));
+  CHECK(session.checkedTypes() == (QStringList{s("equal"), s("horizontal_vertical")}));
+  CHECK(session.setChecked(s("concentric"), true));
+  CHECK(session.checkedTypes() == (QStringList{s("equal"), s("concentric")}));
+  AutoConstraintSession lines;
+  lines.reset(AutoKind::Line);
+  CHECK(lines.setChecked(s("parallel"), true));
+  CHECK(lines.setChecked(s("perpendicular"), true));
+  CHECK(lines.checkedTypes() == QStringList{s("perpendicular")});
+  CHECK(lines.setChecked(s("perpendicular"), false));
+  CHECK(lines.checkedTypes().isEmpty());
+
+  // Three circles linked to the last: 1-2 and 2-3; to the first: 1-2 and 1-3.
+  const auto draw = [&](AutoConstraintSession& on, const QString& id) {
+    const QString reference = on.reference(exists);
+    existing.insert(id);
+    on.record(id, exists);
+    return reference;
+  };
+  CHECK(draw(session, s("c1")).isEmpty());
+  CHECK(draw(session, s("c2")) == s("c1"));
+  CHECK(draw(session, s("c3")) == s("c2"));
+  // A changed mode counts from the next entity; the entities stay.
+  session.setLink(AutoConstraintSession::Link::First);
+  CHECK(session.entities() == (QStringList{s("c1"), s("c2"), s("c3")}));
+  CHECK(draw(session, s("c4")) == s("c1"));
+  CHECK(draw(session, s("c5")) == s("c1"));
+  existing.clear();
+  AutoConstraintSession first;
+  first.reset(AutoKind::Circular);
+  first.setLink(AutoConstraintSession::Link::First);
+  CHECK(draw(first, s("c1")).isEmpty());
+  CHECK(draw(first, s("c2")) == s("c1"));
+  CHECK(draw(first, s("c3")) == s("c1"));
+
+  // Undo: the reference is among the entities that remain; none left,
+  // none referenced. An id undo freed may come again for a new entity.
+  existing.clear();
+  AutoConstraintSession undone;
+  undone.reset(AutoKind::Line);
+  draw(undone, s("c1"));
+  draw(undone, s("c2"));
+  draw(undone, s("c3"));
+  existing.remove(s("c3"));
+  CHECK(undone.reference(exists) == s("c2"));
+  existing.insert(s("c3")); // redo
+  CHECK(undone.reference(exists) == s("c3"));
+  existing.remove(s("c3"));
+  existing.remove(s("c2"));
+  CHECK(draw(undone, s("c2")) == s("c1"));
+  CHECK(undone.entities() == (QStringList{s("c1"), s("c2")}));
+  undone.setLink(AutoConstraintSession::Link::First);
+  existing.remove(s("c1"));
+  CHECK(undone.reference(exists) == s("c2"));
+  existing.clear();
+  CHECK(undone.reference(exists).isEmpty());
+  // A new tool starts over.
+  undone.reset(AutoKind::Circular);
+  CHECK(undone.entities().isEmpty() && undone.link() == AutoConstraintSession::Link::Last);
+
+  // The definitions: from the reference to the new entity.
+  AutoEntity c1;
+  c1.id = s("c2");
+  c1.kind = AutoKind::Circular;
+  c1.center = {0.0, 0.0};
+  c1.radius = 10.0;
+  c1.centerPoint = s("p1");
+  AutoEntity c2 = c1;
+  c2.id = s("c4");
+  c2.center = {30.0, 4.0};
+  c2.radius = 5.0;
+  c2.centerPoint = s("p3");
+  QJsonObject equal = autoConstraintDefinition(s("equal"), c1, c2);
+  CHECK(equal.value(s("type")).toString() == s("equal"));
+  CHECK(equal.value(s("a")).toString() == s("c2") && equal.value(s("b")).toString() == s("c4"));
+  CHECK(autoConstraintDefinition(s("concentric"), c1, c2).value(s("type")).toString() == s("concentric"));
+  const QJsonObject level = autoConstraintDefinition(s("horizontal_vertical"), c1, c2);
+  CHECK(level.value(s("type")).toString() == s("horizontal_points"));
+  CHECK(level.value(s("a")).toString() == s("p1") && level.value(s("b")).toString() == s("p3"));
+  c2.center = {3.0, 40.0};
+  CHECK(autoConstraintDefinition(s("horizontal_vertical"), c1, c2).value(s("type")).toString() ==
+        s("vertical_points"));
+  CHECK(autoConstraintDefinition(s("parallel"), c1, c2).isEmpty());
+  CHECK(!autoConstraintShared(s("concentric"), c1, c2));
+  c2.centerPoint = s("p1");
+  CHECK(autoConstraintDefinition(s("horizontal_vertical"), c1, c2).isEmpty());
+  CHECK(autoConstraintShared(s("horizontal_vertical"), c1, c2));
+  CHECK(autoConstraintShared(s("concentric"), c1, c2));
+  CHECK(!autoConstraintShared(s("equal"), c1, c2));
+  AutoEntity l1;
+  l1.id = s("c1");
+  l1.kind = AutoKind::Line;
+  l1.a = {0.0, 0.0};
+  l1.b = {20.0, 0.0};
+  AutoEntity l2 = l1;
+  l2.id = s("c5");
+  CHECK(autoConstraintDefinition(s("perpendicular"), l1, l2).value(s("type")).toString() == s("perpendicular"));
+  CHECK(autoConstraintDefinition(s("parallel"), l1, l2).value(s("b")).toString() == s("c5"));
+  CHECK(autoConstraintDefinition(s("concentric"), l1, l2).isEmpty());
+  CHECK(autoConstraintDefinition(s("equal"), l1, c1).isEmpty());
+  CHECK(autoConstraintDefinition(s("equal"), l1, l1).isEmpty());
+  CHECK(alignsHorizontally({0.0, 0.0}, {5.0, 5.0}));
+  CHECK(!alignsHorizontally({0.0, 0.0}, {4.0, 5.0}));
+
+  // A line placed for them: square to the reference, as long, both; along
+  // it backwards; a typed length kept.
+  const V2 start{20.0, 0.0};
+  CHECK(nearV(autoLineEnd(start, {23.0, 15.0}, l1, {s("perpendicular")}, false), {20.0, 15.0}));
+  CHECK(nearV(autoLineEnd(start, {23.0, 15.0}, l1, {s("perpendicular"), s("equal")}, false), {20.0, 20.0}));
+  CHECK(nearV(autoLineEnd(start, {5.0, 3.0}, l1, {s("parallel")}, false), {5.0, 0.0}));
+  CHECK(nearV(autoLineEnd(start, {23.0, 4.0}, l1, {s("equal")}, false), {32.0, 16.0}));
+  CHECK(nearV(autoLineEnd({0.0, 10.0}, {6.0, 18.0}, l1, {s("parallel")}, true), {10.0, 10.0}));
+  CHECK(nearV(autoLineEnd({0.0, 10.0}, {6.0, 18.0}, l1, {s("equal")}, true), {6.0, 18.0}));
+  CHECK(nearV(autoLineEnd(start, {23.0, 4.0}, l1, {}, false), {23.0, 4.0}));
+  CHECK(nearV(autoLineEnd(start, {23.0, 4.0}, c1, {s("equal")}, false), {23.0, 4.0}));
+
+  // A circle placed for them: equal, aligned (level or plumb by the
+  // nearer), concentric (through its rim), a typed size kept.
+  const AutoCircle drawn{{30.0, 4.0}, 5.0};
+  AutoCircle placed = autoCircle(drawn, c1, {s("equal")}, false);
+  CHECK(nearV(placed.center, {30.0, 4.0}) && std::abs(placed.radius - 10.0) <= 1e-9);
+  placed = autoCircle(drawn, c1, {s("equal"), s("horizontal_vertical")}, false);
+  CHECK(nearV(placed.center, {30.0, 0.0}) && std::abs(placed.radius - 10.0) <= 1e-9);
+  placed = autoCircle({{3.0, 40.0}, 5.0}, c1, {s("horizontal_vertical")}, false);
+  CHECK(nearV(placed.center, {0.0, 40.0}) && std::abs(placed.radius - 5.0) <= 1e-9);
+  placed = autoCircle(drawn, c1, {s("concentric")}, false, V2{40.0, 0.0});
+  CHECK(nearV(placed.center, {0.0, 0.0}) && std::abs(placed.radius - 40.0) <= 1e-9);
+  placed = autoCircle(drawn, c1, {s("concentric")}, false);
+  CHECK(nearV(placed.center, {0.0, 0.0}) && std::abs(placed.radius - 5.0) <= 1e-9);
+  placed = autoCircle(drawn, c1, {s("equal")}, true);
+  CHECK(std::abs(placed.radius - 5.0) <= 1e-9);
+  placed = autoCircle(drawn, l1, {s("equal"), s("concentric")}, false);
+  CHECK(nearV(placed.center, drawn.center) && std::abs(placed.radius - 5.0) <= 1e-9);
+}
+
+// Selection inputs keep a region once, and a click toggles it (mitcad#199).
+void selectionEntryTests() {
+  using mitcad::Selection;
+  using mitcad::SelectionItem;
+  using mitcad::SelectKind;
+  const auto placedProfile = [](const char* sketch, const char* region, const char* occurrence) {
+    SelectionItem item{SelectKind::Profile, QString::fromLatin1(sketch), QString::fromLatin1(region),
+                       QStringLiteral("plane")};
+    item.occurrence = QString::fromLatin1(occurrence);
+    return item;
+  };
+  const auto profile = [&placedProfile](const char* sketch, const char* region) {
+    return placedProfile(sketch, region, "");
+  };
+  const SelectionItem ring = profile("F1", "r{c1}");
+  const SelectionItem disc = profile("F1", "r{c2}");
+  const SelectionItem inner = profile("F1", "r{c3}");
+  // The newest profile (no occurrence) and the same region clicked in a
+  // placed component's sketch are one entry: the click takes it out.
+  const SelectionItem placed = placedProfile("F1", "r{c1}", "O1");
+  CHECK(mitcad::sameEntry(ring, placed));
+  Selection items{ring};
+  CHECK(!mitcad::toggleEntry(items, placed));
+  CHECK(items.isEmpty());
+  // Clicks in any order give the same entries; a second click on one gives
+  // back the selection before it.
+  Selection forward;
+  for (const SelectionItem& item : {ring, disc, inner}) {
+    CHECK(mitcad::toggleEntry(forward, item));
+  }
+  Selection backward;
+  for (const SelectionItem& item : {inner, ring, disc, inner, inner}) {
+    mitcad::toggleEntry(backward, item);
+  }
+  CHECK(forward.size() == 3 && backward.size() == 3);
+  for (const SelectionItem& item : forward) {
+    CHECK(mitcad::containsEntry(backward, item));
+  }
+  Selection again = forward;
+  CHECK(!mitcad::toggleEntry(again, disc));
+  CHECK(again.size() == 2 && !mitcad::containsEntry(again, disc));
+  CHECK(mitcad::toggleEntry(again, disc));
+  CHECK(again.size() == 3);
+  // Other kinds and other sketches are not merged.
+  CHECK(!mitcad::sameEntry(ring, profile("F4", "r{c1}")));
+  const SelectionItem face{SelectKind::Face, QStringLiteral("F2.b0"), QStringLiteral("r{c1}"), QString()};
+  CHECK(!mitcad::sameEntry(ring, face));
+  SelectionItem otherFace = face;
+  otherFace.occurrence = QStringLiteral("O1");
+  CHECK(!mitcad::sameEntry(face, otherFace)); // a body placed twice is two items
+  // A key that changed with the sketch: the resolver names the region both
+  // keys mean, so a click on the region takes the old entry out.
+  const SelectionItem old = profile("F1", "r{c1[c4,c2],c2[c1,c3],c3[c2,c4],c4[c3,c1]}");
+  const SelectionItem current = profile("F1", "r{c1[c4,c5],c3[c5,c4],c4[c3,c1],c5[c1,c3]}");
+  int asked = 0;
+  const mitcad::ItemResolver resolve = [&](const SelectionItem& item) {
+    ++asked;
+    return item.name == old.name ? current.name : item.name;
+  };
+  CHECK(!mitcad::sameEntry(old, current));
+  CHECK(mitcad::sameEntry(old, current, resolve));
+  CHECK(asked == 2);
+  Selection loaded{old, disc};
+  CHECK(!mitcad::toggleEntry(loaded, current, resolve));
+  CHECK(loaded.size() == 1 && loaded.first() == disc);
+  // A resolver that cannot tell (empty) leaves different keys apart.
+  const mitcad::ItemResolver unknown = [](const SelectionItem&) { return QString(); };
+  CHECK(!mitcad::sameEntry(old, current, unknown));
+  // A list given as a whole keeps each profile once, the first in place
+  // (the old key, the disc without an occurrence), and other items as they
+  // are.
+  const Selection given{old, face, disc, current, placedProfile("F1", "r{c2}", "O1"), face};
+  const Selection unique = mitcad::uniqueProfiles(given, resolve);
+  CHECK(unique.size() == 4);
+  CHECK(unique.size() == 4 && unique[0] == old && unique[1] == face && unique[2] == disc && unique[3] == face);
+  CHECK(mitcad::removeEntry(backward, placed) == 1);
+}
+
+// When a navigation of the view ends, for the rendered view (mitcad#214).
+void viewNavigationTests() {
+  using mitcad::ViewNavigation;
+  using Change = ViewNavigation::Change;
+  constexpr int quiet = ViewNavigation::kQuietMilliseconds;
+  ViewNavigation navigation;
+  CHECK(!navigation.active());
+  CHECK(navigation.update(0, false) == Change::None);
+  // A held button navigates until it goes up, however long it keeps still.
+  navigation.setButtons(true);
+  CHECK(navigation.update(10, false) == Change::Started && navigation.active());
+  CHECK(navigation.update(10 + 10 * quiet, false) == Change::None && navigation.active());
+  navigation.setButtons(false);
+  CHECK(navigation.update(20 + 10 * quiet, false) == Change::Ended && !navigation.active());
+  CHECK(navigation.update(30 + 10 * quiet, false) == Change::None);
+  // A burst of wheel steps 50 ms apart is one navigation, which ends once
+  // the quiet time has passed after the last step.
+  ViewNavigation wheel;
+  std::int64_t now = 1000;
+  wheel.stepped(now);
+  CHECK(wheel.update(now, false) == Change::Started);
+  for (int i = 0; i < 5; ++i) {
+    now += 50;
+    wheel.stepped(now);
+    wheel.cameraMoved(now);
+    CHECK(wheel.update(now, false) == Change::None && wheel.active());
+  }
+  CHECK(wheel.quietLeft(now) == quiet);
+  CHECK(wheel.update(now + quiet - 1, false) == Change::None && wheel.active());
+  CHECK(wheel.quietLeft(now + quiet - 1) == 1);
+  CHECK(wheel.update(now + quiet, false) == Change::Ended && !wheel.active());
+  CHECK(wheel.quietLeft(now + quiet) == 0);
+  // The camera still moving after the last step (an animation of the zoom,
+  // a trackpad's momentum) holds the end back; a camera change outside a
+  // navigation starts none.
+  wheel.stepped(now = 5000);
+  CHECK(wheel.update(now, false) == Change::Started);
+  wheel.cameraMoved(now + 200);
+  CHECK(wheel.update(now + quiet + 10, false) == Change::None);
+  CHECK(wheel.update(now + 200 + quiet, false) == Change::Ended);
+  wheel.cameraMoved(now + 1000);
+  CHECK(wheel.update(now + 1000, false) == Change::None && !wheel.active());
+  // A camera animation navigates while it runs; a trackpad scroll's drag
+  // while it is on, and its quiet time after it.
+  ViewNavigation other;
+  CHECK(other.update(0, true) == Change::Started);
+  CHECK(other.update(400, true) == Change::None);
+  CHECK(other.update(410, false) == Change::Ended);
+  other.stepped(1000);
+  other.setScrollDrag(true);
+  CHECK(other.update(1000, false) == Change::Started);
+  CHECK(other.update(1000 + 2 * quiet, false) == Change::None);
+  other.setScrollDrag(false);
+  CHECK(other.update(1000 + 2 * quiet + 1, false) == Change::Ended);
+  // A button pressed during a burst: the navigation goes on until it is
+  // released, past the quiet time.
+  ViewNavigation mixed;
+  mixed.stepped(0);
+  CHECK(mixed.update(0, false) == Change::Started);
+  mixed.setButtons(true);
+  CHECK(mixed.update(2 * quiet, false) == Change::None);
+  mixed.setButtons(false);
+  CHECK(mixed.update(2 * quiet + 1, false) == Change::Ended);
+}
+
+// Where an orthographic render's camera stands (mitcad#215): on the view's
+// axis behind the scene's bounds, or where the view's eye is when that is
+// behind them already.
+void renderCameraTests() {
+  mitcad::render::ViewData view;
+  view.perspective = false;
+  view.target = {0, 0, 10};
+  view.up = {0, 0, 1};
+  const std::array<double, 3> low{-30, -20, 0};
+  const std::array<double, 3> high{30, 20, 20};
+  const double radius = std::sqrt(60.0 * 60.0 + 40.0 * 40.0 + 20.0 * 20.0) / 2.0;
+  const auto sameEye = [](const std::array<double, 3>& a, const std::array<double, 3>& b) {
+    return std::abs(a[0] - b[0]) < 1e-9 && std::abs(a[1] - b[1]) < 1e-9 && std::abs(a[2] - b[2]) < 1e-9;
+  };
+  // The eye inside the block, looking along +Y: it steps back along the axis
+  // past the bounds' sphere and its margin.
+  view.eye = {0, -5, 10};
+  const std::array<double, 3> placed = mitcad::render::orthographicEye(view, low, high);
+  CHECK(std::abs(placed[0]) < 1e-9 && std::abs(placed[2] - 10.0) < 1e-9);
+  CHECK(placed[1] < -radius && std::abs(placed[1] + radius + 1.0) < 1e-9);
+  // The whole block is in front of the camera.
+  CHECK(low[1] - placed[1] > 0.0);
+  // An eye far behind the scene stays; one in front of it (the bounds
+  // behind it) steps back the same way from the other side.
+  view.eye = {0, -500, 10};
+  CHECK(sameEye(mitcad::render::orthographicEye(view, low, high), view.eye));
+  view.eye = {0, 0, 1000};
+  view.target = {0, 0, 900}; // looking down at the block from above, the block behind the target
+  const std::array<double, 3> above = mitcad::render::orthographicEye(view, low, high);
+  CHECK(sameEye(above, view.eye)); // already behind (above) everything
+  view.eye = {10, 0, 5};
+  view.target = {10, 0, -5}; // looking down from inside the block
+  const std::array<double, 3> down = mitcad::render::orthographicEye(view, low, high);
+  CHECK(std::abs(down[0] - 10.0) < 1e-9 && std::abs(down[1]) < 1e-9);
+  CHECK(down[2] > high[2] && std::abs(down[2] - (-5.0 + 15.0 + radius + 1.0)) < 1e-9);
+  // A large scene takes a margin of a hundredth of its size; no direction
+  // (eye and target the same) leaves the eye alone.
+  const std::array<double, 3> wide{3000, 3000, 20};
+  view.eye = {0, -5, 10};
+  view.target = {0, 0, 10};
+  const double big = std::sqrt(6000.0 * 6000.0 + 6000.0 * 6000.0 + 20.0 * 20.0) / 2.0;
+  CHECK(std::abs(mitcad::render::orthographicEye(view, {-3000, -3000, 0}, wide)[1] + big * 1.01) < 1e-6);
+  view.target = view.eye;
+  CHECK(sameEye(mitcad::render::orthographicEye(view, low, high), view.eye));
+}
+
 } // namespace
 
 int autosaveTests();
+int commandMessageTests();
+int moveToComponentTests();
+int autoselectTests();
+int cutTargetsTests();
 
 int main(int argc, char* argv[]) {
   QApplication app(argc, argv);
-  numberTests();
-  cursorTests();
-  printTests();
-  desktopEntryTests();
-  renderLookTests();
-  renderOutputTests();
-  renderCatcherTests();
-  renderDeviceChoiceTests();
-  renderFallbackTests();
-  reportMaskTests();
-  reportCrashTests();
-  reportLinkTests();
-  cloudAddressTests();
-  failures += autosaveTests();
+  const bool renderDevicesOnly = app.arguments().contains(QStringLiteral("--render-devices"));
+  if (renderDevicesOnly) {
+    renderDeviceChoiceTests();
+    renderFallbackTests();
+  } else {
+    shortcutBindingTests();
+    numberTests();
+    cursorTests();
+    printTests();
+    desktopEntryTests();
+    renderLookTests();
+    renderOutputTests();
+    renderCatcherTests();
+    renderDeviceChoiceTests();
+    renderFallbackTests();
+    reportMaskTests();
+    reportCrashTests();
+    reportLinkTests();
+    cloudAddressTests();
+    timelineSearchTests();
+    autoConstraintTests();
+    selectionEntryTests();
+    viewNavigationTests();
+    renderCameraTests();
+    failures += autosaveTests();
+    failures += commandMessageTests();
+    failures += moveToComponentTests();
+    failures += autoselectTests();
+    failures += cutTargetsTests();
+  }
   if (failures != 0) {
     std::fprintf(stderr, "%d check(s) failed\n", failures);
     return 1;
   }
-  std::printf("app unit tests passed\n");
+  std::printf(renderDevicesOnly ? "render device unit tests passed\n" : "app unit tests passed\n");
   return 0;
 }

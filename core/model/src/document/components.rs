@@ -5,7 +5,7 @@
 //! occurrence of the same component, or Paste New: a new component), and
 //! external components linked from or copied out of other design files.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
 
@@ -121,6 +121,11 @@ impl DocState {
             .filter(|f| match &f.def {
                 FeatureDef::MoveOccurrence(m) => m.occurrences.contains(&uid),
                 FeatureDef::CapturePosition(c) => c.positions.iter().any(|p| p.occurrence == uid),
+                FeatureDef::PatternAtPoints(_) => self
+                    .assembly
+                    .occurrence(uid)
+                    .and_then(|o| o.pattern.as_ref())
+                    .is_some_and(|p| p.feature == f.uid),
                 _ => false,
             })
             .map(|f| f.name.clone())
@@ -209,11 +214,13 @@ impl<K: Kernel> Document<K> {
 
     /// An occurrence's placement in its parent at the timeline marker.
     pub fn placement(&self, uid: OccurrenceUid) -> Option<Transform> {
-        self.result
-            .placements
-            .get(&uid)
-            .copied()
-            .or_else(|| self.state.assembly.occurrence(uid).map(|o| o.transform))
+        self.result.placements.get(&uid).copied().or_else(|| {
+            self.state
+                .assembly
+                .occurrence(uid)
+                .filter(|o| o.pattern.is_none())
+                .map(|o| o.transform)
+        })
     }
 
     /// The transform of a path's last component into the design's
@@ -237,7 +244,7 @@ impl<K: Kernel> Document<K> {
     /// Every body as placed in the design: the root's bodies, then those
     /// of each occurrence, depth first.
     pub fn instances(&self) -> Vec<InstanceView> {
-        let a = &self.state.assembly;
+        let a = self.state.assembly.at_placements(&self.result.placements);
         let placement = |o: OccurrenceUid| self.placement(o).unwrap_or(Transform::IDENTITY);
         let bodies = |c: ComponentUid| self.component_bodies(c);
         a.instances(&placement, &bodies)
@@ -788,6 +795,11 @@ impl<K: Kernel> Document<K> {
     /// deleted features.
     pub fn delete_occurrence(&mut self, uid: OccurrenceUid) -> Result<Vec<FeatureUid>, ModelError> {
         let occurrence = self.state.require_occurrence(uid)?;
+        if occurrence.pattern.is_some() {
+            return Err(invalid(
+                "edit or delete the Pattern at Points feature to remove its instances",
+            ));
+        }
         self.state.editable(occurrence.parent)?;
         self.apply(|state| {
             let name = state.assembly.occurrence_name(uid);
@@ -915,6 +927,52 @@ impl<K: Kernel> Document<K> {
         })
     }
 
+    /// Copies another document's design (its root component with its
+    /// features, parameters and components) into `into`, an empty
+    /// component of this document that is already placed (an importer's:
+    /// the `.f3d` import fills the components standing for components of
+    /// other documents from those documents' files, mitcad#196), and names
+    /// it `name` (made unique). Returns the copied occurrences, each of the
+    /// source's with its copy. The active component stays.
+    pub fn fill_component_copy(
+        &mut self,
+        source: &Document<K>,
+        into: ComponentUid,
+        name: Option<&str>,
+    ) -> Result<HashMap<OccurrenceUid, OccurrenceUid>, ModelError> {
+        self.state.editable(into)?;
+        if into.is_root() {
+            return Err(invalid("the root component cannot be filled with a copy"));
+        }
+        if self.state.features.iter().any(|f| f.component == into)
+            || self.state.assembly.children(into).next().is_some()
+        {
+            return Err(invalid(format!(
+                "{} is not empty",
+                self.state.assembly.name(into)
+            )));
+        }
+        let directory = source.source_directory();
+        let source = &source.state;
+        self.apply(|state| {
+            if let Some(name) = name.filter(|n| !n.trim().is_empty()) {
+                let name = state.free_component_name(name);
+                if let Some(c) = state.assembly.component_mut(into) {
+                    c.name = name;
+                }
+            }
+            let (_, occurrences) = state.copy_component_mapped(
+                source,
+                &[],
+                into,
+                None,
+                CopySource::Document(directory.as_deref()),
+            )?;
+            let label = format!("Copy into {}", state.assembly.name(into));
+            Ok((label, occurrences))
+        })
+    }
+
     /// The visible bodies of another design, placed in its coordinates,
     /// as base-feature bodies.
     pub(super) fn design_bodies(
@@ -927,7 +985,7 @@ impl<K: Kernel> Document<K> {
         let monitor = self.monitor.as_ref();
         let result = recompute(kernel, source, &mut Cache::default(), monitor)?;
         let names = super::display_names(source, &result);
-        let a = &source.assembly;
+        let a = source.assembly.at_placements(&result.placements);
         let placement = |o: OccurrenceUid| {
             result
                 .placements

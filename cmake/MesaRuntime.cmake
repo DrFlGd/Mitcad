@@ -44,6 +44,31 @@ if(MITCAD_MESA_DIR)
               -App "$<TARGET_FILE:mitcad>" -Out "${CMAKE_BINARY_DIR}/ui-windows-workflow"
               -QtBin "$<TARGET_FILE_DIR:Qt6::Core>")
     set_tests_properties(app.ui-windows-workflow PROPERTIES TIMEOUT 300)
+    # An .f3d design of components of other documents (mitcad#196): the
+    # file dialog for each document not found, skipped or chosen.
+    add_test(NAME app.ui-windows-references
+      COMMAND powershell -NoProfile -ExecutionPolicy Bypass
+              -File "${CMAKE_SOURCE_DIR}/tools/ui-windows-references-test.ps1"
+              -App "$<TARGET_FILE:mitcad>" -Out "${CMAKE_BINARY_DIR}/ui-windows-references"
+              -QtBin "$<TARGET_FILE_DIR:Qt6::Core>")
+    set_tests_properties(app.ui-windows-references PROPERTIES TIMEOUT 300)
+    # Sheet metal (mitcad#210): Face, Flange, rule edits, Flat Pattern, its
+    # DXF export, an edit from the timeline, the Floating layout.
+    add_test(NAME app.ui-windows-sheet
+      COMMAND powershell -NoProfile -ExecutionPolicy Bypass
+              -File "${CMAKE_SOURCE_DIR}/tools/ui-windows-sheet-test.ps1"
+              -App "$<TARGET_FILE:mitcad>" -Out "${CMAKE_BINARY_DIR}/ui-windows-sheet"
+              -QtBin "$<TARGET_FILE_DIR:Qt6::Core>")
+    set_tests_properties(app.ui-windows-sheet PROPERTIES TIMEOUT 300)
+    # Sheet-metal operations (mitcad#125): Fold, Bend, Corner Round and
+    # Chamfer, Corner Relief, Sheet Cut, Unfold and Refold, each with its
+    # picks, preview, a timeline edit and Undo.
+    add_test(NAME app.ui-windows-sheet-ops
+      COMMAND powershell -NoProfile -ExecutionPolicy Bypass
+              -File "${CMAKE_SOURCE_DIR}/tools/ui-windows-sheet-ops-test.ps1"
+              -App "$<TARGET_FILE:mitcad>" -Out "${CMAKE_BINARY_DIR}/ui-windows-sheet-ops"
+              -QtBin "$<TARGET_FILE_DIR:Qt6::Core>")
+    set_tests_properties(app.ui-windows-sheet-ops PROPERTIES TIMEOUT 600)
   endif()
 elseif(WIN32 AND CMAKE_RUNTIME_OUTPUT_DIRECTORY)
   # Turned off again: remove earlier copies, or they would stay in use.

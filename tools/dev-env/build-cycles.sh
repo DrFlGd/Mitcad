@@ -6,7 +6,8 @@
 # ISPC compiler, BSD-3-Clause, which is only a build tool). Everything else
 # (Embree, TBB, OpenImageIO, OpenColorIO, OpenEXR, pugixml, zstd, cgltf)
 # comes from vcpkg through the manifest's dependencies. Every Mitcad build
-# has the render worker and needs this prefix: setup-user.sh runs this once.
+# has the render worker and needs this prefix: setup-user.sh runs this once,
+# with --cuda unless MITCAD_RENDER_CUDA=0 (the releases need CUDA, mitcad#202).
 #
 # Usage: tools/dev-env/build-cycles.sh [options] [prefix]
 #
@@ -292,6 +293,10 @@ if [ "$(git -C "$CYCLES_SRC" rev-parse HEAD)" != "$CYCLES_COMMIT" ]; then
 fi
 CYCLES_DONE=$INSTALL/cycles/.done-$CYCLES_VERSION
 [ "$DEVICES" = cpu ] || CYCLES_DONE=$CYCLES_DONE-$DEVICES_STAMP
+# Cycles compiles its GPU denoiser only for the Open Image Denoise devices
+# whose headers it was built with (OIDN_DEVICE_CUDA in OIDN's config.h): a
+# rebuilt Open Image Denoise rebuilds Cycles too (mitcad#202).
+[ "$OIDN_GPU" = 1 ] && CYCLES_DONE=$CYCLES_DONE-oidn-$OIDN_STAMP
 # The GPU devices asked for (off by default; never OptiX, whose licence
 # does not fit open source: README, FAQ). Cycles loads the drivers at
 # run time (cuew, hipew; Level Zero through SYCL), so a GPU build runs on
@@ -348,6 +353,14 @@ if [ ! -f "$CYCLES_DONE" ]; then
   (cd "$CYCLES_SRC/third_party" && find . -name '*.h' -exec cp --parents {} "$INSTALL/cycles/include/third_party/" \;)
   find "$BUILD/cycles" -name 'libcycles_*.a' -exec cp {} "$INSTALL/cycles/lib/" \;
   find "$BUILD/cycles" -name 'libextern_*.a' -exec cp {} "$INSTALL/cycles/lib/" \;
+  # Without OIDN_DEVICE_CUDA Cycles' GPU denoiser never creates Open Image
+  # Denoise's CUDA device ("Failed to create OIDN device" on every GPU).
+  if [ "$OIDN_GPU" = 1 ] && [ "$WITH_CUDA" = 1 ] &&
+    ! grep -q oidnNewCUDADevice "$INSTALL/cycles/lib/libcycles_integrator.a"; then
+    echo "Cycles was built without Open Image Denoise's CUDA device (no oidnNewCUDADevice in" \
+      "libcycles_integrator.a)" >&2
+    exit 1
+  fi
   cp "$CYCLES_SRC/LICENSE" "$INSTALL/cycles/LICENSE"
   # The GPU kernels, in the layout Cycles looks for them at run time
   # (<path>/lib/kernel_sm_61.cubin.zst, ...).

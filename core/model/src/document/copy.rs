@@ -98,8 +98,10 @@ impl DocState {
                 .place(made, entry.component, Transform::IDENTITY);
             made
         });
+        let uid = entry.uid;
         self.features.insert(position, Arc::new(entry));
         self.marker += 1;
+        self.sync_point_pattern(uid)?;
         Ok(made)
     }
 
@@ -118,23 +120,61 @@ impl DocState {
         maker: Option<FeatureUid>,
         origin: CopySource<'_>,
     ) -> Result<ComponentUid, ModelError> {
+        self.copy_component_mapped(source, source_path, into, maker, origin)
+            .map(|(into, _)| into)
+    }
+
+    /// [`DocState::copy_component`], also returning the copied occurrences
+    /// (the source's, each with its copy).
+    pub(crate) fn copy_component_mapped(
+        &mut self,
+        source: &DocState,
+        source_path: &[OccurrenceUid],
+        into: ComponentUid,
+        maker: Option<FeatureUid>,
+        origin: CopySource<'_>,
+    ) -> Result<(ComponentUid, HashMap<OccurrenceUid, OccurrenceUid>), ModelError> {
         let same_document = matches!(origin, CopySource::SameDocument);
         let a = &source.assembly;
         let from =
             crate::joints::path_component(a, ComponentUid::ROOT, source_path).map_err(invalid)?;
+        let before_marker: BTreeSet<_> = source.features[..source.marker]
+            .iter()
+            .map(|f| f.uid)
+            .collect();
+        let copy_occurrence = |o: &Occurrence| {
+            o.pattern
+                .as_ref()
+                .is_none_or(|p| before_marker.contains(&p.feature))
+        };
         // The components to copy: `from` and everything placed in it.
         let mut inside = BTreeSet::from([from]);
         let mut todo = vec![from];
         while let Some(c) = todo.pop() {
             for o in a.children(c) {
+                if !copy_occurrence(o) {
+                    continue;
+                }
                 if inside.insert(o.component) {
                     todo.push(o.component);
                 }
             }
         }
-        let features: Vec<&FeatureEntry> = source.features[..source.marker]
+        let rule_dependencies: BTreeSet<_> = source.features[..source.marker]
             .iter()
             .filter(|f| inside.contains(&f.component) || Some(f.uid) == maker)
+            .filter_map(|f| match &f.def {
+                FeatureDef::SheetFace(d) => Some(d.rules),
+                _ => None,
+            })
+            .collect();
+        let features: Vec<&FeatureEntry> = source.features[..source.marker]
+            .iter()
+            .filter(|f| {
+                inside.contains(&f.component)
+                    || Some(f.uid) == maker
+                    || rule_dependencies.contains(&f.uid)
+            })
             .map(|f| &**f)
             .collect();
         let mut uids: HashMap<FeatureUid, FeatureUid> = HashMap::new();
@@ -163,7 +203,11 @@ impl DocState {
             }
         }
         let mut occurrences: HashMap<OccurrenceUid, OccurrenceUid> = HashMap::new();
-        for o in a.occurrences.iter().filter(|o| inside.contains(&o.parent)) {
+        for o in a
+            .occurrences
+            .iter()
+            .filter(|o| inside.contains(&o.parent) && copy_occurrence(o))
+        {
             let target =
                 self.assembly
                     .place(components[&o.component], components[&o.parent], o.transform);
@@ -175,7 +219,9 @@ impl DocState {
         // The features, in timeline order, checked only after all their
         // reference names and occurrence paths have been mapped.
         for f in &features {
-            let component = components[&f.component];
+            // Rule dependencies can be outside the copied component subtree.
+            // Their independent copies precede consumers in this component.
+            let component = components.get(&f.component).copied().unwrap_or(into);
             let mut def = copy_def(&f.def, &params, &uids)?;
             let references = CopyReferences {
                 source: a,
@@ -184,9 +230,12 @@ impl DocState {
                 prefix: &prefix,
                 occurrences: &occurrences,
                 uids: &uids,
+                same_document,
             };
             references.links(&mut def, &f.def, component)?;
             match &mut def {
+                // Root-relative paths were already mapped by links().
+                FeatureDef::PatternAtPoints(_) => {}
                 FeatureDef::MoveOccurrence(m) => {
                     for o in &mut m.occurrences {
                         *o = occurrences.get(o).copied().unwrap_or(*o);
@@ -219,6 +268,43 @@ impl DocState {
             // Components and placements, including ones made by these
             // features, were created above; insert_resolved would make
             // them a second time.
+            if let (FeatureDef::PatternAtPoints(original), FeatureDef::PatternAtPoints(copy)) =
+                (&f.def, &entry.def)
+                && let (
+                    crate::features::PatternObjects::Components {
+                        occurrences: sources,
+                    },
+                    crate::features::PatternObjects::Components {
+                        occurrences: mapped,
+                    },
+                ) = (&original.objects, &copy.objects)
+            {
+                for o in &a.occurrences {
+                    let Some(instance) = o.pattern.as_ref().filter(|p| p.feature == f.uid) else {
+                        continue;
+                    };
+                    let Some(target) = occurrences.get(&o.uid) else {
+                        continue;
+                    };
+                    let source_index = sources
+                        .iter()
+                        .position(|p| *p == instance.source)
+                        .ok_or_else(|| invalid("pattern source ownership is inconsistent"))?;
+                    let target_index = original
+                        .targets
+                        .iter()
+                        .position(|p| *p == instance.target)
+                        .ok_or_else(|| invalid("pattern target ownership is inconsistent"))?;
+                    self.assembly
+                        .occurrence_mut(*target)
+                        .expect("copied")
+                        .pattern = Some(crate::features::point_pattern::PatternInstance {
+                        feature: entry.uid,
+                        source: mapped[source_index].clone(),
+                        target: copy.targets[target_index].clone(),
+                    });
+                }
+            }
             self.features.insert(self.marker, Arc::new(entry));
             self.marker += 1;
         }
@@ -257,7 +343,23 @@ impl DocState {
             })
             .collect();
         self.body_attributes.extend(attributes);
-        Ok(into)
+        // Flat Pattern items follow their sheet bodies, split pieces
+        // (`F<cut>.b<k>`) included, with the fixed panel's feature mapped
+        // (mitcad#125).
+        let flat_patterns: Vec<_> = source
+            .flat_patterns
+            .iter()
+            .filter_map(|(body, def)| {
+                let feature = uids.get(&body.feature)?;
+                let mut def = def.clone();
+                if let Some(panel) = uids.get(&def.stationary.feature) {
+                    def.stationary.feature = *panel;
+                }
+                Some((BodyUid::new(*feature, body.index), def))
+            })
+            .collect();
+        self.flat_patterns.extend(flat_patterns);
+        Ok((into, occurrences))
     }
 
     fn copy_appearances(
@@ -336,6 +438,21 @@ impl DocState {
         same_document: bool,
     ) -> Result<HashMap<ParamId, ParamId>, ModelError> {
         let table = source.parameters.table();
+        let mut independent: BTreeSet<ParamId> = features
+            .iter()
+            .filter(|f| matches!(f.def, FeatureDef::SheetRules(_)))
+            .flat_map(|f| f.def.params())
+            .collect();
+        let mut rule_params: Vec<_> = independent.iter().copied().collect();
+        while let Some(id) = rule_params.pop() {
+            if let Some(p) = table.get(id) {
+                for dependency in p.dependencies() {
+                    if independent.insert(*dependency) {
+                        rule_params.push(*dependency);
+                    }
+                }
+            }
+        }
         let mut needed: BTreeSet<ParamId> = features.iter().flat_map(|f| f.def.params()).collect();
         let mut todo: Vec<ParamId> = needed.iter().copied().collect();
         while let Some(id) = todo.pop() {
@@ -359,7 +476,7 @@ impl DocState {
                 .owner(id)
                 .and_then(|o| uids.get(&o))
                 .copied();
-            if owner.is_none() && same_document {
+            if owner.is_none() && same_document && !independent.contains(&id) {
                 map.insert(id, id);
                 continue;
             }
@@ -419,6 +536,7 @@ struct CopyReferences<'a> {
     prefix: &'a [OccurrenceUid],
     occurrences: &'a HashMap<OccurrenceUid, OccurrenceUid>,
     uids: &'a HashMap<FeatureUid, FeatureUid>,
+    same_document: bool,
 }
 
 impl CopyReferences<'_> {
@@ -487,6 +605,127 @@ impl CopyReferences<'_> {
         component: ComponentUid,
     ) -> Result<(), ModelError> {
         match (copy, original) {
+            (FeatureDef::PatternAtPoints(copy), FeatureDef::PatternAtPoints(original)) => {
+                for (to, from) in copy
+                    .targets
+                    .iter_mut()
+                    .chain(copy.anchor.iter_mut())
+                    .zip(original.targets.iter().chain(original.anchor.iter()))
+                {
+                    if let Some(path) = &from.occurrence {
+                        if let Some(mapped) = self.path(path) {
+                            to.occurrence = Some(mapped);
+                        } else {
+                            *to = from.clone();
+                        }
+                    }
+                }
+                copy.context = Some(OccurrencePath(
+                    crate::links::first_path(self.destination, component, None).map_err(invalid)?,
+                ));
+                if let (
+                    crate::features::PatternObjects::Components { occurrences: to },
+                    crate::features::PatternObjects::Components { occurrences: from },
+                ) = (&mut copy.objects, &original.objects)
+                {
+                    *to = from
+                        .iter()
+                        .map(|p| self.path(p).unwrap_or_else(|| p.clone()))
+                        .collect();
+                }
+            }
+            (FeatureDef::Extrude(copy), FeatureDef::Extrude(original)) => {
+                if let Some(original) = &original.cut_scope {
+                    use crate::features::extrude_scope::{
+                        BodyTarget, ComponentTarget, TargetScope,
+                    };
+                    let target = |t: &ComponentTarget| -> Result<ComponentTarget, ModelError> {
+                        match self.path(&t.occurrence) {
+                            Some(path) => Ok(ComponentTarget {
+                                component: crate::joints::path_component(
+                                    self.destination,
+                                    ComponentUid::ROOT,
+                                    &path.0,
+                                )
+                                .map_err(invalid)?,
+                                occurrence: path,
+                            }),
+                            None if self.same_document => Ok(t.clone()),
+                            None => Err(invalid(
+                                "cannot copy an assembly cut target outside the inserted component",
+                            )),
+                        }
+                    };
+                    let mut scope = original.clone();
+                    let source_component = crate::joints::path_component(
+                        self.source,
+                        ComponentUid::ROOT,
+                        &original.context.occurrence.0,
+                    )
+                    .map_err(invalid)?;
+                    if source_component != original.context.component {
+                        return Err(invalid(
+                            "cannot copy an assembly cut whose source context no longer resolves",
+                        ));
+                    }
+                    let preferred = self.path(&original.context.occurrence);
+                    scope.context = ComponentTarget {
+                        component,
+                        occurrence: OccurrencePath(
+                            crate::links::first_path(
+                                self.destination,
+                                component,
+                                preferred.as_ref().map(|p| p.0.as_slice()),
+                            )
+                            .map_err(invalid)?,
+                        ),
+                    };
+                    let bodies = original
+                        .excluded_bodies()
+                        .iter()
+                        .map(|b| {
+                            let mapped = target(&ComponentTarget {
+                                component: b.component,
+                                occurrence: b.occurrence.clone(),
+                            })?;
+                            let body = if self.path(&b.occurrence).is_some() {
+                                self.body(b.body)
+                            } else {
+                                b.body
+                            };
+                            Ok(BodyTarget {
+                                component: mapped.component,
+                                occurrence: mapped.occurrence,
+                                body,
+                            })
+                        })
+                        .collect::<Result<Vec<_>, ModelError>>()?;
+                    let targets = original
+                        .stored_targets()
+                        .iter()
+                        .map(target)
+                        .collect::<Result<Vec<_>, _>>()?;
+                    scope.targets = match &original.targets {
+                        TargetScope::Automatic { .. } => TargetScope::Automatic {
+                            excluded: targets,
+                            excluded_bodies: bodies,
+                        },
+                        TargetScope::Explicit { .. } => TargetScope::Explicit {
+                            included: targets,
+                            excluded_bodies: bodies,
+                        },
+                    };
+                    copy.cut_scope = Some(scope);
+                }
+                // The objects on other components' bodies (mitcad#104):
+                // as a sweep's.
+                copy.object_links.clear();
+                for (body, link) in &original.object_links {
+                    let (link, internal) = self.link(link, component)?;
+                    let mapped = if internal { self.body(*body) } else { *body };
+                    copy.object_links.insert(mapped, link);
+                }
+            }
             (FeatureDef::Combine(copy), FeatureDef::Combine(original)) => {
                 let mut tools = HashMap::new();
                 copy.tool_links.clear();
@@ -511,6 +750,15 @@ impl CopyReferences<'_> {
                     let (link, internal) = self.link(link, component)?;
                     let mapped = if internal { self.body(*body) } else { *body };
                     copy.body_links.insert(mapped, link);
+                }
+            }
+            // A split's tool bodies of other components: as a sweep's.
+            (FeatureDef::SplitBody(copy), FeatureDef::SplitBody(original)) => {
+                copy.tool_links.clear();
+                for (body, link) in &original.tool_links {
+                    let (link, internal) = self.link(link, component)?;
+                    let mapped = if internal { self.body(*body) } else { *body };
+                    copy.tool_links.insert(mapped, link);
                 }
             }
             (FeatureDef::Sketch(copy), FeatureDef::Sketch(original)) => {
@@ -810,6 +1058,7 @@ mod tests {
             prefix: &prefix,
             occurrences: &HashMap::new(),
             uids: &HashMap::new(),
+            same_document: false,
         };
         let (link, internal) = references.link(&OccurrenceLink::default(), copy).unwrap();
         assert!(internal);

@@ -97,6 +97,9 @@ pub(crate) enum EqKind {
     /// Signed distance of `p` from the line `a b` (positive on the left)
     /// minus `side * value`.
     PointLine { p: P, a: P, b: P, side: f64 },
+    /// Signed distance of the centre `c` from the line `a b` minus
+    /// `side * (r + value)`: the gap between the circle and the line.
+    CircleLine { c: P, r: Rad, a: P, b: P, side: f64 },
     /// Signed distance of the midpoint of `b1 b2` from the line `a1 a2`
     /// minus `side * value`.
     LineLine {
@@ -242,6 +245,9 @@ impl EqKind {
             Distance { p, q } => pt(x, *q).sub(pt(x, *p)).norm() - T::cst(value),
             PointLine { p, a, b, side } => {
                 sdist(pt(x, *p), pt(x, *a), pt(x, *b)) - T::cst(side * value)
+            }
+            CircleLine { c, r, a, b, side } => {
+                sdist(pt(x, *c), pt(x, *a), pt(x, *b)) - (rad(x, r) + T::cst(value)).mulf(*side)
             }
             LineLine {
                 a1,
@@ -467,6 +473,13 @@ mod tests {
                 a: [2, 3],
                 b: [4, 5],
                 side: 1.0,
+            },
+            EqKind::CircleLine {
+                c: [0, 1],
+                r: Rad::Param(12),
+                a: [2, 3],
+                b: [4, 5],
+                side: -1.0,
             },
             EqKind::LineLine {
                 a1: [0, 1],

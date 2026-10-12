@@ -137,14 +137,19 @@ void test_taper() {
   spec.side1.taper = 1.5;
   CHECK(throws_with([&] { extrude_feature(spec); }, "between -85 and 85"));
 
-  // A taper that shrinks an arc to nothing closes the profile (OCCT's
-  // draft would intersect the cones past their apex, endlessly at times):
-  // a circle of radius 5 leaning in by 20 degrees over 20 mm, and a hole
-  // of radius 5 that a widening taper closes.
+  // A taper that shrinks a circle to nothing before the end of the
+  // extrusion ends in the apex of the cone: a circle of radius 5 leaning in
+  // by 20 degrees over 20 mm (OCCT's draft would intersect the cone past
+  // its apex, endlessly at times). A hole of radius 5 that a widening taper
+  // closes is not a solid's outline, and stays an error.
   const double twenty = 20.0 * kPi / 180.0;
   spec = spec_of({circle(1, 0, 0, 5)}, 20);
   spec.side1.taper = -twenty;
-  CHECK(throws_with([&] { extrude_feature(spec); }, "closes the profile"));
+  const ShapePtr cone = extrude_feature(spec);
+  const double apex = 5.0 / std::tan(twenty);
+  CHECK(near(volume(*cone), kPi * 25 * apex / 3.0, 1e-6));
+  CHECK(cone->face_count() == 2 && faces_named(*cone, "F2:side(c1)") == 1);
+  CHECK(faces_named(*cone, "F2:start(r{c1})") == 1 && near(bounding_box(*cone).max.Z(), apex, 1e-6));
   spec.side1.distance = 10;
   CHECK(near(volume(*extrude_feature(spec)), kPi * 10 / 3 * (25 + 5 * (5 - 10 * std::tan(twenty)) +
                                                               std::pow(5 - 10 * std::tan(twenty), 2))));
@@ -153,6 +158,63 @@ void test_taper() {
   spec = spec_of({ring}, 20);
   spec.side1.taper = twenty;
   CHECK(throws_with([&] { extrude_feature(spec); }, "closes the profile"));
+}
+
+// A regular hexagon of circumradius r about (0, 0), lines c1..c6.
+Region hexagon(double r) {
+  Region region;
+  region.name = "r{c1[c6,c2],c2[c1,c3],c3[c2,c4],c4[c3,c5],c5[c4,c6],c6[c5,c1]}";
+  region.loops.emplace_back();
+  for (int i = 0; i < 6; ++i) {
+    const double a = kPi / 3.0 * i;
+    const double b = kPi / 3.0 * (i + 1);
+    Segment line;
+    line.name = "c" + std::to_string(i + 1);
+    line.kind = SegmentKind::Line;
+    line.start = gp_Pnt2d(r * std::cos(a), r * std::sin(a));
+    line.end = gp_Pnt2d(r * std::cos(b), r * std::sin(b));
+    region.loops.front().segments.push_back(line);
+  }
+  return region;
+}
+
+void test_taper_closing_profile() {
+  // A taper that leans the plane sides in until they meet ends the solid
+  // there: a hexagon with sides leaning in by 85 degrees closes into a
+  // pyramid whose apex is at (apothem / tan 85) from the start, well within
+  // the 10 mm asked for. OCCT's draft cannot build it.
+  const double eighty_five = 85.0 * kPi / 180.0;
+  const double apothem = 1.25;
+  const double r = apothem / std::cos(kPi / 6.0);
+  const double depth = apothem / std::tan(eighty_five);
+  ExtrudeFeatureSpec spec = spec_of({hexagon(r)}, 10);
+  spec.side1.taper = -eighty_five;
+  const ShapePtr pyramid = extrude_feature(spec);
+  const double hexagon_area = 3.0 * std::sqrt(3.0) / 2.0 * r * r;
+  CHECK(near(volume(*pyramid), hexagon_area * depth / 3.0, 1e-6));
+  CHECK(pyramid->face_count() == 7);
+  for (int i = 0; i < 6; ++i) {
+    CHECK(faces_named(*pyramid, "F2:side(c" + std::to_string(i + 1) + ")") == 1);
+  }
+  CHECK(faces_named(*pyramid, "F2:start(" + hexagon(r).name + ")") == 1);
+  CHECK(faces_named(*pyramid, "F2:end(" + hexagon(r).name + ")") == 0);
+  CHECK(edge_names_unique(*pyramid));
+  const BoundingBox box = bounding_box(*pyramid);
+  CHECK(near(box.max.Z(), depth, 1e-6) && near(box.min.Z(), 0.0));
+
+  // A rectangle closes into a roof with a ridge: 40 x 20, leaning in by 45
+  // degrees, closes after 10 mm into a ridge of 20 mm.
+  spec = spec_of({rectangle(1, 0, 0, 40, 20)}, 15);
+  spec.side1.taper = -kPi / 4.0;
+  const ShapePtr roof = extrude_feature(spec);
+  CHECK(near(volume(*roof), 8000.0 - 6000.0 + 4000.0 / 3.0, 1e-6));
+  CHECK(roof->face_count() == 5 && edge_names_unique(*roof));
+  CHECK(near(bounding_box(*roof).max.Z(), 10.0, 1e-6));
+
+  // Not closing within the length: the ordinary draft, with its far cap.
+  spec.side1.distance = 8;
+  const ShapePtr frustum_solid = extrude_feature(spec);
+  CHECK(frustum_solid->face_count() == 6 && face_at_z(*frustum_solid, end_cap("F2", 1), 8));
 }
 
 void test_thin() {
@@ -314,6 +376,17 @@ void test_to_body_from_inside() {
   CHECK(near(volume(*partly), 10 * 20 * 5 + 10 * 20 * 25));
   CHECK(near(bounding_box(*partly).min.Z(), 0) && near(bounding_box(*partly).max.Z(), 25));
 
+  // Through the body from there: each part runs to the body's far side, the
+  // part outside the step from above it and the part inside the step from
+  // within it, both to z = 0.
+  ExtrudeFeatureSpec through_spec = across;
+  Target through_body = first;
+  through_body.through = true;
+  through_spec.side1.target = through_body;
+  const ShapePtr through_all_parts = extrude_feature(through_spec);
+  CHECK(near(volume(*through_all_parts), 20 * 20 * 25));
+  CHECK(near(bounding_box(*through_all_parts).min.Z(), 0));
+
   // On a face: the same square on the step's top (z = 30), down: 10 mm to
   // the lower top beside the step, 30 mm through the step.
   across.frame.origin = gp_Pnt(0, 0, 30);
@@ -382,6 +455,7 @@ void extrude_feature_tests() {
   guarded("test_two_sides_and_symmetric", test_two_sides_and_symmetric);
   guarded("test_start", test_start);
   guarded("test_taper", test_taper);
+  guarded("test_taper_closing_profile", test_taper_closing_profile);
   guarded("test_thin", test_thin);
   guarded("test_to_planes", test_to_planes);
   guarded("test_to_faces_and_bodies", test_to_faces_and_bodies);

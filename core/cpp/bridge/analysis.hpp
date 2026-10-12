@@ -91,6 +91,7 @@ rust::Vec<bool> analysis_points_inside(const geometry::Shape& shape, rust::Slice
 // the fraction along it and -1 where it enters the material, +1 where it
 // leaves, in order along it.
 rust::Vec<double> analysis_segment_crossings(const geometry::Shape& shape, rust::Slice<const double> segment);
+rust::Vec<double> analysis_segments_crossings(const geometry::Shape& shape, rust::Slice<const double> segments);
 
 // The number of distinct faces of the shape.
 std::size_t analysis_face_count(const geometry::Shape& shape);

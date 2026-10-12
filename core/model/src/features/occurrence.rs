@@ -82,6 +82,16 @@ impl<K: Kernel> Evaluate<K> for ComponentFromBodiesDef {
             changes.push(BodyChange::Set(*body, ctx.body(*body)?));
         }
         Ok(FeatureOutput {
+            sheets: self
+                .bodies
+                .iter()
+                .map(|b| {
+                    (
+                        *b,
+                        crate::sheet::SheetChange::Transform(Transform::IDENTITY),
+                    )
+                })
+                .collect(),
             changes,
             ..FeatureOutput::default()
         })

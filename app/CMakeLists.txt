@@ -25,16 +25,24 @@ qt_add_executable(mitcad
   browser/ParametersDialog.hpp
   browser/TimelineWidget.cpp
   browser/TimelineWidget.hpp
+  browser/TimelineSearch.cpp
+  browser/TimelineSearch.hpp
   # The command framework (COMMANDS.md).
   framework/Appearances.cpp
   framework/Appearances.hpp
+  framework/AutoselectPanel.cpp
+  framework/AutoselectPanel.hpp
   framework/ChromeStyle.cpp
   framework/ChromeStyle.hpp
   framework/Command.cpp
   framework/Command.hpp
   framework/CommandPresenter.hpp
+  framework/CommandMessage.cpp
+  framework/CommandMessage.hpp
   framework/CommandPanel.cpp
   framework/CommandPanel.hpp
+  framework/CutTargetsPanel.cpp
+  framework/CutTargetsPanel.hpp
   framework/CommandRegistry.cpp
   framework/CommandRegistry.hpp
   framework/CommandSearch.cpp
@@ -85,10 +93,13 @@ qt_add_executable(mitcad
   MainWindowJoints.cpp
   commands/MoveCommands.cpp
   commands/PatternCommands.cpp
+  commands/PointPatternCommands.cpp
   commands/PrimitiveCommands.cpp
   commands/SketchCommands.cpp
   commands/SweepCommands.cpp
   # Sketch mode (U2).
+  sketch/AutoConstraint.cpp
+  sketch/AutoConstraint.hpp
   sketch/DrawTools.cpp
   sketch/EditTools.cpp
   sketch/SketchController.cpp
@@ -108,6 +119,7 @@ qt_add_executable(mitcad
   # The View menu, display settings and dialogs (U5).
   view/ViewController.cpp
   view/ViewController.hpp
+  view/ViewNavigation.hpp
   # The File menu: import and export (U6).
   files/FileDialogs.cpp
   files/FileDialogs.hpp
@@ -246,7 +258,12 @@ qt_add_executable(mitcad
   projects/ProjectPicker.hpp
   # Hybrid assemblies: moving the root's features into a component (mitcad#171).
   framework/HybridAssembly.cpp
-  framework/HybridAssembly.hpp)
+  framework/MoveToComponentDialog.cpp
+  framework/HybridAssembly.hpp
+  # Sheet metal: its command group, browser rows and Flat Pattern export
+  # (mitcad#210).
+  commands/SheetCommands.cpp
+  MainWindowSheet.cpp)
 
 # Toolbar and command icons (own drawings, MIT), rendered with Qt SVG.
 file(GLOB MITCAD_ICONS RELATIVE "${CMAKE_CURRENT_SOURCE_DIR}" CONFIGURE_DEPENDS icons/*.svg)
@@ -418,10 +435,33 @@ if(BUILD_TESTING)
   target_sources(test_app PRIVATE files/CloudAddress.cpp files/CloudAddress.hpp)
   # Atomic autosave generations through normal recovery (mitcad#110).
   target_sources(test_app PRIVATE tests/autosave.cpp files/AutosaveFiles.cpp files/Recovery.cpp framework/Dialogs.cpp)
+  # The timeline search's words and filters (mitcad#179): plain Qt Core.
+  target_sources(test_app PRIVATE browser/TimelineSearch.cpp browser/TimelineSearch.hpp)
+  # The command panel's message within narrow panels (mitcad#198): plain Qt
+  # Widgets.
+  target_sources(test_app PRIVATE tests/command_message.cpp framework/CommandMessage.cpp framework/CommandMessage.hpp)
+  # Explicit move destinations and cancellation (mitcad#201): modal Qt Widgets.
+  target_sources(test_app PRIVATE tests/move_to_component.cpp framework/MoveToComponentDialog.cpp)
+  # Persistent assembly-cut exclusions and preview-fed checklist (mitcad#200).
+  target_sources(test_app PRIVATE tests/cut_targets.cpp framework/CutTargetsPanel.cpp framework/CutTargetsPanel.hpp)
+  # The sketch's auto constraints while drawing (mitcad#189): plain Qt Core
+  # and plane geometry.
+  target_sources(test_app PRIVATE sketch/AutoConstraint.cpp sketch/AutoConstraint.hpp sketch/SketchGeometry.cpp)
+  # Selection inputs' entries: a click toggles one per region (mitcad#199):
+  # plain Qt Core.
+  target_sources(test_app PRIVATE framework/Selection.cpp framework/Selection.hpp)
+  # Solid-mode profile groups share the actual selection and an independent hover.
+  target_sources(test_app PRIVATE tests/autoselect.cpp framework/AutoselectPanel.cpp framework/AutoselectPanel.hpp)
+  # When a navigation of the view ends (mitcad#214): plain C++.
+  target_sources(test_app PRIVATE view/ViewNavigation.hpp)
+  # Where an orthographic render's camera stands (mitcad#215): plain C++.
+  target_sources(test_app PRIVATE render/RenderCamera.hpp)
   target_include_directories(test_app PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
   target_link_libraries(test_app PRIVATE Qt6::Widgets Qt6::Svg mitcad_warnings)
   add_test(NAME app.unit COMMAND test_app)
-  set_tests_properties(app.unit PROPERTIES
+  # Check renderer device policy and fallback independently of UI helpers.
+  add_test(NAME app.render_devices COMMAND test_app --render-devices)
+  set_tests_properties(app.unit app.render_devices PROPERTIES
     ENVIRONMENT "QT_QPA_PLATFORM=offscreen"
     ENVIRONMENT_MODIFICATION "PATH=path_list_prepend:$<TARGET_FILE_DIR:Qt6::Core>")
 endif()
@@ -514,6 +554,18 @@ if(MITCAD_CYCLES_KERNELS)
             "$<TARGET_FILE_DIR:mitcad-render>/cycles/lib/"
     VERBATIM)
 endif()
+# Metal needs the complete source hierarchy at run time, not the flat
+# compiled-kernel directory above. Keep the build bundle and installed
+# bundle identical; the manifest also causes a relink/copy after a rebuild
+# of the dependency prefix changes a runtime source file.
+if(APPLE)
+  set_property(TARGET mitcad-render APPEND PROPERTY LINK_DEPENDS "${MITCAD_CYCLES_RUNTIME}/source.sha256")
+  add_custom_command(TARGET mitcad-render POST_BUILD
+    COMMAND "${CMAKE_COMMAND}" -E rm -rf "$<TARGET_FILE_DIR:mitcad-render>/../Resources/cycles"
+    COMMAND "${CMAKE_COMMAND}" -E copy_directory "${MITCAD_CYCLES_RUNTIME}"
+            "$<TARGET_FILE_DIR:mitcad-render>/../Resources/cycles"
+    VERBATIM)
+endif()
 # On Windows Open Image Denoise's DLLs next to it (vcpkg's come with
 # vcpkg's applocal step).
 if(MITCAD_OIDN_DLLS)
@@ -549,6 +601,11 @@ if(BUILD_TESTING)
   set_tests_properties(app.render_worker_device_failure PROPERTIES
     ENVIRONMENT "MITCAD_RENDER_TEST_DEVICE_FAILURE=simulated device failure"
     PASS_REGULAR_EXPRESSION "render-fallback Rendering on the CPU: .* failed \\(simulated device failure\\).*render-bench 64x48 samples 2.*render-device CPU")
+  # Open Image Denoise's own view of the GPUs (mitcad#202): its devices,
+  # then a line per GPU (none without one).
+  add_test(NAME app.render_worker_probe_denoiser COMMAND mitcad-render --probe-denoiser)
+  set_tests_properties(app.render_worker_probe_denoiser PROPERTIES
+    PASS_REGULAR_EXPRESSION "render-denoiser-probe Open Image Denoise [0-9.]+ finds: [^\r\n]*CPU")
   # The best GPU against the CPU: the same test scene, images close to each
   # other (8-bit sRGB: mean difference, 99th percentile). Skipped without a
   # GPU device (a machine without one, or a build without GPU devices).
@@ -557,15 +614,27 @@ if(BUILD_TESTING)
                    --output "${CMAKE_CURRENT_BINARY_DIR}/render-worker-gpu-test.png")
   set_tests_properties(app.render_worker_gpu PROPERTIES SKIP_RETURN_CODE 77
     PASS_REGULAR_EXPRESSION "render-compare (CUDA|OPTIX|HIP|METAL|ONEAPI) ")
+  # Check completed denoising independently of render-device capabilities.
+  if(APPLE)
+    foreach(mode cpu failure cpu_previews failure_previews metal previews)
+      add_test(NAME app.render_denoiser_${mode}
+        COMMAND "${CMAKE_COMMAND}" "-DWORKER=$<TARGET_FILE:mitcad-render>" "-DMODE=${mode}"
+                -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/render-denoiser-test.cmake")
+      set_tests_properties(app.render_denoiser_${mode} PROPERTIES
+        TIMEOUT 220 SKIP_REGULAR_EXPRESSION "SKIP: Metal OIDN unavailable")
+    endforeach()
+  endif()
   # Each takes seconds; a hung GPU (mitcad#146) fails them in two minutes,
   # not at ctest's default of 25.
   set_tests_properties(app.render_worker app.render_updates app.render_worker_environment
                        app.render_worker_fallback app.render_worker_device_failure app.render_worker_gpu
+                       app.render_worker_probe_denoiser
     PROPERTIES TIMEOUT 120)
   # On Windows the worker finds Qt's DLLs through PATH, as app.unit does.
   if(WIN32)
     set_tests_properties(app.render_worker app.render_updates app.render_worker_environment
                          app.render_worker_fallback app.render_worker_device_failure app.render_worker_gpu
+                         app.render_worker_probe_denoiser
       PROPERTIES ENVIRONMENT_MODIFICATION "PATH=path_list_prepend:$<TARGET_FILE_DIR:Qt6::Core>")
   endif()
 endif()

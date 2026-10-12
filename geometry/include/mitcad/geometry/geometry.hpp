@@ -33,3 +33,5 @@
 #include "mitcad/geometry/loft.hpp"
 #include "mitcad/geometry/path_sweep.hpp"
 #include "mitcad/geometry/rib.hpp"
+// Sheet material construction (mitcad#206).
+#include "mitcad/geometry/sheet.hpp"

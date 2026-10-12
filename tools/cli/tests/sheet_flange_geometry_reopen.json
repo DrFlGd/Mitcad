@@ -1,0 +1,12 @@
+[
+  {"comment":"SPDX-License-Identifier: MIT. Reopen the analytic L flange and rebuild after a rule edit."},
+  {"expect":{"feature":"F4","status":"ok","bodies":1}},
+  {"expect":{"body":"F3.b0","volume":2051.3274122871835,"min":[-30,0,-2],"max":[5,20,18]}},
+  {"expect":{"query":{"query":"sheet_state","body":"F3.b0"},"result":{"body":"F3.b0","owner":"C0","rules":"F1","status":"valid"}}},
+  {"expect":{"body":"F3.b0","has_face":"F3:sheet_front(0)"}},
+  {"cmd":"edit_feature","uid":"F1","def":{"type":"sheet_rules","thickness":2,"bend_radius":4,"allowance":{"type":"k_factor","k":0.3},"reference_side":"back","bend_relief":{"type":"rectangular","width":2,"depth":3},"corner_relief":{"type":"round","width":2,"depth":3}}},
+  {"expect":{"body":"F3.b0","volume":2074.159265358979,"min":[-30,0,-2],"max":[5,20,19]}},
+  {"cmd":"undo"},
+  {"expect":{"body":"F3.b0","volume":2051.3274122871835,"min":[-30,0,-2],"max":[5,20,18]}},
+  {"expect":{"query":{"query":"sheet_state","body":"F3.b0"},"result":{"body":"F3.b0","owner":"C0","rules":"F1","status":"valid"}}}
+]

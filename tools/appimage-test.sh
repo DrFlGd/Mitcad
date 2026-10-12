@@ -18,7 +18,10 @@
 #   2b. The render worker mitcad-render: its libraries and their
 #      licences are in it, mitcad links none of them, and View > Rendered
 #      renders the demo block with them (on the GPU, with the AppImage's
-#      kernels, when the worker has a CUDA device; mitcad#50).
+#      kernels, when the worker has a CUDA device; mitcad#50). A release
+#      build (mitcad#202: configured with MITCAD_RENDER_REQUIRED_DEVICES
+#      naming CUDA, or --require-cuda) fails without the CUDA kernels and
+#      cuew's licence, whether or not this machine has a GPU.
 #   3. The automatic update (docs/updates.md): the AppImage, taking itself
 #      for 0.0.0 (MITCAD_TEST_VERSION), finds a release whose manifest signs
 #      this AppImage as the linux-x64 download (mitcad-release, with a key
@@ -29,20 +32,33 @@
 #      name) and starts as the release, which reports the update.
 # Without a working FUSE the AppImage runs with APPIMAGE_EXTRACT_AND_RUN=1.
 #
-# Usage: tools/appimage-test.sh [--skip-stale] <AppImage> [<built mitcad>] [<mitcad-release>]
+# Usage: tools/appimage-test.sh [--skip-stale] [--require-cuda] <AppImage> [<built mitcad>] [<mitcad-release>]
 #   --skip-stale (the ctest app.appimage): exit 77, skipped, when there is
 #   no AppImage newer than the built mitcad.
+#   --require-cuda: the AppImage must have the CUDA kernels; implied when
+#   the built mitcad's build folder (its CMakeCache.txt) requires CUDA.
 # The release tool defaults to build/dev/core/mitcad-release.
 
 SKIP_STALE=0
-if [ "${1:-}" = --skip-stale ]; then
-  SKIP_STALE=1
+REQUIRE_CUDA=0
+while [ $# -gt 0 ]; do
+  case $1 in
+    --skip-stale) SKIP_STALE=1 ;;
+    --require-cuda) REQUIRE_CUDA=1 ;;
+    *) break ;;
+  esac
   shift
-fi
-IMAGE=${1:?usage: tools/appimage-test.sh [--skip-stale] <AppImage> [<built mitcad>] [<mitcad-release>]}
+done
+IMAGE=${1:?usage: tools/appimage-test.sh [--skip-stale] [--require-cuda] <AppImage> [<built mitcad>] [<mitcad-release>]}
 BUILT=${2:-}
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 RELEASE_TOOL=${3:-$ROOT/build/dev/core/mitcad-release}
+# The build folder of the built mitcad (<build>/app/mitcad): a release
+# configure asks for CUDA there (cmake/Render.cmake).
+if [ -n "$BUILT" ] && grep -qE '^MITCAD_RENDER_REQUIRED_DEVICES:[A-Z]+=.*\bCUDA\b' \
+  "$(dirname "$BUILT")/../CMakeCache.txt" 2> /dev/null; then
+  REQUIRE_CUDA=1
+fi
 if [ "$SKIP_STALE" = 1 ] && { [ ! -f "$IMAGE" ] || { [ -n "$BUILT" ] && [ "$IMAGE" -ot "$BUILT" ]; }; }; then
   echo "SKIP: no AppImage of this build; run: cmake --build --preset dev --target appimage"
   exit 77
@@ -116,6 +132,17 @@ if env -i /usr/bin/ldd "$DIR/usr/bin/mitcad" | grep -E "$render_libraries"; then
   ui_fail "mitcad links the renderer's libraries"
 fi
 echo "ok   the render worker mitcad-render, its libraries and their licences; mitcad links none of them"
+# The CUDA kernels (mitcad#202): a release must have them, with cuew's
+# licence, whatever this machine's GPU.
+CUBINS=$(compgen -G "$DIR/usr/lib/mitcad/cycles/lib/kernel_sm_*.cubin.zst" | wc -l)
+if [ "$CUBINS" -gt 0 ]; then
+  [ -e "$DIR/usr/share/doc/mitcad/licenses/cycles/cuew-license.txt" ] || ui_fail "the AppImage has CUDA kernels but no cuew licence"
+  echo "ok   $CUBINS CUDA kernels ($(du -ch "$DIR"/usr/lib/mitcad/cycles/lib/* | tail -1 | cut -f1)) and cuew's licence"
+elif [ "$REQUIRE_CUDA" = 1 ]; then
+  ui_fail "a release AppImage without CUDA kernels (usr/lib/mitcad/cycles/lib/kernel_sm_*.cubin.zst)"
+else
+  echo "note no CUDA kernels (a renderer without its CUDA device)"
+fi
 
 elves=0
 glibc=0
@@ -221,9 +248,9 @@ echo "ok   rendered ($(grep -oE "Render view [0-9]+: $MITCAD_RENDER_SAMPLES samp
 # The render device (mitcad#50): with a GPU build on a machine with a
 # GPU, the automatic choice renders on it with the AppImage's kernels.
 device=$(grep -o "Render device: .*" "$UI_LOG" | tail -1)
-if "$DIR/usr/bin/mitcad-render" --list-devices 2> /dev/null | grep -q '"type":"CUDA"'; then
-  compgen -G "$DIR/usr/lib/mitcad/cycles/lib/kernel_*.cubin.zst" > /dev/null ||
-    ui_fail "the worker has a CUDA device but the AppImage no kernels"
+# The running AppImage's worker (section 1's extracted copy is gone).
+if env -i PATH=/usr/bin:/bin "$appdir/usr/bin/mitcad-render" --list-devices 2> /dev/null | grep -q '"type":"CUDA"'; then
+  [ "$CUBINS" -gt 0 ] || ui_fail "the worker has a CUDA device but the AppImage no kernels"
   grep -q "(CUDA) (asked for auto)" <<< "$device" || ui_fail "the AppImage's worker did not render on the GPU: $device"
 fi
 echo "ok   ${device:-no render device logged}"

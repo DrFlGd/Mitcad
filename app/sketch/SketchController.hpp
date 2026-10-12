@@ -23,6 +23,7 @@
 #include <QVector>
 
 #include "../framework/CommandSession.hpp"
+#include "AutoConstraint.hpp"
 #include "SketchModel.hpp"
 #include "SketchSnap.hpp"
 
@@ -31,6 +32,7 @@ class QLineEdit;
 namespace mitcad {
 
 class OcctViewer;
+class CommandRegistry;
 
 // What sketch mode needs from the main window besides a command host.
 class SketchHost : public CommandHost {
@@ -113,7 +115,7 @@ class SketchController : public QObject {
   Q_OBJECT
 
 public:
-  SketchController(SketchHost& host, OcctViewer& viewer, QObject* parent = nullptr);
+  SketchController(SketchHost& host, OcctViewer& viewer, CommandRegistry& registry, QObject* parent = nullptr);
   ~SketchController() override;
 
   // --- Sketch mode
@@ -170,6 +172,32 @@ public:
   // it (on its normal's side), so that the sketch is not hidden.
   bool hideAbove() const { return m_hideAbove; }
   void setHideAbove(bool on);
+
+  // --- Auto constraints while drawing (mitcad#189): the session of the
+  // active drawing tool, which the palette's Auto constraint section shows.
+  const AutoConstraintSession& autoConstraints() const { return m_auto; }
+  void setAutoLink(AutoConstraintSession::Link link);
+  void setAutoConstraint(const QString& type, bool on);
+  // The session's reference among the entities that still exist; empty
+  // before the first entity (or when undo took them all back).
+  QString autoReference() const;
+  // Whether the palette shows the Auto constraint section: a tool that
+  // takes auto constraints has drawn an entity that still exists.
+  bool autoConstraintsShown() const;
+  // The reference and the checked types, when the next entity gets any.
+  std::optional<AutoPlan> autoPlan() const;
+  // The pointer is over the palette's section: the reference is
+  // highlighted.
+  void setAutoHover(bool on);
+  bool autoHover() const { return m_autoHover; }
+  // Adds the checked constraints between the reference and the entity
+  // `made` in `op`. When some are refused, asks whether to keep the entity
+  // with the others: false when the user cancels (the caller then rolls
+  // back `op`).
+  bool applyAutoConstraints(SketchOp& op, const QString& made, const QString& what);
+  // A drawing tool made `made` (after its op's commit): the session's new
+  // last entity.
+  void recordAutoEntity(const QString& made);
 
   // --- For tools and the overlay
   SketchHost& host() { return m_host; }
@@ -234,6 +262,8 @@ signals:
   // The option toggles changed.
   void optionsChanged();
   void toolChanged(const QString& name);
+  // The auto constraint session changed: a new tool, a choice, an entity.
+  void autoConstraintsChanged();
 
 protected:
   bool eventFilter(QObject* watched, QEvent* event) override;
@@ -266,6 +296,7 @@ private:
   int fieldIndex(const QString& id) const;
   QString describeStatus() const;
 
+  CommandRegistry& m_registry;
   SketchHost& m_host;
   OcctViewer& m_viewer;
   QString m_uid;
@@ -286,6 +317,10 @@ private:
   bool m_showConstraints = true;
   bool m_showProfiles = true;
   bool m_hideAbove = false;
+
+  AutoConstraintSession m_auto;
+  bool m_autoHover = false;
+  mutable QString m_autoTarget; // the reference last logged as a target
 
   Snap m_snap;
   QPointF m_cursor;

@@ -62,8 +62,8 @@ void CommandRegistry::createActions(QWidget* owner,
     action->setShortcutContext(Qt::WindowShortcut);
     owner->addAction(action);
     m_actions.insert(id, action);
-    applyShortcut(*def, shortcut(id));
   }
+  refreshShortcuts();
 }
 
 QKeySequence CommandRegistry::defaultShortcut(const QString& id) const {
@@ -79,36 +79,85 @@ QKeySequence CommandRegistry::shortcut(const QString& id) const {
   return defaultShortcut(id);
 }
 
-void CommandRegistry::setShortcut(const QString& id, const QKeySequence& sequence) {
-  const CommandDef* def = find(id);
-  if (def == nullptr) {
-    return;
+ShortcutBinding CommandRegistry::binding(const CommandDef& def, const QKeySequence& primary) const {
+  unsigned contexts = def.mode == CommandDef::Mode::Sketch ? SketchShortcutContext : ModelShortcutContext;
+  if (def.mode == CommandDef::Mode::Any) contexts = ModelShortcutContext | SketchShortcutContext;
+  if (def.mode == CommandDef::Mode::Model && def.kind == CommandDef::Kind::Feature) {
+    // Keep this in step with MainWindow::isAvailable(): Extrude/Revolve can
+    // finish a sketch and start a feature, unlike model Move/Copy.
+    const InputDef* input = def.primarySelection();
+    if (input != nullptr && input->filter.testFlag(SelectKind::Profile)) contexts |= SketchShortcutContext;
   }
-  QSettings settings;
-  if (sequence == def->shortcut) {
-    settings.remove(settingsKey(id));
-  } else {
-    settings.setValue(settingsKey(id), sequence.toString(QKeySequence::PortableText));
-  }
-  applyShortcut(*def, sequence);
+  if (def.duringCommands) contexts |= CommandShortcutContext;
+  return {def.id, def.name, contexts, primary, def.shortcut, def.alternates, false};
 }
 
-void CommandRegistry::applyShortcut(const CommandDef& def, const QKeySequence& sequence) {
+QList<QKeySequence> CommandRegistry::effectiveShortcuts(const QString& id,
+                                                        const QKeySequence& primary) const {
+  const CommandDef* def = find(id);
+  return def != nullptr ? binding(*def, primary).effectiveKeys() : QList<QKeySequence>();
+}
+
+QList<QKeySequence> CommandRegistry::effectiveShortcuts(const QString& id) const {
+  return m_disabledShortcuts.contains(id) ? QList<QKeySequence>() : effectiveShortcuts(id, shortcut(id));
+}
+
+QString CommandRegistry::shortcutHint(const QString& id) const {
+  const CommandDef* def = find(id);
+  if (def == nullptr) return QString();
+  const QList<QKeySequence> keys = effectiveShortcuts(id);
+  return keys.isEmpty() ? def->name
+                        : tr("%1 (%2)").arg(def->name, keys.front().toString(QKeySequence::NativeText));
+}
+
+QList<ShortcutConflict> CommandRegistry::shortcutConflicts(const QHash<QString, QKeySequence>& proposed) const {
+  QList<ShortcutBinding> bindings = fixedShortcutBindings();
+  for (const auto& def : m_commands) {
+    bindings.append(binding(*def, proposed.contains(def->id) ? proposed.value(def->id) : shortcut(def->id)));
+  }
+  return mitcad::shortcutConflicts(bindings);
+}
+
+void CommandRegistry::setShortcut(const QString& id, const QKeySequence& sequence) {
+  setShortcuts({{id, sequence}});
+}
+
+void CommandRegistry::setShortcuts(const QHash<QString, QKeySequence>& shortcuts) {
+  QSettings settings;
+  for (auto it = shortcuts.cbegin(); it != shortcuts.cend(); ++it) {
+    const CommandDef* def = find(it.key());
+    if (def == nullptr) continue;
+    if (it.value() == def->shortcut) settings.remove(settingsKey(it.key()));
+    else settings.setValue(settingsKey(it.key()), it.value().toString(QKeySequence::PortableText));
+  }
+  refreshShortcuts();
+}
+
+void CommandRegistry::refreshShortcuts() {
+  const QList<ShortcutConflict> conflicts = shortcutConflicts();
+  m_disabledShortcuts = conflictingShortcutIds(conflicts);
+  m_shortcutWarnings.clear();
+  for (const auto& conflict : conflicts) {
+    m_shortcutWarnings.append(conflict.description());
+  }
+  for (const auto& def : m_commands) applyShortcut(*def);
+  if (!m_shortcutWarnings.isEmpty()) {
+    qWarning().noquote() << tr("Conflicting saved shortcuts are disabled; commands remain in menus. "
+                               "Open Keyboard Shortcuts to repair them.")
+                        << m_shortcutWarnings.join(QLatin1Char('\n'));
+  }
+}
+
+void CommandRegistry::applyShortcut(const CommandDef& def) {
   QAction* action = m_actions.value(def.id);
-  if (action == nullptr) {
-    return;
-  }
-  QList<QKeySequence> keys;
-  if (!sequence.isEmpty()) {
-    keys.append(sequence);
-    if (sequence == def.shortcut) {
-      keys.append(def.alternates);
-    }
-  }
+  if (action == nullptr) return;
+  const QList<QKeySequence> keys = effectiveShortcuts(def.id);
   action->setShortcuts(keys);
   QString tip = def.tooltip.isEmpty() ? def.name : QStringLiteral("%1: %2").arg(def.name, def.tooltip);
-  if (!sequence.isEmpty()) {
-    tip += QStringLiteral(" (%1)").arg(sequence.toString(QKeySequence::NativeText));
+  if (!keys.isEmpty()) {
+    tip += QStringLiteral(" (%1)").arg(keys.front().toString(QKeySequence::NativeText));
+  } else if (m_disabledShortcuts.contains(def.id)) {
+    tip += tr(" (conflicting shortcut disabled; change it in Keyboard Shortcuts)");
   }
   action->setToolTip(tip);
 }

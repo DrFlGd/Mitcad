@@ -56,6 +56,15 @@ QString xyz(const QJsonValue& value) {
   return QStringLiteral("(%1, %2, %3)").arg(n(a.at(0).toDouble()), n(a.at(1).toDouble()), n(a.at(2).toDouble()));
 }
 
+// A circle or arc (mitcad#194): its radius with its centre, and the
+// diameter, twice the radius before either is rounded for display.
+void describeCircle(double radius, const QString& centre, QStringList& lines, QStringList& log) {
+  const double diameter = 2.0 * radius;
+  lines << QObject::tr("Radius: %1 mm, centre %2").arg(n(radius), centre);
+  lines << QObject::tr("Diameter: %1 mm").arg(n(diameter));
+  log << QStringLiteral("radius %1").arg(n(radius)) << QStringLiteral("diameter %1").arg(n(diameter));
+}
+
 // What the measure query says of one selection.
 QString describeMeasured(const QJsonObject& item, QStringList& log) {
   QStringList lines;
@@ -77,9 +86,8 @@ QString describeMeasured(const QJsonObject& item, QStringList& log) {
   }
   const QJsonObject circle = item.value(QStringLiteral("circle")).toObject();
   if (!circle.isEmpty()) {
-    lines << QObject::tr("Radius: %1 mm, centre %2")
-                 .arg(n(circle.value(QStringLiteral("radius")).toDouble()), xyz(circle.value(QStringLiteral("center"))));
-    log << QStringLiteral("radius %1").arg(n(circle.value(QStringLiteral("radius")).toDouble()));
+    describeCircle(circle.value(QStringLiteral("radius")).toDouble(), xyz(circle.value(QStringLiteral("center"))),
+                   lines, log);
   }
   return lines.join(QStringLiteral("<br>"));
 }
@@ -132,8 +140,7 @@ QString describeShape(const SelectionItem& item, const TopoDS_Shape& shape, QStr
     const BRepAdaptor_Curve curve(TopoDS::Edge(edges.Current()));
     if (curve.GetType() == GeomAbs_Circle) {
       const gp_Circ circle = curve.Circle();
-      lines << QObject::tr("Radius: %1 mm, centre %2").arg(n(circle.Radius()), pointText(circle.Location()));
-      log << QStringLiteral("radius %1").arg(n(circle.Radius()));
+      describeCircle(circle.Radius(), pointText(circle.Location()), lines, log);
     }
   }
   return lines.join(QStringLiteral("<br>"));
@@ -333,28 +340,31 @@ CommandDef interferenceCommand(const CommandContext& context) {
 // ---------------------------------------------------------------------------
 // Section Analysis
 
-// The section plane: the plane picked, moved by the offset, its normal
-// turned round with Flip (the side that is cut away).
-std::optional<std::pair<gp_Pnt, gp_Dir>> sectionPlane(const CommandState& state, const CommandContext& context) {
+// Preview and saved analyses resolve the same occurrence-aware plane in
+// the model. The displayed item is in design coordinates, while a datum
+// query or a body's underlying shape is in its component's coordinates.
+std::optional<std::pair<gp_Pnt, gp_Dir>> sectionPlane(const CommandState& state, const CommandContext& context,
+                                                    bool basePlane = false) {
   const Selection& plane = state.items(QStringLiteral("plane"));
   if (plane.isEmpty()) {
     return std::nullopt;
   }
-  const auto frame = frameOf(plane.first(), context);
-  const auto center = centerOf(plane, context);
-  const double offset = state.value(QStringLiteral("offset"));
-  if (!frame || !center || !std::isfinite(offset)) {
+  const double offset = basePlane ? 0.0 : state.value(QStringLiteral("offset"));
+  if (!std::isfinite(offset)) {
     return std::nullopt;
   }
-  // The middle of the face or datum, on its plane.
-  gp_Pnt origin = *center;
-  origin.Translate(-gp_Vec(frame->normal) * gp_Vec(frame->origin, origin).Dot(gp_Vec(frame->normal)));
-  origin.Translate(gp_Vec(frame->normal) * offset);
-  gp_Dir normal = frame->normal;
-  if (state.checked(QStringLiteral("flip"))) {
-    normal.Reverse();
+  try {
+    const QJsonObject resolved = context.queryObject({
+        {QStringLiteral("query"), QStringLiteral("section_plane")},
+        {QStringLiteral("plane"), plane.first().reference()},
+        {QStringLiteral("occurrence"), plane.first().occurrence},
+        {QStringLiteral("offset"), offset},
+        {QStringLiteral("flip"), !basePlane && state.checked(QStringLiteral("flip"))}});
+    return std::make_pair(pointOf(resolved.value(QStringLiteral("origin"))),
+                          gp_Dir(vectorOf(resolved.value(QStringLiteral("normal")))));
+  } catch (const std::exception&) {
+    return std::nullopt;
   }
-  return std::make_pair(origin, normal);
 }
 
 CommandDef sectionCommand() {
@@ -375,14 +385,14 @@ CommandDef sectionCommand() {
             if (plane.isEmpty()) {
               return std::nullopt;
             }
-            const auto frame = frameOf(plane.first(), context);
+            const auto frame = sectionPlane(state, context, true);
             const auto center = centerOf(plane, context);
             if (!frame || !center) {
               return std::nullopt;
             }
             gp_Pnt origin = *center;
-            origin.Translate(-gp_Vec(frame->normal) * gp_Vec(frame->origin, origin).Dot(gp_Vec(frame->normal)));
-            return arrow(origin, frame->normal);
+            origin.Translate(-gp_Vec(frame->second) * gp_Vec(frame->first, origin).Dot(gp_Vec(frame->second)));
+            return arrow(origin, frame->second);
           }),
       flipInput(QStringLiteral("flip"), QObject::tr("Flip")).withTooltip(QObject::tr("Cut away the other side")),
   };
@@ -397,7 +407,8 @@ CommandDef sectionCommand() {
                             {QStringLiteral("normal"),
                              QJsonArray{plane->second.X(), plane->second.Y(), plane->second.Z()}}};
     const QJsonObject answer =
-        context.queryObject({{QStringLiteral("query"), QStringLiteral("section")}, {QStringLiteral("plane"), fixed}});
+        context.queryObject({{QStringLiteral("query"), QStringLiteral("section")},
+                             {QStringLiteral("plane"), fixed}, {QStringLiteral("world"), true}});
     // The totals: of all bodies. The view shows the bodies cut at the plane
     // with the cut faces as caps (MainWindow::showSectionCaps, U5).
     const double area = answer.value(QStringLiteral("area")).toDouble();
@@ -418,14 +429,27 @@ CommandDef sectionCommand() {
     if (!std::isfinite(offset)) {
       return Built::failure(QObject::tr("Distance: check the value."), QStringLiteral("offset"));
     }
-    return Built::of({{QStringLiteral("type"), QStringLiteral("section")},
+    QJsonObject definition{{QStringLiteral("type"), QStringLiteral("section")},
                       {QStringLiteral("plane"), refsOf(plane).first()},
                       {QStringLiteral("offset"), offset},
-                      {QStringLiteral("flip"), state.checked(QStringLiteral("flip"))}});
+                      {QStringLiteral("flip"), state.checked(QStringLiteral("flip"))}};
+    if (!plane.first().occurrence.isEmpty()) {
+      definition.insert(QStringLiteral("occurrence"), plane.first().occurrence);
+    }
+    return Built::of(definition);
   };
   def.load = [](const QJsonObject& analysis, CommandState& state, const CommandContext& context) {
-    const SelectionItem plane = itemOf(analysis.value(QStringLiteral("plane")), context);
+    SelectionItem plane = itemOf(analysis.value(QStringLiteral("plane")), context);
     if (plane.isValid()) {
+      if (analysis.value(QStringLiteral("occurrence")).isString()) {
+        plane.occurrence = analysis.value(QStringLiteral("occurrence")).toString();
+      } else {
+        // Older saved analyses had no occurrence. Resolve only an
+        // unambiguous component; never silently pick a repeated instance.
+        plane.occurrence = context.queryObject({{QStringLiteral("query"), QStringLiteral("section_plane")},
+            {QStringLiteral("plane"), analysis.value(QStringLiteral("plane"))}})
+                               .value(QStringLiteral("occurrence")).toString();
+      }
       state.items(QStringLiteral("plane")) = {plane};
     }
     state.setText(QStringLiteral("offset"), lengthText(analysis.value(QStringLiteral("offset")).toDouble(), context));

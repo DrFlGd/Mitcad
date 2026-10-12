@@ -588,6 +588,18 @@ pub(crate) fn placed_geometry(def: &FeatureDef) -> bool {
 /// The occurrences a joint feature names (in paths, as members).
 pub(crate) fn occurrences_used(def: &FeatureDef) -> Vec<OccurrenceUid> {
     match def {
+        FeatureDef::PatternAtPoints(p) => p
+            .paths()
+            .into_iter()
+            .flat_map(|p| p.0.iter().copied())
+            .collect(),
+        FeatureDef::Extrude(e) => e.cut_scope.as_ref().map_or_else(Vec::new, |scope| {
+            scope
+                .paths()
+                .into_iter()
+                .flat_map(|path| path.0.iter().copied())
+                .collect()
+        }),
         FeatureDef::Joint(j) => [&j.a.occurrence.0[..], &j.b.occurrence.0[..]].concat(),
         FeatureDef::AsBuiltJoint(j) => {
             let mut used = [&j.a.0[..], &j.b.0[..]].concat();
@@ -607,8 +619,50 @@ pub(crate) fn occurrences_used(def: &FeatureDef) -> Vec<OccurrenceUid> {
     }
 }
 
-/// Renames the occurrences a joint feature names (copies of components);
-/// true when it is one.
+/// Explicit occurrence references, including geometry links and timeline moves.
+pub(crate) fn referenced_occurrences(def: &FeatureDef) -> Vec<OccurrenceUid> {
+    let mut out = occurrences_used(def);
+    let links: Vec<&crate::links::OccurrenceLink> = match def {
+        FeatureDef::Sketch(s) => s
+            .plane_link
+            .iter()
+            .chain(s.projections.iter().filter_map(|p| p.link.as_ref()))
+            .collect(),
+        FeatureDef::Combine(c) => c.tool_links.values().collect(),
+        FeatureDef::Sweep(s) => s.body_links.values().collect(),
+        FeatureDef::SplitBody(s) => s.tool_links.values().collect(),
+        FeatureDef::Extrude(x) => x.object_links.values().collect(),
+        FeatureDef::MoveOccurrence(m) => {
+            out.extend(&m.occurrences);
+            Vec::new()
+        }
+        FeatureDef::CapturePosition(c) => {
+            out.extend(c.positions.iter().map(|p| p.occurrence));
+            Vec::new()
+        }
+        _ => Vec::new(),
+    };
+    for link in links {
+        out.extend(&link.source.0);
+        out.extend(&link.target.0);
+    }
+    out
+}
+
+pub(crate) fn check_generated_references(
+    assembly: &Assembly,
+    ctx: &crate::features::CheckContext<'_>,
+    def: &FeatureDef,
+) -> Result<(), String> {
+    for uid in referenced_occurrences(def) {
+        if let Some(instance) = assembly.occurrence(uid).and_then(|o| o.pattern.as_ref()) {
+            ctx.feature(instance.feature)?;
+        }
+    }
+    Ok(())
+}
+
+/// Renames the occurrences a joint or pattern feature names.
 pub(crate) fn remap_occurrences(
     def: &mut FeatureDef,
     map: &dyn Fn(OccurrenceUid) -> OccurrenceUid,
@@ -619,6 +673,21 @@ pub(crate) fn remap_occurrences(
         }
     };
     match def {
+        FeatureDef::PatternAtPoints(p) => {
+            for point in p.targets.iter_mut().chain(p.anchor.iter_mut()) {
+                if let Some(occurrence) = &mut point.occurrence {
+                    path(&mut occurrence.0);
+                }
+            }
+            if let Some(context) = &mut p.context {
+                path(&mut context.0);
+            }
+            if let crate::features::PatternObjects::Components { occurrences } = &mut p.objects {
+                for occurrence in occurrences {
+                    path(&mut occurrence.0);
+                }
+            }
+        }
         FeatureDef::Joint(j) => {
             path(&mut j.a.occurrence.0);
             path(&mut j.b.occurrence.0);
@@ -916,6 +985,18 @@ pub(crate) fn apply<K: Kernel>(
     let assembly = &state.assembly;
     let params = &state.parameters;
     let component = entry.component;
+    for uid in occurrences_used(&entry.def) {
+        if assembly
+            .occurrence(uid)
+            .is_some_and(|o| o.pattern.is_some())
+            && !done.placements.contains_key(&uid)
+        {
+            return Err(format!(
+                "{} is unavailable: its Pattern at Points feature has no active result",
+                assembly.occurrence_name(uid)
+            ));
+        }
+    }
     if let FeatureDef::RigidGroup(group) = &entry.def {
         for o in &group.occurrences {
             path_component(assembly, component, &[*o])?;
@@ -1461,6 +1542,9 @@ impl Mechanism {
         };
         if all_units {
             for o in assembly.children(component) {
+                if o.pattern.is_some() && !placements.contains_key(&o.uid) {
+                    continue;
+                }
                 mechanism.body(assembly, groups, component, o.uid);
             }
         }
@@ -1845,6 +1929,14 @@ pub(crate) fn orphaned(state: &DocState) -> BTreeSet<FeatureUid> {
         .features
         .iter()
         .filter(|f| {
+            if matches!(f.def, FeatureDef::PatternAtPoints(_)) {
+                return false;
+            }
+            // Missing occurrence paths stay repairable failures. Deleting a
+            // component definition still uses normal dependent-feature removal.
+            if matches!(&f.def, FeatureDef::Extrude(e) if e.cut_scope.is_some()) {
+                return false;
+            }
             occurrences_used(&f.def)
                 .iter()
                 .any(|o| state.assembly.occurrence(*o).is_none())

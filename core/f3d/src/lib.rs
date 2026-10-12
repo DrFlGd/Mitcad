@@ -28,6 +28,8 @@ pub mod names;
 pub mod ogs;
 #[doc(hidden)]
 pub mod testdata;
+#[doc(hidden)]
+pub mod testreferences;
 pub use mitcad_zip as zip;
 
 pub use container::F3dFile;

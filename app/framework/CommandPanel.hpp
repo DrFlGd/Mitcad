@@ -26,6 +26,9 @@ class QVBoxLayout;
 
 namespace mitcad {
 
+class CommandMessage;
+class CutTargetsPanel;
+
 // The panel of a feature command, generated from its inputs: a title, one
 // row per input, a message line and OK and Cancel. It shows the state;
 // CommandSession changes it.
@@ -44,6 +47,7 @@ public:
 
   // Counts, checks, choices, list rows and which rows are shown.
   void refresh(const CommandState& state) override;
+  void setPreviewReport(const QJsonObject& report) override;
   void setActiveSelection(const QString& key) override;
   // A problem with one input, under it; empty clears it.
   void setInputError(const QString& key, const QString& message) override;
@@ -101,6 +105,7 @@ private:
     QLineEdit* edit = nullptr;
     QComboBox* combo = nullptr;
     QAbstractButton* check = nullptr;
+    CutTargetsPanel* targets = nullptr;
     // A list: its rows' frames and the button that adds one.
     QVBoxLayout* rowsLayout = nullptr;
     QPushButton* add = nullptr;
@@ -113,6 +118,10 @@ private:
                  const CommandState& state, const QString& list, int index);
   void refreshRows(const CommandState& state);
   void scheduleLogLayout();
+  // Logs the message's size and the panel's width once laid out, after the
+  // message or a note changed, for UI tests (mitcad#198).
+  void scheduleLogFit();
+  void logFit() const;
   void rebuildList(Row& list, const CommandState& state);
   void refreshRow(Row& row, const CommandState& scope, const CommandState& state);
   void updateNote(Row& row);
@@ -121,7 +130,7 @@ private:
 
   const CommandDef& m_def;
   QFormLayout* m_form = nullptr;
-  QLabel* m_message = nullptr;
+  CommandMessage* m_message = nullptr;
   QLabel* m_result = nullptr;
   QPushButton* m_ok = nullptr;
   std::vector<std::unique_ptr<Row>> m_rows;
@@ -132,6 +141,7 @@ private:
   QString m_active;
   QString m_shownRows; // the rows shown at the last refresh
   QTimer* m_logTimer = nullptr;
+  QTimer* m_fitTimer = nullptr;
 };
 
 } // namespace mitcad

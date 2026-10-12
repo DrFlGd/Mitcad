@@ -340,6 +340,23 @@ impl<K: crate::ImportKernel> Importer<'_, K> {
         entry.accepted = Some((c.clone(), verified));
     }
 
+    /// An earlier extrusion's definition was changed to make a later
+    /// pattern or mirror match its history. Keep its recorded answer in
+    /// sync without changing the original verification or timing.
+    pub(crate) fn learn_revised_definition(&mut self, index: i64, def: &Value, note: Option<&str>) {
+        let Some((candidate, _)) = self
+            .learn
+            .as_mut()
+            .and_then(|store| store.items.get_mut(&index))
+            .and_then(|entry| entry.accepted.as_mut())
+        else {
+            return;
+        };
+        candidate.defs = vec![def.clone()];
+        candidate.input_provenance = crate::InputProvenance::Inferred;
+        candidate.note = note.map(str::to_owned);
+    }
+
     /// The bodies of the replay as they are, by uid and measures (mm).
     fn learn_bodies(&self) -> Vec<Value> {
         let kernel = self.doc.kernel();
@@ -381,7 +398,7 @@ impl<K: crate::ImportKernel> Importer<'_, K> {
                 edge_matches.insert(
                     pointer.clone(),
                     edge_match_json(
-                        refs::dressup_edge_match(edges, &fp),
+                        self.match_dressup_edge(edges, &fp),
                         fp.f3d.as_ref().and_then(|f| f.found.as_deref()),
                     ),
                 );
@@ -588,6 +605,7 @@ fn edge_match_json(
             "status": "matched",
             "decoder_found": decoder_found,
             "count": edges.len(),
+            "chosen_from_multiple": edges.iter().any(|e| e.chosen_from_multiple),
             "matches": edges.iter().take(MAX_EDGE_MATCHES).map(|e| {
                 json!({"body": e.body.to_string(), "name": e.name.to_string(),
                        "mid": e.mid, "direction": e.direction})
@@ -774,6 +792,7 @@ fn candidate_json(c: &Candidate, entry: &Entry, to_index: &HashMap<String, i64>)
         "defs": c.defs.iter().map(|d| in_file_terms(d, entry, to_index)).collect::<Vec<_>>(),
         "note": c.note,
         "guess": c.guess,
+        "input_provenance": c.input_provenance,
         "predicted": c.predicted,
     })
 }
@@ -968,12 +987,34 @@ mod tests {
     use super::*;
 
     #[test]
+    fn input_provenance_is_independent_of_history_only_policy() {
+        let mut c = Candidate::new(json!({"type": "extrude"}));
+        let entry = Entry::default();
+        let indices = HashMap::new();
+        let value = candidate_json(&c, &entry, &indices);
+        assert_eq!(value["input_provenance"], "unknown");
+        assert_eq!(value["guess"], false);
+        c.input_provenance = crate::InputProvenance::Inferred;
+        let value = candidate_json(&c, &entry, &indices);
+        assert_eq!(value["input_provenance"], "inferred");
+        assert_eq!(value["guess"], false);
+        // A geometric representation may require the history even when
+        // its design inputs have been read.
+        c.guess = true;
+        c.input_provenance = crate::InputProvenance::Read;
+        let value = candidate_json(&c, &entry, &indices);
+        assert_eq!(value["input_provenance"], "read");
+        assert_eq!(value["guess"], true);
+    }
+
+    #[test]
     fn dressup_diagnostics_keep_split_matches_in_file_terms() {
         let edge = |name: &str, x: f64| refs::FoundEdge {
             body: "F3.b0".parse().unwrap(),
             name: name.parse().unwrap(),
             mid: [x, 0.0, 0.0],
             direction: Some([1.0, 0.0, 0.0]),
+            chosen_from_multiple: false,
         };
         let value = edge_match_json(
             Ok(vec![edge("E{F3:a|F3:b}", 2.0), edge("E{F3:a|F3:c}", 7.0)]),
@@ -986,10 +1027,15 @@ mod tests {
         );
         assert_eq!(value["status"], "matched");
         assert_eq!(value["count"], 2);
+        assert_eq!(value["chosen_from_multiple"], false);
         assert_eq!(value["matches"][0]["body"], "T9.b0");
         assert_eq!(value["matches"][1]["name"], "E{T9:a|T9:c}");
         assert_eq!(value["matches"][1]["mid"], json!([7.0, 0.0, 0.0]));
         assert_eq!(value["decoder_found"], "BREP.x.smbh before state 4");
+        let mut chosen = edge("E{F3:a|F3:b}", 2.0);
+        chosen.chosen_from_multiple = true;
+        let value = edge_match_json(Ok(vec![chosen]), None);
+        assert_eq!(value["chosen_from_multiple"], true);
     }
 
     #[test]

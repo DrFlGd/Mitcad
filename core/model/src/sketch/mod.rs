@@ -227,6 +227,11 @@ pub enum EntityKind {
         #[serde(with = "point_serde")]
         center: EntityUid,
         radius: f64,
+        /// Where the circle starts, counter-clockwise from the sketch x
+        /// axis (radians): the seam of the cylinder it makes. Zero unless
+        /// an import set it (a circle drawn here starts on the x axis).
+        #[serde(default, rename = "start_angle", skip_serializing_if = "is_zero")]
+        start: f64,
     },
     /// Counter-clockwise from `start` to `end` around `center`.
     Arc {
@@ -692,6 +697,15 @@ pub enum DimensionKind {
         #[serde(with = "curve_serde")]
         line: EntityUid,
     },
+    /// The gap between a circle or arc and a line it does not cross: the
+    /// distance of its centre from the line (its infinite extension) minus
+    /// its radius.
+    TangentDistance {
+        #[serde(with = "curve_serde")]
+        circle: EntityUid,
+        #[serde(with = "curve_serde")]
+        line: EntityUid,
+    },
     /// Angle between two lines, 0 to 180 degrees, in the quadrant where the
     /// lines are when it is added.
     Angle {
@@ -748,6 +762,7 @@ impl DimensionKind {
             }
             PointLineDistance { point, line } => vec![p(*point), c(*line)],
             LineDistance { a, b } | Angle { a, b } => vec![c(*a), c(*b)],
+            TangentDistance { circle, line } => vec![c(*circle), c(*line)],
             Length { line } => vec![c(*line)],
             Radius { curve } | Diameter { curve } => vec![c(*curve)],
             ArcLength { arc } => vec![c(*arc)],
@@ -766,6 +781,7 @@ impl DimensionKind {
             VerticalDistance { .. } => "vertical_distance",
             PointLineDistance { .. } => "point_line_distance",
             LineDistance { .. } => "line_distance",
+            TangentDistance { .. } => "tangent_distance",
             Length { .. } => "length",
             Angle { .. } => "angle",
             Radius { .. } => "radius",
@@ -783,7 +799,8 @@ impl DimensionKind {
             HorizontalDistance { .. }
             | VerticalDistance { .. }
             | PointLineDistance { .. }
-            | LineDistance { .. } => ValueRange::NotNegative,
+            | LineDistance { .. }
+            | TangentDistance { .. } => ValueRange::NotNegative,
             Angle { .. } => ValueRange::Angle,
             _ => ValueRange::Positive,
         }
@@ -884,7 +901,8 @@ impl<'de, P: Deserialize<'de>> Deserialize<'de> for Dimension<P> {
 
 /// Model geometry projected into the sketch whose entities follow the
 /// source (a linked projection). Unlinked projections are plain
-/// fixed reference entities and need no record.
+/// fixed reference entities and need no record; their persistent
+/// `Entity::reference` flag preserves their projected origin.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Projection {
@@ -950,6 +968,17 @@ pub struct SketchText {
     pub flip_x: bool,
     #[serde(default, skip_serializing_if = "is_false")]
     pub flip_y: bool,
+    /// `height` is the height of the capital letters (the font's
+    /// em is that height over the font's capital height) and a text in a
+    /// frame aligns vertically by them: its top is the capitals' top, its
+    /// bottom the last baseline. The `.f3d` import sets it.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub cap_height: bool,
+    /// A text in a frame breaks its lines at spaces to fit the frame's
+    /// width (a word wider than the frame stays whole). The `.f3d` import
+    /// sets it.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub wrap: bool,
 }
 
 impl SketchText {
@@ -971,6 +1000,8 @@ impl SketchText {
             path: None,
             flip_x: false,
             flip_y: false,
+            cap_height: false,
+            wrap: false,
         }
     }
 }

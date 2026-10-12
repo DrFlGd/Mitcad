@@ -4,10 +4,11 @@
 //! Millimetres and radians, sketch coordinates in the frame.
 
 use crate::topo::{RegionKey, SegmentKey};
+use serde::{Deserialize, Serialize};
 
 /// Places sketch coordinates in 3D: p = origin + u x_axis + v y_axis. The
 /// axes are unit vectors at right angles; the normal is x_axis × y_axis.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct SketchFrame {
     pub origin: [f64; 3],
     pub x_axis: [f64; 3],
@@ -32,6 +33,10 @@ impl SketchFrame {
     }
 }
 
+fn is_zero(value: &f64) -> bool {
+    *value == 0.0
+}
+
 pub(crate) fn cross(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
     [
         a[1] * b[2] - a[2] * b[1],
@@ -46,7 +51,8 @@ pub(crate) fn dot(a: [f64; 3], b: [f64; 3]) -> f64 {
 
 /// The curve of a segment. Arcs run counter-clockwise from the start to the
 /// end angle; ellipse angles are parameter angles from the major axis.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
 pub enum SegmentGeometry {
     Line {
         start: [f64; 2],
@@ -61,6 +67,10 @@ pub enum SegmentGeometry {
     Circle {
         center: [f64; 2],
         radius: f64,
+        /// Where the circle starts, counter-clockwise from the sketch x
+        /// axis (radians); absent (zero) for a circle that starts on it.
+        #[serde(default, skip_serializing_if = "is_zero")]
+        start: f64,
     },
     Ellipse {
         center: [f64; 2],
@@ -117,7 +127,7 @@ impl SegmentGeometry {
             } => angles(*start_angle, *end_angle)
                 .map(|t| on_ellipse(*center, *radius, *radius, 0.0, t))
                 .collect(),
-            Self::Circle { center, radius } => angles(0.0, std::f64::consts::TAU)
+            Self::Circle { center, radius, .. } => angles(0.0, std::f64::consts::TAU)
                 .map(|t| on_ellipse(*center, *radius, *radius, 0.0, t))
                 .collect(),
             Self::Ellipse {

@@ -91,6 +91,10 @@ public:
   // The folder of the document's file (relative image paths are in it);
   // empty while it is not saved.
   virtual QString documentFolder() const = 0;
+
+  // Sheet metal (mitcad#210): the Flat Pattern of a sheet-metal body to a
+  // DXF file the user chooses.
+  virtual void exportFlatPattern(const QString& body) = 0;
 };
 
 } // namespace mitcad

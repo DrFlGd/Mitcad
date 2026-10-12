@@ -469,15 +469,43 @@ pub(super) fn rectangular_pattern(
         let v = props?.get(key)?.as_array()?;
         unit([v.first()?.as_f64()?, v.get(1)?.as_f64()?])
     };
+    // Whether the pattern is symmetric in a direction (the originals are
+    // the middle instance): the API's flag, or the stream's flags (the
+    // distance's kind, then the two directions' symmetry).
+    let symmetric = |key: &str, flag: usize| -> bool {
+        props
+            .and_then(|p| p.get(key))
+            .and_then(Value::as_bool)
+            .or_else(|| {
+                let flags = props?.get("flags")?.as_array()?;
+                Some(flags.get(flag)?.as_u64()? == 1)
+            })
+            .unwrap_or(false)
+    };
     let mut dirs = Vec::new();
-    for (q, d, along) in [
-        ("quantityOne", "distanceOne", "directionOne"),
-        ("quantityTwo", "distanceTwo", "directionTwo"),
+    for (q, d, along, sym) in [
+        (
+            "quantityOne",
+            "distanceOne",
+            "directionOne",
+            symmetric("isSymmetricInDirectionOne", 1),
+        ),
+        (
+            "quantityTwo",
+            "distanceTwo",
+            "directionTwo",
+            symmetric("isSymmetricInDirectionTwo", 2),
+        ),
     ] {
         let (_, n) = param(props, q, s.params).ok_or("no quantity")?;
         let (name, dist) = param(props, d, s.params).ok_or("no distance")?;
         let u = direction(along).ok_or("no direction")?;
-        dirs.push((n.round() as u32, name, mm(dist), u));
+        let n = n.round() as u32;
+        // (Symmetric about the originals: an odd count.)
+        if sym && n.is_multiple_of(2) {
+            return Err(format!("a symmetric pattern of {n} instances"));
+        }
+        dirs.push((n, name, mm(dist), u, sym));
     }
     // The second direction alone is the first.
     if dirs[0].0 == 1 {
@@ -487,10 +515,15 @@ pub(super) fn rectangular_pattern(
     if n1 < 2 || n2 < 1 || u64::from(n1) * u64::from(n2) > 1000 {
         return Err(format!("{n1} × {n2} instances"));
     }
+    // The originals' place among the instances.
+    let origin = [
+        if dirs[0].4 { n1 / 2 } else { 0 },
+        if dirs[1].4 { n2 / 2 } else { 0 },
+    ];
     // The distance is the spacing, or the whole extent.
     for extent in [false, true] {
         let step = |k: usize| -> (u32, f64) {
-            let (n, _, d, _) = &dirs[k];
+            let (n, _, d, _, _) = &dirs[k];
             let div = if extent && *n > 1 { n - 1 } else { 1 };
             (div, d / f64::from(div))
         };
@@ -499,9 +532,12 @@ pub(super) fn rectangular_pattern(
         let (e1, e2) = (scale(dirs[0].3, s1), scale(dirs[1].3, s2));
         let instances: Vec<Instance> = (0..n1)
             .flat_map(|i| (0..n2).map(move |j| [i, j]))
-            .filter(|ij| *ij != [0, 0])
+            .filter(|ij| *ij != origin)
             .map(|[i, j]| {
-                let by = add(scale(e1, f64::from(i)), scale(e2, f64::from(j)));
+                let by = add(
+                    scale(e1, f64::from(i) - f64::from(origin[0])),
+                    scale(e2, f64::from(j) - f64::from(origin[1])),
+                );
                 ([i, j], Box::new(move |p: P2| add(p, by)) as Move)
             })
             .collect();
@@ -513,17 +549,23 @@ pub(super) fn rectangular_pattern(
         let u1 = unit(e1).ok_or("a zero spacing")?;
         let ok_second = |a: P2, b: P2| unit(b).is_some_and(|b| dot(b, perp(a)) > 1.0 - 1e-9);
         let value = |k: usize, div: u32, sp: f64| {
-            let (_, name, d, _) = &dirs[k];
+            let (_, name, d, _, _) = &dirs[k];
             value_of(name.as_deref(), *d, sp < 0.0, div)
         };
-        let (direction, count, spacing) = if n2 == 1 {
+        let (direction, count, spacing, sym) = if n2 == 1 {
             let v1 = value(0, div1, s1);
-            ([u1[0], u1[1]], [n1, 1], [v1.clone(), v1])
+            (
+                [u1[0], u1[1]],
+                [n1, 1],
+                [v1.clone(), v1],
+                [dirs[0].4, false],
+            )
         } else if ok_second(u1, e2) {
             (
                 [u1[0], u1[1]],
                 [n1, n2],
                 [value(0, div1, s1), value(1, div2, s2)],
+                [dirs[0].4, dirs[1].4],
             )
         } else if let Some(u2) = unit(e2).filter(|u2| ok_second(*u2, e1)) {
             for (index, _) in &mut copies {
@@ -533,18 +575,22 @@ pub(super) fn rectangular_pattern(
                 [u2[0], u2[1]],
                 [n2, n1],
                 [value(1, div2, s2), value(0, div1, s1)],
+                [dirs[1].4, dirs[0].4],
             )
         } else {
             return Err("the directions are not at right angles".to_owned());
         };
-        let mut g = Group::default();
-        g.patterns
-            .push(json!({"type": "rectangular", "direction": direction,
+        let mut pattern = json!({"type": "rectangular", "direction": direction,
             "count": count, "spacing": spacing, "entities": originals,
-            "copies": copies_json(&copies)}));
+            "copies": copies_json(&copies)});
+        if sym != [false, false] {
+            pattern["symmetric"] = json!(sym);
+        }
+        let mut g = Group::default();
+        g.patterns.push(pattern);
         return Ok(g);
     }
-    Err("the copies are not where the pattern puts them (a symmetric pattern?)".to_owned())
+    Err("the copies are not where the pattern puts them".to_owned())
 }
 
 // Offsets and radius gaps.
@@ -693,13 +739,16 @@ pub(super) fn offset(
     let props = c.props.as_ref();
     let parents = s.names(&id_list(props, "parentCurves").ok_or("its curves were not decoded")?)?;
     let children = s.names(&id_list(props, "childCurves").ok_or("its curves were not decoded")?)?;
-    if children.is_empty() {
-        return Err("no offset curves".to_owned());
-    }
     let dimension = props
         .and_then(|p| p.get("dimension"))
         .and_then(Value::as_str)
         .map(str::to_owned);
+    // An offset whose curves are gone (the stored list is empty) binds
+    // nothing: there is nothing to keep of it, and its dimension, if any,
+    // stands for nothing either.
+    if children.is_empty() {
+        return Ok((Group::default(), dimension));
+    }
     // The distance: the offset dimension's parameter, else the stored one.
     let parameter = dimension
         .as_deref()
@@ -720,6 +769,9 @@ pub(super) fn offset(
     }
     // Each offset curve with its source.
     let mut pairs: Vec<(String, String)> = Vec::new();
+    // Round corners of the file's offset: arcs the offset distance from the
+    // vertex of the chain they are about, with their centres.
+    let mut corner_arcs: Vec<(String, P2)> = Vec::new();
     let mut taken: HashSet<String> = HashSet::new();
     for (child, _) in &children {
         let ce = s.entity(child)?;
@@ -774,7 +826,17 @@ pub(super) fn offset(
                 best = Some((near, parent));
             }
         }
-        let (_, parent) = best.ok_or_else(|| format!("{child} has no source at the distance"))?;
+        let Some((_, parent)) = best else {
+            // An arc of the offset distance about a point is a corner's.
+            if kind == "arc"
+                && let Ok((_, center, radius)) = s.round(child)
+                && (radius - distance).abs() <= TOL
+            {
+                corner_arcs.push((child.clone(), center));
+                continue;
+            }
+            return Err(format!("{child} has no source at the distance"));
+        };
         taken.insert(parent.clone());
         pairs.push((parent.clone(), child.clone()));
     }
@@ -799,6 +861,12 @@ pub(super) fn offset(
         Some(n) => json!(n),
         None => json!(distance),
     };
+    // Round corners: the offset Mitcad computes from its source chain
+    // (derived), as the file has it.
+    if !corner_arcs.is_empty() {
+        derived_offset(s, &parents, &pairs, &corner_arcs, value, &mut g)?;
+        return Ok((g, dimension));
+    }
     for (parent, child) in &pairs {
         if s.entity(parent)?["type"] == "line" {
             g.constraints
@@ -818,4 +886,90 @@ pub(super) fn offset(
         .push(json!({"curves": curves, "distance": value, "left": left,
                           "results": results}));
     Ok((g, dimension))
+}
+
+/// A midpoint constraint of two curves (the API gives only its
+/// `midPointCurve`: the other is no point): the midpoint of the first, a
+/// line, lies on the second. A point at the line's middle takes the two
+/// constraints.
+pub(super) fn midpoint_on_curve(c: &SketchConstraint, s: &mut Sketch<'_>) -> Result<Group, String> {
+    let names = s.names(&refs(c.refs.as_ref(), &["midPointCurve", "point"]))?;
+    let [(a, Kind::Curve), (b, Kind::Curve)] = &names[..] else {
+        return Err("a midpoint needs a point and a curve".to_owned());
+    };
+    let line = s.entity(a)?;
+    if line["type"] != "line" {
+        return Err(format!(
+            "the midpoint of {a}, which is no line, is not supported"
+        ));
+    }
+    let ends = |k: &str| s.point(line[k].as_str().ok_or("no end")?);
+    let mid = scale(add(ends("start")?, ends("end")?), 0.5);
+    let id = format!("p{}", s.fresh());
+    let mut g = Group::default();
+    g.entities
+        .push(json!({"id": id, "type": "point", "at": mid}));
+    g.constraints
+        .push(json!({"type": "midpoint", "point": id, "curve": a}));
+    g.constraints
+        .push(json!({"type": "coincident", "point": id, "entity": b}));
+    Ok(g)
+}
+
+/// Whether a midpoint constraint names two curves.
+pub(super) fn is_curve_pair(c: &SketchConstraint, ids: &Ids) -> bool {
+    resolve(&refs(c.refs.as_ref(), &["midPointCurve", "point"]), ids)
+        .is_ok_and(|r| r.len() == 2 && r.iter().all(|(_, k)| *k == Kind::Curve))
+}
+
+/// An offset with round corners as a derived offset record: the source
+/// chain in the file's order, each curve's offset, and the corner arcs by
+/// the join (the offsets of the chain's curves `join` and `join + 1`, the
+/// last and the first in a closed chain) they close. The offset curves and
+/// the corner arcs are computed from the source after every solve (the
+/// model's `offsets`, derived), so nothing else constrains them.
+fn derived_offset(
+    s: &Sketch<'_>,
+    parents: &[(String, Kind)],
+    pairs: &[(String, String)],
+    corner_arcs: &[(String, P2)],
+    distance: Value,
+    g: &mut Group,
+) -> Result<(), String> {
+    let mut chain: Vec<(String, String)> = Vec::new();
+    for (parent, _) in parents {
+        let pair = pairs
+            .iter()
+            .find(|(p, _)| p == parent)
+            .ok_or_else(|| format!("{parent} has no offset curve"))?;
+        chain.push(pair.clone());
+    }
+    let n = chain.len();
+    let ends = |name: &str| -> Result<[String; 2], String> {
+        let e = s.entity(name)?;
+        let end = |k: &str| e[k].as_str().map(str::to_owned).ok_or("no end");
+        Ok([end("start")?, end("end")?])
+    };
+    let mut corners = Vec::new();
+    for (arc, center) in corner_arcs {
+        let mut join = None;
+        for j in 0..n {
+            let (a, b) = (ends(&chain[j].0)?, ends(&chain[(j + 1) % n].0)?);
+            if a.iter()
+                .filter(|p| b.contains(p))
+                .any(|p| s.point(p).is_ok_and(|at| dist(at, *center) <= TOL))
+            {
+                join = Some(j);
+                break;
+            }
+        }
+        let j = join.ok_or("a round corner of the offset is not at a vertex of its chain")?;
+        corners.push(json!({"join": j, "arc": arc}));
+    }
+    let left = offset_left(s, &chain)?;
+    let (curves, results): (Vec<String>, Vec<String>) = chain.into_iter().unzip();
+    g.offsets
+        .push(json!({"curves": curves, "distance": distance, "left": left,
+                          "results": results, "corners": corners, "derived": true}));
+    Ok(())
 }

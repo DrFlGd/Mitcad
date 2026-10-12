@@ -2,6 +2,15 @@
 // Join, Cut and Intersect with participant bodies: pieces, their sources and
 // the face names they carry.
 
+#include <BRepBuilderAPI_MakeFace.hxx>
+#include <BRep_Builder.hxx>
+#include <TopoDS.hxx>
+#include <TopoDS_Compound.hxx>
+#include <TopoDS_Shell.hxx>
+#include <TopoDS_Solid.hxx>
+#include <gp_Pln.hxx>
+
+#include "../src/history.hpp"
 #include "check.hpp"
 
 namespace test {
@@ -61,6 +70,32 @@ void test_join_merges_flush_faces() {
   CHECK(joined.find_faces(end_cap("F2", 1)).size() == 1);
   CHECK(joined.find_faces(side("F2", 1, 1)).empty()); // the shared wall at x = 60
   CHECK(edge_names_unique(joined));
+}
+
+void test_slivers_are_no_pieces() {
+  // A result of the block and a flat solid beside it: two faces of a strip
+  // 1.5 mm long, back to back (no volume), as a join of walls that continue
+  // the body's walls left between coinciding faces. The strip is no piece;
+  // a sliver alone stays the result.
+  const ShapePtr body = block();
+  const TopoDS_Face strip =
+      BRepBuilderAPI_MakeFace(gp_Pln(gp_Pnt(0, -1, 0), gp_Dir(0, 1, 0)), 0.0, 1e-6, 0.0, 1.5).Face();
+  BRep_Builder builder;
+  TopoDS_Shell shell;
+  builder.MakeShell(shell);
+  builder.Add(shell, strip);
+  builder.Add(shell, strip.Reversed());
+  TopoDS_Solid flat;
+  builder.MakeSolid(flat);
+  builder.Add(flat, shell);
+  TopoDS_Compound both;
+  builder.MakeCompound(both);
+  builder.Add(both, body->occt());
+  builder.Add(both, flat);
+  const std::vector<detail::FaceNamer::Piece> pieces = detail::FaceNamer(both).pieces();
+  CHECK(pieces.size() == 1);
+  CHECK(!pieces.empty() && near(volume(*pieces.at(0).shape), 60.0 * 40.0 * 20.0));
+  CHECK(detail::FaceNamer(flat).pieces().size() == 1);
 }
 
 void test_join_with_several_participants() {
@@ -141,6 +176,15 @@ void test_join_with_a_plate_of_many_holes() {
   // A thousandth of a millimetre above it: nothing touched.
   const BooleanResult hovering = run(BooleanOp::Join, {holed, above}, posts(2.001));
   CHECK((hovering.touched == std::vector<bool>{false, false}) && hovering.pieces.empty());
+  // A nanometre and a half above it (the noise of the geometry a file stores): it
+  // still joins, as one solid with the plate.
+  const BooleanResult nearly = run(BooleanOp::Join, {holed, above}, posts(2.0000015));
+  CHECK((nearly.touched == std::vector<bool>{true, false}));
+  CHECK(nearly.pieces.size() == 1);
+  if (nearly.pieces.size() == 1) {
+    CHECK((nearly.pieces[0].sources == std::vector<std::size_t>{0}));
+    CHECK(near(volume(*nearly.pieces[0].shape), volume(*holed) + 2 * 0.4 * 0.4 * 3));
+  }
 }
 
 void test_cut_hole_names_the_walls() {
@@ -211,6 +255,18 @@ void test_cut_misses_or_removes() {
   // Touching a face removes nothing either.
   const ShapePtr flush = extrude("F4", {rectangle(5, 60, 0, 10, 40)}, 0, 20);
   CHECK(run(BooleanOp::Cut, {body}, flush).touched == std::vector<bool>{false});
+  // A tool in the body's box that passes it by (in the notch of an L):
+  // the cut leaves it as it was, unchecked (mitcad#181).
+  const ShapePtr notch = extrude("F4", {rectangle(5, 40, 20, 30, 30)}, -1, 30);
+  const BooleanResult cut_notch = run(BooleanOp::Cut, {body}, notch);
+  CHECK(cut_notch.touched == std::vector<bool>{true} && cut_notch.pieces.size() == 1);
+  if (cut_notch.pieces.size() == 1) {
+    const ShapePtr l_shape = cut_notch.pieces[0].shape;
+    const ShapePtr inside = extrude("F6", {rectangle(9, 50, 30, 5, 5)}, 5, 10);
+    const BooleanResult passed = run(BooleanOp::Cut, {l_shape}, inside);
+    CHECK(passed.touched == std::vector<bool>{false} && passed.pieces.empty());
+    CHECK(near(volume(*l_shape), 60.0 * 40.0 * 20.0 - 20.0 * 20.0 * 20.0));
+  }
   const ShapePtr all = extrude("F4", {rectangle(5, -10, -10, 80, 60)}, -1, 30);
   const BooleanResult removed = run(BooleanOp::Cut, {body}, all);
   CHECK(removed.touched == std::vector<bool>{true} && removed.pieces.empty());
@@ -248,6 +304,7 @@ void test_intersect() {
 void boolean_tests() {
   test_join_keeps_names_and_names_new_edges();
   test_join_merges_flush_faces();
+  test_slivers_are_no_pieces();
   test_join_with_several_participants();
   test_join_of_many_copies_finds_what_they_touch();
   test_join_with_a_plate_of_many_holes();

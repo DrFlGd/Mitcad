@@ -792,7 +792,13 @@ void test_helices_on_cylinders() {
     try {
       const BooleanResult result = boolean(c.op, {c.body.get()}, *helix_sweep(spec));
       const bool one = result.pieces.size() == 1;
-      const bool valid = one && detail::is_valid(result.pieces.front().shape->occt());
+      // Valid in each of several checks: the checker's threads shared an
+      // edge's curve between its two faces and called the round groove's
+      // faces unorientable in some runs (mitcad#203, OCCT port patch 0033).
+      bool valid = one;
+      for (int check = 0; valid && check < 4; ++check) {
+        valid = detail::is_valid(result.pieces.front().shape->occt());
+      }
       const double volume = one ? precise_volume(*result.pieces.front().shape) : 0.0;
       const bool right = c.tolerance > 0 ? near(volume, expected, c.tolerance) : volume > 0 && volume < body;
       if (!one || !valid || !right) {

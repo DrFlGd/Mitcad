@@ -1,6 +1,9 @@
 // SPDX-License-Identifier: MIT
 // Profile regions from every segment kind, holes and loop orientation.
 
+#include <BRep_Tool.hxx>
+#include <TopExp.hxx>
+
 #include <cmath>
 
 #include "check.hpp"
@@ -97,6 +100,68 @@ void test_holes_and_orientation() {
   CHECK(near(box.min.Z(), 0.0) && near(box.max.Z(), 10.0));
 }
 
+void test_a_hole_that_touches_the_outer_boundary() {
+  // A disc of radius 10 in two arcs (vertices at (10, 0) and (-10, 0)) with a
+  // round hole of radius 5 tangent to it at (10, 0): the hole is a circle cut
+  // there (one arc round to the point) or a whole circle.
+  const auto arc = [](const char* name, double x, double y, double radius, double from, double to) {
+    Segment s;
+    s.name = name;
+    s.kind = SegmentKind::Arc;
+    s.center = gp_Pnt2d(x, y);
+    s.radius = radius;
+    s.start_angle = from;
+    s.end_angle = to;
+    return s;
+  };
+  Segment whole;
+  whole.name = "c3";
+  whole.kind = SegmentKind::Circle;
+  whole.center = gp_Pnt2d(5, 0);
+  whole.radius = 5;
+  const Loop outer{{arc("c1[c3,c2]", 0, 0, 10, 0, kPi), arc("c2[c1,c3]", 0, 0, 10, kPi, 2 * kPi)}};
+  const Segment cut = arc("c3[c1,c1]", 5, 0, 5, 0, 2 * kPi);
+  for (const Segment& hole : {whole, cut}) {
+    const Region region{"r{c1,c2}", {outer, Loop{{hole}}}};
+    const ProfileFace profile = make_profile(Frame(), region);
+    CHECK(profile.pinched);
+    CHECK(profile.edges.size() == 3);
+    CHECK(near(area_of(region), kPi * 75.0));
+    // The prism has the face's area times the length, and the hole's wall.
+    const ExtrudeFeatureSpec spec = [&] {
+      ExtrudeFeatureSpec s;
+      s.feature = "F2";
+      s.regions = {region};
+      s.side1.distance = 4.0;
+      return s;
+    }();
+    const ShapePtr solid = extrude_feature(spec);
+    CHECK(near(mass_properties(*solid).volume, kPi * 75.0 * 4.0));
+  }
+  // The same boundary without the hole touching it is no different: the
+  // face is not pinched.
+  const Region apart{"r", {outer, Loop{{arc("c3", 3, 0, 2, 0, 2 * kPi)}}}};
+  CHECK(!make_profile(Frame(), apart).pinched);
+  CHECK(near(area_of(apart), kPi * (100.0 - 4.0)));
+  // Two regions that meet along the pinched one's boundary come out as one
+  // solid: a disc of radius 10 with the hole and the lens of the hole
+  // cut away from the outside beside it (a ring touching the face).
+  const Segment half_hole = arc("c4[c3,c3]", 5, 0, 5, 0, 2 * kPi);
+  const Region ring{"r{c1,c2}", {outer, Loop{{half_hole}}}};
+  const Region inner = [&] {
+    Segment s = half_hole;
+    s.name = "c3";
+    return Region{"r{c3}", {Loop{{s}}}};
+  }();
+  ExtrudeFeatureSpec both;
+  both.feature = "F3";
+  both.regions = {ring, inner};
+  both.side1.distance = 2.0;
+  const ShapePtr one = extrude_feature(both);
+  CHECK(solids(*one).size() == 1);
+  CHECK(near(mass_properties(*one).volume, kPi * 100.0 * 2.0));
+}
+
 void test_profile_on_another_plane() {
   // The XZ plane seen from -Y: sketch x = X, sketch y = Z.
   Frame frame;
@@ -139,15 +204,39 @@ void test_invalid_profiles() {
   CHECK(throws_with([] { rectangle_region(0, 0, 0, 5); }, "width must be greater than zero"));
 }
 
+void test_a_circle_starts_where_its_rotation_says() {
+  // A whole circle starts on the x axis, or at the angle `rotation` gives (its
+  // seam: the vertex its one edge starts and ends at).
+  const auto seam = [](double rotation) {
+    Segment circle;
+    circle.name = "c1";
+    circle.kind = SegmentKind::Circle;
+    circle.center = gp_Pnt2d(1, 2);
+    circle.radius = 5;
+    circle.rotation = rotation;
+    const ProfileFace profile = make_profile(Frame(), Region{"r", {Loop{{circle}}}});
+    CHECK(profile.edges.size() == 1);
+    return BRep_Tool::Pnt(TopExp::FirstVertex(profile.edges[0].first));
+  };
+  const gp_Pnt on_x = seam(0.0);
+  CHECK(near(on_x.X(), 6.0) && near(on_x.Y(), 2.0));
+  const gp_Pnt up = seam(kPi / 2);
+  CHECK(near(up.X(), 1.0) && near(up.Y(), 7.0));
+  const gp_Pnt back = seam(kPi);
+  CHECK(near(back.X(), -4.0) && near(back.Y(), 2.0));
+}
+
 } // namespace
 
 void profile_tests() {
   test_rectangle_profile_names_its_edges();
   test_arcs_ellipses_and_splines();
   test_holes_and_orientation();
+  test_a_hole_that_touches_the_outer_boundary();
   test_profile_on_another_plane();
   test_segments_meeting_within_the_sketch_tolerance();
   test_invalid_profiles();
+  test_a_circle_starts_where_its_rotation_says();
 }
 
 } // namespace test

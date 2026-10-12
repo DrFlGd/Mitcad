@@ -128,6 +128,7 @@ pub fn project(curves: &[Curve3], frame: &SketchFrame) -> Vec<Projected> {
                         Curve2::Circle {
                             center: c,
                             radius: big,
+                            start: 0.0,
                         }
                     } else {
                         ellipse
@@ -227,9 +228,10 @@ pub fn entities(projected: &[Projected], next: &mut dyn FnMut() -> EntityUid) ->
                 end: point(&mut out, *b, true),
                 centerline: false,
             },
-            Curve2::Circle { center, radius } => EntityKind::Circle {
+            Curve2::Circle { center, radius, .. } => EntityKind::Circle {
                 center: point(&mut out, *center, false),
                 radius: *radius,
+                start: 0.0,
             },
             Curve2::Arc { center, .. } => {
                 let (s, e) = curve.ends().expect("an arc has ends");
@@ -649,7 +651,8 @@ mod tests {
             out,
             vec![Projected::Curve(Curve2::Circle {
                 center: [1.0, 2.0],
-                radius: 3.0
+                radius: 3.0,
+                start: 0.0
             })]
         );
         // Seen edge on from XZ: a line across its diameter.

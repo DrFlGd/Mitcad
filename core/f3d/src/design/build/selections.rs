@@ -22,7 +22,8 @@
 //!   all others).
 //! - Split body: `u8 extend tool | u32 1 | ref | u32 | u32 0 | u32 1 | ref
 //!   tool selection | u32 0 | u32 m | m body records (the pieces it makes)
-//!   | u32 0 | u32 1 | ref selection of the split bodies`.
+//!   | u32 0 | u32 1 | ref selection of the split bodies`. The tool selection
+//!   may hold several tools (`splittingTools`).
 //! - Patterns and mirrors: the first selection of the input list holds the
 //!   objects; a mirror's second its plane; a pattern's axis or directions
 //!   are direction inputs ([`DIRECTION_INPUT`]) naming an axis, an edge or
@@ -42,7 +43,7 @@ use super::super::classes::*;
 use super::super::decode::TimelineEntry;
 use super::super::ir::*;
 use super::super::recipe;
-use super::super::stream::{Segment, f64s_at, header_end, u32_at};
+use super::super::stream::{Segment, f64s_at, u32_at};
 use super::joints::key_point;
 use super::{Builder, edge_input, face_input, json_value};
 
@@ -108,37 +109,6 @@ fn lists_at(seg: &Segment, d: &[u8], p: usize, before: usize, after: usize) -> O
         records,
         last,
     })
-}
-
-/// The end of an object's root part, also when its attributes include
-/// `double` values (a hole's `SavedHoleDepthInNonDistanceExtentsCase`),
-/// which [`Segment::root_part`] does not read.
-fn root_end(seg: &Segment, d: &[u8]) -> Option<usize> {
-    if let Some(r) = seg.root_part(d) {
-        return Some(r.end);
-    }
-    let mut p = header_end(d)?;
-    if *d.get(p)? != 0 || *d.get(p + 1)? != 1 {
-        return None;
-    }
-    let n = u32_at(d, p + 2)?;
-    p += 6;
-    for _ in 0..n.min(1000) {
-        p += 4 + u32_at(d, p)? as usize;
-        let ln = u32_at(d, p)? as usize;
-        let typ = d.get(p + 4..p + 4 + ln)?;
-        p += 4 + ln;
-        p += if typ.ends_with(b"double") || typ.ends_with(b"uint64") {
-            8
-        } else if typ.ends_with(b"bool") {
-            1
-        } else if typ.ends_with(b"IString") {
-            4 + 2 * u32_at(d, p)? as usize
-        } else {
-            return None;
-        };
-    }
-    (p <= d.len()).then_some(p)
 }
 
 impl Builder<'_> {
@@ -264,9 +234,13 @@ impl Builder<'_> {
             if let Some(bodies) = self.bodies_of(Some(*split)) {
                 map.insert("splitBodies".into(), json_value(&bodies));
             }
-            // One plane, face or body.
-            if let Some(mut t) = self.members(*tool).filter(|t| t.len() == 1) {
-                map.insert("splittingTool".into(), json_value(&t.remove(0)));
+            // A plane, face or body; with several tools the first and all
+            // of them (the pieces are cut by each in turn).
+            if let Some(t) = self.members(*tool).filter(|t| !t.is_empty()) {
+                map.insert("splittingTool".into(), json_value(&t[0]));
+                if t.len() > 1 {
+                    map.insert("splittingTools".into(), json_value(&t));
+                }
             }
             if let Some(e) = extend {
                 map.insert("isSplittingToolExtended".into(), json!(e == 1));
@@ -317,7 +291,10 @@ impl Builder<'_> {
                     .ref_ids(self.seg.data_of(i))
                     .into_iter()
                     .find_map(|r| match self.seg.guid_of(r) {
-                        Some(ENTITY_REF | FACE_REF) => self.member(r),
+                        // A sketch line has no target object: its tags name
+                        // it (mitcad#186).
+                        Some(ENTITY_REF) => self.member(r).or_else(|| self.entity_target(r)),
+                        Some(FACE_REF) => self.member(r),
                         _ => None,
                     });
                 let line = direction_line(self.seg, i);
@@ -355,24 +332,6 @@ impl Builder<'_> {
             .into_iter()
             .filter_map(|i| key_point(self.seg, i).map(|(p, _)| p))
             .collect()
-    }
-
-    /// Whether a hole goes through all: a byte after its root part, the
-    /// second in class version 4 and the sixth in version 7 (after a `u32
-    /// 2`; mitcad#96, from two designs only: a lead), else the seventh.
-    pub(super) fn hole_through_all(&self, it: &TimelineEntry) -> Option<bool> {
-        let d = self.seg.data_of(it.id);
-        let p = root_end(self.seg, d)?;
-        let at = match it.class_version {
-            4 => 1,
-            7 => 5,
-            _ => 6,
-        };
-        match d.get(p + at)? {
-            0 => Some(false),
-            1 => Some(true),
-            _ => None,
-        }
     }
 }
 

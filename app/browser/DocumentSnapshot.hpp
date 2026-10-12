@@ -107,6 +107,9 @@ struct DocumentSnapshot {
   // Joints between occurrences (mitcad#55): the `joints` query's answer
   // (joints, rigid groups, degrees of freedom per component).
   QJsonObject joints;
+  // Sheet-metal bodies (mitcad#210): the `sheet_bodies` query's entries
+  // (body, rules and their name and values, Flat Pattern state).
+  QJsonArray sheets;
   // Saved in the document (P9): the root's Origin folder shown, and what
   // the view is isolated to (bodies and occurrences; none: everything).
   bool originShown = false;
@@ -143,6 +146,8 @@ struct DocumentSnapshot {
   // The degrees of freedom of an occurrence placed in a component with
   // joints (what it can do with the others held), or -1.
   int occurrenceDof(const QString& uid) const;
+  // A sheet-metal body's entry of `sheets`, or an empty object.
+  QJsonObject sheet(const QString& body) const;
 };
 
 // The icon (app/icons) of a feature type in the timeline and the browser.

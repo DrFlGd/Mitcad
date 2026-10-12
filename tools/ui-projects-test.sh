@@ -109,7 +109,17 @@ ui_expect_log "Projects panel: 0 projects" "no projects yet"
 ui_step "projects panel again (search)"  ui_command "Projects"
 ui_expect_new "Projects panel: hidden" "hidden"
 ui_mark
-ui_step "new project (search)"           ui_command "New Project"
+ui_step "show the empty projects panel"  ui_command "Projects"
+ui_step "plain plus with no project"     ui_click_logged "Projects button New Project"
+ui_focus_dialog '^New Project$'
+ui_step "a cancelled project folder"     ui_key alt+f
+ui_step "type the cancelled folder"      ui_type_text "$DOCUMENTS/CancelledProject"
+ui_step "cancel creation"                ui_key Escape
+ui_focus_main
+[ ! -e "$DOCUMENTS/CancelledProject" ] || ui_fail "cancel created a project"
+ui_expect_new "New Project cancelled" "the plain plus opened New Project"
+ui_mark
+ui_step "plain plus creates a project"   ui_click_logged "Projects button New Project"
 ui_focus_dialog '^New Project$'
 ui_step "the folder (Alt+F)"             ui_key alt+f
 ui_step "type the folder"                ui_type_text "$SHOP"
@@ -126,9 +136,9 @@ expect_git "$SHOP" "ls-files" ".gitattributes
 .gitignore
 .mitcad/project.json" "only the project's own files"
 
-echo "--- File > New Design, named in the panel"
+echo "--- Document-plus New Design, named in the panel"
 ui_mark
-ui_step "new design (search)"            ui_command "New Design"
+ui_step "document-plus creates a design" ui_click_logged "Projects button New Design"
 ui_expect_new "Projects panel: naming a new design in Shop" "named in place" 20
 name_it "bracket"
 ui_expect_new "Projects panel: new_design recorded as " "recorded" 20

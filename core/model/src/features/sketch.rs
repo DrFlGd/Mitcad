@@ -13,8 +13,8 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 use super::{CheckContext, Evaluate, FeatureInfo, FeatureOutput, References};
 use crate::ids::{BodyUid, EntityUid, FeatureUid};
-use crate::kernel::Kernel;
 use crate::kernel::KernelError;
+use crate::kernel::{FontRequest, Kernel};
 use crate::parameters::ParamId;
 use crate::profile::{ProfileRegion, SketchFrame, dot};
 use crate::sketch::geometry::Curve2;
@@ -317,13 +317,18 @@ impl SketchOutput {
     /// referenced key so that the faces made from it keep their names.
     /// None when no region shares a curve with it.
     pub fn resolve_region(&self, key: &RegionKey) -> Option<ProfileRegion> {
-        if let Some(region) = self.region(key) {
-            return Some(region.clone());
-        }
-        best_match(&self.region_info, key).map(|region| ProfileRegion {
+        self.resolved(key).map(|region| ProfileRegion {
             key: key.clone(),
-            loops: region.profile.loops.clone(),
+            loops: region.loops.clone(),
         })
+    }
+
+    /// The region a reference means (as [`Self::resolve_region`] finds
+    /// it) under its own, current key: what the application highlights for
+    /// the reference and compares two references by (mitcad#199).
+    pub fn resolved(&self, key: &RegionKey) -> Option<&ProfileRegion> {
+        self.region(key)
+            .or_else(|| best_match(&self.region_info, key).map(|region| &region.profile))
     }
 
     pub fn status(&self) -> &SketchStatus {
@@ -551,11 +556,27 @@ impl SketchDef {
     ) -> Result<Vec<TextOutline>, String> {
         let mut out = Vec::new();
         for t in &self.texts {
-            let glyphs = match kernel.font_glyphs(&text::request(t)) {
+            let mut glyphs = match kernel.font_glyphs(&text::request(t)) {
                 Ok(glyphs) => glyphs,
                 Err(KernelError::Unsupported(_)) => return Ok(Vec::new()),
                 Err(e) => return Err(format!("text t{}: {e}", t.id.0)),
             };
+            if t.cap_height && glyphs.cap_height <= 0.0 {
+                // The font's capital height: the top of an H.
+                let request = FontRequest {
+                    text: "H",
+                    ..text::request(t)
+                };
+                glyphs.cap_height = kernel
+                    .font_glyphs(&request)
+                    .map_err(|e| format!("text t{}: {e}", t.id.0))?
+                    .glyphs
+                    .first()
+                    .into_iter()
+                    .flat_map(|g| g.contours.iter().flatten().flatten())
+                    .map(|p| p[1])
+                    .fold(0.0, f64::max);
+            }
             out.push(text::layout(t, &glyphs, &solved.points, &solved.curves)?);
         }
         Ok(out)
@@ -812,6 +833,9 @@ impl<P> SketchDef<P> {
                         return Err(format!("{what}: two different lines"));
                     }
                     vec![(cv(*a), LINE), (cv(*b), LINE)]
+                }
+                D::TangentDistance { circle, line } => {
+                    vec![(cv(*circle), ROUND), (cv(*line), LINE)]
                 }
                 D::Length { line } => vec![(cv(*line), LINE)],
                 D::Radius { curve } | D::Diameter { curve } => vec![(cv(*curve), ROUND)],

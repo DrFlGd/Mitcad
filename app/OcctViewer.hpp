@@ -12,6 +12,7 @@
 #include <vector>
 
 #include <QColor>
+#include <QElapsedTimer>
 #include <QImage>
 #include <QMargins>
 #include <QOpenGLWidget>
@@ -43,6 +44,7 @@
 #include "framework/Appearances.hpp"
 #include "framework/Selection.hpp"
 #include "mitcad/geometry/shape.hpp"
+#include "view/ViewNavigation.hpp"
 
 class QNativeGestureEvent;
 class QTimer;
@@ -314,12 +316,19 @@ public:
   // previews are drawn over it, hidden by the bodies as in the shaded view.
   // A null image draws the bodies again. While the rendered mode is on
   // (setRenderedMode), the bodies are in a layer of their own under the
-  // image's.
+  // image's. The image is of the camera and size of the view when it is
+  // set: once either changes, the view draws the bodies again before its
+  // next frame (no image of an old camera over a moved view, mitcad#214).
   void setRenderedImage(const QImage& image);
   void setRenderedMode(bool on);
   bool showsRenderedImage() const { return !m_renderedImage.isNull(); }
   // The camera the view draws with, for the renderer to follow.
   const occ::handle<Graphic3d_Camera>& viewCamera() const { return m_view->Camera(); }
+  // Whether the user is navigating the view (a button held, a wheel burst
+  // or gesture that has not kept still for a moment, a camera animation;
+  // ViewNavigation), as of the last frame drawn; navigationFinished() when
+  // it ends (mitcad#214).
+  bool isNavigating() const { return m_navigationState.active(); }
   // The background's colours, top and bottom (the same for one colour).
   void backgroundColors(QColor& top, QColor& bottom) const;
   // Replaces the visible sketch profiles (planar faces, placed already);
@@ -421,6 +430,9 @@ signals:
   void orientationCubeMenuRequested(const QPoint& globalPosition);
   // The camera came to rest after it moved (logged as "Camera direction ...").
   void cameraRested();
+  // A navigation of the view ended (isNavigating()): the camera is where the
+  // user left it.
+  void navigationFinished();
   // The application's palette changed (a dark or light mode): what depends
   // on it outside the view follows.
   void themeChanged();
@@ -521,6 +533,14 @@ private:
   void cameraMoved();
   void logCamera();
   void logOrientationCube();
+  // Navigation (mitcad#214): the state evaluated now, and a step of input
+  // without a release (wheel, pinch, roll, resize).
+  void updateNavigation();
+  void navigationStep();
+  // The last button held on the view went up.
+  void buttonsReleased();
+  // Whether the rendered image is no longer of the view's camera or size.
+  bool renderedImageStale() const;
   // Rebuilds the grid's lines when the zoom changes their step or the view
   // nears their edge (or always with `force`).
   void updateGrid(bool force = false);
@@ -643,6 +663,15 @@ private:
   occ::handle<Image_PixMap> m_renderedPixels;
   occ::handle<Graphic3d_Texture2D> m_renderedTexture;
   bool m_renderedMode = false;
+  // The camera and the window's size when the image was set.
+  occ::handle<Graphic3d_Camera> m_renderedCamera;
+  int m_renderedWidth = 0;
+  int m_renderedHeight = 0;
+  // Navigation (isNavigating()): its state, its clock, and the timer that
+  // ends a step's quiet time.
+  ViewNavigation m_navigationState;
+  QElapsedTimer m_navigationClock;
+  QTimer* m_navigationTimer = nullptr;
   class RenderedImageQuad;
   occ::handle<RenderedImageQuad> m_renderedQuad;
   Graphic3d_ZLayerId m_renderedBodyLayer = Graphic3d_ZLayerId_UNKNOWN;

@@ -2,12 +2,15 @@
 #include "SketchPalette.hpp"
 
 #include <QAction>
+#include <QButtonGroup>
 #include <QCheckBox>
+#include <QEvent>
 #include <QGridLayout>
 #include <QGroupBox>
 #include <QLabel>
 #include <QAbstractButton>
 #include <QPushButton>
+#include <QRadioButton>
 #include <QSignalBlocker>
 #include <QStyle>
 #include <QStyleOptionButton>
@@ -18,7 +21,9 @@
 #include "../framework/ChromeStyle.hpp"
 #include "../framework/GlassCard.hpp"
 #include "../framework/CommandRegistry.hpp"
+#include "../framework/TestSync.hpp"
 #include "../framework/Theme.hpp"
+#include "AutoConstraint.hpp"
 #include "SketchController.hpp"
 
 namespace mitcad::sketch {
@@ -51,6 +56,36 @@ Section makeSection(const QString& title) {
   column->addWidget(caption);
   column->addWidget(host);
   return {box, host};
+}
+
+QString autoConstraintTip(const QString& type) {
+  if (type == QStringLiteral("equal")) {
+    return QObject::tr("As long as the reference line, or the radius of the reference circle or arc");
+  }
+  if (type == QStringLiteral("horizontal_vertical")) {
+    return QObject::tr("The centre level with the reference's centre, or plumb with it, whichever it is "
+                       "nearer to");
+  }
+  if (type == QStringLiteral("concentric")) {
+    return QObject::tr("The centre of the reference circle or arc");
+  }
+  if (type == QStringLiteral("parallel")) {
+    return QObject::tr("Parallel to the reference line");
+  }
+  if (type == QStringLiteral("perpendicular")) {
+    return QObject::tr("Perpendicular to the reference line");
+  }
+  return {};
+}
+
+// A check box's or radio button's indicator in the main window: a click
+// there toggles it whatever the width of its label.
+QPoint indicatorCenter(const QAbstractButton* button, QStyle::SubElement element) {
+  QStyleOptionButton option;
+  option.initFrom(button);
+  option.text = button->text();
+  const QRect indicator = button->style()->subElementRect(element, &option, button);
+  return GlassCard::mapToHost(button, indicator.center());
 }
 
 } // namespace
@@ -139,6 +174,61 @@ SketchPalette::SketchPalette(SketchController& controller, CommandRegistry& regi
   }
   layout->addWidget(constraintBox.box);
 
+  // Auto constraints while drawing (mitcad#189): shown once the drawing
+  // tool has drawn an entity; the choices hold for the tool's next ones.
+  const QString autoTitle = tr("Auto constraint");
+  const Section autoBox = makeSection(autoTitle);
+  m_autoSection = autoBox.box;
+  m_autoSection->setObjectName(QStringLiteral("paletteAutoConstraint"));
+  m_autoSection->setAccessibleName(autoTitle);
+  auto* autoLayout = new QVBoxLayout(autoBox.host);
+  if (chromeStyle() == ChromeStyle::Floating) {
+    autoLayout->setContentsMargins(0, 0, 0, 0);
+    autoLayout->setSpacing(4);
+  }
+  const auto radio = [autoLayout](const QString& text, const QString& name, const QString& tip) {
+    auto* button = new QRadioButton(text);
+    button->setObjectName(name);
+    button->setToolTip(tip);
+    button->setFocusPolicy(Qt::NoFocus);
+    autoLayout->addWidget(button);
+    return button;
+  };
+  m_autoFirst = radio(tr("Link to first"), QStringLiteral("paletteAutoFirst"),
+                      tr("Constrain each new entity to the first one this tool drew"));
+  m_autoLast = radio(tr("Link to last"), QStringLiteral("paletteAutoLast"),
+                     tr("Constrain each new entity to the one this tool drew just before it"));
+  auto* links = new QButtonGroup(this);
+  links->setExclusive(true);
+  links->addButton(m_autoFirst);
+  links->addButton(m_autoLast);
+  m_autoLast->setChecked(true);
+  for (const QString& type : autoConstraintTypes()) {
+    auto* box = new QCheckBox(autoConstraintLabel(type));
+    box->setObjectName(QStringLiteral("paletteAuto_") + type);
+    box->setToolTip(autoConstraintTip(type));
+    box->setFocusPolicy(Qt::NoFocus);
+    autoLayout->addWidget(box);
+    m_autoChecks.insert(type, box);
+    connect(box, &QCheckBox::toggled, this, [this, type](bool on) { m_c.setAutoConstraint(type, on); });
+  }
+  connect(m_autoFirst, &QRadioButton::toggled, this, [this](bool on) {
+    if (on) {
+      m_c.setAutoLink(AutoConstraintSession::Link::First);
+    }
+  });
+  connect(m_autoLast, &QRadioButton::toggled, this, [this](bool on) {
+    if (on) {
+      m_c.setAutoLink(AutoConstraintSession::Link::Last);
+    }
+  });
+  // The pointer over the section highlights the reference.
+  m_autoSection->installEventFilter(this);
+  m_autoSection->hide();
+  m_autoLogged = QStringLiteral("hidden");
+  layout->addWidget(m_autoSection);
+  connect(&m_c, &SketchController::autoConstraintsChanged, this, &SketchPalette::refreshAuto);
+
   m_tool = new QLabel;
   m_tool->setWordWrap(true);
   layout->addWidget(m_tool);
@@ -192,6 +282,79 @@ void SketchPalette::refresh() {
   set(m_constraints, m_c.showConstraints());
   set(m_profiles, m_c.showProfiles());
   set(m_hideAbove, m_c.hideAbove());
+  // Undo may have taken the tool's entities back.
+  refreshAuto();
+}
+
+void SketchPalette::refreshAuto() {
+  const AutoConstraintSession& session = m_c.autoConstraints();
+  const bool shown = m_c.autoConstraintsShown();
+  {
+    const QSignalBlocker blockFirst(m_autoFirst);
+    const QSignalBlocker blockLast(m_autoLast);
+    (session.link() == AutoConstraintSession::Link::First ? m_autoFirst : m_autoLast)->setChecked(true);
+  }
+  const QStringList offered = session.types();
+  QStringList states;
+  for (const QString& type : autoConstraintTypes()) {
+    QCheckBox* box = m_autoChecks.value(type);
+    const QSignalBlocker block(box);
+    box->setVisible(offered.contains(type));
+    box->setChecked(session.checked(type));
+    if (offered.contains(type)) {
+      states << QStringLiteral("%1 (%2)").arg(box->text(), box->isChecked() ? QStringLiteral("x") : QStringLiteral(" "));
+    }
+  }
+  m_autoSection->setVisible(shown);
+  if (!shown) {
+    m_c.setAutoHover(false);
+  }
+  const auto mark = [](const QRadioButton* button) {
+    return QStringLiteral("%1 (%2)").arg(button->text(), button->isChecked() ? QStringLiteral("x") : QStringLiteral(" "));
+  };
+  const QString summary = shown ? QStringLiteral("%1, %2; %3")
+                                      .arg(mark(m_autoFirst), mark(m_autoLast), states.join(QStringLiteral(", ")))
+                                : QStringLiteral("hidden");
+  if (summary == m_autoLogged) {
+    return;
+  }
+  m_autoLogged = summary;
+  // "Palette Auto constraint: Link to first ( ), Link to last (x); Equal ( ), …", for UI tests.
+  qDebug().noquote() << QStringLiteral("Palette %1: %2").arg(m_autoSection->accessibleName(), summary);
+  if (shown) {
+    // Once the section is laid out.
+    TestSync::singleShot(50, this, [this] { logAutoLayout(); });
+  }
+}
+
+void SketchPalette::logAutoLayout() {
+  if (!m_autoSection->isVisible()) {
+    return;
+  }
+  const QPoint section = GlassCard::mapToHost(m_autoSection, m_autoSection->rect().center());
+  qDebug().noquote() << QStringLiteral("Palette %1 at %2,%3").arg(m_autoSection->objectName()).arg(section.x()).arg(section.y());
+  for (const QRadioButton* button : {m_autoFirst, m_autoLast}) {
+    const QPoint center = indicatorCenter(button, QStyle::SE_RadioButtonIndicator);
+    qDebug().noquote() << QStringLiteral("Palette %1 at %2,%3").arg(button->objectName()).arg(center.x()).arg(center.y());
+  }
+  for (const QString& type : autoConstraintTypes()) {
+    const QCheckBox* box = m_autoChecks.value(type);
+    if (box->isVisible()) {
+      const QPoint center = indicatorCenter(box, QStyle::SE_CheckBoxIndicator);
+      qDebug().noquote() << QStringLiteral("Palette %1 at %2,%3").arg(box->objectName()).arg(center.x()).arg(center.y());
+    }
+  }
+}
+
+bool SketchPalette::eventFilter(QObject* watched, QEvent* event) {
+  if (watched == m_autoSection) {
+    if (event->type() == QEvent::Enter) {
+      m_c.setAutoHover(true);
+    } else if (event->type() == QEvent::Leave || event->type() == QEvent::Hide) {
+      m_c.setAutoHover(false);
+    }
+  }
+  return QWidget::eventFilter(watched, event);
 }
 
 void SketchPalette::logLayout() const {

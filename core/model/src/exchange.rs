@@ -913,7 +913,7 @@ pub(crate) fn sketch_drawing<'a>(
                     start_angle,
                     end_angle,
                 } => Geometry::arc(point(*center), *radius, *start_angle, *end_angle),
-                SegmentGeometry::Circle { center, radius } => Geometry::Circle {
+                SegmentGeometry::Circle { center, radius, .. } => Geometry::Circle {
                     center: point(*center),
                     radius: *radius,
                 },

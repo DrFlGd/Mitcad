@@ -109,10 +109,14 @@ fn a_parametric_item_has_no_note_and_an_edit_clears_one() {
 
 #[test]
 fn items_suppressed_or_failed_in_the_file_become_placeholders() {
+    // (An item whose change is in other components; a suppressed one
+    // whose definition does not come in: those that do are in
+    // `suppressed_tests`, mitcad#180.)
     let mut fillet = fillet_item(2);
-    fillet["_f3d"] = json!({"result_no": -1, "flags": "010000"});
+    fillet["_f3d"] = json!({"result_no": -1, "flags": "000001"});
     let mut suppressed = extrude(3, 0, "JoinFeatureOperation", "d2");
     suppressed["isSuppressed"] = json!(true);
+    suppressed["detail"] = Value::Null;
     // An item without geometry gets none.
     let mut group = json!({"index": 4, "name": "Group1", "objectType": "Group"});
     group["isSuppressed"] = json!(true);
@@ -157,13 +161,19 @@ fn items_suppressed_or_failed_in_the_file_become_placeholders() {
     let extrude3 = timeline_item(&doc, "Extrude3");
     assert_eq!(extrude3["type"], "placeholder");
     assert_eq!(extrude3["suppressed"], true);
-    assert_eq!(extrude3["error"], "Suppressed in the file");
+    assert_eq!(
+        extrude3["error"],
+        "Suppressed in the file; its definition did not come in: ExtrudeFeature: no details \
+         decoded"
+    );
     assert_eq!(timeline_item(&doc, "Extrude5")["status"], "ok", "{text}");
     // The report is as before: skipped, with the notes the timeline shows.
     assert_eq!(report.items[3].outcome, Outcome::Skipped);
     assert_eq!(
         report.items[3].note.as_deref(),
-        Some("suppressed in the file")
+        Some(
+            "suppressed in the file; its definition did not come in: ExtrudeFeature: no details decoded"
+        )
     );
     assert!(report.items[3].features.is_empty());
     assert_eq!(doc.bodies().len(), 1, "{text}");

@@ -50,4 +50,9 @@ void registerSketchCommands(CommandRegistry& registry, sketch::SketchController&
 // The constraint commands' ids, in the sketch palette's order.
 QStringList sketchConstraintCommands();
 
+// SHEET METAL (mitcad#210): Face, Flange, Bend, Fold, Corner Round, Corner
+// Chamfer, Sheet Cut, Corner Relief, Unfold, Refold, Flat Pattern and Sheet Rules; the main
+// window adds Edit Sheet Rules, Show Flat Pattern and Export Flat Pattern.
+void registerSheetMetalCommands(CommandRegistry& registry, const CommandContext& context);
+
 } // namespace mitcad

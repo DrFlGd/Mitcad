@@ -5,7 +5,8 @@
 # and writes CMakeUserPresets.json for this checkout.
 # Run as the developer, not as root, after install-packages.sh.
 #
-# Optional: MITCAD_GPU_ADAPTER=NVIDIA selects the GPU Mesa uses under WSLg.
+# Optional: MITCAD_GPU_ADAPTER=NVIDIA selects the GPU Mesa uses under WSLg;
+# MITCAD_RENDER_CUDA=0 builds the renderer without its CUDA device.
 set -euo pipefail
 
 SCRIPT_DIR=$(cd "$(dirname "$0")" && pwd)
@@ -60,9 +61,14 @@ fi
 
 # Every build has the render worker (docs/rendering.md "Building"): Cycles
 # and Open Image Denoise, built once outside the build folders; re-running
-# skips what is done.
-echo "== The render worker's libraries (build-cycles.sh)"
-"$SCRIPT_DIR/build-cycles.sh"
+# skips what is done. With Cycles' CUDA device and its kernels (mitcad#202),
+# which the releases need; MITCAD_RENDER_CUDA=0 leaves them out on a
+# development machine that does not want the kernels' build (about 10
+# minutes).
+CYCLES_ARGS=()
+[ "${MITCAD_RENDER_CUDA:-1}" = 0 ] || CYCLES_ARGS+=(--cuda)
+echo "== The render worker's libraries (build-cycles.sh ${CYCLES_ARGS[*]})"
+"$SCRIPT_DIR/build-cycles.sh" "${CYCLES_ARGS[@]}"
 
 echo "== WSLg GPU settings"
 if [ -e /dev/dxg ] && ! grep -q GALLIUM_DRIVER "$HOME/.profile"; then

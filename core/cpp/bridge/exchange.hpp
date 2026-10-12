@@ -6,6 +6,8 @@
 #include <cstddef>
 #include <cstdint>
 #include <memory>
+#include <string>
+#include <vector>
 
 #include "bridge/shape.hpp"
 #include "mitcad/geometry/shape.hpp"
@@ -15,6 +17,11 @@ namespace mitcad::f3d {
 // Defined in the generated mitcad_bridge/brep_import.h.
 struct BrepBodyData;
 } // namespace mitcad::f3d
+
+namespace mitcad::brep {
+// mitcad/geometry/brep_import.hpp.
+struct Healed;
+} // namespace mitcad::brep
 
 namespace mitcad::bridge {
 
@@ -42,6 +49,30 @@ rust::Vec<F3dBody> f3d_bodies(rust::Str path, bool history, bool owners, ShapeLi
 std::shared_ptr<geometry::Shape> f3d_build_body(const f3d::BrepBodyData& data);
 std::shared_ptr<geometry::Shape> f3d_read_body(rust::Slice<const std::uint8_t> data);
 void catch_occt_crashes();
+
+// A body of an .f3d file built with what the builds of its other history
+// states healed (mitcad#181), and what it keeps for theirs.
+struct F3dBuilt {
+  std::shared_ptr<geometry::Shape> shape;
+  std::shared_ptr<const brep::Healed> healed;
+  std::uint32_t reused = 0;
+  // Why the body was healed as a whole although it had bases (empty when
+  // it was not).
+  std::string note;
+};
+
+// The builds a body's build takes healed faces from.
+struct F3dBases {
+  std::vector<std::shared_ptr<const brep::Healed>> bases;
+};
+
+std::unique_ptr<F3dBases> f3d_bases();
+void f3d_bases_add(F3dBases& bases, const std::shared_ptr<F3dBuilt>& built);
+std::shared_ptr<F3dBuilt> f3d_build_body_from(const f3d::BrepBodyData& data, const F3dBases& bases);
+std::shared_ptr<geometry::Shape> f3d_built_shape(const F3dBuilt& built);
+std::uint32_t f3d_built_reused(const F3dBuilt& built);
+bool f3d_built_kept(const F3dBuilt& built);
+rust::String f3d_built_note(const F3dBuilt& built);
 
 // Bodies built from their neutral B-rep data with a build report (the
 // .ipt import).

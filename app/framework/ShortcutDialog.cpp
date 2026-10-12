@@ -22,8 +22,17 @@ ShortcutDialog::ShortcutDialog(CommandRegistry& registry, QWidget* parent)
     : QDialog(parent), m_registry(registry) {
   setWindowTitle(tr("Keyboard Shortcuts"));
   auto* layout = new QVBoxLayout(this);
-  layout->addWidget(new QLabel(tr("Click a shortcut and press the new keys; "
-                                  "Backspace clears it.")));
+  auto* instructions = new QLabel(tr("Click a shortcut and press the new keys. Use the clear button to remove it. "
+                                    "Commands in separate contexts may share keys."));
+  instructions->setWordWrap(true);
+  layout->addWidget(instructions);
+  if (!registry.shortcutWarnings().isEmpty()) {
+    auto* warning = new QLabel(tr("Some saved shortcuts conflict and are disabled. The commands remain in menus. "
+                                  "Change these bindings or restore defaults:\n%1")
+                                  .arg(registry.shortcutWarnings().join(QLatin1Char('\n'))));
+    warning->setWordWrap(true);
+    layout->addWidget(warning);
+  }
   m_table = new QTableWidget(0, 2);
   m_table->setHorizontalHeaderLabels({tr("Command"), tr("Shortcut")});
   m_table->horizontalHeader()->setSectionResizeMode(0, QHeaderView::Stretch);
@@ -65,27 +74,17 @@ void ShortcutDialog::resetAll() {
 }
 
 void ShortcutDialog::accept() {
-  // One command per shortcut.
-  QHash<QString, QString> used;
+  QHash<QString, QKeySequence> proposed;
   for (int row = 0; row < m_table->rowCount(); ++row) {
-    const QKeySequence keys =
-        static_cast<QKeySequenceEdit*>(m_table->cellWidget(row, 1))->keySequence();
-    if (keys.isEmpty()) {
-      continue;
-    }
-    const QString text = keys.toString(QKeySequence::NativeText);
-    const QString name = m_table->item(row, 0)->text();
-    if (used.contains(text)) {
-      sheetWarning(this, windowTitle(),
-                           tr("%1 is the shortcut of both %2 and %3.").arg(text, used.value(text), name));
-      return;
-    }
-    used.insert(text, name);
+    proposed.insert(m_table->item(row, 0)->data(Qt::UserRole).toString(),
+                    static_cast<QKeySequenceEdit*>(m_table->cellWidget(row, 1))->keySequence());
   }
-  for (int row = 0; row < m_table->rowCount(); ++row) {
-    m_registry.setShortcut(m_table->item(row, 0)->data(Qt::UserRole).toString(),
-                           static_cast<QKeySequenceEdit*>(m_table->cellWidget(row, 1))->keySequence());
+  const auto conflicts = m_registry.shortcutConflicts(proposed);
+  if (!conflicts.isEmpty()) {
+    sheetWarning(this, windowTitle(), conflicts.front().description());
+    return;
   }
+  m_registry.setShortcuts(proposed);
   QDialog::accept();
 }
 

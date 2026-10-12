@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: MIT
+#include "NativeKeys.hpp"
 #include "../NativeDialogs.hpp"
 
 #import <AppKit/AppKit.h>
@@ -23,6 +24,7 @@
 #include <QDialogButtonBox>
 #include <QDoubleSpinBox>
 #include <QDir>
+#include <QEnterEvent>
 #include <QEventLoop>
 #include <QFileDialog>
 #include <QFileInfo>
@@ -34,6 +36,7 @@
 #include <QItemSelectionModel>
 #include <QKeyEvent>
 #include <QKeySequence>
+#include <QShortcut>
 #include <QKeySequenceEdit>
 #include <QLabel>
 #include <QLineEdit>
@@ -114,6 +117,17 @@ class NativeMenuPopup;
 - (void)checked:(id)sender;
 @end
 
+// Only opted-in models forward hover. Persistent indices become invalid
+// when an asynchronous preview replaces the checklist's rows.
+@interface MitcadNativeModelHoverButton : NSButton {
+@public
+  QPointer<QAbstractItemView> presenter;
+  QPersistentModelIndex modelIndex;
+  NSTrackingArea* hoverArea;
+}
+- (void)publishHover:(BOOL)entered;
+@end
+
 @interface MitcadNativeWindowTarget : NSObject <NSWindowDelegate> {
 @public
   mitcad::NativeDialogController* owner;
@@ -148,6 +162,15 @@ class NativeMenuPopup;
 @interface MitcadNativeShortcutField : NSTextField {
 @public
   QPointer<QKeySequenceEdit> edit;
+}
+- (void)clearShortcut:(id)sender;
+@end
+
+// Opt-in hover forwarding for presenters that preview a button's candidates.
+@interface MitcadNativeHoverButton : NSButton {
+@public
+  QPointer<QAbstractButton> presenter;
+  NSTrackingArea* hoverArea;
 }
 @end
 
@@ -304,6 +327,9 @@ public:
   }
   void detachBindings() {
     for (Binding& binding : m_bindings) {
+      if ([binding.control isKindOfClass:MitcadNativeHoverButton.class]) {
+        ((MitcadNativeHoverButton*)binding.control)->presenter.clear();
+      }
       if (binding.control != nil) { binding.control.target = nil; binding.control.action = nullptr; }
       if (binding.stepper != nil) { binding.stepper.target = nil; binding.stepper.action = nullptr; }
       if ([binding.control isKindOfClass:NSTextField.class]) {
@@ -663,11 +689,30 @@ public:
     cell->index = index;
     [m_cells addObject:cell];
     if (index.flags().testFlag(Qt::ItemIsUserCheckable) && index.data(Qt::CheckStateRole).isValid()) {
-      NSButton* check = [NSButton checkboxWithTitle:ns(index.data().toString()) target:cell action:@selector(checked:)];
-      check.state = index.data(Qt::CheckStateRole).toInt() == Qt::Checked ? NSControlStateValueOn : NSControlStateValueOff;
+      NSButton* check;
+      if (view->property("nativeModelHoverEvents").toBool()) {
+        MitcadNativeModelHoverButton* hover = [MitcadNativeModelHoverButton new];
+        hover->presenter = view;
+        hover->modelIndex = index;
+        [hover setButtonType:NSButtonTypeSwitch];
+        hover.title = ns(index.data().toString());
+        hover.target = cell;
+        hover.action = @selector(checked:);
+        check = hover;
+      } else {
+        check = [NSButton checkboxWithTitle:ns(index.data().toString()) target:cell action:@selector(checked:)];
+      }
+      const int state = index.data(Qt::CheckStateRole).toInt();
+      check.allowsMixedState = state == Qt::PartiallyChecked;
+      check.state = state == Qt::PartiallyChecked ? NSControlStateValueMixed
+                    : state == Qt::Checked ? NSControlStateValueOn : NSControlStateValueOff;
+      check.enabled = view->isEnabled() && index.flags().testFlag(Qt::ItemIsEnabled);
+      check.toolTip = ns(plain(index.data(Qt::ToolTipRole).toString()));
+      check.accessibilityIdentifier = ns(index.data(NativeControlIdentifierRole).toString());
       check.translatesAutoresizingMaskIntoConstraints = NO;
       [cell addSubview:check];
       [check.leadingAnchor constraintEqualToAnchor:cell.leadingAnchor constant:3].active = YES;
+      [check.trailingAnchor constraintLessThanOrEqualToAnchor:cell.trailingAnchor constant:-4].active = YES;
       [check.centerYAnchor constraintEqualToAnchor:cell.centerYAnchor].active = YES;
     } else {
       NSTextField* field = label(index.data().toString());
@@ -707,7 +752,9 @@ public:
   void modelEdit(int id, const QPersistentModelIndex& index, const QVariant& value, int role) {
     if (id < 0 || static_cast<std::size_t>(id) >= m_bindings.size() || !index.isValid()) { return; }
     auto* view = qobject_cast<QAbstractItemView*>(m_bindings[static_cast<std::size_t>(id)].widget);
-    if (view != nullptr && view->model() == index.model()) { view->model()->setData(index, value, role); }
+    if (view != nullptr && view->isEnabled() && index.flags().testFlag(Qt::ItemIsEnabled) && view->model() == index.model()) {
+      view->model()->setData(index, value, role);
+    }
   }
   void modelSelection(NSTableView* table) {
     QPointer<AppKitWidgetView> alive(this);
@@ -948,8 +995,14 @@ private:
       field.selectable = NO;
       field.stringValue = ns(edit->keySequence().toString(QKeySequence::NativeText));
       field.placeholderString = ns(tr("Press a shortcut"));
-      bind(widget, field, field);
-      return field;
+      NSButton* clear = [NSButton buttonWithTitle:ns(tr("Clear")) target:field action:@selector(clearShortcut:)];
+      clear.toolTip = ns(tr("Clear shortcut; Delete and Backspace can be recorded as keys"));
+      NSStackView* row = [NSStackView stackViewWithViews:@[field, clear]];
+      row.orientation = NSUserInterfaceLayoutOrientationHorizontal;
+      row.spacing = 6;
+      [field setContentHuggingPriority:NSLayoutPriorityDefaultLow forOrientation:NSLayoutConstraintOrientationHorizontal];
+      bind(widget, row, field);
+      return row;
     }
     if (auto* combo = qobject_cast<QComboBox*>(widget)) {
       NSControl* view;
@@ -963,7 +1016,17 @@ private:
       return view;
     }
     if (auto* button = qobject_cast<QAbstractButton*>(widget)) {
-      NSButton* view = [NSButton buttonWithTitle:ns(title(button->text())) target:m_target action:@selector(perform:)];
+      NSButton* view;
+      if (button->property("nativeHoverEvents").toBool()) {
+        MitcadNativeHoverButton* hover = [[MitcadNativeHoverButton alloc] initWithFrame:NSZeroRect];
+        hover->presenter = button;
+        hover.title = ns(title(button->text()));
+        hover.target = m_target;
+        hover.action = @selector(perform:);
+        view = hover;
+      } else {
+        view = [NSButton buttonWithTitle:ns(title(button->text())) target:m_target action:@selector(perform:)];
+      }
       view.bezelStyle = NSBezelStyleRounded;
       if (qobject_cast<QCheckBox*>(widget) != nullptr) { [view setButtonType:NSButtonTypeSwitch]; }
       else if (qobject_cast<QRadioButton*>(widget) != nullptr) { [view setButtonType:NSButtonTypeRadio]; }
@@ -1146,8 +1209,12 @@ private:
       [table addTableColumn:column];
       if (hierarchical && i == 0) { ((NSOutlineView*)table).outlineTableColumn = column; }
     }
-    if (qobject_cast<QListView*>(view) != nullptr) { table.headerView = nil; }
+    auto* tree = qobject_cast<QTreeView*>(view);
+    if (qobject_cast<QListView*>(view) != nullptr || (tree != nullptr && tree->isHeaderHidden())) { table.headerView = nil; }
     NSScrollView* box = scroll(table, std::max(120, std::min(280, view->minimumHeight())));
+    if (view->maximumHeight() < QWIDGETSIZE_MAX) {
+      [box.heightAnchor constraintLessThanOrEqualToConstant:view->maximumHeight()].active = YES;
+    }
     const int id = bind(view, box);
     m_bindings[static_cast<std::size_t>(id)].table = table;
     table.identifier = ns(QString::number(id));
@@ -1182,7 +1249,7 @@ private:
     if (view->model() == nullptr) { return; }
     // Filter/expanded state can change without a model signal. Preserve
     // native first responder and in-progress cell edits between changes.
-    QByteArray structure;
+    QByteArray structure = view->isEnabled() ? QByteArrayLiteral("enabled") : QByteArrayLiteral("disabled");
     auto describe = [&](auto&& self, const QModelIndex& parent) -> void {
       for (int row = 0; row < view->model()->rowCount(parent); ++row) {
         const QModelIndex index = view->model()->index(row, 0, parent);
@@ -1318,6 +1385,24 @@ public:
     pumpNativeEvents([this] { return m_finished; });
     g_modalWindows.pop_back();
     return m_result;
+  }
+  bool dispatchShortcut(NSEvent* event) {
+    if (!m_widget || m_finished || m_window.attachedSheet || !m_window.isKeyWindow) return false;
+    const QKeySequence sequence = mac::keySequence(event);
+    if (sequence.isEmpty() || sequence[0].keyboardModifiers() == Qt::NoModifier) return false;
+    // Only this presenter's explicit shortcuts participate. Text-view
+    // Return remains a newline; Command+Return reaches the save shortcut.
+    QPointer<QShortcut> match;
+    for (QShortcut* shortcut : m_widget->findChildren<QShortcut*>()) {
+      if (!shortcut->isEnabled() || !shortcut->keys().contains(sequence) ||
+          shortcut->context() == Qt::WidgetShortcut || shortcut->context() == Qt::WidgetWithChildrenShortcut) continue;
+      if (match) return false; // Do not choose arbitrarily between aliases.
+      match = shortcut;
+    }
+    if (!match) return false;
+    if (![m_window makeFirstResponder:nil]) return true;
+    QTimer::singleShot(0, match, [match] { if (match && match->isEnabled()) emit match->activated(); });
+    return true;
   }
   bool closeRequested() {
     m_restoreHost = m_restoreHost || m_window.isKeyWindow;
@@ -1928,39 +2013,7 @@ private:
   }
 
   static void setShortcut(NSMenuItem* item, const QKeySequence& sequence) {
-    if (sequence.count() != 1) return;
-    const QKeyCombination combination = sequence[0];
-    const Qt::KeyboardModifiers modifiers = combination.keyboardModifiers();
-    NSEventModifierFlags flags = 0;
-    if (modifiers.testFlag(Qt::ControlModifier)) flags |= NSEventModifierFlagCommand;
-    if (modifiers.testFlag(Qt::MetaModifier)) flags |= NSEventModifierFlagControl;
-    if (modifiers.testFlag(Qt::AltModifier)) flags |= NSEventModifierFlagOption;
-    if (modifiers.testFlag(Qt::ShiftModifier)) flags |= NSEventModifierFlagShift;
-    const int key = combination.key();
-    unichar character = 0;
-    switch (key) {
-    case Qt::Key_Return: case Qt::Key_Enter: character = NSCarriageReturnCharacter; break;
-    case Qt::Key_Escape: character = 0x1b; break;
-    case Qt::Key_Backspace: character = NSBackspaceCharacter; break;
-    case Qt::Key_Delete: character = NSDeleteFunctionKey; break;
-    case Qt::Key_Tab: character = NSTabCharacter; break;
-    case Qt::Key_Left: character = NSLeftArrowFunctionKey; break;
-    case Qt::Key_Right: character = NSRightArrowFunctionKey; break;
-    case Qt::Key_Up: character = NSUpArrowFunctionKey; break;
-    case Qt::Key_Down: character = NSDownArrowFunctionKey; break;
-    case Qt::Key_Home: character = NSHomeFunctionKey; break;
-    case Qt::Key_End: character = NSEndFunctionKey; break;
-    case Qt::Key_PageUp: character = NSPageUpFunctionKey; break;
-    case Qt::Key_PageDown: character = NSPageDownFunctionKey; break;
-    default:
-      if (key >= Qt::Key_F1 && key <= Qt::Key_F35) character = NSF1FunctionKey + key - Qt::Key_F1;
-      else if (key > 0 && key < 0x10000) character = QChar(ushort(key)).toLower().unicode();
-      break;
-    }
-    if (character) {
-      item.keyEquivalent = [NSString stringWithCharacters:&character length:1];
-      item.keyEquivalentModifierMask = flags;
-    }
+    mac::setKeyEquivalent(item, sequence);
   }
 
   QPointer<QMenu> m_source;
@@ -2040,12 +2093,64 @@ QAction* execNativeMenu(QMenu* menu, const QPoint& point) {
 }
 @end
 
+@implementation MitcadNativeModelHoverButton
+- (BOOL)becomeFirstResponder {
+  const BOOL accepted = [super becomeFirstResponder];
+  if (accepted) { [self publishHover:YES]; }
+  return accepted;
+}
+- (BOOL)resignFirstResponder {
+  const BOOL accepted = [super resignFirstResponder];
+  if (accepted) { [self publishHover:NO]; }
+  return accepted;
+}
+- (void)updateTrackingAreas {
+  if (hoverArea != nil) { [self removeTrackingArea:hoverArea]; }
+  hoverArea = [[NSTrackingArea alloc] initWithRect:NSZeroRect
+      options:NSTrackingMouseEnteredAndExited | NSTrackingActiveInActiveApp | NSTrackingInVisibleRect
+      owner:self userInfo:nil];
+  [self addTrackingArea:hoverArea];
+  [super updateTrackingAreas];
+}
+- (void)mouseEntered:(NSEvent*)event {
+  (void)event;
+  [self publishHover:YES];
+}
+- (void)mouseExited:(NSEvent*)event {
+  (void)event;
+  [self publishHover:NO];
+}
+- (void)publishHover:(BOOL)entered {
+  if (presenter != nullptr && (!entered || modelIndex.isValid())) {
+    const QModelIndex index = entered ? QModelIndex(modelIndex) : QModelIndex();
+    QMetaObject::invokeMethod(presenter.data(), "entered", Qt::DirectConnection,
+                              Q_ARG(QModelIndex, index));
+  }
+}
+@end
+
 @implementation MitcadNativeWindowTarget
 - (BOOL)windowShouldClose:(NSWindow*)sender { (void)sender; return owner == nullptr ? YES : owner->closeRequested(); }
 @end
 
 @implementation MitcadNativeSecondaryWindow
 - (BOOL)performKeyEquivalent:(NSEvent*)event {
+  if ([self.firstResponder isKindOfClass:MitcadNativeShortcutField.class])
+    return [(MitcadNativeShortcutField*)self.firstResponder performKeyEquivalent:event];
+  const QKeySequence sequence = mitcad::mac::keySequence(event);
+  if (!sequence.isEmpty() && sequence[0].keyboardModifiers() == Qt::NoModifier &&
+      (sequence[0].key() == Qt::Key_Return || sequence[0].key() == Qt::Key_Enter) &&
+      [self.firstResponder isKindOfClass:NSTextView.class]) {
+    NSTextView* text = (NSTextView*)self.firstResponder;
+    if (text.editable && !text.isFieldEditor) {
+      [text insertNewline:self];
+      return YES;
+    }
+  }
+  if ([self.delegate isKindOfClass:MitcadNativeWindowTarget.class]) {
+    MitcadNativeWindowTarget* target = (MitcadNativeWindowTarget*)self.delegate;
+    if (target->owner && target->owner->dispatchShortcut(event)) return YES;
+  }
   const NSEventModifierFlags modifiers = event.modifierFlags &
       (NSEventModifierFlagCommand | NSEventModifierFlagControl | NSEventModifierFlagOption | NSEventModifierFlagShift);
   if (modifiers == NSEventModifierFlagCommand &&
@@ -2179,7 +2284,37 @@ QAction* execNativeMenu(QMenu* menu, const QPoint& point) {
 }
 @end
 
+@implementation MitcadNativeHoverButton
+- (void)updateTrackingAreas {
+  if (hoverArea != nil) { [self removeTrackingArea:hoverArea]; }
+  hoverArea = [[NSTrackingArea alloc] initWithRect:NSZeroRect
+                                       options:NSTrackingMouseEnteredAndExited | NSTrackingActiveInKeyWindow | NSTrackingInVisibleRect
+                                         owner:self userInfo:nil];
+  [self addTrackingArea:hoverArea];
+  [super updateTrackingAreas];
+}
+- (void)mouseEntered:(NSEvent*)event {
+  (void)event;
+  if (presenter != nullptr && self.enabled && !self.hidden) {
+    QEnterEvent enter{QPointF(), QPointF(), QPointF()};
+    QCoreApplication::sendEvent(presenter, &enter);
+  }
+}
+- (void)mouseExited:(NSEvent*)event {
+  (void)event;
+  if (presenter != nullptr) {
+    QEvent leave(QEvent::Leave);
+    QCoreApplication::sendEvent(presenter, &leave);
+  }
+}
+@end
+
 @implementation MitcadNativeShortcutField
+- (void)clearShortcut:(id)sender {
+  (void)sender;
+  if (edit) edit->clear();
+  self.stringValue = @"";
+}
 - (BOOL)becomeFirstResponder { return YES; }
 - (BOOL)acceptsFirstResponder { return YES; }
 - (void)mouseDown:(NSEvent*)event { (void)event; [self.window makeFirstResponder:self]; }
@@ -2190,29 +2325,9 @@ QAction* execNativeMenu(QMenu* menu, const QPoint& point) {
 }
 - (void)keyDown:(NSEvent*)event {
   if (edit == nullptr) { return; }
-  if (event.keyCode == 51 || event.keyCode == 117) { edit->setKeySequence(QKeySequence()); self.stringValue = @""; return; }
-  int key = 0;
-  switch (event.keyCode) {
-  case 36: key = Qt::Key_Return; break;
-  case 53: key = Qt::Key_Escape; break;
-  case 48: key = Qt::Key_Tab; break;
-  case 123: key = Qt::Key_Left; break;
-  case 124: key = Qt::Key_Right; break;
-  case 125: key = Qt::Key_Down; break;
-  case 126: key = Qt::Key_Up; break;
-  default: {
-    QString text = QString::fromUtf8(event.charactersIgnoringModifiers.UTF8String).toUpper();
-    if (!text.isEmpty()) { key = text.front().unicode(); }
-    break;
-  }
-  }
-  if (key == 0) { return; }
-  Qt::KeyboardModifiers modifiers;
-  if ((event.modifierFlags & NSEventModifierFlagCommand) != 0) { modifiers |= Qt::ControlModifier; }
-  if ((event.modifierFlags & NSEventModifierFlagControl) != 0) { modifiers |= Qt::MetaModifier; }
-  if ((event.modifierFlags & NSEventModifierFlagOption) != 0) { modifiers |= Qt::AltModifier; }
-  if ((event.modifierFlags & NSEventModifierFlagShift) != 0) { modifiers |= Qt::ShiftModifier; }
-  edit->setKeySequence(QKeySequence(QKeyCombination(modifiers, static_cast<Qt::Key>(key))));
-  self.stringValue = [[NSString alloc] initWithUTF8String:edit->keySequence().toString(QKeySequence::NativeText).toUtf8().constData()];
+  const QKeySequence sequence = mitcad::mac::keySequence(event);
+  if (sequence.isEmpty()) return;
+  edit->setKeySequence(sequence);
+  self.stringValue = sequence.toString(QKeySequence::NativeText).toNSString();
 }
 @end

@@ -106,7 +106,9 @@ pub enum GeomRef {
 /// A path: connected edges of one body in order (the path runs from the
 /// free end of the first edge), a sketch line, arc or circle in its own
 /// direction (a circle starts on its sketch x axis and runs
-/// counter-clockwise), or a fixed straight line.
+/// counter-clockwise), several lines and arcs of one sketch joined end to
+/// end (the path runs from the free end of the first listed curve, as
+/// the paths of sweeps do: `path.rs`), or a fixed straight line.
 #[derive(Debug, Clone, PartialEq)]
 pub enum PathRef {
     Edges {
@@ -121,6 +123,11 @@ pub enum PathRef {
         start: Vec3,
         end: Vec3,
     },
+    /// Two or more curves of a sketch, joined end to end.
+    SketchCurves {
+        sketch: FeatureUid,
+        curves: Vec<EntityUid>,
+    },
 }
 
 /// What a reference must be.
@@ -132,7 +139,8 @@ pub enum Want {
     /// An origin axis, a construction axis, a (straight) edge, a sketch
     /// line or a fixed axis.
     Line,
-    /// A line, or an axis of a circular edge or a face of revolution.
+    /// A line, or an axis of a circular edge, a circle or an arc of a
+    /// sketch, or a face of revolution.
     Axis,
     /// The origin point, a construction point, a vertex, the centre or
     /// middle of an edge, a sketch point or a fixed point.
@@ -147,6 +155,10 @@ pub enum Want {
     /// A surface to replace faces with: a plane, a face of any surface
     /// type or a body (its faces).
     Surface,
+    /// A face, or a plane (an origin plane, a construction plane or a fixed
+    /// plane: a planar face is its whole plane): what an axis normal to a
+    /// face at a point is measured from.
+    FaceOrPlane,
 }
 
 impl Want {
@@ -160,12 +172,13 @@ impl Want {
             Self::EdgeOrFace => "an edge or a face",
             Self::Tool => "a plane, a face, a body or sketch curves",
             Self::Surface => "a plane, a face or a body",
+            Self::FaceOrPlane => "a face or a plane",
         }
     }
 
     fn datum(self) -> Option<DatumKind> {
         match self {
-            Self::Plane | Self::Tool | Self::Surface => Some(DatumKind::Plane),
+            Self::Plane | Self::Tool | Self::Surface | Self::FaceOrPlane => Some(DatumKind::Plane),
             Self::Line | Self::Axis => Some(DatumKind::Axis),
             Self::Point => Some(DatumKind::Point),
             Self::Face | Self::EdgeOrFace => None,
@@ -187,6 +200,7 @@ impl Want {
                     | Self::EdgeOrFace
                     | Self::Tool
                     | Self::Surface
+                    | Self::FaceOrPlane
             ),
             G::Edge { .. } => matches!(
                 self,
@@ -195,7 +209,10 @@ impl Want {
             G::Vertex { .. } | G::SketchPoint { .. } | G::FixedPoint(_) => self == Self::Point,
             G::Body(_) => matches!(self, Self::Tool | Self::Surface),
             G::SketchCurves { .. } => matches!(self, Self::Line | Self::Axis | Self::Tool),
-            G::FixedPlane { .. } => matches!(self, Self::Plane | Self::Tool | Self::Surface),
+            G::FixedPlane { .. } => matches!(
+                self,
+                Self::Plane | Self::Tool | Self::Surface | Self::FaceOrPlane
+            ),
             G::FixedAxis { .. } => matches!(self, Self::Line | Self::Axis),
         }
     }
@@ -393,7 +410,18 @@ fn check_sketch_curves(
                 curve.curve_name()
             ));
         }
+        // An axis may also be a circle or an arc: the line through its
+        // centre normal to the sketch.
+        let round = want == Want::Axis
+            && matches!(
+                entity.map(|e| &e.kind),
+                Some(
+                    crate::sketch::EntityKind::Circle { .. }
+                        | crate::sketch::EntityKind::Arc { .. }
+                )
+            );
         if line
+            && !round
             && !matches!(
                 entity.map(|e| &e.kind),
                 Some(crate::sketch::EntityKind::Line { .. })
@@ -416,7 +444,7 @@ impl PathRef {
                 references.body(*body);
                 references.edges(edges);
             }
-            Self::SketchCurve { sketch, .. } => {
+            Self::SketchCurve { sketch, .. } | Self::SketchCurves { sketch, .. } => {
                 references.features.insert(*sketch);
             }
             Self::Line { .. } => {}
@@ -443,6 +471,28 @@ impl PathRef {
                         curve.curve_name()
                     ))
                 }
+            }
+            Self::SketchCurves { sketch, curves } => {
+                let (entry, def) = ctx.sketch(*sketch)?;
+                if curves.len() < 2 {
+                    return Err("a path of several curves needs at least two".to_owned());
+                }
+                for (i, curve) in curves.iter().enumerate() {
+                    if curves[..i].contains(curve) {
+                        return Err(format!(
+                            "curve {} is listed more than once",
+                            curve.curve_name()
+                        ));
+                    }
+                    if !def.entity(*curve).is_some_and(|e| !e.is_point()) {
+                        return Err(format!(
+                            "{} has no curve {}",
+                            entry.name,
+                            curve.curve_name()
+                        ));
+                    }
+                }
+                Ok(())
             }
             Self::Line { start, end } => {
                 finite("path", &[*start, *end].concat())?;
@@ -599,6 +649,14 @@ fn sketch_line(
     let frame = output.frame;
     let ends = match output.solved.curves.get(&curve) {
         Some(Curve2::Line { a, b }) => Some((frame.point(*a), frame.point(*b))),
+        // A circle or an arc as an axis: the line through its centre
+        // normal to the sketch's plane.
+        Some(Curve2::Circle { center, .. } | Curve2::Arc { center, .. }) => {
+            return Ok(DatumAxis {
+                origin: frame.point(*center),
+                direction: unit(frame.normal()).ok_or("the sketch has no normal")?,
+            });
+        }
         Some(_) => None,
         None => output
             .regions
@@ -683,9 +741,28 @@ pub(crate) fn resolve_face_point(
     near: Vec3,
 ) -> Result<SurfacePoint, String> {
     let GeomRef::Face { body, face } = reference else {
-        return Err(format!("{reference} is not a face"));
+        // A plane stands for a planar face: its whole plane.
+        let plane =
+            resolve_plane(r, reference).map_err(|_| format!("{reference} is not a face"))?;
+        let n = plane.normal();
+        return Ok(SurfacePoint {
+            point: sub(near, scale(n, dot(sub(near, plane.origin), n))),
+            normal: n,
+        });
     };
     let shape = r.shape(*body)?;
+    // A planar face is its whole plane (mitcad#186: the reference model of an
+    // axis perpendicular to a face at a point outside it goes through the
+    // point's projection onto the plane).
+    if let Ok(SurfaceGeometry::Plane { origin, normal }) = r.kernel().face_geometry(&shape, face)
+        && let Some(n) = unit(normal)
+    {
+        let d = dot(sub(near, origin), n);
+        return Ok(SurfacePoint {
+            point: sub(near, scale(n, d)),
+            normal: n,
+        });
+    }
     r.kernel()
         .face_point_normal(&shape, face, near)
         .map_err(|e| format!("face {face}: {e}"))
@@ -703,8 +780,98 @@ pub(crate) fn resolve_path(
                 .path_point(&shape, edges, at)
                 .map_err(|e| format!("path: {e}"))
         }
+        PathRef::SketchCurves { sketch, curves } => {
+            Ok(chain_point(&sketch_chain(r, *sketch, curves)?, at))
+        }
         _ => Ok(path_curve(r, path)?.path_point(at)),
     }
+}
+
+/// The lines and arcs of a sketch joined end to end, in order along the
+/// path (`path.rs`: it runs from the free end of the first listed curve).
+fn sketch_chain(
+    r: &mut impl Resolver,
+    sketch: FeatureUid,
+    curves: &[EntityUid],
+) -> Result<Vec<PathCurve>, String> {
+    use super::path::{chain, curve3};
+    use crate::kernel::Curve3;
+    use crate::sweeps::PathCurve as Piece;
+    let output = r.sketch(sketch)?;
+    let mut pieces = Vec::new();
+    for id in curves {
+        let curve = output
+            .solved
+            .curves
+            .get(id)
+            .ok_or_else(|| format!("{} has no curve {}", r.name(sketch), id.curve_name()))?;
+        pieces.push(Piece {
+            name: id.curve_name(),
+            curve: curve3(&output.frame, curve),
+        });
+    }
+    chain(pieces)?
+        .into_iter()
+        .map(|piece| match piece.curve {
+            Curve3::Line { start, end } => PathCurve::line(start, end),
+            Curve3::Conic {
+                center,
+                normal,
+                x_axis,
+                major,
+                minor,
+                start,
+                end,
+                closed: false,
+            } if (major - minor).abs() <= LINEAR => {
+                let y_axis = crate::profile::cross(normal, x_axis);
+                let (sin, cos) = start.sin_cos();
+                Ok(PathCurve::Arc {
+                    center,
+                    x: add(scale(x_axis, cos), scale(y_axis, sin)),
+                    y: add(scale(x_axis, -sin), scale(y_axis, cos)),
+                    radius: major,
+                    sweep: end - start,
+                })
+            }
+            _ => Err(format!("curve {} is not a line or an arc", piece.name)),
+        })
+        .collect()
+}
+
+/// A point of a chain of curves, as [`PathCurve::path_point`] gives one of
+/// a single curve: a fraction of the whole length, a length from the
+/// start (a vertex between two curves takes the tangent of the first),
+/// or the nearest point; beyond the ends it continues straight.
+fn chain_point(chain: &[PathCurve], at: PathParameter) -> PathPoint {
+    let total: f64 = chain.iter().map(PathCurve::length).sum();
+    let s = match at {
+        PathParameter::Fraction(f) => f * total,
+        PathParameter::Length(l) => l,
+        PathParameter::Near(p) => {
+            let mut best = (f64::INFINITY, 0.0);
+            let mut before = 0.0;
+            for piece in chain {
+                let local = piece.nearest(p);
+                let distance = norm(sub(piece.point(local), p));
+                if distance < best.0 - 1e-12 {
+                    best = (distance, before + local);
+                }
+                before += piece.length();
+            }
+            best.1
+        }
+    };
+    let mut before = 0.0;
+    for (i, piece) in chain.iter().enumerate() {
+        let length = piece.length();
+        let last = i + 1 == chain.len();
+        if s <= before + length || last {
+            return piece.path_point(PathParameter::Length(s - before));
+        }
+        before += length;
+    }
+    unreachable!("a chain has curves")
 }
 
 /// The curve of a sketch-curve or line path.
@@ -714,6 +881,9 @@ pub(crate) fn path_curve(r: &mut impl Resolver, path: &PathRef) -> Result<PathCu
         PathRef::SketchCurve { sketch, curve } => (*sketch, *curve),
         PathRef::Edges { .. } => {
             return Err("a path of edges has no analytic curve".to_owned());
+        }
+        PathRef::SketchCurves { .. } => {
+            return Err("a path of several curves is not one curve".to_owned());
         }
     };
     let output = r.sketch(sketch)?;
@@ -739,9 +909,11 @@ pub(crate) fn path_curve(r: &mut impl Resolver, path: &PathRef) -> Result<PathCu
         SegmentGeometry::Line { start, end } => {
             PathCurve::line(frame.point(start), frame.point(end))
         }
-        SegmentGeometry::Circle { center, radius } => {
-            Ok(arc(center, radius, 0.0, std::f64::consts::TAU))
-        }
+        SegmentGeometry::Circle {
+            center,
+            radius,
+            start,
+        } => Ok(arc(center, radius, start, start + std::f64::consts::TAU)),
         SegmentGeometry::Arc {
             center,
             radius,
@@ -1055,6 +1227,13 @@ impl Serialize for PathRef {
                 map.insert("start".to_owned(), vec3(start));
                 map.insert("end".to_owned(), vec3(end));
             }
+            Self::SketchCurves { sketch, curves } => {
+                map.insert("sketch".to_owned(), sketch.to_string().into());
+                map.insert(
+                    "curves".to_owned(),
+                    curves.iter().map(|c| Value::from(c.curve_name())).collect(),
+                );
+            }
         }
         map.serialize(serializer)
     }
@@ -1308,6 +1487,10 @@ impl PathRef {
                 body: f.need("body", "a path of edges")?,
                 edges: f.need("edges", "a path of edges")?,
             },
+            None if f.has("sketch") && f.has("curves") => Self::SketchCurves {
+                sketch: f.need("sketch", "a sketch path")?,
+                curves: f.curves("curves")?.unwrap_or_default(),
+            },
             None if f.has("sketch") => Self::sketch_curve(&mut f)?,
             None => Self::line(&mut f)?,
         };
@@ -1459,6 +1642,36 @@ mod tests {
             let error = serde_json::from_value::<GeomRef>(value).unwrap_err();
             assert!(error.to_string().contains(expected), "{error}");
         }
+    }
+
+    #[test]
+    fn a_path_of_several_sketch_curves_round_trips() {
+        let value = json!({"sketch": "F3", "curves": ["c2", "c1", "c4"]});
+        let path: PathRef = serde_json::from_value(value.clone()).unwrap();
+        assert!(matches!(&path, PathRef::SketchCurves { curves, .. } if curves.len() == 3));
+        assert_eq!(serde_json::to_value(&path).unwrap(), value);
+    }
+
+    #[test]
+    fn chains_of_curves_give_points_along_their_whole_length() {
+        let line = |a: Vec3, b: Vec3| PathCurve::line(a, b).unwrap();
+        let chain = [
+            line([0.0; 3], [10.0, 0.0, 0.0]),
+            line([10.0, 0.0, 0.0], [10.0, 20.0, 0.0]),
+        ];
+        let half = chain_point(&chain, PathParameter::Fraction(0.5));
+        assert_eq!(half.point, [10.0, 5.0, 0.0]);
+        assert_eq!(half.tangent, [0.0, 1.0, 0.0]);
+        // A corner takes the tangent of the curve before it.
+        let corner = chain_point(&chain, PathParameter::Length(10.0));
+        assert_eq!(corner.point, [10.0, 0.0, 0.0]);
+        assert_eq!(corner.tangent, [1.0, 0.0, 0.0]);
+        let beyond = chain_point(&chain, PathParameter::Length(35.0));
+        assert_eq!(beyond.point, [10.0, 25.0, 0.0]);
+        let before = chain_point(&chain, PathParameter::Length(-4.0));
+        assert_eq!(before.point, [-4.0, 0.0, 0.0]);
+        let near = chain_point(&chain, PathParameter::Near([12.0, 18.0, 5.0]));
+        assert_eq!(near.point, [10.0, 18.0, 0.0]);
     }
 
     #[test]

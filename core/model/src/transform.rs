@@ -9,7 +9,7 @@ use crate::topo::{FaceName, RoleKey};
 
 /// An affine map of model space, `p' = linear · p + translation`: a rigid
 /// motion, a mirror or a scale.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Transform {
     /// Row-major.
     pub linear: [[f64; 3]; 3],

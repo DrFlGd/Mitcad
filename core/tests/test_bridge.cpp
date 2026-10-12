@@ -518,6 +518,63 @@ void test_datums_and_analysis_shapes() {
   CHECK(contains(text, "mass 0.376800 kg"));
 }
 
+// A world section must clip each local body before its usual placement.
+// Rotated nested occurrences catch both missing and double transforms.
+void test_section_occurrence_coordinates() {
+  auto document = mitcad::new_document();
+  run(*document, R"({"cmd":"create_component","name":"Assembly","transform":{"translation":[0,0,100]}})");
+  run(*document, R"({"cmd":"create_component","name":"Block","transform":{
+      "rotation":{"axis":[0,1,0],"angle":1.5707963267948966}}})");
+  run(*document, R"({"cmd":"sketch.create"})");
+  run(*document, R"({"cmd":"sketch.add_rectangle","sketch":"F1","corner":[0,0],"width":20,"height":20})");
+  run(*document, extrude("F1", kRectangle, 10, "new_body"));
+  run(*document, R"({"cmd":"activate_component","component":"C0"})");
+  run(*document, R"({"cmd":"copy_occurrence","occurrence":"Assembly:1","transform":{"translation":[30,0,100]}})");
+  for (const char* path : {"O1/O2", "O3/O2"}) {
+    for (int sign : {1, -1}) {
+      const std::string request = std::string(R"({"plane":{"origin":[0,0,90],"normal":[0,0,)") +
+          std::to_string(sign) + R"(]},"body":"F2.b0","occurrence":")" + path + "\"";
+      const auto clipped = document->analysis_shape("{\"shape\":\"clip\"," + request.substr(1) + "}");
+      CHECK(clipped && near(mitcad::geometry::volume(*clipped), 2000.0));
+      if (clipped) {
+        // World z = 100 - local x: the kept half changes sides, in place.
+        const auto box = mitcad::geometry::bounding_box(*clipped);
+        CHECK(!box.empty && near(box.min.X(), sign == 1 ? 10.0 : 0.0));
+        CHECK(!box.empty && near(box.max.X(), sign == 1 ? 20.0 : 10.0));
+        CHECK(!box.empty && near(box.min.Z(), 0.0) && near(box.max.Z(), 10.0));
+      }
+      const auto cap = document->analysis_shape("{\"shape\":\"section\"," + request.substr(1) + "}");
+      CHECK(cap && near(mitcad::geometry::mass_properties(*cap).area, 200.0));
+    }
+  }
+  // A plane outside the body legitimately retains all or none of it.
+  const auto all = document->analysis_shape(R"({"shape":"clip","plane":{
+      "origin":[0,0,110],"normal":[0,0,1]},"body":"F2.b0","occurrence":"O1/O2"})");
+  const auto none = document->analysis_shape(R"({"shape":"clip","plane":{
+      "origin":[0,0,110],"normal":[0,0,-1]},"body":"F2.b0","occurrence":"O1/O2"})");
+  CHECK(all && near(mitcad::geometry::volume(*all), 4000.0));
+  CHECK(none && near(mitcad::geometry::volume(*none), 0.0));
+  CHECK(near(body_volume(*document), 4000.0));
+  // Existing callers without occurrence still get component-local planes.
+  const auto legacy = document->analysis_shape(R"({"shape":"clip","plane":{
+      "origin":[10,0,0],"normal":[1,0,0]},"body":"F2.b0"})");
+  CHECK(legacy && near(mitcad::geometry::volume(*legacy), 2000.0));
+  CHECK(throws_with([&] { document->analysis_shape(R"({"shape":"clip","plane":"xy",
+      "body":"F2.b0","occurrence":"O1"})"); }, "does not own body"));
+  const std::string query = R"({"query":"section","world":true,"plane":{"origin":[0,0,90],"normal":[0,0,1]}})";
+  const auto area = [&] {
+    const std::string result(document->query(query));
+    // JSON object keys are sorted, so the first area is the total.
+    const auto at = result.find("\"area\":");
+    return at == std::string::npos ? -1.0 : std::strtod(result.c_str() + at + 7, nullptr);
+  };
+  CHECK(near(area(), 400.0));
+  run(*document, R"({"cmd":"set_occurrence_visible","occurrence":"Assembly:2","visible":false})");
+  CHECK(near(area(), 200.0));
+  run(*document, R"({"cmd":"undo"})");
+  CHECK(near(area(), 400.0));
+}
+
 // Background computation (P7): a document computed on another thread.
 
 // A thread that runs one job at a time and hands the document back, as the
@@ -1062,6 +1119,7 @@ int main() {
   test_report();
   test_design_file_errors();
   test_datums_and_analysis_shapes();
+  test_section_occurrence_coordinates();
   test_job_cancelled_from_another_thread();
   test_jobs_handed_between_threads();
   test_kernel_operation_cancelled_inside();

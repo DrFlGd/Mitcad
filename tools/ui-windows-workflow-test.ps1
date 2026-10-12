@@ -46,6 +46,10 @@
 #      joint dragged in the view turns about its joint (one undo step); Joint
 #      (J) puts a cap's top face onto a plate's, flipped, the preview showing
 #      the cap where it goes.
+#  14. Extrude's profile clicks (mitcad#199) in a sketch of a placed
+#      component: a click on the newest profile takes it out instead of
+#      listing it twice; clicks on nested squares' regions toggle them, and
+#      the bodies have the odd/even area that is left.
 # Commands without a default shortcut get one in the test's settings
 # (popups such as the command search close at once in session 0).
 # Mitcad runs with Mesa's software OpenGL (MITCAD_MESA_DIR) in session 0
@@ -558,5 +562,65 @@ Ui-Mark
 Ui-Step 'OK (Enter)'                     { Ui-Key 'Return' }
 Ui-ExpectNew 'Added joint Joint2 (rigid): placed, moved O3' 'the cap placed by the joint'
 Ui-ExpectNew 'Browser joints: Joint1 placed, Joint2 placed' 'the browser lists both joints'
+
+Write-Host "--- Extrude's profile clicks toggle one entry per region (mitcad#199)"
+# The design: Part:1 (O1) with Sketch1 (F1): squares A (60), B (40) and C
+# (20) nested about the origin, lines c1..c4, c9..c12 and c17..c20 (each
+# rectangle's corner points after its lines): the ring a between A and B,
+# the ring b between B and C and the square c, the newest profile.
+$ringA = 'r{c1[c4,c2],c2[c1,c3],c3[c2,c4],c4[c3,c1]}'
+$ringB = 'r{c9[c12,c10],c10[c9,c11],c11[c10,c12],c12[c11,c9]}'
+$squareC = 'r{c17[c20,c18],c18[c17,c19],c19[c18,c20],c20[c19,c17]}'
+$toggleScript = Join-Path $work 'toggle.json'
+$toggle = Join-Path $work 'toggle.mitcad'
+Set-Content -Encoding ascii $toggleScript @'
+[
+  {"cmd": "create_component", "name": "Part"},
+  {"cmd": "sketch.create"},
+  {"cmd": "sketch.add_rectangle", "sketch": "F1", "corner": [-30, -30], "width": 60, "height": 60},
+  {"cmd": "sketch.add_rectangle", "sketch": "F1", "corner": [-20, -20], "width": 40, "height": 40},
+  {"cmd": "sketch.add_rectangle", "sketch": "F1", "corner": [-10, -10], "width": 20, "height": 20}
+]
+'@
+$made = & $cli run $toggleScript --save $toggle
+if ($LASTEXITCODE -ne 0 -or -not (Test-Path $toggle)) { Ui-Fail "mitcad-cli: $($made -join ' / ')" }
+Ui-StartApp 'toggle' @('--open', $toggle)
+Ui-ExpectLog "Opened $workLogged/toggle.mitcad" 'the design opened'
+Ui-Step 'fit (F6)'                       { Ui-Key 'F6' }
+Ui-Mark
+Ui-Step 'extrude (E)'                    { Ui-Key 'e' }
+Ui-ExpectNew "Extrude Profiles: 1 profile [profile $squareC of F1 in O1]" 'the newest profile, where Part:1 shows it'
+Ui-ExpectNew 'Pick profile F1/' "Sketch1's profiles can be picked"
+Ui-Mark
+Ui-Step 'click the square c'             { Ui-ClickPick "profile F1/$squareC" }
+Ui-ExpectNew 'Extrude Profiles: nothing' 'the click took the newest profile out'
+Ui-Mark
+Ui-Step 'click the ring a'               { Ui-ClickPick "profile F1/$ringA" }
+Ui-ExpectNew "Extrude Profiles: 1 profile [profile $ringA of F1 in O1]" 'the ring a'
+Ui-Mark
+Ui-Step 'click the ring b'               { Ui-ClickPick "profile F1/$ringB" }
+Ui-ExpectNew 'Extrude Profiles: 2 profiles' 'the ring b too'
+Ui-Mark
+Ui-Step 'click the square c'             { Ui-ClickPick "profile F1/$squareC" }
+Ui-ExpectNew 'Extrude Profiles: 3 profiles' 'all of A'
+Ui-Mark
+Ui-Step 'click the ring b again'         { Ui-ClickPick "profile F1/$ringB" }
+Ui-ExpectNew "Extrude Profiles: 2 profiles [profile $ringA of F1 in O1; profile $squareC of F1 in O1]" 'A minus B plus C'
+Ui-ExpectNew 'Preview Extrude: ok' 'previewed'
+if ((Ui-LogLines) | Where-Object { $_.Contains('is listed more than once') }) { Ui-Fail 'a profile was listed twice' }
+Ui-Mark
+Ui-Step 'OK (Enter)'                     { Ui-Key 'Return' }
+Ui-ExpectNew 'Added extrude (New Body), distance 10' 'the extrusion added' 30
+Ui-ExpectNew 'New body ' 'its bodies measured' 30
+Start-Sleep -Milliseconds 500
+# 10 mm of the ring a (60^2 - 40^2) and the square c (20^2), in its bodies.
+$lines = Ui-LogLines
+$added = 0.0
+foreach ($line in $lines[$script:UiMark..($lines.Count - 1)]) {
+  if ($line -match 'New body \S+ \(F2\.b\d+\): volume ([0-9.]+) mm3') { $added += [double]::Parse($Matches[1], $invariant) }
+}
+$expected = 10 * (3600 - 1600 + 400)
+if ([Math]::Abs($added - $expected) -gt 1e-6 * $expected) { Ui-Fail "new bodies of $added mm3, expected $expected" }
+Write-Host "ok   the odd/even area extruded: $added mm3"
 
 Ui-Finish 'UI Windows workflow test'

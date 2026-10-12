@@ -37,7 +37,7 @@ wsl -d mitcad-dev --cd "~/src/mitcad" -- bash -lc "cmake --preset dev && cmake -
 |---|---|
 | `sync-to-wsl.sh [distro] [dir]` | Mirrors tracked and non-ignored untracked files into the distro (default `mitcad-dev`, `~/src/mitcad`). Only files whose content differs are replaced and get the sync time, so switching branches rebuilds exactly what changed. Deletes removed files; keeps `build/` and `CMakeUserPresets.json`. |
 | `install-packages.sh` | System packages (compilers, CMake, Ninja, ccache, rsync, X11/OpenGL headers, gdb, Xvfb, xdotool, rsvg-convert, ImageMagick; mosquitto for the live updates' tests, its service disabled; libsecret's headers for QtKeychain and GNOME's keyring for the keychain's test). Run as root. |
-| `setup-user.sh` | Pinned per-user toolchain: Rust from `rust-toolchain.toml`, cargo-deny, vcpkg at `vcpkg.json`'s `builtin-baseline`, Qt via aqtinstall, the render worker's Cycles and Open Image Denoise (`build-cycles.sh`, once); writes `CMakeUserPresets.json` (`dev` = Linux debug). Under WSLg sets `GALLIUM_DRIVER=d3d12`; `MITCAD_GPU_ADAPTER=NVIDIA` picks a GPU. |
+| `setup-user.sh` | Pinned per-user toolchain: Rust from `rust-toolchain.toml`, cargo-deny, vcpkg at `vcpkg.json`'s `builtin-baseline`, Qt via aqtinstall, the render worker's Cycles with its CUDA device and Open Image Denoise (`build-cycles.sh --cuda`, once; `MITCAD_RENDER_CUDA=0` without CUDA); writes `CMakeUserPresets.json` (`dev` = Linux debug). Under WSLg sets `GALLIUM_DRIVER=d3d12`; `MITCAD_GPU_ADAPTER=NVIDIA` picks a GPU. |
 | `install-appimage-tools.sh` | AppImage tools into `~/appimage-tools` (`MITCAD_APPIMAGE_TOOLS`), see [below](#tools-downloaded-from-releases). |
 
 Parallel checkouts: `sync-to-wsl.sh mitcad-dev src/mitcad-<name>` and copy
@@ -67,7 +67,7 @@ ssh -i <key> <user>@<vm-host> "cd /d C:\dev\src\mitcad && tools\dev-env\msvc.cmd
 | Script | Use |
 |---|---|
 | `sync-to-vm.sh [user@host] [dir]` | Like `sync-to-wsl.sh`, over SSH. Defaults: `MITCAD_VM`, `MITCAD_VM_DIR` (`C:/dev/src/mitcad`), `MITCAD_VM_KEY` (`~/.ssh/mitcad_vm`). |
-| `setup-windows.ps1 [-Repo <dir>]` | Installs Git, CMake, Ninja, Rustup, Python, NSIS (winget), ccache, the pinned Rust toolchain, cargo-deny, vcpkg and Qt under `C:\dev`, the render worker's libraries (`build-cycles.ps1`, once); writes `CMakeUserPresets.json` (`dev` = Windows release). Run as administrator. |
+| `setup-windows.ps1 [-Repo <dir>]` | Installs Git, CMake, Ninja, Rustup, Python, NSIS (winget), ccache, the pinned Rust toolchain, cargo-deny, vcpkg and Qt under `C:\dev`, the render worker's libraries (`build-cycles.ps1 -Cuda`, once; `MITCAD_RENDER_CUDA=0` without CUDA); writes `CMakeUserPresets.json` (`dev` = Windows release). Run as administrator. |
 | `setup-ccache-windows.ps1 [-Dir] [-MaxSize]` | ccache into `C:\dev\ccache`, on the machine `PATH`, cache limit 4G (a build with the render worker; 2G was cleaned over and over). |
 | `setup-mesa-windows.ps1 [-Out] [-Vcpkg] [-Jobs]` | Builds Mesa's llvmpipe (~20 min) into `<Out>\bin` (default `C:\dev\mesa`). Needed in a VM without a GPU (Windows offers only OpenGL 1.1). |
 | `msvc.cmd <command>` | Runs a command in the VS x64 environment, rebuilding `PATH` from the registry first (SSH sessions keep a stale one). |
@@ -92,7 +92,15 @@ lume get mitcad-mac                      # the guest's IP address
 ```
 
 No shared folders or clipboard; turn on Remote Login and install the Xcode
-Command Line Tools (full Xcode is not needed). The UI tests need a user
+Command Line Tools, including the Metal SDK headers and frameworks. The
+CPU and Metal dependency builds use those tools. Open Image Denoise's
+Metal device additionally needs Apple's offline `metal` and `metallib`
+tools, supplied by Xcode or a separately installed Metal toolchain. Check
+`xcrun --sdk macosx metal --version` in the build environment; the dependency
+builder stops with setup instructions if the tools are missing. Cycles
+compiles its own Metal kernels through the system's runtime compiler. Metal rendering still
+needs a device and driver that can compile and execute those kernels;
+see [rendering.md](rendering.md#macos). The UI tests need a user
 logged in at the console (the unattended setup logs in `lume`) and a
 screen of at least 2880 x 1800, or macOS shrinks their 1280 x 800 window.
 Without a GPU, OpenGL runs on Apple's software renderer: enough for the
@@ -140,8 +148,10 @@ target for vcpkg's libraries).
   into `Contents/Resources/licenses`.
   It also installs the render worker `mitcad-render` (every build has it)
   in `Contents/MacOS`, its dependencies and Open Image Denoise's
-  runtime-loaded CPU module in `Contents/Frameworks`, and their licence
-  texts. `setup-macos.sh` prepares the pinned CPU dependencies with
+  runtime-loaded CPU/BNNS and Metal modules in `Contents/Frameworks`, and their licence
+  texts. The complete Cycles Metal runtime source tree is installed in
+  `Contents/Resources/cycles/source`. `setup-macos.sh` prepares the pinned
+  CPU and Metal rendering and denoising dependencies using
   `tools/dev-env/build-cycles-macos.sh` in the guest;
   see [rendering.md](rendering.md#macos).
 - `tools/package-macos.sh [build dir]` installs, signs ad hoc, checks and
@@ -149,7 +159,8 @@ target for vcpkg's libraries).
   notarisation (`MITCAD_NOTARY_PROFILE`) need an Apple Developer account.
 - `tools/check-bundle-macos.sh <Mitcad.app>`: only system and bundled
   libraries linked, relative rpaths, arm64 everywhere, and `Info.plist`,
-  icon, licence texts and the `libqmacstyle` style plug-in present
+  icon, licence texts, the complete Metal source manifest and the
+  `libqmacstyle` style plug-in present
   (without it Qt falls back to its own cross-platform style).
 - `app/platform/macos/*.mm` is Objective-C++ with ARC, linked with AppKit,
   as warning-free as C++ (`mitcad_warnings`); AppKit calls newer than 14.4
@@ -182,14 +193,18 @@ shipped.
 | ISPC 1.31.0 (compiles Open Image Denoise) | `build-cycles.sh`, `<prefix>/src` | https://github.com/ispc/ispc/releases/download/v1.31.0/ispc-v1.31.0-linux.tar.gz | `d74089c835e10fd7e2c4b9225ced38b87d1fb53d35c7ceabd48cdf035da11b11` |
 | ISPC 1.31.0 for Apple Silicon (compiles Open Image Denoise) | `build-cycles-macos.sh`, `<prefix>/src` | https://github.com/ispc/ispc/releases/download/v1.31.0/ispc-v1.31.0-macOS.arm64.tar.gz | `eac8009da38d41074d0adcf1fad4a3412fc9644a81ee5a49efeb07eac505b6ec` |
 
-`build-cycles.sh --cuda` (mitcad#50) fetches the CUDA compiler's
+`build-cycles.sh --cuda` (mitcad#50; `setup-user.sh` passes it unless
+`MITCAD_RENDER_CUDA=0`) fetches the CUDA compiler's
 components (`cuda_nvcc` 12.9.86, `cuda_cudart` 12.9.79, `cuda_cccl`
 12.9.27 of CUDA 12.9.1) from
 https://developer.download.nvidia.com/compute/cuda/redist/ and checks
 them against the SHA-256 digests NVIDIA lists in `redistrib_12.9.1.json`
 there (pins in `versions.sh`); when no GCC of version 14 or older is
 installed, it unpacks the distribution's `g++-14` packages
-(`apt-get download`). Both are build tools only; see
+(`apt-get download`). `build-cycles.ps1 -Cuda` (mitcad#202;
+`setup-windows.ps1` likewise) fetches the same components' Windows
+archives (`CUDA_*_WINDOWS_SHA256`, from the same JSON) and uses MSVC as
+the host compiler. All are build tools only; see
 [rendering.md](rendering.md#building).
 
 QtKeychain (BSD-3-Clause; the live updates' credentials in the system's
@@ -267,8 +282,10 @@ VC++ runtime, `qt.conf`), `plugins` (via `windeployqt`), licences
 (`LICENSE`, `THIRD-PARTY-NOTICES.txt`, `licenses\` with the font and every
 vcpkg port's `copyright`), uninstaller. Never included: Mesa, Qt's
 software OpenGL, PDBs. The render worker
-`mitcad-render.exe` is installed with its DLLs (Open Image Denoise's too) and the
-licences of Cycles and Open Image Denoise
+`mitcad-render.exe` is installed with its DLLs (Open Image Denoise's too, its
+CUDA device with `-Cuda`),
+its CUDA kernels in `bin\cycles\lib` (a render prefix built with `-Cuda`)
+and the licences of Cycles (with cuew's) and Open Image Denoise
 ([rendering.md](rendering.md#windows)).
 
 `tools/installer-windows-test.ps1` (ctest `app.installer-windows` once
@@ -277,7 +294,8 @@ then in each scope (`-Scope both|user|all`) installs silently into a
 folder of the test's own and checks the scope's registration (uninstall
 entry, `installation.ini`, file type, Start menu shortcut, nothing in the
 other scope). Just for the current user it checks the files, runs
-`mitcad-cli` and `mitcad.exe --version` with a system-only `PATH` and,
+`mitcad-cli`, `mitcad.exe --version` and the render worker (a test render,
+`--list-devices`; the build's GPU kernels installed) with a system-only `PATH` and,
 with `-MesaDir`, renders a screenshot; for all users it reinstalls with
 only `/D=` as an earlier release's updater does. With `-MesaDir` it tests
 the automatic update in both scopes ([updates.md](updates.md#tests);
@@ -354,7 +372,11 @@ Run in the isolated environments:
   `core.cargo_build` and `core.cargo_build_release` build every crate's
   test binaries in one cargo run (`cargo test --no-run`, one lock on the
   target directory, the crates compiled in parallel), and the tests run
-  the binaries directly, at the same time (`core/cargo-tests.cmake`);
+  the binaries directly, at the same time (`core/cargo-tests.cmake`;
+  on Windows each run has `TMP` and `TEMP` in a folder of its own under
+  `%LOCALAPPDATA%\mitcad-tests`, removed when it passes, as Storage Sense
+  deletes the empty folders of git repositories just made in the
+  system's temporary folder);
   `core.doctests` and `core.doctests_release` run the documentation tests.
   A large crate's tests run in parts by module
   (`mitcad_cargo_test(... PARTS <part> <filter>...)` in
@@ -636,7 +658,8 @@ Linux, and warning-free builds with `ctest` in the Windows VM (with
 
 It checks at two depths:
 
-- **By default** (development, and before a merge to `main`) the check is
+- **By default** (development, and before a merge to `main` on a Linux
+  machine; a Windows or macOS machine checks on its own platform) the check is
   scoped to the change and fast: a test runs only when what it depends on
   differs from every run in which it passed on the machine, a few long
   ctests that seldom catch anything are left out, and a UI test depends
@@ -838,7 +861,12 @@ lint use half the cores unless `CMAKE_BUILD_PARALLEL_LEVEL` /
   NVIDIA's CUDA toolkit (CUDA EULA), AMD's HIP SDK or Intel's oneAPI
   compilers is linked statically or shipped; the GPU drivers are loaded
   at run time (Cycles' cuew and hipew, Apache-2.0), and the kernels
-  shipped are Cycles' code compiled by them. NVIDIA's OptiX SDK headers
+  shipped are Cycles' code compiled by them (the AppImage's
+  `usr/lib/mitcad/cycles/lib`, the Windows installer's `bin\cycles\lib`;
+  the notices name cuew). Open Image Denoise's CUDA device (Windows,
+  `build-cycles.ps1 -Cuda`) contains CUTLASS (BSD-3-Clause) and CCCL
+  header code and calls the driver through its own runtime; it links only
+  the driver's import library. NVIDIA's OptiX SDK headers
   (a proprietary licence: binary-only, NVIDIA hardware only, recipients
   bound to its terms) would be compiled in, so Mitcad does not use OptiX
   (README, FAQ).

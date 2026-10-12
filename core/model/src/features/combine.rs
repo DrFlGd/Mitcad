@@ -163,7 +163,8 @@ impl<K: Kernel> Evaluate<K> for CombineDef {
                     };
                     changes.push(BodyChange::Set(self.target, common));
                 } else if result.touched[0] {
-                    let mut pieces = pieces.into_iter();
+                    // Needles a cut leaves are lumps of the first piece.
+                    let mut pieces = super::base::lump_needles(kernel, pieces).into_iter();
                     match pieces.next() {
                         // The tools cover the whole target.
                         None => changes.push(BodyChange::Remove(self.target)),

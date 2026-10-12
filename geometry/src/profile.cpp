@@ -1,8 +1,10 @@
 // SPDX-License-Identifier: MIT
 #include "mitcad/geometry/profile.hpp"
 
+#include <algorithm>
 #include <cmath>
 #include <exception>
+#include <optional>
 #include <stdexcept>
 
 #include <BRepAdaptor_Curve.hxx>
@@ -10,9 +12,11 @@
 #include <BRepBuilderAPI_MakeFace.hxx>
 #include <BRepBuilderAPI_MakeWire.hxx>
 #include <BRepTools_WireExplorer.hxx>
+#include <ElCLib.hxx>
 #include <BRep_Builder.hxx>
 #include <BRep_Tool.hxx>
 #include <Geom_BSplineCurve.hxx>
+#include <Geom_Circle.hxx>
 #include <NCollection_Array1.hxx>
 #include <Precision.hxx>
 #include <ShapeExtend_WireData.hxx>
@@ -21,6 +25,7 @@
 #include <TopExp_Explorer.hxx>
 #include <TopoDS.hxx>
 #include <TopoDS_Compound.hxx>
+#include <TopoDS_Vertex.hxx>
 #include <TopoDS_Wire.hxx>
 #include <gp_Ax2.hxx>
 #include <gp_Ax3.hxx>
@@ -79,7 +84,9 @@ TopoDS_Edge make_edge(const Frame& frame, const Segment& s) {
   case SegmentKind::Circle:
   case SegmentKind::Arc: {
     require_positive("radius", s.radius);
-    const gp_Circ circle(axes_at(frame, s.center, 0.0), s.radius);
+    // A whole circle starts where `rotation` says (its seam), an arc's angles are absolute.
+    const double turn = s.kind == SegmentKind::Circle ? s.rotation : 0.0;
+    const gp_Circ circle(axes_at(frame, s.center, turn), s.radius);
     if (s.kind == SegmentKind::Circle) {
       BRepBuilderAPI_MakeEdge maker(circle);
       return edge_from(maker, s);
@@ -136,6 +143,37 @@ TopoDS_Edge make_edge(const Frame& frame, const Segment& s) {
 }
 
 gp_Pln plane_of(const Frame& frame) { return gp_Pln(gp_Ax3(frame.origin, frame.normal(), frame.x_axis)); }
+
+// Check the curve endpoints before OCCT merges nearby vertices using their
+// individual tolerances. The explicit gap limit is a distance between curves,
+// not the sum of the two vertex tolerances. Segment directions may be reversed.
+void require_loop_gap(const Frame& frame, const Loop& loop, double max_gap) {
+  if (loop.segments.empty()) {
+    throw std::invalid_argument("a profile loop has no segments");
+  }
+  std::vector<std::pair<gp_Pnt, gp_Pnt>> ends;
+  for (const Segment& segment : loop.segments) {
+    throw_if_cancelled();
+    const BRepAdaptor_Curve curve(make_edge(frame, segment));
+    ends.emplace_back(curve.Value(curve.FirstParameter()), curve.Value(curve.LastParameter()));
+  }
+  const auto closes = [&](bool reversed) {
+    const gp_Pnt start = reversed ? ends.front().second : ends.front().first;
+    gp_Pnt current = reversed ? ends.front().first : ends.front().second;
+    for (std::size_t i = 1; i < ends.size(); ++i) {
+      const double forward = current.Distance(ends[i].first);
+      const double backward = current.Distance(ends[i].second);
+      if (std::min(forward, backward) > max_gap) {
+        return false;
+      }
+      current = forward <= backward ? ends[i].second : ends[i].first;
+    }
+    return current.Distance(start) <= max_gap;
+  };
+  if (!closes(false) && !closes(true)) {
+    throw std::invalid_argument("a profile loop is not closed within its gap tolerance");
+  }
+}
 
 // Builds the loop's wire and records the name of each of its edges.
 TopoDS_Wire make_wire(const Frame& frame, const Loop& loop,
@@ -197,13 +235,81 @@ bool is_clockwise(const gp_Pln& plane, const TopoDS_Wire& wire) {
   return area < 0.0;
 }
 
+// The end points of a segment's edge.
+std::pair<gp_Pnt, gp_Pnt> edge_ends(const Frame& frame, const Segment& segment) {
+  const BRepAdaptor_Curve curve(make_edge(frame, segment));
+  return {curve.Value(curve.FirstParameter()), curve.Value(curve.LastParameter())};
+}
+
+// How near a point must lie to a hole's boundary to be where it touches the
+// outer boundary: sketch points that meet are well inside it.
+constexpr double kTouchGap = 1e-5;
+
+// The hole's one segment when it is a whole circle, or an arc that starts and
+// ends where the circle was cut by the curve it touches, and the outer
+// boundary has a vertex on it; else null. A hole of that kind meets the outer
+// wire at the vertex, which they must share: separate vertices at one place
+// make a face with intersecting wires.
+const Segment* touching_circle(const Frame& frame, const Loop& hole, const gp_Pnt& vertex) {
+  if (hole.segments.size() != 1) {
+    return nullptr;
+  }
+  const Segment& s = hole.segments.front();
+  if (s.kind == SegmentKind::Circle) {
+    return std::abs(vertex.Distance(frame.point(s.center)) - s.radius) <= kTouchGap ? &s : nullptr;
+  }
+  if (s.kind == SegmentKind::Arc) {
+    const auto ends = edge_ends(frame, s);
+    return ends.first.Distance(vertex) <= kTouchGap && ends.second.Distance(vertex) <= kTouchGap ? &s
+                                                                                                  : nullptr;
+  }
+  return nullptr;
+}
+
+// The hole's wire when it touches the outer wire at one of its vertices: the
+// circle's one edge from the vertex round to it, built on the outer wire's
+// vertex. Null when it does not.
+std::optional<TopoDS_Wire> touching_hole_wire(const Frame& frame, const Loop& hole,
+                                              const TopoDS_Wire& outer,
+                                              std::vector<std::pair<TopoDS_Edge, std::string>>& names) {
+  for (TopExp_Explorer it(outer, TopAbs_VERTEX); it.More(); it.Next()) {
+    const TopoDS_Vertex vertex = TopoDS::Vertex(it.Current());
+    const gp_Pnt point = BRep_Tool::Pnt(vertex);
+    const Segment* s = touching_circle(frame, hole, point);
+    if (s == nullptr) {
+      continue;
+    }
+    const gp_Circ circle(axes_at(frame, s->center, s->kind == SegmentKind::Circle ? s->rotation : 0.0),
+                         s->radius);
+    double from = ElCLib::Parameter(circle, point);
+    double to = from + kTwoPi;
+    if (s->kind == SegmentKind::Arc) {
+      from = s->start_angle;
+      to = end_after(s->start_angle, s->end_angle);
+    }
+    const occ::handle<Geom_Circle> curve = new Geom_Circle(circle);
+    BRepBuilderAPI_MakeEdge maker(curve, vertex, vertex, from, to);
+    const TopoDS_Edge edge = edge_from(maker, *s);
+    BRepBuilderAPI_MakeWire wire(edge);
+    names.emplace_back(edge, s->name);
+    return wire.Wire();
+  }
+  return std::nullopt;
+}
+
 // The region's face from its segments as they are.
 ProfileFace exact_profile(const Frame& frame, const Region& region) {
   const gp_Pln plane = plane_of(frame);
   std::vector<std::pair<TopoDS_Edge, std::string>> names;
   std::vector<TopoDS_Wire> wires;
+  bool pinched = false;
   for (std::size_t i = 0; i < region.loops.size(); ++i) {
-    TopoDS_Wire wire = make_wire(frame, region.loops[i], names);
+    std::optional<TopoDS_Wire> touching;
+    if (i > 0) {
+      touching = touching_hole_wire(frame, region.loops[i], wires.front(), names);
+    }
+    pinched = pinched || touching.has_value();
+    TopoDS_Wire wire = touching ? *touching : make_wire(frame, region.loops[i], names);
     // Material on the left: the outer boundary counter-clockwise, holes clockwise.
     if (is_clockwise(plane, wire) == (i == 0)) {
       wire = TopoDS::Wire(wire.Reversed());
@@ -219,6 +325,7 @@ ProfileFace exact_profile(const Frame& frame, const Region& region) {
   }
   ProfileFace profile;
   profile.face = maker.Face();
+  profile.pinched = pinched;
   detail::require_valid(profile.face, "the profile");
   ShapeMap edges;
   for (TopExp_Explorer it(profile.face, TopAbs_EDGE); it.More(); it.Next()) {
@@ -246,7 +353,7 @@ gp_Pnt middle(const TopoDS_Edge& edge) {
 
 // The region's face with small gaps between its segments closed by shape
 // healing; each segment's edge is found again by its middle point.
-ProfileFace healed_profile(const Frame& frame, const Region& region) {
+ProfileFace healed_profile(const Frame& frame, const Region& region, double max_gap) {
   const gp_Pln plane = plane_of(frame);
   std::vector<std::pair<gp_Pnt, std::string>> middles;
   std::vector<TopoDS_Wire> wires;
@@ -259,8 +366,8 @@ ProfileFace healed_profile(const Frame& frame, const Region& region) {
     }
     ShapeFix_Wire fix;
     fix.Load(data);
-    fix.SetPrecision(kHealGap);
-    fix.SetMaxTolerance(kHealGap);
+    fix.SetPrecision(max_gap);
+    fix.SetMaxTolerance(max_gap);
     fix.ClosedWireMode() = true;
     fix.FixReorder();
     fix.FixConnected();
@@ -281,8 +388,8 @@ ProfileFace healed_profile(const Frame& frame, const Region& region) {
     throw std::invalid_argument("profile " + region.name + " could not be built");
   }
   ShapeFix_Face fix(maker.Face());
-  fix.SetPrecision(kHealGap);
-  fix.SetMaxTolerance(kHealGap);
+  fix.SetPrecision(max_gap);
+  fix.SetMaxTolerance(max_gap);
   fix.Perform();
   ProfileFace profile;
   profile.face = fix.Face();
@@ -305,7 +412,7 @@ ProfileFace healed_profile(const Frame& frame, const Region& region) {
         best = k;
       }
     }
-    if (edge_middles[best].Distance(point) > 1e3 * kHealGap) {
+    if (edge_middles[best].Distance(point) > 1e3 * max_gap) {
       throw std::invalid_argument("segment " + name + " is not on the healed profile");
     }
     profile.edges.emplace_back(edges[best], name);
@@ -319,24 +426,52 @@ gp_Pnt Frame::point(const gp_Pnt2d& p) const {
   return origin.Translated(gp_Vec(x_axis) * p.X() + gp_Vec(y_axis) * p.Y());
 }
 
-ProfileFace make_profile(const Frame& frame, const Region& region) {
+namespace {
+
+ProfileFace profile_with_gap(const Frame& frame, const Region& region, double max_gap, bool strict) {
+  require_positive("profile gap tolerance", max_gap);
   if (region.loops.empty()) {
     throw std::invalid_argument("profile " + region.name + " has no boundary");
   }
   return detail::run("profile", [&] {
+    if (strict) {
+      for (const Loop& loop : region.loops) {
+        require_loop_gap(frame, loop, max_gap);
+      }
+    }
     try {
       return exact_profile(frame, region);
+    } catch (const Cancelled&) {
+      throw;
+    } catch (const std::bad_alloc&) {
+      throw;
     } catch (const std::exception&) {
       // Segments that meet only within the sketch's tolerance; the first
       // error when that does not help either.
       const std::exception_ptr error = std::current_exception();
       try {
-        return healed_profile(frame, region);
+        return healed_profile(frame, region, max_gap);
+      } catch (const Cancelled&) {
+        throw;
+      } catch (const std::bad_alloc&) {
+        throw;
+      } catch (const Standard_OutOfMemory&) {
+        throw;
       } catch (...) {
         std::rethrow_exception(error);
       }
     }
   });
+}
+
+} // namespace
+
+ProfileFace make_profile(const Frame& frame, const Region& region) {
+  return profile_with_gap(frame, region, kHealGap, false);
+}
+
+ProfileFace make_profile(const Frame& frame, const Region& region, double max_gap) {
+  return profile_with_gap(frame, region, max_gap, true);
 }
 
 ShapePtr profile_shape(const Frame& frame, const std::vector<Region>& regions) {

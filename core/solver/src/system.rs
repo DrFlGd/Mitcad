@@ -754,6 +754,7 @@ fn check_value(c: &Constraint) -> Result<(), Error> {
         | MinorRadius { value, .. } => positive(value),
         PointLineDistance { value, .. }
         | LineDistance { value, .. }
+        | TangentDistance { value, .. }
         | HorizontalDistance { value, .. }
         | VerticalDistance { value, .. } => value == 0.0 || positive(value),
         Angle { value, .. } => (0.0..=PI).contains(&value),
@@ -766,6 +767,7 @@ fn check_value(c: &Constraint) -> Result<(), Error> {
             Angle { .. } => "the angle must be between 0 and pi",
             PointLineDistance { .. }
             | LineDistance { .. }
+            | TangentDistance { .. }
             | HorizontalDistance { .. }
             | VerticalDistance { .. } => "the distance must not be negative",
             _ => "the dimension must be positive",
@@ -798,6 +800,9 @@ pub(crate) fn constraint_entities(c: &Constraint) -> Vec<EntityId> {
         | Concentric(a, b)
         | Collinear(a, b)
         | LineDistance { a, b, .. }
+        | TangentDistance {
+            circle: a, line: b, ..
+        }
         | Angle { a, b, .. }
         | EqualSize(a, b) => vec![a, b],
         SymmetricEntities { a, b, axis } => vec![a, b, axis],
@@ -1015,6 +1020,11 @@ impl System {
                 let mid = self.xy(b1).add(self.xy(b2)).mulf(0.5);
                 rec.side = sign(self.signed_dist(mid, a1, a2));
             }
+            TangentDistance { circle, line, .. } => {
+                let (a1, a2) = self.line(line)?;
+                let (c, _) = self.round(circle)?;
+                rec.side = sign(self.signed_dist(self.xy(c), a1, a2));
+            }
             HorizontalDistance { a, b, .. } => {
                 let (a, b) = (self.xy(self.pidx(a)?), self.xy(self.pidx(b)?));
                 rec.side = sign(b.x - a.x);
@@ -1231,6 +1241,13 @@ impl System {
                 let (b1, b2) = line(b)?;
                 let mid = self.xy(b1).add(self.xy(b2)).mulf(0.5);
                 rec.side * self.signed_dist(mid, a1, a2)
+            }
+            TangentDistance {
+                circle, line: l, ..
+            } => {
+                let (a, b) = line(l)?;
+                let (c, radius) = self.round(circle).ok()?;
+                rec.side * self.signed_dist(self.xy(c), a, b) - radius
             }
             HorizontalDistance { a, b, .. } => rec.side * (pt(b).x - pt(a).x),
             VerticalDistance { a, b, .. } => rec.side * (pt(b).y - pt(a).y),

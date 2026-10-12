@@ -44,6 +44,20 @@ impl Outcome {
     }
 }
 
+/// Where the accepted candidate's design inputs came from. This is
+/// independent of whether its geometry matched the stored result.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum InputProvenance {
+    /// Every required input is accounted for by a decoded field.
+    Read,
+    /// At least one input was selected by a heuristic or the history.
+    Inferred,
+    /// The translation does not yet account for every input's source.
+    #[default]
+    Unknown,
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct ItemReport {
     /// Timeline index.
@@ -60,6 +74,10 @@ pub struct ItemReport {
     /// checked.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub verified: Option<bool>,
+    /// Input provenance of an accepted modelling candidate; absent when
+    /// no candidate was accepted (including a stored-body fallback).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub input_provenance: Option<InputProvenance>,
     /// How far the volume it adds or removes is from the file's change for
     /// it, relative to the change ([`crate::history::Change`]); None when
     /// not compared.
@@ -160,6 +178,105 @@ pub struct DesignReport {
     /// The file's assembly relationships (mitcad#155).
     #[serde(skip_serializing_if = "RelationshipReport::is_empty")]
     pub relationships: RelationshipReport,
+    /// The modelling items suppressed in the file (mitcad#180).
+    #[serde(skip_serializing_if = "crate::SuppressedReport::is_empty")]
+    pub suppressed: crate::SuppressedReport,
+    /// The documents the design refers to (its components of other
+    /// documents, mitcad#196): where their files were found and how they
+    /// came in.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub references: Vec<ReferenceReport>,
+}
+
+/// A document a design refers to (mitcad#196; filled in by the caller that
+/// imports the documents, `mitcad-ffi`).
+#[derive(Debug, Clone, Default, PartialEq, Serialize)]
+pub struct ReferenceReport {
+    /// The document's URN in the design.
+    pub document: String,
+    /// Its name, where the reference folder gives it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    /// The version the design uses.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub version: Option<u32>,
+    /// Its file, when found.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub file: Option<String>,
+    /// How the file was found (`reference folder`, `chosen`, `by its
+    /// GUID`, `package`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub found: Option<String>,
+    /// `linked` (its components filled from the file), `missing` (no
+    /// file: they stay empty), `skipped` (the user skipped it) or `failed`
+    /// (see `note`).
+    pub status: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub note: Option<String>,
+    /// Mitcad's components filled from it (or standing for it, empty).
+    pub components: Vec<String>,
+    /// The design's occurrences of its components.
+    pub occurrences: usize,
+    /// Its own import's timeline items by outcome.
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub items: BTreeMap<String, usize>,
+    /// The documents it refers to in turn.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub references: Vec<ReferenceReport>,
+}
+
+impl ReferenceReport {
+    /// Its name and version for messages: `Part (version 2)`; without a
+    /// name, `the document of Inserted component (version 2)` (the
+    /// component standing for it), else its URN.
+    pub fn title(&self) -> String {
+        let name = self.name.clone().unwrap_or_else(|| {
+            if self.components.is_empty() {
+                self.document.clone()
+            } else {
+                format!("the document of {}", self.components.join(", "))
+            }
+        });
+        match self.version {
+            Some(v) => format!("{name} (version {v})"),
+            None => name,
+        }
+    }
+
+    fn text(&self, out: &mut String, depth: usize) {
+        let indent = "  ".repeat(depth + 2);
+        let items = if self.items.is_empty() {
+            String::new()
+        } else {
+            let n = |o: &str| self.items.get(o).copied().unwrap_or(0);
+            format!(
+                "; its items: {} parametric, {} partial, {} fallback, {} skipped",
+                n("parametric"),
+                n("partial"),
+                n("fallback"),
+                n("skipped")
+            )
+        };
+        let _ = writeln!(
+            out,
+            "{indent}{}: {}, occurrences: {}{}{}{items}{}",
+            self.title(),
+            self.status,
+            self.occurrences,
+            self.file
+                .as_deref()
+                .map_or(String::new(), |f| format!(", from {f}")),
+            self.found
+                .as_deref()
+                .map_or(String::new(), |f| format!(" ({f})")),
+            self.note
+                .as_deref()
+                .map_or(String::new(), |n| format!(": {n}"))
+        );
+        for r in &self.references {
+            r.text(out, depth + 1);
+        }
+    }
 }
 
 /// How the file's assembly relationships came in (mitcad#155;
@@ -309,6 +426,16 @@ impl DesignReport {
         counts
     }
 
+    /// Accepted modelling candidates by input provenance. Unknown is
+    /// counted explicitly; a low candidate rank is not proof of decoding.
+    pub fn input_counts(&self) -> BTreeMap<InputProvenance, usize> {
+        let mut counts = BTreeMap::new();
+        for provenance in self.items.iter().filter_map(|i| i.input_provenance) {
+            *counts.entry(provenance).or_default() += 1;
+        }
+        counts
+    }
+
     /// The largest relative volume difference of the final bodies, None
     /// when no body was compared.
     pub fn worst_volume_difference(&self) -> Option<f64> {
@@ -334,6 +461,17 @@ impl DesignReport {
             n(Outcome::Skipped)
         );
         let p = &self.parameters;
+        let inputs = self.input_counts();
+        if !inputs.is_empty() {
+            let n = |p| inputs.get(&p).copied().unwrap_or(0);
+            let _ = writeln!(
+                out,
+                "  modelling inputs: {} read, {} inferred, {} unknown",
+                n(InputProvenance::Read),
+                n(InputProvenance::Inferred),
+                n(InputProvenance::Unknown)
+            );
+        }
         let _ = writeln!(
             out,
             "  parameters: {} imported, {} as values, {} renamed, {} skipped, {} mismatched",
@@ -367,9 +505,37 @@ impl DesignReport {
         if c.components + c.occurrences + c.external > 0 {
             let _ = writeln!(
                 out,
-                "  components: {} made, {} occurrences placed, {} of other documents placed empty",
-                c.components, c.occurrences, c.external
+                "  components: {} made, {} occurrences placed, {} of other documents ({} filled \
+                 from their files){}",
+                c.components,
+                c.occurrences,
+                c.external,
+                c.linked,
+                if c.placed_inside > 0 {
+                    format!(
+                        ", {} captured positions inside them placed",
+                        c.placed_inside
+                    )
+                } else {
+                    String::new()
+                }
             );
+        }
+        if !self.references.is_empty() {
+            let linked = self
+                .references
+                .iter()
+                .filter(|r| r.status == "linked")
+                .count();
+            let _ = writeln!(
+                out,
+                "  documents referred to: {} linked from their files, {} not",
+                linked,
+                self.references.len() - linked
+            );
+            for r in &self.references {
+                r.text(&mut out, 0);
+            }
         }
         let b = &self.light_bulbs;
         if b.sketch_bulbs + b.construction_bulbs > 0 {
@@ -417,6 +583,31 @@ impl DesignReport {
                 r.inserted_sides,
                 r.tangents,
                 r.left_out.values().sum::<usize>()
+            );
+        }
+        let s = &self.suppressed;
+        if s.rolled_back_as_features + s.rolled_back_as_placeholders > 0 {
+            let _ = writeln!(
+                out,
+                "  rolled back in the file: {} modelling items as features after the marker, {} \
+                 as placeholders",
+                s.rolled_back_as_features, s.rolled_back_as_placeholders
+            );
+        }
+        if s.suppressed_as_features + s.suppressed_as_placeholders > 0 {
+            let indirect = if s.suppressed_indirectly > 0 {
+                format!(
+                    " ({} of them through another suppressed item)",
+                    s.suppressed_indirectly
+                )
+            } else {
+                String::new()
+            };
+            let _ = writeln!(
+                out,
+                "  suppressed in the file: {} modelling items as suppressed features, {} as \
+                 placeholders{indirect}",
+                s.suppressed_as_features, s.suppressed_as_placeholders
             );
         }
         for item in &self.items {

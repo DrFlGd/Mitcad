@@ -131,8 +131,9 @@ pub(crate) fn free_name(name: &str, taken: &BTreeSet<String>) -> String {
         .expect("a free name exists")
 }
 
-/// Creates the parameters of the dump. Text parameters are skipped;
-/// expressions that do not evaluate become values.
+/// Creates the parameters of the dump (names, expressions, units, comments
+/// and favorites). Text parameters are skipped; expressions that do not
+/// evaluate become values.
 pub fn import_parameters<K: Kernel>(
     doc: &mut Document<K>,
     dump: &Dump,
@@ -256,6 +257,10 @@ pub fn import_parameters<K: Kernel>(
             report.literal.push(p.name.clone());
         }
         report.imported += 1;
+        // The star in the parameters dialog.
+        if p.param.is_favorite == Some(true) {
+            let _ = doc.set_parameter_favorite(&p.name, true);
+        }
         // Does Mitcad agree with the value stored in the file?
         if let (Some((expected, _)), Some(param)) = (
             stored_value(p),

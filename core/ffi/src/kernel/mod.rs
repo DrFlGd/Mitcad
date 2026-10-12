@@ -33,6 +33,10 @@ pub mod cancel;
 pub mod mesh;
 // Shaded meshes of faces (USDZ export, mitcad#123).
 pub mod face_mesh;
+// Sheet material construction (mitcad#206).
+pub mod sheet;
+// The faces a run of features made, copied by a pattern.
+pub mod face_copy;
 
 use std::sync::Arc;
 
@@ -157,6 +161,21 @@ pub struct OcctKernel;
 
 impl Kernel for OcctKernel {
     type Shape = SharedPtr<Shape>;
+
+    fn sheet_shape(
+        &self,
+        spec: &mitcad_model::sheet::SheetShapeSpec<'_>,
+        _prefix: &str,
+    ) -> Result<mitcad_model::sheet::SheetGeometry<Self::Shape>, KernelError> {
+        sheet::shape(spec)
+    }
+
+    fn sheet_trim_domain(
+        &self,
+        spec: &mitcad_model::sheet::SheetTrimSpec<'_>,
+    ) -> Result<mitcad_model::sheet::SheetTrimResult, KernelError> {
+        sheet::trim(spec)
+    }
 
     fn extrude(&self, spec: &ExtrudeSpec<'_>) -> Result<Self::Shape, KernelError> {
         let regions: Vec<profile::ffi::Region> = spec.regions.iter().map(profile::region).collect();
@@ -514,6 +533,14 @@ impl Kernel for OcctKernel {
 
     fn bounding_box(&self, shape: &Self::Shape) -> Result<Option<BoundingBox>, KernelError> {
         let bounds = query::ffi::bounding_box(occt(shape)?).map_err(failed)?;
+        Ok((!bounds.empty).then_some(BoundingBox {
+            min: bounds.min,
+            max: bounds.max,
+        }))
+    }
+
+    fn enclosing_box(&self, shape: &Self::Shape) -> Result<Option<BoundingBox>, KernelError> {
+        let bounds = query::ffi::enclosing_box(occt(shape)?).map_err(failed)?;
         Ok((!bounds.empty).then_some(BoundingBox {
             min: bounds.min,
             max: bounds.max,
@@ -1284,6 +1311,92 @@ impl Kernel for OcctKernel {
             triangles: mesh.triangles.as_chunks::<3>().0.to_vec(),
             face_triangles: mesh.face_triangles,
         })
+    }
+
+    // Crossings of several segments (the .f3d import's probes, mitcad#181;
+    // analysis.rs).
+
+    fn segments_crossings(
+        &self,
+        shape: &Self::Shape,
+        segments: &[(Vec3, Vec3)],
+    ) -> Result<Vec<Vec<(f64, bool)>>, KernelError> {
+        let flat: Vec<f64> = segments
+            .iter()
+            .flat_map(|(from, to)| [from[0], from[1], from[2], to[0], to[1], to[2]])
+            .collect();
+        let out =
+            analysis::ffi::analysis_segments_crossings(occt(shape)?, &flat).map_err(failed)?;
+        let mut rest = out.as_slice();
+        let mut all = Vec::with_capacity(segments.len());
+        for _ in segments {
+            let (&n, tail) = rest
+                .split_first()
+                .ok_or_else(|| KernelError::failed("segment crossings: short result"))?;
+            let n = n as usize;
+            if tail.len() < 2 * n {
+                return Err(KernelError::failed("segment crossings: short result"));
+            }
+            all.push(
+                tail[..2 * n]
+                    .as_chunks::<2>()
+                    .0
+                    .iter()
+                    .map(|[t, side]| (*t, *side < 0.0))
+                    .collect(),
+            );
+            rest = &tail[2 * n..];
+        }
+        Ok(all)
+    }
+
+    // The faces a run of features made (face_copy.rs).
+
+    fn feature_changes(
+        &self,
+        before: &Self::Shape,
+        after: &Self::Shape,
+    ) -> Result<mitcad_model::FeatureChanges<Self::Shape>, KernelError> {
+        let changes =
+            face_copy::ffi::feature_changes(occt(before)?, occt(after)?).map_err(failed)?;
+        Ok(mitcad_model::FeatureChanges {
+            added: (0..changes.added_count())
+                .map(|i| {
+                    let seam = changes.added_seam(i);
+                    mitcad_model::AddedMaterial {
+                        solid: changes.added(i),
+                        seam: (!seam.is_null()).then_some(seam),
+                    }
+                })
+                .collect(),
+            removed: (0..changes.removed_count())
+                .map(|i| changes.removed(i))
+                .collect(),
+        })
+    }
+
+    fn supported_copies(
+        &self,
+        body: &Self::Shape,
+        copies: &[(&Self::Shape, Option<&Self::Shape>)],
+    ) -> Result<Vec<Option<Self::Shape>>, KernelError> {
+        let mut solids = shape::ffi::new_shape_list();
+        let mut seams = shape::ffi::new_shape_list();
+        for (solid, seam) in copies {
+            occt(solid)?;
+            solids.pin_mut().push((*solid).clone());
+            seams
+                .pin_mut()
+                .push(seam.map_or_else(SharedPtr::null, Clone::clone));
+        }
+        let parts =
+            face_copy::ffi::supported_copies(occt(body)?, &solids, &seams).map_err(failed)?;
+        Ok((0..parts.size())
+            .map(|i| {
+                let part = parts.at(i);
+                (!part.is_null()).then_some(part)
+            })
+            .collect())
     }
 }
 

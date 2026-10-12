@@ -27,6 +27,7 @@
 #include "browser/TimelineWidget.hpp"
 #include "files/ProjectIndicator.hpp"
 #include "files/LockController.hpp"
+#include "framework/AutoselectPanel.hpp"
 #include "framework/CommandRegistry.hpp"
 #include "framework/ComputeProgress.hpp"
 #include "framework/Dialogs.hpp"
@@ -139,13 +140,19 @@ void MainWindow::createNativeWindow() {
   };
   callbacks.selection = [this](const QStringList& keys) {
     Selection items;
+    QStringList features;
     for (const QString& key : keys) {
-      const SelectionItem item = m_nativeNodes.value(key).item();
+      const BrowserNode node = m_nativeNodes.value(key);
+      if (node.type == BrowserNode::Type::Feature) {
+        if (!features.contains(node.uid)) features.append(node.uid);
+        continue;
+      }
+      const SelectionItem item = node.item();
       if (item.isValid()) {
         items.append(item);
       }
     }
-    emit m_controller->browser()->itemsPicked(items);
+    emit m_controller->browser()->rowsPicked(items, features);
   };
   callbacks.activate = [this](const QString& key) {
     const BrowserNode node = m_nativeNodes.value(key);
@@ -170,6 +177,26 @@ void MainWindow::createNativeWindow() {
     if (node.isValid()) {
       emit m_controller->browser()->contextMenuRequested(node, point);
     }
+  };
+  callbacks.treeDelete = [this](const QString& key) {
+    const BrowserNode node = m_nativeNodes.value(key);
+    if (node.isValid() && !modelBusy() && canChangeModel()) {
+      emit m_controller->browser()->deleteRequested(node);
+    }
+  };
+  callbacks.historyDelete = [this](const QString& uid) {
+    if (!modelBusy() && canChangeModel()) emit m_controller->timeline()->deleteRequested(uid);
+  };
+  callbacks.historyRename = [this](const QString& uid) {
+    QTimer::singleShot(0, this, [this, uid] {
+      const auto* feature = m_snapshot.feature(uid);
+      if (!feature || modelBusy() || !canChangeModel()) return;
+      bool accepted = false;
+      const QString name = dialogText(this, tr("Rename Feature"), tr("Name:"), feature->name, &accepted).trimmed();
+      if (accepted && !name.isEmpty() && !modelBusy() && canChangeModel()) {
+        emit m_controller->timeline()->renamed(uid, name);
+      }
+    });
   };
   callbacks.historyActivated = [this](const QString& uid) {
     emit m_controller->timeline()->editRequested(uid);
@@ -202,6 +229,12 @@ void MainWindow::createNativeWindow() {
   callbacks.historyFilterMenu = [this](const QPoint& point) {
     m_controller->timeline()->showFilterMenu(point);
   };
+  callbacks.timelineSearchOpened = [this] { m_controller->timeline()->beginExternalSearch(); };
+  callbacks.timelineSearchChanged = [this](const QString& text) { m_controller->timeline()->setSearchText(text); };
+  callbacks.timelineSearchStepped = [this](int delta) { m_controller->timeline()->stepSearch(delta); };
+  callbacks.timelineSearchSelected = [this](int index) { m_controller->timeline()->goToMatch(index); };
+  callbacks.timelineSearchClosed = [this] { m_controller->timeline()->closeSearch(); };
+  callbacks.timelineSearchFilterMenu = [this](const QPoint& point) { m_controller->timeline()->showSearchMenu(point); };
   callbacks.projectMenu = [this](const QPoint& point) {
     if (!m_indicator || !m_indicator->menu()) {
       return;
@@ -229,6 +262,30 @@ void MainWindow::createNativeWindow() {
   connect(m_controller->timeline(), &TimelineWidget::filterChanged, this, [this] {
     m_nativeSnapshotKey.clear();
     refreshNativeWindow();
+  }, Qt::QueuedConnection);
+  connect(m_controller->timeline(), &TimelineWidget::searchChanged, this, [this] {
+    auto* timeline = m_controller->timeline();
+    QList<mac::NativeMacHistoryItem> results;
+    for (const QString& uid : timeline->searchMatches()) {
+      if (const auto* feature = m_snapshot.feature(uid)) {
+        mac::NativeMacHistoryItem item;
+        item.id = uid;
+        item.title = feature->name;
+        item.detail = m_snapshot.componentName(feature->component);
+        item.icon = themeIcon(featureIcon(feature->type));
+        results.append(item);
+      }
+    }
+    m_nativeWindow->setTimelineSearchResults(timeline->searchText(), timeline->searchCountText(), results,
+                                             timeline->currentSearchMatch());
+  });
+  connect(m_controller->timeline(), &TimelineWidget::searchStarted, this,
+          [this] { m_nativeWindow->saveTimelineSearchScroll(); });
+  // BrowserController's queued restoration runs first, then the native
+  // scroll positions are restored after its selection refresh.
+  connect(m_controller->timeline(), &TimelineWidget::searchRestored, this, [this] {
+    refreshNativeWindow();
+    m_nativeWindow->restoreTimelineSearchScroll();
   }, Qt::QueuedConnection);
   connect(m_indicator, &ProjectIndicator::presentationChanged, this, [this] {
     if (m_nativeWindow) {
@@ -360,6 +417,7 @@ void MainWindow::refreshNativeActions() {
     item.iconTemplate = false;
     item.symbol = symbolForAction(item.id);
     item.shortcut = action->shortcut().toString(QKeySequence::PortableText);
+    for (const QKeySequence& key : action->shortcuts()) item.shortcuts.append(key.toString(QKeySequence::PortableText));
     if (const CommandDef* def = m_registry->find(item.id)) {
       item.group = def->group;
       item.workspace = def->tab;
@@ -369,7 +427,11 @@ void MainWindow::refreshNativeActions() {
       if (!item.workspace.isEmpty()) {
         item.symbol.clear(); // Keep the familiar CAD command drawing.
       }
-      item.shortcut = m_registry->shortcut(item.id).toString(QKeySequence::PortableText);
+      item.shortcuts.clear();
+      for (const QKeySequence& key : m_registry->effectiveShortcuts(item.id)) {
+        item.shortcuts.append(key.toString(QKeySequence::PortableText));
+      }
+      item.shortcut = item.shortcuts.value(0);
     }
     if (action->menuRole() == QAction::PreferencesRole || action->menuRole() == QAction::AboutRole) {
       item.menu = QStringLiteral("Mitcad");
@@ -448,7 +510,9 @@ void MainWindow::refreshNativeWindow() {
       item.kind = row.node.isFolder() ? QStringLiteral("folder") : QString::number(static_cast<int>(row.node.type));
       item.editable = canRename && (row.node.type == BrowserNode::Type::Body || row.node.type == BrowserNode::Type::Sketch ||
                                    row.node.type == BrowserNode::Type::Component || row.node.type == BrowserNode::Type::Datum ||
-                                   row.node.type == BrowserNode::Type::Analysis || row.node.type == BrowserNode::Type::Joint);
+                                   row.node.type == BrowserNode::Type::Analysis || row.node.type == BrowserNode::Type::Joint ||
+                                   row.node.type == BrowserNode::Type::Feature ||
+                                   (row.node.type == BrowserNode::Type::NamedView && row.node.uid.startsWith(QStringLiteral("named:"))));
       item.hasVisibility = row.node.hasEye;
       item.canToggleVisibility = row.node.hasEye && canToggleVisibility;
       item.visible = row.node.visible;
@@ -486,7 +550,8 @@ void MainWindow::refreshNativeWindow() {
   }
   QStringList selected;
   for (auto node = m_nativeNodes.cbegin(); node != m_nativeNodes.cend(); ++node) {
-    if (m_selection.contains(node.value().item())) {
+    if (m_selection.contains(node.value().item()) ||
+        (node.value().type == BrowserNode::Type::Feature && m_controller->timeline()->selectedFeatures().contains(node.value().uid))) {
       selected.append(node.key());
     }
   }
@@ -499,8 +564,9 @@ void MainWindow::refreshNativeInspector() {
   if (m_nativeForm || !m_nativeWindow) {
     return;
   }
-  QWidget* page = m_mode == Mode::Sketch ? static_cast<QWidget*>(m_palette) : static_cast<QWidget*>(m_idleInfo);
-  m_nativeWindow->showInspector(m_mode == Mode::Sketch || !m_selection.isEmpty());
+  QWidget* page = m_mode == Mode::Sketch ? static_cast<QWidget*>(m_palette) : m_idlePage;
+  m_nativeWindow->showInspector(m_mode == Mode::Sketch || !m_selection.isEmpty() ||
+                                (m_mode == Mode::Idle && m_autoselect->available()));
   if (m_nativeIdlePage != page || !m_nativeIdleForm) {
     m_nativeIdleForm = createNativeWidgetView(page);
     m_nativeIdlePage = page;

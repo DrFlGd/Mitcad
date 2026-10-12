@@ -2,6 +2,7 @@
 #import <AppKit/AppKit.h>
 
 #include "../NativeForms.hpp"
+#include "../NativeDialogs.hpp"
 
 #include <algorithm>
 #include <iterator>
@@ -13,6 +14,7 @@
 #include <QtLogging>
 
 #include "../../framework/CommandSession.hpp"
+#include "../../framework/CutTargetsPanel.hpp"
 #include "../../framework/TestSync.hpp"
 
 namespace mitcad {
@@ -207,6 +209,9 @@ public:
         }
         break;
       }
+      case InputDef::Type::CutTargets:
+        row.targets->setScope(scope.object(input.id));
+        break;
       case InputDef::Type::List:
         break;
       }
@@ -215,6 +220,15 @@ public:
     refreshControlAvailability();
     [m_root layoutSubtreeIfNeeded];
     m_logTimer.start();
+  }
+
+  void setPreviewReport(const QJsonObject& report) override {
+    for (Row& row : m_rows) {
+      if (row.targets) {
+        row.targets->setPreview(report.value(QStringLiteral("cut_targets")).toObject());
+        row.targetsView->refresh();
+      }
+    }
   }
 
   void inputActionApplied(const QString& key) override {
@@ -421,6 +435,8 @@ private:
     NSButton* __strong clear = nil;
     NSStackView* __strong order = nil;
     QStringList orderDescriptions;
+    std::shared_ptr<CutTargetsPanel> targets;
+    std::shared_ptr<NativeWidgetView> targetsView;
   };
 
   NSButton* button(const QString& text, const QString& action) {
@@ -437,7 +453,7 @@ private:
     for (const Row& row : m_rows) {
       // A list owner's view contains all its row fields and actions.
       // Visiting children separately could undo their owner's lock.
-      if (row.list.isEmpty()) {
+      if (row.list.isEmpty() && !row.targets) {
         setControlAvailability(row.box, inputEnabled(row.key));
       }
     }
@@ -544,6 +560,12 @@ private:
     row.box = column();
     row.box.spacing = 4;
     row.box.accessibilityIdentifier = nativeString(QStringLiteral("row_") + key);
+    if (!input.heading.isEmpty()) {
+      // The heading of a group of inputs, hidden with the row.
+      NSTextField* heading = label(input.heading);
+      heading.font = [NSFont boldSystemFontOfSize:[NSFont systemFontSize]];
+      addFullWidth(row.box, heading);
+    }
     addFullWidth(row.box, label(input.label));
     NSView* control = nil;
     switch (input.type) {
@@ -604,6 +626,23 @@ private:
       }
       break;
     }
+    case InputDef::Type::CutTargets:
+      row.targets = std::make_shared<CutTargetsPanel>();
+      row.targets->setObjectName(QStringLiteral("input_") + key);
+      row.targets->setScope(m_state.object(key));
+      QObject::connect(row.targets.get(), &CutTargetsPanel::scopeChanged, row.targets.get(),
+                       [this, key](const QJsonObject& value) {
+        auto call = actions().objectChanged;
+        if (call) { call(key, value); }
+      });
+      QObject::connect(row.targets.get(), &CutTargetsPanel::highlightChanged, row.targets.get(),
+                       [this](const Selection& items) {
+        auto call = actions().highlightRequested;
+        if (call) { call(items); }
+      });
+      row.targetsView = createNativeWidgetView(row.targets.get());
+      control = (__bridge NSView*)row.targetsView->nativeView();
+      break;
     case InputDef::Type::List:
       // Declarative lists contain fields; nesting is not supported by the
       // shared CommandState row representation either.

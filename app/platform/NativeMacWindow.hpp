@@ -27,6 +27,7 @@ struct NativeMacAction {
   QString workspace;
   QString symbol;
   QString shortcut; // QKeySequence::PortableText; Ctrl is Command on macOS.
+  QStringList shortcuts; // Effective primary and alternate bindings.
   bool enabled = true;
   bool checked = false;
   QString menu; // Optional top-level menu, e.g. File, Edit or View.
@@ -73,6 +74,9 @@ struct NativeMacWindowCallbacks {
   std::function<void(const QString&)> activate;
   std::function<void(const QString&, const QString&)> rename;
   std::function<void(const QString&)> historyActivated;
+  std::function<void(const QString&)> treeDelete;
+  std::function<void(const QString&)> historyDelete;
+  std::function<void(const QString&)> historyRename;
   std::function<bool()> requestClose;
   std::function<void()> closed;
   std::function<void(const QString&, bool)> visibilityChanged;
@@ -90,6 +94,12 @@ struct NativeMacWindowCallbacks {
   std::function<void(const QString&, int)> historyReordered;
   std::function<void(const QString&, const QPoint&)> historyContextMenu;
   std::function<void(const QPoint&)> historyFilterMenu;
+  std::function<void()> timelineSearchOpened;
+  std::function<void(const QString&)> timelineSearchChanged;
+  std::function<void(int)> timelineSearchStepped;
+  std::function<void(int)> timelineSearchSelected;
+  std::function<void()> timelineSearchClosed;
+  std::function<void(const QPoint&)> timelineSearchFilterMenu;
   std::function<void(const QPoint&)> projectMenu;
   std::function<void(const QString&)> openFile;
   std::function<bool()> confirm;
@@ -141,6 +151,11 @@ public:
   void showSidebar(bool shown = true);
   void showHistory(bool shown = true);
   void showCommandSearch();
+  void showTimelineSearch();
+  void setTimelineSearchResults(const QString& text, const QString& count,
+                                const QList<NativeMacHistoryItem>& results, int selected);
+  void saveTimelineSearchScroll();
+  void restoreTimelineSearchScroll();
 
   void* nativeWindow() const; // NSWindow*, borrowed.
   void* nativeInspectorHost() const; // NSView*, borrowed.

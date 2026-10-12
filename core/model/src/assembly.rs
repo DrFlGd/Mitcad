@@ -77,6 +77,9 @@ pub struct Occurrence {
     pub visible: bool,
     /// The number in its name, `Component1:2`.
     pub number: u32,
+    /// Owned by a timeline Pattern at Points. Its placement only exists
+    /// after that feature succeeds; the source component stays shared.
+    pub pattern: Option<crate::features::point_pattern::PatternInstance>,
 }
 
 /// The components and occurrences of a design.
@@ -255,6 +258,7 @@ impl Assembly {
             grounded: false,
             visible: true,
             number,
+            pattern: None,
         });
         uid
     }
@@ -268,6 +272,16 @@ impl Assembly {
         if !self.exists(self.active) {
             self.active = ComponentUid::ROOT;
         }
+    }
+
+    /// Occurrences available at a recomputed timeline position. Definition
+    /// state retains inactive pattern IDs for edits, undo and file round trips.
+    pub(crate) fn at_placements(&self, placements: &BTreeMap<OccurrenceUid, Transform>) -> Self {
+        let mut assembly = self.clone();
+        assembly
+            .occurrences
+            .retain(|o| o.pattern.is_none() || placements.contains_key(&o.uid));
+        assembly
     }
 
     /// Every body as placed in the design: the root's bodies, then each
@@ -412,6 +426,14 @@ impl Assembly {
         }
         let mut numbers = BTreeMap::new();
         for o in &self.occurrences {
+            if let Some(pattern) = &o.pattern
+                && !features.contains(&pattern.feature)
+            {
+                return Err(format!(
+                    "occurrence {}: pattern {} does not exist",
+                    o.uid, pattern.feature
+                ));
+            }
             for c in [o.component, o.parent] {
                 if !self.exists(c) {
                     return Err(format!(

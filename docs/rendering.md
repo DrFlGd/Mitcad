@@ -158,8 +158,37 @@ file) simply has no rendered view (the log says `No render worker
   ViewDimensions`), which gives the vertical field of view of a
   perspective camera and the view plane of an orthographic one. Cycles'
   camera looks along its +Z; the view plane is set explicitly, so the
-  aspect follows the view's. The framing matches the shaded view
+  aspect follows the view's. An orthographic view's eye may stand inside
+  the scene (the 3D view's depth range reaches behind it), but Cycles'
+  orthographic rays start at the camera's plane and go forward only: its
+  camera stands on the view's axis behind the bounds of the bodies and the
+  ground instead (`orthographicEye` in `RenderCamera.hpp`, mitcad#215),
+  placed again when they change; the image does not depend on the
+  distance, and the lights that follow the camera keep the view's eye. A
+  perspective camera clips only what is nearer to the eye than a ten
+  thousandth of its distance to the target, nearer than the 3D view's own
+  near plane. The framing matches the shaded view
   (`tools/ui-render-test.sh` compares the silhouettes).
+- **Navigation** (mitcad#214): the worker gets a view only when a
+  navigation of the view ends, not on every step, as each view restarts
+  the render. `OcctViewer` keeps the state (`ViewNavigation`,
+  `isNavigating()`, `navigationFinished()`): a mouse button held on the
+  view (an orbit, a pan, a drag) navigates until the last button goes up,
+  and the frame after the release, which applies the last move, ends it;
+  input without a release (a wheel step, the Trackpad scheme's scrolling
+  and its momentum, a pinch or a rotation of the fingers on macOS, a
+  window resized in steps) navigates until the camera has kept still for
+  250 ms (`ViewNavigation::kQuietMilliseconds`); an animated camera move
+  (the orientation cube, a named view, Home) navigates until it
+  has finished. Meanwhile the view shows the bodies shaded and steady,
+  the worker goes on with the view it has, and its frames are not shown;
+  then one view goes to the worker. A camera change that is a single
+  step (a fit without animation, a camera set without one) sends its view
+  at once. There is no 3D mouse input. The view never draws a rendered
+  image over a camera or size other than the one it was made for: once
+  the camera or the size changes, or an animation starts, the frame that
+  shows it draws the bodies shaded (`OcctViewer::setRenderedImage`); a
+  navigation that ends where it began shows the last frame again.
 - **Display** (`OcctViewer::setRenderedImage`): the frame's light is
   scaled by the exposure and put through the view transform
   ([Environment](#environment)), composited over the view's background
@@ -171,7 +200,8 @@ file) simply has no rendered view (the log says `No render worker
   sketches, datums, highlights and previews over it, in depth with the
   bodies ([Overlays in depth](#overlays-in-depth)).
   Frames of an older camera are dropped, and until the first frame of a
-  new one arrives the bodies are drawn shaded.
+  new one arrives the bodies are drawn shaded (also during a
+  navigation, see above).
 - **Failure**: if the worker ends without being asked, the view shows a
   message, the mode turns off and the application keeps working; View >
   Rendered starts a new worker. Leaving the mode stops the worker. If the
@@ -788,8 +818,9 @@ Decisions and limits:
 The renderer renders on the CPU or on one GPU (mitcad#50): Cycles' CUDA
 device (NVIDIA, Maxwell and newer), and, in builds with their SDKs, HIP
 (AMD), Metal (Apple) and oneAPI (Intel); never OptiX (see below). Which
-ones a build has is up to `build-cycles.sh` ([Building](#building)); a build
-without any GPU device renders on the CPU, as before.
+ones a build has is up to its dependency builder ([Building](#building));
+Apple Silicon builds include CPU and Metal. A build without any GPU
+device renders on the CPU, as before.
 
 - **The worker's devices** (`cyclesDevices`, `CyclesRenderer.cpp`'s
   "Devices" section): Cycles' devices of this build on this machine, the
@@ -826,27 +857,81 @@ without any GPU device renders on the CPU, as before.
   are dropped. The worker says why in a `device` event (batch: also a
   `warning`), which the application shows over the view ("Rendering on
   the CPU: NVIDIA GeForce GTX 1060 3GB (CUDA) failed (…)") and Render
-  Image and `mitcad-cli render` as a warning. The worker's
+  Image and `mitcad-cli render` as a warning. The order (mitcad#202): a
+  GPU that fails while it also denoises on a GPU is first replaced by the
+  same GPU with CPU denoising, with the same state ("Denoising on the CPU:
+  Open Image Denoise on NVIDIA GeForce RTX 3080 (CUDA) failed (…)"; the
+  `device` event's `denoiser_device`, and the `denoiser` event where there
+  is one, then name the CPU); only when that one cannot start or
+  fails too does the CPU take over, with the message above. A GPU that
+  already denoises on the CPU goes to the CPU at once. Each step happens
+  at most once. Every failure of a GPU-denoising GPU gets the retry, not
+  only the denoiser's: when Open Image Denoise runs on the rendering GPU,
+  Cycles' denoiser and path tracer share one Cycles device, whose single
+  error text (Open Image Denoise's own messages are free text) does not
+  say which of them failed; a path tracer that fails again on the retry
+  costs one more start before the CPU. The worker's
   `MITCAD_RENDER_TEST_DEVICE_FAILURE=<message>` makes its first device
   fail so after its first frame (also the CPU, so that it can be tested
-  on any machine).
+  on any machine); that failure counts as the path tracer's and goes to
+  the CPU at once.
 - **Kernels**: Cycles' GPU kernels are files it loads at run time
   (`kernel_sm_61.cubin.zst`, `kernel_compute_75.ptx.zst`, …, from
   `<folder>/lib`): `cycles/lib` next to `mitcad-render` in a build folder
   (`app/CMakeLists.txt` copies them), `usr/lib/mitcad/cycles/lib` in the
-  AppImage. A GPU runs the cubin of its major version with the highest
+  AppImage, `bin\cycles\lib` in the Windows installer. The Linux and
+  Windows releases ship CUDA (mitcad#202, [Release
+  builds](#release-builds)). A GPU runs the cubin of its major version with the highest
   minor not above its own, else the driver compiles the newest PTX not
   above it (compute 7.5 for Ampere, Hopper and later). Without a kernels
   folder Cycles lists no CUDA device (unless a CUDA toolkit is installed:
   then it would compile the kernel, but the worker ships no kernel source,
   so that fails and the CPU renders); without a kernel for the GPU's
-  architecture the device fails to load and the CPU renders.
+  architecture the device fails to load and the CPU renders. On macOS,
+  Metal instead compiles `source/kernel/device/metal/kernel.metal` at run
+  time, with the complete `kernel` and `util` source trees under
+  `Contents/Resources/cycles/source`; see [macOS](#macos).
+- **Metal ray tracing**: Metal compute works independently of hardware
+  ray tracing. By default, the session enables MetalRT only when the device supports
+  it and pinned Cycles recommends it by default
+  (`use_hardware_raytracing && use_metalrt_by_default`). Device JSON
+  separates `metalrt_available`, `metalrt_default` and actual `metalrt`;
+  the worker's benchmark reports `render-backend` and MetalRT after
+  session creation, including CPU fallback. Device enumeration alone
+  does not confirm that a Metal session rendered successfully.
 - **Denoising**: Cycles denoises with Open Image Denoise on the device
   when Open Image Denoise has a module for it (its CUDA device: Turing,
-  sm_75, and newer; HIP; SYCL), else on the CPU (`Denoiser::create`).
-  That covers the previews and the final image alike; `ready` says where
-  (`"denoiser": "device" | "cpu"`), and the log `Render device: …,
-  denoising on the …`.
+  sm_75, and newer; HIP; SYCL; Metal), else on the CPU (`Denoiser::create`).
+  The session selects its denoising device independently of the render
+  device, for previews and final images alike. Enumeration and `ready`
+  report capability (`denoiser_available`) and selection, not proof of
+  execution. The macOS worker's `denoiser` event follows a successful
+  denoise and reports `denoiser_device` with `id`, `type`, `name`,
+  `executed` and an optional fallback `message`. The legacy `denoiser`
+  field is `pending` before that confirmation, then `device` or `cpu`.
+  A narrow Cycles patch lets the worker read the actual denoiser
+  after a completed frame, including Cycles' own CPU fallback. Builds
+  without that accessor leave execution unconfirmed. The patch also forwards
+  errors from a separate denoising device through Cycles' synchronized
+  progress state. A denoiser failure on the CPU path tracer
+  restarts the complete scene on CPU rendering and CPU denoising, retaining
+  its camera, materials, environment, previews and final-image settings;
+  on a GPU, the same GPU with CPU denoising takes over first (Fallback
+  above). Cycles' GPU denoiser has a device of Open Image Denoise only for
+  the OIDN devices whose headers Cycles was compiled with
+  (`OIDN_DEVICE_CUDA` in OIDN's `config.h`); otherwise every GPU denoise
+  fails with "Failed to create OIDN device". The dependency builders
+  therefore rebuild Cycles whenever Open Image Denoise is rebuilt with
+  another device set, and fail when a CUDA build's `cycles_integrator`
+  library does not call `oidnNewCUDADevice`; `cmake/Render.cmake` refuses
+  such a prefix too. When the error comes anyway, the worker adds Open
+  Image Denoise's own answer to the same call (made again on the watcher's
+  thread; Cycles does not read OIDN's error): "…; Open Image Denoise's own
+  probe: oidnNewCUDADevice failed: <OIDN's message>". `mitcad-render
+  --probe-denoiser` prints the physical devices Open Image Denoise finds
+  and, per GPU, whether it creates and commits its device there or OIDN's
+  error (`render-denoiser-probe` lines; CUDA and HIP, others say "not
+  probed").
 - **Not offered**: several GPUs together (Cycles' multi-device) and the
   CPU with a GPU; OptiX's own denoiser (Open Image Denoise everywhere).
 
@@ -880,7 +965,7 @@ Decisions and limits:
 ## Building
 
 ```bash
-tools/dev-env/build-cycles.sh   # once (setup-user.sh runs it), about 15 minutes
+tools/dev-env/build-cycles.sh --cuda   # once (setup-user.sh runs it), about 25 minutes
 cmake --preset dev
 ```
 
@@ -912,7 +997,7 @@ cmake --preset dev
   pins), clones Cycles at its tag and checks the commit (pins in
   `tools/dev-env/versions.sh`), builds Open Image Denoise (CPU device, the
   ray tracing filter's weights) and Cycles (CPU with Embree and Open Image
-  Denoise; no OSL, USD, Alembic, OpenVDB, OpenSubdiv or GPU devices) as
+  Denoise; no OSL, USD, Alembic, OpenVDB or OpenSubdiv) as
   release builds, and writes `install/cycles/mitcad-cycles.cmake` for
   `cmake/Render.cmake`. A Debug build of Mitcad links the release
   libraries, as it links OCCT's.
@@ -920,12 +1005,15 @@ cmake --preset dev
 - GPU devices (mitcad#50, `build-cycles.sh --help`): `--cuda` builds
   Cycles' CUDA device and its kernels for `--cuda-arch` (default
   `CUDA_ARCHITECTURES` in `versions.sh`: sm_50, 52, 60, 61, 70, 75, 86,
-  89, 120 and PTX for compute 7.5); no OptiX ([Devices](#devices)); `--hip`
+  89, 120 and PTX for compute 7.5); no OptiX ([Devices](#devices)).
+  `setup-user.sh` passes `--cuda` (mitcad#202) unless
+  `MITCAD_RENDER_CUDA=0`, which a development machine may set to skip
+  the kernels' build: the releases need CUDA ([Release
+  builds](#release-builds)). `--hip`
   HIP (ROCm's HIP SDK) and `--oneapi` oneAPI (the DPC++ compiler and Level
   Zero), both untested so far; `--oidn-gpu` Open Image Denoise's devices
-  for those GPUs. Metal is a macOS follow-up (mitcad#50); the initial
-  macOS script builds CPU rendering only. Each choice gets its own build
-  stamp, so changing
+  for those GPUs. The [macOS script](#macos) enables CPU and Metal, with
+  CPU/BNNS and Metal denoising. Each choice gets its own build stamp, so changing
   them builds Cycles again; `install/cycles/kernels/lib` holds the kernels
   and `mitcad-cycles.cmake` names them (`MITCAD_CYCLES_KERNELS`) with the
   devices (`MITCAD_CYCLES_DEVICES`, which CMake prints: `Cycles devices:
@@ -975,28 +1063,78 @@ The kernels are 28 MB compressed with zstd (165 MB uncompressed): 2.7 to
 3.6 MB per cubin, 1.2 MB of PTX. The CUDA toolkit's components take
 180 MB in the prefix, the unpacked GCC 14 100 MB.
 
+### Release builds
+
+The Linux and Windows releases ship the CUDA device (mitcad#202), and
+fail rather than ship a CPU-only renderer:
+
+- `MITCAD_RENDER_REQUIRED_DEVICES` (a CMake or environment variable,
+  `cmake/Render.cmake`; empty by default) names devices the prefix must
+  have; the release builds configure with `CPU;CUDA`, and a prefix
+  without CUDA, or with a kernel file missing or no `kernel_sm_*.cubin.zst`
+  at all, stops the configure with the script to run.
+- `tools/appimage-test.sh` fails on an AppImage without CUDA kernels or
+  cuew's licence when the build folder it tests requires CUDA (or with
+  `--require-cuda`), whether or not the machine has a GPU; with a CUDA
+  device it still checks that the render ran on it.
+- `tools/installer-windows-test.ps1` (`app.installer-windows`) checks that
+  every kernel of the build folder is in the installer's `bin\cycles\lib`
+  with cuew's licence, fails without kernels when the build requires
+  CUDA, and runs the installed worker's `--list-devices`.
+
 ### Windows
 
 In the build VM (mitcad#51), in the Visual Studio x64 environment:
 
 ```bat
-tools\dev-env\msvc.cmd powershell -ExecutionPolicy Bypass -File tools\dev-env\build-cycles.ps1
+tools\dev-env\msvc.cmd powershell -ExecutionPolicy Bypass -File tools\dev-env\build-cycles.ps1 -Cuda
 tools\dev-env\msvc.cmd cmake --preset dev
 ```
 
-- `build-cycles.ps1 [-Prefix dir]` (which `setup-windows.ps1` runs) does
-  what `build-cycles.sh` does,
+- `build-cycles.ps1 [-Prefix dir] [-Cuda [-CudaArch list]]` (which
+  `setup-windows.ps1` runs, with `-Cuda` unless `MITCAD_RENDER_CUDA=0`)
+  does what `build-cycles.sh` does,
   with MSVC and Ninja: the manifest's libraries for `x64-windows`, ISPC's
   Windows release (`ISPC_WINDOWS_SHA256`; the script reads the pins of
-  `versions.sh` itself), Open Image Denoise and Cycles as release builds
-  with the CPU device only (no GPU devices yet), the check with Cycles'
+  `versions.sh` itself), Open Image Denoise (CPU device) and Cycles as
+  release builds, the check with Cycles'
   standalone program and `mitcad-cycles.cmake` (the definitions of
-  `compile_commands.json`, MSVC's `/fp:` and `/arch:` options). The
+  `compile_commands.json`, MSVC's `/fp:` and `/arch:` options, the
+  devices and the kernels). The
   prefix defaults to `MITCAD_RENDER_DEPS`, else
   `C:\dev\mitcad-render-deps`, which is also `cmake/RenderDeps.cmake`'s
   default on Windows. Cycles' `FindTBB` looks for `tbb.lib`; the script
   names oneTBB's `tbb12.lib`. MSVC's linker needs no link group for
   Cycles' libraries.
+- `-Cuda` (mitcad#202) builds Cycles' CUDA device and its kernels for
+  `-CudaArch` (default `CUDA_ARCHITECTURES`, as on Linux) with the same
+  CUDA 12.9.1 compiler components as Linux, from their Windows archives
+  (`CUDA_NVCC_WINDOWS_SHA256`, `CUDA_CUDART_WINDOWS_SHA256`,
+  `CUDA_CCCL_WINDOWS_SHA256` in `versions.sh`, NVIDIA's digests of
+  `redistrib_12.9.1.json`) unpacked into `<prefix>\cuda-12.9.1` with
+  Windows' `tar`; no installer, no administrator rights
+  (`MITCAD_CUDA_TOOLKIT` names another toolkit). The host compiler is the
+  environment's MSVC: CUDA 12.9 takes Visual Studio 2017 to 2022, and the
+  build VM's cl 19.40 (Visual Studio 2022 17.10) needs no
+  `-allow-unsupported-compiler`. The kernels are built first with
+  `MITCAD_CUDA_JOBS` parallel compiles (default 3: the VM has about 6 GB
+  of memory, and each nvcc takes up to 1 GB, ptxas most of it), then the
+  rest with `MITCAD_RENDER_JOBS`. The kernels go to
+  `install\cycles\kernels\lib`, `mitcad-cycles.cmake` names them and the
+  devices (`CPU CUDA`), and cuew's licence goes to
+  `install\cycles\licenses`. The CUDA driver (`nvcuda.dll`) is loaded at
+  run time (cuew), so the worker starts and renders on the CPU on a
+  machine without an NVIDIA GPU or driver (the build VM: `--list-devices`
+  lists the CPU only and `app.render_worker_gpu` skips). `-Cuda` also
+  builds Open Image Denoise's CUDA device
+  (`OpenImageDenoise_device_cuda.dll`, 3 MB, kernels for sm_75, 80, 90,
+  100 and 120; a few minutes), which CUDA 12.9 compiles with MSVC (on
+  Linux glibc 2.41's math headers stop it, [Building](#building)): Cycles
+  then denoises on Turing and newer GPUs. It calls the driver through
+  Open Image Denoise's own small runtime (it imports `nvcuda.dll` and
+  links no CUDA toolkit library), and the core loads it at run time only
+  where that works, so a machine without the driver denoises on the CPU.
+  OptiX stays off.
 - A release configuration only (the Windows preset is RelWithDebInfo;
   there is no Windows Debug preset): a Debug build's runtime library
   (`/MDd`) does not match the release libraries, and `cmake/Render.cmake`
@@ -1016,10 +1154,13 @@ tools\dev-env\msvc.cmd cmake --preset dev
   frames refine to all samples and show the block.
 - The installer has `mitcad-render.exe` with its DLLs (the runtime
   dependency set, with Open Image Denoise's folder) and Open Image
-  Denoise's CPU device, the licences in `licenses\cycles` and
+  Denoise's CPU and CUDA devices, the CUDA kernels in `bin\cycles\lib` (next to the
+  worker, as in the build folder, where `app/CMakeLists.txt` copies
+  them), the licences in `licenses\cycles` (with cuew's) and
   `licenses\openimagedenoise`, and `THIRD-PARTY-NOTICES.txt` lists them;
-  `tools/installer-windows-test.ps1` checks them and renders the test
-  scene with the installed worker on a system-only `PATH`.
+  `tools/installer-windows-test.ps1` checks them, renders the test
+  scene with the installed worker on a system-only `PATH` and lists its
+  devices ([Release builds](#release-builds)).
 
 On the build VM: the renderer's vcpkg ports take the
 longest the first time (hwloc alone 10 minutes, Embree next), Cycles
@@ -1028,13 +1169,21 @@ longest the first time (hwloc alone 10 minutes, Embree next), Cycles
 builds 390 MB). `mitcad-render.exe` is 11 MB, Open Image Denoise's core
 45 MB, Embree 33 MB, OpenImageIO 6 MB, OpenColorIO 5 MB.
 
+With `-Cuda` (mitcad#202, the same VM, 16 threads, while a Mitcad build
+ran beside it): the ten CUDA kernels took about 13 minutes with three
+parallel compiles, Cycles' host code 99 s more. The kernels are 29 MB
+compressed with zstd (2.8 to 3.8 MB per cubin, 1.2 MB of PTX; 161 MB of
+cubins uncompressed), the same as Linux; the CUDA components' archives
+are 133 MB and take 380 MB unpacked in the prefix (about 4.8 GB in all).
+The installer grew from 112 MB to 142 MB.
+
 ### macOS
 
 In the isolated Apple Silicon build guest (mitcad#51),
 `tools/dev-env/setup-macos.sh` runs `build-cycles-macos.sh` once; then:
 
 ```bash
-tools/dev-env/build-cycles-macos.sh   # again only after a pin changes
+tools/dev-env/build-cycles-macos.sh   # rerun after pins or build inputs change
 cmake --preset dev
 ```
 
@@ -1051,30 +1200,68 @@ Both dependency builds request arm64 and macOS 14.4, matching the app's
 presets and vcpkg triplet. A narrow patch of Open Image Denoise's
 `cmake/oidn_platform.cmake` keeps it from overriding that deployment
 target; the Apache-2.0 patch is published in `third_party/oidn/`.
-The generated `mitcad-cycles.cmake` exports Cycles' own definitions and
-host options. Apple's linker takes its static libraries without GNU's
-link group. Every GPU device, including Metal in Cycles and the denoiser,
-is disabled; enabling Metal remains mitcad#50.
+Cycles and Open Image Denoise both build CPU and Metal devices; OIDN also
+retains its CPU/BNNS implementation. The generated
+`mitcad-cycles.cmake` exports the actual Cycles definitions and host
+options, both libraries' device configurations, source/tool pins and hashes of the builder,
+manifest, triplet and patches. Those inputs form the completion stamp.
+An old CPU-only prefix or changed input is rebuilt in place by the script;
+Mitcad's configure rejects an outdated export with the rebuild command.
+OIDN's installed files are refreshed before its install-time rpath edits,
+so rebuilding an existing prefix is safe.
+
+Apple's linker takes Cycles' static libraries without GNU's link group.
+The worker also links the pinned upstream framework dependencies: Metal,
+Foundation, IOKit, Carbon and Accelerate. A narrow Apache-2.0 patch in
+`third_party/cycles/metal-resource-usage.patch` uses the existing read
+usage for sampled textures, replacing a Metal flag deprecated in macOS
+13; no compiler warning is suppressed. The build uses Xcode Command Line
+Tools and their SDK. OIDN also requires Apple's offline `metal` compiler
+and `metallib` linker through `xcrun`, from Xcode or a separately installed
+Metal toolchain. Its compiled kernels are embedded in the Metal device
+module, so the installed app needs neither that toolchain nor an external
+OIDN kernel file. The dependency builder checks the tools before building
+and records their identity in its completion stamp. Cycles calls Metal's
+`newLibraryWithSource` at run time rather than invoking the offline
+`xcrun metal` compiler. A working Metal device and runtime compiler are
+therefore required to validate Metal rendering.
+
+The prefix exports the complete `src/kernel` and `src/util` hierarchies
+under `install/cycles/runtime/source`, including `.metal` and other
+non-header files. `source.sha256` records every shipped source. The
+build and installed bundles both copy that runtime root to
+`Contents/Resources/cycles`; the worker resolves it relative to its own
+executable, so moving the bundle does not require the source or dependency
+prefix. The first Metal render compiles kernels and can take longer than
+later renders that use the driver's cache. The worker uses synchronous
+Metal pipeline creation on Cycles' shader threads: the asynchronous
+completion path stalled on the validated paravirtual GPU. Compilation
+remains outside the application process, whose worker shutdown does not
+depend on that callback. `CYCLES_METAL_ASYNC_PSO_CREATION` remains an
+explicit upstream diagnostic override.
 
 The worker is built beside `mitcad` in the build bundle's `Contents/MacOS`
 and installed there too. Bundle deployment discovers the dependencies of
-both executables and Open Image Denoise's CPU module, which the core opens
+both executables and Open Image Denoise's CPU and Metal modules, which the core opens
 at run time. They go to `Contents/Frameworks`; copied dylibs receive
 relative install names and a loader-relative rpath. Qt's deployment also
-processes the worker and the module. `tools/package-macos.sh` then removes
+processes the worker and the modules. `tools/package-macos.sh` then removes
 absolute build rpaths, signs the nested code and checks the bundle.
 `Contents/Resources/licenses` holds Cycles' and its bundled code's texts,
 Open Image Denoise's notices, and the renderer's vcpkg copyrights;
-`THIRD-PARTY-NOTICES.txt` names the renderer and the deployment-target patch.
-`tools/check-bundle-macos.sh` checks their presence and the CPU module as
-well as the normal arm64 and dependency-path checks.
+`THIRD-PARTY-NOTICES.txt` names the renderer and its published patches.
+`tools/check-bundle-macos.sh` checks their presence, both versioned and signed OIDN modules and
+the complete Metal source manifest, as well as the normal arm64 and
+dependency-path checks. Validate an installed worker after relocating the
+bundle and denying access to the development prefix, source and build
+folders; linked-library checks alone do not prove runtime source lookup.
 
 The macOS bundle contains the app and its worker. To render through the
 separate build-tree `mitcad-cli`, pass
 `--worker <build>/app/mitcad.app/Contents/MacOS/mitcad-render` (or set
 `MITCAD_RENDER_WORKER`); `cli.render` uses the target's complete path too.
 
-The CPU renderer was built and validated in the isolated arm64 guest on
+The initial CPU renderer was built and validated in the isolated arm64 guest on
 macOS 27.0.1 with SDK 27.0, using the pinned Cycles commit and Open Image
 Denoise 2.5.1. The dependency build and standalone CPU render, worker
 tests, and `cli.render` passed. The macOS Qt UI smoke test displayed
@@ -1085,6 +1272,76 @@ signature checks; its worker and the same UI smoke test rendered while
 access to the development dependencies and build trees was denied. The
 deployment target is macOS 14.4; runtime compatibility with macOS 14.4 was
 not tested.
+
+The Metal integration (mitcad#183) was validated on 2026-10-11 in the
+isolated arm64 macOS 27.0.1 guest with SDK 27.0. The device was
+`Apple Paravirtual device (GPU)`, with unified memory and no ray-tracing
+capability; diagnostics reported MetalRT off and CPU denoising. The
+completed checks were:
+
+- Upgrade the existing CPU dependency prefix to CPU and Metal, and reject
+  its saved CPU-only metadata during a new CMake configure.
+- Build the application, worker, CLI and scoped test executable without
+  compiler warnings, retaining the arm64/macOS 14.4 deployment target.
+- Pass all eight scoped ctests: `app.render_devices`, `app.render_worker`,
+  `app.render_updates`, `app.render_worker_environment`,
+  `app.render_worker_fallback`, `app.render_worker_device_failure`,
+  `app.render_worker_gpu` and `cli.render`. The device tests cover MetalRT
+  policy, explicit CPU/device selection, missing devices and startup/runtime
+  failure with the scene and render settings retained.
+- Render at 320 x 240 and 64 samples with explicit Metal, without fallback
+  or debug overrides. Comparison with explicit CPU passed the `2:24`
+  tolerance with mean difference 0 and 99th-percentile difference 0.
+- Package and sign ad hoc, verify all runtime source hashes, and check
+  87 Mach-O files and 949 library references with no problems. Repeat the
+  explicit Metal/CPU comparison from a relocated installed bundle while
+  denying reads of the source/build, dependency and Qt development trees;
+  the images again matched, and the signature remained valid after rendering.
+
+These VM checks establish GPU execution and package completeness, not a
+hardware speedup. Asynchronous pipeline creation initially stalled; the
+worker's synchronous pipeline default passed the final checks. Physical
+M1/M2 and M3-or-newer generation behaviour, hardware MetalRT, representative
+performance, minimum-OS runtime coverage and native/Qt rendered-view
+acceptance remain mitcad#185. Metal denoising remains mitcad#184.
+
+The OIDN Metal integration (mitcad#184) builds both CPU/BNNS and Metal
+modules, but the same guest cannot validate GPU denoising: OIDN 2.5.1
+requires the Metal3 and Apple6 GPU families and a maximum threadgroup size
+of at least 1024. Its paravirtual GPU reports neither required family.
+The Metal module loads successfully and OIDN rejects the unsupported
+device; the worker continues Metal rendering with confirmed CPU denoising.
+This is fallback coverage, not evidence that Metal denoising executed.
+Actual execution and image comparisons on a supported GPU remain required
+before mitcad#184 can be closed.
+
+The scoped `app.render_denoiser_*` tests check CPU execution, recovery from
+a denoiser error, and interactive previews with camera changes and
+navigation. The CPU preview and failure-preview tests run independently
+of GPU capability. Metal tests first query the separate OIDN capability;
+only its known absence skips them. `MITCAD_RENDER_REQUIRE_GPU=1` instead
+makes that absence an error. An advertised Metal denoiser must actually
+execute; a later CPU fallback, timeout or error fails the test.
+On supported devices, both comparison runs use the same Metal path tracer
+and switch only the denoiser. Final and matching intermediate preview
+images allow a mean absolute RGB difference of 2 and a 99th-percentile
+difference of 24 on displayed 8-bit values (`--tolerance 2:24`).
+Preview comparisons require matching resolution and sample counts; the
+adaptive scheduler need not stop at exactly the requested 4 and 16 samples.
+
+The scoped guest validation passed 13 tests, with the two unsupported
+Metal-denoiser tests skipped. The installed and relocated bundle passed
+signature checks and 88 Mach-O/959 library-reference checks. With source,
+dependency, toolchain and Qt development trees inaccessible, the four CPU
+denoiser tests passed again, including progressive frames and error recovery.
+A copy without the Metal OIDN module completed an explicit Metal-denoiser
+request on the CPU with an explanatory diagnostic. The bundled CLI also
+finished its image after a real Metal pipeline compilation failure triggered
+the CPU retry. These results do not establish successful Metal previews:
+the guest's interactive Metal benchmark waited for `shader_eval_background`
+and reached its 60-second deadline; cancellation then ended cleanly.
+The narrow `metal-pipeline-failure.patch` propagates failed or exhausted
+pipeline requests and ends cancelled waits instead of waiting indefinitely.
 
 ### AppImage
 
@@ -1099,15 +1356,18 @@ library loads at run time from its own folder). The licences of Cycles
 `usr/share/doc/mitcad/licenses/{cycles,openimagedenoise}`, the vcpkg
 libraries' with the others; `THIRD-PARTY-NOTICES.txt` lists them. A Debug
 build's AppImage is about 145 MB.
-With `--cuda` the AppImage also has the kernels in
+With `--cuda` (the default of `setup-user.sh` and required by the
+release) the AppImage also has the kernels in
 `usr/lib/mitcad/cycles/lib` (a Debug build's AppImage 181 MB instead of
 152 MB) and the cuew licence; the driver stays the system's.
 `tools/appimage-test.sh` then also checks that the libraries and licences
 are there and that `mitcad` links none of the renderer's libraries, and
 renders the demo block with the AppImage's worker on Xvfb (the worker
-loads only the AppImage's and the system's libraries); when the worker
-has a CUDA device, that the kernels are there and the render ran on the
-GPU (tested with the build of `--cuda` on the GTX 1060 below).
+loads only the AppImage's and the system's libraries); that the kernels
+and cuew's licence are there when the build requires CUDA ([Release
+builds](#release-builds)); and when the worker has a CUDA device, that
+the render ran on the GPU (tested with the build of `--cuda` on the GTX
+1060 below).
 
 ## Tests and measurements
 
@@ -1121,7 +1381,9 @@ GPU (tested with the build of `--cuda` on the GTX 1060 below).
   mesh changes only it, and a released mesh is gone; a face with a
   material of its own, another material of that face and none again each
   change only that body and no mesh (mitcad#53); then the last scene
-  renders.
+  renders. An orthographic view whose eye stands inside the block renders
+  as one from far outside it (mitcad#215: the mean difference of the
+  images below 2 of 255).
 - `tools/ui-render-materials-test.sh`: appearances in the render
   ([Materials](#materials)).
 - `tools/ui-render-faces-test.sh`: appearances of faces and textures
@@ -1141,7 +1403,9 @@ GPU (tested with the build of `--cuda` on the GTX 1060 below).
   file.
 - `tools/ui-render-test.sh`: the mode on Xvfb (frames refine, the
   silhouette matches the shaded view, the cube is on top, orbit, pan and
-  zoom restart the render and still match, a resize renders larger
+  zoom restart the render and still match, each sending one view when it
+  ends: none while the button is held, one after the release or after a
+  burst of wheel steps (mitcad#214), a resize renders larger
   frames in a larger frame memory, a killed worker leaves the
   application working, leaving the mode ends the worker; the worker is
   `mitcad-render` next to the app, the app and the worker map the
@@ -1199,6 +1463,15 @@ GPU (tested with the build of `--cuda` on the GTX 1060 below).
   while rendering (the test hook) hands over to the CPU with the message.
 - `ctest` `app.unit`: the final render's image conversions (opaque 8 bits
   as `displayImage`, 16 bits the same colours, straight alpha).
+- `ctest` `app.unit`: when a navigation ends (`ViewNavigation`,
+  mitcad#214): a held button, a burst of wheel steps and its quiet time, a
+  camera still moving after the last step, an animation, a trackpad
+  scroll's drag; where an orthographic render's camera stands
+  (`orthographicEye`, mitcad#215).
+- `ctest` `app.ui-windows`: View > Rendered in the Windows VM, with the
+  test driver: the frames refine and show the block; an orbit sends no
+  view while the button is held and one after the release, and a burst of
+  five wheel steps (`wheel-burst`) sends one view (mitcad#214).
 - `tools/appimage-test.sh`: see [AppImage](#appimage).
 - `mitcad-render --bench 1920x1080 --samples 64 [--interactive]
   [--orthographic] [--trace] [--frames folder] [--previews n,m] [--output image.png]
@@ -1232,6 +1505,9 @@ about 3 s.
 | `MITCAD_RENDER_PREVIEWS` | Sample counts of full-resolution denoised previews, e.g. `4,16` (default none; [Previews](#previews)). |
 | `MITCAD_RENDER_TEST_SCENE=1` | The rendered view shows the fixed test scene instead of the document. |
 | `MITCAD_RENDER_TEST_DEVICE_FAILURE` | The worker's first render device fails with this message after its first frame (tests of the CPU's fallback, mitcad#50). |
+| `MITCAD_RENDER_TEST_DENOISER` | Test-only OIDN selection: `cpu` or `metal`, independently of the render device. Automatic selection remains the product behaviour. |
+| `MITCAD_RENDER_TEST_COMPARE_DENOISER` | Test-only OIDN selection for the second run of the worker's `--compare` benchmark. |
+| `MITCAD_RENDER_TEST_DENOISER_FAILURE` | Inject a denoiser error after its first successful denoise; the CPU retry ignores this hook and any Metal override. |
 | `MITCAD_RENDER_WORKER` | The render worker's executable instead of `mitcad-render` next to the application or `mitcad-cli` (tests); a missing file means no rendered view and no final render. |
 
 ## Licences
@@ -1272,19 +1548,22 @@ GPU devices (mitcad#50; also in [development.md](development.md#licence-policy))
   with LLVM exception) and Level Zero (MIT), the runtime linked
   dynamically; not built here so far. **Metal**: Apple's system
   frameworks.
-- **Open Image Denoise's GPU modules** (`--oidn-gpu`): Apache-2.0 with
-  CUTLASS (BSD-3-Clause) and CCCL's headers (Apache-2.0 with LLVM
-  exception); its CUDA module uses the driver API (`libcuda.so.1`), not
-  the CUDA runtime, so nothing of NVIDIA's is linked into it either. The
-  AppImage takes the modules that are there (`make-appimage.sh`) and
-  leaves the drivers out.
+- **Open Image Denoise's GPU modules** (`--oidn-gpu`; on Windows part of
+  `build-cycles.ps1 -Cuda`, mitcad#202): Apache-2.0 with
+  CUTLASS (BSD-3-Clause, in its `third-party-programs.txt`, which the
+  packages ship) and CCCL's headers (Apache-2.0 with LLVM exception); its
+  CUDA module uses the driver API (`libcuda.so.1`,
+  `nvcuda.dll` through the driver's import library), not the CUDA
+  runtime, so nothing of NVIDIA's is linked into it either. The AppImage
+  and the Windows installer take the modules that are there
+  (`make-appimage.sh`, `cmake/Packaging.cmake`) and leave the drivers out.
 
 ## Not done yet (follow-ups)
 
 - GPU devices (mitcad#50): HIP and oneAPI built and tested on their
-  hardware; Metal with the macOS build; Open Image Denoise's CUDA device
-  built with CUDA 13 and tested on Turing or newer; several GPUs at once;
-  the kernels in the Windows installer and the macOS bundle.
+  hardware; Open Image Denoise's CUDA device on Linux (built with CUDA 13)
+  and tested on Turing or newer on Linux and Windows; several GPUs at
+  once. Metal denoising on macOS remains mitcad#184.
 - Roughness and normal maps, textures in the shaded view, OCCT's PBR shading from the same
   parameters ([Materials](#materials)).
 - Lights ([Lights](#lights)): a rotation of area lights about their
@@ -1294,7 +1573,9 @@ GPU devices (mitcad#50; also in [development.md](development.md#licence-policy))
   image formats (TIFF), render passes and render queues for the final
   render ([Final render](#final-render)); `mitcad-cli render` in
   `tools/appimage-test.sh`.
-- GPU devices in `build-cycles.ps1` (CUDA and HIP on Windows).
+- HIP in `build-cycles.ps1` (AMD GPUs on Windows); the Windows CUDA
+  build run on an NVIDIA GPU (mitcad#202 tested it only in a VM without
+  one, where it renders on the CPU).
 - A body recomputed to the same geometry (a later feature changed) is
   another `TopoDS_Shape`: its display triangulation is read and hashed
   again (not sent: the worker holds the hash). The model could keep the

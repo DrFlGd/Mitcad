@@ -124,6 +124,14 @@ BrowserController::BrowserController(DocumentHost& host, QWidget* window)
   });
   follow(m_timeline, &TimelineWidget::markerDragged, &BrowserController::markerDragged);
   follow(m_timeline, &TimelineWidget::markerDragFinished, &BrowserController::markerDragFinished);
+  // The timeline's search (mitcad#179): Ctrl+F in the browser opens it; the
+  // selection from before it comes back when it is cleared.
+  connect(m_browser, &BrowserPanel::searchRequested, m_timeline, &TimelineWidget::openSearch);
+  connect(m_timeline, &TimelineWidget::searchStarted, this, [this] {
+    m_searchItems = m_shownItems;
+    m_searchFeatures = m_shownFeatures;
+  });
+  follow(m_timeline, &TimelineWidget::searchRestored, &BrowserController::restoreSearchSelection);
 
   // A click on a badge goes to its feature, or lists them to go to.
   const auto listed = [this](QToolButton* button, const QVector<const DocumentSnapshot::Feature*>& features) {
@@ -372,6 +380,11 @@ void BrowserController::toggleVisibility(const BrowserNode& node) {
     done = m_host.runModelCommands(commands, (show ? tr("Show %1") : tr("Hide %1")).arg(what));
     break;
   }
+  case BrowserNode::Type::FlatPattern:
+    // The sheet shown flat in place of the folded body (mitcad#210).
+    done = m_host.runModelCommand(cmd("set_flat_pattern", {{QStringLiteral("body"), node.uid},
+                                                           {QStringLiteral("shown"), show}}));
+    break;
   case BrowserNode::Type::Analysis:
     // Showing it hides the others: one section at a time (mitcad#41).
     done = m_host.runModelCommand(cmd("set_analysis_visible", {{QStringLiteral("name"), node.uid},
@@ -450,6 +463,7 @@ void BrowserController::browserDoubleClicked(const BrowserNode& node) {
   case BrowserNode::Type::Datum:
   case BrowserNode::Type::Joint:
   case BrowserNode::Type::Feature:
+  case BrowserNode::Type::SheetRules:
     m_host.editFeature(node.uid);
     break;
   case BrowserNode::Type::Body:
@@ -457,6 +471,9 @@ void BrowserController::browserDoubleClicked(const BrowserNode& node) {
     if (canChange()) {
       m_browser->startRename(node);
     }
+    break;
+  case BrowserNode::Type::FlatPattern:
+    editFlatPattern(node.uid);
     break;
   case BrowserNode::Type::Units:
     changeUnits();
@@ -472,8 +489,20 @@ void BrowserController::browserDoubleClicked(const BrowserNode& node) {
   }
 }
 
+void BrowserController::editFlatPattern(const QString& body) {
+  if (canChange()) {
+    m_host.startCommand(QStringLiteral("sheet.flat_pattern"), {SelectionItem{SelectKind::Body, body, QString(), QString()}},
+                        nullptr);
+  }
+}
+
 void BrowserController::deleteNode(const BrowserNode& node) {
   switch (node.type) {
+  case BrowserNode::Type::FlatPattern:
+    if (canChange() && m_host.runModelCommand(cmd("remove_flat_pattern", {{QStringLiteral("body"), node.uid}}))) {
+      qDebug().noquote() << QStringLiteral("Deleted the flat pattern of %1").arg(m_host.model().bodyName(node.uid));
+    }
+    break;
   case BrowserNode::Type::Body:
     // The feature that made it goes, as nothing removes a body by itself.
     deleteFeature(node.uid.section(QLatin1Char('.'), 0, 0));
@@ -735,7 +764,8 @@ void BrowserController::browserMenu(const BrowserNode& node, const QPoint& at) {
     for (const DocumentSnapshot::Component& c : std::as_const(m_snapshot.components)) {
       if (c.uid == node.uid && !c.linked && !c.bodies.isEmpty()) {
         menu.add(QStringLiteral("component"), tr("Move Features into a Component"), [this, node] {
-          moveToComponent({{QStringLiteral("component"), node.uid}});
+          moveToComponent({{QStringLiteral("component"), node.uid},
+                           {QStringLiteral("source_occurrence"), node.occurrence}});
         });
       }
     }
@@ -793,11 +823,24 @@ void BrowserController::browserMenu(const BrowserNode& node, const QPoint& at) {
              [this, node] { componentsFromBodies(node); });
     // The body with the features that made it (mitcad#171).
     menu.add(QStringLiteral("component"), tr("Move to Component..."), [this, node] {
-      moveToComponent({{QStringLiteral("component"), node.component}, {QStringLiteral("bodies"), QJsonArray{node.uid}}});
+      moveToComponent({{QStringLiteral("component"), node.component},
+                       {QStringLiteral("source_occurrence"), node.occurrence},
+                       {QStringLiteral("bodies"), QJsonArray{node.uid}}});
     });
     menu.add(QStringLiteral("appearance"), tr("Appearance..."), [this, node] {
       openAppearances({SelectionItem{SelectKind::Body, node.uid, QString(), QString()}});
     });
+    // A sheet-metal body (mitcad#210): its rules and Flat Pattern.
+    if (const QJsonObject sheet = m_snapshot.sheet(node.uid); !sheet.isEmpty()) {
+      const QString rules = sheet.value(QStringLiteral("rules")).toString();
+      menu.add(QStringLiteral("sheet-rules"), tr("Edit Sheet Rules"), [this, rules] { m_host.editFeature(rules); });
+      if (sheet.value(QStringLiteral("flat_pattern")).isObject()) {
+        menu.add(QStringLiteral("export-dxf"), tr("Export Flat Pattern..."),
+                 [this, node] { m_host.exportFlatPattern(node.uid); });
+      } else {
+        menu.add(QStringLiteral("flat-pattern"), tr("Create Flat Pattern"), [this, node] { editFlatPattern(node.uid); });
+      }
+    }
     menu.separator();
     renameEntry();
     menu.add(QStringLiteral("delete"), tr("Delete"), [this, node] { deleteNode(node); });
@@ -931,6 +974,18 @@ void BrowserController::browserMenu(const BrowserNode& node, const QPoint& at) {
   case BrowserNode::Type::Feature:
     // The timeline's menu of the feature (mitcad#177).
     featureMenu(node.uid, at, node);
+    break;
+  case BrowserNode::Type::SheetRules:
+    menu.add(QStringLiteral("sheet-rules"), tr("Edit Sheet Rules"), [this, node] { m_host.editFeature(node.uid); });
+    timelineEntry(node.uid);
+    break;
+  case BrowserNode::Type::FlatPattern:
+    menu.add(QStringLiteral("flat-pattern"), tr("Edit Flat Pattern"), [this, node] { editFlatPattern(node.uid); });
+    menu.add(node.visible ? QStringLiteral("eye-off") : QStringLiteral("eye"),
+             node.visible ? tr("Show Folded") : tr("Show Flat"), [this, node] { toggleVisibility(node); });
+    menu.add(QStringLiteral("export-dxf"), tr("Export DXF..."), [this, node] { m_host.exportFlatPattern(node.uid); });
+    menu.separator();
+    menu.add(QStringLiteral("delete"), tr("Delete"), [this, node] { deleteNode(node); });
     break;
   default:
     break;
@@ -1089,6 +1144,17 @@ void BrowserController::renameClicked(const BrowserNode& node) {
   }
 }
 
+void BrowserController::restoreSearchSelection() {
+  // Outside commands and sketches only: a command's inputs keep what the
+  // steps gave them.
+  if (!m_host.canChangeModel()) {
+    return;
+  }
+  pick(m_searchItems, m_searchFeatures);
+  qDebug().noquote() << QStringLiteral("Selection restored after the timeline search: %1 item(s)")
+                            .arg(m_searchItems.size());
+}
+
 void BrowserController::findInTimeline(const QString& uid) {
   m_timeline->selectFeature(uid);
   qDebug().noquote() << QStringLiteral("Found %1 in the timeline").arg(uid);
@@ -1182,8 +1248,13 @@ void BrowserController::featureMenu(const QString& uid, const QPoint& at, const 
              feature->type != QStringLiteral("capture_position") &&
              feature->type != QStringLiteral("constraint_set")) {
     const QString component = feature->component;
-    menu.add(QStringLiteral("component"), tr("Move to Component..."), [this, uid, component] {
-      moveToComponent({{QStringLiteral("component"), component}, {QStringLiteral("features"), QJsonArray{uid}}});
+    menu.add(QStringLiteral("component"), tr("Move to Component..."), [this, uid, component, row] {
+      QJsonObject selection{{QStringLiteral("component"), component},
+                            {QStringLiteral("features"), QJsonArray{uid}}};
+      // A browser row identifies an occurrence. A timeline-only selection
+      // has none; the model must establish that its source is unambiguous.
+      if (row.isValid()) { selection.insert(QStringLiteral("source_occurrence"), row.occurrence); }
+      moveToComponent(selection);
     });
   }
   menu.separator();

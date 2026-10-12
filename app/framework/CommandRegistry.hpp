@@ -11,6 +11,7 @@
 #include <QString>
 
 #include "Command.hpp"
+#include "ShortcutBindings.hpp"
 
 class QAction;
 class QWidget;
@@ -42,6 +43,15 @@ public:
 
   QKeySequence shortcut(const QString& id) const;
   QKeySequence defaultShortcut(const QString& id) const;
+  // The runtime bindings, including default-only alternates. Conflicting
+  // legacy settings remain editable but are not installed on actions.
+  QList<QKeySequence> effectiveShortcuts(const QString& id) const;
+  QList<QKeySequence> effectiveShortcuts(const QString& id, const QKeySequence& primary) const;
+  QList<ShortcutConflict> shortcutConflicts(const QHash<QString, QKeySequence>& proposed = {}) const;
+  const QStringList& shortcutWarnings() const { return m_shortcutWarnings; }
+  QString shortcutHint(const QString& id) const;
+  // Applies one complete proposal so swaps do not create intermediate conflicts.
+  void setShortcuts(const QHash<QString, QKeySequence>& shortcuts);
   // Changes a shortcut and saves it; an empty sequence removes it.
   void setShortcut(const QString& id, const QKeySequence& shortcut);
 
@@ -49,10 +59,14 @@ public:
   void updateEnabled(const std::function<bool(const CommandDef&)>& available);
 
 private:
-  void applyShortcut(const CommandDef& def, const QKeySequence& shortcut);
+  ShortcutBinding binding(const CommandDef& def, const QKeySequence& primary) const;
+  void refreshShortcuts();
+  void applyShortcut(const CommandDef& def);
 
   std::vector<std::unique_ptr<CommandDef>> m_commands;
   QHash<QString, QAction*> m_actions;
+  QSet<QString> m_disabledShortcuts;
+  QStringList m_shortcutWarnings;
 };
 
 } // namespace mitcad

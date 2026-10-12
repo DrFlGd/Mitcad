@@ -2,9 +2,13 @@
 # SPDX-License-Identifier: MIT
 # check-all sources: app/commands geometry/analysis
 # The INSPECT group (U4) through the real UI, on two 20 mm cubes that
-# overlap by 5 mm (Body1 at x = 0, Body2 at x = 15):
+# overlap by 5 mm (Body1 at x = 0, Body2 at x = 15) and, apart from them,
+# a rod of radius 5 (Body3, from a circle in Sketch1 about (-40, 10)):
 #   - Measure between a face and a vertex, and an edge's length; in sketch
 #     mode between two sketch lines (P9).
+#   - The radius and diameter of the rod's circular edge and of the sketch
+#     circle, alone and as either item of two (mitcad#194); a straight edge
+#     gets no diameter.
 #   - Interference: the overlap's volume.
 #   - Section Analysis at the YZ plane moved by its arrow and typed: the
 #     section's area; kept after OK until Remove Section Analysis.
@@ -35,6 +39,9 @@ cat > "$WORK/cubes.json" << EOF
   {"cmd": "sketch.create"},
   {"cmd": "sketch.add_rectangle", "sketch": "F3", "corner": [15, 0], "width": 20, "height": 20},
   {"cmd": "add_feature", "def": {"type": "extrude", "profiles": [{"sketch": "F3", "region": "$R"}],
+    "extent": {"type": "distance", "distance": 20}, "operation": "new_body"}},
+  {"cmd": "sketch.add_circle", "sketch": "F1", "center": [-40, 10], "diameter": 10},
+  {"cmd": "add_feature", "def": {"type": "extrude", "profiles": [{"sketch": "F1", "region": "r{c9}"}],
     "extent": {"type": "distance", "distance": 20}, "operation": "new_body"}}
 ]
 EOF
@@ -59,8 +66,20 @@ ui_expect_log "Command Measure cancelled" "measure closed"
 ui_step "measure (I)"                      ui_key i
 ui_step "pick an edge"                     ui_click_pick "edge F4.b0/E{F4:end($R)|F4:side(c1[c4,c2])}"
 ui_expect_log "Inspect Measure: length 20" "the edge is 20 long"
+grep "Inspect Measure: length 20.*diameter" "$UI_LOG" > /dev/null && ui_fail "a straight edge has a diameter"
 ui_step "close (Enter)"                    ui_key Return
 ui_expect_log "Closed Measure" "measure closed"
+
+echo "--- Measure a circular edge (mitcad#194)"
+ui_mark
+ui_step "measure (I)"                      ui_key i
+ui_step "pick the rod's top edge"          ui_click_pick "edge F5.b0/E{F5:end(r{c9})|"
+ui_expect_new "Inspect Measure: length 31.416, radius 5, diameter 10" "radius 5 and diameter 10"
+ui_step "pick Body2's top face"            ui_click_pick "face F4.b0/F4:end($R)"
+ui_expect_new "Inspect Measure: length 31.416, radius 5, diameter 10, area 400, distance" \
+  "the diameter stays beside the face's area and the distance"
+ui_step "close (Enter)"                    ui_key Return
+ui_expect_new "Closed Measure" "measure closed"
 
 echo "--- Measure in sketch mode (P9)"
 ui_expect_log "Timeline Sketch1 at" "the timeline is logged"
@@ -74,6 +93,16 @@ ui_step "pick the bottom line"             ui_click_logged "Sketch entity F1/c1"
 ui_expect_new "Inspect Measure: length 20" "a sketch line's length"
 ui_step "pick the top line"                ui_click_logged "Sketch entity F1/c3"
 ui_expect_new "distance 20, angle 0 deg" "20 mm apart and parallel"
+ui_step "close (Enter)"                    ui_key Return
+ui_expect_new "Closed Measure" "measure closed, still sketching"
+ui_mark
+ui_step "measure (I)"                      ui_key i
+ui_expect_new "Sketch entity F1/c9 at" "the sketch circle can be picked"
+ui_step "pick the bottom line"             ui_click_logged "Sketch entity F1/c1"
+ui_expect_new "Inspect Measure: length 20" "the line first"
+ui_step "pick the circle"                  ui_click_logged "Sketch entity F1/c9"
+ui_expect_new "Inspect Measure: length 20, length 31.416, radius 5, diameter 10, distance" \
+  "the sketch circle as the second item: radius 5 and diameter 10"
 ui_step "close (Enter)"                    ui_key Return
 ui_expect_new "Closed Measure" "measure closed, still sketching"
 ui_step "finish the sketch (Ctrl+Enter)"   ui_key ctrl+Return

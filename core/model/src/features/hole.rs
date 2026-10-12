@@ -18,7 +18,7 @@ use serde::{Deserialize, Serialize};
 use super::extrude::{Operation, apply_operation, check_participants, participant_bodies};
 use super::geom_ref::GeomRef;
 use super::reference::{ExtentObject, normalized};
-use super::thread::{ThreadSize, thread_part};
+use super::thread::{ThreadSize, check_clearance, clearance_value, thread_clearance, thread_part};
 use super::thread_table::ThreadStandard;
 use super::{
     BodyChange, CheckContext, EvalContext, Evaluate, FeatureInfo, FeatureOutput, References,
@@ -138,6 +138,12 @@ pub struct HoleThread<P = ParamId> {
     pub length: Option<P>,
     #[serde(default = "Default::default", skip_serializing_if = "Option::is_none")]
     pub offset: Option<P>,
+    /// A modelled thread's extra clearance, radial and perpendicular to
+    /// each flank (as the thread feature's); 0 without.
+    #[serde(default = "Default::default", skip_serializing_if = "Option::is_none")]
+    pub radial_clearance: Option<P>,
+    #[serde(default = "Default::default", skip_serializing_if = "Option::is_none")]
+    pub flank_clearance: Option<P>,
 }
 
 fn yes() -> bool {
@@ -283,6 +289,12 @@ impl<P> HoleDef<P> {
                 modeled: thread.modeled,
                 length: map_option("thread.length", &thread.length, f)?,
                 offset: map_option("thread.offset", &thread.offset, f)?,
+                radial_clearance: map_option(
+                    "thread.radial_clearance",
+                    &thread.radial_clearance,
+                    f,
+                )?,
+                flank_clearance: map_option("thread.flank_clearance", &thread.flank_clearance, f)?,
             }),
         };
         let taper = map_option("taper", &self.taper, f)?;
@@ -410,6 +422,8 @@ impl FeatureInfo for HoleDef {
             }
             if thread.modeled {
                 thread.standard.check_modeled()?;
+            } else if thread.radial_clearance.is_some() || thread.flank_clearance.is_some() {
+                return Err("only a modelled thread has extra clearance".to_owned());
             }
             thread.size().check(Some(true))?;
         }
@@ -497,6 +511,10 @@ impl FeatureInfo for HoleDef {
                 }
             }
         }
+        if let Some(thread) = &self.thread {
+            clearance_value("radial clearance", thread.radial_clearance.map(value))?;
+            clearance_value("flank clearance", thread.flank_clearance.map(value))?;
+        }
         Ok(())
     }
 
@@ -519,7 +537,10 @@ impl FeatureInfo for HoleDef {
 
 impl HoleDef {
     /// The holes' start points and their direction into the material.
-    fn positions<K: Kernel>(&self, ctx: &mut EvalContext<'_, K>) -> Result<Vec<Axis>, String> {
+    pub(crate) fn positions<K: Kernel>(
+        &self,
+        ctx: &mut EvalContext<'_, K>,
+    ) -> Result<Vec<Axis>, String> {
         let (points, normal) = match &self.placement {
             HolePlacement::Face { body, face, points } => {
                 let shape = ctx.body(*body)?;
@@ -733,6 +754,14 @@ impl<K: Kernel> Evaluate<K> for HoleDef {
             .map(|i| hole_face(ctx.uid, i, "wall"))
             .collect();
         let mut part = thread_part(ctx, thread.length, thread.offset, false)?;
+        let clearance = thread_clearance(ctx, thread.radial_clearance, thread.flank_clearance)?;
+        check_clearance(
+            data.pitch,
+            (data.major, data.minor, data.pitch_diameter),
+            true,
+            clearance,
+        )?;
+        let (radial_clearance, flank_clearance) = clearance;
         for change in &mut output.changes {
             let BodyChange::Set(_, shape) = change else {
                 continue;
@@ -768,6 +797,8 @@ impl<K: Kernel> Evaluate<K> for HoleDef {
                 right_handed: thread.right_handed,
                 angle: 0.0,
                 part,
+                radial_clearance,
+                flank_clearance,
             };
             *shape = ctx
                 .kernel

@@ -42,6 +42,8 @@ mod record;
 pub mod sketch;
 pub mod stream;
 mod unicode;
+// Synthetic design streams for tests (mitcad#196).
+pub mod writer;
 
 use std::path::Path;
 
@@ -213,3 +215,63 @@ pub fn decode_path(path: &Path) -> Result<Vec<FileDesign>, String> {
 
 #[cfg(test)]
 mod tests;
+
+/// The GUIDs (lower case) the `Manifest.dat` files of a document list: an
+/// external document's `document_guid` (`ir::ExternalDocument`) is one of
+/// those of the file it refers to (mitcad#196).
+pub fn manifest_guids(doc: &F3dFile) -> Vec<String> {
+    let mut out = Vec::new();
+    for e in doc.archive().entries() {
+        if e.name.rsplit('/').next() == Some("Manifest.dat")
+            && let Ok(data) = doc.archive().read(e)
+        {
+            out.extend(build::guid_strings(&data));
+        }
+    }
+    out.sort();
+    out.dedup();
+    out
+}
+
+/// A document a design refers to (an external document of its design
+/// segment, mitcad#196), as [`referenced_documents`] lists it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ReferencedDocument {
+    /// The key references to it carry (16 hex digits).
+    pub key: String,
+    pub urn: String,
+    /// The version the URN names.
+    pub version: Option<u32>,
+    /// One of the GUIDs of the referenced file's `Manifest.dat`.
+    pub document_guid: String,
+    /// The design's occurrences of its components.
+    pub occurrences: usize,
+}
+
+/// The documents a design refers to, with how many occurrences of their
+/// components it has, read from the design streams without decoding the
+/// design (quick: for asking where they are before an import).
+pub fn referenced_documents(doc: &F3dFile) -> Result<Vec<ReferencedDocument>, String> {
+    let Some(s) = find_design_streams(doc).map_err(|e| e.to_string())? else {
+        return Ok(Vec::new());
+    };
+    let segment = Segment::parse(&s.meta, s.bulk).map_err(|e| e.to_string())?;
+    let mut counts: std::collections::HashMap<u64, usize> = std::collections::HashMap::new();
+    for o in segment.objects_of(classes::OCCURRENCE) {
+        if let Some(key) = build::occurrence_info(&segment, o.id).and_then(|i| i.context) {
+            *counts.entry(key).or_default() += 1;
+        }
+    }
+    Ok(segment
+        .meta
+        .external
+        .iter()
+        .map(|x| ReferencedDocument {
+            key: format!("{:016x}", x.key),
+            urn: x.urn.clone(),
+            version: build::urn_version(&x.urn),
+            document_guid: x.guid_c.to_lowercase(),
+            occurrences: counts.get(&x.key).copied().unwrap_or(0),
+        })
+        .collect())
+}

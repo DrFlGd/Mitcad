@@ -110,7 +110,7 @@ fn at_place(original: &EdgeMiddle, transform: &Transform, middles: &[EdgeMiddle]
 
 /// The shape of `body` that fillet or chamfer `uid` started from: the last
 /// one the features before it set.
-fn input_shape<K: Kernel>(
+pub(super) fn input_shape<K: Kernel>(
     ctx: &EvalContext<'_, K>,
     uid: FeatureUid,
     body: BodyUid,
@@ -344,6 +344,9 @@ fn merged(copies: &[(u32, FeatureDef)]) -> FeatureDef {
     all
 }
 
+/// The most copies of a fillet or chamfer applied in one operation.
+const DRESSED_AT_ONCE: usize = 128;
+
 /// Rounds or bevels `shape` by a copy's definition, its new faces named
 /// after `pattern`.
 fn dress<K: Kernel>(
@@ -499,23 +502,28 @@ pub(crate) fn repeat_dressup<K: Kernel>(
         ));
     }
     for (body, copies) in work {
-        let shape = set.get(body).cloned().expect("the body has the copies");
-        let dressed = match dress(ctx, pattern, &merged(&copies), &shape) {
-            Ok(dressed) => dressed,
-            Err(e) if copies.len() == 1 => {
-                return Err(format!("{} at element {}: {e}", entry.name, copies[0].0));
-            }
-            // One element after another, where the copies' roundings get
-            // in each other's way at once.
-            Err(_) => {
-                let mut dressed = shape;
-                for (index, copy) in &copies {
-                    dressed = dress(ctx, pattern, copy, &dressed)
-                        .map_err(|e| format!("{} at element {index}: {e}", entry.name))?;
+        let mut dressed = set.get(body).cloned().expect("the body has the copies");
+        // In groups of at most DRESSED_AT_ONCE copies: the kernel compares
+        // every pair of the roundings of one operation (a thousand copies of
+        // a rounding took a minute in that alone).
+        for group in copies.chunks(DRESSED_AT_ONCE) {
+            dressed = match dress(ctx, pattern, &merged(group), &dressed) {
+                Ok(dressed) => dressed,
+                Err(e) if group.len() == 1 => {
+                    return Err(format!("{} at element {}: {e}", entry.name, group[0].0));
                 }
-                dressed
-            }
-        };
+                // One element after another, where the copies' roundings get
+                // in each other's way at once.
+                Err(_) => {
+                    let mut dressed = dressed;
+                    for (index, copy) in group {
+                        dressed = dress(ctx, pattern, copy, &dressed)
+                            .map_err(|e| format!("{} at element {index}: {e}", entry.name))?;
+                    }
+                    dressed
+                }
+            };
+        }
         set.set(body, dressed);
     }
     Ok(true)

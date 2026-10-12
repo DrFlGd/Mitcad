@@ -142,7 +142,8 @@ fn check_fractions(one: f64, two: f64, closed: bool) -> Result<(), String> {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SweepDef<P = ParamId> {
-    /// Regions of one sketch.
+    /// Regions of one sketch, a set (see `extrude::selected_regions`).
+    #[serde(deserialize_with = "super::extrude::profile_set")]
     pub profiles: Vec<ProfileRef>,
     pub path: CurvePath,
     #[serde(default, skip_serializing_if = "is_perpendicular")]

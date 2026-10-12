@@ -10,9 +10,24 @@ sleep 800
 mark
 native-action file.new_project
 focus-dialog '^New Project$'
+native-type projectFolder '${MITCAD_TEST_WORK}/CancelledProject'
+native-type projectDisplayName 'Must not be kept'
+native-type projectAuthorName 'Cancelled Author'
+native-type projectAuthorEmail 'cancelled@example.invalid'
+native-choice projectLiveHere 'Another broker'
+native-type projectHereBroker 'mqtts://cancelled.example.invalid'
+button '^Cancel$'
+expect-native-dialog-gone '^New Project$'
+focus-main
+native-action file.new_project
+focus-dialog '^New Project$'
 native-type projectFolder '${MITCAD_TEST_WORK}/NativeProject'
 native-type projectAuthorName 'Native Project Tester'
 native-type projectAuthorEmail 'native-project@example.invalid'
+native-type projectDisplayName 'Native Workshop'
+native-click projectSendAtOnce
+native-choice projectCheckMinutes 'every 30 minutes'
+native-choice projectLiveHere 'Off'
 button '^Create$'
 expect-log 'New Project: created ${MITCAD_TEST_WORK:re}/NativeProject: version ' 30
 expect-native-dialog-gone '^New Project$'
@@ -26,6 +41,9 @@ expect-file '${MITCAD_TEST_WORK}/NativeProject/.mitcad/project.json'
 mark
 native-action file.project_settings
 focus-dialog '^Project Settings - NativeProject$'
+expect-native-text projectDisplayName '^Native Workshop$'
+expect-native-text projectCheckMinutes '^every 30 minutes$'
+expect-native-text projectLiveHere '^Off$'
 expect-native-text projectAuthorName '^Native Project Tester$'
 expect-native-text projectAuthorEmail '^native-project@example\.invalid$'
 native-type projectAuthorName 'Native Project Edited'
@@ -47,6 +65,42 @@ expect-native-text projectAuthorName '^Native Project Edited$'
 expect-native-text projectAuthorEmail '^native-edited@example\.invalid$'
 button '^Close$'
 expect-native-dialog-gone '^Project Settings - NativeProject$'
+focus-main
+
+# Cloud settings are configured before creation, then read back through the
+# same form. The repository is a local test fixture and brokers stay off here.
+mark
+native-action file.new_project
+focus-dialog '^New Project$'
+native-type projectFolder '${MITCAD_TEST_WORK}/NativeCloudProject'
+native-click projectStorageCloud
+native-type cloudAddress '${MITCAD_TEST_WORK}/native-cloud.git'
+native-type projectAuthorName 'Native Cloud Tester'
+native-type projectAuthorEmail 'cloud-project@example.invalid'
+native-type projectDisplayName 'Cloud Workshop'
+native-type projectLockIdle '25'
+native-type projectLockPoll '40'
+native-click projectLiveBroker
+native-type projectBroker 'mqtts://shared.example.invalid:8883'
+native-type projectBrokerPrefix 'team'
+native-choice projectLiveHere 'Off'
+native-choice projectCheckMinutes 'every hour'
+expect-log 'Reachable and empty: ready.' 30
+button '^Create$'
+expect-log 'New Project: created ${MITCAD_TEST_WORK:re}/NativeCloudProject: version ' 30
+expect-native-dialog-gone '^New Project$'
+focus-main
+native-action file.project_settings
+focus-dialog '^Project Settings - NativeCloudProject$'
+expect-native-text projectDisplayName '^Cloud Workshop$'
+expect-native-text projectLockIdle '^25'
+expect-native-text projectLockPoll '^40'
+expect-native-text projectBroker '^mqtts://shared\.example\.invalid:8883$'
+expect-native-text projectBrokerPrefix '^team$'
+expect-native-text projectLiveHere '^Off$'
+expect-native-text projectCheckMinutes '^every hour$'
+button '^Close$'
+expect-native-dialog-gone '^Project Settings - NativeCloudProject$'
 focus-main
 
 # Add a parameter through a native child sheet; accepting it must keep the

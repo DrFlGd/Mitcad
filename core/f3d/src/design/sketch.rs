@@ -10,10 +10,11 @@ use super::classes::{self, *};
 use super::ir::{
     ConstraintF3d, DimensionF3d, ErrorRef, Geometry, IDENTITY, Mat4, ModelFrame, RefValue,
     Reference, SketchConstraint, SketchCounts, SketchCurve, SketchDetail, SketchDimension,
-    SketchPoint, Vec3,
+    SketchEntityRef, SketchPoint, Vec3,
 };
 use super::stream::{
-    Object, Segment, f64_at, f64s_at, header_end, hex, py_sum, slice, str16_at, u32_at, u64_at,
+    Object, Segment, f64_at, f64s_at, header_end, hex, i32_at, py_sum, slice, str16_at, u32_at,
+    u64_at,
 };
 use super::unicode;
 
@@ -112,7 +113,18 @@ pub fn points(seg: &Segment) -> HashMap<u64, PointGeom> {
         let Some(root) = seg.root_part(d) else {
             continue;
         };
-        let Some(r) = seg.ref_at(d, root.end) else {
+        // The corner points a text's box makes (`00D157C2`) keep the
+        // point's members in the sub-chunk, right after its header.
+        let sub = seg.sub_start(o);
+        let at = if seg.guid_of(o.id) == Some(SKETCH_POINT_2) && sub > 0 {
+            match header_end(&d[sub..]) {
+                Some(h) => sub + h,
+                None => continue,
+            }
+        } else {
+            root.end
+        };
+        let Some(r) = seg.ref_at(d, at) else {
             continue;
         };
         let q = r.end;
@@ -145,7 +157,27 @@ pub fn lines(seg: &Segment) -> HashMap<u64, LineGeom> {
         let Some(root) = seg.root_part(d) else {
             continue;
         };
-        let p = root.end;
+        // A subclass (`16DEFC4D`) keeps its own members after the root
+        // part and the line's in its sub-chunk, right after the chunk's
+        // header (mitcad#178: read from the main part, 158 lines of 20
+        // sketches in the corpora came out as denormal numbers).
+        let sub = seg.sub_start(o);
+        let p = if seg.guid_of(o.id) != Some(SKETCH_LINE) && sub > 0 {
+            match header_end(&d[sub..]) {
+                Some(h) => sub + h,
+                None => continue,
+            }
+        } else {
+            // Another subclass (`AE42BAB6`) has a reference of its own
+            // first (mitcad#178).
+            let mut p = root.end;
+            while let Some(r) = seg.ref_at(d, p)
+                && !classes::is_point_class(seg.guid_of(r.id))
+            {
+                p = r.end;
+            }
+            p
+        };
         let Some(v) = f64s_at(d, p, n) else { continue };
         let mut q = p + 8 * n;
         let mut refs = Vec::new();
@@ -169,21 +201,77 @@ pub fn lines(seg: &Segment) -> HashMap<u64, LineGeom> {
     out
 }
 
-/// A sketch curve's kind (mitcad#33): 0 normal, 1 construction, 2 centre
-/// line. Every curve class ends its sketch-curve part with two `f32` 1.0;
-/// the kind is the byte 22 bytes before the last such pair *(verified on
-/// the reference models' lines, arcs, circles, splines and ellipses
-/// against their dumps' `isConstruction` and `isCenterLine`)*. Where
-/// a reference starts 24 bytes before the pair (curves linked to other
-/// geometry) the layout differs: `None`, as for any other value.
-pub fn curve_kind(seg: &Segment, d: &[u8]) -> Option<u8> {
+/// The flags of a sketch curve's sketch-curve part (class `9FF71F46`),
+/// which every curve class ends with.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct CurveFlags {
+    /// 0 normal, 1 construction, 2 centre line.
+    pub kind: u8,
+    /// The curve is fixed (not moved by the solver).
+    pub fixed: bool,
+    /// The curve is linked: a projection or inclusion of geometry outside
+    /// the sketch (the API's `isLinked` and `isReference`, always equal).
+    pub linked: bool,
+    /// The objects the curve's reference list names (offset chains).
+    pub refs: Vec<u64>,
+}
+
+/// A sketch curve's flags (mitcad#33; the API reference dumps). The
+/// sketch-curve part ends with `01 | u32 n | n references | 13 bytes |
+/// f32 1.0, f32 1.0` (the block): found from the last such pair, `n` being
+/// the count that fits the references' room. The flag bytes lie before
+/// the block's `01`, as many bytes back as the class's version says
+/// *(read against the API reference dumps, 29 000 curves of lines, arcs,
+/// circles, ellipses and splines; versions 7 to 9 occur)*:
+///
+/// | version | fixed | linked | kind |
+/// |---------|-------|--------|------|
+/// | 9       | 9     | 7      | 4    |
+/// | 8       | 8     | 6      | 4    |
+/// | 7       | 4     | 2      | 7    |
+///
+/// A flag above 1, a kind above 2 or another version: `None`.
+pub fn curve_flags(seg: &Segment, d: &[u8]) -> Option<CurveFlags> {
+    let version = seg.class_by_guid(SKETCH_CURVE).map_or(0, |c| c.version);
+    curve_flags_of(d, version, &|d, at| seg.ref_at(d, at).map(|r| r.id))
+}
+
+fn curve_flags_of(
+    d: &[u8],
+    version: u32,
+    ref_at: &dyn Fn(&[u8], usize) -> Option<u64>,
+) -> Option<CurveFlags> {
     const PAIR: [u8; 8] = [0, 0, 0x80, 0x3f, 0, 0, 0x80, 0x3f];
+    // Bytes back from the block's `01`: fixed, linked, kind.
+    let (fixed, linked, kind) = match version {
+        7 => (4, 2, 7),
+        8 => (8, 6, 4),
+        9.. => (9, 7, 4),
+        _ => return None,
+    };
     let p = d.windows(8).rposition(|w| w == PAIR)?;
-    let at = p.checked_sub(24)?;
-    if seg.ref_at(d, at).is_some() {
-        return None;
+    for n in 0..=16usize {
+        let Some(b) = p.checked_sub(18 + 11 * n) else {
+            break;
+        };
+        if d[b] != 1 || u32_at(d, b + 1) != Some(n as u32) {
+            continue;
+        }
+        let refs: Option<Vec<u64>> = (0..n).map(|i| ref_at(d, b + 5 + 11 * i)).collect();
+        let Some(refs) = refs else { continue };
+        let byte = |back: usize| b.checked_sub(back).and_then(|i| d.get(i)).copied();
+        let (f, l, k) = (byte(fixed)?, byte(linked)?, byte(kind)?);
+        if f > 1 || l > 1 || k > 2 {
+            return None;
+        }
+        return Some(CurveFlags {
+            kind: k,
+            fixed: f == 1,
+            linked: l == 1,
+            refs,
+        });
     }
-    d.get(p - 22).copied().filter(|&k| k <= 2)
+    None
 }
 
 /// Arcs and circles by object id.
@@ -237,9 +325,21 @@ pub struct SplineGeom {
     pub control: Vec<Vec3>,
     pub start_point: Option<u64>,
     pub end_point: Option<u64>,
+    /// The sketch points of the spline's fit-point list between its end
+    /// points (`F81C561A`; empty where the list is).
+    pub fit_points: Vec<u64>,
+    /// The tangent handle lines of the spline's handle list (`4224E565`).
+    pub handles: Vec<u64>,
 }
 
 impl SplineGeom {
+    /// The spline was made through fit points: its fit-point list holds
+    /// points or its handle list holds handles. Of the 453 splines of the
+    /// API reference dumps, all 6 fitted splines are told by this, and no
+    /// other spline has either list filled.
+    pub fn has_fit_points(&self) -> bool {
+        !self.fit_points.is_empty() || !self.handles.is_empty()
+    }
     /// The knot vector is clamped at both ends (the first and last knots
     /// repeated `degree + 1` times): the curve starts at its first control
     /// point and ends at its last. An unclamped vector is taken for a
@@ -324,7 +424,40 @@ pub fn splines(seg: &Segment, pts: &HashMap<u64, PointGeom>) -> HashMap<u64, Spl
             control,
             start_point: None,
             end_point: None,
+            fit_points: Vec::new(),
+            handles: Vec::new(),
         };
+        // The spline's own lists, of fit points and of handles (the first of
+        // each kind that refers back to the spline).
+        for (_, r) in seg.refs_in(d, root.end, d.len()) {
+            let fit = match seg.guid_of(r.id) {
+                Some(SPLINE_FIT_POINTS) if s.fit_points.is_empty() => true,
+                Some(SPLINE_HANDLES) if s.handles.is_empty() => false,
+                _ => continue,
+            };
+            let ld = seg.data_of(r.id);
+            let Some(start) = header_end(ld) else {
+                continue;
+            };
+            let items = seg.refs_in(ld, start, ld.len());
+            // The list ends with the reference back to the spline.
+            if items.last().map(|(_, b)| b.id) != Some(o.id) {
+                continue;
+            }
+            let ids = items.iter().map(|(_, b)| b.id).filter(|&id| {
+                let class = seg.guid_of(id);
+                if fit {
+                    classes::is_point_class(class)
+                } else {
+                    classes::is_line_class(class)
+                }
+            });
+            if fit {
+                s.fit_points.extend(ids);
+            } else {
+                s.handles.extend(ids);
+            }
+        }
         if s.is_clamped() {
             let ends: Vec<u64> = seg
                 .refs_in(d, root.end, at)
@@ -347,6 +480,20 @@ pub fn splines(seg: &Segment, pts: &HashMap<u64, PointGeom>) -> HashMap<u64, Spl
         out.insert(o.id, s);
     }
     out
+}
+
+/// The API type of a sketch spline (mitcad#186): a spline with a fit-point
+/// or handle list is a fitted spline; one an offset made (`offset_child`),
+/// or a fixed one (the curve flag), a control-point spline; any other a
+/// fixed spline. Read against the API reference dumps: all 453 splines.
+pub fn spline_kind(s: &SplineGeom, fixed: bool, offset_child: bool) -> &'static str {
+    if s.has_fit_points() {
+        "SketchFittedSpline"
+    } else if fixed || offset_child {
+        "SketchControlPointSpline"
+    } else {
+        "SketchFixedSpline"
+    }
 }
 
 /// A sketch ellipse or elliptical arc [`SKETCH_ELLIPSE`] (mitcad#154):
@@ -551,6 +698,36 @@ pub fn light_bulb(seg: &Segment, s: &Object) -> Option<LightBulb> {
     found
 }
 
+/// The name a user gave a sketch: the `str16` after the reference to the
+/// [`SKETCH_NAME_ANCHOR`] object (`ref | str16 name | u8 0 | u32 n | ref[n]`,
+/// see [`light_bulb`]). It is empty while the sketch has its default name
+/// (`Sketch<n>`, which the item's tail carries); the item's tail does not
+/// hold a name the user gave a sketch (a custom name there is one the sketch
+/// no longer has). None when the place is not found exactly once (sketch
+/// classes older than version 17 lay it out otherwise).
+pub fn sketch_name(seg: &Segment, s: &Object) -> Option<String> {
+    let d = seg.data(s);
+    let start = header_end(d)?;
+    let mut found = None;
+    for (_, r) in seg.refs_in(d, start, d.len()) {
+        if seg.guid_of(r.id) != Some(SKETCH_NAME_ANCHOR) {
+            continue;
+        }
+        let Some((name, e)) = str16_at(d, r.end) else {
+            continue;
+        };
+        let n = u32_at(d, e + 1).unwrap_or(u32::MAX) as usize;
+        if d.get(e) != Some(&0) || n > 100_000 || refs_from(seg, d, e + 5, n).len() != n {
+            continue;
+        }
+        if found.is_some() {
+            return None;
+        }
+        found = Some(name);
+    }
+    found.filter(|n| unicode::is_printable(n))
+}
+
 /// Up to `n` consecutive references from `p` (stops at the first invalid).
 fn refs_from(seg: &Segment, d: &[u8], mut p: usize, n: usize) -> Vec<u64> {
     let mut out = Vec::new();
@@ -625,7 +802,9 @@ pub fn parse_constraint(seg: &Segment, o: &Object) -> Option<ConstraintRaw> {
         p += 1;
     }
     let tail_start = attributes_end(d, p);
-    for q in p..d.len().min(p + 200) {
+    // (A pattern constraint of newer writers keeps its values before the
+    // sketch: over 200 bytes.)
+    for q in p..d.len().min(p + 1000) {
         let Some(r) = seg.ref_at(d, q) else { continue };
         if seg.guid_of(r.id) != Some(SKETCH) {
             continue;
@@ -843,28 +1022,71 @@ pub fn offsets(seg: &Segment) -> HashMap<u64, OffsetRaw> {
 
 /// A sketch dimension (classes under `855F0A64`, section 10.5): its tail
 /// is `str16 expression | f64 text[3] | u8 flags[k] | ref holder | u32 n |
-/// ref entities[n]`, anchored at the last holder reference.
+/// ref entities[n]`, anchored at the last holder reference. A driven
+/// dimension (one that measures, without a parameter) has a null
+/// reference, a single zero byte, where the holder would be (mitcad#178).
 #[derive(Clone, Debug, PartialEq)]
 pub struct DimensionRaw {
-    /// Parameter holder (`D91D429C`) of the dimension's parameter.
-    pub holder: u64,
+    /// Parameter holder (`D91D429C`) of the dimension's parameter; `None`
+    /// for a driven dimension.
+    pub holder: Option<u64>,
     pub entities: Vec<u64>,
-    /// Copy of the parameter expression.
+    /// Copy of the parameter expression (of a driven dimension: the value
+    /// it shows).
     pub expression: Option<String>,
     /// Text position, sketch space.
     pub text: Option<Vec3>,
     pub flags: Option<Vec<u8>>,
 }
 
+/// Where a driven dimension's entity list starts: `u8 0 | u32 n | ref
+/// entities[n]` after the root part, its entities sketch points or curves;
+/// the last such list. Returns the position of the null reference and of
+/// the count.
+fn driven_entities_at(seg: &Segment, d: &[u8]) -> Option<(usize, usize)> {
+    let after = seg.root_part(d).map_or(0, |r| r.end);
+    let is_entity =
+        |id: u64| classes::is_point_class(seg.guid_of(id)) || seg.is_kind_of(id, SKETCH_CURVE);
+    seg.refs_in(d, after, d.len())
+        .into_iter()
+        .rev()
+        .find_map(|(p, r)| {
+            let q = p.checked_sub(5)?;
+            if q < after || d[q] != 0 || !is_entity(r.id) {
+                return None;
+            }
+            let n = u32_at(d, q + 1)?;
+            if !(1..=4).contains(&n) {
+                return None;
+            }
+            let mut at = p;
+            for _ in 0..n {
+                let e = seg.ref_at(d, at)?;
+                if !is_entity(e.id) {
+                    return None;
+                }
+                at = e.end;
+            }
+            Some((q, q + 1))
+        })
+}
+
 pub fn parse_dimension(seg: &Segment, o: &Object) -> Option<DimensionRaw> {
     let d = seg.data(o);
-    let (hp, hr) = seg
+    let holder = seg
         .refs_in(d, 0, d.len())
         .into_iter()
         .rev()
-        .find(|(_, r)| seg.guid_of(r.id) == Some(PARAMETER_HOLDER))?;
-    let n = u32_at(d, hr.end)?;
-    let mut q = hr.end + 4;
+        .find(|(_, r)| seg.guid_of(r.id) == Some(PARAMETER_HOLDER));
+    let (hp, holder, count_at) = match holder {
+        Some((hp, hr)) => (hp, Some(hr.id), hr.end),
+        None => {
+            let (hp, count_at) = driven_entities_at(seg, d)?;
+            (hp, None, count_at)
+        }
+    };
+    let n = u32_at(d, count_at)?;
+    let mut q = count_at + 4;
     let mut entities = Vec::new();
     for _ in 0..n {
         let r = seg.ref_at(d, q)?;
@@ -879,6 +1101,8 @@ pub fn parse_dimension(seg: &Segment, o: &Object) -> Option<DimensionRaw> {
             && !s.is_empty()
             && unicode::is_printable(&s)
             && e + 24 <= hp
+            // A driven dimension's string is the value it shows.
+            && (holder.is_some() || s.bytes().any(|c| c.is_ascii_digit()))
         {
             found = Some((s, e));
             break;
@@ -894,12 +1118,221 @@ pub fn parse_dimension(seg: &Segment, o: &Object) -> Option<DimensionRaw> {
         None => (None, None, None),
     };
     Some(DimensionRaw {
-        holder: hr.id,
+        holder,
         entities,
         expression,
         text,
         flags,
     })
+}
+
+/// A sketch text `E0618268` (mitcad#186). After the root part's
+/// properties: `u8 flag | f64 width factor | f32 rgba[4] | str16 font | u8 0
+/// | f64 height (cm) | [ref height holder] | u32 horizontal alignment (1
+/// left, 2 right, 3 centre) | u8 flags[3] | str16 text | [ref content
+/// holder] | u32 vertical alignment (1 top, 2 bottom, 3 middle) | u8 flag
+/// | i32 font weight | u32 kind (0 text in a box, 1 text on a path) | tail
+/// | ref sketch`. The two optional references (and their null bytes) are
+/// framed by requiring the record to end on the sketch reference. The
+/// tail of a text in a box is, in some files, a flag byte and the text's
+/// 4 x 4 placement matrix (row-major, sketch space in cm: the corner of
+/// its box and the direction of its baseline) ahead of fixed bytes.
+#[derive(Clone, Debug, PartialEq)]
+pub struct TextRaw {
+    pub text: String,
+    pub font: String,
+    /// Height of the capital letters, cm.
+    pub height: f64,
+    pub width_factor: f64,
+    pub horizontal: u32,
+    pub vertical: u32,
+    pub flags: [u8; 3],
+    pub vertical_flag: u8,
+    pub weight: i32,
+    /// 0: in a box; 1: along a path.
+    pub kind: u32,
+    /// Row-major placement of a text in a box, when the file stores it.
+    pub matrix: Option<[f64; 16]>,
+    /// The parameter holders that drive the height and the content.
+    pub height_holder: Option<u64>,
+    pub content_holder: Option<u64>,
+}
+
+/// The bytes a text's tail has after its matrix: a `u32`, a null
+/// reference, two bytes, two `f32` and five bytes.
+const TEXT_MATRIX_TAIL: usize = 1 + 128 + 4 + 11 + 2 + 8 + 5;
+
+pub fn parse_text(seg: &Segment, o: &Object) -> Option<TextRaw> {
+    let d = seg.data(o);
+    let root = seg.root_part(d)?;
+    // The record ends on the reference to its sketch.
+    let end = d.len().checked_sub(11)?;
+    let sketch = seg.ref_at(d, end)?;
+    if seg.guid_of(sketch.id) != Some(SKETCH) {
+        return None;
+    }
+    let p = root.end + 1;
+    let width_factor = f64_at(d, p)?;
+    let (font, q) = str16_at(d, p + 8 + 16)?;
+    let height = f64_at(d, q + 1)?;
+    if !(height.is_finite() && height > 0.0) {
+        return None;
+    }
+    let after_height = q + 9;
+    // Each optional slot: nothing, a null byte or a reference.
+    let slot = |at: usize| -> Vec<(usize, Option<u64>)> {
+        let mut options = Vec::new();
+        if let Some(r) = seg.ref_at(d, at)
+            && seg.guid_of(r.id).is_some()
+        {
+            options.push((r.end, Some(r.id)));
+        }
+        options.push((at, None));
+        if d.get(at) == Some(&0) {
+            options.push((at + 1, None));
+        }
+        options
+    };
+    for (a_end, height_holder) in slot(after_height) {
+        let Some(horizontal) = u32_at(d, a_end).filter(|h| (1..=3).contains(h)) else {
+            continue;
+        };
+        let flags = [*d.get(a_end + 4)?, *d.get(a_end + 5)?, *d.get(a_end + 6)?];
+        let Some((text, t_end)) = str16_at(d, a_end + 7).filter(|(s, _)| !s.is_empty()) else {
+            continue;
+        };
+        for (b_end, content_holder) in slot(t_end) {
+            let Some(vertical) = u32_at(d, b_end).filter(|v| (1..=3).contains(v)) else {
+                continue;
+            };
+            let Some(vertical_flag) = d.get(b_end + 4).copied() else {
+                continue;
+            };
+            let (Some(weight), Some(kind)) = (i32_at(d, b_end + 5), u32_at(d, b_end + 9)) else {
+                continue;
+            };
+            if !(1..=1000).contains(&weight) || kind > 1 {
+                continue;
+            }
+            let tail = b_end + 13;
+            if tail > end {
+                continue;
+            }
+            let matrix = (kind == 0 && end - tail >= TEXT_MATRIX_TAIL)
+                .then(|| f64s_at(d, tail + 1, 16))
+                .flatten()
+                .and_then(|m| <[f64; 16]>::try_from(m).ok())
+                .filter(|m| m.iter().all(|x| x.is_finite()) && m[12..16] == [0.0, 0.0, 0.0, 1.0]);
+            return Some(TextRaw {
+                text,
+                font,
+                height,
+                width_factor,
+                horizontal,
+                vertical,
+                flags,
+                vertical_flag,
+                weight,
+                kind,
+                matrix,
+                height_holder,
+                content_holder,
+            });
+        }
+    }
+    None
+}
+
+/// A text as SCHEMA.md `Text` (cm). The API gives no position and angle
+/// for a text in a box or on a path; they are written when the file stores
+/// the text's placement. The box's lines and the path's curve come from the
+/// text's own constraint (`TextBoxConstraint`, `TextPathConstraint`).
+pub(crate) fn text_value(
+    seg: &Segment,
+    text: u64,
+    id: &str,
+    raw: &TextRaw,
+    constraints: &[u64],
+    curves: &IdTable,
+) -> serde_json::Value {
+    use serde_json::json;
+    let alignment =
+        |v: u32, names: [&'static str; 3]| names.get(v.wrapping_sub(1) as usize).copied();
+    let horizontal = alignment(
+        raw.horizontal,
+        [
+            "LeftHorizontalAlignment",
+            "RightHorizontalAlignment",
+            "CenterHorizontalAlignment",
+        ],
+    );
+    let vertical = alignment(
+        raw.vertical,
+        [
+            "TopVerticalAlignment",
+            "BottomVerticalAlignment",
+            "MiddleVerticalAlignment",
+        ],
+    );
+    // The constraint that ties the text to its box or path.
+    let tie = constraints.iter().find_map(|&c| {
+        let pc = parse_constraint(seg, seg.object(c)?)?;
+        let ours = pc.roles.iter().any(|(e, _)| *e == text);
+        (ours && matches!(pc.mask, 0x100_0000_0000 | 0x200_0000_0000)).then_some(pc)
+    });
+    let entity = |e: u64| {
+        curves
+            .get(e)
+            .map(|c| json!({"kind": "sketch_entity", "id": c}))
+    };
+    let mut definition = serde_json::Map::new();
+    match (&tie, raw.kind) {
+        (Some(pc), 1) if pc.mask == 0x200_0000_0000 => {
+            definition.insert("_type".into(), json!("AlongPathTextDefinition"));
+            if let Some(path) = pc.entities.first().copied().and_then(entity) {
+                definition.insert("path".into(), path);
+            }
+        }
+        _ => {
+            definition.insert("_type".into(), json!("MultiLineTextDefinition"));
+            if let Some(pc) = tie.as_ref().filter(|pc| pc.mask == 0x100_0000_0000) {
+                let lines: Vec<serde_json::Value> =
+                    pc.entities.iter().filter_map(|&e| entity(e)).collect();
+                if lines.len() == 4 {
+                    definition.insert("rectangleLines".into(), json!(lines));
+                }
+            }
+            if let Some(v) = vertical {
+                definition.insert("verticalAlignment".into(), json!(v));
+            }
+        }
+    }
+    if let Some(h) = horizontal {
+        definition.insert("horizontalAlignment".into(), json!(h));
+    }
+    let mut value = json!({
+        "id": id,
+        "text": raw.text,
+        "height": raw.height,
+        "fontName": raw.font,
+        "isHorizontalFlip": false,
+        "isVerticalFlip": false,
+        // Bit 1 bold: the weights the files store are 400 and up to 750.
+        "textStyle": i64::from(raw.weight >= 600),
+        "definition": definition,
+        "_f3d": {
+            "flags": hex(&raw.flags),
+            "verticalFlag": raw.vertical_flag,
+            "weight": raw.weight,
+            "widthFactor": raw.width_factor,
+            "kind": raw.kind,
+        },
+    });
+    if let Some(m) = raw.matrix {
+        value["position"] = json!([m[3], m[7], 0.0]);
+        value["angle"] = json!(m[4].atan2(m[0]));
+    }
+    value
 }
 
 /// Type of a constraint mask (section 10.3).
@@ -913,13 +1346,31 @@ pub fn constraint_type(mask: u64) -> Option<&'static str> {
         0x40 => "HorizontalConstraint",
         0x80 => "VerticalConstraint",
         0x100 => "TangentConstraint",
+        // A spline and an arc or line joined smoothly (the reference
+        // model `con_smooth`: a fitted spline and an arc).
+        0x200 => "SmoothConstraint",
         0x400 => "SymmetryConstraint",
         0x800 => "EqualConstraint",
         0x1000 => "MidPointConstraint",
         0x2000 => "PolygonConstraint",
         0x1000_0000 => "CircularPatternConstraint",
         0x2000_0000 => "RectangularPatternConstraint",
+        // The control polygon of a control point spline: its lines
+        // (construction lines through the control points) and the spline
+        // (the reference model `sk_spline_control`; the API lists no
+        // constraint for it). Not a constraint of the geometry.
+        0x8000_0000 => "ControlPolygonConstraint",
         0x20_0000_0000 => "OffsetConstraint",
+        // The frame of a sketch text in a box (the reference model
+        // `sk_text`: the four construction lines of its rectangle, which
+        // the API gives as the definition's `rectangleLines`, with the
+        // box's corner point in some files). Not a constraint of the
+        // geometry.
+        0x100_0000_0000 => "TextBoxConstraint",
+        // A text and one curve, with four matrices (a text along a path,
+        // unverified: its record names the text and the curve; the API
+        // lists no constraint for it).
+        0x200_0000_0000 => "TextPathConstraint",
         _ => return None,
     })
 }
@@ -927,7 +1378,7 @@ pub fn constraint_type(mask: u64) -> Option<&'static str> {
 /// Object id -> sketch-local id, in insertion order (a repeated object
 /// keeps its first position and takes the new id, like a Python dict).
 #[derive(Default)]
-struct IdTable {
+pub(crate) struct IdTable {
     order: Vec<u64>,
     ids: HashMap<u64, String>,
 }
@@ -984,11 +1435,22 @@ pub fn sketch_details(seg: &Segment) -> (Vec<SketchInfo>, HashMap<u64, (u64, Str
     let lns = lines(seg);
     let arcs = arcs(seg);
     let splines = splines(seg, &pts);
+    // The tangent handles of fitted splines are no sketch curves of their
+    // own (the API lists none; the handle lines' points stay).
+    let handle_lines: std::collections::HashSet<u64> = splines
+        .values()
+        .flat_map(|s| s.handles.iter().copied())
+        .collect();
     let ellipses = ellipses(seg);
     let tfs = transforms(seg);
     let offsets = offsets(seg);
     let offset_dimensions: std::collections::HashSet<u64> =
         offsets.values().filter_map(|o| o.dimension).collect();
+    // The curves the offsets made.
+    let offset_children: std::collections::HashSet<u64> = offsets
+        .values()
+        .flat_map(|o| o.children.iter().copied())
+        .collect();
     let mut local_ids = HashMap::new();
     let mut out = Vec::new();
     for s in seg.objects_of(SKETCH) {
@@ -1000,7 +1462,7 @@ pub fn sketch_details(seg: &Segment) -> (Vec<SketchInfo>, HashMap<u64, (u64, Str
             if classes::is_point_class(g) {
                 let n = pid.len();
                 pid.insert(e, format!("p{n}"));
-            } else if seg.is_kind_of(e, SKETCH_CURVE) {
+            } else if seg.is_kind_of(e, SKETCH_CURVE) && !handle_lines.contains(&e) {
                 let n = cid.len();
                 cid.insert(e, format!("c{n}"));
             } else if g == Some(SKETCH_TEXT) {
@@ -1025,13 +1487,28 @@ pub fn sketch_details(seg: &Segment) -> (Vec<SketchInfo>, HashMap<u64, (u64, Str
         let local = |e: u64| -> RefValue {
             match [&pid, &cid, &tid, &kid, &did].iter().find_map(|t| t.get(e)) {
                 Some(id) => RefValue::Id(id.clone()),
-                None => RefValue::Ref(external_ref(seg, e)),
+                None => match lns.get(&e).filter(|_| handle_lines.contains(&e)) {
+                    // A spline's handle line is no curve of the sketch; as
+                    // in the API, a constraint or dimension that names it
+                    // holds the line itself.
+                    Some(h) => RefValue::Ref(Reference::SketchEntity(SketchEntityRef {
+                        object_type: Some("SketchLine".into()),
+                        geometry: Some(serde_json::json!({
+                            "type": "Line3D",
+                            "startPoint": h.start,
+                            "endPoint": h.end(),
+                        })),
+                        ..SketchEntityRef::default()
+                    })),
+                    None => RefValue::Ref(external_ref(seg, e)),
+                },
             }
         };
 
         let mut connected: HashMap<u64, Vec<String>> = HashMap::new();
         let mut curves = Vec::new();
         for (e, c) in cid.iter() {
+            let flags = curve_flags(seg, seg.data_of(e));
             let mut rec = SketchCurve {
                 id: Some(c.clone()),
                 ..SketchCurve::default()
@@ -1090,10 +1567,23 @@ pub fn sketch_details(seg: &Segment) -> (Vec<SketchInfo>, HashMap<u64, (u64, Str
                     }
                 }
             } else if let Some(s) = splines.get(&e) {
-                // mitcad#154. Fitted and control-point splines are not told
-                // apart: the curve is kept as stored, a fixed spline.
+                // mitcad#154; the kind mitcad#186 ([`spline_kind`]). The curve's
+                // NURBS data is kept as stored.
                 let pt = |p: Option<u64>| Some(p.and_then(|p| pid.get(p).cloned()));
-                rec.curve_type = Some("SketchFixedSpline".into());
+                let fixed = flags.as_ref().is_some_and(|f| f.fixed);
+                rec.curve_type = Some(spline_kind(s, fixed, offset_children.contains(&e)).into());
+                if s.has_fit_points()
+                    && let (Some(a), Some(b)) = (s.start_point, s.end_point)
+                {
+                    // The fit points in order: the ends and those between.
+                    let ids: Option<Vec<String>> = [a]
+                        .into_iter()
+                        .chain(s.fit_points.iter().copied())
+                        .chain([b])
+                        .map(|p| pid.get(p).cloned())
+                        .collect();
+                    rec.fit_points = ids;
+                }
                 rec.start_sketch_point = pt(s.start_point);
                 rec.end_sketch_point = pt(s.end_point);
                 rec.degree = Some(s.degree as i64);
@@ -1142,10 +1632,19 @@ pub fn sketch_details(seg: &Segment) -> (Vec<SketchInfo>, HashMap<u64, (u64, Str
             } else {
                 rec.f3d_class = seg.guid_of(e).map(str::to_string);
             }
-            match curve_kind(seg, seg.data_of(e)) {
-                Some(1) => rec.is_construction = Some(true),
-                Some(2) => rec.is_center_line = Some(true),
-                _ => {}
+            if let Some(f) = &flags {
+                match f.kind {
+                    1 => rec.is_construction = Some(true),
+                    2 => rec.is_center_line = Some(true),
+                    _ => {}
+                }
+                if f.fixed {
+                    rec.is_fixed = Some(true);
+                }
+                if f.linked {
+                    rec.is_linked = Some(true);
+                    rec.is_reference = Some(true);
+                }
             }
             curves.push(rec);
         }
@@ -1209,8 +1708,19 @@ pub fn sketch_details(seg: &Segment) -> (Vec<SketchInfo>, HashMap<u64, (u64, Str
                 ..SketchDimension::default()
             };
             let pd = seg.object(x).and_then(|o| parse_dimension(seg, o));
-            holders.push(pd.as_ref().map(|pd| pd.holder));
+            holders.push(pd.as_ref().and_then(|pd| pd.holder));
+            if pd.is_none() {
+                // Its class, so that a dimension not read can be told
+                // apart in reports (mitcad#178).
+                rec.f3d = Some(DimensionF3d {
+                    class: Some(g.clone()),
+                    ..DimensionF3d::default()
+                });
+            }
             if let Some(pd) = pd {
+                if pd.holder.is_none() {
+                    rec.is_driving = Some(false);
+                }
                 let kinds: String = pd
                     .entities
                     .iter()
@@ -1222,15 +1732,23 @@ pub fn sketch_details(seg: &Segment) -> (Vec<SketchInfo>, HashMap<u64, (u64, Str
                             'L'
                         } else if k == Some(SKETCH_ARC) {
                             'A'
+                        } else if k == Some(SKETCH_ELLIPSE) {
+                            'E'
                         } else {
                             '?'
                         }
                     })
                     .collect();
+                let mut axis_length = false;
                 let mut typ = match g.as_str() {
                     ANGULAR_DIMENSION => Some("SketchAngularDimension"),
                     RADIAL_DIMENSION => Some("SketchRadialDimension"),
                     DIAMETER_DIMENSION => Some("SketchDiameterDimension"),
+                    // A line and a circle or arc: the distance between them
+                    // (mitcad#186: the reference model `diff_dim_kind_tangent_
+                    // distance`, and the three such dimensions of the corpus
+                    // by their sketch's geometry).
+                    TANGENT_DISTANCE_DIMENSION => Some("SketchTangentDistanceDimension"),
                     _ => None,
                 };
                 let linear = g == LINEAR_DIMENSION;
@@ -1249,6 +1767,36 @@ pub fn sketch_details(seg: &Segment) -> (Vec<SketchInfo>, HashMap<u64, (u64, Str
                 } else if linear && kinds == "AA" {
                     // concentric circles, value = radius difference (38/38)
                     typ = Some("SketchConcentricCircleDimension");
+                } else if linear && kinds == "E" {
+                    // An ellipse's major or minor radius (mitcad#186): of
+                    // the last eight flag bytes one is set, 1 or 4 for the
+                    // major radius and 2 or 8 for the minor *(the reference
+                    // models `diff_dim_kind_ellipse_major` and `_minor`: 1
+                    // and 2; the four ellipse dimensions of one real design:
+                    // 4 and 8, which the API dump confirms)*.
+                    let flags = pd.flags.as_deref().unwrap_or_default();
+                    let last = &flags[flags.len().saturating_sub(8)..];
+                    typ = match last.iter().filter(|&&b| b != 0).collect::<Vec<_>>()[..] {
+                        [1 | 4] => Some("SketchEllipseMajorRadiusDimension"),
+                        [2 | 8] => Some("SketchEllipseMinorRadiusDimension"),
+                        _ => None,
+                    };
+                    // With 4 or 8 the value is the whole axis: the four
+                    // dimensions of the one real design have twice their
+                    // ellipse's radii, the reference models' (1, 2) the
+                    // radii.
+                    axis_length = last
+                        .iter()
+                        .find(|&&b| b != 0)
+                        .is_some_and(|b| matches!(b, 4 | 8));
+                } else if linear && matches!(kinds.as_str(), "P?" | "?P") {
+                    // A point and a face or plane outside the sketch (the
+                    // reference models `diff_dim_target_face` and
+                    // `_construction_plane`).
+                    typ = Some("SketchDistanceBetweenPointAndSurfaceDimension");
+                } else if linear && matches!(kinds.as_str(), "L?" | "?L") {
+                    // A line and a planar face (`diff_dim_kind_line_to_face`).
+                    typ = Some("SketchDistanceBetweenLineAndPlanarSurfaceDimension");
                 }
                 if offset_dimensions.contains(&x) {
                     // The distance of an offset (its offset object names
@@ -1275,6 +1823,13 @@ pub fn sketch_details(seg: &Segment) -> (Vec<SketchInfo>, HashMap<u64, (u64, Str
                         }
                     }
                 }
+                // A distance between two lines, or a point and a line, with
+                // no parameter holder is driving: the 63 such dimensions of
+                // the reference dumps all are; the driven ones have a
+                // parameter.
+                if pd.holder.is_none() && typ == Some("SketchOffsetDimension") {
+                    rec.is_driving = None;
+                }
                 rec.dimension_type = typ.map(str::to_string);
                 rec.text_position = pd.text;
                 rec.refs = Some(entities_refs(pd.entities.iter().map(|&e| local(e))));
@@ -1284,6 +1839,8 @@ pub fn sketch_details(seg: &Segment) -> (Vec<SketchInfo>, HashMap<u64, (u64, Str
                 rec.f3d = Some(DimensionF3d {
                     class: Some(g),
                     flags: Some(pd.flags.as_deref().map(hex)),
+                    expression: pd.expression.clone().filter(|_| pd.holder.is_none()),
+                    axis_length: axis_length.then_some(true),
                     ..DimensionF3d::default()
                 });
             }
@@ -1309,6 +1866,16 @@ pub fn sketch_details(seg: &Segment) -> (Vec<SketchInfo>, HashMap<u64, (u64, Str
                 sketch_to_model: Some(m),
                 ..ModelFrame::default()
             });
+        }
+        let texts: Vec<serde_json::Value> = tid
+            .iter()
+            .filter_map(|(e, id)| {
+                let raw = seg.object(e).and_then(|o| parse_text(seg, o))?;
+                Some(text_value(seg, e, id, &raw, &cons, &cid))
+            })
+            .collect();
+        if !texts.is_empty() {
+            detail.texts = Some(texts);
         }
         detail.counts = Some(SketchCounts {
             points: Some(pid.len() as i64),
@@ -1459,6 +2026,18 @@ fn external_ref(seg: &Segment, id: u64) -> Reference {
 mod tests {
     use super::*;
 
+    /// The type bits the reference models settle (mitcad#186): a smooth
+    /// join, a control point spline's polygon and a text's box.
+    #[test]
+    fn constraint_type_bits() {
+        assert_eq!(constraint_type(0x200), Some("SmoothConstraint"));
+        assert_eq!(constraint_type(1 << 31), Some("ControlPolygonConstraint"));
+        assert_eq!(constraint_type(1 << 40), Some("TextBoxConstraint"));
+        assert_eq!(constraint_type(0x40), Some("HorizontalConstraint"));
+        // Two bits at once are no type.
+        assert_eq!(constraint_type(0x200 | 0x40), None);
+    }
+
     fn counted(out: &mut Vec<u8>, values: &[f64], count: usize) {
         out.extend((count as u32).to_le_bytes());
         out.extend((count as u32).to_le_bytes());
@@ -1500,12 +2079,103 @@ mod tests {
             control,
             start_point: None,
             end_point: None,
+            fit_points: Vec::new(),
+            handles: Vec::new(),
         };
         assert!(s.is_clamped());
         // Knots that do not count up to the poles: not a payload.
         let mut bad = d.clone();
         bad[7 + 12] = 7;
         assert!(nurbs_at(&bad, 0).is_none());
+    }
+
+    /// The end of a curve's sketch-curve part for a class version: `fixed
+    /// | a | linked | ...` then the block `01 | u32 n | n references | 13
+    /// zeros | f32 1.0 x 2`, with `n` references of the form `01 id`.
+    fn curve_end(version: u32, kind: u8, fixed: u8, linked: u8, refs: &[u8]) -> Vec<u8> {
+        let mut d = vec![7u8; 20];
+        // Bytes back from the block: fixed, linked, kind (see
+        // `curve_flags`).
+        let (f, l, k) = match version {
+            7 => (4, 2, 7),
+            8 => (8, 6, 4),
+            _ => (9, 7, 4),
+        };
+        let block = d.len() + 12;
+        d.resize(block, 0);
+        d[block - f] = fixed;
+        d[block - f + 1] = 1;
+        d[block - l] = linked;
+        d[block - k] = kind;
+        d.push(1);
+        d.extend((refs.len() as u32).to_le_bytes());
+        for &id in refs {
+            d.push(1);
+            d.extend([id, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
+        }
+        d.extend([0; 13]);
+        d.extend([0, 0, 0x80, 0x3f, 0, 0, 0x80, 0x3f]);
+        d.extend([0; 5]);
+        d
+    }
+
+    /// Fixed, linked and kind are read where the class version puts them,
+    /// before a block that holds none or several references.
+    #[test]
+    fn curve_flags_by_version() {
+        // A reference is any `01 id` that is odd.
+        let ref_at = |d: &[u8], at: usize| (d[at] == 1).then(|| u64::from(d[at + 1]));
+        for version in [7, 8, 9, 12] {
+            for (kind, fixed, linked) in [(0, false, false), (1, true, false), (2, false, true)] {
+                for refs in [&[][..], &[5u8][..], &[5, 6][..]] {
+                    let d = curve_end(version, kind, u8::from(fixed), u8::from(linked), refs);
+                    let f = curve_flags_of(&d, version, &ref_at).expect("flags");
+                    assert_eq!((f.kind, f.fixed, f.linked), (kind, fixed, linked));
+                    let ids: Vec<u64> = refs.iter().map(|&r| u64::from(r)).collect();
+                    assert_eq!(f.refs, ids, "version {version}");
+                }
+            }
+        }
+        // A kind above 2, a flag above 1, an unknown version, no pair.
+        assert_eq!(
+            curve_flags_of(&curve_end(9, 3, 0, 0, &[]), 9, &ref_at),
+            None
+        );
+        assert_eq!(
+            curve_flags_of(&curve_end(9, 0, 2, 0, &[]), 9, &ref_at),
+            None
+        );
+        assert_eq!(
+            curve_flags_of(&curve_end(9, 0, 0, 2, &[]), 9, &ref_at),
+            None
+        );
+        let d = curve_end(9, 0, 0, 0, &[]);
+        assert_eq!(curve_flags_of(&d, 5, &ref_at), None);
+        assert_eq!(curve_flags_of(&[0; 60], 9, &ref_at), None);
+    }
+
+    /// The spline kind: fit lists make a fitted spline, an offset or a
+    /// fixed flag a control-point spline, else it stays a fixed spline.
+    #[test]
+    fn spline_kinds() {
+        let mut s = SplineGeom {
+            degree: 3,
+            knots: Vec::new(),
+            weights: Vec::new(),
+            control: Vec::new(),
+            start_point: None,
+            end_point: None,
+            fit_points: Vec::new(),
+            handles: Vec::new(),
+        };
+        assert_eq!(spline_kind(&s, false, false), "SketchFixedSpline");
+        assert_eq!(spline_kind(&s, true, false), "SketchControlPointSpline");
+        assert_eq!(spline_kind(&s, false, true), "SketchControlPointSpline");
+        s.handles = vec![4];
+        assert_eq!(spline_kind(&s, true, true), "SketchFittedSpline");
+        s.handles.clear();
+        s.fit_points = vec![5];
+        assert_eq!(spline_kind(&s, false, false), "SketchFittedSpline");
     }
 
     /// An ellipse's normal is its major direction across its minor one.

@@ -5,7 +5,8 @@
 //! 60-degree profile on the faces (ISO metric and Unified threads;
 //! Whitworth and NPT threads are cosmetic only): the basic profile of the
 //! size, or the profile of given diameters (a tolerance class's, as .f3d
-//! designs store them), turned about its axis by an angle.
+//! designs store them), turned about its axis by an angle, with optional
+//! extra radial and flank clearance for a looser fit (mitcad#195).
 
 use serde::{Deserialize, Serialize};
 
@@ -116,6 +117,14 @@ pub struct ThreadDef<P = ParamId> {
     /// without.
     #[serde(default = "Default::default", skip_serializing_if = "Option::is_none")]
     pub angle: Option<P>,
+    /// A modelled thread's extra radial clearance per side (see
+    /// `ThreadSpec`); 0 without.
+    #[serde(default = "Default::default", skip_serializing_if = "Option::is_none")]
+    pub radial_clearance: Option<P>,
+    /// A modelled thread's extra clearance perpendicular to each flank (see
+    /// `ThreadSpec`); 0 without.
+    #[serde(default = "Default::default", skip_serializing_if = "Option::is_none")]
+    pub flank_clearance: Option<P>,
 }
 
 impl<P> ThreadDef<P> {
@@ -142,8 +151,88 @@ impl<P> ThreadDef<P> {
                 None => None,
             },
             angle: self.angle.as_ref().map(|v| f("angle", v)).transpose()?,
+            radial_clearance: self
+                .radial_clearance
+                .as_ref()
+                .map(|v| f("radial_clearance", v))
+                .transpose()?,
+            flank_clearance: self
+                .flank_clearance
+                .as_ref()
+                .map(|v| f("flank_clearance", v))
+                .transpose()?,
         })
     }
+}
+
+/// The narrowest crest a flank clearance may leave, in pitches.
+const MIN_CREST: f64 = 0.02;
+
+/// A clearance's value: a finite length of 0 or more (`what`: "radial
+/// clearance"); 0 without.
+pub(crate) fn clearance_value(what: &str, value: Option<f64>) -> Result<f64, String> {
+    match value {
+        None => Ok(0.0),
+        Some(v) if v.is_finite() && v >= 0.0 => Ok(v),
+        Some(v) => Err(format!(
+            "the thread's {what} must be a finite length of 0 or more, got {v}"
+        )),
+    }
+}
+
+/// A modelled thread's extra clearance (radial, flank), read and checked
+/// for its own values.
+pub(crate) fn thread_clearance<K: Kernel>(
+    ctx: &mut EvalContext<'_, K>,
+    radial: Option<ParamId>,
+    flank: Option<ParamId>,
+) -> Result<(f64, f64), String> {
+    let radial = radial.map(|id| ctx.param(id)).transpose()?;
+    let flank = flank.map(|id| ctx.param(id)).transpose()?;
+    Ok((
+        clearance_value("radial clearance", radial)?,
+        clearance_value("flank clearance", flank)?,
+    ))
+}
+
+/// Whether extra clearance leaves a thread of the profile (`pitch` and the
+/// `major`, `minor` and pitch diameters) on an internal or external face:
+/// the flank clearance moves each flank `flank / cos 30°` into the tooth
+/// along the axis, the crest keeping its radius, and must leave the crest
+/// at least P/50 wide; the radial clearance moves the whole profile away
+/// from the material and must leave an external thread a core. The
+/// geometry checks the same (`geometry/src/thread.cpp`).
+pub(crate) fn check_clearance(
+    pitch: f64,
+    (major, minor, pitch_diameter): (f64, f64, f64),
+    internal: bool,
+    (radial, flank): (f64, f64),
+) -> Result<(), String> {
+    let tan30 = 30f64.to_radians().tan();
+    let cos30 = 30f64.to_radians().cos();
+    if flank > 0.0 {
+        // Half a pitch at the pitch diameter, narrowing along the flanks.
+        let depth = if internal {
+            pitch_diameter - minor
+        } else {
+            major - pitch_diameter
+        };
+        let crest = pitch / 2.0 - depth * tan30 - 2.0 * flank / cos30;
+        let needed = MIN_CREST * pitch;
+        if crest < needed {
+            return Err(format!(
+                "the flank clearance of {flank} mm leaves no usable tooth: the crest would be \
+                 {crest:.4} mm wide, at least {needed:.4} mm is needed"
+            ));
+        }
+    }
+    if !internal && minor - 2.0 * radial <= 0.0 {
+        return Err(format!(
+            "the radial clearance of {radial} mm leaves the external thread no core \
+             (minor diameter {minor} mm)"
+        ));
+    }
+    Ok(())
 }
 
 /// The part of a cylinder a thread covers, for the kernel: (length,
@@ -200,6 +289,8 @@ impl FeatureInfo for ThreadDef {
             self.thread.standard.check_modeled()?;
         } else if self.diameters.is_some() || self.angle.is_some() {
             return Err("only a modelled thread has diameters and an angle".to_owned());
+        } else if self.radial_clearance.is_some() || self.flank_clearance.is_some() {
+            return Err("only a modelled thread has extra clearance".to_owned());
         }
         self.thread.check(None).map(|_| ())
     }
@@ -230,6 +321,8 @@ impl FeatureInfo for ThreadDef {
                 ));
             }
         }
+        clearance_value("radial clearance", self.radial_clearance.map(value))?;
+        clearance_value("flank clearance", self.flank_clearance.map(value))?;
         Ok(())
     }
 }
@@ -264,6 +357,8 @@ impl<K: Kernel> Evaluate<K> for ThreadDef {
             Some(id) => ctx.param(id)?,
             None => 0.0,
         };
+        let clearance = thread_clearance(ctx, self.radial_clearance, self.flank_clearance)?;
+        let (radial, _) = clearance;
         // The faces by body, each a cylinder, all on one side of their material.
         let mut bodies: Vec<(BodyUid, K::Shape, Vec<FaceName>)> = Vec::new();
         let mut internal = None;
@@ -287,14 +382,15 @@ impl<K: Kernel> Evaluate<K> for ThreadDef {
             internal = Some(cylinder.internal);
             let data = self.thread.check(internal)?;
             // The size must fit the cylinder: an external thread's root lies
-            // inside it, an internal thread's root outside the bore.
+            // inside it, an internal thread's root outside the bore (each
+            // moved by the radial clearance).
             let diameter = 2.0 * cylinder.radius;
             let (major, minor, _) =
                 diameters.unwrap_or((data.major, data.minor, data.pitch_diameter));
             let fits = if cylinder.internal {
-                diameter < major
+                diameter < major + 2.0 * radial
             } else {
-                diameter > minor
+                diameter > minor - 2.0 * radial
             };
             if self.modeled && !fits {
                 return Err(format!(
@@ -314,6 +410,13 @@ impl<K: Kernel> Evaluate<K> for ThreadDef {
         let data = self.thread.data()?;
         let (major, minor, pitch_diameter) =
             diameters.unwrap_or((data.major, data.minor, data.pitch_diameter));
+        check_clearance(
+            data.pitch,
+            (major, minor, pitch_diameter),
+            internal.unwrap_or(false),
+            clearance,
+        )?;
+        let (radial_clearance, flank_clearance) = clearance;
         for (uid, shape, faces) in bodies {
             let spec = ThreadSpec {
                 feature: ctx.uid,
@@ -325,6 +428,8 @@ impl<K: Kernel> Evaluate<K> for ThreadDef {
                 right_handed: self.thread.right_handed,
                 angle,
                 part,
+                radial_clearance,
+                flank_clearance,
             };
             let threaded = ctx
                 .kernel

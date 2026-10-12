@@ -227,9 +227,9 @@ QVector<QPair<QString, QString>> mouseRows(NavigationScheme scheme) {
             {wheel, QObject::tr("Zoom")}};
   }
   case NavigationScheme::AltButtons:
-    return {{QObject::tr("Alt + left drag"), QObject::tr("Orbit")},
-            {QObject::tr("Alt + middle drag"), QObject::tr("Pan")},
-            {QObject::tr("Alt + right drag"), QObject::tr("Zoom")},
+    return {{QObject::tr("%1 + left drag").arg(altKey()), QObject::tr("Orbit")},
+            {QObject::tr("%1 + middle drag").arg(altKey()), QObject::tr("Pan")},
+            {QObject::tr("%1 + right drag").arg(altKey()), QObject::tr("Zoom")},
             {wheel, QObject::tr("Zoom")}};
   case NavigationScheme::MiddlePanF4:
     return {{QObject::tr("Middle drag"), QObject::tr("Pan")},
@@ -237,7 +237,7 @@ QVector<QPair<QString, QString>> mouseRows(NavigationScheme scheme) {
             {wheel, QObject::tr("Zoom")}};
   case NavigationScheme::MiddleOrbit:
     return {{QObject::tr("Middle drag"), QObject::tr("Orbit")},
-            {QObject::tr("Ctrl + middle drag"), QObject::tr("Pan")},
+            {QObject::tr("%1 + middle drag").arg(ctrlKey()), QObject::tr("Pan")},
             {QObject::tr("Shift + middle drag"), QObject::tr("Zoom")},
             {wheel, QObject::tr("Zoom")}};
   case NavigationScheme::RightOrbit:
@@ -1072,8 +1072,8 @@ void ViewController::showPreferences(const QString& page) {
       renderDevice->addItem(device.type == QLatin1String("CPU") ? tr("CPU: %1").arg(device.label()) : device.label(),
                             device.type == QLatin1String("CPU") ? QStringLiteral("cpu") : device.id);
       renderDevice->setItemData(renderDevice->count() - 1,
-                                device.denoisesOnDevice ? tr("Renders and denoises on this device")
-                                                        : tr("Renders on this device; denoises on the CPU"),
+                                device.denoiserAvailable ? tr("Supports rendering and denoising on this device")
+                                                         : tr("Renders on this device; uses CPU denoising"),
                                 Qt::ToolTipRole);
     }
     if (devices.isEmpty()) {
@@ -1331,7 +1331,7 @@ void ViewController::showShortcutOverview() {
     new QTreeWidgetItem(mouse, {keys, what});
   }
   for (const auto& [keys, what] :
-       QVector<QPair<QString, QString>>{{tr("Left click"), tr("Select; Ctrl or Shift adds or removes")},
+       QVector<QPair<QString, QString>>{{tr("Left click"), tr("Select; %1 or Shift adds or removes").arg(ctrlKey())},
                                         {tr("Left drag to the right"), tr("Select what lies inside")},
                                         {tr("Left drag to the left"), tr("Select what the window crosses")},
                                         {tr("Right click"), tr("The commands that fit the selection")},
@@ -1345,8 +1345,7 @@ void ViewController::showShortcutOverview() {
   QTreeWidgetItem* keys = section(tr("Keys"));
   // Ctrl is Cmd on macOS, where Backspace (the delete key) deletes too.
   const QString fileKeys =
-      QStringList{QKeySequence(QKeySequence::New).toString(QKeySequence::NativeText),
-                  QKeySequence(QKeySequence::Open).toString(QKeySequence::NativeText),
+      QStringList{QKeySequence(QKeySequence::Open).toString(QKeySequence::NativeText),
                   QKeySequence(QKeySequence::Save).toString(QKeySequence::NativeText),
                   QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_S).toString(QKeySequence::NativeText)}
           .join(QStringLiteral(", "));
@@ -1360,15 +1359,15 @@ void ViewController::showShortcutOverview() {
                                         {tr("Esc"), tr("Cancel the command, step back in a sketch tool, clear the selection")},
                                         {tr("Tab"), tr("The next value box of a sketch tool")},
                                         {deleteKeys, tr("Delete the selection")},
-                                        {tr("F2"), tr("Rename in the browser")},
-                                        {fileKeys, tr("New Design, Open, Save, Save As")}}) {
+                                        {tr("F2"), tr("Rename in the Browser or history; Return activates")},
+                                        {fileKeys, tr("Open, Save, Save As")}}) {
     new QTreeWidgetItem(keys, {key, what});
   }
   // The commands with shortcuts, by tab and group.
   QHash<QString, QTreeWidgetItem*> groups;
   for (const auto& def : m_registry.commands()) {
-    const QKeySequence sequence = m_registry.shortcut(def->id);
-    if (sequence.isEmpty()) {
+    const QList<QKeySequence> sequences = m_registry.effectiveShortcuts(def->id);
+    if (sequences.isEmpty()) {
       continue;
     }
     const QString group = def->tab.isEmpty() ? tr("General")
@@ -1377,7 +1376,9 @@ void ViewController::showShortcutOverview() {
     if (parent == nullptr) {
       parent = section(group);
     }
-    auto* row = new QTreeWidgetItem(parent, {sequence.toString(QKeySequence::NativeText), def->name});
+    QStringList labels;
+    for (const QKeySequence& sequence : sequences) labels.append(sequence.toString(QKeySequence::NativeText));
+    auto* row = new QTreeWidgetItem(parent, {labels.join(QStringLiteral(", ")), def->name});
     row->setIcon(1, themeIcon(def->icon));
     ++count;
   }

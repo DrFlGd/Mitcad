@@ -186,7 +186,7 @@ int render(int argc, char* argv[], const OpenPart& open) {
     }
     for (const render::RenderDevice& entry : devices) {
       std::printf("%s\t%s\t%s%s\n", entry.type.toUtf8().constData(), entry.id.toUtf8().constData(),
-                  entry.name.toUtf8().constData(), entry.denoisesOnDevice ? " (denoises on the device)" : "");
+                  entry.name.toUtf8().constData(), entry.denoiserAvailable ? " (supports device denoising)" : "");
     }
     return 0;
   }

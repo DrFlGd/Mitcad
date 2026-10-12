@@ -1,0 +1,20 @@
+# SPDX-License-Identifier: MIT
+wait-idle 30
+native-action view.fit
+expect-model-bodies 3 11760
+expect-shown-body F1.b0 O1 3840
+expect-shown-body F2.b0 O2 4000
+expect-shown-body F3.b0 O3/O4 3920
+menu 'View/Show History'
+mark
+native-activate native.history.F5
+expect-log 'Editing F5 with Extrude'
+expect-log 'Cut target C2@O2: eligible, unchecked, intersects'
+native-type input_distance '50 mm'
+expect-shown-body F2.b0 O2 4000
+expect-shown-body F3.b0 O3/O4 3840
+native-click commandCancel
+expect-model-bodies 3 11760
+expect-shown-body F3.b0 O3/O4 3920
+screenshot '${MITCAD_TEST_WORK}/cut-components-reopened.png'
+expect-never 'The document was read while a job computes it|Native Mac canvas:|OCCT view event failed|TestDriver: FAIL'

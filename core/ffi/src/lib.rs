@@ -13,6 +13,8 @@ mod brep_import;
 mod exchange;
 // .f3d import with the timeline (T1).
 mod f3d_import;
+// The documents an .f3d design refers to, from local files (mitcad#196).
+mod f3d_references;
 // Background computation (P7).
 mod jobs;
 // The result store (P7d).
@@ -133,7 +135,9 @@ mod ffi {
 
         /// Shape of a body at the timeline marker, or null.
         fn body_shape(self: &Document, uid: &str) -> SharedPtr<Shape>;
-        /// The face of an evaluated profile region, or null.
+        /// The face of an evaluated profile region, or null: the region a
+        /// reference with the key means (the best match when the key changed
+        /// with the sketch, as features find it).
         fn profile_shape(self: &Document, sketch: &str, region: &str) -> SharedPtr<Shape>;
         /// A body after the previewed command, or null.
         fn preview_body_shape(self: &Document, uid: &str) -> SharedPtr<Shape>;

@@ -102,6 +102,7 @@ impl IptGeometry {
                     source,
                     component: None,
                     id: Some(v as u64),
+                    lineage: None,
                 });
                 continue;
             }
@@ -112,6 +113,7 @@ impl IptGeometry {
                     source: format!("{source}#{k}"),
                     component: None,
                     id: Some(v as u64 | ((k + 1) << 32)),
+                    lineage: None,
                 });
             }
         }

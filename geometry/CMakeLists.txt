@@ -139,6 +139,21 @@ target_sources(mitcad_geometry PRIVATE
 target_sources(mitcad_geometry PRIVATE
   src/ring_dressup.cpp
   src/ring_dressup.hpp)
+# Sheet material construction (mitcad#206).
+target_sources(mitcad_geometry PRIVATE
+  src/sheet.cpp
+  src/sheet_chart.cpp
+  src/sheet_curve.cpp
+  src/sheet_curve.hpp
+  src/sheet_trim.cpp
+  include/mitcad/geometry/sheet_domain.hpp
+  include/mitcad/geometry/sheet_trim.hpp
+  include/mitcad/geometry/sheet.hpp)
+# The faces a run of features made, as solids a pattern copies (its
+# optimized compute option).
+target_sources(mitcad_geometry PRIVATE
+  src/face_copy.cpp
+  include/mitcad/geometry/face_copy.hpp)
 target_include_directories(mitcad_geometry PUBLIC include)
 # Volumes and areas come from the analysis library's integrals, so that
 # every reported volume agrees (query.cpp, brep_import.cpp).
@@ -204,9 +219,25 @@ if(BUILD_TESTING)
   # Walked roundings that are true rolling balls, with the port's patches
   # 0075-0077 (mitcad#121).
   target_sources(test_geometry PRIVATE tests/test_fillet_rolling_ball.cpp)
+  # The faces a run of features made, copied by a pattern's optimized
+  # compute option.
+  target_sources(test_geometry PRIVATE tests/test_face_copy.cpp)
   target_link_libraries(test_geometry PRIVATE mitcad_geometry_analysis)
   target_link_libraries(test_geometry PRIVATE mitcad_geometry mitcad_warnings)
   add_test(NAME geometry COMMAND test_geometry)
+  # Planar material domains and sheet thickness/reference sides (mitcad#206).
+  add_executable(test_sheet tests/test_sheet.cpp)
+  target_link_libraries(test_sheet PRIVATE mitcad_geometry mitcad_warnings)
+  add_test(NAME geometry.sheet COMMAND test_sheet)
+  add_executable(test_sheet_trim tests/test_sheet_trim.cpp)
+  target_link_libraries(test_sheet_trim PRIVATE mitcad_geometry mitcad_warnings)
+  add_test(NAME geometry.sheet_trim COMMAND test_sheet_trim)
+  add_executable(test_sheet_bend tests/test_sheet_bend.cpp)
+  target_link_libraries(test_sheet_bend PRIVATE mitcad_geometry mitcad_warnings)
+  add_test(NAME geometry.sheet_bend COMMAND test_sheet_bend)
+  add_executable(test_sheet_bend_graph tests/test_sheet_bend_graph.cpp)
+  target_link_libraries(test_sheet_bend_graph PRIVATE mitcad_geometry mitcad_warnings)
+  add_test(NAME geometry.sheet_bend_graph COMMAND test_sheet_bend_graph)
   # OCCT's crash handlers next to the application's crash report (mitcad#62).
   if(NOT WIN32)
     add_executable(test_guard tests/test_guard.cpp)

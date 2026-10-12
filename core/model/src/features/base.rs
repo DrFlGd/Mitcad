@@ -263,6 +263,9 @@ impl<K: Kernel> Evaluate<K> for BaseDef {
         Ok(output)
     }
 }
+/// A cut piece holding less than this part of the volume of the largest
+/// piece of its body is a lump of that body, not a body of its own.
+const NEGLIGIBLE: f64 = 1e-6;
 
 /// The body changes of a join, cut or intersect of a tool with participant
 /// bodies, as an extrusion makes them: joined bodies merge into the first
@@ -323,7 +326,8 @@ pub(crate) fn apply_tool<K: Kernel>(
                 if !result.touched[i] {
                     continue;
                 }
-                let mut own = pieces[i].drain(..);
+                let own = lump_needles(ctx.kernel, std::mem::take(&mut pieces[i]));
+                let mut own = own.into_iter();
                 match own.next() {
                     None => changes.push(BodyChange::Remove(*uid)),
                     Some(first) => {
@@ -337,6 +341,50 @@ pub(crate) fn apply_tool<K: Kernel>(
         }
     }
     Ok(changes)
+}
+
+/// The pieces a cut left of one body. Pieces of negligible volume (needles
+/// left where the tool's wall lies almost on a wall of the body) stay in
+/// the body as lumps beside its first real piece, as the file keeps them;
+/// they are no bodies of their own.
+pub(crate) fn lump_needles<K: Kernel>(kernel: &K, mut own: Vec<K::Shape>) -> Vec<K::Shape> {
+    if own.len() < 2 {
+        return own;
+    }
+    let volumes: Vec<f64> = own
+        .iter()
+        .map(|s| {
+            kernel
+                .mass_properties(s)
+                .map_or(f64::NAN, |m| m.volume.abs())
+        })
+        .collect();
+    let largest = volumes
+        .iter()
+        .copied()
+        .filter(|v| v.is_finite())
+        .fold(0.0, f64::max);
+    let tiny: Vec<bool> = volumes.iter().map(|v| *v < NEGLIGIBLE * largest).collect();
+    if let Some(head) = tiny.iter().position(|t| !t)
+        && tiny.iter().any(|t| *t)
+    {
+        let group: Vec<K::Shape> = (0..own.len())
+            .filter(|k| *k == head || tiny[*k])
+            .map(|k| own[k].clone())
+            .collect();
+        if let Ok(joined) = kernel.compound(&group) {
+            let mut kept: Vec<K::Shape> = Vec::new();
+            for (k, piece) in own.drain(..).enumerate() {
+                if k == head {
+                    kept.push(joined.clone());
+                } else if !tiny[k] {
+                    kept.push(piece);
+                }
+            }
+            own = kept;
+        }
+    }
+    own
 }
 
 /// B-rep data of a body: OCCT's binary format (or its text format), as the
@@ -780,5 +828,53 @@ mod tests {
         assert_eq!(value["participants"], json!(["F2.b0"]));
         assert_eq!(value["source"], "part.step");
         assert_eq!(value["bodies"][0]["color"], json!([1.0, 0.5, 0.0]));
+    }
+}
+
+#[cfg(test)]
+mod needle_tests {
+    use super::lump_needles;
+    use crate::kernel::BoundingBox;
+    use crate::testing::{MockKernel, MockShape};
+
+    fn piece(history: &str, size: [f64; 3]) -> MockShape {
+        MockShape {
+            history: history.to_owned(),
+            faces: Vec::new(),
+            edges: Vec::new(),
+            bounds: Some(BoundingBox {
+                min: [0.0; 3],
+                max: size,
+            }),
+            parts: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn needles_of_a_cut_stay_as_lumps_of_the_first_real_piece() {
+        let kernel = MockKernel::default();
+        kernel.measures.set(true);
+        // Two real pieces and two needles of a millionth of a millionth.
+        let pieces = vec![
+            piece("needle0", [0.001, 0.001, 0.001]),
+            piece("big", [10.0, 10.0, 10.0]),
+            piece("other", [5.0, 5.0, 5.0]),
+            piece("needle1", [0.001, 0.001, 0.001]),
+        ];
+        let kept = lump_needles(&kernel, pieces);
+        assert_eq!(kept.len(), 2);
+        // The first real piece holds the needles beside it.
+        assert_eq!(kept[0].parts.len(), 3);
+        assert!(
+            kept[0].history.starts_with("compound("),
+            "{}",
+            kept[0].history
+        );
+        assert_eq!(kept[1].history, "other");
+        // Without needles, and with one piece, nothing changes.
+        let same = vec![piece("a", [10.0; 3]), piece("b", [9.0; 3])];
+        assert_eq!(lump_needles(&kernel, same.clone()), same);
+        let one = vec![piece("a", [1.0; 3])];
+        assert_eq!(lump_needles(&kernel, one.clone()), one);
     }
 }

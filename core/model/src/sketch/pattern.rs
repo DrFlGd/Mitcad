@@ -51,7 +51,22 @@ pub enum PatternKind<P> {
         direction: [f64; 2],
         count: [u32; 2],
         spacing: [P; 2],
+        /// Per direction: the originals are the middle instance (an odd
+        /// count), the others lie on both sides of them (a symmetric
+        /// pattern).
+        #[serde(default, skip_serializing_if = "not_symmetric")]
+        symmetric: [bool; 2],
     },
+}
+
+fn not_symmetric(symmetric: &[bool; 2]) -> bool {
+    !symmetric[0] && !symmetric[1]
+}
+
+/// The place of the originals among the instances: the first, or the
+/// middle one of a symmetric direction.
+fn original_index(count: [u32; 2], symmetric: [bool; 2]) -> [u32; 2] {
+    [0, 1].map(|k| if symmetric[k] { count[k] / 2 } else { 0 })
 }
 
 /// One instance of a pattern: its place in the pattern (`[k, 0]` for the
@@ -165,10 +180,12 @@ impl<P> SketchPattern<P> {
                 direction,
                 count,
                 spacing,
+                symmetric,
             } => PatternKind::Rectangular {
                 direction: *direction,
                 count: *count,
                 spacing: [f(&slots[0], &spacing[0])?, f(&slots[1], &spacing[1])?],
+                symmetric: *symmetric,
             },
         };
         Ok(SketchPattern {
@@ -192,10 +209,15 @@ impl<P> SketchPattern<P> {
     pub fn indices(&self) -> Vec<[u32; 2]> {
         match self.kind {
             PatternKind::Circular { count, .. } => (1..count).map(|k| [k, 0]).collect(),
-            PatternKind::Rectangular { count, .. } => (0..count[0])
-                .flat_map(|i| (0..count[1]).map(move |j| [i, j]))
-                .filter(|ij| *ij != [0, 0])
-                .collect(),
+            PatternKind::Rectangular {
+                count, symmetric, ..
+            } => {
+                let original = original_index(count, symmetric);
+                (0..count[0])
+                    .flat_map(|i| (0..count[1]).map(move |j| [i, j]))
+                    .filter(|ij| *ij != original)
+                    .collect()
+            }
         }
     }
 
@@ -221,11 +243,17 @@ impl<P> SketchPattern<P> {
                 }
             }
             PatternKind::Rectangular {
-                direction, count, ..
+                direction,
+                count,
+                symmetric,
+                ..
             } => {
                 let total = count[0] as u64 * count[1] as u64;
                 if count.contains(&0) || !(2..=1000).contains(&total) {
                     return Err(format!("{what}: a pattern has 2 to 1000 instances"));
+                }
+                if (0..2).any(|k| symmetric[k] && count[k].is_multiple_of(2)) {
+                    return Err(format!("{what}: a symmetric direction has an odd count"));
                 }
                 if !direction.iter().all(|v| v.is_finite()) || (norm(*direction) - 1.0).abs() > 1e-9
                 {
@@ -409,12 +437,19 @@ impl SketchPattern<ParamId> {
                 center: *center,
                 angle: circular_step(*count, values[0]) * index[0] as f64,
             },
-            PatternKind::Rectangular { direction, .. } => {
+            PatternKind::Rectangular {
+                direction,
+                count,
+                symmetric,
+                ..
+            } => {
                 let d1 = *direction;
                 let d2 = perp(d1);
+                let at = original_index(*count, *symmetric);
+                let from = |k: usize| index[k] as f64 - at[k] as f64;
                 Placement::Move(add(
-                    scale(d1, values[0] * index[0] as f64),
-                    scale(d2, values[1] * index[1] as f64),
+                    scale(d1, values[0] * from(0)),
+                    scale(d2, values[1] * from(1)),
                 ))
             }
         }
@@ -554,11 +589,15 @@ impl SketchEdit<'_> {
         direction: P2,
         count: [u32; 2],
         spacing: [&ValueInput; 2],
+        symmetric: [bool; 2],
     ) -> Result<ConstraintUid, String> {
         self.check_originals(entities)?;
         let total = count[0] as u64 * count[1] as u64;
         if count.contains(&0) || !(2..=1000).contains(&total) {
             return Err("a pattern has 2 to 1000 instances".to_owned());
+        }
+        if (0..2).any(|k| symmetric[k] && count[k].is_multiple_of(2)) {
+            return Err("a symmetric direction has an odd count".to_owned());
         }
         let direction = unit(direction);
         if !(direction.iter().all(|v| v.is_finite()) && norm(direction) > 0.5) {
@@ -573,6 +612,7 @@ impl SketchEdit<'_> {
                 direction,
                 count,
                 spacing: [s1, s2],
+                symmetric,
             },
             entities: entities.to_vec(),
             copies: Vec::new(),
@@ -656,6 +696,7 @@ impl SketchEdit<'_> {
                 direction,
                 count,
                 spacing,
+                symmetric,
             } => {
                 if change.angle.is_some() || change.center.is_some() {
                     return Err(format!("{id} is a rectangular pattern: no angle or centre"));
@@ -672,6 +713,9 @@ impl SketchEdit<'_> {
                 if count.contains(&0) || !(2..=1000).contains(&total) {
                     return Err("a pattern has 2 to 1000 instances".to_owned());
                 }
+                if (0..2).any(|k| symmetric[k] && count[k].is_multiple_of(2)) {
+                    return Err("a symmetric direction has an odd count".to_owned());
+                }
                 let direction = match change.direction {
                     Some(d) => {
                         let d = unit(d);
@@ -686,6 +730,7 @@ impl SketchEdit<'_> {
                     direction,
                     count,
                     spacing,
+                    symmetric,
                 }
             }
         };

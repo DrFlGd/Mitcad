@@ -40,6 +40,7 @@
 //!
 //! [`Document::persist_results`]: crate::Document::persist_results
 
+use std::collections::BTreeMap;
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
@@ -194,6 +195,8 @@ struct Meta {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 enum StoredRead {
+    SheetRules(FeatureUid, Option<Hex>),
+    Sheet(BodyUid, Option<Hex>),
     Param(String, Option<u64>),
     Sketch(FeatureUid, Option<Hex>),
     Body(BodyUid, Option<Hex>),
@@ -203,12 +206,15 @@ enum StoredRead {
     BodyIn(ComponentUid, BodyUid, Option<Hex>),
     BodiesIn(ComponentUid, Vec<(BodyUid, Hex)>),
     Placement(OccurrenceUid, Option<[u64; 12]>),
+    Assembly(Hex),
 }
 
 impl StoredRead {
     fn new(read: &Read, params: &Parameters) -> Self {
         let hex = |v: &Option<u128>| v.map(Hex);
         match read {
+            Read::SheetRules(uid, v) => Self::SheetRules(*uid, hex(v)),
+            Read::Sheet(uid, v) => Self::Sheet(*uid, hex(v)),
             Read::Param(id, bits) => Self::Param(params.name(*id), *bits),
             Read::Sketch(uid, v) => Self::Sketch(*uid, hex(v)),
             Read::Body(uid, v) => Self::Body(*uid, hex(v)),
@@ -223,6 +229,7 @@ impl StoredRead {
                 bodies.iter().map(|(uid, v)| (*uid, Hex(*v))).collect(),
             ),
             Read::Placement(uid, bits) => Self::Placement(*uid, *bits),
+            Read::Assembly(key) => Self::Assembly(Hex(*key)),
         }
     }
 
@@ -231,6 +238,8 @@ impl StoredRead {
     fn read(&self, params: &Parameters) -> Option<Read> {
         let version = |v: &Option<Hex>| v.map(|h| h.0);
         Some(match self {
+            Self::SheetRules(uid, v) => Read::SheetRules(*uid, version(v)),
+            Self::Sheet(uid, v) => Read::Sheet(*uid, version(v)),
             Self::Param(name, bits) => Read::Param(params.find(name)?, *bits),
             Self::Sketch(uid, v) => Read::Sketch(*uid, version(v)),
             Self::Body(uid, v) => Read::Body(*uid, version(v)),
@@ -245,6 +254,7 @@ impl StoredRead {
                 bodies.iter().map(|(uid, v)| (*uid, v.0)).collect(),
             ),
             Self::Placement(uid, bits) => Read::Placement(*uid, *bits),
+            Self::Assembly(key) => Read::Assembly(key.0),
         })
     }
 }
@@ -264,12 +274,26 @@ enum StoredChange {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 struct VariantHead {
+    #[serde(default)]
+    sheet_protocol: u32,
+    #[serde(default)]
+    sheet_rules: Option<crate::features::SheetRulesDef<f64>>,
+    #[serde(default)]
+    sheets: BTreeMap<BodyUid, crate::sheet::SheetChange>,
+    #[serde(default)]
+    sheet_footprint: Vec<BodyUid>,
     reads: Vec<StoredRead>,
     /// The evaluation's error; None when it succeeded.
     error: Option<String>,
     warnings: Vec<String>,
     /// A pattern's elements: linear part (row-major) and translation.
     elements: Vec<([[f64; 3]; 3], [f64; 3])>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pattern_anchor: Option<crate::features::point_pattern::PatternAnchor>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    owners: BTreeMap<BodyUid, ComponentUid>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    cut_targets: Option<crate::features::extrude_scope::CutTargets>,
     changes: Vec<StoredChange>,
     tool: Option<usize>,
     /// How long the evaluation took.
@@ -303,12 +327,22 @@ enum FileError {
 /// comment).
 pub(crate) fn storable(def: &FeatureDef) -> bool {
     match def {
+        FeatureDef::SheetRules(_) => false,
         FeatureDef::Sketch(_)
         | FeatureDef::ConstructionPlane(_)
         | FeatureDef::ConstructionAxis(_)
         | FeatureDef::ConstructionPoint(_)
         | FeatureDef::MoveOccurrence(_)
         | FeatureDef::CapturePosition(_) => false,
+        // Component patterns publish placements and depend on assembly structure.
+        FeatureDef::PatternAtPoints(p)
+            if matches!(
+                p.objects,
+                crate::features::PatternObjects::Components { .. }
+            ) =>
+        {
+            false
+        }
         // Joints between occurrences (mitcad#55).
         FeatureDef::Joint(_)
         | FeatureDef::AsBuiltJoint(_)
@@ -403,6 +437,9 @@ impl ResultStore {
             return None;
         }
         for variant in &file.variants {
+            if variant.head.sheet_protocol != crate::sheet::ALGORITHM_VERSION {
+                continue;
+            }
             let Some(reads) = variant
                 .head
                 .reads
@@ -465,6 +502,10 @@ impl ResultStore {
         let tool = output.tool.as_ref().map(&mut store).transpose()?;
         let variant = Variant {
             head: VariantHead {
+                sheet_protocol: crate::sheet::ALGORITHM_VERSION,
+                sheet_rules: output.sheet_rules.as_ref().map(|r| r.value.clone()),
+                sheets: output.sheets.clone(),
+                sheet_footprint: output.sheet_footprint.clone(),
                 reads: output
                     .reads
                     .iter()
@@ -472,6 +513,9 @@ impl ResultStore {
                     .collect(),
                 error: output.result.clone().err(),
                 warnings: output.warnings.clone(),
+                pattern_anchor: output.pattern_anchor.clone(),
+                owners: output.owners.clone(),
+                cut_targets: output.cut_targets.clone(),
                 elements: output
                     .elements
                     .iter()
@@ -560,6 +604,12 @@ fn restore<K: Kernel>(
         });
     }
     Ok(Output {
+        sheet_rules: head.sheet_rules.clone().map(|value| Versioned {
+            version: part_version(version, Part::SheetRules),
+            value,
+        }),
+        sheets: head.sheets.clone(),
+        sheet_footprint: head.sheet_footprint.clone(),
         version,
         def_fp,
         reads,
@@ -567,6 +617,9 @@ fn restore<K: Kernel>(
         persisted: Flag::new(true),
         result: head.error.clone().map_or(Ok(()), Err),
         warnings: head.warnings.clone(),
+        pattern_anchor: head.pattern_anchor.clone(),
+        owners: head.owners.clone(),
+        cut_targets: head.cut_targets.clone(),
         elements: head
             .elements
             .iter()

@@ -1,0 +1,22 @@
+# SPDX-License-Identifier: MIT
+wait-idle 30
+native-action view.fit
+expect-shown-body F2.b0 O1 2000 0 0 100 20 20 105
+expect-shown-body F2.b0 O2 2000 30 0 100 50 20 105
+expect-log 'Section caps: 2 face\(s\)'
+screenshot-view "${MITCAD_TEST_WORK}/reopened.png"
+mark
+native-expand native.modelTree
+native-activate native.model.analysis:PlaneCut
+expect-log 'Editing analysis PlaneCut with Section Analysis'
+expect-shown-body F2.b0 O1 2000 0 0 100 20 20 105
+native-type input_offset '0'
+expect-shown-body F2.b0 O1 4000 0 0 100 20 20 110
+# Cancel restores the saved plane, without modifying the model.
+native-click commandCancel
+expect-shown-body F2.b0 O1 2000 0 0 100 20 20 105
+native-action inspect.remove_section
+expect-shown-body F2.b0 O1 4000 0 0 100 20 20 110
+expect-shown-body F2.b0 O2 4000 30 0 100 50 20 110
+expect-model-bodies 1 4000
+screenshot-view "${MITCAD_TEST_WORK}/disabled.png"

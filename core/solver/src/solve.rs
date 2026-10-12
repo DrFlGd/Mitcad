@@ -703,6 +703,27 @@ impl System {
         out
     }
 
+    /// The constraints whose equations the current geometry does not
+    /// satisfy within `tolerance` (millimetres), ascending.
+    pub fn violated(&mut self, tolerance: f64) -> Vec<ConstraintId> {
+        self.ensure_prepared();
+        let prep = self.prepared.as_ref().expect("prepared");
+        let scale = self.scale();
+        let mut out = std::collections::BTreeSet::new();
+        for comp in &prep.comps {
+            let mut f = vec![0.0; comp.eqs.len()];
+            evaluate(prep, comp, &self.params, scale, &mut f, None);
+            for (&ei, r) in comp.eqs.iter().zip(&f) {
+                if r.abs() > tolerance
+                    && let Some(c) = prep.eqs[ei].constraint()
+                {
+                    out.insert(c);
+                }
+            }
+        }
+        out.into_iter().map(|c| ConstraintId(c as u32)).collect()
+    }
+
     /// Largest residual of the current geometry (millimetres).
     pub fn residual(&mut self) -> f64 {
         self.ensure_prepared();

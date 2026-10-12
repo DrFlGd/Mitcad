@@ -1,0 +1,15 @@
+[
+  {"comment":"SPDX-License-Identifier: MIT. Fresh-process reopen recomputes paired sheet domains and named OCCT solids; it cannot inherit the setup process's in-memory cache (mitcad#206)."},
+  {"expect":{"feature":"F1","status":"ok","bodies":2,"total_volume":2447.1238898038473}},
+  {"expect":{"feature":"F4","status":"ok","body":"F3.b1","volume":2362.3008881569226,"area":1972.5663706143594,"min":[5,-2,4],"max":[45,18,7],"center":[25,8,5.5],"has_face":"F3:sheet_front(1)"}},
+  {"expect":{"body":"F3.b1","has_face":"F3:sheet_side1(F2:sheet_curve(c9))"}},
+  {"expect":{"body":"F3.b0","volume":84.82300164692441,"min":[47,7,-3],"max":[53,13,0],"center":[50,10,-1.5]}},
+  {"expect":{"query":{"query":"sheet_state","body":"F3.b1"},"result":{"body":"F3.b1","owner":"C0","status":"valid","rules":"F1","panels":[{"id":{"feature":"F3","slot":1},"frame":{"origin":[5,-2,7]}}],"blockers":[]}}},
+  {"expect":{"query":{"query":"section","bodies":["F3.b1"],"plane":{"origin":[0,0,5],"normal":[0,0,1]}},"result":{"area":787.4336293856409,"length":132.5663706143592,"bodies":[{"uid":"F3.b1","faces":1,"edges":5,"area":787.4336293856409}]}}},
+  {"comment":"Editing thickness after reopening keeps the body's local move and circular boundary; the separate island follows the same rule."},
+  {"cmd":"set_parameter","name":"d1","value":2},
+  {"expect":{"body":"F3.b1","volume":1574.8672587712817,"min":[5,-2,5],"max":[45,18,7],"total_volume":1631.415926535898}},
+  {"expect":{"body":"F3.b0","volume":56.548667764616276,"min":[47,7,-2],"max":[53,13,0]}},
+  {"cmd":"undo"},
+  {"expect":{"body":"F3.b1","volume":2362.3008881569226,"total_volume":2447.1238898038473}}
+]

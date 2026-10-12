@@ -41,8 +41,43 @@ pub struct ComponentReport {
     /// Occurrences of components in other documents, placed as
     /// occurrences of empty components (not counted above).
     pub external: usize,
+    /// Of them, those whose components were filled from their documents'
+    /// files (mitcad#196).
+    pub linked: usize,
+    /// Captured positions of occurrences inside those components that
+    /// placed the copied occurrences.
+    pub placed_inside: usize,
     /// Timeline items by the component they went into (the file's names).
     pub items: BTreeMap<String, usize>,
+    /// The empty components standing for components of other documents,
+    /// for the import to fill from those documents' files (mitcad#196).
+    #[serde(skip)]
+    pub inserted: Vec<InsertedComponent>,
+    /// The occurrences by the GUIDs the file gives them (occurrence paths
+    /// of a design that inserts this one name them so, mitcad#196).
+    #[serde(skip)]
+    pub occurrence_guids: HashMap<String, OccurrenceUid>,
+    /// The captured positions of occurrences inside the components of other
+    /// documents, which the replay leaves out (mitcad#196).
+    #[serde(skip)]
+    pub positions_inside: Vec<crate::InsidePosition>,
+}
+
+/// An empty component standing for a component of another document
+/// ([`ComponentReport::inserted`]).
+#[derive(Debug, Clone, PartialEq)]
+pub struct InsertedComponent {
+    pub component: ComponentUid,
+    /// The other document's URN (`_f3d.external_document`).
+    pub document: String,
+    /// Its key in this design (`_f3d.external_key`).
+    pub key: String,
+    /// The GUID that tells its file (`_f3d.external_documents[].document_guid`).
+    pub document_guid: Option<String>,
+    /// The component's object id in the other document.
+    pub component_object: u64,
+    /// Its occurrences placed.
+    pub occurrences: usize,
 }
 
 /// The file's components and the items in them, in Mitcad's terms.
@@ -194,11 +229,21 @@ pub(crate) fn import_components<K: Kernel>(
             makers.entry(o).or_insert_with(|| name.to_owned());
         }
     }
+    // The GUIDs that tell the files of the other documents (mitcad#196).
+    let document_guids: HashMap<String, String> = dump
+        .f3d
+        .as_ref()
+        .and_then(|f| f.external_documents.as_ref())
+        .into_iter()
+        .flatten()
+        .filter_map(|x| Some((x.key.clone()?, x.document_guid.clone()?)))
+        .collect();
     let mut placer = Placer {
         doc,
         out: &mut out,
         objects: &objects,
         makers: &makers,
+        document_guids: &document_guids,
         report,
         warnings,
     };
@@ -214,6 +259,8 @@ struct Placer<'a, K: Kernel> {
     objects: &'a HashMap<String, u64>,
     /// The name of the item that made each occurrence object.
     makers: &'a HashMap<u64, String>,
+    /// The GUIDs of the other documents by their keys.
+    document_guids: &'a HashMap<String, String>,
     report: &'a mut ComponentReport,
     warnings: &'a mut Vec<String>,
 }
@@ -319,6 +366,12 @@ impl<K: Kernel> Placer<'_, K> {
         if let Some(o) = node.f3d.as_ref().and_then(|f| f.object_id) {
             self.out.occurrences.entry(o).or_insert(occurrence);
         }
+        for g in node.f3d.iter().flat_map(|f| f.guids.iter().flatten()) {
+            self.report
+                .occurrence_guids
+                .entry(g.to_lowercase())
+                .or_insert(occurrence);
+        }
         if node.is_grounded == Some(true) {
             let _ = self.doc.set_occurrence_grounded(occurrence, true);
         }
@@ -360,6 +413,26 @@ impl<K: Kernel> Placer<'_, K> {
                 return;
             }
         };
+        if known.is_none() {
+            self.report.inserted.push(InsertedComponent {
+                component,
+                document: f3d
+                    .and_then(|f| f.external_document.clone())
+                    .unwrap_or_default(),
+                key: key.0.clone(),
+                document_guid: self.document_guids.get(&key.0).cloned(),
+                component_object: key.1,
+                occurrences: 0,
+            });
+        }
+        if let Some(i) = self
+            .report
+            .inserted
+            .iter_mut()
+            .find(|i| i.component == component)
+        {
+            i.occurrences += 1;
+        }
         self.out.inserted.entry(key).or_insert(component);
         self.report.external += 1;
         self.placed(node, occurrence);
@@ -402,6 +475,23 @@ pub(crate) fn placement(
     let [path] = paths.as_slice() else {
         return None;
     };
+    let mut placed = Transform::IDENTITY;
+    for o in path {
+        placed = placed.after(&place(assembly.occurrence(*o)?));
+    }
+    Some(placed)
+}
+
+/// Where a component is placed in the design: [`placement`], and for a
+/// component placed several times (an occurrence pattern) the placement of its
+/// first occurrence, the original the file's features are made in.
+pub(crate) fn original_placement(
+    assembly: &Assembly,
+    component: ComponentUid,
+    place: impl Fn(&Occurrence) -> Transform,
+) -> Option<Transform> {
+    let paths = assembly.paths_to(component);
+    let path = paths.iter().min()?;
     let mut placed = Transform::IDENTITY;
     for o in path {
         placed = placed.after(&place(assembly.occurrence(*o)?));

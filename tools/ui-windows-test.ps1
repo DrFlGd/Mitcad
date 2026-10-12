@@ -8,7 +8,9 @@
 #   4. MITCAD_TEST_CRASH=app and model-worker: the crash report's stack
 #      starts at the crashing function, named from the PDB file (mitcad#76).
 #   5. View > Rendered, with the render worker: its frames refine and show
-#      the block (mitcad#51; skipped without mitcad-render.exe).
+#      the block (mitcad#51); an orbit sends the worker no view while the
+#      button is held and one after the release, a burst of wheel steps one
+#      view (mitcad#214).
 # The app renders into an offscreen framebuffer and --screenshot reads it
 # back, so this works over SSH, in session 0 without a desktop.
 #
@@ -313,6 +315,24 @@ command view.rendered
 expect-log 'Rendered view on'
 wait-log 'Render frame view [0-9]+ [0-9]+x[0-9]+ samples 16 ' 120
 screenshot-view '$((Join-Path $Out 'rendered.png') -replace "'", "''")'
+# mitcad#214: no view goes to the worker while a button is held, however
+# long it keeps still; one when it goes up.
+mark
+view-pointer press 40 50 middle shift
+view-pointer move 45 48 middle shift
+view-pointer move 50 46 middle shift
+view-pointer move 55 45 middle shift
+sleep 700
+expect-no-log 'Render view [0-9]+: (orthographic|perspective) '
+view-pointer release 55 45 middle shift
+wait-log 'Render view [0-9]+: first frame' 60
+sleep 1000
+mark
+# A burst of wheel steps 50 ms apart: one view, after the quiet time.
+wheel-burst 50 50 -1 5
+wait-log 'Render view [0-9]+: first frame' 60
+sleep 1000
+mark
 command view.rendered
 expect-log 'Rendered view off'
 "@ | Set-Content -Encoding ascii $script
@@ -322,6 +342,18 @@ expect-log 'Rendered view off'
   $frames = ([regex]::Matches($log, 'Render frame view [0-9]+ [0-9]+x[0-9]+ samples ')).Count
   if ($frames -ge 2) { Pass "View > Rendered: the view refined in $frames frames" }
   else { Fail "View > Rendered: $frames frames shown" }
+  # The views sent between a step of the script and the next mark.
+  function Views-Sent([string]$Step) {
+    $part = [regex]::Match($log, "TestDriver: line [0-9]+: $Step[\s\S]*?TestDriver: line [0-9]+: mark")
+    if (-not $part.Success) { return -1 }
+    return ([regex]::Matches($part.Value, 'Render view [0-9]+: (orthographic|perspective) ')).Count
+  }
+  $sent = Views-Sent 'view-pointer press'
+  if ($sent -eq 1) { Pass 'View > Rendered: an orbit sent one view, after the release' }
+  else { Fail "View > Rendered: an orbit sent $sent views (1 wanted)" }
+  $sent = Views-Sent 'wheel-burst'
+  if ($sent -eq 1) { Pass 'View > Rendered: a burst of 5 wheel steps sent one view' }
+  else { Fail "View > Rendered: a burst of 5 wheel steps sent $sent views (1 wanted)" }
   $path = Join-Path $Out 'rendered.png'
   if (-not (Test-Path $path)) { Fail 'View > Rendered: no screenshot' }
   else {

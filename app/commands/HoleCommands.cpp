@@ -272,6 +272,48 @@ void loadThreadInputs(const QJsonObject& thread, CommandState& state, const Comm
   state.setChoice(QStringLiteral("class"), str(thread, "class"));
 }
 
+// A modelled thread's Extra clearance (mitcad#195): two lengths, 0 by
+// default, shown while `shown` holds.
+const QString kRadialClearance = QStringLiteral("radial_clearance");
+const QString kFlankClearance = QStringLiteral("flank_clearance");
+
+QVector<InputDef> clearanceInputs(const std::function<bool(const CommandState&)>& shown) {
+  return {
+      valueInput(kRadialClearance, QObject::tr("Radial clearance"), ValueKind::Length, QStringLiteral("0 mm"))
+          .withHeading(QObject::tr("Extra clearance"))
+          .withTooltip(QObject::tr("Extra clearance per side, along the radius: moves the whole profile away from "
+                                   "the material, enlarging an internal thread and shrinking an external one. Not a "
+                                   "diameter: 0.2 mm changes each diameter by 0.4 mm. The size, class and pitch "
+                                   "stay. Clearance on both mating parts adds up; the other part is not changed."))
+          .withVisible(shown),
+      valueInput(kFlankClearance, QObject::tr("Flank clearance"), ValueKind::Length, QStringLiteral("0 mm"))
+          .withTooltip(QObject::tr("Extra clearance on each flank, measured perpendicular to the flank of the "
+                                   "profile (not along the axis, not a scale factor): thins an external thread's "
+                                   "teeth or widens an internal thread's groove, keeping the pitch and the flank "
+                                   "angle. It applies to each flank, after the radial clearance. Clearance on both "
+                                   "mating parts adds up; the other part is not changed."))
+          .withVisible(shown),
+  };
+}
+
+// Puts the clearances that are not zero into a thread's definition.
+void insertClearance(const CommandState& state, QJsonObject& def) {
+  for (const QString& key : {kRadialClearance, kFlankClearance}) {
+    if (nonZero(state, key)) {
+      def.insert(key, state.expression(key));
+    }
+  }
+}
+
+// Fills the clearance inputs from a thread's definition (`thread`) in a
+// feature.
+void loadClearance(const QJsonObject& thread, const QJsonObject& feature, CommandState& state,
+                   const CommandContext& context) {
+  for (const QString& key : {kRadialClearance, kFlankClearance}) {
+    loadValue(state, key, thread.value(key), feature, context);
+  }
+}
+
 } // namespace
 
 // ---------------------------------------------------------------------------
@@ -402,8 +444,10 @@ CommandDef holeCommand(const CommandContext& context) {
           .withVisible(choiceIs(QStringLiteral("drill"), QStringLiteral("angle"))),
   };
   def.inputs += threadInputs(context, {QStringLiteral("6"), QStringLiteral("M6x1"), QStringLiteral("6H")}, true, tapped);
+  def.inputs.append(checkInput(QStringLiteral("modeled"), QObject::tr("Modeled"), false).withVisible(tapped));
+  def.inputs += clearanceInputs(
+      [tapped](const CommandState& s) { return tapped(s) && s.checked(QStringLiteral("modeled")); });
   def.inputs += {
-      checkInput(QStringLiteral("modeled"), QObject::tr("Modeled"), false).withVisible(tapped),
       flipInput(QStringLiteral("flip"), QObject::tr("Flip")),
       selectionInput(QStringLiteral("objects"), QObject::tr("Objects to Cut"), SelectKind::Body, 0, 0)
           .withTooltip(QObject::tr("The bodies the holes cut; none: every body they reach")),
@@ -482,11 +526,14 @@ CommandDef holeCommand(const CommandContext& context) {
       result.def.insert(QStringLiteral("taper"), state.expression(QStringLiteral("taper")));
     }
     if (tapped) {
-      result.def.insert(QStringLiteral("thread"),
-                        QJsonObject{{QStringLiteral("standard"), state.choice(QStringLiteral("standard"))},
-                                    {QStringLiteral("designation"), state.choice(QStringLiteral("designation"))},
-                                    {QStringLiteral("class"), state.choice(QStringLiteral("class"))},
-                                    {QStringLiteral("modeled"), state.checked(QStringLiteral("modeled"))}});
+      QJsonObject thread{{QStringLiteral("standard"), state.choice(QStringLiteral("standard"))},
+                         {QStringLiteral("designation"), state.choice(QStringLiteral("designation"))},
+                         {QStringLiteral("class"), state.choice(QStringLiteral("class"))},
+                         {QStringLiteral("modeled"), state.checked(QStringLiteral("modeled"))}};
+      if (state.checked(QStringLiteral("modeled"))) {
+        insertClearance(state, thread);
+      }
+      result.def.insert(QStringLiteral("thread"), thread);
     }
     if (state.checked(QStringLiteral("flip"))) {
       result.def.insert(QStringLiteral("flip"), true);
@@ -560,6 +607,7 @@ CommandDef holeCommand(const CommandContext& context) {
       state.setChoice(QStringLiteral("tap"), QStringLiteral("tapped"));
       loadThreadInputs(thread, state, context);
       state.setChecked(QStringLiteral("modeled"), thread.value(QStringLiteral("modeled")).toBool());
+      loadClearance(thread, feature, state, context);
     }
     state.setChecked(QStringLiteral("flip"), feature.value(QStringLiteral("flip")).toBool());
     state.setItems(QStringLiteral("objects"), bodiesOf(feature.value(QStringLiteral("participants")).toArray()));
@@ -652,6 +700,9 @@ CommandDef threadCommand(const CommandContext& context) {
                   QStringLiteral("right")),
       checkInput(QStringLiteral("modeled"), QObject::tr("Modeled"), false)
           .withTooltip(QObject::tr("Cut the thread into the geometry; otherwise only listed")),
+  };
+  def.inputs += clearanceInputs([](const CommandState& s) { return s.checked(QStringLiteral("modeled")); });
+  def.inputs += {
       checkInput(QStringLiteral("full_length"), QObject::tr("Full Length"), true),
       valueInput(QStringLiteral("length"), QObject::tr("Length"), ValueKind::Length, QStringLiteral("10 mm"))
           .withVisible(partial),
@@ -681,6 +732,9 @@ CommandDef threadCommand(const CommandContext& context) {
                   {QStringLiteral("faces"), faces},
                   {QStringLiteral("thread"), thread},
                   {QStringLiteral("modeled"), state.checked(QStringLiteral("modeled"))}};
+    if (state.checked(QStringLiteral("modeled"))) {
+      insertClearance(state, result.def);
+    }
     if (!state.checked(QStringLiteral("full_length"))) {
       result.def.insert(QStringLiteral("length"), state.expression(QStringLiteral("length")));
       result.def.insert(QStringLiteral("offset"), state.expression(QStringLiteral("offset")));
@@ -700,6 +754,7 @@ CommandDef threadCommand(const CommandContext& context) {
     state.setChoice(QStringLiteral("direction"),
                     thread.value(QStringLiteral("right_handed")).toBool(true) ? QStringLiteral("right") : QStringLiteral("left"));
     state.setChecked(QStringLiteral("modeled"), feature.value(QStringLiteral("modeled")).toBool());
+    loadClearance(feature, feature, state, context);
     const bool partial = feature.contains(QStringLiteral("length"));
     state.setChecked(QStringLiteral("full_length"), !partial);
     loadValue(state, QStringLiteral("length"), feature.value(QStringLiteral("length")), feature, context);

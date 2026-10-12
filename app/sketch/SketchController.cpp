@@ -10,10 +10,14 @@
 #include <QJsonArray>
 #include <QKeyEvent>
 #include <QLineEdit>
+#include <QMessageBox>
+#include <QPushButton>
 #include <QResizeEvent>
 #include <QtLogging>
 
 #include "../OcctViewer.hpp"
+#include "../framework/CommandRegistry.hpp"
+#include "../framework/Dialogs.hpp"
 #include "../framework/Json.hpp"
 #include "../framework/ModelShapes.hpp"
 #include "../framework/Numbers.hpp"
@@ -235,8 +239,8 @@ void SketchOp::rollback() {
 // ---------------------------------------------------------------------------
 // SketchController
 
-SketchController::SketchController(SketchHost& host, OcctViewer& viewer, QObject* parent)
-    : QObject(parent), m_host(host), m_viewer(viewer) {
+SketchController::SketchController(SketchHost& host, OcctViewer& viewer, CommandRegistry& registry, QObject* parent)
+    : QObject(parent), m_registry(registry), m_host(host), m_viewer(viewer) {
   m_overlay = new SketchOverlay(*this, &viewer);
   m_overlay->hide();
   viewer.installEventFilter(this);
@@ -368,6 +372,10 @@ void SketchController::startTool(std::unique_ptr<SketchTool> tool) {
   m_viewer.setPickFilter(SelectFilter());
   qDebug().noquote() << QStringLiteral("Sketch tool %1").arg(m_tool->name());
   emit toolChanged(m_tool->name());
+  // A new auto constraint session (mitcad#189).
+  m_auto.reset(m_tool->autoKind());
+  m_autoTarget.clear();
+  emit autoConstraintsChanged();
   m_tool->start();
   if (m_cursorValid) {
     updateCursor(m_cursor);
@@ -389,6 +397,11 @@ void SketchController::stopTool() {
   m_snap = Snap();
   m_viewer.setSketchInput(false);
   emit toolChanged(QString());
+  // Leaving the tool ends its auto constraint session.
+  m_auto.reset();
+  m_autoHover = false;
+  m_autoTarget.clear();
+  emit autoConstraintsChanged();
   m_overlay->update();
 }
 
@@ -403,7 +416,7 @@ bool SketchController::confirm() {
   if (m_tool) {
     if (!m_tool->confirm()) {
       stopTool();
-      hint(tr("Sketch: choose a tool, or Finish Sketch (Ctrl+Enter)."));
+      hint(tr("Sketch: choose a tool, or %1.").arg(m_registry.shortcutHint(QStringLiteral("sketch.finish"))));
     }
     m_overlay->update();
     return true;
@@ -429,7 +442,7 @@ bool SketchController::cancel() {
   if (m_tool) {
     if (!m_tool->cancel()) {
       stopTool();
-      hint(tr("Sketch: choose a tool, or Finish Sketch (Ctrl+Enter)."));
+      hint(tr("Sketch: choose a tool, or %1.").arg(m_registry.shortcutHint(QStringLiteral("sketch.finish"))));
     }
     m_overlay->update();
     return true;
@@ -704,6 +717,181 @@ void SketchController::setHideAbove(bool on) {
   qDebug().noquote() << QStringLiteral("Hide Above Sketch %1").arg(on ? QStringLiteral("on") : QStringLiteral("off"));
   emit optionsChanged();
   m_host.refreshScene();
+}
+
+// ---------------------------------------------------------------------------
+// Auto constraints (mitcad#189)
+
+namespace {
+
+// A line, circle or arc of the sketch as the auto constraints see it.
+std::optional<AutoEntity> autoEntity(const SketchModel& model, const QString& id) {
+  const CurveData* c = model.curve(id);
+  if (c == nullptr) {
+    return std::nullopt;
+  }
+  AutoEntity entity;
+  entity.id = id;
+  if (c->isLine()) {
+    entity.kind = AutoKind::Line;
+    entity.a = c->curve.a;
+    entity.b = c->curve.b;
+  } else if (c->isCircular()) {
+    entity.kind = AutoKind::Circular;
+    entity.center = c->curve.center;
+    entity.radius = c->curve.radius;
+    entity.centerPoint = c->center;
+  } else {
+    return std::nullopt;
+  }
+  return entity;
+}
+
+} // namespace
+
+void SketchController::setAutoLink(AutoConstraintSession::Link link) {
+  if (link == m_auto.link()) {
+    return;
+  }
+  m_auto.setLink(link);
+  qDebug().noquote() << QStringLiteral("Auto constraint link: %1")
+                            .arg(link == AutoConstraintSession::Link::First ? QStringLiteral("first")
+                                                                            : QStringLiteral("last"));
+  emit autoConstraintsChanged();
+  m_overlay->update();
+}
+
+void SketchController::setAutoConstraint(const QString& type, bool on) {
+  if (!m_auto.setChecked(type, on)) {
+    return;
+  }
+  const QStringList checked = m_auto.checkedTypes();
+  qDebug().noquote() << QStringLiteral("Auto constraint %1: %2 (checked: %3)")
+                            .arg(type, on ? QStringLiteral("on") : QStringLiteral("off"),
+                                 checked.isEmpty() ? QStringLiteral("none") : checked.join(QStringLiteral(", ")));
+  emit autoConstraintsChanged();
+  // The preview of the entity being drawn follows the choice.
+  if (m_tool && m_cursorValid) {
+    m_tool->move(m_snap);
+  }
+  m_overlay->update();
+}
+
+QString SketchController::autoReference() const {
+  if (m_auto.kind() == AutoKind::None) {
+    return {};
+  }
+  return m_auto.reference([this](const QString& id) { return m_model.curve(id) != nullptr; });
+}
+
+bool SketchController::autoConstraintsShown() const {
+  return m_tool && m_auto.kind() != AutoKind::None && !autoReference().isEmpty();
+}
+
+std::optional<AutoPlan> SketchController::autoPlan() const {
+  const QStringList types = m_auto.checkedTypes();
+  if (types.isEmpty()) {
+    return std::nullopt;
+  }
+  const QString id = autoReference();
+  const auto reference = autoEntity(m_model, id);
+  if (!reference) {
+    return std::nullopt;
+  }
+  if (id != m_autoTarget) {
+    m_autoTarget = id;
+    qDebug().noquote() << QStringLiteral("Auto constraint target %1").arg(id);
+  }
+  return AutoPlan{*reference, types};
+}
+
+void SketchController::setAutoHover(bool on) {
+  if (on == m_autoHover) {
+    return;
+  }
+  m_autoHover = on;
+  const QString reference = autoReference();
+  if (!reference.isEmpty()) {
+    qDebug().noquote() << (on ? QStringLiteral("Auto constraint reference highlighted: %1").arg(reference)
+                              : QStringLiteral("Auto constraint reference highlight off"));
+  }
+  m_overlay->update();
+}
+
+bool SketchController::applyAutoConstraints(SketchOp& op, const QString& made, const QString& what) {
+  const QStringList types = m_auto.checkedTypes();
+  if (types.isEmpty() || made.isEmpty()) {
+    return true;
+  }
+  const SketchModel& model = op.model();
+  // The new entity may have the id of one undo took back: that one is
+  // not the reference.
+  const QString id = m_auto.reference(
+      [&model, &made](const QString& entity) { return entity != made && model.curve(entity) != nullptr; });
+  if (id.isEmpty()) {
+    return true;
+  }
+  const auto reference = autoEntity(model, id);
+  const auto entity = autoEntity(model, made);
+  if (!reference || !entity) {
+    return true;
+  }
+  QStringList failures;
+  for (const QString& type : types) {
+    const QString label = autoConstraintLabel(type);
+    if (autoConstraintShared(type, *reference, *entity)) {
+      qDebug().noquote() << QStringLiteral("Auto constraint %1 on %2, %3: one centre point").arg(type, id, made);
+      continue;
+    }
+    const QJsonObject definition = autoConstraintDefinition(type, *reference, *entity);
+    if (definition.isEmpty()) {
+      failures << tr("%1: %2 and %3 do not take it").arg(label, id, made);
+      qDebug().noquote() << QStringLiteral("Auto constraint %1 on %2, %3 does not fit").arg(type, id, made);
+      continue;
+    }
+    QJsonObject cmd = op.command(QStringLiteral("sketch.add_constraint"));
+    cmd.insert(QStringLiteral("constraint"), definition);
+    QJsonObject result;
+    if (op.run(cmd, &result)) {
+      qDebug().noquote() << QStringLiteral("Auto constraint %1 %2 on %3, %4")
+                                .arg(definition.value(QStringLiteral("type")).toString(),
+                                     result.value(QStringLiteral("constraints")).toArray().first().toString(), id,
+                                     made);
+    } else {
+      failures << QStringLiteral("%1: %2").arg(label, op.error());
+      qDebug().noquote() << QStringLiteral("Auto constraint %1 on %2, %3 refused: %4").arg(type, id, made, op.error());
+    }
+  }
+  if (failures.isEmpty()) {
+    return true;
+  }
+  // The new entity is shown while the user decides.
+  op.model();
+  m_overlay->update();
+  qDebug().noquote() << QStringLiteral("Auto constraint dialog: %1").arg(failures.join(QStringLiteral("; ")));
+  QMessageBox box(QMessageBox::Warning, tr("Auto Constraint"),
+                  tr("These auto constraints could not be added to the new %1:\n\n%2\n\n"
+                     "Accept keeps the %1 without them; Cancel takes it back.")
+                      .arg(what, failures.join(QLatin1Char('\n'))),
+                  QMessageBox::Cancel, m_viewer.window());
+  QPushButton* accept = box.addButton(tr("Accept"), QMessageBox::AcceptRole);
+  box.setDefaultButton(accept);
+  box.setEscapeButton(QMessageBox::Cancel);
+  prepareModal(&box);
+  execDialog(&box);
+  const bool accepted = box.clickedButton() == accept;
+  qDebug().noquote() << (accepted ? QStringLiteral("Auto constraint accepted: %1 kept without them").arg(made)
+                                  : QStringLiteral("Auto constraint cancelled: %1 taken back").arg(made));
+  return accepted;
+}
+
+void SketchController::recordAutoEntity(const QString& made) {
+  if (m_auto.kind() == AutoKind::None || made.isEmpty()) {
+    return;
+  }
+  m_auto.record(made, [this](const QString& id) { return m_model.curve(id) != nullptr; });
+  qDebug().noquote() << QStringLiteral("Auto constraint entities: %1").arg(m_auto.entities().join(QStringLiteral(", ")));
+  emit autoConstraintsChanged();
 }
 
 // ---------------------------------------------------------------------------

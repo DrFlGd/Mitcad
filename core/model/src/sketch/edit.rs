@@ -355,6 +355,7 @@ impl<'a> SketchEdit<'a> {
             EntityKind::Circle {
                 center: ids[1],
                 radius: d / 2.0,
+                start: 0.0,
             },
         ));
         let mut point = Entity::point(ids[1], center);

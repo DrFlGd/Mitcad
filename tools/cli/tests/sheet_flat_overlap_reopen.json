@@ -1,0 +1,5 @@
+[
+  {"comment":"SPDX-License-Identifier: MIT. The reopened overlapping sheet still refuses its Flat Pattern (mitcad#208)."},
+  {"expect":{"feature":"F6","status":"ok","bodies":1}},
+  {"expect":{"query":{"query":"flat_pattern","body":"F3.b0"},"result":{"status":"invalid"}}}
+]

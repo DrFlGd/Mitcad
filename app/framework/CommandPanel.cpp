@@ -16,6 +16,7 @@
 #include <QStyle>
 #include <QListWidget>
 #include <QPushButton>
+#include <QScrollBar>
 #include <QSignalBlocker>
 #include <QTimer>
 #include <QToolButton>
@@ -23,6 +24,8 @@
 #include <QtLogging>
 
 #include "ChromeStyle.hpp"
+#include "CommandMessage.hpp"
+#include "CutTargetsPanel.hpp"
 #include "GlassCard.hpp"
 #include "Icons.hpp"
 #include "GlassCard.hpp"
@@ -198,6 +201,11 @@ CommandPanel::CommandPanel(const CommandDef& def, const CommandState& state, boo
     }
   });
 
+  // The panel is as wide as the page shows it (the scroll area's viewport,
+  // which never scrolls sideways), whatever its rows ask for: a row that
+  // would want more is squeezed rather than pushing the fields and OK and
+  // Cancel out of sight (mitcad#198).
+  setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
   auto* layout = new QVBoxLayout(this);
   if (chromeStyle() == ChromeStyle::Floating) {
     layout->setContentsMargins(4, 4, 4, 4); // the card has its own margins
@@ -243,8 +251,9 @@ CommandPanel::CommandPanel(const CommandDef& def, const CommandState& state, boo
   m_result->setVisible(static_cast<bool>(def.inspect));
   layout->addWidget(m_result);
 
-  m_message = new QLabel;
-  m_message->setWordWrap(true);
+  // Errors and hints (mitcad#198): within the panel's width however long
+  // their words, scrolling after a few lines, hidden when there is none.
+  m_message = new CommandMessage;
   m_message->setObjectName(QStringLiteral("commandMessage"));
   layout->addWidget(m_message);
 
@@ -443,6 +452,20 @@ CommandPanel::Row* CommandPanel::createRow(const InputDef& input, const QString&
     field = flip;
     break;
   }
+  case InputDef::Type::CutTargets: {
+    row.targets = new CutTargetsPanel;
+    row.targets->setScope(scope.object(input.id));
+    connect(row.targets, &CutTargetsPanel::scopeChanged, this, [this, key](const QJsonObject& value) {
+      auto call = CommandPresenter::actions().objectChanged;
+      if (call) { call(key, value); }
+    });
+    connect(row.targets, &CutTargetsPanel::highlightChanged, this, [this](const Selection& items) {
+      auto call = CommandPresenter::actions().highlightRequested;
+      if (call) { call(items); }
+    });
+    field = row.targets;
+    break;
+  }
   case InputDef::Type::List: {
     auto* box = new QWidget;
     auto* boxLayout = new QVBoxLayout(box);
@@ -472,7 +495,7 @@ CommandPanel::Row* CommandPanel::createRow(const InputDef& input, const QString&
   column->addWidget(row.note);
   row.field = container;
 
-  if (input.type == InputDef::Type::List) {
+  if (input.type == InputDef::Type::List || input.type == InputDef::Type::CutTargets) {
     // A list's rows take the whole width, under its name.
     auto* title = new QLabel(QStringLiteral("<b>%1</b>").arg(input.label.toHtmlEscaped()));
     title->setToolTip(input.tooltip);
@@ -480,6 +503,12 @@ CommandPanel::Row* CommandPanel::createRow(const InputDef& input, const QString&
     form->addRow(title);
     form->addRow(container);
   } else {
+    if (!input.heading.isEmpty() && form != nullptr) {
+      // The heading of a group of inputs, a row of its own above.
+      auto* heading = new QLabel(QStringLiteral("<b>%1</b>").arg(input.heading.toHtmlEscaped()));
+      row.title = heading;
+      form->addRow(heading);
+    }
     row.label = new QLabel(input.label);
     row.label->setToolTip(input.tooltip);
     if (form != nullptr) {
@@ -616,13 +645,17 @@ void CommandPanel::refreshRows(const CommandState& state) {
 void CommandPanel::refreshRow(Row& row, const CommandState& scope, const CommandState& state) {
   const InputDef& input = *row.input;
   const bool shown = isShown(input, scope);
-  if (input.type == InputDef::Type::List) {
+  if (input.type == InputDef::Type::List || input.type == InputDef::Type::CutTargets) {
     row.form->setRowVisible(row.title, shown);
     row.form->setRowVisible(row.field, shown);
+    if (row.targets) { row.targets->setScope(scope.object(input.id)); }
     return;
   }
   if (row.form != nullptr) {
     row.form->setRowVisible(row.field, shown);
+    if (row.title != nullptr) {
+      row.form->setRowVisible(row.title, shown);
+    }
   } else {
     row.label->setVisible(shown);
     row.field->setVisible(shown);
@@ -695,6 +728,7 @@ void CommandPanel::refreshRow(Row& row, const CommandState& scope, const Command
     break;
   }
   case InputDef::Type::List:
+  case InputDef::Type::CutTargets:
     break;
   }
   Q_UNUSED(state);
@@ -727,7 +761,15 @@ void CommandPanel::updateNote(Row& row) {
   const auto [errorText, hint] = m_notes.value(row.key);
   const bool error = !errorText.isEmpty();
   const QString text = error ? errorText : hint;
-  row.note->setText(text);
+  // A long name in an error (an unknown parameter) breaks rather than
+  // widening the panel (mitcad#198).
+  const QString shown = breakableText(text);
+  if (row.note->text() != shown) {
+    row.note->setText(shown);
+    if (!m_shownRows.isEmpty()) {
+      scheduleLogFit();
+    }
+  }
   setErrorStyleSheet(row.note, error ? QStringLiteral("color: %1;") : QStringLiteral("color: gray;"));
   if (row.note->isHidden() != text.isEmpty()) {
     // The rows below move.
@@ -748,13 +790,53 @@ void CommandPanel::updateNote(Row& row) {
 }
 
 void CommandPanel::setMessage(const QString& message, bool error) {
-  m_message->setText(message);
-  setErrorStyleSheet(m_message, error ? QStringLiteral("color: %1;") : QStringLiteral("color: gray;"));
+  setErrorStyleSheet(m_message, error ? QStringLiteral("QTextEdit { color: %1; background: transparent; }")
+                                      : QStringLiteral("QTextEdit { color: gray; background: transparent; }"));
+  if (message == m_message->message()) {
+    return;
+  }
+  m_message->setMessage(message);
+  scheduleLogFit();
+}
+
+void CommandPanel::scheduleLogFit() {
+  if (m_fitTimer == nullptr) {
+    m_fitTimer = new QTimer(this);
+    m_fitTimer->setSingleShot(true);
+    m_fitTimer->setInterval(50);
+    connect(m_fitTimer, &QTimer::timeout, this, &CommandPanel::logFit);
+    TestSync::watch(m_fitTimer);
+  }
+  m_fitTimer->start();
+}
+
+void CommandPanel::logFit() const {
+  QCoreApplication::sendPostedEvents(nullptr, QEvent::LayoutRequest);
+  // What the page shows of the panel: the scroll area's viewport.
+  const QWidget* page = parentWidget() != nullptr ? parentWidget() : this;
+  QString shown = QStringLiteral("hidden");
+  if (!m_message->isHidden()) {
+    shown = QStringLiteral("%1x%2").arg(m_message->width()).arg(m_message->height());
+    const QScrollBar* bar = m_message->verticalScrollBar();
+    if (bar != nullptr && bar->maximum() > 0) {
+      shown += QStringLiteral(" scrolling");
+    }
+  }
+  qDebug().noquote() << QStringLiteral("Panel %1 message %2, panel width %3 of %4")
+                            .arg(m_def.name, shown)
+                            .arg(width())
+                            .arg(page->width());
 }
 
 void CommandPanel::setResult(const QString& text) { m_result->setText(text); }
 
 void CommandPanel::setOkEnabled(bool enabled) { m_ok->setEnabled(enabled); }
+
+void CommandPanel::setPreviewReport(const QJsonObject& report) {
+  for (const auto& row : m_rows) {
+    if (row->targets != nullptr) { row->targets->setPreview(report.value(QStringLiteral("cut_targets")).toObject()); }
+  }
+}
 
 QColor CommandPanel::colorOf(const QString& key) const {
   const auto own = m_colors.constFind(key);
@@ -856,6 +938,9 @@ void CommandPanel::logLayout() const {
     }
   }
   qDebug().noquote() << QStringLiteral("Panel %1 OK at %2").arg(m_def.name, position(m_ok));
+  // Wider than the page would cut its right side off (mitcad#198).
+  const QWidget* page = parentWidget() != nullptr ? parentWidget() : this;
+  qDebug().noquote() << QStringLiteral("Panel %1 width %2 of %3").arg(m_def.name).arg(width()).arg(page->width());
 }
 
 } // namespace mitcad

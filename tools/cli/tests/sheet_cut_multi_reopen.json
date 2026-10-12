@@ -1,0 +1,9 @@
+[
+  {"comment":"SPDX-License-Identifier: MIT. The reopened multi-sketch cut across both bends of the Z recomputes the same folded, developed and flat results (mitcad#209)."},
+  {"expect":{"feature":"F8","status":"ok","bodies":1,"body":"F3.b0","volume":2236.30939887463}},
+  {"expect":{"feature":"F10","status":"ok","body":"F3.b0","volume":2236.30939887463,"min":[-30,0,-2],"max":[20,20,18]}},
+  {"cmd":"set_marker","position":9},
+  {"expect":{"body":"F3.b0","volume":2203.80971245188,"max":[33.30973355292326,20,0]}},
+  {"cmd":"undo"},
+  {"expect":{"query":{"query":"flat_pattern","body":"F3.b0"},"result":{"status":"valid","area":1101.90485622594}}}
+]

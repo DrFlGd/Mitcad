@@ -9,7 +9,8 @@
 #     folder, the target and the binary, separated by tabs.
 #   cmake -DLIST=<file> -P cargo-tests.cmake -- run <package> [<argument>...]
 #     Runs the package's test binaries in the package's folder, as cargo
-#     test does, with libtest's arguments (a filter, --skip <filter>).
+#     test does, with libtest's arguments (a filter, --skip <filter>); on
+#     Windows with a temporary folder of the run's own (see below).
 #   cmake -DLIST=<file> -P cargo-tests.cmake -- parts <package> <filter>...
 #     Checks the parts a package's tests run in: those of each filter, and
 #     the rest (--skip of every filter). Together they must list each test
@@ -131,6 +132,26 @@ if(mode STREQUAL "build")
 elseif(mode STREQUAL "run")
   list(POP_FRONT args package)
   binaries("${package}" entries)
+  # On Windows the tests' temporary folders (std::env::temp_dir and the git
+  # they run) go to a folder of this run outside the system's temporary
+  # folder: Storage Sense, which runs when the disk is low, deletes empty
+  # folders there, also those of a git repository a test has just made
+  # (refs, objects), and git then no longer sees the repository. Not in the
+  # build tree: a build folder in a git checkout would put the tests'
+  # folders in that repository. Each run (package and filter in this build)
+  # has its own folder, as parts of a package run at the same time.
+  set(temporary)
+  if(CMAKE_HOST_WIN32 AND DEFINED ENV{LOCALAPPDATA})
+    file(TO_CMAKE_PATH "$ENV{LOCALAPPDATA}" local)
+    string(SHA1 run_id "${LIST};${package};${args}")
+    string(SUBSTRING "${run_id}" 0 8 run_id)
+    set(temporary "${local}/mitcad-tests/${run_id}")
+    file(REMOVE_RECURSE "${temporary}")
+    file(MAKE_DIRECTORY "${temporary}")
+    file(TO_NATIVE_PATH "${temporary}" native)
+    set(ENV{TMP} "${native}")
+    set(ENV{TEMP} "${native}")
+  endif()
   set(failed)
   foreach(entry IN LISTS entries)
     string(REPLACE "|" ";" fields "${entry}")
@@ -146,6 +167,9 @@ elseif(mode STREQUAL "run")
   if(failed)
     list(JOIN failed ", " failed)
     message(FATAL_ERROR "failed: ${failed}")
+  endif()
+  if(temporary)
+    file(REMOVE_RECURSE "${temporary}")
   endif()
 
 elseif(mode STREQUAL "parts")

@@ -34,7 +34,7 @@ pub fn intersections(a: &Curve2, b: &Curve2, tol: f64) -> Vec<Hit> {
     };
     hits.extend(end_contacts(a, b, tol));
     hits.extend(end_contacts(b, a, tol).into_iter().map(swap));
-    dedupe(hits, tol)
+    collapse_overlaps(a, b, dedupe(hits, tol), tol)
 }
 
 fn swap(h: Hit) -> Hit {
@@ -88,7 +88,7 @@ fn round_param(curve: &Curve2, angle: f64, eps: f64) -> Option<f64> {
 
 fn round_of(curve: &Curve2) -> (P2, f64) {
     match curve {
-        Curve2::Circle { center, radius } | Curve2::Arc { center, radius, .. } => {
+        Curve2::Circle { center, radius, .. } | Curve2::Arc { center, radius, .. } => {
             (*center, *radius)
         }
         _ => unreachable!("a circle or an arc"),
@@ -363,6 +363,46 @@ fn numeric(a: &Curve2, b: &Curve2, tol: f64) -> Vec<Hit> {
     hits
 }
 
+/// Curves that lie on each other over a stretch (a curve drawn twice, two
+/// projections of one edge) are hit once per sampled piece along it. The
+/// hits of such a run are cut down to its first and last: the stretch is
+/// then bounded by two vertices, and the pieces of the two curves between
+/// them are the same edge (the arrangement keeps one of them).
+fn collapse_overlaps(a: &Curve2, b: &Curve2, mut hits: Vec<Hit>, tol: f64) -> Vec<Hit> {
+    if hits.len() < 3 {
+        return hits;
+    }
+    hits.sort_by(|x, y| x.ta.total_cmp(&y.ta));
+    // Whether `a` between two hits runs along `b`.
+    let along = |p: &Hit, q: &Hit| {
+        [0.25, 0.5, 0.75].iter().all(|f| {
+            let t = p.ta + (q.ta - p.ta) * f;
+            b.closest(a.point(t)).1 <= 10.0 * tol
+        })
+    };
+    let mut kept = Vec::with_capacity(hits.len());
+    let mut run: Vec<Hit> = Vec::new();
+    for hit in hits {
+        if run.last().is_some_and(|last| !along(last, &hit)) {
+            flush(&mut run, &mut kept);
+        }
+        run.push(hit);
+    }
+    flush(&mut run, &mut kept);
+    kept
+}
+
+/// A run of three or more hits keeps its ends.
+fn flush(run: &mut Vec<Hit>, kept: &mut Vec<Hit>) {
+    if run.len() >= 3 {
+        kept.push(run[0]);
+        kept.push(run[run.len() - 1]);
+    } else {
+        kept.extend(run.iter().copied());
+    }
+    run.clear();
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -375,7 +415,11 @@ mod tests {
     }
 
     fn circle(center: P2, radius: f64) -> Curve2 {
-        Curve2::Circle { center, radius }
+        Curve2::Circle {
+            center,
+            radius,
+            start: 0.0,
+        }
     }
 
     #[test]
@@ -457,6 +501,35 @@ mod tests {
         for hit in h {
             assert!(hit.point[1].abs() < 1e-9);
             assert!(dist(spline.point(hit.ta), hit.point) < 1e-9);
+        }
+    }
+
+    #[test]
+    fn curves_that_lie_on_each_other_meet_at_the_ends_of_the_stretch() {
+        // A spline and the same one drawn the other way round (and
+        // parametrized otherwise): every sampled piece along them would hit.
+        let control: Vec<P2> = (0..8)
+            .map(|i| [i as f64 * 2.0, if i % 2 == 0 { -3.0 } else { 3.0 }])
+            .collect();
+        let forward = Curve2::Nurbs(Nurbs {
+            degree: 3,
+            control: control.clone(),
+            weights: Vec::new(),
+            knots: clamped_uniform_knots(8, 3),
+        });
+        let mut reversed = control;
+        reversed.reverse();
+        let backward = Curve2::Nurbs(Nurbs {
+            degree: 3,
+            control: reversed,
+            weights: Vec::new(),
+            knots: clamped_uniform_knots(8, 3),
+        });
+        let h = intersections(&forward, &backward, TOL);
+        assert_eq!(h.len(), 2, "{h:?}");
+        let ends = [forward.point(0.0), forward.ends().unwrap().1];
+        for hit in &h {
+            assert!(ends.iter().any(|e| dist(*e, hit.point) < 1e-9), "{hit:?}");
         }
     }
 }

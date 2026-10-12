@@ -9,7 +9,8 @@ use std::collections::HashMap;
 
 use super::classes::{self, *};
 use super::stream::{
-    Object, Segment, f64_at, f64s_at, i32_at, slice, str16_at, text_at, u32_at, u64_at, utf16_units,
+    Object, Ref, Segment, f64_at, f64s_at, i32_at, slice, str16_at, text_at, u32_at, u64_at,
+    utf16_units,
 };
 use super::unicode;
 
@@ -30,21 +31,141 @@ pub struct ItemTail {
     pub sub_features: Vec<Option<u64>>,
     /// The three state bytes before the health reference.
     pub flags: [u8; 3],
+    /// Two more state bytes, in front of the item's `6CCF41D5` reference:
+    /// `00 00` on a healthy item, the first 1 on a suppressed
+    /// one (also seen as the middle one of `01 00 00` in the short
+    /// reference layout) and the second on one after the timeline marker.
+    pub after: Option<[u8; 2]>,
     /// Object-relative byte range `[start, end)` of the decoded fields.
     pub start: usize,
     pub end: usize,
 }
 
 impl ItemTail {
-    /// The display name: the custom name, else base name + index.
+    /// The display name: the custom name, else the shown base name + index.
     pub fn display_name(&self) -> String {
         if !self.custom_name.is_empty() {
             self.custom_name.clone()
         } else if !self.base_name.is_empty() {
-            format!("{}{}", self.base_name, self.index)
+            format!("{}{}", shown_base_name(&self.base_name), self.index)
         } else {
             String::new()
         }
+    }
+
+    /// What the result number and the state bytes say about the item
+    /// ([`item_state`]).
+    pub fn state(&self) -> ItemState {
+        item_state(self.result_no, self.flags)
+    }
+
+    /// The item is after the timeline marker (rolled back): the
+    /// second byte of [`Self::after`]. In the controlled variant the
+    /// rolled back items keep their result numbers, which the history no
+    /// longer holds; in the corpora they are the end of the timeline.
+    pub fn rolled_back(&self) -> bool {
+        self.after.is_some_and(|a| a[1] == 1)
+    }
+
+    /// How the item is suppressed, if it is ([`item_suppression`]).
+    pub fn suppression(&self) -> Option<Suppression> {
+        item_suppression(self.result_no, self.flags)
+    }
+}
+
+/// The name of a sketch item: the name the sketch object holds, or the
+/// default name (the tail's custom name is one the sketch no longer has)
+/// when that is empty ([`super::sketch::sketch_name`]).
+pub fn sketch_item_name(own: &str, tail: &ItemTail) -> String {
+    if own.is_empty() {
+        ItemTail {
+            custom_name: String::new(),
+            ..tail.clone()
+        }
+        .display_name()
+    } else {
+        own.to_owned()
+    }
+}
+
+/// The default name base the application shows for a base name the file
+/// keeps: construction planes and axes and joint origins are stored under
+/// internal names (`WorkPlane` ...) and shown as `Plane1`, `Axis1` and
+/// `Joint Origin1` *(every one of 165 such items in the reference dumps of
+/// the corpora: 123 planes, 8 axes, 34 joint origins)*.
+fn shown_base_name(base: &str) -> &str {
+    match base {
+        "WorkPlane" => "Plane",
+        "WorkAxis" => "Axis",
+        "JointOrigin" => "Joint Origin",
+        _ => base,
+    }
+}
+
+/// An item's state in the file, from its result number and the three state
+/// bytes of its tail (mitcad#180).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ItemState {
+    /// The file keeps the item's result, or the item has none to keep
+    /// (sketches, construction geometry, occurrences; modelling items
+    /// after the timeline marker, never computed, also have result -1 and
+    /// no state byte set).
+    Normal,
+    /// Suppressed in the file: result -1 and the first or the second byte
+    /// set (`010000`, `000100`, on sketches, extrusions, fillets and others
+    /// alike, alone and in runs). The two bytes tell how it came to be
+    /// suppressed ([`Suppression`]).
+    Suppressed,
+    /// Result -1 and the third byte set (`000001`): an item whose change
+    /// is all in other components, in its parts there (mitcad#169); every
+    /// such item of the corpora has parts with results.
+    InParts,
+}
+
+/// An item's state from its result number and the three state bytes of
+/// its tail. In the corpora the bytes are set only on items with result
+/// -1; such items also have `01 01 00` where the others have `01 00 00`
+/// after the health reference, and -1 where the others have their start
+/// state's number (the result number before theirs). An item that failed
+/// in the file (one checked in the original application) has the bytes
+/// and numbers of a healthy item: the history tells it (mitcad#156).
+pub fn item_state(result_no: i32, flags: [u8; 3]) -> ItemState {
+    if result_no != -1 || flags == [0, 0, 0] {
+        ItemState::Normal
+    } else if flags[0] != 0 || flags[1] != 0 {
+        ItemState::Suppressed
+    } else {
+        ItemState::InParts
+    }
+}
+
+/// How an item came to be suppressed in the file. The state
+/// bytes of the controlled variants: an item the user suppressed (by the
+/// design API, the timeline menu, a configuration's row or as a member of a
+/// suppressed group, all the same bytes) has `000100`; an item suppressed
+/// only because an item it depends on is (the fillet of a suppressed hole's
+/// edge, the extrusion of a suppressed sketch) has `010000`. In the
+/// variants the two differ in these bytes alone. In the corpora 24 of the
+/// 27 designs with suppressed items begin with a `000100` item (an item
+/// suppressed through another cannot come first); the three that do not
+/// are one design's versions.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Suppression {
+    /// Suppressed itself (`000100`).
+    Direct,
+    /// Suppressed through an item it depends on (`010000`).
+    Indirect,
+}
+
+/// How an item is suppressed, from its result number and state bytes
+/// (`None` for an item that is not suppressed, [`item_state`]).
+pub fn item_suppression(result_no: i32, flags: [u8; 3]) -> Option<Suppression> {
+    if item_state(result_no, flags) != ItemState::Suppressed {
+        None
+    } else if flags[1] != 0 {
+        Some(Suppression::Direct)
+    } else {
+        Some(Suppression::Indirect)
     }
 }
 
@@ -89,14 +210,37 @@ pub struct ExtrudeFields {
     /// an object, nine zero bytes and `u32 side two`; only the
     /// combinations the description lists for the extent codes are taken.
     pub sides: Option<[u32; 2]>,
+    /// For each side up to an object, its "nearest solution" byte (the API
+    /// reference dumps' `isMinimumSolution`): the byte after the side's
+    /// object reference (one of 55 up-to-an-object extents has it 1, the
+    /// other 54 have 0). Side two only in the two-sided layout
+    /// `[m1] [3 × 0] [u32 1] [u32 two] [u8 0] [ref] [m2]`; `None` where the
+    /// side is not up to an object or the layout is not recognised.
+    pub minimum: [Option<bool>; 2],
+    /// The thin-wall block (mitcad#186): after the extent kinds the record
+    /// keeps `[6 zero bytes] [slot] [5 bytes] [u8 thin] [u32 location]
+    /// [slot] [5 zero bytes] [u32 1] [ref BODY_INPUT]`; the byte `thin` is
+    /// 1 for a thin extrusion and 0 for a solid one. Read from the record's
+    /// end, back from the first input slot (class version 8; the block is
+    /// consistent on every extrusion of the corpus, where it is always the
+    /// solid form, and on the reference models' thin extrusions).
+    pub thin: Option<bool>,
+    /// The wall's location when [`Self::thin`] is read: 0 side one, 1 the
+    /// centre, 2 side two (the reference models' three thin variants; the
+    /// dump names them `Side1`, `Center` and `Side2`).
+    pub thin_location: Option<u8>,
+    /// The parameter holder of the wall thickness (the slot after the
+    /// location); `None` for a solid extrusion.
+    pub thin_holder: Option<u64>,
 }
 
 impl ExtrudeFields {
-    /// `Join`, `Cut`, `NewBody` for the known codes.
+    /// `Join`, `Cut`, `Intersect`, `NewBody` for the known codes.
     pub fn operation(&self) -> Option<&'static str> {
         match self.operation_code {
             1 => Some("Join"),
             2 => Some("Cut"),
+            3 => Some("Intersect"),
             4 => Some("NewBody"),
             _ => None,
         }
@@ -152,6 +296,12 @@ pub struct ParameterEntry {
 impl ParameterEntry {
     pub fn is_user(&self) -> bool {
         self.holder.is_none()
+    }
+
+    /// The parameter is a favorite (the parameters dialog's star): the third
+    /// byte from the end of the flags after the expression is 1.
+    pub fn is_favorite(&self) -> bool {
+        self.gap1.len() >= 3 && self.gap1[self.gap1.len() - 3] == 1
     }
 
     /// The parameter of a driven (reference) sketch dimension: the fourth
@@ -247,6 +397,32 @@ pub fn decode(seg: &Segment) -> Decoded {
         .find(|t| !t.is_empty())
         .unwrap_or_default();
     let mut timeline = Vec::new();
+    // The names users gave their sketches: the sketch object holds them, the
+    // sketch item's tail does not.
+    let mut sketch_names: HashMap<u64, String> = HashMap::new();
+    for s in seg.objects_of(SKETCH) {
+        if let Some(name) = super::sketch::sketch_name(seg, s) {
+            for r in seg.ref_ids(seg.data(s)) {
+                if seg.guid_of(r) == Some(SKETCH_FEATURE) {
+                    sketch_names.insert(r, name.clone());
+                }
+            }
+        }
+    }
+    // (Some sketch items refer to their sketch where the sketch has no
+    // reference back.)
+    for f in seg.objects_of(SKETCH_FEATURE) {
+        if sketch_names.contains_key(&f.id) {
+            continue;
+        }
+        for r in seg.ref_ids(seg.data(f)) {
+            if let Some(s) = seg.object(r).filter(|_| seg.guid_of(r) == Some(SKETCH))
+                && let Some(name) = super::sketch::sketch_name(seg, s)
+            {
+                sketch_names.insert(f.id, name);
+            }
+        }
+    }
     for (pos, &fid) in main.iter().enumerate() {
         let Some(o) = seg.object(fid) else { continue };
         let class = seg.guid(o).unwrap_or_default().to_string();
@@ -259,21 +435,31 @@ pub fn decode(seg: &Segment) -> Decoded {
         } else {
             None
         };
+        let name = match (sketch_names.get(&fid), &tail) {
+            (Some(own), Some(t)) if class == SKETCH_FEATURE => Some(sketch_item_name(own, t)),
+            _ => tail.as_ref().map(ItemTail::display_name),
+        };
         timeline.push(TimelineEntry {
             pos,
             id: fid,
             type_name: classes::known_name(&class),
             class_version: seg.version(o).unwrap_or(0),
             class,
-            name: tail.as_ref().map(ItemTail::display_name),
+            name,
             tail,
             extrude,
         });
     }
 
     // Parameters; the holder's root reference list names the owning feature.
+    // (A count, the integer parameter of a pattern, and a text have holders
+    // of their own classes with the same layout.)
     let mut holder_owner = HashMap::new();
-    for h in seg.objects_of(PARAMETER_HOLDER) {
+    for h in seg
+        .objects_of(PARAMETER_HOLDER)
+        .chain(seg.objects_of(INT_HOLDER))
+        .chain(seg.objects_of(TEXT_HOLDER))
+    {
         let d = seg.data(h);
         if let Some(p) = super::stream::header_end(d)
             && d.get(p) == Some(&1)
@@ -350,9 +536,12 @@ pub fn decode(seg: &Segment) -> Decoded {
 /// str16 custom_name | u32 n | n refs | 3 flag bytes | ref health`.
 ///
 /// The last such reference anchors it, the earlier ones when no tail ends
-/// there (mitcad#96: fillets of class version 3 can refer to a health
-/// object near their start too, `ref 4A557CE2 | u32 0 | ref health |
-/// 00 01 00 00 00 | ref 2CA5A1CD ...`; a tail found back from that one has
+/// there (mitcad#96: fillets of class version 3 can seem to refer to a
+/// health object near their start too, `ref 4A557CE2 | u32 0 | ref health |
+/// 00 01 00 00 00 | ref 2CA5A1CD ...`; that is the corner flag `01`, a
+/// zero and a `01` read as a reference to object 256 (`01 00 01 00 00 ...`
+/// is a reference marker and the id 0x100), which is a health object in a
+/// design that has one with that id; a tail found back from that one has
 /// no base name, a wrong result number and no inputs. In the learning
 /// dump the last reference gave the tail of all 53 such items, and every
 /// other fillet and chamfer has one reference).
@@ -422,9 +611,25 @@ fn tail_at(seg: &Segment, d: &[u8], b: usize, p: usize) -> Option<ItemTail> {
         result_no: i32_at(d, b - 4)?,
         sub_features: subs,
         flags: [d[q], d[q + 1], d[q + 2]],
+        after: after_health(seg, d, p),
         start: b - 4,
         end: p,
     })
+}
+
+/// The two state bytes in front of the first reference of class
+/// `6CCF41D5` that follows the health reference at `p` (and the reference
+/// of class `5FBE538E` before it, [`ItemTail::after`]).
+fn after_health(seg: &Segment, d: &[u8], p: usize) -> Option<[u8; 2]> {
+    let end = seg.ref_at(d, p)?.end;
+    let refs = seg.refs_in(d, end, end + 80);
+    let class = |r: &Ref, g: &str| seg.guid_of(r.id).is_some_and(|c| c.starts_with(g));
+    let first = refs.iter().position(|(_, r)| class(r, "5FBE538E"))?;
+    let (at, _) = refs[first + 1..]
+        .iter()
+        .find(|(_, r)| class(r, "6CCF41D5"))?;
+    let a = d.get(at.checked_sub(2)?..*at)?;
+    Some([a[0], a[1]])
 }
 
 /// Operation, extent fields and direction of an extrude (section 9.2).
@@ -460,6 +665,13 @@ pub fn extrude_fields(seg: &Segment, o: &Object) -> Option<ExtrudeFields> {
         .flatten()
         .map(|v| [v[0], v[1], v[2]])
         .filter(|v| ((v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt() - 1.0).abs() < 1e-6);
+    let (thin, thin_location, thin_holder) = match vector
+        .filter(|_| seg.version(o).is_some_and(|v| v >= 8))
+        .and_then(|_| thin_block(seg, d, p + 42))
+    {
+        Some((thin, location, holder)) => (Some(thin), Some(location), holder),
+        None => (None, None, None),
+    };
     Some(ExtrudeFields {
         operation_code,
         extent_a,
@@ -473,11 +685,70 @@ pub fn extrude_fields(seg: &Segment, o: &Object) -> Option<ExtrudeFields> {
         solid: vector.and(d.get(p + 13)).map(|&b| b == 1),
         start: vector.and(d.get(p + 14)).copied().filter(|&b| b <= 2),
         sides: vector.and_then(|_| extent_sides(seg, d, p + 42, extent_a)),
+        minimum: vector.map_or([None; 2], |_| to_object_minimum(seg, d, p + 42, extent_a)),
+        thin,
+        thin_location,
+        thin_holder,
     })
 }
 
-/// [`ExtrudeFields::sides`]: `from` is the end of the direction vector.
-fn extent_sides(seg: &Segment, d: &[u8], from: usize, direction: u32) -> Option<[u32; 2]> {
+/// The raw fields of a revolve after its root part *(the API reference
+/// dumps' 103 revolutions of class versions 1 and 2, and the controlled
+/// models: a revolution, a symmetric one and a two-sided one)*:
+///
+/// ```text
+/// u32 operation | u32 2 | u8 0 or 1 (not known)
+///   | version 2 only: u8 project axis
+///   | u8 solid | u8 symmetric | u8 two sides
+///   | [ref second angle holder or 00] | ref angle holder
+/// ```
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RevolveFields {
+    /// 1 Join, 2 Cut, 3 Intersect, 4 NewBody (as an extrusion's).
+    pub operation_code: u32,
+    /// The axis is projected into the sketch's plane (`isProjectAxis`: 1 on
+    /// every revolution of the corpus, 0 on the controlled models that a
+    /// script made); class version 1 has no such byte.
+    pub project_axis: Option<bool>,
+    /// A solid (not a surface) revolution.
+    pub solid: bool,
+    /// The angle goes half each way.
+    pub symmetric: bool,
+    /// Two angles, one each way.
+    pub two_sides: bool,
+}
+
+/// [`RevolveFields`] of a revolve item; `None` for other layouts.
+pub fn revolve_fields(seg: &Segment, o: &Object) -> Option<RevolveFields> {
+    let version = seg.version(o).filter(|v| matches!(v, 1 | 2))?;
+    let d = seg.data(o);
+    let p = seg.root_part(d)?.end;
+    let operation_code = u32_at(d, p)?;
+    if !(1..=4).contains(&operation_code) || u32_at(d, p + 4)? != 2 || *d.get(p + 8)? > 1 {
+        return None;
+    }
+    let flag = |at: usize| match d.get(at) {
+        Some(0) => Some(false),
+        Some(1) => Some(true),
+        _ => None,
+    };
+    let (project_axis, at) = if version == 2 {
+        (Some(flag(p + 9)?), p + 10)
+    } else {
+        (None, p + 9)
+    };
+    Some(RevolveFields {
+        operation_code,
+        project_axis,
+        solid: flag(at)?,
+        symmetric: flag(at + 1)?,
+        two_sides: flag(at + 2)?,
+    })
+}
+
+/// The end of the seven optional reference slots that follow the direction
+/// vector (`from` is its end): an absent slot is one zero byte.
+fn slots_end(seg: &Segment, d: &[u8], from: usize) -> Option<usize> {
     let mut q = from;
     for _ in 0..7 {
         if *d.get(q)? == 0 {
@@ -486,11 +757,58 @@ fn extent_sides(seg: &Segment, d: &[u8], from: usize, direction: u32) -> Option<
             q = seg.ref_at(d, q)?.end;
         }
     }
+    Some(q)
+}
+
+/// [`ExtrudeFields::thin`], [`ExtrudeFields::thin_location`] and
+/// [`ExtrudeFields::thin_holder`]: `from` is the end of the direction
+/// vector. The block is found back from the first input slot after the
+/// reference slots (`u32 1 | ref BODY_INPUT`): five zero bytes, the
+/// thickness slot (a parameter holder, else one absent byte), the `u32`
+/// location and the `u8` flag before them. Only the two consistent forms
+/// are taken: a solid extrusion (flag 0, location 0, no holder) and a thin
+/// one (flag 1, location 0 to 2, a holder).
+fn thin_block(seg: &Segment, d: &[u8], from: usize) -> Option<(bool, u8, Option<u64>)> {
+    let after = slots_end(seg, d, from)?;
+    let refs = seg.refs_in(d, after, d.len());
+    let (slot, _) = refs.iter().find(|(s, r)| {
+        seg.guid_of(r.id) == Some(BODY_INPUT) && *s >= after + 4 && u32_at(d, *s - 4) == Some(1)
+    })?;
+    let anchor = slot - 4;
+    let end = anchor.checked_sub(5)?;
+    if slice(d, end, anchor) != [0u8; 5] {
+        return None;
+    }
+    let holder = refs
+        .iter()
+        .find(|(_, r)| r.end == end && seg.guid_of(r.id) == Some(PARAMETER_HOLDER));
+    let (start, holder) = match holder {
+        Some((s, r)) => (*s, Some(r.id)),
+        None if *d.get(end.checked_sub(1)?)? == 0 => (end - 1, None),
+        None => return None,
+    };
+    let block = start.checked_sub(5)?;
+    let flag = *d.get(block)?;
+    let location = u32_at(d, block + 1)?;
+    match (flag, holder, location) {
+        (0, None, 0) => Some((false, 0, None)),
+        (1, Some(h), 0..=2) => Some((true, location as u8, Some(h))),
+        _ => None,
+    }
+}
+
+/// [`ExtrudeFields::sides`]: `from` is the end of the direction vector.
+fn extent_sides(seg: &Segment, d: &[u8], from: usize, direction: u32) -> Option<[u32; 2]> {
+    let q = slots_end(seg, d, from)?;
     let one = u32_at(d, q)?;
     let two = if one == 2 {
         0
     } else {
-        if slice(d, q + 4, q + 13) != [0u8; 9] {
+        // The older writer leaves nine zero bytes between the sides; the
+        // newer one (the reference models, mitcad#186) keeps `u8 0 | u32 a |
+        // u32 b` there: `a` is 2 on a side through all (else 0), `b` 1 on
+        // two sides and symmetric extents (else 0).
+        if *d.get(q + 4)? != 0 || u32_at(d, q + 5)? > 2 || u32_at(d, q + 9)? > 1 {
             return None;
         }
         u32_at(d, q + 13)?
@@ -500,6 +818,27 @@ fn extent_sides(seg: &Segment, d: &[u8], from: usize, direction: u32) -> Option<
         (1, 1..=4, 0) | (2, 1..=4, 0..=4) | (3, 1, 0) | (3, 1, 1) | (3, 4, 4)
     );
     listed.then_some([one, two])
+}
+
+/// [`ExtrudeFields::minimum`]: `from` is the end of the direction vector.
+fn to_object_minimum(seg: &Segment, d: &[u8], from: usize, direction: u32) -> [Option<bool>; 2] {
+    let flag = |at: usize| d.get(at).copied().filter(|b| *b <= 1).map(|b| b == 1);
+    let Some(q) = slots_end(seg, d, from).filter(|&q| u32_at(d, q) == Some(2)) else {
+        return [None; 2];
+    };
+    let Some(first) = seg.ref_at(d, q + 4) else {
+        return [None; 2];
+    };
+    let e = first.end;
+    let second = (direction == 2
+        && slice(d, e + 1, e + 4) == [0u8; 3]
+        && u32_at(d, e + 4) == Some(1)
+        && u32_at(d, e + 8) == Some(2)
+        && d.get(e + 12) == Some(&0))
+    .then(|| seg.ref_at(d, e + 13))
+    .flatten()
+    .and_then(|r| flag(r.end));
+    [flag(e), second]
 }
 
 /// See [`ExtrudeFields::full_length`]; `from` is the end of the direction
@@ -524,6 +863,13 @@ const SLOT_KEY: &str = "2DF7DA30-A4E4-4260-AFD1-D9C7154CB44B";
 
 /// The role of an extrusion's profile slot ([`ExtentSlot`]).
 pub const PROFILE_ROLE: u32 = 65;
+
+/// The input slot listing the bodies changed by an extrusion.
+pub const PARTICIPANT_ROLE: u32 = 8;
+
+/// The same slot in a revolution's and a hole's record (the API reference
+/// dumps: the revolutions that have it list the bodies they changed).
+pub const PARTICIPANT_ROLE_2: u32 = 4;
 
 /// An extrusion's input slot (mitcad#96): a [`BODY_INPUT`] object the item
 /// refers to, `u32 n | n refs | ... | ref 2DF7DA30 | u32 0 | u32 role |
@@ -704,6 +1050,11 @@ pub fn parse_parameter(seg: &Segment, o: &Object) -> Option<ParameterEntry> {
         }
         let unit = s.next()?;
         let name = s.next()?;
+        // A text parameter keeps a default expression with a unit (`1 mm`)
+        // where the other parameters keep nothing: not a comment.
+        if unit == "Text" {
+            comment = v8_comment.as_ref().map(|(c, _)| c.clone());
+        }
         return Some(ParameterEntry {
             id: o.id,
             number,
@@ -745,21 +1096,35 @@ fn guidish(s: &str) -> bool {
     guid || name
 }
 
-/// A component's name: its last printable `str16` that is not a GUID
+/// A component's name: the `str16` that follows the last GUID text of the
+/// object (the component's own identifiers come before it). It is empty
+/// while the component has its default name (`Component<n>`), and then the
+/// component has no name here: the last printable text before it is the
+/// component's material (`PrismMaterial-018`), not a name. Without a text
+/// after the last GUID: the last printable `str16` that is not a GUID
 /// (probable, section 12).
 pub fn component_name(d: &[u8]) -> Option<String> {
     let mut name = None;
+    let mut after_guid = None;
     let mut p = 0;
     while p + 4 < d.len() {
         match text_at(d, p) {
             Some((s, e)) => {
-                if !guidish(&s) {
+                if guidish(&s) {
+                    after_guid = Some(e);
+                } else {
                     name = Some(s);
                 }
                 p = e;
             }
             None => p += 1,
         }
+    }
+    if let Some(e) = after_guid
+        && let Some((s, _)) = str16_at(d, e)
+        && (s.is_empty() || unicode::is_printable(&s))
+    {
+        return Some(s).filter(|s| !s.is_empty() && !guidish(s));
     }
     name
 }
@@ -896,6 +1261,7 @@ mod tests {
             result_no: 1,
             sub_features: vec![],
             flags: [0; 3],
+            after: None,
             start: 0,
             end: 0,
         };
@@ -905,5 +1271,32 @@ mod tests {
         t.custom_name.clear();
         t.base_name.clear();
         assert_eq!(t.display_name(), "");
+    }
+
+    #[test]
+    fn display_names_of_construction_items() {
+        let mut t = ItemTail {
+            base_name: "WorkPlane".into(),
+            index: 2,
+            after_index: 0,
+            custom_name: String::new(),
+            result_no: -1,
+            sub_features: vec![],
+            flags: [0; 3],
+            after: None,
+            start: 0,
+            end: 0,
+        };
+        assert_eq!(t.display_name(), "Plane2");
+        t.base_name = "WorkAxis".into();
+        assert_eq!(t.display_name(), "Axis2");
+        t.base_name = "JointOrigin".into();
+        assert_eq!(t.display_name(), "Joint Origin2");
+        t.base_name = "Sketch".into();
+        assert_eq!(t.display_name(), "Sketch2");
+        // a name the user gave is shown as it is
+        t.base_name = "WorkPlane".into();
+        t.custom_name = "Mid".into();
+        assert_eq!(t.display_name(), "Mid");
     }
 }

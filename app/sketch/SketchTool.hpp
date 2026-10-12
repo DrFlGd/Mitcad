@@ -13,6 +13,7 @@
 
 #include <QString>
 
+#include "AutoConstraint.hpp"
 #include "SketchModel.hpp"
 #include "SketchSnap.hpp"
 
@@ -41,6 +42,10 @@ struct ToolPreview {
   QString glyph;                                // a constraint inferred at the cursor
   std::optional<V2> glyphAt;                    // where it is shown (else by the cursor)
   std::optional<DimensionData> dimension;       // a dimension being placed
+  // The auto constraints the next click adds (mitcad#189), shown in a row
+  // beside `marksAt`.
+  QStringList marks;
+  std::optional<V2> marksAt;
 
   void add(std::vector<V2> polyline, Style style = Style::Draw, bool closed = false) {
     paths.push_back({std::move(polyline), style, closed});
@@ -78,6 +83,9 @@ public:
   virtual void paint(ToolPreview& preview) const { (void)preview; }
   // Drawing tools snap the cursor; picking tools do not.
   virtual bool snaps() const { return true; }
+  // What the tool makes, for the sketch palette's Auto constraint section
+  // (mitcad#189); None: the tool takes no auto constraints.
+  virtual AutoKind autoKind() const { return AutoKind::None; }
 
 protected:
   SketchController& m_c;

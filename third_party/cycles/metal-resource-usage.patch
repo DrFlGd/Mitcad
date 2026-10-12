@@ -1,0 +1,15 @@
+# SPDX-License-Identifier: Apache-2.0
+# Cycles 5.2.0: MTLResourceUsageRead covers sampling on macOS 13 and newer.
+# Original: https://projects.blender.org/blender/cycles/src/tag/v5.2.0/src/device/metal/queue.mm
+# Copyright 2021-2022 Blender Foundation. Modification by Mitcad contributors.
+--- a/src/device/metal/queue.mm
++++ b/src/device/metal/queue.mm
+@@ -807,7 +807,7 @@
+     }
+     else if (it.second->mtlTexture) {
+       /* METAL_WIP - use array version (i.e. useResources) */
+-      [mtlComputeEncoder_ useResource:it.second->mtlTexture usage:usage | MTLResourceUsageSample];
++      [mtlComputeEncoder_ useResource:it.second->mtlTexture usage:usage];
+     }
+   }
+ 

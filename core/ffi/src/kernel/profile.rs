@@ -78,7 +78,7 @@ pub fn frame(frame: &SketchFrame) -> ffi::Frame {
     }
 }
 
-fn segment(name: String, geometry: &SegmentGeometry) -> ffi::Segment {
+pub(super) fn segment(name: String, geometry: &SegmentGeometry) -> ffi::Segment {
     let mut segment = ffi::Segment {
         name,
         kind: ffi::SegmentKind::Line,
@@ -114,10 +114,16 @@ fn segment(name: String, geometry: &SegmentGeometry) -> ffi::Segment {
             segment.start_angle = *start_angle;
             segment.end_angle = *end_angle;
         }
-        SegmentGeometry::Circle { center, radius } => {
+        SegmentGeometry::Circle {
+            center,
+            radius,
+            start,
+        } => {
             segment.kind = ffi::SegmentKind::Circle;
             segment.center = *center;
             segment.radius = *radius;
+            // Where the circle starts (the bridge turns its axes by it).
+            segment.rotation = *start;
         }
         SegmentGeometry::Ellipse {
             center,

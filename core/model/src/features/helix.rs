@@ -25,7 +25,8 @@ use crate::sweeps::HelixSpec;
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct HelixDef<P = ParamId> {
-    /// Regions of one sketch.
+    /// Regions of one sketch, a set (see `extrude::selected_regions`).
+    #[serde(deserialize_with = "super::extrude::profile_set")]
     pub profiles: Vec<ProfileRef>,
     /// A sketch line, an origin or construction axis, a straight edge or a
     /// fixed axis: the profiles move along its direction.

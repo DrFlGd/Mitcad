@@ -175,6 +175,8 @@ std::shared_ptr<geometry::Shape> modeled_thread(rust::Str feature, const geometr
   spec.length = input.length;
   spec.offset = input.offset;
   spec.high_end = input.high_end;
+  spec.radial_clearance = input.radial_clearance;
+  spec.flank_clearance = input.flank_clearance;
   return geometry::modeled_thread(body, spec);
 }
 

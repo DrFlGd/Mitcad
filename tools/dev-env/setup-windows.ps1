@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: MIT
 # Installs the Mitcad Windows toolchain with pinned versions, ccache too
 # (setup-ccache-windows.ps1), builds the render worker's libraries
-# (build-cycles.ps1) and writes CMakeUserPresets.json for a checkout. Meant for the isolated Windows build VM; run as an
+# (build-cycles.ps1 -Cuda; MITCAD_RENDER_CUDA=0 without CUDA) and writes CMakeUserPresets.json for a checkout. Meant for the isolated Windows build VM; run as an
 # administrator. Visual Studio 2022 or newer with the C++ desktop tools
 # must already be installed.
 #
@@ -97,9 +97,14 @@ if (-not (Test-Path $qtDir)) {
 
 # Every build has the render worker (docs/rendering.md "Building"): Cycles
 # and Open Image Denoise, built once outside the build folders, in the
-# MSVC environment; re-running skips what is done.
-Write-Host "== The render worker's libraries (build-cycles.ps1)"
-Invoke-Checked { & (Join-Path $PSScriptRoot 'msvc.cmd') powershell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot 'build-cycles.ps1') }
+# MSVC environment; re-running skips what is done. With Cycles' CUDA
+# device and its kernels (mitcad#202), which the releases need;
+# MITCAD_RENDER_CUDA=0 leaves them out on a development machine that does
+# not want the kernels' build.
+$cycles = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', (Join-Path $PSScriptRoot 'build-cycles.ps1'))
+if ($env:MITCAD_RENDER_CUDA -ne '0') { $cycles += '-Cuda' }
+Write-Host "== The render worker's libraries (build-cycles.ps1 $(if ($cycles -contains '-Cuda') { '-Cuda' }))"
+Invoke-Checked { & (Join-Path $PSScriptRoot 'msvc.cmd') powershell @cycles }
 
 Write-Host '== CMakeUserPresets.json'
 New-Item -ItemType Directory -Force $Repo | Out-Null

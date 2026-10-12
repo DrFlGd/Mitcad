@@ -1,0 +1,8 @@
+[
+  {"comment":"SPDX-License-Identifier: MIT. Reopened corner relief of non-perpendicular flanges (mitcad#125)."},
+  {"expect":{"feature":"F6","status":"ok","bodies":1,"body":"F3.b0","volume":1837.421647895612}},
+  {"expect":{"query":{"query":"flat_pattern","body":"F3.b0"},"result":{"status":"valid","area":1830.299159428259}}},
+  {"cmd":"set_parameter","name":"d3","value":0.5},
+  {"expect":{"feature":"F6","status":"ok","body":"F3.b0","volume":1837.46556841867}},
+  {"cmd":"undo"}
+]

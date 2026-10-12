@@ -353,7 +353,7 @@ impl<K: Kernel> Document<K> {
                 "library": def.and_then(|d| d.library.as_ref()),
                 "features": features,
                 "bodies": bodies,
-                "occurrences": a.occurrences_of(uid).count(),
+                "occurrences": a.occurrences_of(uid).filter(|o| self.placement(o.uid).is_some()).count(),
             })
         };
         let mut components = vec![component(ComponentUid::ROOT)];
@@ -376,6 +376,7 @@ impl<K: Kernel> Document<K> {
             return Vec::new();
         }
         a.children(parent)
+            .filter(|o| self.placement(o.uid).is_some())
             .map(|o| {
                 let mut path = path.to_vec();
                 path.push(o.uid);

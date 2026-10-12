@@ -7,6 +7,7 @@
 #include <BRepBuilderAPI_MakeVertex.hxx>
 #include <BRepExtrema_DistShapeShape.hxx>
 
+#include "../src/face_select.hpp"
 #include "check.hpp"
 
 namespace test {
@@ -28,6 +29,25 @@ void test_mass_properties_and_box() {
   const BoundingBox round = bounding_box(*extrude("F3", {circle(5, 0, 0, 5)}, 0, 10));
   CHECK(near(round.min.X(), -5, 1e-4) && near(round.max.Y(), 5, 1e-4));
   CHECK(bounding_box(Shape(TopoDS_Shape())).empty);
+}
+
+void test_enclosing_box_and_edge_faces() {
+  // The enclosing box holds the tight one (a cylinder's own box is exact).
+  const ShapePtr round = extrude("F3", {circle(5, 0, 0, 5)}, 0, 10);
+  const BoundingBox enclosing = enclosing_box(*round);
+  CHECK(!enclosing.empty);
+  CHECK(enclosing.min.X() <= -5 + 1e-6 && enclosing.max.X() >= 5 - 1e-6);
+  CHECK(enclosing.min.Z() <= 1e-6 && enclosing.max.Z() >= 10 - 1e-6);
+  CHECK(enclosing_box(Shape(TopoDS_Shape())).empty);
+  // Once the tight box was measured, it is the one given.
+  const BoundingBox tight = bounding_box(*round);
+  const BoundingBox again = enclosing_box(*round);
+  CHECK(near(again.min.X(), tight.min.X(), 1e-9) && near(again.max.Z(), tight.max.Z(), 1e-9));
+  // The faces of every edge, found once, are those faces_at_edge finds.
+  const mitcad::geometry::detail::EdgeFaces faces(*round);
+  for (int e = 0; e < round->edge_count(); ++e) {
+    CHECK(faces.at(e) == mitcad::geometry::detail::faces_at_edge(*round, e));
+  }
 }
 
 void test_face_and_edge_infos() {
@@ -139,6 +159,7 @@ void test_new_faces() {
 
 void query_tests() {
   test_mass_properties_and_box();
+  test_enclosing_box_and_edge_faces();
   test_face_and_edge_infos();
   test_measured_from_threads();
   test_new_faces();

@@ -61,9 +61,10 @@ struct HybridModel {
 ComponentAnswer askHybridAssembly(QWidget* parent, const HybridModel& model, const ComponentRequest& request);
 
 // Move to Component: `selection` is the model's (`component`, `bodies`,
-// `features`, `groups`; empty: every modelled feature of the root). Lists
-// the features that tie bodies to others and offers to keep those
-// together. True when the features moved.
+// `features`, `groups`, optional `source_occurrence`; empty: every modelled
+// feature of the root). Always asks for an existing destination or Create
+// New with a parent. Lists expanded dependencies and offers Keep Them
+// Together for conflicts. True after a successful atomic move.
 bool moveToComponent(QWidget* parent, const HybridModel& model, const QJsonObject& selection);
 
 } // namespace mitcad

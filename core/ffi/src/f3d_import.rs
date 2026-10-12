@@ -35,7 +35,10 @@ use serde_json::{Value, json};
 
 use crate::Document;
 use crate::brep_import::{Source, to_ffi};
-use crate::kernel::exchange::ffi::{brep_data, f3d_build_body, f3d_read_body};
+use crate::kernel::exchange::ffi::{
+    F3dBuilt, brep_data, f3d_bases, f3d_bases_add, f3d_build_body, f3d_build_body_from,
+    f3d_built_kept, f3d_built_note, f3d_built_reused, f3d_built_shape, f3d_read_body,
+};
 use crate::kernel::{OcctKernel, Shape};
 
 /// Faces, edges, vertices and the rounded sum of the vertices of a body.
@@ -117,7 +120,15 @@ pub struct StoredFile {
     /// The bodies to build ahead of the replay, oldest state first
     /// ([`F3dGeometry::build_ahead`], mitcad#103).
     ahead: Mutex<std::collections::VecDeque<usize>>,
+    /// The last builds of large bodies of each blob that keep their healed
+    /// faces, with the blob (mitcad#181): the next state's build of a body
+    /// takes the faces it shares with them as healed there. Healing a body
+    /// of 5 000 faces took 25–45 s, a state of the history each.
+    healed: Mutex<Vec<(usize, SharedPtr<F3dBuilt>)>>,
 }
+
+/// How many builds of each blob [`StoredFile::healed`] keeps.
+const HEALED_PER_BLOB: usize = 3;
 
 /// A body's build shared by the tries of an import ([`StoredFile::builds`]).
 enum SharedBuild {
@@ -242,6 +253,7 @@ impl StoredFile {
             builds: Mutex::new(HashMap::new()),
             build_ended: Condvar::new(),
             ahead: Mutex::new(std::collections::VecDeque::new()),
+            healed: Mutex::new(Vec::new()),
         };
         for blob in doc.body_blobs() {
             let data = doc
@@ -916,6 +928,9 @@ impl F3dGeometry {
                 source: format!("{name}#{}", variant.body.record),
                 component: blob.component,
                 id: Some(v as u64),
+                // (A body keeps its record through the rolled-back states
+                // of its blob, also where an operation changed it.)
+                lineage: Some(((variant.blob as u64) << 32) | variant.body.record as u64),
             });
         }
         (bodies, broken)
@@ -958,21 +973,90 @@ impl StoredFile {
         if variant == 0 && std::env::var_os("MITCAD_IMPORT_STALL").is_some_and(|s| s == "slow") {
             std::thread::sleep(Duration::from_millis(1500));
         }
-        let shape = build_stored_body(&data);
+        let (shape, how) = self.build_reusing(v.blob, &data);
         let seconds = clock.elapsed().as_secs_f64();
         let still = BUILD_PROGRESS
             .with(Cell::take)
             .map_or(seconds, |(last, longest)| {
                 longest.max(last.elapsed().as_secs_f64())
             });
-        if seconds >= 1.0 {
+        if seconds >= 1.0 || !how.is_empty() {
             trace_body(
                 self,
                 variant,
-                &format!("built in {seconds:.2} s, at most {still:.2} s without progress"),
+                &format!("built in {seconds:.2} s, at most {still:.2} s without progress{how}"),
             );
         }
         shape
+    }
+
+    /// Builds a body of `blob` from its B-rep data with the faces it shares
+    /// with the blob's last builds ([`StoredFile::healed`]) as healed there
+    /// (mitcad#181), keeping this build for the next ones; the shape and,
+    /// for the trace, how many faces were taken (or why none) and whether
+    /// it was kept. As [`build_stored_body`] when an allocation failed.
+    fn build_reusing(
+        &self,
+        blob: usize,
+        data: &crate::brep_import::ffi::BrepBodyData,
+    ) -> (Option<SharedPtr<Shape>>, String) {
+        let mut bases = f3d_bases();
+        {
+            let healed = self
+                .healed
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            for (_, built) in healed.iter().filter(|(b, _)| *b == blob) {
+                f3d_bases_add(bases.pin_mut(), built);
+            }
+        }
+        let built = match f3d_build_body_from(data, &bases) {
+            Ok(built) => built,
+            Err(e) => {
+                if let Some(progress) = mitcad_import::current_progress() {
+                    progress.low_memory(&format!(
+                        "{} ({})",
+                        e.what(),
+                        crate::memory::memory_use().describe()
+                    ));
+                }
+                return (None, String::new());
+            }
+        };
+        let Some(b) = built.as_ref() else {
+            return (None, String::new());
+        };
+        let shape = f3d_built_shape(b);
+        if shape.is_null() {
+            return (None, String::new());
+        }
+        let reused = f3d_built_reused(b);
+        let kept = f3d_built_kept(b);
+        let note = f3d_built_note(b);
+        let mut how = String::new();
+        if reused > 0 {
+            how.push_str(&format!(", {reused} faces as healed in another state"));
+        }
+        if !note.is_empty() {
+            how.push_str(&format!(", {note}"));
+        }
+        if kept {
+            how.push_str(", kept for the other states");
+            let mut healed = self
+                .healed
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            healed.push((blob, built.clone()));
+            // The oldest of the blob's go.
+            while healed.iter().filter(|(b, _)| *b == blob).count() > HEALED_PER_BLOB {
+                let oldest = healed
+                    .iter()
+                    .position(|(b, _)| *b == blob)
+                    .expect("counted");
+                healed.remove(oldest);
+            }
+        }
+        (Some(shape), how)
     }
 }
 
@@ -1211,6 +1295,12 @@ impl StoredGeometry<SharedPtr<Shape>> for F3dGeometry {
             }
         }
         file.release_ahead(&kept);
+        // The memory before the time: what the next builds would reuse
+        // goes too.
+        file.healed
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clear();
         // (A body that did not build is not tried again.)
         for (built, kept) in self.built.iter_mut().zip(kept) {
             if !kept && matches!(built, Some(Some(_))) {
@@ -1311,6 +1401,31 @@ pub struct TimelineOptions {
     /// `mitcad_import::learn`); `MITCAD_IMPORT_LEARN` when left out.
     #[serde(default)]
     pub learn: Option<String>,
+    /// Folders searched for the documents the design refers to (its
+    /// components of other documents, mitcad#196), beside the reference
+    /// folder next to it (`<design> vN.refs`).
+    #[serde(default)]
+    pub references: Vec<String>,
+    /// Files of documents the design refers to, by their URNs (the
+    /// application's file dialog); their folders are searched too.
+    #[serde(default)]
+    pub reference_files: HashMap<String, String>,
+    /// Documents the user chose not to give (by URN): reported as
+    /// skipped rather than missing.
+    #[serde(default)]
+    pub skipped_references: Vec<String>,
+    /// The components of other documents stay empty (as before
+    /// mitcad#196).
+    #[serde(default)]
+    pub no_references: bool,
+    /// Only list the documents the design refers to and where their files
+    /// are, importing nothing (`f3d_references::list`).
+    #[serde(default)]
+    pub list_references: bool,
+    /// The files being imported, outermost first: a document that refers
+    /// to one of them is not imported again (a cycle).
+    #[serde(skip)]
+    pub(crate) stack: Vec<String>,
 }
 
 /// What a try of the import is told by the watchdog.
@@ -1776,6 +1891,15 @@ impl Document {
         if options.list {
             return list_designs(path);
         }
+        if options.list_references {
+            let listed = mitcad_import::reference_folder::list(
+                path,
+                &options.references,
+                &options.reference_files,
+            )
+            .map_err(ApiError)?;
+            return Ok(serde_json::to_string_pretty(&listed).expect("serializes"));
+        }
         let report = self.import_timeline(path, &options)?;
         let json = serde_json::to_string_pretty(&report).expect("the report serializes");
         if let Some(file) = &options.report_path {
@@ -1785,7 +1909,24 @@ impl Document {
         Ok(if options.text { report.text() } else { json })
     }
 
+    /// The import of the design, then of the documents it refers to into
+    /// its components of other documents (mitcad#196), as one undo step.
     pub(crate) fn import_timeline(
+        &mut self,
+        path: &str,
+        options: &TimelineOptions,
+    ) -> Result<mitcad_import::ImportReport, ApiError> {
+        let depth = self.0.undo_depth();
+        let mut report = self.import_design_timeline(path, options)?;
+        if !options.no_references && self.import_references(path, options, &mut report) {
+            self.0
+                .merge_undo(depth, &format!("Import {}", file_name(path)));
+        }
+        Ok(report)
+    }
+
+    /// The import of the design itself.
+    fn import_design_timeline(
         &mut self,
         path: &str,
         options: &TimelineOptions,

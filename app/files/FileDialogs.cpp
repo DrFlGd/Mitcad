@@ -882,6 +882,29 @@ void showImportReport(QWidget* parent, const QString& file, const QJsonObject& r
     text->setWordWrap(true);
     layout->addWidget(text);
   }
+  // The documents an .f3d design refers to (mitcad#196): where each came
+  // from, or why its components stay empty.
+  QStringList references;
+  for (const QJsonValue& value : design.value(QStringLiteral("references")).toArray()) {
+    const QJsonObject r = value.toObject();
+    const QString name = r.value(QStringLiteral("name")).toString();
+    const int version = r.value(QStringLiteral("version")).toInt();
+    const QString title = (name.isEmpty() ? r.value(QStringLiteral("document")).toString() : name) +
+                          (version > 0 ? QObject::tr(" (version %1)").arg(version) : QString());
+    const QString source = r.value(QStringLiteral("file")).toString();
+    const QString note = r.value(QStringLiteral("note")).toString();
+    const QString from =
+        source.isEmpty() ? QString() : QObject::tr(", from %1").arg(QFileInfo(source).fileName().toHtmlEscaped());
+    references << QObject::tr("%1: %2%3%4")
+                      .arg(title.toHtmlEscaped(), r.value(QStringLiteral("status")).toString(), from,
+                           note.isEmpty() ? QString() : QStringLiteral(" (%1)").arg(note.toHtmlEscaped()));
+  }
+  if (!references.isEmpty()) {
+    auto* text = new QLabel(
+        QObject::tr("<b>Documents referred to</b><br>%1").arg(references.join(QStringLiteral("<br>"))));
+    text->setWordWrap(true);
+    layout->addWidget(text);
+  }
   QStringList warnings;
   for (const QJsonValue& warning : design.value(QStringLiteral("warnings")).toArray()) {
     warnings << warning.toString().toHtmlEscaped();

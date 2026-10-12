@@ -583,3 +583,65 @@ fn moves_are_the_features_outside_a_longest_ordered_run() {
         ]
     );
 }
+
+#[test]
+fn flat_pattern_items_are_added_changed_and_deleted() {
+    // Sheet rules (F1), Sketch (F2) and a sheet Face (F3.b0).
+    let mut doc = Document::new(MockKernel::default());
+    run(
+        &mut doc,
+        json!([
+            {"cmd": "add_feature", "def": {"type": "sheet_rules", "thickness": 1, "bend_radius": 2,
+             "allowance": {"type": "k_factor", "k": 0.4}, "reference_side": "front",
+             "bend_relief": {"type": "round", "width": 1, "depth": 3},
+             "corner_relief": {"type": "rectangular", "width": 1, "depth": 3}}},
+            {"cmd": "sketch.create"},
+            {"cmd": "sketch.add_rectangle", "sketch": "F2", "corner": [0, 0], "width": 40, "height": 20},
+            {"cmd": "add_feature", "def": {"type": "sheet_face", "rules": "F1",
+             "profiles": [{"sketch": "F2", "region": REGION}]}},
+            {"cmd": "rename_body", "uid": "F3.b0", "name": "Bracket"},
+        ]),
+    );
+    let diff = changed(
+        &mut doc,
+        json!({"cmd": "set_flat_pattern", "body": "F3.b0"}),
+    );
+    assert!(!diff.identical);
+    assert_eq!(diff.flat_patterns.len(), 1, "{:?}", diff.flat_patterns);
+    let item = &diff.flat_patterns[0];
+    assert_eq!(item.kind, Kind::Added);
+    assert_eq!(item.uid.as_deref(), Some("F3.b0"));
+    assert_eq!(item.name, "Flat Pattern of Bracket");
+    assert_eq!(item.text, "Flat Pattern of Bracket (F3.b0): added");
+    assert_eq!(diff.summary, "+1 flat pattern");
+    assert!(
+        diff.to_text()
+            .contains("Flat Patterns:\n  Flat Pattern of Bracket (F3.b0): added\n"),
+        "{}",
+        diff.to_text()
+    );
+    // Its settings field by field; the display choice too.
+    let diff = changed(
+        &mut doc,
+        json!([{"cmd": "set_flat_pattern", "body": "F3.b0", "reference_side": "back"},
+               {"cmd": "set_flat_pattern", "body": "F3.b0", "shown": true}]),
+    );
+    let item = &diff.flat_patterns[0];
+    assert_eq!(item.kind, Kind::Modified);
+    let fields: Vec<&str> = item.fields.iter().map(|f| f.field.as_str()).collect();
+    assert_eq!(fields, ["reference_side", "shown"], "{item:?}");
+    assert_eq!(item.fields[0].from, json!("front"));
+    assert_eq!(item.fields[0].to, json!("back"));
+    // A deleted item keeps the name it had.
+    let diff = changed(
+        &mut doc,
+        json!([{"cmd": "rename_body", "uid": "F3.b0", "name": "Plate"},
+               {"cmd": "remove_flat_pattern", "body": "F3.b0"}]),
+    );
+    assert_eq!(diff.flat_patterns.len(), 1);
+    assert_eq!(diff.flat_patterns[0].kind, Kind::Deleted);
+    assert_eq!(diff.flat_patterns[0].name, "Flat Pattern of Bracket");
+    // The same design read back has no differences.
+    let text = doc.to_json();
+    assert!(diff_files(&text, &text).unwrap().identical);
+}

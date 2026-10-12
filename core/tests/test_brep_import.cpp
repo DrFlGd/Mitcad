@@ -44,10 +44,15 @@
 #include <exception>
 #include <filesystem>
 #include <map>
+#include <memory>
 #include <string>
 #include <vector>
 
+#include <BRepCheck_Analyzer.hxx>
+#include <BRepGProp.hxx>
 #include <BRepTools.hxx>
+#include <GProp_GProps.hxx>
+#include <TopoDS_Shape.hxx>
 
 #include "mitcad/geometry/brep_import.hpp"
 #include "mitcad_bridge/brep_import.h"
@@ -119,6 +124,61 @@ void print_messages(const mitcad::brep::BuildReport& r) {
   }
 }
 
+// A body built again with what its build healed (mitcad#181): the same
+// body takes every face, one whose vertex differs in its data (its
+// tolerance) takes the faces away from it and heals the others, a body
+// shared with nothing heals as a whole; each is the valid solid of the
+// build as a whole. The cylinder's side face gets a seam from healing and
+// is taken with it.
+void reuse_test(const rust::Vec<BrepBodyData>& bodies) {
+  const auto build = [](const mitcad::brep::Body& body, const std::shared_ptr<const mitcad::brep::Healed>& base) {
+    mitcad::brep::BuildOptions options;
+    options.measure = false;
+    options.keep = true;
+    options.reuse_min_faces = 1;
+    if (base) {
+      options.bases.push_back(base);
+    }
+    return mitcad::brep::build_body(body, options);
+  };
+  const auto volume = [](const TopoDS_Shape& shape) {
+    GProp_GProps props;
+    BRepGProp::VolumeProperties(shape, props);
+    return props.Mass();
+  };
+  for (const std::size_t i : {std::size_t{0}, std::size_t{1}}) {
+    const mitcad::brep::Body body = to_body(bodies[i]);
+    const auto first = build(body, nullptr);
+    CHECK(first.report.built);
+    CHECK(first.healed != nullptr);
+    CHECK(first.report.reused_faces == 0);
+    const auto again = build(body, first.healed);
+    print_messages(again.report);
+    CHECK(again.report.built);
+    CHECK(again.report.reused_faces == static_cast<int>(body.faces.size()));
+    CHECK(BRepCheck_Analyzer(again.shape).IsValid());
+    CHECK(near(volume(again.shape), volume(first.shape), 1e-9));
+    // The first build's shape is not changed by the second.
+    CHECK(BRepCheck_Analyzer(first.shape).IsValid());
+  }
+  // The cube with one vertex's tolerance changed in its data: its three
+  // faces are built and healed, the other three taken.
+  mitcad::brep::Body changed = to_body(bodies[0]);
+  changed.vertices[3] = 2.0 * std::max(changed.vertices[3], 1e-7);
+  const auto cube = build(to_body(bodies[0]), nullptr);
+  const auto partly = build(changed, cube.healed);
+  print_messages(partly.report);
+  CHECK(partly.report.built);
+  CHECK(partly.report.reused_faces == 3);
+  CHECK(BRepCheck_Analyzer(partly.shape).IsValid());
+  CHECK(near(volume(partly.shape), 1000.0, 1e-9));
+  // The cylinder shares nothing with the cube.
+  const auto other = build(to_body(bodies[1]), cube.healed);
+  CHECK(other.report.built);
+  CHECK(other.report.reused_faces == 0);
+  CHECK(near(volume(other.shape), kPi * 100.0 * 20.0, 1e-6));
+}
+
 int self_test() {
   const rust::Vec<BrepBodyData> bodies = mitcad::f3d::f3d_test_bodies();
   CHECK(bodies.size() == 3);
@@ -161,6 +221,8 @@ int self_test() {
   CHECK(near(cone.report.area, kPi * 100.0 + kPi * 10.0 * std::sqrt(500.0), 1e-6));
   CHECK(cone.report.faces == 2);
   CHECK(near(cone.report.bbox[5], 20.0, 1e-6));
+
+  reuse_test(bodies);
 
   if (failures == 0) {
     std::printf("test_brep_import: all checks passed\n");

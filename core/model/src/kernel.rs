@@ -35,6 +35,22 @@ pub trait Kernel {
     /// must be cheap (a shared handle); shapes are never modified.
     type Shape: Clone;
 
+    // Named material domains, exact trimming and chart reconstruction.
+    fn sheet_trim_domain(
+        &self,
+        _spec: &crate::sheet::SheetTrimSpec<'_>,
+    ) -> Result<crate::sheet::SheetTrimResult, KernelError> {
+        Err(KernelError::Unsupported("sheet domain trimming"))
+    }
+
+    fn sheet_shape(
+        &self,
+        _spec: &crate::sheet::SheetShapeSpec<'_>,
+        _prefix: &str,
+    ) -> Result<crate::sheet::SheetGeometry<Self::Shape>, KernelError> {
+        Err(KernelError::Unsupported("sheet shape construction"))
+    }
+
     // Profiles and extrusion.
 
     /// Sweeps the regions along the direction between the offsets; faces
@@ -212,6 +228,13 @@ pub trait Kernel {
     /// None for an empty shape.
     fn bounding_box(&self, _shape: &Self::Shape) -> Result<Option<BoundingBox>, KernelError> {
         Err(KernelError::Unsupported("bounding boxes"))
+    }
+
+    /// A box that holds the shape, not necessarily the tight one: for
+    /// tests of whether shapes can meet. Kernels where the tight box is
+    /// costly on bodies of many curved faces give a cheaper one.
+    fn enclosing_box(&self, shape: &Self::Shape) -> Result<Option<BoundingBox>, KernelError> {
+        self.bounding_box(shape)
     }
 
     // Imported bodies and data exchange (base features, import, export).
@@ -833,6 +856,69 @@ pub trait Kernel {
     ) -> Result<crate::exchange::FaceMeshes, KernelError> {
         Err(KernelError::Unsupported("face meshes"))
     }
+
+    // Crossings of several segments (the `.f3d` import's probes, mitcad#181).
+
+    /// [`Kernel::segment_crossings`] of several segments at once (each
+    /// face's set-up made once for all of them), in their order.
+    fn segments_crossings(
+        &self,
+        _shape: &Self::Shape,
+        _segments: &[(Vec3, Vec3)],
+    ) -> Result<Vec<Vec<(f64, bool)>>, KernelError> {
+        Err(KernelError::Unsupported("crossings of several segments"))
+    }
+
+    // The faces a run of features made, copied by a pattern's optimized
+    // compute option.
+
+    /// What features did to a body: the material `after` has and `before`
+    /// lacks, and the material `before` has and `after` lacks, as closed
+    /// solids bounded by the faces the features made (the unchanged faces
+    /// of the two bodies coincide and are the solids' seam with the body).
+    /// Joined to (or cut from) a body at another place, a moved solid
+    /// gives that body the features' faces there. Face names carry through
+    /// from both bodies; slivers along the faces the two share are left
+    /// out. Both empty when the bodies do not differ.
+    fn feature_changes(
+        &self,
+        _before: &Self::Shape,
+        _after: &Self::Shape,
+    ) -> Result<FeatureChanges<Self::Shape>, KernelError> {
+        Err(KernelError::Unsupported("the faces of features"))
+    }
+
+    /// The parts of copies of added material that stand on `body`: each
+    /// copy is a solid with its seam moved to the same place
+    /// ([`AddedMaterial`]). The material over a part of a planar seam
+    /// face that no planar face of the body lies under (coplanar, facing
+    /// it) is cut off, along the seam's normal; a copy whose seam lies
+    /// wholly on the body's faces is as it is, one with nothing under it
+    /// is None; a copy without a seam is as it is.
+    fn supported_copies(
+        &self,
+        _body: &Self::Shape,
+        _copies: &[(&Self::Shape, Option<&Self::Shape>)],
+    ) -> Result<Vec<Option<Self::Shape>>, KernelError> {
+        Err(KernelError::Unsupported("copies standing on a body"))
+    }
+}
+
+/// The material features added to and removed from a body
+/// ([`Kernel::feature_changes`]).
+#[derive(Debug, Clone)]
+pub struct FeatureChanges<S> {
+    pub added: Vec<AddedMaterial<S>>,
+    pub removed: Vec<S>,
+}
+
+/// Material features added: the solid and its seam, the planar faces of
+/// the solid that lie on faces of the body it stands on (None when there
+/// are none).
+#[derive(Debug, Clone)]
+pub struct AddedMaterial<S> {
+    pub solid: S,
+    pub seam: Option<S>,
 }
 
 /// What [`Kernel::indexed_element`] counts.
@@ -890,6 +976,9 @@ pub struct FontGlyphs {
     /// Above the baseline (positive) and below it (negative).
     pub ascender: f64,
     pub descender: f64,
+    /// The height of the capital letters above the baseline; 0 when the
+    /// kernel does not say (see `SketchEdit::text_outlines`).
+    pub cap_height: f64,
     /// From one baseline to the next.
     pub line_spacing: f64,
     pub glyphs: Vec<Glyph>,
@@ -1403,6 +1492,12 @@ pub struct HoleSpec<'a, S> {
 /// `part` limits it to (length, offset, from the high end of the
 /// cylinder's axis); otherwise it covers the face and runs out through its
 /// free ends. The thread's faces are named `<feature>:thread(<face>)`.
+/// Extra clearance (mitcad#195, mm, 0 or more): `radial_clearance` moves
+/// the whole profile along the radius away from the material (an internal
+/// thread's diameters grow by twice it, an external thread's shrink), then
+/// `flank_clearance` moves each flank that far perpendicular to itself
+/// into the tooth, keeping the flank angle, the pitch and the crest and
+/// root radii (`features::thread::check_clearance` gives the limits).
 #[derive(Debug, Clone)]
 pub struct ThreadSpec<'a> {
     pub feature: FeatureUid,
@@ -1414,6 +1509,8 @@ pub struct ThreadSpec<'a> {
     pub right_handed: bool,
     pub angle: f64,
     pub part: Option<(f64, f64, bool)>,
+    pub radial_clearance: f64,
+    pub flank_clearance: f64,
 }
 
 /// [`Kernel::extrude_feature`] with [`Kernel::extrude`]: a prism between

@@ -8,26 +8,34 @@
 
 #include <QContextMenuEvent>
 #include <QAction>
+#include <QDockWidget>
+#include <QFocusEvent>
 #include <QHBoxLayout>
+#include <QHeaderView>
 #include <QHelpEvent>
 #include <QIcon>
 #include <QJsonArray>
 #include <QJsonObject>
 #include <QKeyEvent>
+#include <QKeySequence>
+#include <QLabel>
 #include <QLineEdit>
 #include <QMenu>
 #include <QMouseEvent>
 #include <QPainter>
 #include <QPalette>
 #include <QPixmap>
+#include <QResizeEvent>
 #include <QScrollArea>
 #include <QScrollBar>
 #include <QStyle>
 #include <QTimer>
 #include <QToolButton>
 #include <QToolTip>
+#include <QTreeWidget>
 #include <QtLogging>
 
+#include "TimelineSearch.hpp"
 #include "../framework/ChromeStyle.hpp"
 #include "../framework/Dialogs.hpp"
 #include "../framework/GlassCard.hpp"
@@ -77,21 +85,24 @@ const QColor kMarkerHandle(0xe0, 0x7b, 0x1a);
 const QColor kAllowed(0x20, 0xa0, 0x40);
 const QColor kRefused(0xd0, 0x20, 0x20);
 const QColor kGroupBand(0x7d, 0x8c, 0x9e); // over an open group's features (P9)
+const QColor kFoundBorder(0xff, 0x7a, 0x00); // a match of the search (mitcad#179), light or dark
 
 // The colours of the strip's cells and marker. Docked: the fixed ones above
 // (light or dark). Floating: derived from the palette and the Theme's colours,
 // so that they sit on the card's material and follow the accent colour.
 struct StripColors {
   QColor errorFill, errorBorder, warningFill, warningBorder, selectedFill, selectedBorder, hoverFill, marker;
+  QColor found = kFoundBorder;
 };
 
 StripColors stripColors(const QPalette& palette) {
   const bool dark = isDarkPalette(palette);
   if (chromeStyle() != ChromeStyle::Floating) {
-    return {dark ? kErrorFillDark : kErrorFill,     kErrorBorder,
-            dark ? kWarningFillDark : kWarningFill, kWarningBorder,
+    return {dark ? kErrorFillDark : kErrorFill,       kErrorBorder,
+            dark ? kWarningFillDark : kWarningFill,   kWarningBorder,
             dark ? kSelectedFillDark : kSelectedFill, kSelectedBorder,
-            dark ? kHoverFillDark : kHoverFill,     dark ? kMarkerColorDark : kMarkerColor};
+            dark ? kHoverFillDark : kHoverFill,       dark ? kMarkerColorDark : kMarkerColor,
+            kFoundBorder};
   }
   const auto tint = [](QColor color, qreal alpha) {
     color.setAlphaF(static_cast<float>(alpha));
@@ -102,7 +113,8 @@ StripColors stripColors(const QPalette& palette) {
   return {tint(errorColor(palette), 0.20),  errorColor(palette),
           tint(warningColor(palette), 0.22), warningColor(palette),
           tint(accent, 0.24),                accent,
-          tint(text, 0.09),                  text};
+          tint(text, 0.09),                  text,
+          kFoundBorder};
 }
 
 // Component colours; the root has none.
@@ -276,6 +288,14 @@ public:
       }
     }
     return -1;
+  }
+
+  // The matches of the search (mitcad#179), outlined.
+  void setFound(QSet<QString> found) {
+    if (found != m_found) {
+      m_found = std::move(found);
+      update();
+    }
   }
 
   QString selected() const { return m_selected; }
@@ -466,6 +486,7 @@ protected:
       bool warned = false;
       bool noted = false; // an import note on a feature that is not built (mitcad#170)
       bool off = true;
+      bool found = false; // a match of the search (mitcad#179)
       const int last = head ? m_groups[item.group].last : i;
       for (int k = i; k <= last; ++k) {
         const DocumentSnapshot::Feature& member = m_items[k].feature;
@@ -473,6 +494,7 @@ protected:
         warned = warned || member.status == QStringLiteral("warning");
         noted = noted || !member.importNote.isEmpty();
         off = off && (member.suppressed || k >= m_marker);
+        found = found || m_found.contains(member.uid);
       }
       const bool selected = run.contains(feature.uid);
       QColor fill = Qt::transparent;
@@ -491,10 +513,15 @@ protected:
       if (selected) {
         fill = failed || warned ? fill : colors.selectedFill;
         border = colors.selectedBorder;
-      } else if (i == m_hover && !failed && !warned) {
-        fill = colors.hoverFill;
+      } else {
+        if (found) {
+          border = colors.found;
+        }
+        if (i == m_hover && !failed && !warned) {
+          fill = colors.hoverFill;
+        }
       }
-      painter.setPen(QPen(border, selected ? 2.0 : 1.2));
+      painter.setPen(QPen(border, selected || found ? 2.0 : 1.2));
       painter.setBrush(fill);
       painter.drawRoundedRect(rect, 4, 4);
       if (item.colour >= 0) {
@@ -695,6 +722,10 @@ protected:
   }
 
   void keyPressEvent(QKeyEvent* event) override {
+    if (event->matches(QKeySequence::Find)) {
+      m_owner.openSearch(); // Ctrl+F, Cmd+F on macOS (mitcad#179)
+      return;
+    }
     if (!m_selected.isEmpty() && isDeleteKey(event->key())) {
       emit m_owner.deleteRequested(m_selected);
       return;
@@ -790,6 +821,7 @@ private:
   QString m_selectedTo; // the other end of a run (Shift+click)
   QSet<QString> m_externalSelected; // exact selection mirrored by another presentation
   bool m_hasExternalSelection = false;
+  QSet<QString> m_found; // the search's matches (mitcad#179)
   int m_hover = -1;
   int m_pressGroup = -1; // a press on a group's band or folded cell
   bool m_shift = false;
@@ -849,6 +881,67 @@ TimelineWidget::TimelineWidget(const CommandContext& model, QWidget* parent)
   });
   layout->addWidget(m_filterButton);
   updateFilterButton();
+
+  // The search (mitcad#179): its button, and the field with the count of
+  // matches and the step buttons, shown while it is open.
+  const QString findKey = QKeySequence(QKeySequence::Find).toString(QKeySequence::NativeText);
+  m_searchButton = new QToolButton(this);
+  m_searchButton->setAutoRaise(true);
+  m_searchButton->setCheckable(true);
+  if (floating) {
+    setFlatCardButton(m_searchButton);
+  }
+  m_searchButton->setFocusPolicy(Qt::NoFocus);
+  m_searchButton->setToolTip(findKey.isEmpty() ? tr("Search the Timeline")
+                                               : tr("Search the Timeline (%1)").arg(findKey));
+  connect(m_searchButton, &QToolButton::clicked, this, [this] {
+    if (isSearchOpen()) {
+      closeSearch();
+    } else {
+      openSearch();
+    }
+  });
+  layout->addWidget(m_searchButton);
+  m_searchBar = new QWidget(this);
+  auto* bar = new QHBoxLayout(m_searchBar);
+  bar->setContentsMargins(2, 0, 2, 0);
+  bar->setSpacing(1);
+  m_searchField = new QLineEdit(m_searchBar);
+  m_searchField->setObjectName(QStringLiteral("timelineSearch"));
+  m_searchField->setPlaceholderText(tr("Name or type; is:failed, in:component"));
+  m_searchField->setToolTip(
+      tr("Features whose name or type contains the words. Filters: in:<component>, is:failed, is:warning "
+         "(import notes too), is:suppressed, is:rolled-back. Enter and Down: next match; Shift+Enter and Up: "
+         "previous; Esc: close."));
+  m_searchField->setClearButtonEnabled(true);
+  m_searchField->setFixedWidth(240);
+  m_searchField->installEventFilter(this);
+  QAction* filters = m_searchField->addAction(themeIcon(QStringLiteral("filter")), QLineEdit::TrailingPosition);
+  filters->setToolTip(tr("Filters: component and status"));
+  connect(filters, &QAction::triggered, this, [this] { showSearchMenu(); });
+  connect(m_searchField, &QLineEdit::textChanged, this, &TimelineWidget::searchTextChanged);
+  bar->addWidget(m_searchField);
+  m_searchCount = new QLabel(m_searchBar);
+  m_searchCount->setMinimumWidth(m_searchCount->fontMetrics().horizontalAdvance(QStringLiteral("888 of 888")) + 8);
+  m_searchCount->setAlignment(Qt::AlignCenter);
+  bar->addWidget(m_searchCount);
+  const auto stepButton = [this, bar, floating](QStyle::StandardPixmap icon, const QString& tip, int delta) {
+    auto* step = new QToolButton(m_searchBar);
+    step->setAutoRaise(true);
+    if (floating) {
+      setFlatCardButton(step);
+    }
+    step->setFocusPolicy(Qt::NoFocus);
+    step->setIcon(style()->standardIcon(icon));
+    step->setToolTip(tip);
+    connect(step, &QToolButton::clicked, this, [this, delta] { stepSearch(delta); });
+    bar->addWidget(step);
+    return step;
+  };
+  m_searchPrevious = stepButton(QStyle::SP_ArrowLeft, tr("Previous Match (Shift+Enter)"), -1);
+  m_searchNext = stepButton(QStyle::SP_ArrowRight, tr("Next Match (Enter)"), 1);
+  m_searchBar->hide();
+  layout->addWidget(m_searchBar);
 
   m_strip = new TimelineStrip(*this);
   m_scroll = new QScrollArea(this);
@@ -915,6 +1008,9 @@ void TimelineWidget::applyPalette() {
                                                               : mac::symbolIcon(m_buttonSymbols[i], standard));
   }
   updateFilterButton(); // its icon in the theme's colours
+  m_searchButton->setIcon(themeIcon(QStringLiteral("search")));
+  m_searchPrevious->setIcon(playbackIcon(*style(), QStyle::SP_ArrowLeft, palette()));
+  m_searchNext->setIcon(playbackIcon(*style(), QStyle::SP_ArrowRight, palette()));
   m_strip->update();
   const QString colours = QStringLiteral("Timeline colours: %1, marker %2, buttons %3, window %4")
                               .arg(darkPalette(palette()) ? QStringLiteral("dark") : QStringLiteral("light"),
@@ -987,6 +1083,9 @@ void TimelineWidget::rebuild(const DocumentSnapshot& snapshot) {
   if (m_strip->indexOf(m_strip->selected()) < 0 ||
       (!m_strip->selected().isEmpty() && m_strip->filtered(m_strip->indexOf(m_strip->selected())))) {
     m_strip->select(QString());
+  }
+  if (m_searching) {
+    updateMatches(); // the features, their names and states may have changed
   }
   const QString logged = shown.isEmpty() ? QStringLiteral("all components")
                                          : QStringLiteral("%1: %2 of %3 features")
@@ -1236,12 +1335,481 @@ void TimelineWidget::logLayout() {
   }
   const QPoint filterAt = GlassCard::mapToHost(m_filterButton, m_filterButton->rect().center());
   lines << QStringLiteral("Timeline button filter at %1,%2").arg(filterAt.x()).arg(filterAt.y());
+  const QPoint searchAt = GlassCard::mapToHost(m_searchButton, m_searchButton->rect().center());
+  lines << QStringLiteral("Timeline button search at %1,%2").arg(searchAt.x()).arg(searchAt.y());
+  if (m_searchBar->isVisible()) {
+    for (const auto& [id, widget] : {std::pair<const char*, QWidget*>{"search field", m_searchField},
+                                     std::pair<const char*, QWidget*>{"button search-previous", m_searchPrevious},
+                                     std::pair<const char*, QWidget*>{"button search-next", m_searchNext}}) {
+      const QPoint at = GlassCard::mapToHost(widget, widget->rect().center());
+      lines << QStringLiteral("Timeline %1 at %2,%3").arg(QLatin1String(id)).arg(at.x()).arg(at.y());
+    }
+  }
   const QString logged = lines.join(QLatin1Char('\n'));
   if (logged != m_logged) {
     m_logged = logged;
     for (const QString& line : std::as_const(lines)) {
       qDebug().noquote() << line;
     }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// The search (mitcad#179)
+
+bool TimelineWidget::isSearchOpen() const { return m_externalSearch || !m_searchBar->isHidden(); }
+
+void TimelineWidget::beginExternalSearch() {
+  m_externalSearch = true;
+  updateMatches(); // Publish an empty initial presentation too.
+}
+void TimelineWidget::setSearchText(const QString& text) { m_searchField->setText(text); }
+QString TimelineWidget::searchText() const { return m_searchField->text(); }
+QString TimelineWidget::searchCountText() const { return m_searchCount->text(); }
+
+void TimelineWidget::openSearch() {
+  // A closed timeline dock opens again (the docked layout).
+  for (QWidget* parent = parentWidget(); parent != nullptr; parent = parent->parentWidget()) {
+    if (auto* dock = qobject_cast<QDockWidget*>(parent)) {
+      if (dock->isHidden()) {
+        dock->show();
+      }
+      break;
+    }
+  }
+  const bool wasOpen = isSearchOpen();
+  m_searchBar->show();
+  m_searchButton->setChecked(true);
+  m_searchField->setFocus(Qt::ShortcutFocusReason);
+  m_searchField->selectAll();
+  if (!wasOpen) {
+    qDebug().noquote() << QStringLiteral("Timeline search opened");
+  }
+  if (m_searching) {
+    showSearchList();
+  }
+  QTimer::singleShot(0, this, &TimelineWidget::logLayout);
+}
+
+void TimelineWidget::closeSearch() {
+  if (!isSearchOpen()) {
+    return;
+  }
+  const bool focused = m_searchField->hasFocus();
+  m_searchField->clear(); // ends the search (searchTextChanged)
+  m_externalSearch = false;
+  hideSearchList();
+  m_searchBar->hide();
+  m_searchButton->setChecked(false);
+  if (focused) {
+    m_strip->setFocus(Qt::OtherFocusReason);
+  }
+  qDebug().noquote() << QStringLiteral("Timeline search closed");
+  QTimer::singleShot(0, this, &TimelineWidget::logLayout);
+}
+
+void TimelineWidget::searchTextChanged() {
+  const bool searching = !m_searchField->text().trimmed().isEmpty();
+  if (searching && !m_searching) {
+    // Where the timeline was and what was selected, for when it is cleared.
+    m_searching = true;
+    m_savedScroll = m_scroll->horizontalScrollBar()->value();
+    m_savedSelection = m_strip->selectedRun();
+    m_searchSelected.clear();
+    m_match = -1;
+    emit searchStarted();
+  } else if (!searching && m_searching) {
+    m_searching = false;
+    endSearch();
+  }
+  updateMatches();
+  if (m_searching && m_searchField->hasFocus()) {
+    showSearchList();
+  } else {
+    hideSearchList();
+  }
+}
+
+void TimelineWidget::endSearch() {
+  // Back to the selection and the scroll position from before the search,
+  // unless something other than its match was selected since.
+  const bool restore = !m_searchSelected.isEmpty() && m_strip->selectedRun() == QStringList{m_searchSelected};
+  m_searchSelected.clear();
+  m_match = -1;
+  if (!restore) {
+    qDebug().noquote() << QStringLiteral("Timeline search cleared");
+    return;
+  }
+  if (m_savedSelection.size() > 1) {
+    m_strip->selectFeatures(m_savedSelection);
+  } else {
+    const QString uid = m_savedSelection.value(0);
+    m_strip->select(m_strip->indexOf(uid) >= 0 ? uid : QString());
+  }
+  m_scroll->horizontalScrollBar()->setValue(m_savedScroll);
+  QStringList names;
+  for (const QString& uid : m_strip->selectedRun()) {
+    names << m_strip->item(m_strip->indexOf(uid))->feature.name;
+  }
+  qDebug().noquote() << QStringLiteral("Timeline search cleared: selected %1 again, scrolled to %2")
+                            .arg(names.isEmpty() ? QStringLiteral("nothing") : names.join(QStringLiteral(", ")))
+                            .arg(m_scroll->horizontalScrollBar()->value());
+  emit searchRestored();
+}
+
+void TimelineWidget::updateMatches() {
+  if (!m_searching) {
+    m_matches.clear();
+    m_match = -1;
+    m_strip->setFound({});
+    m_loggedSearch.clear();
+    updateSearchCount();
+    fillSearchList();
+    return;
+  }
+  const QString text = m_searchField->text().trimmed();
+  const TimelineQuery query = TimelineQuery::parse(text);
+  const QString current = m_match >= 0 && m_match < m_matches.size() ? m_matches[m_match] : QString();
+  // Among the features the filter shows (mitcad#98), in timeline order.
+  QStringList matches;
+  QStringList listed;
+  for (int i = 0; i < m_strip->count(); ++i) {
+    if (m_strip->filtered(i)) {
+      continue;
+    }
+    const DocumentSnapshot::Feature& feature = m_strip->item(i)->feature;
+    TimelineSearchItem item;
+    item.name = feature.name;
+    item.type = feature.type;
+    item.component = m_snapshot.componentName(feature.component);
+    item.failed = feature.status == QStringLiteral("error");
+    // As the warnings badge counts them (mitcad#170).
+    item.warned = !item.failed && (feature.status == QStringLiteral("warning") || !feature.importNote.isEmpty());
+    item.suppressed = feature.suppressed;
+    item.rolledBack = i >= m_strip->marker();
+    if (query.matches(item)) {
+      matches << feature.uid;
+      listed << QStringLiteral("%1 (%2)").arg(item.name, item.component);
+    }
+  }
+  m_matches = matches;
+  m_match = current.isEmpty() ? -1 : static_cast<int>(matches.indexOf(current));
+  m_strip->setFound(QSet<QString>(matches.begin(), matches.end()));
+  updateSearchCount();
+  fillSearchList();
+  constexpr int kLoggedMatches = 30;
+  if (listed.size() > kLoggedMatches) {
+    listed = listed.mid(0, kLoggedMatches) << QStringLiteral("...");
+  }
+  const QString found =
+      !query.unknown.isEmpty()
+          ? QStringLiteral("unknown filter %1").arg(query.unknown.join(QStringLiteral(", ")))
+          : matches.isEmpty() ? QStringLiteral("no matches")
+                              : QStringLiteral("%1 %2: %3")
+                                    .arg(matches.size())
+                                    .arg(matches.size() == 1 ? QStringLiteral("match") : QStringLiteral("matches"))
+                                    .arg(listed.join(QStringLiteral(", ")));
+  const QString logged = QStringLiteral("Timeline search \"%1\": %2").arg(text, found);
+  if (logged != m_loggedSearch) {
+    m_loggedSearch = logged;
+    qDebug().noquote() << logged;
+  }
+}
+
+void TimelineWidget::updateSearchCount() {
+  QString count;
+  QString tip;
+  if (m_searching) {
+    const TimelineQuery query = TimelineQuery::parse(m_searchField->text());
+    if (!query.unknown.isEmpty()) {
+      count = tr("Unknown: %1").arg(query.unknown.join(QStringLiteral(", ")));
+      tip = tr("Statuses: is:failed, is:warning, is:suppressed, is:rolled-back");
+    } else if (m_matches.isEmpty()) {
+      count = tr("No matches");
+    } else if (m_match >= 0) {
+      count = tr("%1 of %2").arg(m_match + 1).arg(m_matches.size());
+    } else {
+      count = m_matches.size() == 1 ? tr("1 match") : tr("%1 matches").arg(m_matches.size());
+    }
+  }
+  m_searchCount->setText(count);
+  m_searchCount->setToolTip(tip);
+  m_searchPrevious->setEnabled(!m_matches.isEmpty());
+  m_searchNext->setEnabled(!m_matches.isEmpty());
+  emit searchChanged();
+}
+
+void TimelineWidget::stepSearch(int delta) {
+  if (m_matches.isEmpty()) {
+    return;
+  }
+  const int count = static_cast<int>(m_matches.size());
+  goToMatch(m_match < 0 ? (delta > 0 ? 0 : count - 1) : ((m_match + delta) % count + count) % count);
+}
+
+void TimelineWidget::goToMatch(int index) {
+  if (index < 0 || index >= m_matches.size()) {
+    return;
+  }
+  m_match = index;
+  const QString uid = m_matches[index];
+  // Scrolled to and selected, a folded group opened (which finds the
+  // matches again, the same one stepped to).
+  selectFeature(uid);
+  m_searchSelected = uid;
+  if (const DocumentSnapshot::Feature* feature = m_snapshot.feature(uid)) {
+    qDebug().noquote() << QStringLiteral("Timeline search match %1 of %2: %3 (%4)")
+                              .arg(m_match + 1)
+                              .arg(m_matches.size())
+                              .arg(feature->name, m_snapshot.componentName(feature->component));
+  }
+  updateSearchCount();
+  if (m_searchList != nullptr && m_match < m_searchList->topLevelItemCount()) {
+    m_searchList->setCurrentItem(m_searchList->topLevelItem(m_match));
+    m_searchList->scrollToItem(m_searchList->currentItem());
+  }
+  emit featuresClicked({uid}); // selected as a click selects it
+}
+
+void TimelineWidget::fillSearchList() {
+  if (m_searchList == nullptr) {
+    return; // made when first shown
+  }
+  m_searchList->clear();
+  // The component colours of the strip's bands.
+  QHash<QString, int> colours;
+  for (int i = 1; i < m_snapshot.components.size(); ++i) {
+    colours.insert(m_snapshot.components[i].uid, i - 1);
+  }
+  for (const QString& uid : std::as_const(m_matches)) {
+    const DocumentSnapshot::Feature* feature = m_snapshot.feature(uid);
+    if (feature == nullptr) {
+      continue;
+    }
+    auto* row = new QTreeWidgetItem(m_searchList, {feature->name, m_snapshot.componentName(feature->component)});
+    row->setIcon(0, themeIcon(featureIcon(feature->type)));
+    const int colour = colours.value(feature->component, -1);
+    row->setIcon(1, swatchIcon(colour >= 0 ? kComponentColors[colour % 8] : QColor(Qt::transparent)));
+    row->setData(0, Qt::UserRole, uid);
+    QString state;
+    if (feature->status == QStringLiteral("error") || feature->status == QStringLiteral("warning")) {
+      state = feature->error;
+    } else if (feature->suppressed) {
+      state = feature->error.isEmpty() ? tr("Suppressed") : tr("Suppressed: %1").arg(feature->error);
+    } else if (feature->index >= m_snapshot.marker) {
+      state = tr("Rolled back");
+    }
+    row->setToolTip(0, state.isEmpty() ? feature->name : QStringLiteral("%1: %2").arg(feature->name, state));
+    if (feature->status == QStringLiteral("error")) {
+      row->setForeground(0, errorColor(palette()));
+    }
+  }
+  if (m_match >= 0 && m_match < m_searchList->topLevelItemCount()) {
+    m_searchList->setCurrentItem(m_searchList->topLevelItem(m_match));
+  }
+  if (m_matches.isEmpty()) {
+    hideSearchList();
+  } else if (m_searchList->isVisible()) {
+    placeSearchList();
+    QTimer::singleShot(0, this, &TimelineWidget::logSearchList);
+  }
+}
+
+void TimelineWidget::showSearchList() {
+  if (m_externalSearch) return;
+  // Over the window (the main window, also from a floating card's own
+  // window), so that it is not clipped to the timeline's dock or card.
+  QWidget* host = GlassCard::hostWindow(this);
+  if (m_searchList == nullptr) {
+    auto* list = new QTreeWidget(host);
+    list->setObjectName(QStringLiteral("timelineSearchResults"));
+    list->setColumnCount(2);
+    list->setHeaderHidden(true);
+    list->setRootIsDecorated(false);
+    list->setUniformRowHeights(true);
+    list->setFocusPolicy(Qt::NoFocus); // the field keeps the keys
+    list->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    list->header()->setStretchLastSection(false);
+    list->header()->setSectionResizeMode(0, QHeaderView::Stretch);
+    list->header()->setSectionResizeMode(1, QHeaderView::ResizeToContents);
+    list->hide();
+    connect(list, &QTreeWidget::itemClicked, this, [this](QTreeWidgetItem* row) {
+      goToMatch(m_searchList->indexOfTopLevelItem(row));
+      // The keys back to the field (from a floating card's own window, the
+      // click activated the main window).
+      if (!m_searchField->hasFocus()) {
+        m_searchField->activateWindow();
+        m_searchField->setFocus(Qt::PopupFocusReason);
+      }
+    });
+    connect(list->verticalScrollBar(), &QScrollBar::valueChanged, this,
+            [this] { QTimer::singleShot(0, this, &TimelineWidget::logSearchList); });
+    m_searchList = list;
+    host->installEventFilter(this);
+  } else if (m_searchList->parentWidget() != host) {
+    m_searchList->setParent(host); // a floated dock went back, or the other way
+    host->installEventFilter(this);
+  }
+  fillSearchList();
+  if (m_matches.isEmpty()) {
+    hideSearchList();
+    return;
+  }
+  placeSearchList();
+  m_searchList->show();
+  m_searchList->raise();
+  QTimer::singleShot(0, this, &TimelineWidget::logSearchList);
+}
+
+void TimelineWidget::hideSearchList() {
+  if (m_searchList != nullptr && !m_searchList->isHidden()) {
+    m_searchList->hide();
+    m_loggedResults.clear();
+    qDebug().noquote() << QStringLiteral("Timeline search results hidden");
+  }
+}
+
+void TimelineWidget::placeSearchList() {
+  if (m_searchList == nullptr || m_searchList->topLevelItemCount() == 0) {
+    return;
+  }
+  // Up to eight rows above the field, below it when there is no room.
+  QWidget* host = m_searchList->parentWidget();
+  const int rows = std::min(m_searchList->topLevelItemCount(), 8);
+  const int rowHeight = std::max(m_searchList->sizeHintForRow(0), fontMetrics().height() + 4);
+  const int height = rows * rowHeight + 2 * m_searchList->frameWidth() + 2;
+  const int width = std::max(m_searchField->width() + 100, 340);
+  const QPoint field = GlassCard::mapToHost(m_searchField, QPoint(0, 0));
+  QPoint at(field.x(), field.y() - height - 2);
+  if (at.y() < 0) {
+    at.setY(field.y() + m_searchField->height() + 2);
+  }
+  at.setX(std::clamp(at.x(), 0, std::max(0, host->width() - width)));
+  m_searchList->setGeometry(QRect(at, QSize(width, height)));
+}
+
+void TimelineWidget::logSearchList() {
+  if (m_searchList == nullptr || !m_searchList->isVisible()) {
+    return;
+  }
+  QStringList lines;
+  const QRect shown = m_searchList->viewport()->rect();
+  for (int i = 0; i < m_searchList->topLevelItemCount(); ++i) {
+    QTreeWidgetItem* row = m_searchList->topLevelItem(i);
+    const QRect rect = m_searchList->visualItemRect(row);
+    if (!rect.isValid() || !shown.contains(rect.center())) {
+      continue;
+    }
+    const QPoint at = GlassCard::mapToHost(m_searchList->viewport(), rect.center());
+    lines << QStringLiteral("Timeline search result %1 (%2) at %3,%4")
+                 .arg(row->text(0), row->text(1))
+                 .arg(at.x())
+                 .arg(at.y());
+  }
+  const QString logged = lines.join(QLatin1Char('\n'));
+  if (logged != m_loggedResults) {
+    m_loggedResults = logged;
+    for (const QString& line : std::as_const(lines)) {
+      qDebug().noquote() << line;
+    }
+  }
+}
+
+void TimelineWidget::showSearchMenu() {
+  showSearchMenu(m_searchField->mapToGlobal(QPoint(0, m_searchField->height())));
+}
+
+void TimelineWidget::showSearchMenu(const QPoint& globalPosition) {
+  QMenu menu(this);
+  QStringList entries;
+  const QString text = m_searchField->text();
+  const auto add = [&](const QString& label, const QString& token) {
+    QAction* action = menu.addAction(label);
+    action->setCheckable(true);
+    action->setChecked(hasTimelineToken(text, token));
+    connect(action, &QAction::triggered, this, [this, token] {
+      m_searchField->setText(toggleTimelineToken(m_searchField->text(), token));
+      if (!m_externalSearch) m_searchField->setFocus(Qt::PopupFocusReason);
+    });
+    entries << label;
+  };
+  add(tr("Failed"), timelineStatusToken(TimelineQuery::Failed));
+  add(tr("Warnings and Import Notes"), timelineStatusToken(TimelineQuery::Warning));
+  add(tr("Suppressed"), timelineStatusToken(TimelineQuery::Suppressed));
+  add(tr("Rolled Back"), timelineStatusToken(TimelineQuery::RolledBack));
+  menu.addSeparator();
+  for (const DocumentSnapshot::Component& component : std::as_const(m_snapshot.components)) {
+    add(component.name, timelineComponentToken(component.name));
+  }
+  qDebug().noquote() << QStringLiteral("Context menu: %1").arg(entries.join(QStringLiteral(" | ")));
+  execMenu(&menu, globalPosition);
+}
+
+bool TimelineWidget::eventFilter(QObject* watched, QEvent* event) {
+  if (watched == m_searchField) {
+    switch (event->type()) {
+    case QEvent::ShortcutOverride: {
+      // The field's own keys, not the window's OK and Cancel (Enter, Esc).
+      const int key = static_cast<QKeyEvent*>(event)->key();
+      if (key == Qt::Key_Return || key == Qt::Key_Enter || key == Qt::Key_Escape || key == Qt::Key_Up ||
+          key == Qt::Key_Down) {
+        event->accept();
+        return true;
+      }
+      break;
+    }
+    case QEvent::KeyPress: {
+      const auto* key = static_cast<QKeyEvent*>(event);
+      switch (key->key()) {
+      case Qt::Key_Return:
+      case Qt::Key_Enter:
+        stepSearch(key->modifiers().testFlag(Qt::ShiftModifier) ? -1 : 1);
+        return true;
+      case Qt::Key_Down:
+        stepSearch(1);
+        return true;
+      case Qt::Key_Up:
+        stepSearch(-1);
+        return true;
+      case Qt::Key_Escape:
+        closeSearch();
+        return true;
+      default:
+        break;
+      }
+      break;
+    }
+    case QEvent::FocusIn:
+      if (m_searching) {
+        showSearchList();
+      }
+      break;
+    case QEvent::FocusOut: {
+      // Not for the field's menu of filters, nor for a click on the list
+      // that activated its window (a floating card's field is in a window
+      // of its own).
+      const Qt::FocusReason reason = static_cast<QFocusEvent*>(event)->reason();
+      const bool onList = reason == Qt::ActiveWindowFocusReason && m_searchList != nullptr &&
+                          m_searchList->isVisible() && m_searchList->underMouse();
+      if (reason != Qt::PopupFocusReason && !onList) {
+        hideSearchList();
+      }
+      break;
+    }
+    default:
+      break;
+    }
+  } else if (m_searchList != nullptr && watched == m_searchList->parentWidget() &&
+             event->type() == QEvent::Resize && m_searchList->isVisible()) {
+    placeSearchList();
+  }
+  return QWidget::eventFilter(watched, event);
+}
+
+void TimelineWidget::resizeEvent(QResizeEvent* event) {
+  QWidget::resizeEvent(event);
+  if (m_searchList != nullptr && m_searchList->isVisible()) {
+    placeSearchList();
   }
 }
 

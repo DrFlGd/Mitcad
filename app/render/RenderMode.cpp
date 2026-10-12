@@ -33,9 +33,6 @@ namespace mitcad {
 
 namespace {
 
-// While the camera keeps moving, a new view goes to the worker at most this
-// often (each restarts the render).
-constexpr int kViewInterval = 30;
 // How long a message stays over the view.
 constexpr int kMessageMilliseconds = 10000;
 // Meshes no scene shows any more that are kept for a while (a body shown
@@ -98,7 +95,7 @@ int renderSamples() {
 RenderMode::RenderMode(OcctViewer& viewer, std::function<void(QObject*, std::function<void()>)> whenIdle,
                        QObject* parent)
     : QObject(parent), m_viewer(viewer), m_whenIdle(std::move(whenIdle)), m_client(new render::RenderClient(this)),
-      m_messageTimer(new QTimer(this)), m_viewTimer(new QTimer(this)) {
+      m_messageTimer(new QTimer(this)) {
   connect(m_client, &render::RenderClient::ready, this, &RenderMode::workerReady);
   connect(m_client, &render::RenderClient::failed, this, &RenderMode::workerFailed);
   connect(m_client, &render::RenderClient::sceneApplied, this, &RenderMode::sceneApplied);
@@ -127,9 +124,9 @@ RenderMode::RenderMode(OcctViewer& viewer, std::function<void(QObject*, std::fun
       m_message->hide();
     }
   });
-  m_viewTimer->setSingleShot(true);
-  connect(m_viewTimer, &QTimer::timeout, this, &RenderMode::sendView);
   connect(&m_viewer, &OcctViewer::viewChanged, this, &RenderMode::viewChanged);
+  // The view the user navigated to (mitcad#214).
+  connect(&m_viewer, &OcctViewer::navigationFinished, this, &RenderMode::sendView);
   connect(&m_viewer, &OcctViewer::bodiesChanged, this, &RenderMode::scheduleScene);
 }
 
@@ -152,7 +149,6 @@ void RenderMode::setEnabled(bool enabled) {
   m_sentEnvironment.clear();
   m_missingTextures.clear();
   m_frame = render::Frame();
-  m_viewTimer->stop();
   if (m_message) {
     m_message->hide();
   }
@@ -196,7 +192,10 @@ void RenderMode::workerReady(const QString& renderer) {
                   {QStringLiteral("previews"), previews}});
   sendEnvironment();
   scheduleScene();
-  sendView();
+  // During a navigation, its end sends the view.
+  if (!m_viewer.isNavigating()) {
+    sendView();
+  }
 }
 
 void RenderMode::setSettings(const QJsonObject& settings, const QString& documentFolder) {
@@ -466,50 +465,62 @@ void RenderMode::sceneApplied(const QJsonObject& event) {
 }
 
 void RenderMode::viewChanged() {
-  if (!m_enabled || !m_ready || m_viewTimer->isActive()) {
-    return;
-  }
-  if (m_sinceSent.isValid() && m_sinceSent.elapsed() < kViewInterval) {
-    m_viewTimer->start(kViewInterval - static_cast<int>(m_sinceSent.elapsed()));
+  // While the user navigates, the view shows the bodies shaded and the
+  // worker goes on with the view it has; the view the navigation ends at
+  // goes to it then (navigationFinished, mitcad#214). Other changes (a fit,
+  // a camera set without animation) are single steps: sent at once.
+  if (!m_enabled || !m_ready || m_viewer.isNavigating()) {
     return;
   }
   sendView();
 }
 
-void RenderMode::sendView() {
-  if (!m_enabled || !m_ready) {
-    return;
-  }
+QJsonObject RenderMode::viewCommand() const {
   const occ::handle<Graphic3d_Camera>& camera = m_viewer.viewCamera();
   const qreal ratio = m_viewer.devicePixelRatioF();
   const int width = qRound(m_viewer.width() * ratio);
   const int height = qRound(m_viewer.height() * ratio);
   const bool perspective = !camera->IsOrthographic();
   const double halfHeight = camera->ViewDimensions().Y() / 2.0;
-  const QJsonArray eye = vector3(camera->Eye().XYZ());
-  const QJsonArray target = vector3(camera->Center().XYZ());
-  const QJsonArray up = vector3(camera->Up().XYZ());
-  const QJsonArray size{width, height};
-  QJsonObject view{{QStringLiteral("cmd"), QStringLiteral("view")},
-                   {QStringLiteral("projection"), perspective ? QStringLiteral("perspective") : QStringLiteral("orthographic")},
-                   {QStringLiteral("eye"), eye},
-                   {QStringLiteral("target"), target},
-                   {QStringLiteral("up"), up},
-                   {QStringLiteral("half_height"), halfHeight},
-                   {QStringLiteral("size"), size}};
-  const QString key = QString::fromUtf8(QJsonDocument(view).toJson(QJsonDocument::Compact));
+  return {{QStringLiteral("cmd"), QStringLiteral("view")},
+          {QStringLiteral("projection"), perspective ? QStringLiteral("perspective") : QStringLiteral("orthographic")},
+          {QStringLiteral("eye"), vector3(camera->Eye().XYZ())},
+          {QStringLiteral("target"), vector3(camera->Center().XYZ())},
+          {QStringLiteral("up"), vector3(camera->Up().XYZ())},
+          {QStringLiteral("half_height"), halfHeight},
+          {QStringLiteral("size"), QJsonArray{width, height}}};
+}
+
+QString RenderMode::viewKey(const QJsonObject& view) {
+  return QString::fromUtf8(QJsonDocument(view).toJson(QJsonDocument::Compact));
+}
+
+void RenderMode::sendView() {
+  if (!m_enabled || !m_ready) {
+    return;
+  }
+  QJsonObject view = viewCommand();
+  const QString key = viewKey(view);
   if (key == m_lastView) {
+    // The camera came back to the view the worker renders (a click, a
+    // navigation that ended where it began): its frame again, if the view
+    // dropped it.
+    if (!m_viewer.showsRenderedImage()) {
+      displayFrame();
+    }
     return;
   }
   m_lastView = key;
   view.insert(QStringLiteral("sequence"), static_cast<qint64>(++m_view));
+  const QJsonArray size = view.value(QStringLiteral("size")).toArray();
+  const int width = size.at(0).toInt();
+  const int height = size.at(1).toInt();
   m_client->reserve(width, height);
   m_client->send(view);
   // The last frame shows another camera: the bodies are drawn until the
   // first frame of this one comes.
   m_viewer.setRenderedImage(QImage());
   m_sinceView.start();
-  m_sinceSent.start();
   m_firstFrameLogged = false;
   m_firstDenoisedLogged = false;
   qDebug().noquote() << QStringLiteral("Render view %1: %2 %3 x %4").arg(m_view).arg(view.value(QStringLiteral("projection")).toString()).arg(width).arg(height);
@@ -544,7 +555,9 @@ void RenderMode::showFrame() {
                              .arg(m_sinceView.elapsed());
   }
   m_frame = std::move(frame);
-  displayFrame();
+  if (!displayFrame()) {
+    return; // the camera has moved on: not shown
+  }
   // What the frame covers, in the view's logical pixels (UI tests compare
   // it with the shaded view).
   const QRect covered = render::coverage(m_frame.pixels.data(), width, height);
@@ -562,9 +575,14 @@ void RenderMode::showFrame() {
                             .arg(qRound((covered.bottom() + 1) * scaleY));
 }
 
-void RenderMode::displayFrame() {
+bool RenderMode::displayFrame() {
   if (!m_enabled || m_frame.pixels.empty() || m_frame.info.view != m_view) {
-    return;
+    return false;
+  }
+  // The camera has moved since the view was sent (a navigation goes on):
+  // the frame no longer fits the view.
+  if (viewKey(viewCommand()) != m_lastView) {
+    return false;
   }
   // The view's own background, or the settings' colour; a frame of the
   // environment covers it all.
@@ -579,6 +597,7 @@ void RenderMode::displayFrame() {
   m_viewer.setRenderedImage(render::displayImage(m_frame.pixels.data(), static_cast<int>(m_frame.info.width),
                                                  static_cast<int>(m_frame.info.height), top, bottom, m_look,
                                                  m_frame.catcher.empty() ? nullptr : m_frame.catcher.data()));
+  return true;
 }
 
 void RenderMode::showMessage(const QString& text) {

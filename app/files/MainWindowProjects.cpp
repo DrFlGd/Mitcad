@@ -247,9 +247,12 @@ bool MainWindow::handleNewProject(const std::optional<NewProjectResult>& result,
       return true;
     }
   }
+  const bool sendAtOnce = projectSync(root).sendAtOnce;
   showHint(state.kind == ProjectState::Kind::Cloud
-               ? tr("Cloud project %1 is in %2: New Design adds a design; every save records a version and sends "
-                    "it.")
+               ? (sendAtOnce ? tr("Cloud project %1 is in %2: New Design adds a design; every save records a version "
+                                 "and sends it.")
+                             : tr("Cloud project %1 is in %2: New Design adds a design; Sync Now sends recorded "
+                                  "versions."))
                      .arg(state.name(), QDir::toNativeSeparators(root))
                : tr("Local project %1 is in %2: New Design adds a design; every save records a version.")
                      .arg(state.name(), QDir::toNativeSeparators(root)));

@@ -7,6 +7,7 @@
 #include <chrono>
 #include <cmath>
 #include <cstdio>
+#include <limits>
 
 #include <BRepAlgoAPI_Cut.hxx>
 #include <BRepAlgoAPI_Fuse.hxx>
@@ -28,6 +29,7 @@ using namespace mitcad::geometry;
 
 constexpr double kTan30 = 0.57735026918962576451;
 constexpr double kH = 0.8660254037844386; // H / P
+constexpr double kCos30 = 0.8660254037844386;
 
 struct Diameters {
   double major;
@@ -57,27 +59,36 @@ ThreadSpec spec_of(const std::string& feature, const std::string& face, double p
 // The material of the thread per millimetre of its length between the
 // minor and major diameters: the teeth (an external thread's narrowing
 // outwards from P/2 at the pitch diameter, an internal thread's widening)
-// swept round the axis, integrated exactly.
-double teeth_per_mm(double pitch, const Diameters& d, bool internal) {
+// swept round the axis, integrated exactly. A flank clearance moves each
+// flank `flank` perpendicular to itself into the tooth: the tooth is
+// 2 flank / cos 30 narrower at every radius.
+double teeth_per_mm(double pitch, const Diameters& d, bool internal, double flank = 0.0) {
   const double rp = d.pitch / 2.0;
   const double a = d.minor / 2.0;
   const double b = d.major / 2.0;
   // width(r) = c0 + c1 r
   const double c1 = internal ? 2.0 * kTan30 : -2.0 * kTan30;
-  const double c0 = pitch / 2.0 - c1 * rp;
+  const double c0 = pitch / 2.0 - c1 * rp - 2.0 * flank / kCos30;
   const auto integral = [&](double r) { return c0 * r * r / 2.0 + c1 * r * r * r / 3.0; };
   return 2.0 * kPi / pitch * (integral(b) - integral(a));
 }
 
 // An external thread's section per millimetre: the core and the teeth.
-double bolt_per_mm(double pitch, const Diameters& d) {
-  return kPi * d.minor * d.minor / 4.0 + teeth_per_mm(pitch, d, false);
+double bolt_per_mm(double pitch, const Diameters& d, double flank = 0.0) {
+  return kPi * d.minor * d.minor / 4.0 + teeth_per_mm(pitch, d, false, flank);
 }
 
 // What an internal thread takes from a solid per millimetre: everything
 // inside the major diameter but the teeth.
-double nut_hole_per_mm(double pitch, const Diameters& d) {
-  return kPi * d.major * d.major / 4.0 - teeth_per_mm(pitch, d, true);
+double nut_hole_per_mm(double pitch, const Diameters& d, double flank = 0.0) {
+  return kPi * d.major * d.major / 4.0 - teeth_per_mm(pitch, d, true, flank);
+}
+
+// A profile moved by a radial clearance away from the material: every
+// diameter 2 radial larger inside, smaller outside.
+Diameters loosened(const Diameters& d, double radial, bool internal) {
+  const double shift = internal ? 2.0 * radial : -2.0 * radial;
+  return {d.major + shift, d.minor + shift, d.pitch + shift};
 }
 
 gp_Pnt centre(const Shape& shape) {
@@ -236,6 +247,146 @@ void test_tapped_holes() {
   CHECK_NEAR_TOL(volume(*blind_threaded), before - removed, 2e-5);
 }
 
+// Extra clearance on bolts (mitcad#195): the radial one moves the crests
+// and roots in, the flank one moves each flank perpendicular to itself;
+// the volumes against the exact profile and points either side of the
+// moved crests, roots and flanks.
+void test_bolt_clearance() {
+  const ShapePtr rod = extrude("F2", {circle(1, 0, 0, 5)}, 0, 12);
+  const double rp = k6g.pitch / 2.0;
+
+  // Radial only: 0.2 per side takes 0.4 off every diameter.
+  ThreadSpec radial = spec_of("F3", "F2:side(c1)", 1.5, k6g);
+  radial.radial_clearance = 0.2;
+  const ShapePtr loose = modeled_thread(*rod, radial);
+  CHECK_NEAR_TOL(volume(*loose), 12 * bolt_per_mm(1.5, loosened(k6g, 0.2, false)), 2e-5);
+  CHECK(near(bounding_box(*loose).max.X(), 4.725, 1e-4));
+  CHECK(near(2.0 * bounding_box(*loose).max.X(), k6g.major - 0.4, 1e-4));
+  // The crest (the tooth's middle at angle 0 is 1.125 up) and the root (the
+  // groove's middle 0.375 up) each 0.2 further in.
+  CHECK(inside(*loose, gp_Pnt(4.725 - 0.01, 0, 1.125)));
+  CHECK(!inside(*loose, gp_Pnt(4.725 + 0.01, 0, 1.125)));
+  const double root = k6g.minor / 2.0 - 0.2;
+  CHECK(inside(*loose, gp_Pnt(root - 0.01, 0, 0.375)));
+  CHECK(!inside(*loose, gp_Pnt(root + 0.01, 0, 0.375)));
+
+  // Flank only: the crests keep their radius; each flank moves 0.05 / cos 30
+  // along the axis, the groove at the pitch diameter spanning
+  // [-relief, 0.75 + relief] instead of [0, 0.75], every pitch.
+  const double flank = 0.05;
+  const double relief = flank / kCos30;
+  ThreadSpec thin = spec_of("F3", "F2:side(c1)", 1.5, k6g);
+  thin.flank_clearance = flank;
+  const ShapePtr relieved = modeled_thread(*rod, thin);
+  CHECK_NEAR_TOL(volume(*relieved), 12 * bolt_per_mm(1.5, k6g, flank), 2e-5);
+  CHECK(near(bounding_box(*relieved).max.X(), 4.925, 1e-4));
+  for (const double turn : {0.0, 1.5, 3.0}) {
+    CHECK(!inside(*relieved, gp_Pnt(rp, 0, turn + 0.75 + 0.9 * relief)));
+    CHECK(inside(*relieved, gp_Pnt(rp, 0, turn + 0.75 + 1.1 * relief)));
+    CHECK(!inside(*relieved, gp_Pnt(rp, 0, turn + 1.5 - 0.9 * relief)));
+    CHECK(inside(*relieved, gp_Pnt(rp, 0, turn + 1.5 - 1.1 * relief)));
+  }
+  // The flank keeps its angle: 0.2 further out it lies 0.2 tan 30 further
+  // along, moved by the same relief.
+  const double out = rp + 0.2;
+  const double edge = 0.75 + 0.2 * kTan30 + relief;
+  CHECK(!inside(*relieved, gp_Pnt(out, 0, edge - 0.1 * relief)));
+  CHECK(inside(*relieved, gp_Pnt(out, 0, edge + 0.1 * relief)));
+
+  // Both, on a left-hand thread 8 long 2 below the top: the profile is
+  // moved in and then relieved, the rest of the face stays.
+  ThreadSpec both = spec_of("F3", "F2:side(c1)", 1.5, k6g);
+  both.radial_clearance = 0.2;
+  both.flank_clearance = flank;
+  both.right_handed = false;
+  both.full_length = false;
+  both.length = 8;
+  both.offset = 2;
+  const ShapePtr part = modeled_thread(*rod, both);
+  CHECK_NEAR_TOL(volume(*part), 4 * kPi * 25 + 8 * bolt_per_mm(1.5, loosened(k6g, 0.2, false), flank), 2e-5);
+  CHECK(!part->find_faces("F2:side(c1)").empty());
+  CHECK(inside(*part, gp_Pnt(4.99, 0, 1)));
+  CHECK(inside(*part, gp_Pnt(4.99, 0, 11)));
+  CHECK(!inside(*part, gp_Pnt(4.8, 0, 5.625)));
+  CHECK(inside(*part, gp_Pnt(4.725 - 0.01, 0, 5.625)));
+  CHECK(!inside(*part, gp_Pnt(4.725 + 0.01, 0, 5.625)));
+  const double moved = rp - 0.2;
+  CHECK(!inside(*part, gp_Pnt(moved, 0, 5.25 + 0.9 * relief)));
+  CHECK(inside(*part, gp_Pnt(moved, 0, 5.25 + 1.1 * relief)));
+  // A quarter turn on, the left-hand groove has fallen a quarter pitch
+  // (a right-hand one would have risen): the tooth's middle at 5.25.
+  CHECK(inside(*part, gp_Pnt(0, moved, 5.25)));
+  CHECK(!inside(*part, gp_Pnt(0, moved, 6.0)));
+
+  // Values that leave no thread, and values that are none.
+  ThreadSpec wrong = spec_of("F3", "F2:side(c1)", 1.5, k6g);
+  wrong.radial_clearance = -0.1;
+  CHECK(throws_with([&] { modeled_thread(*rod, wrong); }, "must not be negative"));
+  wrong.radial_clearance = 0.0;
+  wrong.flank_clearance = std::numeric_limits<double>::quiet_NaN();
+  CHECK(throws_with([&] { modeled_thread(*rod, wrong); }, "finite"));
+  // The crest of 6g is 0.218 wide: 0.1 per flank takes 0.231 off it.
+  wrong.flank_clearance = 0.1;
+  CHECK(throws_with([&] { modeled_thread(*rod, wrong); }, "no usable tooth"));
+  wrong.flank_clearance = 0.0;
+  wrong.radial_clearance = 4.1;
+  CHECK(throws_with([&] { modeled_thread(*rod, wrong); }, "no core"));
+}
+
+// Extra clearance on tapped holes: the radial one moves the crests and
+// roots out, the flank one widens the groove.
+void test_hole_clearance() {
+  const ShapePtr plate = extrude("F2", {rectangle(1, -15, -15, 30, 30)}, 0, 20);
+  const ShapePtr drill = extrude("F3", {circle(5, 0, 0, 4.25)}, -1, 21);
+  const BooleanResult drilled = boolean(BooleanOp::Cut, {plate.get()}, *drill);
+  CHECK(drilled.pieces.size() == 1);
+  const ShapePtr nut = drilled.pieces.at(0).shape;
+  const double flank = 0.03;
+  const double relief = flank / kCos30;
+  ThreadSpec spec = spec_of("F4", "F3:side(c5)", 1.5, k6H);
+  spec.radial_clearance = 0.2;
+  spec.flank_clearance = flank;
+  const ShapePtr threaded = modeled_thread(*nut, spec);
+  CHECK_NEAR_TOL(volume(*threaded), 30 * 30 * 20 - 20 * nut_hole_per_mm(1.5, loosened(k6H, 0.2, true), flank),
+                 2e-5);
+  CHECK(!threaded->find_faces("F4:thread(F3:side(c5))").empty());
+  // The tooth at the moved pitch diameter spans [relief, 0.75 - relief].
+  const double rp = k6H.pitch / 2.0 + 0.2;
+  CHECK(inside(*threaded, gp_Pnt(rp, 0, 2.25 - 1.1 * relief)));
+  CHECK(!inside(*threaded, gp_Pnt(rp, 0, 2.25 - 0.9 * relief)));
+  CHECK(inside(*threaded, gp_Pnt(rp, 0, 1.5 + 1.1 * relief)));
+  CHECK(!inside(*threaded, gp_Pnt(rp, 0, 1.5 + 0.9 * relief)));
+  // The crest (the minor diameter, at the tooth's middle) and the root (the
+  // major one, at the groove's middle) each 0.2 further out.
+  const double crest = k6H.minor / 2.0 + 0.2;
+  CHECK(inside(*threaded, gp_Pnt(crest + 0.01, 0, 1.875)));
+  CHECK(!inside(*threaded, gp_Pnt(crest - 0.01, 0, 1.875)));
+  const double root = k6H.major / 2.0 + 0.2;
+  CHECK(!inside(*threaded, gp_Pnt(root - 0.01, 0, 2.625)));
+  CHECK(inside(*threaded, gp_Pnt(root + 0.01, 0, 2.625)));
+  // The crest of 6H is 0.409 wide: 0.17 per flank takes 0.393 off it.
+  ThreadSpec wrong = spec_of("F4", "F3:side(c5)", 1.5, k6H);
+  wrong.flank_clearance = 0.17;
+  CHECK(throws_with([&] { modeled_thread(*nut, wrong); }, "no usable tooth"));
+
+  // The basic M6x1 in a drilled hole through a 6 mm plate (the wall's axis
+  // points down, into the material), as a tapped hole makes it.
+  const ShapePtr block = extrude("F2", {rectangle(1, 100, 0, 30, 30)}, 0, 6);
+  HoleSpec hole;
+  hole.feature = "F4";
+  hole.positions = {gp_Ax1(gp_Pnt(115, 15, 6), gp_Dir(0, 0, -1))};
+  hole.diameter = basic(6, 1).minor;
+  hole.extent = HoleExtent::ThroughAll;
+  hole.bodies = {block};
+  const BooleanResult holed = boolean(BooleanOp::Cut, {block.get()}, *hole_tool(hole));
+  ThreadSpec tapped = spec_of("F5", "F4:hole0.wall", 1.0, basic(6, 1));
+  tapped.radial_clearance = 0.15;
+  tapped.flank_clearance = 0.02;
+  const ShapePtr in_hole = modeled_thread(*holed.pieces.at(0).shape, tapped);
+  CHECK_NEAR_TOL(volume(*in_hole), 30 * 30 * 6 - 6 * nut_hole_per_mm(1.0, loosened(basic(6, 1), 0.15, true), 0.02),
+                 2e-5);
+}
+
 // A plate with a grid of n x n small holes (some thousands of faces for n
 // of 56) with a 10 mm shaft 20 long standing on a pad on it.
 ShapePtr perforated(int n) {
@@ -296,6 +447,8 @@ void thread_tests() {
   guarded("test_bolt_profiles", test_bolt_profiles);
   guarded("test_shoulder_and_partial", test_shoulder_and_partial);
   guarded("test_tapped_holes", test_tapped_holes);
+  guarded("test_bolt_clearance", test_bolt_clearance);
+  guarded("test_hole_clearance", test_hole_clearance);
   guarded("test_large_body", test_large_body);
 }
 

@@ -16,9 +16,11 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 use super::{Document, ModelError, invalid};
-use crate::datum::Vec3;
+use crate::datum::{DatumPlane, Vec3};
 use crate::features::geom_ref::GeomRef;
-use crate::features::is_false;
+use crate::features::{OccurrencePath, is_false};
+use crate::ids::ComponentUid;
+use crate::joints::path_component;
 use crate::kernel::Kernel;
 
 /// An analysis kept in the document.
@@ -65,6 +67,10 @@ pub struct SectionAnalysis {
     /// A plane reference: an origin plane, a construction plane, a planar
     /// face or a fixed plane.
     pub plane: GeomRef,
+    /// The selected plane's occurrence, from the design root. Older
+    /// analyses without one resolve a component reference only if unique.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub occurrence: Option<OccurrencePath>,
     /// How far the section is from the plane along its normal, in mm.
     #[serde(default, skip_serializing_if = "is_zero")]
     pub offset: f64,
@@ -104,6 +110,51 @@ impl Analysis {
 }
 
 impl<K: Kernel> Document<K> {
+    /// Resolve an analysis reference in design coordinates. Modelling
+    /// features still use resolve_plane in their own component coordinates.
+    pub(crate) fn analysis_plane(
+        &self,
+        reference: &GeomRef,
+        occurrence: Option<&OccurrencePath>,
+    ) -> Result<DatumPlane, String> {
+        let plane = self.resolve_plane(reference)?;
+        let path = self.analysis_plane_occurrence(reference, occurrence)?;
+        let transform = self.path_transform(&path.0);
+        Ok(DatumPlane {
+            origin: transform.apply_point(plane.origin),
+            x_axis: transform.apply_vector(plane.x_axis),
+            y_axis: transform.apply_vector(plane.y_axis),
+        })
+    }
+
+    pub(crate) fn analysis_plane_occurrence(
+        &self,
+        reference: &GeomRef,
+        occurrence: Option<&OccurrencePath>,
+    ) -> Result<OccurrencePath, String> {
+        let owner = match reference {
+            GeomRef::Face { body, .. } => self.body_component(*body),
+            GeomRef::Datum(uid) => self.feature(*uid).map(|f| f.component),
+            _ => None,
+        };
+        let path = if let Some(path) = occurrence {
+            let component = path_component(self.assembly(), ComponentUid::ROOT, &path.0)?;
+            if owner.is_some_and(|owner| owner != component) {
+                return Err("the selected occurrence does not own the section plane".to_owned());
+            }
+            path.0.clone()
+        } else if let Some(owner) = owner {
+            let paths = self.assembly().paths_to(owner);
+            if paths.len() != 1 {
+                return Err("select an occurrence for the section plane's component".to_owned());
+            }
+            paths[0].clone()
+        } else {
+            Vec::new()
+        };
+        Ok(OccurrencePath(path))
+    }
+
     /// The analyses in the order they were added.
     pub fn analyses(&self) -> &[Analysis] {
         &self.state.analyses
@@ -111,7 +162,10 @@ impl<K: Kernel> Document<K> {
 
     /// A section's plane at the timeline marker, or why it cannot be found.
     pub fn section_plane(&self, section: &SectionAnalysis) -> Result<SectionPlane, String> {
-        let plane = self.resolve_plane(&section.plane)?;
+        if !section.offset.is_finite() {
+            return Err("the section offset must be finite".to_owned());
+        }
+        let plane = self.analysis_plane(&section.plane, section.occurrence.as_ref())?;
         let n = plane.normal();
         let origin = [0, 1, 2].map(|i| plane.origin[i] + n[i] * section.offset);
         // No -0 in the normal.
@@ -158,7 +212,7 @@ impl<K: Kernel> Document<K> {
     fn check_analysis_def(&self, def: &AnalysisDef) -> Result<(), ModelError> {
         match def {
             AnalysisDef::Section(section) => {
-                self.resolve_plane(&section.plane)
+                self.section_plane(section)
                     .map_err(|e| invalid(format!("the section's plane: {e}")))?;
             }
         }

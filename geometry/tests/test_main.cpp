@@ -155,6 +155,8 @@ int main() {
   // Walked roundings that are true rolling balls, with the port's patches
   // 0075-0077 (mitcad#121).
   test::fillet_rolling_ball_tests();
+  // The faces a run of features made, copied by a pattern.
+  test::face_copy_tests();
   for (const std::string& change : mitcad::geometry::input_changes()) {
     std::fprintf(stderr, "%s\n", change.c_str());
   }

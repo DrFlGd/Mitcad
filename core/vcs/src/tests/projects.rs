@@ -41,6 +41,7 @@ fn options(url: Option<&str>) -> CreateOptions {
         url: url.map(str::to_owned),
         push: true,
         shared: None,
+        local: None,
     }
 }
 
@@ -410,9 +411,11 @@ fn a_local_project_is_made_with_its_first_version() {
     // The shared settings in the first version (New Project's Live updates).
     let shared = json!({"edit_locks": {"idle_minutes": 20},
                         "live_updates": {"broker": "mqtts://broker.example.com"}});
+    let local = json!({"name": "Workshop", "sync": {"send_at_once": false, "check_minutes": 30},
+                       "live": {"mode": "broker", "broker": "mqtts://local.example.com", "prefix": "private"}});
     let answer = projects_run(
         json!({"cmd": "create_project", "dir": scratch.join("live"), "author": AUTHOR,
-               "shared": shared}),
+               "shared": shared, "local": local}),
         &Context::default(),
     );
     assert_eq!(answer["error"], Value::Null, "{answer}");
@@ -424,7 +427,31 @@ fn a_local_project_is_made_with_its_first_version() {
         settings["shared"]["live_updates"]["broker"],
         "mqtts://broker.example.com:8883"
     );
+    assert_eq!(settings["local"]["name"], "Workshop");
+    assert_eq!(settings["local"]["sync"]["send_at_once"], false);
+    assert_eq!(settings["local"]["sync"]["check_minutes"], 30);
+    assert_eq!(settings["local"]["live"]["prefix"], "private");
+    assert_eq!(
+        settings["live_updates"]["broker"],
+        "mqtts://local.example.com:8883"
+    );
     let marker = live.root().join(PROJECT_MARKER);
+    let marker_text = fs::read_to_string(&marker).unwrap();
+    assert!(!marker_text.contains("Workshop"));
+    assert!(!marker_text.contains("local.example.com"));
+    assert!(!marker_text.contains("send_at_once"));
+    let refused_local = projects::run(
+        &json!({"cmd": "create_project", "dir": scratch.join("bad-local"), "author": AUTHOR,
+                "local": {"sync": {"check_minutes": 1441}}})
+        .to_string(),
+        &Context::default(),
+        None,
+    );
+    assert!(
+        matches!(refused_local, Err(VcsError::Command(_))),
+        "{refused_local:?}"
+    );
+    assert!(!scratch.join("bad-local").exists());
     assert_eq!(
         live.history(&marker).unwrap().len(),
         1,
@@ -449,6 +476,51 @@ fn a_local_project_is_made_with_its_first_version() {
         "{refused:?}"
     );
     assert!(!taken.join(".mitcad").exists());
+
+    // The UI validates before creating a shared-folder remote: neither
+    // invalid nor valid settings validation creates a local or remote folder.
+    let checked = projects_run(
+        json!({"cmd": "validate_create_project", "dir": scratch.join("validate-local"),
+               "url": scratch.join("validate-remote.git"), "author": AUTHOR,
+               "shared": shared, "local": local}),
+        &Context::default(),
+    );
+    assert_eq!(checked["valid"], true);
+    let invalid = projects::run(
+        &json!({"cmd": "validate_create_project", "dir": scratch.join("validate-local"),
+                "url": scratch.join("validate-remote.git"), "author": AUTHOR,
+                "shared": {"live_updates": {"broker": "https://broker.example.com"}}})
+        .to_string(),
+        &Context::default(),
+        None,
+    );
+    assert!(matches!(invalid, Err(VcsError::Command(_))), "{invalid:?}");
+    assert!(!scratch.join("validate-local").exists());
+    assert!(!scratch.join("validate-remote.git").exists());
+
+    // Local settings written before a later failure are rolled back too,
+    // including files left over in .mitcad/local before the project existed.
+    let rollback = scratch.join("rollback");
+    fs::create_dir_all(rollback.join(".mitcad/local")).unwrap();
+    let old_name = "{\"name\": \"Existing name\"}\n";
+    fs::write(rollback.join(".mitcad/local/name.json"), old_name).unwrap();
+    fs::write(rollback.join("occupied"), "a file, not a design folder").unwrap();
+    let failed = projects::run(
+        &json!({"cmd": "create_project", "dir": rollback, "author": AUTHOR,
+                "local": local, "design": {"path": "occupied/part.mitcad", "text": design().to_json()}})
+        .to_string(),
+        &Context::default(),
+        None,
+    );
+    assert!(failed.is_err(), "{failed:?}");
+    assert!(!rollback.join(".git").exists());
+    assert!(!rollback.join(PROJECT_MARKER).exists());
+    assert_eq!(
+        fs::read_to_string(rollback.join(".mitcad/local/name.json")).unwrap(),
+        old_name
+    );
+    assert!(!rollback.join(".mitcad/local/mqtt.json").exists());
+    assert!(!rollback.join(".mitcad/local/sync.json").exists());
 
     // A cancel or a failure leaves the folder as it was.
     let control = Control::new();
@@ -495,7 +567,11 @@ fn a_cloud_project_is_made_on_an_empty_remote() {
     let url = remote.to_string_lossy().into_owned();
     let answer = projects_run(
         json!({"cmd": "create_project", "dir": scratch.join("a"), "author": AUTHOR,
-               "url": url, "design": {"path": "a.mitcad", "text": design().to_json()}}),
+               "url": url, "design": {"path": "a.mitcad", "text": design().to_json()},
+               "shared": {"edit_locks": {"enabled": false, "idle_minutes": 25, "poll_seconds": 40},
+                          "live_updates": {"broker": "mqtts://shared.example.com", "prefix": "team"}},
+               "local": {"name": "Cloud workshop", "sync": {"send_at_once": false, "check_minutes": 60},
+                         "live": {"mode": "off"}}}),
         &context(&cli),
     );
     assert_eq!(answer["error"], Value::Null, "{answer}");
@@ -511,6 +587,21 @@ fn a_cloud_project_is_made_on_an_empty_remote() {
     let a = scratch.join("a");
     assert_eq!(tip(&remote, "refs/heads/main"), tip(&a, "HEAD"));
     assert!(inspect_folder(&a).unwrap().cloud);
+    let repo = ProjectRepo::open(&a).unwrap();
+    let settings = run(&repo, json!({"cmd": "project_settings"}));
+    assert_eq!(settings["shared"]["edit_locks"]["enabled"], false);
+    assert_eq!(settings["shared"]["edit_locks"]["idle_minutes"], 25);
+    assert_eq!(settings["shared"]["edit_locks"]["poll_seconds"], 40);
+    assert_eq!(settings["shared"]["live_updates"]["prefix"], "team");
+    assert_eq!(settings["local"]["name"], "Cloud workshop");
+    assert_eq!(settings["local"]["sync"]["send_at_once"], false);
+    assert_eq!(settings["local"]["sync"]["check_minutes"], 60);
+    assert_eq!(settings["local"]["live"]["mode"], "off");
+    assert_eq!(settings["live_updates"], Value::Null);
+    assert_eq!(git(&a, &["ls-files", ".mitcad/local"]).unwrap(), "");
+    let sent_marker = git(&remote, &["show", "main:.mitcad/project.json"]).unwrap();
+    assert!(sent_marker.contains("shared.example.com"));
+    assert!(!sent_marker.contains("Cloud workshop"));
     clean(&a);
     git(&remote, &["fsck", "--strict", "--no-progress"]).unwrap();
 

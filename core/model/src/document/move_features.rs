@@ -44,6 +44,10 @@ use crate::links::OccurrenceLink;
 use crate::recompute::{Change, FeatureStatus, Read};
 use crate::transform::Transform;
 
+#[path = "move_destination.rs"]
+mod destination;
+pub(crate) use destination::MoveDestination;
+
 /// What one new component is to get: bodies of the source component at
 /// the timeline marker, and features besides those that made them.
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -933,6 +937,8 @@ fn follow_references(
             }
             FeatureDef::Combine(c) => !c.tool_links.is_empty(),
             FeatureDef::Sweep(s) => !s.body_links.is_empty(),
+            FeatureDef::SplitBody(s) => !s.tool_links.is_empty(),
+            FeatureDef::Extrude(x) => !x.object_links.is_empty(),
             def => has_origins(def),
         };
         if !changes {
@@ -962,6 +968,16 @@ fn follow_references(
             }
             FeatureDef::Sweep(sweep) => {
                 for (body, link) in &mut sweep.body_links {
+                    follow(link, &BTreeSet::from([body.feature]), own);
+                }
+            }
+            FeatureDef::SplitBody(split) => {
+                for (body, link) in &mut split.tool_links {
+                    follow(link, &BTreeSet::from([body.feature]), own);
+                }
+            }
+            FeatureDef::Extrude(extrude) => {
+                for (body, link) in &mut extrude.object_links {
                     follow(link, &BTreeSet::from([body.feature]), own);
                 }
             }

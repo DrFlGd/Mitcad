@@ -563,9 +563,10 @@ QJsonObject build(const QString& type, const QStringList& picks, const SketchMod
       return obj(std::abs(d.x) >= std::abs(d.y) ? QStringLiteral("horizontal") : QStringLiteral("vertical"),
                  {{"line", picks[0]}});
     }
-    const V2 d = *model.pointAt(picks[1]) - *model.pointAt(picks[0]);
-    return obj(std::abs(d.x) >= std::abs(d.y) ? QStringLiteral("horizontal_points")
-                                              : QStringLiteral("vertical_points"),
+    // The rule the auto constraints align centres by (mitcad#189).
+    return obj(alignsHorizontally(*model.pointAt(picks[0]), *model.pointAt(picks[1]))
+                   ? QStringLiteral("horizontal_points")
+                   : QStringLiteral("vertical_points"),
                {{"a", picks[0]}, {"b", picks[1]}});
   }
   if (type == QStringLiteral("symmetric")) {

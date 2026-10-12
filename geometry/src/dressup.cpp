@@ -214,7 +214,7 @@ ShapePtr healed(const Shape& result, const Shape& body) {
     ShapeFix_Shape fix(named.occt());
     detail::interruptible([&](const Message_ProgressRange& range) { fix.Perform(range); });
     const TopoDS_Shape fixed = fix.Shape();
-    if (fixed.IsNull() || !BRepCheck_Analyzer(fixed).IsValid()) {
+    if (fixed.IsNull() || !BRepCheck_Analyzer(fixed, true, true).IsValid()) {
       return nullptr;
     }
     const double before = volume_of(body.occt());
@@ -234,7 +234,7 @@ ShapePtr healed(const Shape& result, const Shape& body) {
 // The faces and edges of a shape that OCCT's checker rejects (a wire's
 // problem counts for its face), in any context.
 ShapeMap faulty_parts(const TopoDS_Shape& shape) {
-  BRepCheck_Analyzer analyzer(shape);
+  BRepCheck_Analyzer analyzer(shape, true, true);
   ShapeMap faulty;
   const auto bad = [](const NCollection_List<BRepCheck_Status>& statuses) {
     for (const BRepCheck_Status s : statuses) {
@@ -406,6 +406,7 @@ ShapePtr name_result(BRepFilletAPI_LocalOperation& maker, const std::string& fea
   namer.carry(maker, body);
   ShapeMap vertices;
   ShapeMap touched; // the faces at the contours' edges
+  const detail::EdgeFaces edge_faces(body);
   for (int ic = 1; ic <= maker.NbContours(); ++ic) {
     for (int ie = 1; ie <= maker.NbEdges(ic); ++ie) {
       const TopoDS_Edge& edge = maker.Edge(ic, ie);
@@ -415,7 +416,7 @@ ShapePtr name_result(BRepFilletAPI_LocalOperation& maker, const std::string& fea
       TopExp::MapShapes(edge, TopAbs_VERTEX, vertices);
       const int index = body.edge_index(edge);
       if (index >= 0) {
-        for (const int f : detail::faces_at_edge(body, index)) {
+        for (const int f : edge_faces.at(index)) {
           touched.Add(body.face(f));
         }
       }
@@ -429,8 +430,8 @@ ShapePtr name_result(BRepFilletAPI_LocalOperation& maker, const std::string& fea
   name_consumed_faces(maker, body, namer);
   namer.finish();
   // One check of a valid result: on a large body BRepCheck takes about as
-  // long as the fillet itself.
-  if (!BRepCheck_Analyzer(namer.result()).IsValid() &&
+  // long as the fillet itself (on OCCT's thread pool, mitcad#181).
+  if (!BRepCheck_Analyzer(namer.result(), true, true).IsValid() &&
       !inherited_faults_only(namer.result(), body.occt(), touched)) {
     if (!t_retry) {
       if (ShapePtr repaired = healed(*namer.shape(), body)) {

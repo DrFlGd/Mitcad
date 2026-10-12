@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: MIT
 #include "Selection.hpp"
 
+#include <algorithm>
+
 #include <QJsonObject>
 #include <QMap>
 #include <QStringList>
@@ -137,6 +139,54 @@ SelectKind preferredKind(const Selection& items) {
     }
   }
   return SelectKind::None;
+}
+
+bool sameEntry(const SelectionItem& a, const SelectionItem& b, const ItemResolver& resolve) {
+  if (a == b) {
+    return true;
+  }
+  if (a.kind != SelectKind::Profile || b.kind != SelectKind::Profile || a.owner != b.owner) {
+    return false;
+  }
+  if (a.name == b.name) {
+    return true; // placed by another occurrence, or by none
+  }
+  if (!resolve) {
+    return false;
+  }
+  const QString region = resolve(a);
+  return !region.isEmpty() && region == resolve(b);
+}
+
+bool containsEntry(const Selection& items, const SelectionItem& item, const ItemResolver& resolve) {
+  return std::any_of(items.cbegin(), items.cend(),
+                     [&](const SelectionItem& entry) { return sameEntry(entry, item, resolve); });
+}
+
+int removeEntry(Selection& items, const SelectionItem& item, const ItemResolver& resolve) {
+  const auto before = items.size();
+  items.erase(std::remove_if(items.begin(), items.end(),
+                             [&](const SelectionItem& entry) { return sameEntry(entry, item, resolve); }),
+              items.end());
+  return static_cast<int>(before - items.size());
+}
+
+bool toggleEntry(Selection& items, const SelectionItem& item, const ItemResolver& resolve) {
+  if (removeEntry(items, item, resolve) > 0) {
+    return false;
+  }
+  items.append(item);
+  return true;
+}
+
+Selection uniqueProfiles(const Selection& items, const ItemResolver& resolve) {
+  Selection unique;
+  for (const SelectionItem& item : items) {
+    if (item.kind != SelectKind::Profile || !containsEntry(unique, item, resolve)) {
+      unique.append(item);
+    }
+  }
+  return unique;
 }
 
 QString summarize(const Selection& items) {

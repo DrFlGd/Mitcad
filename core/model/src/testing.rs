@@ -90,6 +90,8 @@ pub struct MockKernel {
     pub calls: RefCell<BTreeMap<&'static str, usize>>,
     /// Operations that fail: "extrude", "join", "cut", "intersect", "fillet", "chamfer".
     pub fail: RefCell<BTreeSet<&'static str>>,
+    /// A boolean fails only when one target has this exact shape history.
+    pub boolean_fail_targets: RefCell<BTreeSet<String>>,
     /// Operations that fail as one whose allocation failed does (mitcad#80).
     pub out_of_memory: RefCell<BTreeSet<&'static str>>,
     /// Which targets a boolean touches, by index; all when None.
@@ -146,6 +148,9 @@ pub struct MockKernel {
     /// by edge name; `edge_middles` lists the shape's edges that have one
     /// (along y, 1 mm long).
     pub middles: RefCell<BTreeMap<String, [f64; 3]>>,
+    /// Copies of added material that stand on nothing (`supported_copies`):
+    /// their index among the copies of one call.
+    pub unsupported: RefCell<BTreeSet<usize>>,
 }
 
 impl MockShape {
@@ -289,15 +294,104 @@ fn set_edges<'a>(
 impl Kernel for MockKernel {
     type Shape = MockShape;
 
+    fn sheet_shape(
+        &self,
+        spec: &crate::sheet::SheetShapeSpec<'_>,
+        _prefix: &str,
+    ) -> Result<crate::sheet::SheetGeometry<MockShape>, KernelError> {
+        self.call("sheet_shape")?;
+        let mut solids = Vec::new();
+        for patch in spec.patches {
+            let crate::sheet::SheetEmbedding::Plane {
+                front_frame: frame,
+                front_to_back_sign,
+            } = &patch.embedding
+            else {
+                return Err(KernelError::Unsupported("mock cylindrical sheet"));
+            };
+            let start = 0.0;
+            let mut points = Vec::new();
+            for segment in patch
+                .regions
+                .iter()
+                .flat_map(|r| &r.loops)
+                .flat_map(|l| &l.edges)
+            {
+                let key = match &segment.piece.curve {
+                    crate::sheet::SheetCurveId::Sketch { segment, .. } => segment.clone(),
+                    crate::sheet::SheetCurveId::Generated { .. } => "c1".parse().expect("segment"),
+                };
+                let region = crate::profile::ProfileRegion {
+                    key: "r{c1}".parse().expect("region"),
+                    loops: vec![crate::profile::ProfileLoop {
+                        segments: vec![crate::profile::ProfileSegment {
+                            key,
+                            geometry: segment.curve.geometry.clone(),
+                        }],
+                    }],
+                };
+                let (min, max) = region.bounds();
+                for x in [min[0], max[0]] {
+                    for y in [min[1], max[1]] {
+                        for z in [start, start + spec.thickness] {
+                            let p = frame.point([x, y]);
+                            points.push(std::array::from_fn(|i| {
+                                p[i] + z * front_to_back_sign.sign() * frame.normal()[i]
+                            }));
+                        }
+                    }
+                }
+            }
+            solids.push(crate::sheet::SheetSolid {
+                membership: (0..patch.regions.len())
+                    .map(|region| crate::sheet::RegionMembership {
+                        domain: patch.domain,
+                        region,
+                    })
+                    .collect(),
+                shape: MockShape {
+                    history: format!(
+                        "sheet({:?}:{:?}:{start}..{})",
+                        patch.domain,
+                        frame,
+                        start + spec.thickness
+                    ),
+                    faces: ["sheet_front", "sheet_back"]
+                        .iter()
+                        .map(|role| {
+                            format!("{}:{role}({})", patch.domain.feature(), patch.domain.slot())
+                                .parse()
+                                .expect("sheet face name")
+                        })
+                        .collect(),
+                    edges: Vec::new(),
+                    parts: Vec::new(),
+                    bounds: Some(BoundingBox {
+                        min: std::array::from_fn(|i| {
+                            points
+                                .iter()
+                                .map(|p: &[f64; 3]| p[i])
+                                .fold(f64::INFINITY, f64::min)
+                        }),
+                        max: std::array::from_fn(|i| {
+                            points
+                                .iter()
+                                .map(|p| p[i])
+                                .fold(f64::NEG_INFINITY, f64::max)
+                        }),
+                    }),
+                },
+            });
+        }
+        Ok(crate::sheet::SheetGeometry {
+            solids,
+            diagnostics: Vec::new(),
+        })
+    }
+
     fn extrude(&self, spec: &ExtrudeSpec<'_>) -> Result<MockShape, KernelError> {
         self.call("extrude")?;
         let feature = spec.feature;
-        let up = spec.direction[2] >= 0.0;
-        let (z0, z1) = if up {
-            (spec.start, spec.end)
-        } else {
-            (-spec.end, -spec.start)
-        };
         let mut parts = Vec::new();
         for region in spec.regions {
             let start = FaceName::start(feature, region.key.clone());
@@ -319,6 +413,19 @@ impl Kernel for MockKernel {
                 faces.extend(sides);
             }
             let (min, max) = region.bounds();
+            // Profiles are in sketch coordinates; both their frame and
+            // the sweep direction are in the body's component space.
+            let mut corners: Vec<[f64; 3]> = Vec::with_capacity(8);
+            for u in [min[0], max[0]] {
+                for v in [min[1], max[1]] {
+                    let point = spec.frame.point([u, v]);
+                    for offset in [spec.start, spec.end] {
+                        corners.push(std::array::from_fn(|i| {
+                            point[i] + offset * spec.direction[i]
+                        }));
+                    }
+                }
+            }
             parts.push(MockShape {
                 history: format!(
                     "prism({feature}:{}..{})",
@@ -328,8 +435,15 @@ impl Kernel for MockKernel {
                 faces,
                 edges,
                 bounds: Some(BoundingBox {
-                    min: [min[0], min[1], z0],
-                    max: [max[0], max[1], z1],
+                    min: std::array::from_fn(|i| {
+                        corners.iter().map(|c| c[i]).fold(f64::INFINITY, f64::min)
+                    }),
+                    max: std::array::from_fn(|i| {
+                        corners
+                            .iter()
+                            .map(|c| c[i])
+                            .fold(f64::NEG_INFINITY, f64::max)
+                    }),
                 }),
                 parts: Vec::new(),
             });
@@ -371,6 +485,12 @@ impl Kernel for MockKernel {
             BooleanOp::Intersect => "intersect",
         };
         self.call(name)?;
+        if targets
+            .iter()
+            .any(|shape| self.boolean_fail_targets.borrow().contains(&shape.history))
+        {
+            return Err(KernelError::failed("target Boolean failed"));
+        }
         let touched = self
             .touch
             .borrow()
@@ -1037,8 +1157,17 @@ impl Kernel for MockKernel {
         spec: &ThreadSpec<'_>,
     ) -> Result<MockShape, KernelError> {
         self.call("thread")?;
+        // Extra clearance only when there is some (other specs stay as they were).
+        let clearance = if spec.radial_clearance != 0.0 || spec.flank_clearance != 0.0 {
+            format!(
+                " clearance {:.4}/{:.4}",
+                spec.radial_clearance, spec.flank_clearance
+            )
+        } else {
+            String::new()
+        };
         self.specs.borrow_mut().push(format!(
-            "thread {} pitch {} diameters {:.4}/{:.4}/{:.4} angle {:.6} right {} part {:?}",
+            "thread {} pitch {} diameters {:.4}/{:.4}/{:.4} angle {:.6} right {} part {:?}{clearance}",
             spec.faces
                 .iter()
                 .map(ToString::to_string)
@@ -1483,6 +1612,7 @@ impl Kernel for MockKernel {
             fallback: !(request.family.is_empty() || request.family == "Mock Sans"),
             ascender: 0.75,
             descender: -0.25,
+            cap_height: 0.0,
             line_spacing: 1.2,
             glyphs,
         })
@@ -1668,6 +1798,7 @@ impl Kernel for MockKernel {
         Some(MockKernel {
             measures: self.measures.clone(),
             fail: self.fail.clone(),
+            boolean_fail_targets: self.boolean_fail_targets.clone(),
             out_of_memory: self.out_of_memory.clone(),
             touch: self.touch.clone(),
             split: self.split.clone(),
@@ -1703,6 +1834,71 @@ impl Kernel for MockKernel {
                     length: 1.0,
                 })
             })
+            .collect())
+    }
+
+    // The faces a run of features made, copied by a pattern.
+    //
+    // The faces `after` has and `before` lacks are one added solid (with
+    // `after`'s bounds); the faces `before` has and `after` lacks one
+    // removed solid. The mock never has "material", only faces.
+    fn feature_changes(
+        &self,
+        before: &MockShape,
+        after: &MockShape,
+    ) -> Result<crate::kernel::FeatureChanges<MockShape>, KernelError> {
+        self.call("feature_changes")?;
+        let piece = |label: &str, from: &MockShape, lacking: &MockShape| {
+            let faces: Vec<FaceName> = from
+                .faces
+                .iter()
+                .filter(|f| !lacking.faces.contains(f))
+                .cloned()
+                .collect();
+            (!faces.is_empty()).then(|| MockShape {
+                history: format!("{label}({},{})", from.history, lacking.history),
+                edges: from
+                    .edges
+                    .iter()
+                    .filter(|(a, b)| faces.contains(a) && faces.contains(b))
+                    .cloned()
+                    .collect(),
+                faces,
+                bounds: from.bounds,
+                parts: Vec::new(),
+            })
+        };
+        Ok(crate::kernel::FeatureChanges {
+            added: piece("added", after, before)
+                .into_iter()
+                .map(|solid| crate::kernel::AddedMaterial {
+                    seam: Some(MockShape {
+                        history: format!("seam({})", solid.history),
+                        faces: Vec::new(),
+                        edges: Vec::new(),
+                        bounds: solid.bounds,
+                        parts: Vec::new(),
+                    }),
+                    solid,
+                })
+                .collect(),
+            removed: piece("removed", before, after).into_iter().collect(),
+        })
+    }
+
+    /// Copies stand on the body, except those whose index is in
+    /// `unsupported` (counted over the copies of one call).
+    fn supported_copies(
+        &self,
+        _body: &MockShape,
+        copies: &[(&MockShape, Option<&MockShape>)],
+    ) -> Result<Vec<Option<MockShape>>, KernelError> {
+        self.call("supported_copies")?;
+        let unsupported = self.unsupported.borrow();
+        Ok(copies
+            .iter()
+            .enumerate()
+            .map(|(i, (solid, _))| (!unsupported.contains(&i)).then(|| (*solid).clone()))
             .collect())
     }
 }

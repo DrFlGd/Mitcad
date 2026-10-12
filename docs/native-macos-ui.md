@@ -74,6 +74,27 @@ The sketch editor retains its existing shared marker and undo/merge
 workflow. Inspector command checkpoints do not replace that whole sketch
 edit transaction.
 
+Keyboard Shortcuts validates commands in their available contexts and keeps
+conflicting saved assignments visible for repair. Native menus and key
+dispatch use the registry's effective primary and alternate bindings.
+Recording, menu equivalents and event dispatch share the Qt/AppKit key
+conversion; Command remains Qt's portable Ctrl and physical Control its
+Meta. The recorder's Clear button removes a binding, so Backspace and
+forward Delete can themselves be assigned.
+
+With Browser or history focus, F2 renames and Backspace or forward Delete
+deletes through the shared controllers. Return retains activation/editing.
+Command+F opens native timeline search, sharing the query, component/status
+filters, result navigation and selection restoration with the Qt timeline.
+Text editors keep their normal editing keys; document shortcuts do not
+intercept input in an attached modal sheet. In Save with Description,
+Command+Return saves and plain Return inserts a newline.
+
+The #187 keyboard changes were integrated without executing builds or tests
+at the owner's request. The validation history below predates those changes;
+it is not runtime evidence for the keyboard changes. The outstanding manual
+scenarios are also listed in [the macOS checklist](macos-trackpad-checklist.md).
+
 ## Validation
 
 `app.ui-macos-native` starts and cancels Offset Plane through its familiar

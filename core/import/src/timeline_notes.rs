@@ -44,6 +44,9 @@ pub(crate) struct Notes {
     /// Base features made for another reason than an item's fallback, with
     /// the report's warning about them.
     warnings: Vec<(FeatureUid, String)>,
+    /// The items (report entries) suppressed in the file that came in as
+    /// suppressed features (mitcad#180).
+    suppressed: Vec<usize>,
 }
 
 /// How many items a base feature's note names; the rest are counted.
@@ -200,6 +203,12 @@ impl<K: crate::ImportKernel> Importer<'_, K> {
         }
     }
 
+    /// The item of report entry `at`, suppressed in the file, came in as
+    /// suppressed features (mitcad#180): they get its note.
+    pub(crate) fn note_suppressed(&mut self, at: usize) {
+        self.notes.suppressed.push(at);
+    }
+
     /// Gives the features the import made their notes from the report
     /// (at the end of the import).
     pub(crate) fn timeline_notes(&mut self) {
@@ -269,6 +278,18 @@ impl<K: crate::ImportKernel> Importer<'_, K> {
         for item in items.iter().filter(|i| i.outcome == Outcome::Partial) {
             for uid in item.features.iter().filter_map(|f| f.parse().ok()) {
                 push(&mut notes, uid, partly(item.note.as_deref()));
+            }
+        }
+        // Suppressed in the file (mitcad#180): their note (a partial one's
+        // says it already).
+        for &at in &self.notes.suppressed {
+            let item = &items[at];
+            if item.outcome != Outcome::Partial
+                && let Some(note) = item.note.as_deref()
+            {
+                for uid in item.features.iter().filter_map(|f| f.parse().ok()) {
+                    push(&mut notes, uid, sentence(note));
+                }
             }
         }
         // Only features there are (a fallback undone later is gone).

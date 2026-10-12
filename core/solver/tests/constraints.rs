@@ -419,6 +419,48 @@ fn point_line_and_line_line_distance() {
 }
 
 #[test]
+fn tangent_distance_is_the_gap_between_a_circle_and_a_line() {
+    let mut s = System::new();
+    let (l, _) = two_lines(&mut s, [0.0, 0.0, 10.0, 0.0], [0.0, 9.0, 10.0, 9.0]);
+    s.add_constraint(FixEntity(l)).unwrap();
+    // A circle above the line: its centre is fixed, so the gap sets its
+    // radius.
+    let c = s.add_point(4.0, 5.0);
+    s.add_constraint(FixPoint(c)).unwrap();
+    let circle = s.add_circle(c, 2.0).unwrap();
+    let gap = s
+        .add_constraint(TangentDistance {
+            circle,
+            line: l,
+            value: 1.0,
+        })
+        .unwrap();
+    solve_ok(&mut s);
+    assert_near(s.radius(circle).unwrap(), 4.0, "the gap sets the radius");
+    assert_near(s.measure(gap).unwrap(), 1.0, "measure");
+    // With the radius set instead, the centre moves: the gap is measured
+    // from the circle's nearest point, on the side the circle started on.
+    let mut s = System::new();
+    let (l, _) = two_lines(&mut s, [0.0, 0.0, 10.0, 0.0], [0.0, 9.0, 10.0, 9.0]);
+    s.add_constraint(FixEntity(l)).unwrap();
+    let c = s.add_point(4.0, -5.0);
+    let circle = s.add_circle(c, 2.0).unwrap();
+    s.add_constraint(Radius {
+        entity: circle,
+        value: 2.5,
+    })
+    .unwrap();
+    s.add_constraint(TangentDistance {
+        circle,
+        line: l,
+        value: 3.0,
+    })
+    .unwrap();
+    solve_ok(&mut s);
+    assert_near(pt(&s, c)[1], -5.5, "below the line at 3 + 2.5");
+}
+
+#[test]
 fn length_and_angle() {
     let mut s = System::new();
     let o = s.add_point(0.0, 0.0);
@@ -858,4 +900,23 @@ fn invalid_definitions_are_rejected() {
     s.remove_entity(l).unwrap();
     s.remove_point(a).unwrap();
     assert!(s.point(a).is_none());
+}
+
+#[test]
+fn violated_names_the_constraints_the_geometry_does_not_satisfy() {
+    let mut s = System::new();
+    let a = s.add_point(0.0, 0.0);
+    let b = s.add_point(10.0, 0.0);
+    let c = s.add_point(10.0, 5.0);
+    let d = s.add_point(0.0, 5.0);
+    let held = s.add_constraint(HorizontalPoints(a, b)).unwrap();
+    let broken = s.add_constraint(HorizontalPoints(b, c)).unwrap();
+    let also = s.add_constraint(VerticalPoints(a, d)).unwrap();
+    assert_eq!(s.violated(1e-6), vec![broken]);
+    assert!(!s.violated(1e-6).contains(&held) && !s.violated(1e-6).contains(&also));
+    // A tolerance above the miss accepts it.
+    assert!(s.violated(10.0).is_empty());
+    // After the solve nothing is violated.
+    solve_ok(&mut s);
+    assert!(s.violated(1e-6).is_empty());
 }

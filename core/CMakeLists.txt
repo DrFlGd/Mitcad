@@ -49,7 +49,11 @@ corrosion_add_cxxbridge(mitcad_bridge CRATE mitcad_ffi FILES
   # The process's memory against its limits (mitcad#80).
   memory.rs
   # Shaded meshes of faces (USDZ export, mitcad#123).
-  kernel/face_mesh.rs)
+  kernel/face_mesh.rs
+  # Sheet material construction (mitcad#206).
+  kernel/sheet.rs
+  # The faces a run of features made, copied by a pattern.
+  kernel/face_copy.rs)
 target_sources(mitcad_bridge PRIVATE
   cpp/bridge/boolean.cpp
   cpp/bridge/boolean.hpp
@@ -111,6 +115,14 @@ target_sources(mitcad_bridge PRIVATE
 target_sources(mitcad_bridge PRIVATE
   cpp/bridge/face_mesh.cpp
   cpp/bridge/face_mesh.hpp)
+# Sheet material construction (mitcad#206).
+target_sources(mitcad_bridge PRIVATE
+  cpp/bridge/sheet.cpp
+  cpp/bridge/sheet.hpp)
+# The faces a run of features made, copied by a pattern.
+target_sources(mitcad_bridge PRIVATE
+  cpp/bridge/face_copy.cpp
+  cpp/bridge/face_copy.hpp)
 target_include_directories(mitcad_bridge PUBLIC cpp)
 target_link_libraries(mitcad_bridge PUBLIC mitcad_geometry)
 # The bridge and the Rust library call each other, and a single-pass

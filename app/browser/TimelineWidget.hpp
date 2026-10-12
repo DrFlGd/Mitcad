@@ -4,6 +4,7 @@
 #include <QHash>
 #include <QPair>
 #include <QPoint>
+#include <QPointer>
 #include <QSet>
 #include <QString>
 #include <QStringList>
@@ -12,9 +13,11 @@
 
 #include "DocumentSnapshot.hpp"
 
+class QLabel;
 class QLineEdit;
 class QScrollArea;
 class QToolButton;
+class QTreeWidget;
 
 namespace mitcad {
 
@@ -32,8 +35,11 @@ class TimelineStrip;
 // opens again). Shift+click selects a run of features. A filter (mitcad#98)
 // shows only some components' features: the others take no room, a mark
 // stands for each run of them, and the marker and the playback buttons step
-// between the features shown. What the actions do is the
-// BrowserController's.
+// between the features shown. The search (mitcad#179) finds features by
+// name, type, component and status: a field beside the filter button
+// (Ctrl+F, Cmd+F on macOS), the matches outlined in the strip and listed
+// with their components over it, stepped through with Enter and the arrow
+// keys. What the actions do is the BrowserController's.
 class TimelineWidget : public QWidget {
   Q_OBJECT
 
@@ -75,6 +81,23 @@ public:
   bool cancelEditing();
   // Logs where the features and the marker are, for UI tests (when changed).
   void logLayout();
+  // The search (mitcad#179): opens the field with the keys in it (Ctrl+F in
+  // the timeline or the browser), or closes it, which clears it. Clearing
+  // the search brings back the scroll position and the selection it began
+  // with, unless something else was selected since.
+  void openSearch();
+  void closeSearch();
+  bool isSearchOpen() const;
+  // Other toolkit presentations use this same search and restoration state.
+  void beginExternalSearch();
+  void setSearchText(const QString& text);
+  QString searchText() const;
+  QString searchCountText() const;
+  QStringList searchMatches() const { return m_matches; }
+  int currentSearchMatch() const { return m_match; }
+  void stepSearch(int delta);
+  void goToMatch(int index);
+  void showSearchMenu(const QPoint& globalPosition);
 
 signals:
   void filterChanged();
@@ -94,9 +117,20 @@ signals:
   void reorderRequested(const QString& uid, int index);
   // A right click on a group's band or folded cell.
   void groupMenuRequested(const QString& name, const QPoint& globalPosition);
+  // A search began (its text is no longer empty): what is selected now
+  // comes back when it is cleared. A step to a match selects it as a click
+  // does (featuresClicked).
+  void searchStarted();
+  void searchChanged();
+  // The search was cleared after it selected matches, with nothing else
+  // selected since: the timeline shows its selection from before again;
+  // the rest of the window is to follow.
+  void searchRestored();
 
 protected:
   void changeEvent(QEvent* event) override;
+  bool eventFilter(QObject* watched, QEvent* event) override;
+  void resizeEvent(QResizeEvent* event) override;
 
 private:
   friend class TimelineStrip;
@@ -111,6 +145,20 @@ private:
                     const QHash<QString, QString>& occurrenceComponents) const;
   void showFilterMenu();
   void updateFilterButton();
+  // The search (mitcad#179): the field's text changed; the matches found
+  // again (after a change of the text or the timeline); a step to the
+  // previous or next match, or to one; the list of matches over the field;
+  // the field's menu of filters.
+  void searchTextChanged();
+  void endSearch();
+  void updateMatches();
+  void updateSearchCount();
+  void fillSearchList();
+  void showSearchList();
+  void hideSearchList();
+  void placeSearchList();
+  void showSearchMenu();
+  void logSearchList();
 
   const CommandContext& m_model;
   DocumentSnapshot m_snapshot; // the last rebuild's
@@ -128,6 +176,23 @@ private:
   bool m_subcomponents = false;
   QToolButton* m_filterButton = nullptr;
   QString m_loggedFilter;
+  // The search (mitcad#179).
+  QToolButton* m_searchButton = nullptr;
+  QWidget* m_searchBar = nullptr; // the field, the count and the step buttons
+  QLineEdit* m_searchField = nullptr;
+  QLabel* m_searchCount = nullptr;
+  QToolButton* m_searchPrevious = nullptr;
+  QToolButton* m_searchNext = nullptr;
+  QPointer<QTreeWidget> m_searchList; // over the window (its child), made when first shown
+  QStringList m_matches;     // in timeline order
+  int m_match = -1;          // the match stepped to
+  bool m_externalSearch = false; // Native presentation owns focus, results and scrolling.
+  bool m_searching = false;  // the field has a text
+  int m_savedScroll = 0;     // when the search began
+  QStringList m_savedSelection;
+  QString m_searchSelected;  // the match last selected by a step
+  QString m_loggedSearch;
+  QString m_loggedResults;
 };
 
 } // namespace mitcad

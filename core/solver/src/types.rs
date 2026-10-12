@@ -141,6 +141,14 @@ pub enum Constraint {
         b: EntityId,
         value: f64,
     },
+    /// The gap between a circle (or arc) and a line (meant for a line the
+    /// circle does not cross): the distance of its centre from the line
+    /// minus its radius.
+    TangentDistance {
+        circle: EntityId,
+        line: EntityId,
+        value: f64,
+    },
     /// Horizontal distance between two points.
     HorizontalDistance {
         a: PointId,
@@ -230,6 +238,7 @@ impl Constraint {
             Distance { value, .. }
             | PointLineDistance { value, .. }
             | LineDistance { value, .. }
+            | TangentDistance { value, .. }
             | HorizontalDistance { value, .. }
             | VerticalDistance { value, .. }
             | Length { value, .. }
@@ -253,6 +262,7 @@ impl Constraint {
             Distance { value, .. }
             | PointLineDistance { value, .. }
             | LineDistance { value, .. }
+            | TangentDistance { value, .. }
             | HorizontalDistance { value, .. }
             | VerticalDistance { value, .. }
             | Length { value, .. }

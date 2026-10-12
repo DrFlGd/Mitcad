@@ -419,12 +419,51 @@ std::vector<int> Shape::sorted_vertices(std::vector<int> vertices) const {
   return vertices;
 }
 
+// Below this many faces a reference is matched against every face's names.
+constexpr int kIndexedFaces = 64;
+
 std::vector<int> Shape::find_faces(const std::string& reference) const {
-  std::vector<std::pair<detail::ShapeKey, int>> keyed;
-  for (int i = 0; i < face_count(); ++i) {
-    if (face_matches(m_faceNames[static_cast<std::size_t>(i)], reference)) {
-      keyed.emplace_back(detail::shape_key(face(i)), i);
+  std::vector<int> matching;
+  if (face_count() < kIndexedFaces) {
+    for (int i = 0; i < face_count(); ++i) {
+      if (face_matches(m_faceNames[static_cast<std::size_t>(i)], reference)) {
+        matching.push_back(i);
+      }
     }
+  } else {
+    std::shared_ptr<const FaceIndex> index = m_faceIndex.get().value_or(nullptr);
+    if (!index) {
+      // The references a name matches (name_matches): the name, and the
+      // name up to each '#' in it.
+      auto made = std::make_shared<FaceIndex>();
+      for (int i = 0; i < face_count(); ++i) {
+        for (const std::string& name : m_faceNames[static_cast<std::size_t>(i)]) {
+          for (std::size_t end = 0; end <= name.size(); ++end) {
+            if (end < name.size() && name[end] != '#') {
+              continue;
+            }
+            std::vector<int>& faces = (*made)[name.substr(0, end)];
+            if (faces.empty() || faces.back() != i) {
+              faces.push_back(i);
+            }
+          }
+        }
+      }
+      index = made;
+      m_faceIndex.set(index);
+    }
+    const auto found = index->find(reference);
+    if (found != index->end()) {
+      matching = found->second;
+    }
+  }
+  // (One face needs no order: its key measures the face.)
+  if (matching.size() == 1) {
+    return matching;
+  }
+  std::vector<std::pair<detail::ShapeKey, int>> keyed;
+  for (const int i : matching) {
+    keyed.emplace_back(detail::shape_key(face(i)), i);
   }
   std::sort(keyed.begin(), keyed.end());
   std::vector<int> found;

@@ -483,6 +483,19 @@ pub struct Ref {
     pub context: Option<u64>,
 }
 
+/// A reference to an object of another document ([`Segment::context_ref_at`]).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ContextRef {
+    /// The object's id in the other document.
+    pub id: u64,
+    /// The external document's key (`MetaStream::external`).
+    pub key: u64,
+    /// The object's class GUID (upper case).
+    pub guid: String,
+    /// Offset after the reference.
+    pub end: usize,
+}
+
 /// One object of the BulkStream.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Object {
@@ -728,6 +741,64 @@ impl Segment {
             end: q,
             context,
         })
+    }
+
+    /// A reference to an object of another document at `p`, through an
+    /// assembly context (`01 id [str8 guid] 01 key 00 str8 guid 00`) whose
+    /// key is one of the MetaStream's external documents (mitcad#196). The
+    /// id is the object's in that document, so it is not looked up here:
+    /// the GUID after the key names its class (upper case).
+    pub fn context_ref_at(&self, d: &[u8], p: usize) -> Option<ContextRef> {
+        if d.get(p) != Some(&1) {
+            return None;
+        }
+        let id = u64_at(d, p + 1)?;
+        let mut q = p + 9;
+        if self.long_refs {
+            if d.get(q..q + 4) != Some(&[0x24, 0, 0, 0][..]) {
+                return None;
+            }
+            q += 40;
+        }
+        if d.get(q) != Some(&1) || d.get(q + 9..q + 14) != Some(&[0, 0x24, 0, 0, 0][..]) {
+            return None;
+        }
+        let key = u64_at(d, q + 1)?;
+        if !self.meta.external.iter().any(|x| x.key == key) || d.get(q + 50) != Some(&0) {
+            return None;
+        }
+        let guid = slice(d, q + 14, q + 50);
+        if !guid.is_ascii() {
+            return None;
+        }
+        Some(ContextRef {
+            id,
+            key,
+            guid: latin1(guid).to_uppercase(),
+            end: q + 51,
+        })
+    }
+
+    /// Every [`Segment::context_ref_at`] in `d[start..end]`, with its
+    /// offset.
+    pub fn context_refs_in(&self, d: &[u8], start: usize, end: usize) -> Vec<(usize, ContextRef)> {
+        let mut out = Vec::new();
+        if self.meta.external.is_empty() {
+            return out;
+        }
+        let mut p = start;
+        let end = end.min(d.len());
+        while p < end {
+            match self.context_ref_at(d, p) {
+                Some(r) => {
+                    let next = r.end;
+                    out.push((p, r));
+                    p = next;
+                }
+                None => p += 1,
+            }
+        }
+        out
     }
 
     /// All references found by scanning `d[start..end]` (a reference may

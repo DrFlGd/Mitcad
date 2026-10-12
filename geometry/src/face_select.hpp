@@ -10,6 +10,9 @@
 #include <vector>
 
 #include <Bnd_Box.hxx>
+#include <NCollection_IndexedDataMap.hxx>
+#include <NCollection_List.hxx>
+#include <TopTools_ShapeMapHasher.hxx>
 #include <TopoDS_Edge.hxx>
 #include <TopoDS_Face.hxx>
 #include <gp_Dir.hxx>
@@ -48,6 +51,21 @@ std::vector<int> tangent_closure(const Shape& body, std::vector<int> faces);
 
 // The faces of the body at an edge (one for a seam or a free edge).
 std::vector<int> faces_at_edge(const Shape& body, int edge);
+
+// The faces of every edge of the body, found once: for operations that ask
+// for the faces of many edges (faces_at_edge maps the whole body each time,
+// seconds for a thousand edges of a body of thousands of faces).
+class EdgeFaces {
+public:
+  explicit EdgeFaces(const Shape& body);
+  // As faces_at_edge(body, edge).
+  std::vector<int> at(int edge) const;
+
+private:
+  const Shape& m_body;
+  NCollection_IndexedDataMap<TopoDS_Shape, NCollection_List<TopoDS_Shape>, TopTools_ShapeMapHasher>
+      m_ancestors;
+};
 
 // The plane of a planar face with its normal pointing out of the material;
 // null for other surfaces.

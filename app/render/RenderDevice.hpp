@@ -17,10 +17,19 @@ struct RenderDevice {
   QString type; // CPU, CUDA, OPTIX, HIP, METAL, ONEAPI
   QString name;
   bool denoisesOnDevice = false;
+  bool metalRTAvailable = false;
+  bool metalRTDefault = false;
+  bool metalRT = false;
+  bool denoiserAvailable = false;
+  QString denoiserType;
+  QString denoiserName;
+  QString denoiserMessage;
+  bool denoiserExecuted = false;
 
   static RenderDevice fromJson(const QJsonObject& device);
   // "NVIDIA GeForce ... (CUDA)", or the CPU's name.
   QString label() const;
+  QString diagnostics() const; // Backend/MetalRT details, for logs rather than UI labels.
 };
 
 // The choice in the settings: "auto" (the default: the best GPU, else the

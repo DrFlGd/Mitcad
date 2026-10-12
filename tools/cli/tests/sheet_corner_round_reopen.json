@@ -1,0 +1,11 @@
+[
+  {"comment":"SPDX-License-Identifier: MIT. Reopen sheet contour modification and verify independent thickness-rule recompute."},
+  {"expect":{"feature":"F4","status":"ok","bodies":1}},
+  {"expect":{"body":"F3.b0","volume":2198.28318530718,"min":[0,0,-2],"max":[40,30,0]}},
+  {"expect":{"query":{"query":"sheet_state","body":"F3.b0"},"result":{"body":"F3.b0","owner":"C0","rules":"F1","status":"valid"}}},
+  {"cmd":"edit_feature","uid":"F1","def":{"type":"sheet_rules","thickness":3,"bend_radius":3,"allowance":{"type":"k_factor","k":0.3},"reference_side":"back","bend_relief":{"type":"rectangular","width":2,"depth":3},"corner_relief":{"type":"round","width":2,"depth":3}}},
+  {"expect":{"body":"F3.b0","volume":3297.4247779607695,"min":[0,0,-3],"max":[40,30,0]}},
+  {"cmd":"undo"},
+  {"expect":{"body":"F3.b0","volume":2198.28318530718,"min":[0,0,-2],"max":[40,30,0]}},
+  {"expect":{"query":{"query":"sheet_state","body":"F3.b0"},"result":{"body":"F3.b0","owner":"C0","rules":"F1","status":"valid"}}}
+]

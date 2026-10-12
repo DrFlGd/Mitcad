@@ -77,9 +77,14 @@ void test_axes() {
   CHECK(cut.pieces.size() == 1 &&
         near(volume(*cut.pieces.at(0).shape), kPi * 400 * 40 - kPi * (400 - 324) * 10));
 
-  // A profile across the axis fails; one through which the axis passes too.
-  RevolveSpec across = tube(kPi);
+  // A profile across the axis is swept in its parts on either side of it for a
+  // turn of less than half (a quarter turn of each half of the rectangle: half
+  // the cylinder), else it fails (the parts overlap); so does one the axis
+  // passes through.
+  RevolveSpec across = tube(kPi / 2);
   across.regions = {rectangle(1, -5, 0, 10, 30)};
+  CHECK(near(volume(*revolve(across)), kPi * 25 * 30 / 2, 1e-5));
+  across.angle1 = kPi;
   CHECK(throws_with([&] { revolve(across); }, "crosses the revolve axis"));
   across.axis = gp_Ax1(gp_Pnt(0, 10, 0), gp_Dir(0, 0, 1));
   CHECK(throws_with([&] { revolve(across); }, "passes through profile"));

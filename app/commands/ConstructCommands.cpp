@@ -88,6 +88,10 @@ const std::vector<Spec>& specs() {
       {"construct.plane_normal_point", "Plane Normal to Path at Point", "plane-path",
        "A plane across a path where it is nearest to a point", "construction_plane",
        "normal_at_point", {{"path", "Path", Field::Path}, {"point", "Point", Field::Point}}},
+      {"construct.plane_offset_point", "Offset Plane Through Point", "offset-plane",
+       "A plane parallel to a plane or planar face, through a point", "construction_plane",
+       "offset_through_point",
+       {{"plane", "Plane", Field::Plane}, {"point", "Point", Field::Point}}},
       // Axes
       {"construct.axis_cylinder", "Axis Through Cylinder/Cone/Torus", "construction-axis",
        "The axis of a cylinder, cone or torus", "construction_axis", "circular_face",

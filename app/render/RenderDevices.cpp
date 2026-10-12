@@ -41,6 +41,19 @@ std::string nameOf(const DeviceInfo& device) {
   return device.type == "CPU" ? device.name : device.name + " (" + device.type + ")";
 }
 
+// It denoises on a GPU (its own or another), not on the CPU.
+bool gpuDenoising(const DeviceInfo& device) {
+  return !device.denoiser.type.empty() && device.denoiser.type != "CPU";
+}
+
+// The GPU its denoiser runs on, for a message.
+std::string denoiserNameOf(const DeviceInfo& device) {
+  if (device.denoiser.name.empty() || device.denoiser.id == device.id) {
+    return nameOf(device);
+  }
+  return device.denoiser.name + " (" + device.denoiser.type + ")";
+}
+
 // The renderer's sink as one renderer sees it: once that renderer is
 // replaced, its frames no longer reach the sink.
 class DeviceSink : public FrameSink {
@@ -64,6 +77,11 @@ public:
   void finished(std::uint64_t view, int samples, double seconds) override {
     if (m_active) {
       m_sink.finished(view, samples, seconds);
+    }
+  }
+  void denoisingDevice(const DeviceInfo& device) override {
+    if (m_active) {
+      m_sink.denoisingDevice(device);
     }
   }
 
@@ -97,16 +115,13 @@ public:
   // starts.
   bool start(const DeviceInfo& device, std::string& error) {
     std::string why;
-    if (!startOn(device, why) && device.type != "CPU") {
+    if (!startOn(device, false, why)) {
       std::string cpuError;
-      if (!startOn(DeviceInfo(), cpuError)) {
+      if (!startOn(DeviceInfo(), true, cpuError)) {
         error = why + "; the CPU: " + cpuError;
         return false;
       }
       m_report(m_inner->device(), fallbackMessage(device, why));
-    } else if (!m_inner) {
-      error = why;
-      return false;
     }
     m_watcher = std::thread([this] { watch(); });
     return true;
@@ -181,12 +196,12 @@ private:
 
   // A renderer on the device (an empty one: the CPU) with its own sink;
   // false when it cannot start or its device failed at once.
-  bool startOn(const DeviceInfo& device, std::string& error) {
+  bool startOn(const DeviceInfo& device, bool cpuDenoising, std::string& error) {
     const bool first = !m_inner;
-    auto sink = std::make_shared<DeviceSink>(m_sink, first && !m_testFailure.empty()
+    auto sink = std::make_shared<DeviceSink>(m_sink, first && !cpuDenoising && !m_testFailure.empty()
                                                          ? std::function<void()>([this] { simulateFailure(); })
                                                          : std::function<void()>());
-    std::unique_ptr<Renderer> renderer = m_factory(*sink, device, error);
+    std::unique_ptr<Renderer> renderer = m_factory(*sink, device, cpuDenoising, error);
     if (!renderer) {
       return false;
     }
@@ -201,15 +216,15 @@ private:
         sink, std::move(renderer));
     m_inner = std::shared_ptr<Renderer>(pair, pair->second.get());
     m_innerSink = std::move(sink);
-    m_first = m_inner.get();
-    if (!first) {
-      m_first = nullptr;
-    }
+    m_first = first && !cpuDenoising ? m_inner.get() : nullptr;
     return true;
   }
 
   static std::string fallbackMessage(const DeviceInfo& device, const std::string& why) {
     return "Rendering on the CPU: " + nameOf(device) + " failed (" + why + ")";
+  }
+  static std::string denoisingMessage(const DeviceInfo& device, const std::string& why) {
+    return "Denoising on the CPU: Open Image Denoise on " + denoiserNameOf(device) + " failed (" + why + ")";
   }
 
   // The device's error, or the test hook's for the first renderer.
@@ -222,7 +237,8 @@ private:
 
   // The renderer's device failed and the CPU can take over (with the lock).
   bool replaceable(const Renderer& renderer) const {
-    return !m_fallbackFailed && (renderer.device().type != "CPU" || &renderer == m_first) &&
+    const DeviceInfo device = renderer.device();
+    return !m_fallbackFailed && (device.type != "CPU" || gpuDenoising(device) || &renderer == m_first) &&
            !failure(renderer).empty();
   }
 
@@ -234,8 +250,12 @@ private:
     m_changed.notify_all();
   }
 
-  // Watches the device: when it fails, the CPU takes over with what the
-  // failed one had.
+  // Watches the device: when it fails, another renderer takes over with
+  // what the failed one had. A GPU that also denoised on a GPU first gets
+  // the same GPU with CPU denoising (Cycles' error does not say whether the
+  // path tracer or the denoiser failed: both share the device), once; else,
+  // or when that fails too, the CPU. The test hook's failure is the path
+  // tracer's.
   void watch() {
     std::unique_lock<std::mutex> lock(m_mutex);
     while (!m_stop) {
@@ -245,11 +265,20 @@ private:
       }
       const DeviceInfo failed = m_inner->device();
       const std::string why = failure(*m_inner);
+      const bool simulated = m_inner.get() == m_first && m_simulated;
       std::shared_ptr<Renderer> old = m_inner;
       std::shared_ptr<DeviceSink> oldSink = m_innerSink;
       oldSink->retire();
       std::string error;
-      if (!startOn(DeviceInfo(), error)) {
+      std::string message = fallbackMessage(failed, why);
+      if (!m_denoisingRetried && failed.type != "CPU" && gpuDenoising(failed) && !simulated) {
+        m_denoisingRetried = true;
+        std::string retryError;
+        if (startOn(failed, true, retryError)) {
+          message = denoisingMessage(failed, why);
+        }
+      }
+      if (m_inner == old && !startOn(DeviceInfo(), true, error)) {
         m_fallbackFailed = true;
         lock.unlock();
         m_report(failed, "The render device failed (" + why + ") and the CPU could not take over (" + error + ")");
@@ -278,7 +307,7 @@ private:
       }
       const DeviceInfo now = m_inner->device();
       lock.unlock();
-      m_report(now, fallbackMessage(failed, why));
+      m_report(now, message);
       // The failed renderer ends here, not while the lock is held: its
       // session's thread may still deliver a frame (to its retired sink).
       old.reset();
@@ -298,6 +327,7 @@ private:
   const Renderer* m_first = nullptr;       // the first renderer, while it renders
   std::atomic<bool> m_simulated{false};
   bool m_fallbackFailed = false;
+  bool m_denoisingRetried = false; // the same GPU with CPU denoising took over once
   bool m_stop = false;
   std::thread m_watcher;
   // The scene as the renderer holds it: all its meshes and the bodies.

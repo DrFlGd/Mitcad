@@ -725,7 +725,7 @@ ShapePtr blend_bevels(const std::string& feature, const Shape& body, const Shape
   FaceNamer namer(replaced);
   namer.carry(*reshape.History(), chamfered);
   namer.finish();
-  if (!BRepCheck_Analyzer(namer.result()).IsValid()) {
+  if (!BRepCheck_Analyzer(namer.result(), true, true).IsValid()) {
     require_valid(namer.result(), "fillet"); // throws with the problem
   }
   return namer.shape();

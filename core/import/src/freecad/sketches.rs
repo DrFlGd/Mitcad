@@ -1215,6 +1215,7 @@ fn projected_of(curve: &Curve) -> Option<Projected> {
         Curve::Circle { center, radius } => Projected::Curve(Curve2::Circle {
             center: *center,
             radius: *radius,
+            start: 0.0,
         }),
         Curve::Arc { center, radius, .. } => {
             let (s, e) = (curve.point(PointPos::Start)?, curve.point(PointPos::End)?);

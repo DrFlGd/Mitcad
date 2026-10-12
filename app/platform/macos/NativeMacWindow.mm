@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: MIT
 #include "platform/NativeMacWindow.hpp"
+#include "NativeKeys.hpp"
 
 #import <AppKit/AppKit.h>
 #import <QuartzCore/QuartzCore.h>
@@ -13,6 +14,10 @@
 #include <QHash>
 #include <QKeySequence>
 #include <QImage>
+#include <QLineEdit>
+#include <QPlainTextEdit>
+#include <QTextEdit>
+#include <QAbstractSpinBox>
 #include <QNativeGestureEvent>
 #include <QOpenGLWidget>
 #include <QPointingDevice>
@@ -30,6 +35,7 @@ struct NativeMacWindowState;
 @public
   mitcad::mac::NativeMacWindowState* state;
 }
+- (BOOL)performKeyEquivalent:(NSEvent*)event;
 - (BOOL)dispatchConfirmation;
 - (BOOL)dispatchCancellation;
 - (BOOL)dispatchKeyboardEvent:(NSEvent*)event;
@@ -129,6 +135,8 @@ struct NativeMacWindowState;
 - (void)openSearch:(id)sender;
 - (void)chooseSearch:(id)sender;
 - (void)searchChanged:(id)sender;
+- (void)openTimelineSearchFilter:(id)sender;
+- (void)stepTimelineSearch:(id)sender;
 - (void)activateTree:(id)sender;
 - (void)clickHistoryFeature:(id)sender;
 - (void)stepHistory:(id)sender;
@@ -303,40 +311,8 @@ MITCADFloatingCard* floatingCard(NSString* identifier) {
   return card;
 }
 
-// Portable Ctrl means the platform's primary modifier (Command on macOS).
 void setShortcut(NSMenuItem* item, const QString& shortcut) {
-  const QKeySequence sequence = QKeySequence::fromString(shortcut, QKeySequence::PortableText);
-  if (sequence.isEmpty() || sequence.count() != 1) {
-    return;
-  }
-  const QKeyCombination combination = sequence[0];
-  const auto modifiers = combination.keyboardModifiers();
-  NSEventModifierFlags flags = 0;
-  if (modifiers.testFlag(Qt::ControlModifier)) flags |= NSEventModifierFlagCommand;
-  if (modifiers.testFlag(Qt::MetaModifier)) flags |= NSEventModifierFlagControl;
-  if (modifiers.testFlag(Qt::AltModifier)) flags |= NSEventModifierFlagOption;
-  if (modifiers.testFlag(Qt::ShiftModifier)) flags |= NSEventModifierFlagShift;
-  const int key = combination.key();
-  unichar character = 0;
-  switch (key) {
-  case Qt::Key_Return: case Qt::Key_Enter: character = NSCarriageReturnCharacter; break;
-  case Qt::Key_Escape: character = 0x1b; break;
-  case Qt::Key_Backspace: character = NSBackspaceCharacter; break;
-  case Qt::Key_Delete: character = NSDeleteFunctionKey; break;
-  case Qt::Key_Tab: character = NSTabCharacter; break;
-  case Qt::Key_Left: character = NSLeftArrowFunctionKey; break;
-  case Qt::Key_Right: character = NSRightArrowFunctionKey; break;
-  case Qt::Key_Up: character = NSUpArrowFunctionKey; break;
-  case Qt::Key_Down: character = NSDownArrowFunctionKey; break;
-  default:
-    if (key >= Qt::Key_F1 && key <= Qt::Key_F35) character = NSF1FunctionKey + key - Qt::Key_F1;
-    else if (key > 0 && key < 0x10000) character = QChar(ushort(key)).toLower().unicode();
-    break;
-  }
-  if (character != 0) {
-    item.keyEquivalent = [NSString stringWithCharacters:&character length:1];
-    item.keyEquivalentModifierMask = flags;
-  }
+  setKeyEquivalent(item, QKeySequence::fromString(shortcut, QKeySequence::PortableText));
 }
 
 int searchScore(const NativeMacAction& action, const QString& query) {
@@ -381,6 +357,11 @@ struct NativeMacWindowState {
   QHash<QString, int> treeIndex;
   QList<NativeMacHistoryItem> historyItems;
   QList<int> searchResults;
+  QList<NativeMacHistoryItem> timelineResults;
+  QSet<QString> timelineMatches;
+  bool timelineSearch = false;
+  NSPoint savedHistoryScroll = NSZeroPoint;
+  NSPoint savedBrowserScroll = NSZeroPoint;
   int historyMarker = 0;
   QStringList selectedHistory;
   QString historySelectionAnchor;
@@ -433,6 +414,8 @@ struct NativeMacWindowState {
   NSPopover* __strong searchPopover = nil;
   NSSearchField* __strong searchField = nil;
   NSTableView* __strong searchTable = nil;
+  NSStackView* __strong timelineSearchControls = nil;
+  NSTextField* __strong timelineSearchCount = nil;
   NSMenu* __strong mainMenu = nil;
   NSMenu* __strong previousMenu = nil;
   NSMenu* __strong previousServicesMenu = nil;
@@ -518,8 +501,69 @@ struct NativeMacWindowState {
 
   bool nativeModalBlocked() const {
     NSWindow* key = NSApp.keyWindow;
-    return window.attachedSheet != nil ||
+    return NSApp.modalWindow != nil || window.attachedSheet != nil ||
            (key != nil && (key.attachedSheet != nil || key.sheetParent != nil));
+  }
+
+  bool textEditing() const {
+    if ([window.firstResponder isKindOfClass:NSTextView.class]) return true;
+    // Qt editors can live inside the embedded viewport as CAD overlays.
+    NSView* responder = [window.firstResponder isKindOfClass:NSView.class] ? (NSView*)window.firstResponder : nil;
+    if (responder && [responder isDescendantOf:viewportHost]) {
+      QWidget* focus = QApplication::focusWidget();
+      return qobject_cast<QLineEdit*>(focus) || qobject_cast<QPlainTextEdit*>(focus) ||
+             qobject_cast<QTextEdit*>(focus) || qobject_cast<QAbstractSpinBox*>(focus);
+    }
+    return false;
+  }
+
+  bool dispatchShortcut(NSEvent* event) {
+    if (event.type != NSEventTypeKeyDown || event.window != window || NSApp.keyWindow != window ||
+        closing || nativeModalBlocked() || QApplication::activeModalWidget() || textEditing()) return false;
+    const QKeySequence pressed = keySequence(event);
+    if (pressed.isEmpty()) return false;
+    NSResponder* focus = window.firstResponder;
+    const bool browserFocus = focus == tree;
+    const bool historyFocus = focus == history || [focus isKindOfClass:MITCADHistoryFeatureButton.class];
+    const bool inHistory = [focus isKindOfClass:NSView.class] && [(NSView*)focus isDescendantOf:history];
+    if ((browserFocus || historyFocus || inHistory) && pressed == QKeySequence(QKeySequence::Find)) {
+      openSearch(true);
+      return true;
+    }
+    const auto combination = pressed[0];
+    if ((browserFocus || historyFocus) && combination.keyboardModifiers() == Qt::NoModifier) {
+      const auto key = combination.key();
+      if (key == Qt::Key_Delete || key == Qt::Key_Backspace || key == Qt::Key_F2) {
+        // Focus belongs to the collection itself, never its field editor.
+        if (!historyCanChange()) return true;
+        if (browserFocus && tree.selectedRow >= 0) {
+          MITCADTreeNode* node = [tree itemAtRow:tree.selectedRow];
+          const auto* item = node ? treeItem(node.key) : nullptr;
+          if (item && item->enabled) {
+            if (key == Qt::Key_F2) {
+              if (item->editable) [tree editColumn:0 row:tree.selectedRow withEvent:nil select:YES];
+            } else if (callbacks.treeDelete) callbacks.treeDelete(item->id);
+          }
+        } else if (historyFocus && !selectedHistory.isEmpty()) {
+          const QString uid = selectedHistory.back();
+          if (key == Qt::Key_F2) { if (callbacks.historyRename) callbacks.historyRename(uid); }
+          else if (callbacks.historyDelete) callbacks.historyDelete(uid);
+        }
+        return true;
+      }
+    }
+    const NativeMacAction* match = nullptr;
+    for (const auto& candidate : actions) {
+      if (!candidate.enabled || candidate.id == QStringLiteral("file.close")) continue;
+      for (const QString& shortcut : candidate.shortcuts) {
+        if (QKeySequence(shortcut, QKeySequence::PortableText) != pressed) continue;
+        if (match && match->id != candidate.id) return false;
+        match = &candidate;
+      }
+    }
+    if (!match) return false;
+    invoke(match->id);
+    return true;
   }
 
   bool historyCanChange() const {
@@ -600,6 +644,10 @@ struct NativeMacWindowState {
       MITCADHistoryFeatureButton* button = historyButtons[ns(item.id)];
       button.enabled = item.enabled && !item.filtered && !nativeModalBlocked();
       button.state = selectedHistory.contains(item.id) ? NSControlStateValueOn : NSControlStateValueOff;
+      button.wantsLayer = YES;
+      button.layer.cornerRadius = 5;
+      button.layer.borderWidth = timelineMatches.contains(item.id) ? 2 : 0;
+      button.layer.borderColor = NSColor.controlAccentColor.CGColor;
       button.alphaValue = item.suppressed || index >= historyMarker ? 0.42 : 1.0;
       QStringList description = {item.title};
       if (item.suppressed) description.append(QStringLiteral("Suppressed"));
@@ -1261,9 +1309,7 @@ struct NativeMacWindowState {
         const QString path = actionMenuPath(item);
         if (path.isEmpty()) continue;
         const QStringList parts = path.split(QLatin1Char('/'), Qt::SkipEmptyParts);
-        const bool standardClose = !item.shortcut.isEmpty() &&
-            QKeySequence(item.shortcut, QKeySequence::PortableText) == QKeySequence(QKeySequence::Close);
-        if (parts.isEmpty() || parts.front() != title || item.id == QStringLiteral("file.close") || standardClose) continue;
+        if (parts.isEmpty() || parts.front() != title || item.id == QStringLiteral("file.close")) continue;
         QString prefix = title;
         NSMenu* target = menu;
         for (int index = 1; index < parts.size(); ++index) {
@@ -1369,7 +1415,7 @@ struct NativeMacWindowState {
     const QStringList groups = sketching
         ? QStringList{QStringLiteral("CREATE"), QStringLiteral("MODIFY"), QStringLiteral("CONSTRAINTS"),
                       QStringLiteral("INSPECT"), QStringLiteral("INSERT"), QStringLiteral("SELECT"), QStringLiteral("FINISH SKETCH")}
-        : QStringList{QStringLiteral("CREATE"), QStringLiteral("MODIFY"), QStringLiteral("ASSEMBLE"),
+        : QStringList{QStringLiteral("CREATE"), QStringLiteral("MODIFY"), QStringLiteral("SHEET METAL"), QStringLiteral("ASSEMBLE"),
                       QStringLiteral("CONSTRUCT"), QStringLiteral("INSPECT"), QStringLiteral("INSERT"),
                       QStringLiteral("MAKE"), QStringLiteral("SELECT")};
     CGFloat x = ribbonInset;
@@ -1619,9 +1665,22 @@ struct NativeMacWindowState {
     searchTable.delegate = delegate;
     searchTable.target = delegate;
     searchTable.doubleAction = @selector(chooseSearch:);
+    searchTable.action = @selector(chooseSearch:);
     searchTable.accessibilityLabel = @"Commands";
     NSScrollView* results = scroll(searchTable);
     [view addSubview:results];
+    timelineSearchCount = label(@"");
+    NSButton* filters = [NSButton buttonWithTitle:@"Filters…" target:delegate action:@selector(openTimelineSearchFilter:)];
+    NSButton* previous = [NSButton buttonWithTitle:@"Previous" target:delegate action:@selector(stepTimelineSearch:)];
+    NSButton* next = [NSButton buttonWithTitle:@"Next" target:delegate action:@selector(stepTimelineSearch:)];
+    previous.tag = -1;
+    next.tag = 1;
+    timelineSearchControls = [NSStackView stackViewWithViews:@[filters, previous, next, timelineSearchCount]];
+    timelineSearchControls.translatesAutoresizingMaskIntoConstraints = NO;
+    timelineSearchControls.orientation = NSUserInterfaceLayoutOrientationHorizontal;
+    timelineSearchControls.spacing = 8;
+    timelineSearchControls.hidden = YES;
+    [view addSubview:timelineSearchControls];
     [NSLayoutConstraint activateConstraints:@[
       [searchField.leadingAnchor constraintEqualToAnchor:view.leadingAnchor constant:12],
       [searchField.trailingAnchor constraintEqualToAnchor:view.trailingAnchor constant:-12],
@@ -1629,11 +1688,19 @@ struct NativeMacWindowState {
       [results.topAnchor constraintEqualToAnchor:searchField.bottomAnchor constant:8],
       [results.leadingAnchor constraintEqualToAnchor:view.leadingAnchor constant:6],
       [results.trailingAnchor constraintEqualToAnchor:view.trailingAnchor constant:-6],
-      [results.bottomAnchor constraintEqualToAnchor:view.bottomAnchor constant:-6]
+      [results.bottomAnchor constraintEqualToAnchor:view.bottomAnchor constant:-42],
+      [timelineSearchControls.leadingAnchor constraintEqualToAnchor:view.leadingAnchor constant:12],
+      [timelineSearchControls.trailingAnchor constraintEqualToAnchor:view.trailingAnchor constant:-12],
+      [timelineSearchControls.bottomAnchor constraintEqualToAnchor:view.bottomAnchor constant:-8]
     ]];
   }
 
   void fillSearch() {
+    if (timelineSearch) {
+      if (callbacks.timelineSearchChanged) callbacks.timelineSearchChanged(qt(searchField.stringValue));
+      [searchTable reloadData];
+      return;
+    }
     searchResults.clear();
     const QString query = qt(searchField.stringValue).trimmed().toCaseFolded();
     for (int index = 0; index < actions.size(); ++index) {
@@ -1652,15 +1719,25 @@ struct NativeMacWindowState {
     }
   }
 
-  void openSearch() {
+  void openSearch(bool timeline = false) {
     if (nativeModalBlocked()) return;
     buildSearch();
-    searchField.stringValue = @"";
+    if (searchPopover.shown && timelineSearch && !timeline && callbacks.timelineSearchClosed) callbacks.timelineSearchClosed();
+    const bool reopening = searchPopover.shown && timelineSearch == timeline;
+    timelineSearch = timeline;
+    timelineSearchControls.hidden = !timeline;
+    searchField.placeholderString = timeline ? @"Search timeline: name, type, in:component, is:status" : @"Search commands";
+    searchField.accessibilityIdentifier = timeline ? @"native.timelineSearch" : @"native.commandSearch";
+    searchField.identifier = searchField.accessibilityIdentifier;
+    searchTable.accessibilityLabel = timeline ? @"Timeline search results" : @"Commands";
+    if (timeline && callbacks.timelineSearchOpened) callbacks.timelineSearchOpened();
+    if (timeline) setCardVisible(historyCard, true);
+    if (!reopening) searchField.stringValue = @"";
     fillSearch();
     [searchPopover showRelativeToRect:NSMakeRect(window.contentView.bounds.size.width / 2 - 1,
                                                1, 2, 2)
                               ofView:window.contentView preferredEdge:NSRectEdgeMaxY];
-    searchField.window.identifier = @"native.commandSearchWindow";
+    searchField.window.identifier = timeline ? @"native.timelineSearchWindow" : @"native.commandSearchWindow";
     [searchField.window makeKeyWindow];
     [searchField.window makeFirstResponder:searchField];
     [searchField selectText:nil];
@@ -1705,7 +1782,7 @@ void NativeMacWindow::setActions(const QList<NativeMacAction>& actions) {
     for (int index = 0; index < actions.size(); ++index) {
       const auto& a = actions[index]; const auto& b = m_state->actions[index];
       if (a.id != b.id || a.label != b.label || a.menu != b.menu || a.group != b.group ||
-          a.workspace != b.workspace || a.shortcut != b.shortcut || a.submenu != b.submenu ||
+          a.workspace != b.workspace || a.shortcut != b.shortcut || a.shortcuts != b.shortcuts || a.submenu != b.submenu ||
           a.toolbarPinned != b.toolbarPinned || a.toolbarOrder != b.toolbarOrder) { structureChanged = true; break; }
     }
   }
@@ -1788,6 +1865,34 @@ void NativeMacWindow::showInspector(bool shown) { m_state->setCardVisible(m_stat
 void NativeMacWindow::showSidebar(bool shown) { m_state->setCardVisible(m_state->sidebarCard, shown); }
 void NativeMacWindow::showHistory(bool shown) { m_state->setCardVisible(m_state->historyCard, shown); }
 void NativeMacWindow::showCommandSearch() { m_state->openSearch(); }
+void NativeMacWindow::showTimelineSearch() { m_state->openSearch(true); }
+void NativeMacWindow::setTimelineSearchResults(const QString& text, const QString& count,
+                                               const QList<NativeMacHistoryItem>& results, int selected) {
+  auto& state = *m_state;
+  state.timelineResults = results;
+  state.timelineMatches.clear();
+  for (const auto& item : results) state.timelineMatches.insert(item.id);
+  state.updateHistoryAppearance();
+  if (!state.timelineSearch) return;
+  if (qt(state.searchField.stringValue) != text) state.searchField.stringValue = ns(text);
+  state.timelineSearchCount.stringValue = ns(count);
+  [state.searchTable reloadData];
+  if (selected >= 0 && selected < results.size()) {
+    [state.searchTable selectRowIndexes:[NSIndexSet indexSetWithIndex:NSUInteger(selected)] byExtendingSelection:NO];
+    [state.searchTable scrollRowToVisible:selected];
+  } else [state.searchTable deselectAll:nil];
+}
+void NativeMacWindow::saveTimelineSearchScroll() {
+  m_state->savedHistoryScroll = m_state->historyScroll.contentView.bounds.origin;
+  m_state->savedBrowserScroll = m_state->tree.enclosingScrollView.contentView.bounds.origin;
+}
+void NativeMacWindow::restoreTimelineSearchScroll() {
+  [m_state->historyScroll.contentView scrollToPoint:m_state->savedHistoryScroll];
+  [m_state->historyScroll reflectScrolledClipView:m_state->historyScroll.contentView];
+  NSScrollView* browser = m_state->tree.enclosingScrollView;
+  [browser.contentView scrollToPoint:m_state->savedBrowserScroll];
+  [browser reflectScrolledClipView:browser.contentView];
+}
 void* NativeMacWindow::nativeWindow() const { return (__bridge void*)m_state->window; }
 void* NativeMacWindow::nativeInspectorHost() const { return (__bridge void*)m_state->inspectorHost; }
 
@@ -1796,8 +1901,12 @@ void* NativeMacWindow::nativeInspectorHost() const { return (__bridge void*)m_st
 using namespace mitcad::mac;
 
 @implementation MITCADDocumentWindow
+- (BOOL)performKeyEquivalent:(NSEvent*)event {
+  if (state && state->dispatchShortcut(event)) return YES;
+  return [super performKeyEquivalent:event];
+}
 - (void)sendEvent:(NSEvent*)event {
-  if (state && state->dispatchGesture(event)) return;
+  if (state && (state->dispatchGesture(event) || state->dispatchShortcut(event))) return;
   [super sendEvent:event];
 }
 - (BOOL)dispatchConfirmation {
@@ -2447,11 +2556,21 @@ using namespace mitcad::mac;
   }
 }
 - (NSInteger)numberOfRowsInTableView:(NSTableView*)table {
-  return state && table == state->searchTable ? state->searchResults.size() : 0;
+  return state && table == state->searchTable ? (state->timelineSearch ? state->timelineResults.size() : state->searchResults.size()) : 0;
 }
 - (NSView*)tableView:(NSTableView*)table viewForTableColumn:(NSTableColumn*)column row:(NSInteger)row {
   (void)column;
-  if (!state || table != state->searchTable || row < 0 || row >= state->searchResults.size()) return nil;
+  if (!state || table != state->searchTable || row < 0) return nil;
+  if (state->timelineSearch) {
+    if (row >= state->timelineResults.size()) return nil;
+    const auto& result = state->timelineResults[int(row)];
+    NSTextField* field = label(ns(result.title + QStringLiteral("   ") + result.detail));
+    field.lineBreakMode = NSLineBreakByTruncatingTail;
+    field.toolTip = ns(result.title + QStringLiteral("\n") + result.detail);
+    field.accessibilityIdentifier = ns(QStringLiteral("native.timelineSearchResult.") + result.id);
+    return field;
+  }
+  if (row >= state->searchResults.size()) return nil;
   const NativeMacAction* command = &state->actions[state->searchResults[int(row)]];
   NSTableCellView* cell = [table makeViewWithIdentifier:@"nativeListCell" owner:self];
   if (!cell) {
@@ -2473,6 +2592,7 @@ using namespace mitcad::mac;
   return cell;
 }
 - (BOOL)tableView:(NSTableView*)table shouldSelectRow:(NSInteger)row {
+  if (state && table == state->searchTable && state->timelineSearch) return row >= 0 && row < state->timelineResults.size();
   return state && table == state->searchTable && row >= 0 && row < state->searchResults.size() &&
          state->actions[state->searchResults[int(row)]].enabled;
 }
@@ -2497,12 +2617,37 @@ using namespace mitcad::mac;
   (void)sender;
   if (!state) return;
   NSInteger row = state->searchTable.selectedRow;
+  if (state->timelineSearch) {
+    if (row >= 0 && row < state->timelineResults.size() && state->callbacks.timelineSearchSelected)
+      state->callbacks.timelineSearchSelected(int(row));
+    [state->searchField.window makeFirstResponder:state->searchField];
+    return;
+  }
+  // Command search keeps its existing double-click/Return activation.
+  if ([sender isKindOfClass:NSTableView.class] && NSApp.currentEvent.clickCount < 2) return;
   if (row < 0 || row >= state->searchResults.size()) return;
   const auto& command = state->actions[state->searchResults[int(row)]];
   if (!command.enabled) return;
   const QString id = command.id;
   [state->searchPopover close];
   state->invoke(id);
+}
+- (void)openTimelineSearchFilter:(id)sender {
+  if (state && state->timelineSearch && state->callbacks.timelineSearchFilterMenu)
+    state->callbacks.timelineSearchFilterMenu(menuPoint((NSView*)sender));
+  if (state && state->searchPopover.shown) [state->searchField.window makeFirstResponder:state->searchField];
+}
+- (void)stepTimelineSearch:(id)sender {
+  if (state && state->timelineSearch && state->callbacks.timelineSearchStepped)
+    state->callbacks.timelineSearchStepped(int([sender tag]));
+  if (state) [state->searchField.window makeFirstResponder:state->searchField];
+}
+- (void)popoverDidClose:(NSNotification*)notification {
+  if (!state || notification.object != state->searchPopover || !state->timelineSearch) return;
+  state->timelineSearch = false;
+  state->timelineMatches.clear();
+  state->updateHistoryAppearance();
+  if (!state->closing && state->callbacks.timelineSearchClosed) state->callbacks.timelineSearchClosed();
 }
 - (void)searchChanged:(id)sender { (void)sender; if (state) state->fillSearch(); }
 - (void)controlTextDidChange:(NSNotification*)notification {
@@ -2521,8 +2666,25 @@ using namespace mitcad::mac;
 }
 - (BOOL)control:(NSControl*)control textView:(NSTextView*)textView doCommandBySelector:(SEL)selector {
   (void)textView;
-  if (!state || control != state->searchField) return NO;
+  if (!state) return NO;
+  if (control != state->searchField) {
+    if (selector == @selector(cancelOperation:) && [control isKindOfClass:NSTextField.class]) {
+      const auto* item = state->treeItem(control.identifier);
+      if (item) {
+        ((NSTextField*)control).stringValue = ns(item->title);
+        [control.window makeFirstResponder:state->tree];
+        return YES;
+      }
+    }
+    return NO;
+  }
   if (selector == @selector(cancelOperation:)) { [state->searchPopover close]; return YES; }
+  if (state->timelineSearch && (selector == @selector(insertNewline:) || selector == @selector(moveDown:) ||
+                                selector == @selector(moveUp:) || selector == @selector(insertNewlineIgnoringFieldEditor:))) {
+    const bool previous = selector == @selector(moveUp:) || (NSApp.currentEvent.modifierFlags & NSEventModifierFlagShift);
+    if (state->callbacks.timelineSearchStepped) state->callbacks.timelineSearchStepped(previous ? -1 : 1);
+    return YES;
+  }
   if (selector == @selector(insertNewline:)) { [self chooseSearch:control]; return YES; }
   if (selector == @selector(moveDown:) || selector == @selector(moveUp:)) {
     const int step = selector == @selector(moveDown:) ? 1 : -1;

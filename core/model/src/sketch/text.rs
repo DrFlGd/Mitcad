@@ -25,7 +25,7 @@ use super::regions::RegionCurve;
 use super::tools::RectangleMode;
 use super::{EntityIndex, EntityKind, SketchText, TextAlign, TextVAlign};
 use crate::ids::EntityUid;
-use crate::kernel::{FontGlyphs, FontRequest};
+use crate::kernel::{FontGlyphs, FontRequest, Glyph};
 use crate::topo::CurveId;
 
 /// A glyph contour placed in the sketch: its pieces in order.
@@ -196,6 +196,58 @@ impl ArcLength {
 /// How a glyph's outline (em units) maps into the sketch.
 type Placement = Box<dyn Fn(P2) -> P2>;
 
+/// The horizontal extent of a glyph's outline (em units, from its pen): the
+/// range of the pieces' end points; None for a glyph without outline.
+fn ink(glyph: &Glyph) -> Option<(f64, f64)> {
+    let xs = glyph
+        .contours
+        .iter()
+        .flatten()
+        .flat_map(|piece| [piece.first(), piece.last()])
+        .flatten()
+        .map(|p| p[0]);
+    xs.fold(None, |range, x| match range {
+        None => Some((x, x)),
+        Some((lo, hi)) => Some((lo.min(x), hi.max(x))),
+    })
+}
+
+/// A line of characters broken at its spaces into lines no wider than
+/// `limit`. A word wider than that stays whole on a line of its own; the
+/// spaces a break replaces are dropped.
+fn wrap_line(
+    line: &[usize],
+    chars: &[char],
+    advance: &dyn Fn(usize) -> f64,
+    limit: f64,
+) -> Vec<Vec<usize>> {
+    let width = |part: &[usize]| part.iter().map(|k| advance(*k)).sum::<f64>();
+    let mut lines: Vec<Vec<usize>> = Vec::new();
+    let mut current: Vec<usize> = Vec::new();
+    let mut at = 0;
+    while at < line.len() {
+        let spaces = line[at..].iter().take_while(|k| chars[**k] == ' ').count();
+        let word = line[at + spaces..]
+            .iter()
+            .take_while(|k| chars[**k] != ' ')
+            .count();
+        let (gap, word) = (
+            &line[at..at + spaces],
+            &line[at + spaces..at + spaces + word],
+        );
+        if current.is_empty() || width(&current) + width(gap) + width(word) <= limit + 1e-9 {
+            current.extend_from_slice(gap);
+            current.extend_from_slice(word);
+        } else {
+            lines.push(std::mem::take(&mut current));
+            current.extend_from_slice(word);
+        }
+        at += spaces + word.len();
+    }
+    lines.push(current);
+    lines
+}
+
 /// Lays a text out from its font's glyphs. `points` and `curves` are the
 /// solved sketch (for frames and paths).
 pub fn layout(
@@ -211,7 +263,13 @@ pub fn layout(
             "{what}: the font gave no glyph for some characters"
         ));
     }
-    let h = text.height;
+    // The em, from the capital height when `height` is that.
+    let cap = text.cap_height && glyphs.cap_height > 0.0;
+    let h = if cap {
+        text.height / glyphs.cap_height
+    } else {
+        text.height
+    };
     let stretch = 1.0 + text.spacing / 100.0;
     let advance = |k: usize| glyphs.glyphs[k].advance * stretch * h;
     // Lines of character indices.
@@ -224,10 +282,28 @@ pub fn layout(
         }
     }
     let width = |line: &[usize]| line.iter().map(|k| advance(*k)).sum::<f64>();
+    if text.wrap
+        && text.path.is_none()
+        && let [o, a, ..] = text.frame[..]
+        && let (Some(o), Some(a)) = (points.get(&o), points.get(&a))
+        && dist(*o, *a) > 0.0
+    {
+        let limit = dist(*o, *a);
+        lines = lines
+            .iter()
+            .flat_map(|line| wrap_line(line, &chars, &advance, limit))
+            .collect();
+    }
     let (ascender, descender, spacing) = (
         glyphs.ascender * h,
         glyphs.descender * h,
-        glyphs.line_spacing * h,
+        // One line to the next: the font's own spacing, or with `cap_height`
+        // the ascender and descender without a line gap.
+        if cap {
+            (glyphs.ascender - glyphs.descender) * h
+        } else {
+            glyphs.line_spacing * h
+        },
     );
     // Where each character's pen starts and how its outline maps into the
     // sketch: a point p of the glyph (em units) goes to `place(k, p)`.
@@ -292,8 +368,15 @@ pub fn layout(
             }
             (o, unit(sub(a, o)), unit(sub(b, o)), Some((w, hh)))
         };
-        let block_top = ascender;
-        let block_bottom = last_baseline + descender;
+        // The block's extent for the vertical alignment: the font's
+        // ascender down to its descender, or the capitals' top down to the
+        // last baseline.
+        let block_top = if cap { text.height } else { ascender };
+        let block_bottom = if cap {
+            last_baseline
+        } else {
+            last_baseline + descender
+        };
         // The first baseline's height above the origin.
         let first = match (box_size, text.valign) {
             (None, TextVAlign::Baseline) => 0.0,
@@ -304,22 +387,40 @@ pub fn layout(
             (Some(_), TextVAlign::Bottom) => -block_bottom,
             (Some((_, hh)), TextVAlign::Middle) => hh / 2.0 - (block_top + block_bottom) / 2.0,
         };
-        let line_start = |w: f64| match (box_size, text.align) {
-            (None, TextAlign::Left) | (Some(_), TextAlign::Left) => 0.0,
-            (None, TextAlign::Center) => -w / 2.0,
-            (None, TextAlign::Right) => -w,
-            (Some((bw, _)), TextAlign::Center) => (bw - w) / 2.0,
-            (Some((bw, _)), TextAlign::Right) => bw - w,
+        // The extent of a line along its baseline: its pen advance, or
+        // with `cap_height` the extent of its outlines (the first and the
+        // last character with an outline).
+        let extent = |line: &[usize]| -> (f64, f64) {
+            if !cap {
+                return (0.0, width(line));
+            }
+            let mut x = 0.0;
+            let (mut l, mut r) = (f64::INFINITY, f64::NEG_INFINITY);
+            for &k in line {
+                if let Some((lo, hi)) = ink(&glyphs.glyphs[k]) {
+                    l = l.min(x + lo * h);
+                    r = r.max(x + hi * h);
+                }
+                x += advance(k);
+            }
+            if l <= r { (l, r) } else { (0.0, x) }
+        };
+        let line_start = |(l, r): (f64, f64)| match (box_size, text.align) {
+            (_, TextAlign::Left) => -l,
+            (None, TextAlign::Center) => -(l + r) / 2.0,
+            (None, TextAlign::Right) => -r,
+            (Some((bw, _)), TextAlign::Center) => bw / 2.0 - (l + r) / 2.0,
+            (Some((bw, _)), TextAlign::Right) => bw - r,
         };
         // Extents of the block for flips.
-        let widths: Vec<f64> = lines.iter().map(|l| width(l)).collect();
-        let left = widths
+        let extents: Vec<(f64, f64)> = lines.iter().map(|l| extent(l)).collect();
+        let left = extents
             .iter()
-            .map(|w| line_start(*w))
+            .map(|e| line_start(*e) + e.0)
             .fold(f64::INFINITY, f64::min);
-        let right = widths
+        let right = extents
             .iter()
-            .map(|w| line_start(*w) + w)
+            .map(|e| line_start(*e) + e.1)
             .fold(f64::NEG_INFINITY, f64::max);
         let (x_mid, y_mid) = (
             (left + right) / 2.0,
@@ -328,7 +429,7 @@ pub fn layout(
         let (flip_x, flip_y) = (text.flip_x, text.flip_y);
         for (i, line) in lines.iter().enumerate() {
             let baseline = first - spacing * i as f64;
-            let mut x = line_start(widths[i]);
+            let mut x = line_start(extents[i]);
             for &k in line {
                 let pen = [x, baseline];
                 placements.push((

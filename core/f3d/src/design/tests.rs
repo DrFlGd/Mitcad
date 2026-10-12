@@ -5,7 +5,7 @@
 use serde_json::{Value, json};
 
 use super::classes::*;
-use super::stream::{AttrValue, MetaStream, Segment};
+use super::stream::{AttrValue, MetaStream};
 use super::*;
 
 const ROOT: &str = "98542EB9-A4F2-4137-A808-DBB5B3CD6159";
@@ -44,121 +44,7 @@ fn cat(parts: &[&[u8]]) -> Vec<u8> {
     parts.concat()
 }
 
-/// Object id, class index, body, sub-chunk body.
-type TestObject = (u64, usize, Vec<u8>, Option<Vec<u8>>);
-
-/// A synthetic design: class table and objects.
-#[derive(Default)]
-pub(crate) struct Doc {
-    classes: Vec<(String, String, u32)>,
-    objects: Vec<TestObject>,
-    external: Vec<(u64, String)>,
-    form_b: bool,
-}
-
-impl Doc {
-    pub(crate) fn class(&mut self, guid: &str, parent: &str, version: u32) -> usize {
-        self.classes.push((guid.into(), parent.into(), version));
-        self.classes.len() - 1
-    }
-
-    fn class_index(&self, guid: &str) -> usize {
-        self.classes.iter().position(|c| c.0 == guid).unwrap()
-    }
-
-    pub(crate) fn obj(&mut self, id: u64, guid: &str, body: Vec<u8>) {
-        let c = self.class_index(guid);
-        self.objects.push((id, c, body, None));
-    }
-
-    fn obj_sub(&mut self, id: u64, guid: &str, body: Vec<u8>, sub: Vec<u8>) {
-        let c = self.class_index(guid);
-        self.objects.push((id, c, body, Some(sub)));
-    }
-
-    fn streams(&self) -> (Vec<u8>, Vec<u8>) {
-        let mut bulk = Vec::new();
-        let mut index = Vec::new();
-        let mut subs = Vec::new();
-        for (id, class, body, sub) in &self.objects {
-            index.push((*id, bulk.len() as u64));
-            bulk.extend(s8(&(256 + class).to_string()));
-            bulk.extend(id.to_le_bytes());
-            bulk.extend(s8(""));
-            bulk.extend(body);
-            if let Some(sub) = sub {
-                subs.push((*id, bulk.len() as u64));
-                bulk.extend(s8(&(256 + class).to_string()));
-                bulk.extend(id.to_le_bytes());
-                bulk.extend(sub);
-            }
-        }
-        let mut m = s8("Design");
-        m.extend(u32b(0));
-        m.extend(s16("00000000-0000-0000-0000-000000000000"));
-        if self.form_b {
-            m.extend(u32b(1234));
-            m.extend(u32b(8));
-            m.extend(u32b(36));
-            m.extend(u32b((2704 << 18) | (1 << 6)));
-        } else {
-            m.extend(u32b(0x0800_0000 | 20981));
-            m.extend(u32b(5));
-        }
-        m.extend(s8("Design"));
-        m.extend(s8(if self.form_b { "Design" } else { "" }));
-        m.extend(u32b(1));
-        m.extend(u32b(0));
-        m.extend(u32b(self.classes.len() as u32));
-        for (i, (guid, parent, version)) in self.classes.iter().enumerate() {
-            m.extend(s8(guid));
-            m.extend(s8(parent));
-            m.extend(u32b(*version));
-            m.extend(s8("Design"));
-            let ids: Vec<u64> = self
-                .objects
-                .iter()
-                .filter(|o| o.1 == i)
-                .map(|o| o.0)
-                .collect();
-            m.extend(u32b(ids.len() as u32));
-            for id in ids {
-                m.extend(id.to_le_bytes());
-            }
-        }
-        m.extend(u32b(0)); // named roots
-        for list in [&index, &subs] {
-            m.extend(u32b(list.len() as u32));
-            for (id, off) in list.iter() {
-                m.extend(id.to_le_bytes());
-                m.extend(off.to_le_bytes());
-            }
-        }
-        let next = self.objects.iter().map(|o| o.0).max().unwrap_or(0) + 1;
-        m.extend(next.to_le_bytes());
-        m.extend(u32b(self.external.len() as u32));
-        for (key, urn) in &self.external {
-            m.extend(key.to_le_bytes());
-            for s in ["a", "b", urn.as_str(), "c"] {
-                m.extend(s16(s));
-            }
-            m.extend(u32b(1));
-        }
-        if self.form_b {
-            m.extend(u32b(2));
-            m.extend(s8("Application"));
-            m.extend(u32b(2));
-            m.extend(s8("Server"));
-            m.extend(u32b(6));
-        }
-        (m, bulk)
-    }
-
-    pub(crate) fn segment(&self) -> Segment {
-        let (m, b) = self.streams();
-        Segment::parse(&m, b).unwrap()
-    }
-}
+pub(crate) use super::writer::DesignWriter as Doc;
 
 /// A timeline item tail: `i32 result_no | str16 base | u32 index | u32 0 |
 /// str16 custom | u32 0 | flags | ref health`.
@@ -702,31 +588,181 @@ fn parameters_of_class_version_8() {
     assert!(dec.parameters[1].is_user());
 }
 
+/// A text parameter keeps a default expression with a unit (`1 mm`) in the
+/// string after its role: it is no comment, and the parameter has no number.
 #[test]
-fn curve_kinds() {
-    let seg = sample().segment();
-    // The end of a curve's sketch-curve part: flags, the two f32 1.0 and
-    // the sketch reference; the kind 22 bytes before the pair.
-    let curve = |kind: u8| {
-        let mut d = vec![7u8; 30];
-        d.extend([0, 0, 0, 0, 0, 0, kind, 0, 0, 0, 1, 0, 0, 0, 0, 1]);
-        d.extend([0; 12]);
-        d.extend([0, 0, 0x80, 0x3f, 0, 0, 0x80, 0x3f]);
-        d.extend([0; 6]);
-        d
-    };
-    assert_eq!(sketch::curve_kind(&seg, &curve(0)), Some(0));
-    assert_eq!(sketch::curve_kind(&seg, &curve(1)), Some(1));
-    assert_eq!(sketch::curve_kind(&seg, &curve(2)), Some(2));
-    assert_eq!(sketch::curve_kind(&seg, &curve(9)), None);
-    // A reference where the flags would be: another layout.
-    let mut d = curve(1);
-    let at = d.len() - 6 - 8 - 24;
-    d.splice(at..at + 11, r(32));
-    assert_eq!(sketch::curve_kind(&seg, &d), None);
-    assert_eq!(sketch::curve_kind(&seg, &[0; 40]), None);
+fn text_parameters_have_no_comment_from_the_default_expression() {
+    let mut d = Doc::default();
+    d.class(ROOT, "", 0);
+    d.class(PARAMETER, ROOT, 8);
+    d.class(PARAMETER_LIST, ROOT, 4);
+    d.class(PARAMETER_HOLDER, ROOT, 0);
+    d.obj(30, PARAMETER_HOLDER, vec![0, 0]);
+    d.obj(32, PARAMETER_LIST, vec![0, 0]);
+    let mut p = parameter_v8(1, Some(30), "text", "Text1-Text", "note", "Text", "d1", 0.0);
+    // The string after the role: `1 mm` instead of the empty one.
+    let at = p
+        .windows(s16("Text1-Text").len())
+        .position(|w| w == s16("Text1-Text"))
+        .unwrap()
+        + s16("Text1-Text").len();
+    p.splice(at..at + 4, s16("1 mm"));
+    d.obj(40, PARAMETER, p);
+    let dec = decode::decode(&d.segment());
+    assert_eq!(dec.parameter_failures, 0);
+    let p = &dec.parameters[0];
+    assert_eq!((p.unit.as_str(), p.name.as_str()), ("Text", "d1"));
+    assert_eq!(p.comment.as_deref(), Some("note"));
+    // Class version 7: the comment place holds the same string.
+    let mut d = Doc::default();
+    d.class(ROOT, "", 0);
+    d.class(PARAMETER, ROOT, 7);
+    d.class(PARAMETER_LIST, ROOT, 1);
+    d.class(PARAMETER_HOLDER, ROOT, 0);
+    d.obj(30, PARAMETER_HOLDER, vec![0, 0]);
+    d.obj(32, PARAMETER_LIST, vec![0, 0]);
+    d.obj(
+        40,
+        PARAMETER,
+        parameter(1, Some(30), "text", "Text1-Text", "1 mm", "Text", "d1", 0.0),
+    );
+    let dec = decode::decode(&d.segment());
+    assert_eq!(dec.parameter_failures, 0);
+    assert_eq!(dec.parameters[0].comment, None);
 }
 
+/// A sketch's own name (`ref anchor | str16 name | 0 | u32 n | ref[n]`) is
+/// the item's name when the user gave one, and its absence means the default
+/// name even where the item's tail still holds a custom one.
+#[test]
+fn sketch_items_are_named_by_their_sketch() {
+    for (name, custom, want) in [
+        ("Plate", "", "Plate"),
+        ("Plate", "stale", "Plate"),
+        ("", "stale", "Sketch1"),
+        ("", "", "Sketch1"),
+    ] {
+        let mut d = Doc::default();
+        for (g, v) in [
+            (ROOT, 0),
+            (TIMELINE, 3),
+            (FEATURE_MANAGER, 1),
+            (SKETCH_FEATURE, 1),
+            (HEALTH, 1),
+            (SKETCH, 18),
+            (SKETCH_NAME_ANCHOR, 1),
+            (USAGE, 1),
+        ] {
+            d.class(g, if g == ROOT { "" } else { ROOT }, v);
+        }
+        d.obj(1, FEATURE_MANAGER, cat(&[&[0, 0], &r(2)]));
+        d.obj(3, TIMELINE, cat(&[&[0, 0], &r(1), &u32b(1), &r(10)]));
+        d.obj(
+            10,
+            SKETCH_FEATURE,
+            cat(&[
+                &[0, 0],
+                &r(60),
+                &tail(-1, "Sketch", 1, custom, [0, 0, 0], 11),
+            ]),
+        );
+        d.obj(11, HEALTH, vec![0, 0]);
+        d.obj(50, USAGE, vec![0, 0]);
+        d.obj(51, USAGE, vec![0, 0]);
+        d.obj(60, SKETCH_NAME_ANCHOR, vec![0, 0]);
+        d.obj(
+            40,
+            SKETCH,
+            cat(&[
+                &[0, 0],
+                &r(10),
+                &[0, 0, 0, 0, 0, 0, 1],
+                &r(60),
+                &s16(name),
+                &[0],
+                &u32b(2),
+                &r(50),
+                &r(51),
+            ]),
+        );
+        let seg = d.segment();
+        let sk = seg.object(40).unwrap();
+        assert_eq!(sketch::sketch_name(&seg, sk).as_deref(), Some(name));
+        let dec = decode::decode(&seg);
+        assert_eq!(
+            dec.timeline[0].name.as_deref(),
+            Some(want),
+            "{name:?} {custom:?}"
+        );
+    }
+}
+
+/// A component without a name of its own: the text before it is the
+/// material's.
+#[test]
+fn component_name_is_the_text_after_the_last_identifier() {
+    let guid = "2F4C1849-1A5A-4F6C-A086-8DD445CBF94B";
+    let object = |name: &str| {
+        cat(&[
+            &[0, 0, 0],
+            &s16(guid),
+            &s16(guid),
+            &u32b(0),
+            &s16("PrismMaterial-018"),
+            &[1, 1, 5, 0, 0, 0, 0, 0, 0, 0, 0],
+            &s16(guid),
+            &s16(name),
+            &[0, 1, 9],
+        ])
+    };
+    assert_eq!(
+        decode::component_name(&object("Bracket")).as_deref(),
+        Some("Bracket")
+    );
+    assert_eq!(decode::component_name(&object("")), None);
+}
+
+/// A curve's flags (mitcad#33, mitcad#186) in a design whose sketch-curve
+/// class has version 9: fixed, linked and the kind before the block, which
+/// can hold references (here the offset chain `32`).
+#[test]
+fn curve_flags_in_a_design() {
+    let mut doc = Doc::default();
+    doc.class(ROOT, "", 0);
+    doc.class(SKETCH_CURVE, ROOT, 9);
+    doc.class(OFFSET_CHAIN, ROOT, 0);
+    doc.obj(32, OFFSET_CHAIN, vec![0, 0]);
+    let seg = doc.segment();
+    let curve = |kind: u8, fixed: u8, linked: u8, refs: &[u64]| {
+        let mut d = vec![7u8; 30];
+        d.extend([fixed, 1, linked, 0, 0, kind, 0, 0, 0]);
+        d.push(1);
+        d.extend(u32b(refs.len() as u32));
+        for &id in refs {
+            d.extend(r(id));
+        }
+        d.extend([0; 13]);
+        d.extend([0, 0, 0x80, 0x3f, 0, 0, 0x80, 0x3f]);
+        d.extend([0; 5]);
+        d
+    };
+    let flags = |d: &[u8]| sketch::curve_flags(&seg, d).map(|f| (f.kind, f.fixed, f.linked));
+    assert_eq!(flags(&curve(0, 0, 0, &[])), Some((0, false, false)));
+    assert_eq!(flags(&curve(1, 0, 0, &[])), Some((1, false, false)));
+    assert_eq!(flags(&curve(2, 1, 0, &[])), Some((2, true, false)));
+    assert_eq!(flags(&curve(0, 0, 1, &[])), Some((0, false, true)));
+    // The block's references move nothing that is read from its start.
+    let with_chain = curve(1, 1, 1, &[32]);
+    assert_eq!(flags(&with_chain), Some((1, true, true)));
+    assert_eq!(
+        sketch::curve_flags(&seg, &with_chain).map(|f| f.refs),
+        Some(vec![32])
+    );
+    // Values that are no flags, and no sketch-curve part at all.
+    assert_eq!(flags(&curve(9, 0, 0, &[])), None);
+    assert_eq!(flags(&curve(0, 2, 0, &[])), None);
+    assert_eq!(flags(&[0; 40]), None);
+}
 #[test]
 fn sketch_geometry() {
     let seg = sample().segment();
@@ -743,10 +779,176 @@ fn sketch_geometry() {
     let c = sketch::parse_constraint(&seg, seg.object(54).unwrap()).unwrap();
     assert_eq!((c.sketch, c.mask, c.entities), (40, 0x40, vec![52]));
     let dm = sketch::parse_dimension(&seg, seg.object(55).unwrap()).unwrap();
-    assert_eq!((dm.holder, dm.entities.clone()), (56, vec![50, 51]));
+    assert_eq!((dm.holder, dm.entities.clone()), (Some(56), vec![50, 51]));
     assert_eq!(dm.expression.as_deref(), Some("10 mm"));
     assert_eq!(dm.text, Some([1.0, 0.5, 0.0]));
     assert_eq!(dm.flags.unwrap().len(), 21);
+}
+
+/// A sketch spline's fit-point and handle lists (mitcad#186): the points
+/// between its ends, the handle lines, each list closing with the
+/// reference back to the spline; a spline without them has none.
+#[test]
+fn spline_fit_point_and_handle_lists() {
+    let mut doc = sample();
+    doc.class(SKETCH_SPLINE, SKETCH_CURVE, 3);
+    doc.class(SPLINE_FIT_POINTS, ROOT, 1);
+    doc.class(SPLINE_HANDLES, ROOT, 0);
+    doc.class(SKETCH_LINE_3, SKETCH_LINE, 0);
+    for (id, x) in [(170, 0.0), (171, 3.0), (172, 1.5)] {
+        doc.obj(
+            id,
+            SKETCH_POINT,
+            cat(&[
+                &[0, 1],
+                &u32b(1),
+                &s8("pt_tag"),
+                &s8("IntrinsicMetaTypeuint64"),
+                &7u64.to_le_bytes(),
+                &r(53),
+                &[0, 0, 0, 0, 1, 0, 1, 0],
+                &f64s(&[x, 0.0, 0.0]),
+                &r(40),
+            ]),
+        );
+    }
+    let counted = |v: &[f64], width: usize| {
+        cat(&[
+            &u32b((v.len() / width) as u32),
+            &u32b((v.len() / width) as u32),
+            &u32b(8),
+            &f64s(v),
+        ])
+    };
+    let nurbs = cat(&[
+        &u32b(3),
+        &f64s(&[1e-9]),
+        &counted(&[0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0], 1),
+        &counted(&[], 1),
+        &counted(
+            &[0.0, 0.0, 0.0, 1.0, 2.0, 0.0, 2.0, 2.0, 0.0, 3.0, 0.0, 0.0],
+            3,
+        ),
+        &[0x11, 0xea],
+    ]);
+    // Spline 173 has both lists (174: one fit point, 175: one handle line 176),
+    // spline 177 none.
+    doc.obj(
+        173,
+        SKETCH_SPLINE,
+        cat(&[&[0, 0], &r(174), &r(175), &r(170), &r(171), &nurbs]),
+    );
+    doc.obj(174, SPLINE_FIT_POINTS, cat(&[&[0, 0], &r(172), &r(173)]));
+    doc.obj(175, SPLINE_HANDLES, cat(&[&[0, 0], &r(176), &r(173)]));
+    doc.obj(176, SKETCH_LINE_3, vec![0, 0]);
+    doc.obj(
+        177,
+        SKETCH_SPLINE,
+        cat(&[&[0, 0], &r(170), &r(171), &nurbs]),
+    );
+    let seg = doc.segment();
+    let splines = sketch::splines(&seg, &sketch::points(&seg));
+    let s = &splines[&173];
+    assert_eq!((s.start_point, s.end_point), (Some(170), Some(171)));
+    assert_eq!(
+        (s.fit_points.clone(), s.handles.clone()),
+        (vec![172], vec![176])
+    );
+    assert!(s.has_fit_points());
+    let plain = &splines[&177];
+    assert!(plain.fit_points.is_empty() && plain.handles.is_empty());
+    assert!(!plain.has_fit_points());
+}
+
+/// A line of the subclass `16DEFC4D` (mitcad#178): its own members (two
+/// point references) after the root part, the line's in the sub-chunk
+/// after the chunk's header.
+#[test]
+fn line_subclass_in_its_sub_chunk() {
+    let mut doc = sample();
+    doc.class(SKETCH_LINE_2, SKETCH_LINE, 0);
+    let geometry = [1.0, 2.0, 0.0, 3.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, -1.0];
+    doc.obj_sub(
+        58,
+        SKETCH_LINE_2,
+        cat(&[&[0, 0], &r(50), &r(51)]),
+        cat(&[&u32b(0), &f64s(&geometry), &r(51), &r(50), &r(40)]),
+    );
+    let seg = doc.segment();
+    let ln = sketch::lines(&seg)[&58];
+    assert_eq!(ln.start, [1.0, 2.0, 0.0]);
+    assert_eq!(ln.end(), [4.0, 2.0, 0.0]);
+    assert_eq!((ln.end_point, ln.start_point), (Some(51), Some(50)));
+}
+
+/// A driven dimension (mitcad#178): a null reference (one zero byte)
+/// where the parameter holder would be, then its entities; its string is
+/// the value it shows. The sketch's dimension comes in driven.
+#[test]
+fn driven_dimension() {
+    let mut doc = sample();
+    let mut flags = vec![0u8; 21];
+    flags[15] = 0x40;
+    let body = cat(&[
+        &[0, 0],
+        &s16("2.00 mm"),
+        &f64s(&[1.0, 0.5, 0.0]),
+        &flags,
+        &[0],
+        &u32b(2),
+        &r(50),
+        &r(51),
+        &[0],
+    ]);
+    let o = doc
+        .objects
+        .iter_mut()
+        .find(|o| o.0 == 55)
+        .expect("the sample's dimension");
+    o.2 = body;
+    let seg = doc.segment();
+    let dm = sketch::parse_dimension(&seg, seg.object(55).unwrap()).unwrap();
+    assert_eq!((dm.holder, dm.entities.clone()), (None, vec![50, 51]));
+    assert_eq!(dm.expression.as_deref(), Some("2.00 mm"));
+    assert_eq!(dm.text, Some([1.0, 0.5, 0.0]));
+    let (infos, _) = sketch::sketch_details(&seg);
+    let d = &infos[0].detail.dimensions.as_ref().unwrap()[0];
+    assert_eq!(d.dimension_type.as_deref(), Some("SketchLinearDimension"));
+    assert_eq!(d.is_driving, Some(false));
+    let f = d.f3d.as_ref().unwrap();
+    assert_eq!(f.expression.as_deref(), Some("2.00 mm"));
+}
+
+/// A distance between a line and a point with no parameter holder is a
+/// driving dimension (the reference dumps' offset dimensions without a
+/// parameter), not a driven one.
+#[test]
+fn offset_dimension_without_a_holder_is_driving() {
+    let mut doc = sample();
+    let mut flags = vec![0u8; 21];
+    flags[15] = 0x40;
+    let body = cat(&[
+        &[0, 0],
+        &s16("2.00 mm"),
+        &f64s(&[1.0, 0.5, 0.0]),
+        &flags,
+        &[0],
+        &u32b(2),
+        &r(52),
+        &r(50),
+        &[0],
+    ]);
+    let o = doc
+        .objects
+        .iter_mut()
+        .find(|o| o.0 == 55)
+        .expect("the sample's dimension");
+    o.2 = body;
+    let seg = doc.segment();
+    let (infos, _) = sketch::sketch_details(&seg);
+    let d = &infos[0].detail.dimensions.as_ref().unwrap()[0];
+    assert_eq!(d.dimension_type.as_deref(), Some("SketchOffsetDimension"));
+    assert_eq!(d.is_driving, None);
 }
 
 fn sample_dump() -> Value {
@@ -841,6 +1043,8 @@ fn dump_matches_the_schema_shape() {
                {"kind": "profile", "sketch": "Sketch1", "sketch_timeline_index": 0}])
     );
     assert_eq!(ex["_f3d"]["flags"], "000100");
+    // (It has a result: not suppressed, mitcad#180.)
+    assert!(ex.get("isSuppressed").is_none());
     assert_eq!(ex["_f3d"]["extrude"]["operation"], "NewBody");
 
     let p = &v["parameters"];
@@ -879,7 +1083,8 @@ fn dump_matches_the_schema_shape() {
     );
     assert_eq!(
         f3d["external_documents"],
-        json!([{"key": "1122334455667788", "urn": "urn:test:doc?version=1"}])
+        json!([{"key": "1122334455667788", "urn": "urn:test:doc?version=1", "version": 1,
+               "guids": ["a", "b"], "document_guid": "c"}])
     );
     assert!(f3d.get("non_finite").is_none());
 }
@@ -1045,6 +1250,41 @@ fn occurrence_items_groups_and_assembly_items_are_named() {
         items[3]["detail"]["occurrence"]["_f3d"]["path"],
         json!([80])
     );
+}
+
+/// An occurrence of a component without a name of its own is named
+/// `Component<n>`, the number being the one in its item's tail.
+#[test]
+fn unnamed_components_get_their_default_name() {
+    let mut d = sample();
+    for (g, v) in [(OCCURRENCE_ITEM, 2), (OCCURRENCE_REF, 0)] {
+        d.class(g, ROOT, v);
+    }
+    d.objects.retain(|o| o.0 != 3 && o.0 != 5);
+    d.obj(5, COMPONENT, cat(&[&[0, 0], &s16("")]));
+    d.obj(
+        3,
+        TIMELINE,
+        cat(&[&[0, 0], &r(1), &u32b(3), &r(10), &r(20), &r(100)]),
+    );
+    d.obj(
+        100,
+        OCCURRENCE_ITEM,
+        cat(&[&[0, 0], &r(101), &tail(-1, "", 3, "", [0, 0, 0], 102)]),
+    );
+    d.obj(101, OCCURRENCE_REF, cat(&[&[0, 0], &r(80), &r(100)]));
+    d.obj(102, HEALTH, vec![0, 0]);
+    let (m, b) = d.streams();
+    let v = serde_json::to_value(Design::parse(&m, b).unwrap().dump("x", "Design1")).unwrap();
+    let items = v["timeline"]["items"].as_array().unwrap();
+    assert_eq!(items[2]["name"], "Component3");
+    let names: Vec<&str> = v["components"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|c| c["name"].as_str())
+        .collect();
+    assert!(names.contains(&"Component3") && names.contains(&"Bracket"));
 }
 
 /// A sweep's and a loft's inputs (mitcad#34): the operation, the profile
@@ -1741,6 +1981,7 @@ fn combine_and_hole_selections() {
     const RECIPE: &str = "7ACC2A03-0261-4879-A14A-A93D661A5BDC";
     const COMBINE: &str = "2A94257F-2020-4B19-9A68-103A2672F1B7";
     const HOLE: &str = "1C037A07-4A15-43F6-ABFC-BBF61B9038D4";
+    const SLOT_KEY: &str = "2DF7DA30-A4E4-4260-AFD1-D9C7154CB44B";
     let mut d = sample();
     for (g, v) in [
         (COMBINE, 1),
@@ -1751,6 +1992,7 @@ fn combine_and_hole_selections() {
         (PLACEMENT, 5),
         (KEY_POINT, 3),
         (RECIPE, 1),
+        (SLOT_KEY, 1),
     ] {
         d.class(g, ROOT, v);
     }
@@ -1803,7 +2045,7 @@ fn combine_and_hole_selections() {
         ]),
     );
     d.obj(501, HEALTH, vec![0, 0]);
-    // A hole through all at two points.
+    // A hole through all at two points: a slot of role 5 holds the bodies.
     for (id, x) in [(610, 1.0), (611, 5.0)] {
         d.obj(
             id,
@@ -1812,15 +2054,31 @@ fn combine_and_hole_selections() {
         );
     }
     d.obj(
+        540,
+        BODY_INPUT,
+        cat(&[
+            &[0, 0],
+            &u32b(1),
+            &r(511),
+            &[0; 6],
+            &r(541),
+            &u32b(0),
+            &u32b(5),
+            &[0; 4],
+        ]),
+    );
+    d.obj(541, SLOT_KEY, vec![0, 0]);
+    d.obj(
         600,
         HOLE,
         cat(&[
             &[0, 0],
             &u32b(0),
             &[1, 1, 1, 0],
-            &u32b(2),
+            &u32b(3),
             &r(610),
             &r(611),
+            &r(540),
             &tail(6, "Hole", 1, "", [0, 0, 0], 601),
         ]),
     );
@@ -1862,6 +2120,7 @@ fn revolve_pattern_mirror_and_hole_inputs() {
         (PROFILE_LOOPS, 1),
         (REVOLVE_PROFILE, 0),
         (BODY_RECORD, 2),
+        (BODY_INPUT, 1),
         (DIRECTION_INPUT, 4),
     ] {
         d.class(g, ROOT, v);
@@ -1953,7 +2212,8 @@ fn revolve_pattern_mirror_and_hole_inputs() {
             &103u64.to_le_bytes(),
         ]),
     );
-    // A mirror that makes one new body: not joined with its image.
+    // A mirror that makes one new body: not joined with its image. Its
+    // feature selection stays decoded even though its plane is absent.
     d.obj(
         400,
         MIRROR,
@@ -1964,7 +2224,9 @@ fn revolve_pattern_mirror_and_hole_inputs() {
             &u32b(0),
             &u32b(1),
             &r(403),
-            &0u64.to_le_bytes(),
+            &u32b(0),
+            &u32b(1),
+            &r(405),
             &tail(6, "Mirror", 1, "", [0, 0, 0], 404),
         ]),
     );
@@ -1972,6 +2234,9 @@ fn revolve_pattern_mirror_and_hole_inputs() {
         d.obj(id, HEALTH, vec![0, 0]);
     }
     d.obj(403, BODY_RECORD, vec![0, 0]);
+    d.obj(405, BODY_INPUT, cat(&[&[0, 0], &u32b(1), &r(406)]));
+    d.obj(406, ENTITY_REF, cat(&[&[0, 0], &r(407)]));
+    d.obj(407, REF_TARGET, cat(&[&[0, 0], &20u64.to_le_bytes()]));
     // A circular pattern about a construction axis off the origin, whose
     // direction input stores the direction times the axis' length.
     d.obj(
@@ -1995,7 +2260,8 @@ fn revolve_pattern_mirror_and_hole_inputs() {
             &u32b(7),
         ]),
     );
-    // A hole (class version 4) through all that keeps a depth.
+    // A hole (class version 4) with a depth and no slot of role 5: a
+    // distance, whatever its bytes.
     d.obj(
         600,
         HOLE,
@@ -2028,6 +2294,12 @@ fn revolve_pattern_mirror_and_hole_inputs() {
                 "children": []}])
     );
     assert_eq!(items[3]["detail"]["isCombine"], false);
+    assert_eq!(items[3]["detail"]["inputEntities"][0]["timeline_index"], 1);
+    assert_eq!(
+        items[3]["detail"]["patternEntityType"],
+        "FeaturesPatternType"
+    );
+    assert!(items[3]["detail"]["mirrorPlane"].is_null());
     let pattern = &items[4]["detail"];
     assert_eq!(
         pattern["_f3d_axis"],
@@ -2038,7 +2310,9 @@ fn revolve_pattern_mirror_and_hole_inputs() {
         hole["extentDefinition"]["_type"],
         "DistanceExtentDefinition"
     );
-    assert_eq!(hole["_f3d_through_all"], true);
+    // The byte after the root part that the earlier decoder took for a
+    // through-all flag decides nothing: the hole has no slot of role 5.
+    assert!(hole["_f3d_through_all"].is_null());
 }
 
 /// Bodies named by the item that made them (mitcad#96): a body input's
@@ -2180,6 +2454,193 @@ fn bodies_by_the_items_that_made_them() {
     assert_eq!((&p["producer"], &p["body_index"]), (&json!(1), &json!(1)));
 }
 
+/// A revolution's flag bytes (the API reference dumps' 103 revolutions and
+/// the controlled models): `u32 operation | u32 2 | u8 lead | [u8 project
+/// axis] | u8 solid | u8 symmetric | u8 two sides | [second holder or 00] |
+/// holder`, the project-axis byte in class version 2 only.
+#[test]
+fn revolve_record_flags() {
+    const REVOLVE: &str = "E3849A15-2FC6-42A0-AF3A-2F1D7273B406";
+    let dump_of = |version: u32, bytes: &[u8]| {
+        let mut d = sample();
+        d.class(REVOLVE, ROOT, version);
+        d.objects.retain(|o| o.0 != 3);
+        d.obj(
+            3,
+            TIMELINE,
+            cat(&[&[0, 0], &r(1), &u32b(3), &r(10), &r(20), &r(300)]),
+        );
+        d.obj(
+            300,
+            REVOLVE,
+            cat(&[
+                &[0, 0],
+                &u32b(2),
+                &u32b(2),
+                bytes,
+                &[0],
+                &r(302),
+                &tail(5, "Revolve", 1, "", [0, 0, 0], 301),
+            ]),
+        );
+        d.obj(301, HEALTH, vec![0, 0]);
+        d.obj(302, PARAMETER_HOLDER, cat(&[&[1], &u32b(1), &r(300), &[0]]));
+        let p = parameter(
+            20,
+            Some(302),
+            "90 deg",
+            "AlongAngle",
+            "",
+            "deg",
+            "d20",
+            1.57,
+        );
+        d.obj(303, PARAMETER, p);
+        let (m, b) = d.streams();
+        let v = serde_json::to_value(Design::parse(&m, b).unwrap().dump("x", "Design1")).unwrap();
+        v["timeline"]["items"][2]["detail"].clone()
+    };
+    // Version 2: lead, project axis, solid, symmetric, two sides.
+    let detail = dump_of(2, &[0, 1, 1, 0, 0]);
+    assert_eq!(detail["isProjectAxis"], true);
+    assert_eq!(detail["isSolid"], true);
+    assert_eq!(detail["extentDefinition"]["isSymmetric"], false);
+    assert_eq!(detail["extentDefinition"]["_type"], "AngleExtentDefinition");
+    let detail = dump_of(2, &[1, 0, 1, 1, 0]);
+    assert_eq!(detail["isProjectAxis"], false);
+    assert_eq!(detail["extentDefinition"]["isSymmetric"], true);
+    // Two sides: the two angles are the extent's.
+    let detail = dump_of(2, &[0, 1, 1, 0, 1]);
+    assert_eq!(
+        detail["extentDefinition"]["_type"],
+        "TwoSidesAngleExtentDefinition"
+    );
+    // Version 1 has no project-axis byte.
+    let detail = dump_of(1, &[0, 1, 0, 0]);
+    assert!(detail["isProjectAxis"].is_null());
+    assert_eq!(detail["isSolid"], true);
+    assert_eq!(detail["extentDefinition"]["isSymmetric"], false);
+    // A byte that is no flag: nothing is read.
+    let detail = dump_of(2, &[0, 1, 7, 0, 0]);
+    assert!(detail["isSolid"].is_null());
+    assert!(detail["extentDefinition"]["isSymmetric"].is_null());
+}
+
+/// A shell's two bytes after the root part: the tangent-chain flag and the
+/// shell type (1 rounded, 0 sharp).
+#[test]
+fn shell_record_flags() {
+    const SHELL: &str = "E8063467-BC05-4688-8196-AECB90F0EFEE";
+    for (bytes, chain, kind) in [
+        ([1u8, 1u8], json!(true), json!("RoundedOffsetShellType")),
+        ([1, 0], json!(true), json!("SharpOffsetShellType")),
+        ([0, 0], json!(false), json!("SharpOffsetShellType")),
+        ([2, 0], json!(null), json!(null)),
+    ] {
+        let mut d = sample();
+        d.class(SHELL, ROOT, 3);
+        d.objects.retain(|o| o.0 != 3);
+        d.obj(
+            3,
+            TIMELINE,
+            cat(&[&[0, 0], &r(1), &u32b(3), &r(10), &r(20), &r(300)]),
+        );
+        d.obj(
+            300,
+            SHELL,
+            cat(&[
+                &[0, 0],
+                &bytes,
+                &[0; 8],
+                &tail(5, "Shell", 1, "", [0, 0, 0], 301),
+            ]),
+        );
+        d.obj(301, HEALTH, vec![0, 0]);
+        let (m, b) = d.streams();
+        let v = serde_json::to_value(Design::parse(&m, b).unwrap().dump("x", "Design1")).unwrap();
+        let detail = &v["timeline"]["items"][2]["detail"];
+        assert_eq!(detail["isTangentChain"], chain, "{bytes:?}");
+        assert_eq!(detail["shellType"], kind, "{bytes:?}");
+    }
+}
+
+/// A termination body is not a participant. Missing or unresolved slots
+/// retain the older input-list reading; an explicit empty slot is kept.
+#[test]
+fn extrusion_participants_use_their_slot() {
+    const SLOT_KEY: &str = "2DF7DA30-A4E4-4260-AFD1-D9C7154CB44B";
+    for (selected, expected) in [
+        (None, vec![701, 702]),
+        (Some(vec![701]), vec![701]),
+        (Some(vec![]), vec![]),
+        (Some(vec![703]), vec![701, 702]),
+    ] {
+        let mut d = sample();
+        for (g, v) in [
+            (BODY_INPUT, 1),
+            (BODY_REF, 1),
+            (BODY_RECORD, 2),
+            (SLOT_KEY, 1),
+        ] {
+            d.class(g, ROOT, v);
+        }
+        d.objects.retain(|o| o.0 != 3);
+        d.obj(
+            3,
+            TIMELINE,
+            cat(&[&[0, 0], &r(1), &u32b(3), &r(10), &r(20), &r(700)]),
+        );
+        // Two distinct bodies made by the preceding extrusion.
+        for (input, record) in [(701, 710), (702, 711)] {
+            d.obj(input, BODY_REF, cat(&[&[0, 0], &r(record)]));
+            d.obj(record, BODY_RECORD, cat(&[&[0, 0], &r(20)]));
+        }
+        d.obj(703, BODY_REF, vec![0, 0]);
+        let mut refs = vec![r(701), r(702)];
+        for (slot, key, role, inputs) in [
+            (720, 730, decode::PARTICIPANT_ROLE, selected),
+            (721, 731, 5, Some(vec![702])),
+        ] {
+            let Some(inputs) = inputs else { continue };
+            let mut body = cat(&[&[0, 0], &u32b(inputs.len() as u32)]);
+            body.extend(inputs.into_iter().flat_map(r));
+            body.extend(cat(&[&[0; 6], &r(key), &u32b(0), &u32b(role), &[0; 4]]));
+            d.obj(slot, BODY_INPUT, body);
+            d.obj(key, SLOT_KEY, vec![0, 0]);
+            refs.push(r(slot));
+        }
+        d.obj(
+            700,
+            EXTRUDE,
+            cat(&[
+                &[0, 0],
+                &[0, 0, 0],
+                &u32b(2),
+                &u32b(1),
+                &u32b(0),
+                &[0, 1],
+                &u32b(0),
+                &f64s(&[0.0, 0.0, 1.0]),
+                &[0, 0],
+                &u32b(refs.len() as u32),
+                &refs.concat(),
+                &tail(7, "Extrude", 2, "", [0, 0, 0], 704),
+            ]),
+        );
+        d.obj(704, HEALTH, vec![0, 0]);
+        let (m, b) = d.streams();
+        let v = serde_json::to_value(Design::parse(&m, b).unwrap().dump("x", "Design1")).unwrap();
+        let participants = v["timeline"]["items"][2]["detail"]["participantBodies"]
+            .as_array()
+            .unwrap();
+        let actual: Vec<_> = participants
+            .iter()
+            .map(|p| p["_f3d"]["object_id"].as_u64().unwrap())
+            .collect();
+        assert_eq!(actual, expected);
+    }
+}
+
 /// An extrusion up to a face (mitcad#96): the flag byte after the extent
 /// codes, the direction vector after a `u32 1`, and the input slots whose
 /// roles say which input is the extent's object (17) and which the profile
@@ -2267,7 +2728,171 @@ fn extrusion_up_to_a_face() {
         );
     }
 
+    // One-sided distance extrusions with the thin-wall block (mitcad#186):
+    // `7 slots | u32 1 | 9 × 0 | u32 0 | 6 × 0 | slot | 5 bytes | u8 thin
+    // | u32 location | slot | 5 × 0 | u32 1 | input slot`; a thin one names
+    // the thickness's parameter holder, a solid one has no slot there.
+    for (id, thin, location, holder) in [
+        (900, 1u8, 1u32, Some(730)),
+        (910, 0, 0, None),
+        (920, 1, 2, Some(730)),
+        // Inconsistent: thin without a holder, solid with a location.
+        (930, 1, 0, None),
+        (940, 0, 2, None),
+    ] {
+        let slot = holder.map_or(vec![0], r);
+        d.obj(
+            id,
+            EXTRUDE,
+            cat(&[
+                &[0, 0],
+                &[0, 0, 0],
+                &u32b(1),
+                &u32b(1),
+                &u32b(2),
+                &[0, 1],
+                &u32b(0),
+                &f64s(&[0.0, 0.0, 1.0]),
+                &[0; 7],
+                &u32b(1),
+                &[0; 9],
+                &u32b(0),
+                &[0; 6],
+                &[0],
+                &[0; 5],
+                &[thin],
+                &u32b(location),
+                &slot,
+                &[0; 5],
+                &u32b(1),
+                &r(741),
+                &tail(8, "Extrude", 3, "", [0, 0, 0], 701),
+            ]),
+        );
+    }
+
+    // The words between the two sides (mitcad#186): nine zero bytes in the
+    // older writer, `u8 0 | u32 a | u32 b` in the newer one (`a` 2 for a
+    // side through all, `b` 1 for two sides and symmetric extents).
+    let words = |a: u32, b: u32| cat(&[&[0], &u32b(a), &u32b(b)]);
+    for (id, code, one, middle, two) in [
+        (950, 2u32, 1u32, words(0, 1), 1u32),
+        (951, 3, 1, vec![0; 9], 1),
+        (952, 3, 1, words(0, 1), 0),
+        (953, 2, 4, words(2, 1), 4),
+        (954, 1, 4, words(2, 0), 0),
+        // Not a layout of any writer.
+        (955, 2, 1, words(7, 1), 1),
+    ] {
+        d.obj(
+            id,
+            EXTRUDE,
+            cat(&[
+                &[0, 0],
+                &[0, 0, 0],
+                &u32b(4),
+                &u32b(code),
+                &u32b(1),
+                &[0, 1],
+                &u32b(0),
+                &f64s(&[0.0, 0.0, 1.0]),
+                &[0; 7],
+                &u32b(one),
+                &middle,
+                &u32b(two),
+                &[0; 6],
+                &[0],
+                &[0; 5],
+                &[0],
+                &u32b(0),
+                &[0],
+                &[0; 5],
+                &u32b(1),
+                &r(741),
+                &tail(8, "Extrude", 3, "", [0, 0, 0], 701),
+            ]),
+        );
+    }
+
+    // Sides up to an object: the byte after the object's reference is its
+    // nearest-solution flag; the two-sided layout holds the second side's the
+    // same way (the API reference dumps: `[m1] [3 × 0] [u32 1] [u32 2] [u8 0]
+    // [ref] [m2]`).
+    let reference = r(741);
+    for (id, code, middle) in [
+        (960, 1u32, cat(&[&reference, &[1], &[0; 20]])),
+        (
+            961,
+            2,
+            cat(&[
+                &reference,
+                &[0],
+                &[0; 3],
+                &u32b(1),
+                &u32b(2),
+                &[0],
+                &reference,
+                &[1],
+                &[0; 6],
+            ]),
+        ),
+        (962, 1, cat(&[&reference, &[5], &[0; 20]])),
+    ] {
+        d.obj(
+            id,
+            EXTRUDE,
+            cat(&[
+                &[0, 0],
+                &[0, 0, 0],
+                &u32b(4),
+                &u32b(code),
+                &u32b(1),
+                &[0, 1],
+                &u32b(0),
+                &f64s(&[0.0, 0.0, 1.0]),
+                &[0; 7],
+                &u32b(2),
+                &middle,
+                &[0; 6],
+                &[0],
+                &[0; 5],
+                &[0],
+                &u32b(0),
+                &[0],
+                &[0; 5],
+                &u32b(1),
+                &r(741),
+                &tail(8, "Extrude", 3, "", [0, 0, 0], 701),
+            ]),
+        );
+    }
+
     let seg = d.segment();
+    let sides = |id| decode::extrude_fields(&seg, seg.object(id).unwrap()).and_then(|f| f.sides);
+    assert_eq!(sides(950), Some([1, 1]));
+    assert_eq!(sides(951), Some([1, 1]));
+    assert_eq!(sides(952), Some([1, 0]));
+    assert_eq!(sides(953), Some([4, 4]));
+    assert_eq!(sides(954), Some([4, 0]));
+    assert_eq!(sides(955), None);
+    let minimum =
+        |id| decode::extrude_fields(&seg, seg.object(id).unwrap()).map(|f| (f.sides, f.minimum));
+    assert_eq!(minimum(960), Some((Some([2, 0]), [Some(true), None])));
+    assert_eq!(
+        minimum(961),
+        Some((Some([2, 0]), [Some(false), Some(true)]))
+    );
+    assert_eq!(minimum(962), Some((Some([2, 0]), [None, None])));
+    assert_eq!(minimum(954).map(|m| m.1), Some([None, None]));
+    let thin = |id| {
+        let f = decode::extrude_fields(&seg, seg.object(id).unwrap()).unwrap();
+        (f.thin, f.thin_location, f.thin_holder, f.sides)
+    };
+    assert_eq!(thin(900), (Some(true), Some(1), Some(730), Some([1, 0])));
+    assert_eq!(thin(910), (Some(false), Some(0), None, Some([1, 0])));
+    assert_eq!(thin(920), (Some(true), Some(2), Some(730), Some([1, 0])));
+    assert_eq!(thin(930), (None, None, None, Some([1, 0])));
+    assert_eq!(thin(940), (None, None, None, Some([1, 0])));
     let dec = decode::decode(&seg);
     let f = dec.timeline[2].extrude.unwrap();
     assert_eq!((f.extent_a, f.extent_b, f.flag), (1, 1, Some(1)));
@@ -2348,6 +2973,7 @@ fn fillet_tail_and_face_selections() {
         (RECIPE, 1),
         (FACE_REF, 2),
         (BODY_INPUT, 1),
+        (BODY_RECORD, 2),
         (SELECTS, 1),
         (OTHER, 1),
     ] {
@@ -2399,7 +3025,11 @@ fn fillet_tail_and_face_selections() {
     d.obj(710, BODY_INPUT, set(8));
     d.obj(720, BODY_INPUT, set(9));
     d.obj(730, BODY_INPUT, set(16));
-    for (input, rec) in [(711, 751), (712, 752), (721, 753), (731, 754)] {
+    // The first edge refers to its body's record, made by the second item
+    // of the timeline (the others to none).
+    d.obj(760, BODY_RECORD, cat(&[&[0, 0], &r(20)]));
+    d.obj(711, FACE_REF, cat(&[&[0, 0], &r(751), &r(760)]));
+    for (input, rec) in [(712, 752), (721, 753), (731, 754)] {
         d.obj(input, FACE_REF, cat(&[&[0, 0], &r(rec)]));
     }
     d.obj(
@@ -2447,6 +3077,176 @@ fn fillet_tail_and_face_selections() {
     // The second list is left out; the edge's own name stays first.
     assert_eq!(edges[0]["_f3d"]["entities"].as_array().unwrap().len(), 2);
     assert_eq!(edges[1]["_f3d"]["entities"][0][0]["tag"], "-1029");
+    // The edge on a body says which item made the body; an edge without a
+    // record says nothing.
+    assert_eq!(edges[0]["_f3d"]["producer"], 1);
+    assert_eq!(edges[0]["_f3d"]["body_index"], 0);
+    assert!(edges[1]["_f3d"].get("producer").is_none());
+}
+
+#[test]
+fn dressup_sets_follow_holder_links_after_reordering() {
+    const FILLET: &str = "A07D5F17-68CB-464D-9935-BF68E98A865F";
+    const CHAMFER: &str = "F757D611-217B-4B72-9C41-B617BDCE43DA";
+    const RECIPE: &str = "7ACC2A03-0261-4879-A14A-A93D661A5BDC";
+    const SELECTS: &str = "2DF7DA30-A4E4-4260-AFD1-D9C7154CB44B";
+    // The fillet's set records of the three layouts (the class version of
+    // the set, a block of zeros before its input) and the chamfer's.
+    for (class, set_class, role, size_key, version, gap) in [
+        (FILLET, FILLET_SET, "Radius", "radius", 10, 0),
+        (FILLET, FILLET_SET, "Radius", "radius", 10, 20),
+        (FILLET, FILLET_SET, "Radius", "radius", 9, 0),
+        (FILLET, FILLET_SET, "Radius", "radius", 4, 0),
+        (CHAMFER, CHAMFER_SET, "Distance", "distance", 2, 0),
+    ] {
+        let mut d = sample();
+        for (g, v) in [
+            (class, 3),
+            (set_class, version),
+            (BODY_INPUT, 1),
+            (FACE_REF, 2),
+            (RECIPE, 1),
+            (SELECTS, 1),
+        ] {
+            d.class(g, ROOT, v);
+        }
+        d.objects.retain(|o| o.0 != 3);
+        d.obj(
+            3,
+            TIMELINE,
+            cat(&[&[0, 0], &r(1), &u32b(3), &r(10), &r(20), &r(700)]),
+        );
+        let leading = if class == FILLET {
+            cat(&[&u32b(2), &r(731), &r(730), &u32b(0), &[1]])
+        } else {
+            cat(&[&u32b(1), &u32b(2), &r(731), &r(730)])
+        };
+        // Parameter 740 precedes every input group; the option records and
+        // the groups are in the opposite order to the size parameters.
+        d.obj(
+            700,
+            class,
+            cat(&[
+                &[0, 0],
+                &leading,
+                &u32b(6),
+                &r(740),
+                &r(720),
+                &r(721),
+                &r(741),
+                &r(710),
+                &r(711),
+                &tail(9, "Dressup", 1, "", [0, 0, 0], 703),
+            ]),
+        );
+        d.obj(703, HEALTH, vec![0, 0]);
+        d.obj(709, SELECTS, vec![0, 0]);
+        for (group, edge, rec, option, holder, chain) in [
+            (710, 711, 751, 730, 740, false),
+            (720, 721, 752, 731, 741, true),
+        ] {
+            d.obj(
+                group,
+                BODY_INPUT,
+                cat(&[
+                    &[0, 0],
+                    &u32b(1),
+                    &r(edge),
+                    &[0, 0, 1, 0, 0, 0],
+                    &r(709),
+                    &u32b(0),
+                    &u32b(8),
+                ]),
+            );
+            d.obj(edge, FACE_REF, cat(&[&[0, 0], &r(rec)]));
+            d.obj(
+                rec,
+                RECIPE,
+                recipe(
+                    "edge",
+                    &[(if chain { "4" } else { "3" }, 301), ("1", 301)],
+                    &[],
+                ),
+            );
+            let body = if class == FILLET {
+                let chain = u8::from(chain);
+                let options: &[u8] = match version {
+                    10 => &[0, 0, 1, 0, 0, chain, 0, 0],
+                    9 => &[0, 1, 0, chain, 0, 0],
+                    _ => &[0, 1, 0, chain, 0],
+                };
+                cat(&[
+                    &[0, 0],
+                    options,
+                    &vec![0; gap],
+                    &r(group),
+                    &[0; 23],
+                    &r(holder),
+                    &[0; 12],
+                ])
+            } else {
+                // The byte after the root part is the tangent-chain option.
+                cat(&[
+                    &[0, 0],
+                    &[u8::from(chain), 0, 0],
+                    &r(holder),
+                    &[0],
+                    &u32b(1),
+                    &r(group),
+                ])
+            };
+            d.obj(option, set_class, body);
+            d.obj(
+                holder,
+                PARAMETER_HOLDER,
+                cat(&[&[1], &u32b(1), &r(700), &[0]]),
+            );
+        }
+        for (id, number, holder, name, value) in
+            [(742, 30, 740, "small", 0.1), (743, 40, 741, "large", 0.2)]
+        {
+            d.obj(
+                id,
+                PARAMETER,
+                parameter(number, Some(holder), "1 mm", role, "", "mm", name, value),
+            );
+        }
+        let read = |d: &Doc| {
+            let (meta, bulk) = d.streams();
+            serde_json::to_value(Design::parse(&meta, bulk).unwrap().dump("x", "Design1")).unwrap()
+        };
+        let v = read(&d);
+        let sets = v["timeline"]["items"][2]["detail"]["edgeSets"]
+            .as_array()
+            .unwrap();
+        assert_eq!(sets.len(), 2);
+        assert_eq!(sets[0][size_key]["name"], "small");
+        assert_eq!(sets[1][size_key]["name"], "large");
+        assert_eq!(sets[0]["edges"][0]["_f3d"]["object_id"], 711);
+        assert_eq!(sets[1]["edges"][0]["_f3d"]["object_id"], 721);
+        assert_eq!(sets[0]["isTangentChain"], false);
+        assert_eq!(sets[1]["isTangentChain"], true);
+        if class == FILLET {
+            assert_eq!(sets[0]["continuity"], "TangentSurfaceContinuityType");
+        } else {
+            // A chamfer's sets carry their own option; the feature's is
+            // set only where the sets agree.
+            assert_eq!(sets[0]["isTangentChain"], false);
+            assert_eq!(sets[1]["isTangentChain"], true);
+            assert!(
+                v["timeline"]["items"][2]["detail"]
+                    .get("isTangentChain")
+                    .is_none_or(Value::is_null)
+            );
+            // Equal distances have no side to flip.
+            assert!(sets[0].get("isFlipped").is_none());
+        }
+        // A truncated counted list must not become a partial selection.
+        let input = d.objects.iter_mut().find(|o| o.0 == 710).unwrap();
+        input.2[2..6].copy_from_slice(&2u32.to_le_bytes());
+        let v = read(&d);
+        assert!(v["timeline"]["items"][2]["detail"]["edgeSets"][0]["edges"].is_null());
+    }
 }
 
 /// A two-sided extrusion with both sides up to faces (mitcad#104): a slot
@@ -2494,7 +3294,8 @@ fn two_sided_extrusion_up_to_two_faces() {
     d.obj(731, PARAMETER, p);
     let p = parameter(6, Some(730), "2 mm", "Side2Offset", "", "mm", "d6", 0.2);
     d.obj(732, PARAMETER, p);
-    for (slot, input, key, role) in [(740, 750, 760, 17), (742, 752, 762, 17), (741, 70, 761, 65)] {
+    // The slots keep the second side first (the API reference dumps).
+    for (slot, input, key, role) in [(740, 752, 760, 17), (742, 750, 762, 17), (741, 70, 761, 65)] {
         d.obj(
             slot,
             BODY_INPUT,
@@ -2530,6 +3331,57 @@ fn two_sided_extrusion_up_to_two_faces() {
         assert_eq!(side["entity"]["_f3d"]["object_id"], object);
         assert_eq!(side["entity"]["_f3d"]["entities"][0][0]["tag"], tag);
     }
+}
+
+/// A move's transform object that stores no matrix is the identity; one
+/// that stores its matrix, or another layout, is not read as such.
+#[test]
+fn a_move_without_a_stored_matrix_is_the_identity() {
+    let mut d = sample();
+    d.class(MOVE_DATA, ROOT, 2);
+    let with_matrix = |m: &[f64; 16]| {
+        cat(&[
+            &[0, 0],
+            &[0; 22],
+            &u32b(5),
+            &f64s(m),
+            &[0, 0, 1, 0, 0, 0, 0],
+            &r(1),
+        ])
+    };
+    // `05 00 00 00 | 01 00 00 01 00 00 00 00 | ref`: no matrix.
+    d.obj(
+        900,
+        MOVE_DATA,
+        cat(&[
+            &[0, 0],
+            &[0; 22],
+            &u32b(5),
+            &[1, 0, 0, 1, 0, 0, 0, 0],
+            &r(1),
+        ]),
+    );
+    let shifted = [
+        1.0, 0.0, 0.0, 0.5, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0,
+    ];
+    d.obj(901, MOVE_DATA, with_matrix(&shifted));
+    // The marker without a reference after it.
+    d.obj(
+        902,
+        MOVE_DATA,
+        cat(&[
+            &[0, 0],
+            &[0; 22],
+            &u32b(5),
+            &[1, 0, 0, 1, 0, 0, 0, 0],
+            &[0; 4],
+        ]),
+    );
+    let seg = d.segment();
+    assert!(build::identity_move_data(&seg, 900));
+    assert!(!build::identity_move_data(&seg, 901));
+    assert!(!build::identity_move_data(&seg, 902));
+    assert!(!build::identity_move_data(&seg, 1));
 }
 
 /// A combine that consumes a tool of another component through a body
@@ -2980,4 +3832,459 @@ fn parts_of_items_in_other_components() {
     assert_eq!(part["_f3d"]["object_id"], 25);
     assert_eq!(part["_f3d"]["extrude"]["operation"], "Cut");
     assert!(items[1]["_f3d"].get("part_of").is_none());
+}
+
+#[test]
+fn item_states_from_the_tail() {
+    // mitcad#180: the state bytes count only with result -1.
+    use super::decode::{ItemState, item_state};
+    assert_eq!(item_state(-1, [1, 0, 0]), ItemState::Suppressed);
+    assert_eq!(item_state(-1, [0, 1, 0]), ItemState::Suppressed);
+    assert_eq!(item_state(-1, [0, 0, 1]), ItemState::InParts);
+    assert_eq!(item_state(-1, [0, 0, 0]), ItemState::Normal);
+    assert_eq!(item_state(7, [0, 1, 0]), ItemState::Normal);
+    // The IR: isSuppressed, else the bytes in `_f3d`.
+    let item = |v: Value| -> ir::TimelineItem { serde_json::from_value(v).unwrap() };
+    let state = |v: Value| item(v).file_state();
+    assert_eq!(
+        state(json!({"index": 0, "isSuppressed": true})),
+        ItemState::Suppressed
+    );
+    assert_eq!(
+        state(json!({"index": 0, "_f3d": {"result_no": -1, "flags": "010000"}})),
+        ItemState::Suppressed
+    );
+    assert_eq!(
+        state(json!({"index": 0, "_f3d": {"result_no": -1, "flags": "000001"}})),
+        ItemState::InParts
+    );
+    assert_eq!(
+        state(json!({"index": 0, "_f3d": {"result_no": 4, "flags": "000100"}})),
+        ItemState::Normal
+    );
+    assert_eq!(state(json!({"index": 0})), ItemState::Normal);
+}
+
+#[test]
+fn suppression_tells_direct_from_indirect() {
+    // `000100` suppressed by the user, `010000` through an item
+    // it depends on; only with result -1.
+    use super::decode::{Suppression, item_suppression};
+    assert_eq!(item_suppression(-1, [0, 1, 0]), Some(Suppression::Direct));
+    assert_eq!(item_suppression(-1, [1, 0, 0]), Some(Suppression::Indirect));
+    assert_eq!(item_suppression(-1, [0, 0, 1]), None);
+    assert_eq!(item_suppression(-1, [0, 0, 0]), None);
+    assert_eq!(item_suppression(5, [0, 1, 0]), None);
+    let item = |v: Value| -> ir::TimelineItem { serde_json::from_value(v).unwrap() };
+    let how = |v: Value| item(v).suppression();
+    assert_eq!(
+        how(json!({"index": 0, "isSuppressed": true,
+                   "_f3d": {"result_no": -1, "flags": "010000"}})),
+        Some(Suppression::Indirect)
+    );
+    assert_eq!(
+        how(json!({"index": 0, "_f3d": {"result_no": -1, "flags": "000100"}})),
+        Some(Suppression::Direct)
+    );
+    // An external dump's `isSuppressed` has no bytes: direct.
+    assert_eq!(
+        how(json!({"index": 0, "isSuppressed": true})),
+        Some(Suppression::Direct)
+    );
+    assert_eq!(how(json!({"index": 0})), None);
+}
+
+/// Construction points, planes and axes by what they are made from
+/// (mitcad#186): a point at a vertex (its position from the key point
+/// input), a plane through a vertex, a point and a vertex, a plane
+/// tangent to a face at a vertex, an axis through a round face and one
+/// through two vertices.
+#[test]
+fn construction_points_planes_and_axes_by_their_inputs() {
+    const KEY: &str = KEY_POINT;
+    const RECIPE: &str = "7ACC2A03-0261-4879-A14A-A93D661A5BDC";
+    let mut d = sample();
+    for (g, v) in [
+        (CONSTRUCTION_POINT, 1),
+        (CONSTRUCTION_PLANE, 3),
+        (CONSTRUCTION_AXIS, 0),
+        (ORIGIN_POINT, 0),
+        (FACE_REF, 3),
+        (RECIPE, 3),
+        (KEY, 3),
+        (DIRECTION_INPUT, 0),
+        (INPUT_SLOT, 1),
+    ] {
+        d.class(g, ROOT, v);
+    }
+    d.objects.retain(|o| ![3].contains(&o.0));
+    let ids = [10, 20, 100, 300, 400, 500, 600];
+    let mut timeline = cat(&[&[0, 0], &r(1), &u32b(ids.len() as u32)]);
+    for id in ids {
+        timeline.extend(r(id));
+    }
+    d.obj(3, TIMELINE, timeline);
+    // A vertex input, its recipe, and a face input of a cylinder.
+    let vertex = |d: &mut Doc, input: u64, tags: &[&str]| {
+        d.obj(input, FACE_REF, cat(&[&[0, 0], &r(input + 1)]));
+        let names: Vec<(&str, i32)> = tags.iter().map(|t| (*t, 301)).collect();
+        d.obj(input + 1, RECIPE, recipe("vertex", &names, &[]));
+    };
+    let face = |d: &mut Doc, input: u64| {
+        d.obj(input, FACE_REF, cat(&[&[0, 0], &r(input + 1)]));
+        d.obj(input + 1, RECIPE, face_recipe("3", &[301]));
+    };
+    let key_point = |d: &mut Doc, id: u64, at: [f64; 3]| {
+        d.obj(id, KEY, cat(&[&[0, 0], &[0; 21], &f64s(&at), &u32b(10)]));
+    };
+    // The point at the vertex (6, 0, 0) cm; its own point object 101.
+    d.obj(101, ORIGIN_POINT, vec![0, 0]);
+    d.obj(
+        100,
+        CONSTRUCTION_POINT,
+        cat(&[
+            &[0, 0],
+            &[1],
+            &u32b(0),
+            &r(101),
+            &u32b(2),
+            &r(110),
+            &r(111),
+            &tail(-1, "WorkPoint", 1, "", [0, 0, 0], 102),
+        ]),
+    );
+    d.obj(102, HEALTH, vec![0, 0]);
+    key_point(&mut d, 110, [6.0, 0.0, 0.0]);
+    vertex(&mut d, 111, &["1", "2", "3"]);
+    // A plane through that vertex's point, and two vertices.
+    d.obj(103, REF_TARGET, cat(&[&[0, 0], &101u64.to_le_bytes()]));
+    d.obj(104, ENTITY_REF, cat(&[&[0, 0], &r(103)]));
+    d.obj(
+        300,
+        CONSTRUCTION_PLANE,
+        cat(&[
+            &[0, 0],
+            &[1],
+            &u32b(2),
+            &u32b(5),
+            &r(320),
+            &r(321),
+            &r(104),
+            &r(323),
+            &r(324),
+            &tail(-1, "WorkPlane", 1, "", [0, 0, 0], 301),
+        ]),
+    );
+    d.obj(301, HEALTH, vec![0, 0]);
+    d.obj(320, INPUT_SLOT, cat(&[&[0, 0], &r(321)]));
+    vertex(&mut d, 321, &["4", "5", "6"]);
+    d.obj(323, INPUT_SLOT, cat(&[&[0, 0], &r(324)]));
+    vertex(&mut d, 324, &["7", "8", "9"]);
+    // A plane tangent to a face at a vertex.
+    d.obj(
+        400,
+        CONSTRUCTION_PLANE,
+        cat(&[
+            &[0, 0],
+            &[1],
+            &u32b(9),
+            &u32b(2),
+            &r(410),
+            &r(412),
+            &tail(-1, "WorkPlane", 2, "", [0, 0, 0], 401),
+        ]),
+    );
+    d.obj(401, HEALTH, vec![0, 0]);
+    face(&mut d, 410);
+    vertex(&mut d, 412, &["1", "2"]);
+    // An axis through a round face, with its line (a point and a
+    // displacement); and one through two vertices.
+    let line = |d: &mut Doc, id: u64, o: [f64; 3], v: [f64; 3]| {
+        d.obj(
+            id,
+            DIRECTION_INPUT,
+            cat(&[
+                &[0, 0],
+                &u32b(0),
+                &f64s(&o),
+                &f64s(&v),
+                &f64s(&[0.0, 0.0]),
+                &u32b(1),
+            ]),
+        );
+    };
+    d.obj(
+        500,
+        CONSTRUCTION_AXIS,
+        cat(&[
+            &[0, 0],
+            &u32b(2),
+            &r(510),
+            &r(511),
+            &tail(-1, "WorkAxis", 1, "", [0, 0, 0], 501),
+        ]),
+    );
+    d.obj(501, HEALTH, vec![0, 0]);
+    line(&mut d, 510, [1.0, 2.0, 0.0], [0.0, 0.0, 1.0]);
+    face(&mut d, 511);
+    d.obj(
+        600,
+        CONSTRUCTION_AXIS,
+        cat(&[
+            &[0, 0],
+            &u32b(5),
+            &r(610),
+            &r(620),
+            &r(612),
+            &r(630),
+            &r(614),
+            &tail(-1, "WorkAxis", 2, "", [0, 0, 0], 601),
+        ]),
+    );
+    d.obj(601, HEALTH, vec![0, 0]);
+    line(&mut d, 610, [0.0, 0.0, 0.0], [1.0, 0.0, 0.0]);
+    vertex(&mut d, 620, &["1", "2", "3"]);
+    key_point(&mut d, 612, [0.0, 0.0, 0.0]);
+    vertex(&mut d, 630, &["4", "5", "6"]);
+    key_point(&mut d, 614, [3.0, 0.0, 0.0]);
+
+    let (m, b) = d.streams();
+    let v = serde_json::to_value(Design::parse(&m, b).unwrap().dump("x", "Design1")).unwrap();
+    let items = v["timeline"]["items"].as_array().unwrap();
+    let vertex_of = |e: &Value, tags: usize| {
+        assert_eq!(e["kind"], "vertex", "{e}");
+        assert_eq!(e["_f3d"]["recipe"], "vertex");
+        assert_eq!(e["_f3d"]["entities"].as_array().unwrap().len(), tags);
+    };
+
+    let point = &items[2];
+    assert_eq!(point["objectType"], "ConstructionPoint");
+    assert_eq!(point["_f3d"]["datum_code"], 0);
+    assert_eq!(point["detail"]["geometry"], json!([6.0, 0.0, 0.0]));
+    let def = &point["detail"]["definition"];
+    assert_eq!(def["_type"], "ConstructionPointPointDefinition");
+    vertex_of(&def["pointEntity"], 3);
+
+    let plane = &items[3];
+    assert_eq!(plane["_f3d"]["datum_code"], 2);
+    let def = &plane["detail"]["definition"];
+    assert_eq!(def["_type"], "ConstructionPlaneThreePointsDefinition");
+    vertex_of(&def["pointEntityOne"], 3);
+    assert_eq!(
+        def["pointEntityTwo"],
+        json!({"kind": "construction_point", "name": "WorkPoint1", "origin": null,
+               "timeline_index": 2})
+    );
+    vertex_of(&def["pointEntityThree"], 3);
+
+    let tangent = &items[4]["detail"]["definition"];
+    assert_eq!(items[4]["_f3d"]["datum_code"], 9);
+    assert_eq!(
+        tangent["_type"],
+        "ConstructionPlaneTangentAtPointDefinition"
+    );
+    assert_eq!(tangent["tangentFace"]["kind"], "face");
+    vertex_of(&tangent["pointEntity"], 2);
+
+    let round = &items[5]["detail"];
+    assert_eq!(
+        round["geometry"],
+        json!({"type": "InfiniteLine3D", "origin": [1.0, 2.0, 0.0], "direction": [0.0, 0.0, 1.0]})
+    );
+    assert_eq!(
+        round["definition"]["_type"],
+        "ConstructionAxisCircularFaceDefinition"
+    );
+    assert_eq!(round["definition"]["circularFace"]["kind"], "face");
+
+    let two = &items[6]["detail"]["definition"];
+    assert_eq!(two["_type"], "ConstructionAxisTwoPointDefinition");
+    vertex_of(&two["pointEntityOne"], 3);
+    vertex_of(&two["pointEntityTwo"], 3);
+}
+
+/// The bytes of a sketch text record (`E0618268`, mitcad#186) after its
+/// header: root part with two properties, then the members of
+/// [`sketch::parse_text`]'s layout up to the owning sketch's reference.
+fn text_record(slots: Option<(u64, u64)>, kind: u32, matrix: Option<[f64; 16]>) -> Vec<u8> {
+    let attr = |key: &str, value: u64| {
+        cat(&[
+            &s8(key),
+            &s8("IntrinsicMetaTypeuint64"),
+            &value.to_le_bytes(),
+        ])
+    };
+    let slot = |at: usize| slots.map_or(vec![], |s| r([s.0, s.1][at]));
+    let tail = match matrix {
+        Some(m) => cat(&[&[1], &f64s(&m), &[0; 30]]),
+        None => cat(&[&u32b(1), &u32b(256), &u32b(0), &u32b(0), &[0; 15]]),
+    };
+    cat(&[
+        &[0, 1],
+        &u32b(2),
+        &attr("textex_tag", 101),
+        &attr("txt_tag_base", 300),
+        &[1],
+        &f64s(&[1.0]),
+        &[0; 12],
+        &1.0f32.to_le_bytes(),
+        &s16("Arial"),
+        &[0],
+        &f64s(&[0.3]),
+        &slot(0),
+        &u32b(3),
+        &[0, 0, 0],
+        &s16("1 mm"),
+        &slot(1),
+        &u32b(1),
+        &[0],
+        &400i32.to_le_bytes(),
+        &u32b(kind),
+        &tail,
+        &r(40),
+    ])
+}
+
+#[test]
+fn sketch_text_records() {
+    let mut doc = Doc::default();
+    for (g, p, v) in [
+        (ROOT, "", 0),
+        (SKETCH, ROOT, 18),
+        (SKETCH_TEXT, ROOT, 0),
+        (USAGE, ROOT, 1),
+    ] {
+        doc.class(g, p, v);
+    }
+    doc.obj(40, SKETCH, vec![0, 0]);
+    doc.obj(91, USAGE, vec![0, 0]);
+    doc.obj(92, USAGE, vec![0, 0]);
+    let turned = [
+        -1.0, 0.0, 0.0, 2.5, 0.0, -1.0, 0.0, -3.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0,
+    ];
+    // With its parameter references and placement matrix, without both,
+    // and a text on a path.
+    doc.obj(
+        80,
+        SKETCH_TEXT,
+        text_record(Some((91, 92)), 0, Some(turned)),
+    );
+    doc.obj(81, SKETCH_TEXT, text_record(None, 0, None));
+    doc.obj(82, SKETCH_TEXT, text_record(None, 1, None));
+    let seg = doc.segment();
+    let read = |id: u64| sketch::parse_text(&seg, seg.object(id).unwrap()).unwrap();
+
+    let t = read(80);
+    assert_eq!((t.text.as_str(), t.font.as_str()), ("1 mm", "Arial"));
+    assert_eq!(
+        (t.height, t.horizontal, t.vertical, t.weight),
+        (0.3, 3, 1, 400)
+    );
+    assert_eq!((t.height_holder, t.content_holder), (Some(91), Some(92)));
+    assert_eq!(t.matrix, Some(turned));
+    // The placement is in the value the dump gets: the angle of the
+    // matrix's first column and its translation.
+    let v = sketch::text_value(&seg, 80, "t0", &t, &[], &sketch::IdTable::default());
+    assert_eq!(v["position"], json!([2.5, -3.0, 0.0]));
+    assert!((v["angle"].as_f64().unwrap() - std::f64::consts::PI).abs() < 1e-12);
+    assert_eq!(
+        v["definition"]["horizontalAlignment"],
+        "CenterHorizontalAlignment"
+    );
+    assert_eq!(v["definition"]["verticalAlignment"], "TopVerticalAlignment");
+    assert_eq!(v["textStyle"], 0);
+
+    let t = read(81);
+    assert_eq!(
+        (t.height_holder, t.content_holder, t.matrix),
+        (None, None, None)
+    );
+    assert_eq!(t.text, "1 mm");
+    let v = sketch::text_value(&seg, 81, "t1", &t, &[], &sketch::IdTable::default());
+    assert!(v.get("position").is_none() && v.get("angle").is_none());
+
+    let t = read(82);
+    assert_eq!(t.kind, 1);
+}
+
+/// A reference to an object of another document through an assembly
+/// context: `01 id 01 key 00 str8(guid) 00`.
+fn context_ref(id: u64, key: u64, guid: &str) -> Vec<u8> {
+    cat(&[
+        &[1],
+        &id.to_le_bytes(),
+        &[1],
+        &key.to_le_bytes(),
+        &[0],
+        &s8(guid),
+        &[0],
+    ])
+}
+
+/// An occurrence of a component of another document whose id is no object
+/// of this design (mitcad#196): in the occurrence tree with its document's
+/// key and URN, its transform and its GUIDs; the external document with its
+/// version and GUIDs; and listed by `referenced_documents`.
+#[test]
+fn occurrence_of_a_component_of_another_document() {
+    let mut d = sample();
+    let key = 0x0102_0304_0506_0708;
+    let t = [
+        1.0, 0.0, 0.0, 5.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0,
+    ];
+    d.obj(
+        83,
+        OCCURRENCE,
+        cat(&[
+            &[0, 0],
+            &context_ref(0x7777, key, COMPONENT),
+            &[0],
+            &f64s(&t),
+            &u32b(0),
+            &s16("124bea26-b9ef-4785-962e-5f51a19652ce"),
+            &r(84),
+        ]),
+    );
+    d.obj(84, OCCURRENCE_CONTAINER, cat(&[&[0, 0], &r(83), &r(2)]));
+    d.externals.push(super::writer::WriterExternal {
+        key,
+        guids: [
+            "7A3F46D6-B137-489D-84BA-42A1B0ED13DF".into(),
+            "f7d6678d-a812-4537-98bd-7db7eea2ea52".into(),
+        ],
+        urn: "urn:test:fs.file:vf.part?version=3".into(),
+        document_guid: "6bb3e201-b763-4428-a07d-12d3975a4494".into(),
+    });
+    let (m, b) = d.streams();
+    let design = Design::parse(&m, b).unwrap();
+    let v = serde_json::to_value(design.dump("assembly.f3d", "Design1")).unwrap();
+    let occ = v["occurrences"].as_array().unwrap();
+    let ext = occ
+        .iter()
+        .find(|o| o["isReferencedComponent"] == true)
+        .expect("the occurrence of the other document's component");
+    assert_eq!(ext["transform"][0], json!([1.0, 0.0, 0.0, 5.0]));
+    assert_eq!(
+        ext["_f3d"],
+        json!({"object_id": 83, "component_object": 0x7777,
+               "guids": ["124bea26-b9ef-4785-962e-5f51a19652ce"],
+               "external_key": "0102030405060708",
+               "external_document": "urn:test:fs.file:vf.part?version=3"})
+    );
+    assert_eq!(
+        v["_f3d"]["external_documents"][1],
+        json!({"key": "0102030405060708", "urn": "urn:test:fs.file:vf.part?version=3",
+               "version": 3,
+               "guids": ["7a3f46d6-b137-489d-84ba-42a1b0ed13df",
+                         "f7d6678d-a812-4537-98bd-7db7eea2ea52"],
+               "document_guid": "6bb3e201-b763-4428-a07d-12d3975a4494"})
+    );
+    // A reference with a key that is no external document is none.
+    let seg = d.segment();
+    assert!(
+        seg.context_ref_at(&context_ref(0x7777, 99, COMPONENT), 0)
+            .is_none()
+    );
+    assert_eq!(super::build::urn_version("urn:x?version=12"), Some(12));
+    assert_eq!(super::build::urn_version("urn:x"), None);
 }

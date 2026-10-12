@@ -929,6 +929,87 @@ rust::Vec<double> analysis_segment_crossings(const geometry::Shape& shape, rust:
   return out;
 }
 
+rust::Vec<double> analysis_segments_crossings(const geometry::Shape& shape, rust::Slice<const double> segments) {
+  const geometry::CheckedOperation check("segment crossings");
+  if (segments.size() % 6 != 0) {
+    throw std::invalid_argument("segments come as two x, y, z triples each");
+  }
+  const std::size_t count = segments.size() / 6;
+  struct Segment {
+    gp_Lin line;
+    double length = 0.0;
+    Bnd_Box reach;
+  };
+  std::vector<Segment> lines(count);
+  for (std::size_t s = 0; s < count; ++s) {
+    const gp_Pnt from(segments[6 * s], segments[6 * s + 1], segments[6 * s + 2]);
+    const gp_Pnt to(segments[6 * s + 3], segments[6 * s + 4], segments[6 * s + 5]);
+    lines[s].length = from.Distance(to);
+    if (lines[s].length < Precision::Confusion()) {
+      throw std::invalid_argument("a segment has no length");
+    }
+    lines[s].line = gp_Lin(from, gp_Dir(gp_Vec(from, to)));
+    lines[s].reach.Add(from);
+    lines[s].reach.Add(to);
+    lines[s].reach.Enlarge(1e-6);
+  }
+  // As analysis_segment_crossings for each segment, with each face's set-up
+  // (its intersector and the classifier of its wires, the expensive part on
+  // a face with hundreds of holes) made once for all the segments that
+  // reach its box (mitcad#181: the probes of a sketch's regions on a body of
+  // 5 000 faces took 1.5 s each).
+  std::vector<std::vector<std::pair<double, double>>> found(count);
+  for (TopExp_Explorer it(shape.occt(), TopAbs_FACE); it.More(); it.Next()) {
+    const TopoDS_Face& face = TopoDS::Face(it.Current());
+    Bnd_Box box;
+    BRepBndLib::Add(face, box);
+    std::optional<IntCurvesFace_Intersector> intersector;
+    std::optional<BRepGProp_Face> oriented;
+    for (std::size_t s = 0; s < count; ++s) {
+      const Segment& segment = lines[s];
+      if (box.IsOut(segment.reach)) {
+        continue;
+      }
+      if (!intersector) {
+        intersector.emplace(face, 1e-7);
+        oriented.emplace(face);
+      }
+      intersector->Perform(segment.line, -1e-9, segment.length + 1e-9);
+      if (!intersector->IsDone()) {
+        continue;
+      }
+      for (int i = 1; i <= intersector->NbPnt(); ++i) {
+        gp_Pnt point;
+        gp_Vec normal;
+        oriented->Normal(intersector->UParameter(i), intersector->VParameter(i), point, normal);
+        const double along = normal.Dot(gp_Vec(segment.line.Direction()));
+        if (std::abs(along) <= 1e-9 * normal.Magnitude()) {
+          continue;
+        }
+        found[s].emplace_back(intersector->WParameter(i) / segment.length, along < 0.0 ? -1.0 : 1.0);
+      }
+    }
+  }
+  rust::Vec<double> out;
+  for (auto& crossings : found) {
+    std::sort(crossings.begin(), crossings.end());
+    std::vector<double> kept;
+    for (std::size_t i = 0; i < crossings.size(); ++i) {
+      if (i > 0 && std::abs(crossings[i].first - crossings[i - 1].first) < 1e-9 &&
+          crossings[i].second == crossings[i - 1].second) {
+        continue;
+      }
+      kept.push_back(crossings[i].first);
+      kept.push_back(crossings[i].second);
+    }
+    out.push_back(static_cast<double>(kept.size() / 2));
+    for (const double v : kept) {
+      out.push_back(v);
+    }
+  }
+  return out;
+}
+
 rust::Vec<AnalysisEdgeMiddle> analysis_edge_middles(const geometry::Shape& shape) {
   const geometry::CheckedOperation check("edge middles");
   rust::Vec<AnalysisEdgeMiddle> out;

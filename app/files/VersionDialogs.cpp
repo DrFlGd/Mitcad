@@ -90,11 +90,12 @@ std::optional<QString> askVersionDescription(QWidget* parent, const QString& fil
   layout->addWidget(text);
   auto* buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel);
   buttons->button(QDialogButtonBox::Ok)->setText(QObject::tr("Save"));
-  buttons->button(QDialogButtonBox::Ok)->setToolTip(QObject::tr("Ctrl+Enter"));
+  buttons->button(QDialogButtonBox::Ok)->setToolTip(
+      QKeySequence(Qt::CTRL | Qt::Key_Return).toString(QKeySequence::NativeText));
   layout->addWidget(buttons);
   QObject::connect(buttons, &QDialogButtonBox::accepted, &dialog, &QDialog::accept);
   QObject::connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
-  // Enter makes a new line; Ctrl+Enter saves.
+  // Return inserts a newline; Command+Return on macOS (Ctrl elsewhere) saves.
   for (const QKeySequence& key : {QKeySequence(Qt::CTRL | Qt::Key_Return), QKeySequence(Qt::CTRL | Qt::Key_Enter)}) {
     QObject::connect(new QShortcut(key, &dialog), &QShortcut::activated, &dialog, &QDialog::accept);
   }

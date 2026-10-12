@@ -100,6 +100,41 @@ void refuse(SketchController& c, SketchOp& op, const QString& what) {
   c.error(QObject::tr("%1 not added: %2").arg(what, reason));
 }
 
+// The auto constraints' reference (mitcad#189) highlighted in a preview,
+// also before the next entity's first click.
+void previewReference(ToolPreview& preview, const SketchController& c, const std::optional<AutoPlan>& plan) {
+  if (!plan) {
+    return;
+  }
+  if (const CurveData* reference = c.model().curve(plan->reference.id)) {
+    preview.curve(reference->curve, 2.0 * c.pixel(), Style::Highlight);
+  }
+}
+
+// The auto constraints in a preview: their reference highlighted, and
+// their glyphs beside `at` (the centre alignment as the side it takes for
+// a circle centred at `center`).
+void previewAuto(ToolPreview& preview, const SketchController& c, const AutoPlan& plan, const V2& at,
+                 const V2& center) {
+  previewReference(preview, c, plan);
+  preview.marks.clear();
+  for (const QString& type : plan.types) {
+    if (type == QStringLiteral("horizontal_vertical")) {
+      preview.marks << (alignsHorizontally(plan.reference.center, center) ? QStringLiteral("horizontal_points")
+                                                                          : QStringLiteral("vertical_points"));
+    } else {
+      preview.marks << type;
+    }
+  }
+  preview.marksAt = at;
+}
+
+// The user cancelled a new entity whose auto constraints were refused.
+void takenBack(SketchController& c, SketchOp& op, const QString& what) {
+  op.rollback();
+  c.hint(QObject::tr("%1 taken back: its auto constraints were refused.").arg(what));
+}
+
 // ---------------------------------------------------------------------------
 // Line
 
@@ -108,6 +143,7 @@ public:
   using SketchTool::SketchTool;
 
   QString name() const override { return QObject::tr("Line"); }
+  AutoKind autoKind() const override { return AutoKind::Line; }
 
   void start() override { m_c.hint(QObject::tr("Line: click the start point.")); }
 
@@ -201,6 +237,9 @@ public:
 
   void paint(ToolPreview& preview) const override {
     if (m_state == State::Chain && dist(m_start, m_end) > 0.0) {
+      if (m_plan) {
+        previewAuto(preview, m_c, *m_plan, (m_start + m_end) / 2.0, V2{});
+      }
       preview.line(m_start, m_end);
       preview.points.push_back(m_end);
       if (m_inference) {
@@ -212,6 +251,8 @@ public:
         preview.curve(*arc, 2.0 * m_c.pixel());
         preview.glyph = QStringLiteral("tangent");
       }
+    } else if (m_state == State::First) {
+      previewReference(preview, m_c, m_c.autoPlan());
     }
   }
 
@@ -259,6 +300,10 @@ private:
     if (norm(d) < 4.0 * px) {
       return std::nullopt;
     }
+    // A direction the auto constraints give replaces the inferred one.
+    if (m_plan && (m_plan->has(QStringLiteral("parallel")) || m_plan->has(QStringLiteral("perpendicular")))) {
+      return std::nullopt;
+    }
     struct Option {
       QString type;
       QString other;
@@ -302,6 +347,10 @@ private:
       return;
     }
     m_inference.reset();
+    // The auto constraints (mitcad#189) to the session's first or last
+    // line, not to a line the cursor passed: a direction they give
+    // replaces the inferred one.
+    m_plan = m_c.autoPlan();
     V2 end = m_snap.at;
     const auto length = m_c.fieldValue(QStringLiteral("length"));
     const auto angle = m_c.fieldValue(QStringLiteral("angle"));
@@ -326,6 +375,9 @@ private:
       if (length) {
         const V2 d = end - m_start;
         end = m_start + (norm(d) > 0.0 ? unit(d) : V2{1.0, 0.0}) * *length;
+      }
+      if (m_plan) {
+        end = autoLineEnd(m_start, end, m_plan->reference, m_plan->types, length.has_value());
       }
     }
     m_end = end;
@@ -397,7 +449,12 @@ private:
                        {QStringLiteral("b"), line}},
                       m_c.fieldExpression(QStringLiteral("angle")));
     }
+    if (!m_c.applyAutoConstraints(op, line, QObject::tr("line"))) {
+      takenBack(m_c, op, name());
+      return;
+    }
     op.commit();
+    m_c.recordAutoEntity(line);
     const V2 from = m_start;
     V2 to = m_end;
     if (const CurveData* c = m_c.model().curve(line)) {
@@ -492,6 +549,7 @@ private:
   bool m_prevArc = false;
   QString m_reference;
   std::optional<Inference> m_inference;
+  std::optional<AutoPlan> m_plan; // the auto constraints of the next line
   bool m_arcPress = false;
   QPointF m_arcPressAt;
 };
@@ -836,6 +894,8 @@ public:
   }
 
   bool snaps() const override { return !tangent() || m_lines.size() >= 2; }
+  // Tangent circles are placed by their lines: no auto constraints.
+  AutoKind autoKind() const override { return tangent() ? AutoKind::None : AutoKind::Circular; }
 
   void move(const Snap& snap) override {
     if (tangent() && pickingLines()) {
@@ -889,16 +949,22 @@ public:
       }
       return;
     }
+    const auto plan = m_c.autoPlan();
     if (clicked() == 0) {
+      previewReference(preview, m_c, plan);
       return;
     }
-    if (const auto c = circleFor(cursor())) {
-      preview.curve(*c, step());
+    const auto c = placedCircle(cursor(), plan);
+    if (c && c->radius > 0.0) {
+      if (plan) {
+        previewAuto(preview, m_c, *plan, c->center, c->center);
+      }
+      preview.curve(Curve2::circle(c->center, c->radius), step());
     } else {
       preview.line(click(clicked() - 1), cursor(), Style::Guide);
     }
     if (m_mode == QStringLiteral("center")) {
-      preview.line(click(0), cursor(), Style::Guide);
+      preview.line(c ? c->center : click(0), cursor(), Style::Guide);
     }
   }
 
@@ -986,6 +1052,21 @@ protected:
     return center ? std::optional<Curve2>(Curve2::circle(*center, dist(*center, p))) : std::nullopt;
   }
 
+  // The circle of the clicks and `p`, moved and sized for the auto
+  // constraints (mitcad#189): a centre circle keeps going through `p`.
+  std::optional<AutoCircle> placedCircle(const V2& p, const std::optional<AutoPlan>& plan) const {
+    const auto c = circleFor(p);
+    if (!c) {
+      return std::nullopt;
+    }
+    const AutoCircle drawn{c->center, c->radius};
+    if (!plan) {
+      return drawn;
+    }
+    const std::optional<V2> rim = m_mode == QStringLiteral("center") ? std::optional<V2>(p) : std::nullopt;
+    return autoCircle(drawn, plan->reference, plan->types, m_c.typed(QStringLiteral("diameter")), rim);
+  }
+
   // The circle tangent to the two lines whose centre is nearest the cursor.
   std::optional<std::pair<V2, double>> tangentCircle(const V2& p) const {
     if (m_lines.size() < 2) {
@@ -1058,6 +1139,23 @@ protected:
   }
 
   void commit() override {
+    // Where the auto constraints put the circle, when they move or size
+    // it: made there, so that it already satisfies them.
+    std::optional<AutoCircle> placed;
+    bool freeCenter = false;
+    if (const auto plan = tangent() ? std::optional<AutoPlan>() : m_c.autoPlan()) {
+      const V2 p = click(clicked() - 1);
+      const auto drawn = circleFor(p);
+      const auto circle = placedCircle(p, plan);
+      if (drawn && circle && circle->radius > 1e-9) {
+        // A centre moved off its snap, or one concentric to the
+        // reference's: a point of its own.
+        freeCenter = dist(circle->center, drawn->center) > 1e-9 || plan->has(QStringLiteral("concentric"));
+        if (freeCenter || std::abs(circle->radius - drawn->radius) > 1e-9) {
+          placed = circle;
+        }
+      }
+    }
     SketchOp op(m_c);
     QJsonObject cmd = op.command(QStringLiteral("sketch.circle"));
     cmd.insert(QStringLiteral("mode"), m_mode);
@@ -1071,6 +1169,12 @@ protected:
       cmd.insert(QStringLiteral("lines"), QJsonArray::fromStringList(m_lines));
       cmd.insert(QStringLiteral("radius"), c->second);
       cmd.insert(QStringLiteral("near"), xy(c->first));
+    } else if (placed) {
+      cmd.insert(QStringLiteral("mode"), QStringLiteral("center"));
+      cmd.insert(QStringLiteral("center"), freeCenter || m_mode != QStringLiteral("center")
+                                               ? QJsonValue(xy(placed->center))
+                                               : op.pointInput(snapOf(0)));
+      cmd.insert(QStringLiteral("radius"), placed->radius);
     } else if (m_mode == QStringLiteral("center")) {
       cmd.insert(QStringLiteral("center"), op.pointInput(snapOf(0)));
       cmd.insert(QStringLiteral("radius"), dist(click(0), click(1)));
@@ -1093,15 +1197,17 @@ protected:
     if (const CurveData* c = op.model().curve(circle)) {
       center = c->center;
     }
-    if (m_mode == QStringLiteral("center") && !shares(snapOf(0))) {
+    if (m_mode == QStringLiteral("center") && !freeCenter && !shares(snapOf(0))) {
       op.constrain(center, snapOf(0));
     }
-    // Clicks on the circle that snapped to points keep it through them.
+    // Clicks on the circle that snapped to points keep it through them
+    // (when the auto constraints left it there).
     const int first = m_mode == QStringLiteral("center") ? 1 : 0;
     if (!tangent()) {
       for (int i = first; i < clicked(); ++i) {
         const Snap& s = snapOf(i);
-        if (s.atPoint() || s.kind == Snap::Kind::Origin) {
+        const bool on = !placed || std::abs(dist(s.at, placed->center) - placed->radius) <= 1e-6;
+        if ((s.atPoint() || s.kind == Snap::Kind::Origin) && on) {
           const QJsonValue point = op.pointInput(s);
           op.addConstraint({{QStringLiteral("type"), QStringLiteral("coincident")},
                             {QStringLiteral("point"), point.toString()},
@@ -1113,7 +1219,14 @@ protected:
       op.addDimension({{QStringLiteral("type"), QStringLiteral("diameter")}, {QStringLiteral("curve"), circle}},
                       m_c.fieldExpression(QStringLiteral("diameter")));
     }
+    if (!m_c.applyAutoConstraints(op, circle, QObject::tr("circle"))) {
+      takenBack(m_c, op, name());
+      m_lines.clear();
+      m_c.setPicked({});
+      return;
+    }
     op.commit();
+    m_c.recordAutoEntity(circle);
     logCircle(circle);
     m_lines.clear();
     m_c.setPicked({});
@@ -1147,6 +1260,10 @@ public:
     }
     return m_mode == QStringLiteral("tangent") ? QObject::tr("Tangent Arc") : QObject::tr("3-Point Arc");
   }
+  // A tangent arc is placed by the curve it leaves: no auto constraints.
+  AutoKind autoKind() const override {
+    return m_mode == QStringLiteral("tangent") ? AutoKind::None : AutoKind::Circular;
+  }
 
   void move(const Snap& snap) override {
     // The sweep of a centre point arc follows the cursor around.
@@ -1174,10 +1291,15 @@ public:
   }
 
   void paint(ToolPreview& preview) const override {
+    const auto plan = m_c.autoPlan();
     if (clicked() == 0) {
+      previewReference(preview, m_c, plan);
       return;
     }
-    if (const auto arc = arcFor(cursor())) {
+    if (const auto arc = placedArc(cursor(), plan)) {
+      if (plan) {
+        previewAuto(preview, m_c, *plan, arc->center, arc->center);
+      }
       preview.curve(*arc, step());
     } else {
       preview.line(click(clicked() - 1), cursor(), Style::Guide);
@@ -1265,12 +1387,60 @@ protected:
     return arcThrough(click(0), p, click(1));
   }
 
+  // The arc of the clicks and `p`, moved and sized for the auto
+  // constraints (mitcad#189): a centre point arc keeps starting where its
+  // start was clicked and sweeps to `p` about its new centre; a 3-point
+  // arc keeps its angles.
+  std::optional<Curve2> placedArc(const V2& p, const std::optional<AutoPlan>& plan) const {
+    const auto arc = arcFor(p);
+    if (!arc || !plan) {
+      return arc;
+    }
+    const bool center = m_mode == QStringLiteral("center");
+    const AutoCircle circle =
+        autoCircle({arc->center, arc->radius}, plan->reference, plan->types, m_c.typed(QStringLiteral("radius")),
+                   center ? std::optional<V2>(click(1)) : std::nullopt);
+    if (circle.radius <= 1e-9) {
+      return arc;
+    }
+    if (center) {
+      const double start = angleOf(click(1) - circle.center);
+      const double end = angleOf(p - circle.center);
+      return m_sweep >= 0 ? Curve2::arc(circle.center, circle.radius, start, end)
+                          : Curve2::arc(circle.center, circle.radius, end, start);
+    }
+    return Curve2::arc(circle.center, circle.radius, arc->start, arc->end);
+  }
+
   void commit() override {
+    // Where the auto constraints put the arc, when they move or size it:
+    // made there from its centre, so that it already satisfies them.
+    std::optional<Curve2> placed;
+    bool freeCenter = false;
+    if (const auto plan = m_c.autoPlan()) {
+      const V2 p = click(clicked() - 1);
+      const auto drawn = arcFor(p);
+      const auto arc = placedArc(p, plan);
+      if (drawn && arc) {
+        freeCenter = dist(arc->center, drawn->center) > 1e-9 || plan->has(QStringLiteral("concentric"));
+        if (freeCenter || std::abs(arc->radius - drawn->radius) > 1e-9) {
+          placed = arc;
+        }
+      }
+    }
     SketchOp op(m_c);
     QJsonObject cmd = op.command(QStringLiteral("sketch.arc"));
     cmd.insert(QStringLiteral("mode"), m_mode);
     cmd.insert(QStringLiteral("construction"), m_c.construction());
-    if (m_mode == QStringLiteral("three_point")) {
+    if (placed) {
+      cmd.insert(QStringLiteral("mode"), QStringLiteral("center"));
+      cmd.insert(QStringLiteral("center"), freeCenter || m_mode != QStringLiteral("center")
+                                               ? QJsonValue(xy(placed->center))
+                                               : op.pointInput(snapOf(0)));
+      cmd.insert(QStringLiteral("start"), xy(placed->startPoint()));
+      cmd.insert(QStringLiteral("end"), xy(placed->endPoint()));
+      cmd.insert(QStringLiteral("clockwise"), false);
+    } else if (m_mode == QStringLiteral("three_point")) {
       cmd.insert(QStringLiteral("start"), op.pointInput(snapOf(0)));
       cmd.insert(QStringLiteral("end"), op.pointInput(snapOf(1)));
       cmd.insert(QStringLiteral("through"), xy(click(2)));
@@ -1293,7 +1463,12 @@ protected:
       op.addDimension({{QStringLiteral("type"), QStringLiteral("radius")}, {QStringLiteral("curve"), arc}},
                       m_c.fieldExpression(QStringLiteral("radius")));
     }
+    if (!m_c.applyAutoConstraints(op, arc, QObject::tr("arc"))) {
+      takenBack(m_c, op, name());
+      return;
+    }
     op.commit();
+    m_c.recordAutoEntity(arc);
     if (const CurveData* c = m_c.model().curve(arc)) {
       qDebug().noquote() << QStringLiteral("Added arc %1, radius %2 mm at %3")
                                 .arg(arc)

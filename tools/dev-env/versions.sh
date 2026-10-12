@@ -68,6 +68,12 @@ CUDA_CUDART_SHA256=1f6ad42d4f530b24bfa35894ccf6b7209d2354f59101fd62ec4a6192a184c
 CUDA_CCCL_VERSION=12.9.27
 CUDA_CCCL_SHA256=8b1a5095669e94f2f9afd7715533314d418179e9452be61e2fde4c82a3e542aa
 CUDA_MAX_GCC=14
+# The same components' Windows archives (build-cycles.ps1 -Cuda, mitcad#202),
+# from the same redistrib_<CUDA_VERSION>.json; the host compiler is MSVC
+# (CUDA 12.9 takes Visual Studio 2017 to 2022).
+CUDA_NVCC_WINDOWS_SHA256=227b109663b5e57d2718bcabb24a4ba0d9d4e52d958e327dc476f7c28691be85
+CUDA_CUDART_WINDOWS_SHA256=179e9c43b0735ffe67207b3da556eb5a0c50f3047961882b7657d3b822d34ef8
+CUDA_CCCL_WINDOWS_SHA256=17aaa7c6b8f94a417d8f3261780b7e34b9cbdfab7513bce86768623b06aa28b5
 # The kernels: a cubin per architecture (a GPU runs the one of its major
 # version with the highest minor not above its own) and PTX for compute
 # 7.5, which the driver compiles for newer GPUs (sm_80, sm_90, ...).

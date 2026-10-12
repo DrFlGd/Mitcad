@@ -1,0 +1,11 @@
+[
+  {"comment":"SPDX-License-Identifier: MIT. The reopened split recomputes both pieces and their sheet states; suppressing the failed Unfold of the removed bend releases the base piece (mitcad#209)."},
+  {"expect":{"feature":"F7","status":"ok","bodies":2}},
+  {"expect":{"body":"F3.b0","volume":1160,"max":[-1,20,0]}},
+  {"expect":{"body":"F7.b0","volume":560,"min":[3,0,4],"max":[5,20,18]}},
+  {"expect":{"query":{"query":"sheet_state","body":"F7.b0"},"result":{"status":"valid","charts":[{"domain":{"kind":"panel","id":{"feature":"F4","slot":0}}}]}}},
+  {"expect":{"feature":"F8","status":"error","error_contains":"not a bend"}},
+  {"expect":{"query":{"query":"flat_pattern","body":"F3.b0"},"result":{"status":"blocked"}}},
+  {"cmd":"suppress_feature","uid":"F8"},
+  {"expect":{"query":{"query":"flat_pattern","body":"F3.b0"},"result":{"status":"valid","area":580}}}
+]

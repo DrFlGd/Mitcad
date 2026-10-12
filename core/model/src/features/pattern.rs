@@ -15,7 +15,9 @@
 //!   when that gives the same bodies (no body split apart), which is much
 //!   faster on large bodies. Identical and
 //!   Optimized move the tool the feature left to every element and combine
-//!   them all at once. Groups of copies whose boxes stay away from the
+//!   them all at once; consecutive features that cut the same bodies (a
+//!   hole and the copies of a pattern of it) are cut in one operation with
+//!   all their copies. Groups of copies whose boxes stay away from the
 //!   bodies' boxes change nothing and are left out of a cut (and of
 //!   Adjust's join), before the copies are united ([`reaching`]).
 //! - Patterns and mirrors of features among the features (patterns of
@@ -27,17 +29,22 @@
 //! - Fillets and chamfers among the features (mitcad#105) are applied
 //!   again on the copies of the edges they round, found by the copies'
 //!   names ([`super::dressup_copies`]); the features then go in timeline
-//!   order.
+//!   order. With Optimized the faces the features made are copied
+//!   instead: the material they added and removed, moved to every
+//!   element and joined and cut in one operation each
+//!   (`face_copy.rs`), with no fillet or chamfer worked out again.
 //! - Faces: the faces of a body bound a boss or a pocket together with
 //!   planar caps ([`crate::kernel::Kernel::face_tool`]); its copies are
 //!   joined to or cut from the body like a feature's tool.
 //!
 //! Copied faces are named `<pattern>:inst<element>(<original name>)`.
 //!
-//! Element numbering: along a direction the positions are 0, 1, …, q − 1
-//! and, when symmetric, −1, …, −(q − 1); a rectangular pattern numbers the
-//! elements direction 1 first: element = k1 + n1 · k2. The ids in .f3d
-//! designs (experiment K43) may differ; the import matches elements by transform.
+//! Element numbering: along a direction the positions are 0, 1, …, q − 1;
+//! when symmetric the q elements lie on both sides of the original: 0, 1,
+//! …, q − 1 − ⌊q / 2⌋, then −1, …, −⌊q / 2⌋ (three elements: 0, 1, −1; four:
+//! 0, 1, −1, −2). A rectangular pattern numbers the elements direction 1
+//! first: element = k1 + n1 · k2. The ids in .f3d designs (experiment K43)
+//! may differ; the import matches elements by transform.
 
 use std::collections::BTreeSet;
 
@@ -61,9 +68,20 @@ use crate::transform::{Instance, Transform, add, cross, scaled, sub};
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum PatternObjects {
-    Bodies { bodies: Vec<BodyUid> },
-    Features { features: Vec<FeatureUid> },
-    Faces { body: BodyUid, faces: Vec<FaceName> },
+    Bodies {
+        bodies: Vec<BodyUid>,
+    },
+    Features {
+        features: Vec<FeatureUid>,
+    },
+    Faces {
+        body: BodyUid,
+        faces: Vec<FaceName>,
+    },
+    /// Repeated occurrences of shared component definitions (Pattern at Points).
+    Components {
+        occurrences: Vec<super::OccurrencePath>,
+    },
 }
 
 /// The compute option for patterns and mirrors of features.
@@ -75,7 +93,9 @@ pub enum ComputeOption {
     Adjust,
     /// The original tool moved to every element.
     Identical,
-    /// As Identical (a faster copy of faces has no counterpart here).
+    /// As Identical, but the fillets and chamfers among the features are
+    /// copied as the faces the features made (`face_copy.rs`) instead
+    /// of being worked out again on each copy.
     Optimized,
 }
 
@@ -103,8 +123,8 @@ pub struct PatternDirection<P = ParamId> {
     /// Spacing or extent (see [`SpacingType`]); negative goes against the
     /// axis.
     pub distance: P,
-    /// Elements on both sides of the original, `quantity` (and the extent)
-    /// on each side (experiment K41).
+    /// The `quantity` elements on both sides of the original, ⌊quantity /
+    /// 2⌋ of them before it (the extent and the spacing as without).
     #[serde(default, skip_serializing_if = "is_false")]
     pub symmetric: bool,
 }
@@ -147,7 +167,9 @@ pub struct CircularPatternDef<P = ParamId> {
     /// angle / quantity, a partial one by angle / (quantity − 1); negative
     /// turns the other way.
     pub angle: P,
-    /// Elements on both sides, `quantity` and `angle` on each side.
+    /// The `quantity` elements on both sides of the original, ⌊quantity /
+    /// 2⌋ of them turned back from it, at the same spacing as without
+    /// (not for a full turn).
     #[serde(default, skip_serializing_if = "is_false")]
     pub symmetric: bool,
     #[serde(default, skip_serializing_if = "is_adjust")]
@@ -317,6 +339,7 @@ impl PatternObjects {
                 }
             }
             Self::Features { features } => references.features.extend(features),
+            Self::Components { .. } => {}
             Self::Faces { body, faces } => {
                 references.body(*body);
                 for face in faces {
@@ -339,6 +362,7 @@ impl PatternObjects {
             Ok(())
         }
         match self {
+            Self::Components { .. } => Err("components require Pattern at Points".to_owned()),
             Self::Bodies { bodies } => {
                 unique(bodies, "body")?;
                 bodies.iter().try_for_each(|body| ctx.body(*body))
@@ -419,15 +443,21 @@ fn quantity(what: &str, value: f64) -> Result<u32, String> {
 /// Elements of one pattern at most.
 const MAX_ELEMENTS: u32 = 10_000;
 
-/// Positions along a direction: 0, 1, …, q − 1, then −1, …, −(q − 1) when
-/// symmetric.
+/// Positions along a direction: 0, 1, …, q − 1; when symmetric the `q`
+/// elements spread over both sides of the original, ⌊q / 2⌋ before it and
+/// the rest after it (0, 1, …, q − 1 − ⌊q / 2⌋, then −1, …, −⌊q / 2⌋), as
+/// the `.f3d` designs do (the one-option variants of a rectangular and a
+/// circular pattern, mitcad#186).
 fn positions(quantity: u32, symmetric: bool) -> Vec<f64> {
-    let forward = (0..quantity).map(f64::from);
-    let backward = (1..quantity).map(|i| -f64::from(i));
-    if symmetric {
-        forward.chain(backward).collect()
+    if symmetric && quantity > 1 {
+        let before = quantity / 2;
+        let after = quantity - 1 - before;
+        (0..=after)
+            .map(f64::from)
+            .chain((1..=before).map(|i| -f64::from(i)))
+            .collect()
     } else {
-        forward.collect()
+        (0..quantity).map(f64::from).collect()
     }
 }
 
@@ -454,6 +484,7 @@ pub(crate) fn repeated(def: &FeatureDef) -> Option<(&PatternObjects, &[u32])> {
         FeatureDef::RectangularPattern(d) => Some((&d.objects, &d.suppressed_elements)),
         FeatureDef::CircularPattern(d) => Some((&d.objects, &d.suppressed_elements)),
         FeatureDef::PathPattern(d) => Some((&d.objects, &d.suppressed_elements)),
+        FeatureDef::PatternAtPoints(d) => Some((&d.objects, &[])),
         FeatureDef::Mirror(d) => Some((&d.objects, &[])),
         _ => None,
     }
@@ -464,9 +495,9 @@ pub(crate) fn repeated(def: &FeatureDef) -> Option<(&PatternObjects, &[u32])> {
 /// innermost first: each element's transform and the instance that names
 /// its copies.
 #[derive(PartialEq)]
-struct Placed {
-    feature: FeatureUid,
-    steps: Vec<(Transform, Instance)>,
+pub(super) struct Placed {
+    pub(super) feature: FeatureUid,
+    pub(super) steps: Vec<(Transform, Instance)>,
 }
 
 /// Places at most that patterns of patterns give.
@@ -539,7 +570,7 @@ fn originals<K: Kernel>(
 /// A tool moved through a place's steps (each copy named by its instance),
 /// then by `transform` named by `instance`. `moved`: the tool is in its
 /// place already (rebuilt there), only the names change.
-fn placed_copy<K: Kernel>(
+pub(super) fn placed_copy<K: Kernel>(
     ctx: &EvalContext<'_, K>,
     tool: &K::Shape,
     steps: &[(Transform, Instance)],
@@ -637,6 +668,7 @@ fn scale_elements<K: Kernel>(
         PatternObjects::Faces { .. } => {
             return Err(format!("{UNSUPPORTED}scaled copies of faces"));
         }
+        PatternObjects::Components { .. } => return Err("components cannot be scaled".to_owned()),
     };
     let center = ctx
         .kernel
@@ -803,6 +835,7 @@ pub(crate) fn repeat<K: Kernel>(
         index: element.index,
     };
     match objects {
+        PatternObjects::Components { .. } => Err("components require Pattern at Points".to_owned()),
         PatternObjects::Bodies { bodies } => {
             let mut changes = Vec::new();
             let count = bodies.len() as u32;
@@ -883,6 +916,41 @@ pub(crate) fn repeat<K: Kernel>(
                 copied: &copied,
                 dressups: &dressups,
             };
+            // A requested point is an explicit placement, never an optional
+            // lattice element: report which target could not replay the group.
+            if matches!(
+                ctx.feature_entry(ctx.uid)?.def,
+                FeatureDef::PatternAtPoints(_)
+            ) {
+                for element in elements {
+                    for place in &places {
+                        if !copying.place(ctx, &mut set, place, std::slice::from_ref(element))? {
+                            return Err(format!(
+                                "target {}: {}",
+                                element.index,
+                                copying.unreached(ctx, place)
+                            ));
+                        }
+                    }
+                }
+                return Ok(FeatureOutput {
+                    changes: set.changes(),
+                    ..FeatureOutput::default()
+                });
+            }
+            // Optimized copies the faces of fillets and chamfers (and the
+            // features they round) instead of rounding at each copy. A
+            // failure there is the pattern's: the roundings are not worked
+            // out copy by copy as the other options do.
+            if compute == ComputeOption::Optimized
+                && !dressups.is_empty()
+                && super::face_copy::copy_faces(ctx, &mut set, &places, elements)?
+            {
+                return Ok(FeatureOutput {
+                    changes: set.changes(),
+                    ..FeatureOutput::default()
+                });
+            }
             let saved = (set.clone(), ctx.next_body, ctx.warnings.len());
             match copying.by_places(ctx, &mut set, elements) {
                 Ok(()) => {}
@@ -975,10 +1043,120 @@ impl Copying<'_> {
         set: &mut BodySet<K::Shape>,
         elements: &[Element],
     ) -> Result<(), String> {
-        for place in self.places {
+        let mut i = 0;
+        while i < self.places.len() {
+            let run = self.cut_run(ctx, set, i)?;
+            if run > 1 {
+                self.cut_together(ctx, set, &self.places[i..i + run], elements)?;
+                i += run;
+                continue;
+            }
+            let place = &self.places[i];
             if !self.place(ctx, set, place, elements)? && !elements.is_empty() {
                 return Err(self.unreached(ctx, place));
             }
+            i += 1;
+        }
+        Ok(())
+    }
+
+    /// How many places from `from` on cut the same bodies with their copies
+    /// all at once (Identical and Optimized; no fillet or chamfer among
+    /// them): those are cut together ([`Copying::cut_together`]). 1 (or 0)
+    /// when the place at `from` is not such a cut.
+    fn cut_run<K: Kernel>(
+        &self,
+        ctx: &mut EvalContext<'_, K>,
+        set: &BodySet<K::Shape>,
+        from: usize,
+    ) -> Result<usize, String> {
+        if self.compute == ComputeOption::Adjust {
+            return Ok(1);
+        }
+        let mut first = None;
+        let mut run = 0;
+        for place in &self.places[from..] {
+            if self.dressups.contains(&place.feature) {
+                break;
+            }
+            let Some(participants) = self.cut_participants(ctx, set, place)? else {
+                break;
+            };
+            match &first {
+                None => first = Some(participants),
+                Some(p) if *p == participants => {}
+                Some(_) => break,
+            }
+            run += 1;
+        }
+        Ok(run.max(1))
+    }
+
+    /// The bodies the copies of the feature at `place` cut; None when it
+    /// does not cut.
+    fn cut_participants<K: Kernel>(
+        &self,
+        ctx: &mut EvalContext<'_, K>,
+        set: &BodySet<K::Shape>,
+        place: &Placed,
+    ) -> Result<Option<Vec<BodyUid>>, String> {
+        let entry = ctx.feature_entry(place.feature)?;
+        let Some(tool_use) = entry.def.info().tool_use() else {
+            return Ok(None);
+        };
+        if tool_use.operation != Operation::Cut {
+            return Ok(None);
+        }
+        let participants = if self.original_bodies && tool_use.participants.is_empty() {
+            changed_bodies(ctx, place.feature, set)?
+        } else {
+            tool_use.participants.clone()
+        };
+        Ok(Some(participants))
+    }
+
+    /// The places of a run of cuts ([`Copying::cut_run`]) in one operation:
+    /// the copies of all of them united and cut out of their bodies at once,
+    /// which gives the bodies the cuts one after another give (mitcad#181: a
+    /// pattern of a hole and of its circular pattern of 21 was 44 cuts of 28
+    /// copies each from a body of 4 000 faces, more than a minute). A place
+    /// none of whose copies reaches a body fails the pattern as it does
+    /// alone.
+    fn cut_together<K: Kernel>(
+        &self,
+        ctx: &mut EvalContext<'_, K>,
+        set: &mut BodySet<K::Shape>,
+        places: &[Placed],
+        elements: &[Element],
+    ) -> Result<(), String> {
+        if elements.is_empty() {
+            return Ok(());
+        }
+        let participants = self
+            .cut_participants(ctx, set, &places[0])?
+            .unwrap_or_default();
+        let mut tools = Vec::with_capacity(places.len());
+        for place in places {
+            let stored = ctx.feature_tool(place.feature)?;
+            match moved_copies(
+                ctx,
+                &stored,
+                &place.steps,
+                elements,
+                Some((&*set, participants.as_slice())),
+            )? {
+                Some(tool) => tools.push(tool),
+                None => return Err(self.unreached(ctx, place)),
+            }
+        }
+        let tool = if tools.len() == 1 {
+            tools.pop().expect("one tool")
+        } else {
+            let refs: Vec<&K::Shape> = tools.iter().collect();
+            ctx.kernel.unite(&refs).map_err(|e| e.to_string())?
+        };
+        if !apply_tool(ctx, set, Operation::Cut, &participants, &tool)? {
+            return Err(self.unreached(ctx, &places[0]));
         }
         Ok(())
     }
@@ -1229,13 +1407,15 @@ const REACH: f64 = 0.1;
 /// a round plate has most copies off the plate, and uniting and cutting
 /// with them took most of its time. All copies when a box cannot be
 /// measured.
-fn reaching<K: Kernel>(
+pub(super) fn reaching<K: Kernel>(
     ctx: &EvalContext<'_, K>,
     set: &BodySet<K::Shape>,
     participants: &[BodyUid],
     copies: Vec<K::Shape>,
 ) -> Vec<K::Shape> {
-    let measure = |shape: &K::Shape| ctx.kernel.bounding_box(shape).map_err(|_| ());
+    // (Boxes that hold the shapes: the tight ones of a body of thousands of
+    // spline faces took half of a pattern's time.)
+    let measure = |shape: &K::Shape| ctx.kernel.enclosing_box(shape).map_err(|_| ());
     let Ok(boxes) = copies.iter().map(measure).collect::<Result<Vec<_>, ()>>() else {
         return copies;
     };

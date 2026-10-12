@@ -1,0 +1,17 @@
+[
+  {"comment":"SPDX-License-Identifier: MIT. Reopened shared and independently copied sheet definitions preserve rules, names and placed geometry (mitcad#206)."},
+  {"expect":{"feature":"F7","status":"ok","bodies":2,"instances":3,"world_volume":448.58407346410206}},
+  {"expect":{"occurrence":"O1/O2","body":"F3.b0","volume":134.5752220392306,"bbox":{"min":[100,30,35],"max":[103,38,41]}}},
+  {"expect":{"occurrence":"O1/O3","body":"F3.b0","volume":134.5752220392306,"bbox":{"min":[100,50,35],"max":[103,58,41]}}},
+  {"expect":{"occurrence":"O1/O4","body":"F6.b0","volume":179.4336293856408,"bbox":{"min":[96,70,35],"max":[100,78,41]},"has_face":"F6:sheet_front(0)"}},
+  {"expect":{"query":{"query":"sheet_state","body":"F3.b0"},"result":{"body":"F3.b0","owner":"C2","status":"valid","rules":"F1","panels":[{"id":{"feature":"F3","slot":0}}],"blockers":[]}}},
+  {"expect":{"query":{"query":"sheet_state","body":"F6.b0"},"result":{"body":"F6.b0","owner":"C3","status":"valid","rules":"F4","panels":[{"id":{"feature":"F6","slot":0}}],"blockers":[]}}},
+  {"expect":{"query":{"query":"sketch","uid":"F7"},"result":{"frame":{"origin":[96,0,0],"normal":[-1,0,0]}}}},
+  {"comment":"The copied rule closure remains independent after serialization, not merely in the setup process."},
+  {"cmd":"set_parameter","name":"d1","value":2},
+  {"expect":{"instances":3,"world_volume":358.8672587712816}},
+  {"expect":{"occurrence":"O1/O3","body":"F3.b0","volume":89.7168146928204,"bbox":{"min":[100,50,35],"max":[102,58,41]}}},
+  {"expect":{"occurrence":"O1/O4","body":"F6.b0","volume":179.4336293856408,"bbox":{"min":[96,70,35],"max":[100,78,41]}}},
+  {"cmd":"undo"},
+  {"expect":{"world_volume":448.58407346410206}}
+]

@@ -115,20 +115,28 @@ impl<K: Kernel> Document<K> {
                 continue;
             };
             let error = |e: crate::kernel::KernelError| ApiError(format!("{}: {e}", i.name));
-            // A body where its component has it as it is, without a copy.
-            let placed = if i.transform.is_identity() {
-                shape.clone()
-            } else {
-                kernel
-                    .transform_shape(shape, &i.transform, None)
-                    .map_err(error)?
-            };
-            let mass = kernel.mass_properties(&placed).map_err(error)?;
             let at = if i.path_name.is_empty() {
                 a.root_name.clone()
             } else {
                 i.path_name.clone()
             };
+            // A body where its component has it as it is, without a copy.
+            let placed = if i.transform.is_identity() {
+                shape.clone()
+            } else {
+                match kernel.transform_shape(shape, &i.transform, None) {
+                    Ok(placed) => placed,
+                    // A body the kernel cannot move where the design places
+                    // it (one stored invalid in a file the design refers
+                    // to, mitcad#196) is reported, not the end of the
+                    // report.
+                    Err(e) => {
+                        let _ = writeln!(text, "  {at}/{} ({}): not placed: {e}", i.name, i.body);
+                        continue;
+                    }
+                }
+            };
+            let mass = kernel.mass_properties(&placed).map_err(error)?;
             let hidden = if i.visible { "" } else { " (hidden)" };
             let _ = writeln!(
                 text,

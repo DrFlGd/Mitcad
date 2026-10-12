@@ -120,12 +120,13 @@ sets ("autosave", "slicer", "git"), as *Preferences: Cache* and so on.
 | Move/Copy | M | Bodies or components: free move with handles, along axes, rotation, point to point |
 | Measure | I | Distance, angle, length, area, position; also whole bodies |
 | Rename | F2 | A browser row (on the timeline from the context menu) |
+| Search Timeline | Ctrl+F (Cmd+F) | Where the timeline or the browser has the keys: find features by name, type, component and status ([Timeline search](#browser-timeline-and-parameters)); also Edit › Search Timeline |
 
 Other commands of the SOLID tab, in menu order:
 
 - **CREATE:** Create Sketch, Extrude, Revolve, Sweep, Loft,
   Rib, Web, Hole, Thread, Box, Cylinder, Sphere, Torus, Coil, Helix, Pipe,
-  Rectangular/Circular Pattern, Pattern on Path, Mirror. Helix turns
+  Rectangular/Circular Pattern, Pattern on Path, Pattern at Points, Mirror. Helix turns
   sketch profiles about an axis while they rise along it, as a screw
   moves (a thread's profile, a twisted ridge): give the revolutions and
   the pitch, the revolutions and the height, or the height and the pitch,
@@ -165,15 +166,38 @@ Other commands of the SOLID tab, in menu order:
   Joints folder.
 - **CONSTRUCT:** Offset Plane, Plane at Angle, Tangent Plane, Midplane,
   Plane Through Two Edges / Three Points / Edge and Point, Plane Tangent
-  to Face at Point, Plane Along Path, Plane Normal to Path at Point, axes
-  (through a cylinder, cone or torus; perpendicular at a point; through
-  two planes; through two points; through an edge; normal to a face at a
-  point) and points (at a vertex, through two edges, through three planes,
-  at the centre of a circle or sphere, at an edge and a plane, along a
-  path).
+  to Face at Point, Plane Along Path, Plane Normal to Path at Point,
+  Offset Plane Through Point, axes (through a cylinder, cone or torus;
+  perpendicular at a point; through two planes; through two points;
+  through an edge; normal to a face at a point) and points (at a
+  vertex, through two edges, through three planes, at the centre of a
+  circle or sphere, at an edge and a plane, along a path).
 - **INSPECT:** Measure, Interference, Section Analysis, Physical
   Properties.
 - **INSERT:** Insert Mesh, Insert DXF, Import.
+
+**Pattern at Points** repeats Features, Bodies or Components at sketch points,
+construction points or vertices. Select the source objects, then the Target
+Points: every target receives one additional copy with the source orientation,
+and the originals remain. The targets stay linked to their geometry, so moving
+a point updates its copy. Components remain instances of the same definition.
+Features replay their operations; select a hole and its finishing features
+together to repeat that group rather than copy the resulting body.
+For Bodies and Features, activate the component that owns the sources first;
+use Components to repeat placed occurrences from other components.
+
+The preview marks the shared **Automatic anchor** that goes to each target.
+For components it is the centre of the bounding box of their origins. For a
+feature group containing holes, it is the centre of the bounding box of all
+hole placement points, on their starting surface; finishing features do not
+change it. Other feature groups use their tools' bounding box, or the modified
+bodies for a group containing only finishing features. Bodies use the bounding
+box of all selected bodies. These group rules do not depend on selection order.
+Under **Additional options**, change Anchor to **Selected point** to pick a
+different anchor, or restore **Automatic**. A group retains its relative
+positions. Repeated target references cannot be selected twice; coincident
+targets and targets at the anchor report an error instead of silently omitting
+a copy. Edit the timeline feature to change sources, targets or the anchor.
 
 On macOS the keys that say Ctrl are Cmd keys (Cmd+N, Cmd+S, Cmd+Z, ...),
 and Redo is Shift+Cmd+Z (elsewhere Ctrl+Y and Ctrl+Shift+Z). Fit is also
@@ -257,6 +281,26 @@ a function's arguments, and `;` always does. So `max(a, b)`, `max(1, 5)`
 and `max(1; 5)` have two arguments, but `max(1,5)` is `max(1.5)`. There
 are no thousands separators (`1,000` is 1, `1 000` is an error).
 
+### Cutting across components
+
+For a new **Extrude** with **Operation: Cut**, **Affected components** lists
+the components intersected by the current tool. Names include their assembly
+paths; root-owned bodies appear under the root. Uncheck a component to leave
+all its bodies unchanged, or expand its row to exclude individual bodies.
+Hover or focus a row to identify its geometry. The list scrolls independently
+of the other command fields.
+
+The preview follows the checked targets. Exclusions survive distance, start,
+direction and profile changes, including targets temporarily outside the cut.
+Newly intersected eligible targets are selected automatically. **Select none**
+means no targets and disables OK; **Select all** explicitly clears exclusions.
+The saved feature retains its choices when edited, reopened or undone/redone.
+
+Repeated instances of a shared component definition and linked read-only
+components are shown disabled with a reason. This cut cannot change only one
+instance of a shared definition. Older cuts retain their **Local bodies** scope
+when edited; opening an existing cut does not add other component targets.
+
 ### The Mac layout
 
 On macOS the window follows the system's own apps; `--chrome=docked`
@@ -308,6 +352,22 @@ stays on for the next sketch.
 - Values can be typed while drawing: fields appear next to the cursor,
   Tab moves between them, Enter accepts. Typed values (also expressions)
   become dimensions.
+- **Auto constraint:** once the line, circle or arc tool has drawn its
+  first entity, the palette shows an *Auto constraint* section that
+  constrains each next entity of the same tool to the first one it drew
+  (*Link to first*) or to the one drawn just before (*Link to last*, the
+  default). Circles and arcs offer *Equal* (radius), *Horizontal/Vertical
+  alignment* (the centres level or plumb, whichever they are nearer to) and
+  *Concentric*; lines offer *Equal* (length), *Parallel* and
+  *Perpendicular*, so that Equal and Perpendicular with Link to last draw
+  square corners of equal sides. The new entity is made where the checked
+  constraints put it (the preview shows it, with the reference
+  highlighted, also while the pointer is over the section) and gets them
+  in the same undo step. The choices affect only the entities drawn next
+  and last until the tool ends; a constraint the sketch refuses opens a
+  dialog that lists it: *Cancel* takes the entity back, *Accept* keeps it
+  without that constraint. Tangent circles and tangent arcs take no auto
+  constraints.
 - A double-click on a dimension edits its value; a dimension's text can
   be dragged. A dimension that would over-constrain the sketch is added
   as driven (in parentheses); an over-constraining constraint is refused
@@ -367,6 +427,25 @@ stays on for the next sketch.
   the features shown, and a feature dragged lands just before or after a
   shown neighbour. Find in Timeline on a hidden feature shows all again.
   The filter belongs to the window and is not saved.
+- **Timeline search:** the magnifier after the filter button, Ctrl+F
+  (Cmd+F on a Mac) while the timeline or the browser has the keys, or
+  Edit › Search Timeline opens a field on the timeline. It finds the
+  features whose name or type contains every word typed ("fillet2",
+  "rounded edge", "fillet", "construction plane"; a "quoted phrase" is
+  one word), among those the timeline filter shows. The matches are
+  outlined in orange, and listed above the field with their component's
+  colour and name, since imported designs repeat names across
+  components. Enter or Down goes to the next match, Shift+Enter or Up to
+  the previous one (a click on a listed match to it): it is scrolled into
+  sight and selected as a click selects it. Filters in the same field,
+  also from its filter menu: `in:Part` (the components whose name
+  contains it; `in:"Two words"`), `is:failed`, `is:warning` (warnings and
+  the import's notes, as the yellow "n warnings" counts them),
+  `is:suppressed`, `is:rolled-back`. Filters of one kind are
+  alternatives (`is:failed is:warning`: either), different kinds all
+  apply (`fillet in:Cover is:warning`). Esc closes the search; clearing
+  it brings back the scroll position and the selection from before it,
+  unless something else was selected meanwhile.
 - **Change Parameters:** user and model parameters with expressions and
   comments; a refused change (a cycle, a wrong unit) stays in the cell in
   red with the reason. Renaming updates the expressions.
@@ -1097,12 +1176,29 @@ again:
   item the file had suppressed or that failed in the file ("Suppressed:
   Suppressed in the file"). It builds nothing; it shows where the file
   had the item. Items with no geometry (occurrences, groups) get none.
+- **Struck through with a yellow outline, a real feature:** an `.f3d`
+  item suppressed in the file, brought in with its definition ("Suppressed:
+  Suppressed in the file; not checked against the file's history").
+  Unsuppress it to build it, as in the original design; the file keeps
+  no result for it, so the import could not check it. Unsuppress the
+  suppressed items before it too when it uses them (a fillet of a
+  suppressed extrusion's edges). Where its definition did not come in,
+  it is a placeholder that says why.
+- **Rolled back, a real feature:** an `.f3d` item after the file's timeline
+  marker, brought in with its definition ("Rolled back in the file (after
+  its timeline marker); not checked against the file's history"). The
+  timeline marker is before it, as in the file; move the marker past it to
+  build it. Where its definition did not come in, it is a placeholder
+  that says why.
 - **Red:** a feature that failed in Mitcad, as anywhere else; only these
   count in "n failed". The yellow "n warnings" beside it lists the
   others, and a click goes to them.
 
 Editing such a feature so that it still builds (its definition or one of
-its dimensions) takes its yellow away; undo brings it back.
+its dimensions) takes its yellow away; undo brings it back. On a long
+imported timeline the [timeline search](#browser-timeline-and-parameters)
+finds them: `is:warning` the yellow ones and the placeholders' notes,
+`is:failed` the red ones, `in:<component>` one component's.
 
 ### FreeCAD import
 

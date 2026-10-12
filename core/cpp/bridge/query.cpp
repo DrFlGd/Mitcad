@@ -67,6 +67,15 @@ BoundingBox bounding_box(const geometry::Shape& shape) {
   return result;
 }
 
+BoundingBox enclosing_box(const geometry::Shape& shape) {
+  const geometry::BoundingBox box = geometry::enclosing_box(shape);
+  BoundingBox result;
+  result.empty = box.empty;
+  result.min = xyz(box.min);
+  result.max = xyz(box.max);
+  return result;
+}
+
 std::size_t count_edges(const geometry::Shape& shape, rust::Str name) {
   return shape.find_edges(std::string(name)).size();
 }

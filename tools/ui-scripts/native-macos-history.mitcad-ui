@@ -79,7 +79,8 @@ native-resize 1280 820
 # A genuine AppKit double-click opens the same persisted feature form as
 # the shared timeline. Cancelling a preview leaves every actual volume intact.
 mark
-native-activate native.history.F2
+native-select native.history.F2
+key Return
 expect-log 'Editing F2 with Box'
 expect-native-text input_height '^20(?:\.0*)?(?: mm)?$'
 native-type input_height '45 mm'
@@ -87,6 +88,50 @@ native-click commandCancel
 expect-log 'Command Box cancelled' 30
 expect-model-bodies 3 6000
 expect-native-history
+
+# Actual native keyboard events exercise alternate dispatch, collection
+# deletion/rename, editor isolation and the shared search's restoration.
+native-select native.history.F3
+key F6
+expect-model-bodies 3 6000
+key Ctrl+f
+expect-native-visible native.timelineSearch true
+native-type native.timelineSearch 'box in:Root'
+expect-log 'Timeline search "box in:Root": 3 matches'
+key Return
+expect-native-history F1
+key Down
+expect-native-history F2
+key Shift+Return
+expect-native-history F1
+key Escape
+expect-native-history F3
+native-select native.history.F2
+key F2
+focus-dialog '^Rename Feature$'
+key Ctrl+a
+type 'KeyboardBox'
+key Backspace
+expect-model-bodies 3 6000
+type 'x'
+button '^OK$'
+expect-log 'Renamed .* to KeyboardBox' 30
+focus-main
+native-select native.history.F3
+key Backspace
+expect-model-bodies 2 3000
+key Ctrl+z
+expect-model-bodies 3 6000
+native-select native.history.F3
+key Delete
+expect-model-bodies 2 3000
+key Ctrl+z
+expect-model-bodies 3 6000
+native-select native.model.body:F3.b0@
+key Delete
+expect-model-bodies 2 3000
+key Ctrl+z
+expect-model-bodies 3 6000
 
 # Native playback buttons step the real document marker. The in-row marker
 # must sit between icons, and icons after it must visibly dim.

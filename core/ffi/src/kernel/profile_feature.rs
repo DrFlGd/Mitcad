@@ -95,6 +95,9 @@ pub mod ffi {
         length: f64,
         offset: f64,
         high_end: bool,
+        /// Extra clearance, mm (mitcad#195; `ThreadSpec` in thread.hpp).
+        radial_clearance: f64,
+        flank_clearance: f64,
     }
 
     struct PlaneOutput {
@@ -376,6 +379,8 @@ pub fn thread_input(spec: &ThreadSpec<'_>) -> ffi::ThreadInput {
         length,
         offset,
         high_end,
+        radial_clearance: spec.radial_clearance,
+        flank_clearance: spec.flank_clearance,
     }
 }
 

@@ -254,6 +254,7 @@ void CommandState::removeRow(const QString& list, int index) {
   const QString full = key(list);
   dropRow(m_items, full, index);
   dropRow(m_texts, full, index);
+  dropRow(m_objects, full, index);
   dropRow(m_expressions, full, index);
   dropRow(m_values, full, index);
   dropRow(m_choices, full, index);

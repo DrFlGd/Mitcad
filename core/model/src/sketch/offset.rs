@@ -469,11 +469,11 @@ pub fn compute(
         if let Some(s) = structure
             && s.joins.get(j) != Some(&kind)
         {
-            return Err(
-                "the offset no longer fits: a corner changed between round, trimmed and smooth; \
-                 offset again"
-                    .to_owned(),
-            );
+            return Err(format!(
+                "the offset no longer fits: the corner at join {j} changed from {:?} to {kind:?} \
+                 (round, trimmed or smooth); offset again",
+                s.joins.get(j)
+            ));
         }
         match kind {
             Join::Shared => {}
@@ -511,7 +511,7 @@ pub fn compute(
         let (from, to) = ends[i];
         made.push(match &p.curve {
             Curve2::Line { .. } => Made::Line(from, to),
-            Curve2::Circle { center, radius } if single_closed => {
+            Curve2::Circle { center, radius, .. } if single_closed => {
                 let r = radius + p.left;
                 if r <= 0.0 {
                     return Err("the offset is larger than the circle's radius".to_owned());
@@ -578,6 +578,7 @@ pub fn made_curve(made: &Made) -> Curve2 {
         Made::Circle { center, radius } => Curve2::Circle {
             center: *center,
             radius: *radius,
+            start: 0.0,
         },
         Made::Spline { knots, control } => Curve2::Nurbs(spline_nurbs(knots, control)),
     }
@@ -842,6 +843,7 @@ impl SketchEdit<'_> {
                 Made::Circle { center, radius } => EntityKind::Circle {
                     center: self.add_point(*center),
                     radius: *radius,
+                    start: 0.0,
                 },
                 Made::Spline { knots, control } => {
                     let last = control.len() - 1;

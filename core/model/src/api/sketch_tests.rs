@@ -991,3 +991,67 @@ fn sketches_on_construction_planes_follow_them() {
     let error = rejected(&mut d, json!({"cmd": "sketch.create", "plane": "F99"}));
     assert!(error.contains("F99"), "{error}");
 }
+
+#[test]
+fn a_tangent_distance_is_the_gap_between_a_circle_and_a_line() {
+    let mut d = with_sketch();
+    // A circle of 24 at the origin (fixed) and a free line below it.
+    let circle = command(
+        &mut d,
+        json!({"cmd": "sketch.add_circle", "sketch": "F1", "center": [0, 0], "diameter": 24}),
+    );
+    let circle = circle["curves"][0].as_str().unwrap().to_owned();
+    let line = command(
+        &mut d,
+        json!({"cmd": "sketch.add_line", "sketch": "F1", "start": [-30, -30], "end": [30, -30]}),
+    );
+    let line = line["entities"][2].as_str().unwrap().to_owned();
+    command(
+        &mut d,
+        json!({"cmd": "sketch.add_constraint", "sketch": "F1",
+               "constraint": {"type": "horizontal", "line": line}}),
+    );
+    let line_y = |s: &Value| {
+        let l = s["entities"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|e| e["id"] == line.as_str())
+            .unwrap();
+        l["geometry"]["start"][1].as_f64().unwrap()
+    };
+    assert!(close(line_y(&sketch(&d, "F1")), -30.0));
+    let dim = command(
+        &mut d,
+        json!({"cmd": "sketch.add_dimension", "sketch": "F1",
+               "dimension": {"type": "tangent_distance", "circle": circle, "line": line},
+               "value": 25}),
+    );
+    // The gap to the nearest point of the circle: 12 + 25 below the centre.
+    let s = sketch(&d, "F1");
+    assert!(close(line_y(&s), -37.0), "{s}");
+    assert!(close(
+        measured(&s, dim["dimensions"][0].as_str().unwrap()),
+        25.0
+    ));
+    // A driven one measures the gap.
+    let driven = command(
+        &mut d,
+        json!({"cmd": "sketch.add_dimension", "sketch": "F1",
+               "dimension": {"type": "tangent_distance", "circle": circle, "line": line},
+               "driven": true}),
+    );
+    let s = sketch(&d, "F1");
+    assert!(close(
+        measured(&s, driven["dimensions"][0].as_str().unwrap()),
+        25.0
+    ));
+    // Two lines are no circle.
+    let error = rejected(
+        &mut d,
+        json!({"cmd": "sketch.add_dimension", "sketch": "F1",
+               "dimension": {"type": "tangent_distance", "circle": line, "line": line},
+               "value": 3}),
+    );
+    assert!(!error.is_empty());
+}

@@ -4,12 +4,15 @@
 //! lines) and other geometry are references ([`GeomRef`]); faces and bodies
 //! as sweep targets, with their options, are added here.
 
+use std::collections::BTreeMap;
+
 use serde::{Deserialize, Serialize};
 
 use super::geom_ref::{GeomRef, Want};
 use super::{CheckContext, EvalContext, References, is_false};
 use crate::ids::BodyUid;
 use crate::kernel::{Axis, Kernel, Plane, Target};
+use crate::links::OccurrenceLink;
 use crate::profile::{SketchFrame, dot};
 use crate::topo::FaceName;
 
@@ -72,11 +75,41 @@ impl ExtentObject {
         !matches!(self, Self::Body { .. })
     }
 
+    /// The bodies of the object (the face's or the body itself).
+    pub fn body(&self) -> Option<BodyUid> {
+        match self {
+            Self::Plane { .. } => None,
+            Self::Face { body, .. } | Self::Body { body, .. } => Some(*body),
+        }
+    }
+
     /// The object for the kernel, with the shapes it needs.
     pub fn resolve<K: Kernel>(
         &self,
         ctx: &mut EvalContext<'_, K>,
     ) -> Result<Target<K::Shape>, String> {
+        self.resolve_linked(ctx, &BTreeMap::new())
+    }
+
+    /// [`Self::resolve`] where bodies of other components are read in their
+    /// components and moved into the feature's coordinates by their
+    /// `links` (mitcad#104, as a combine's tools).
+    pub fn resolve_linked<K: Kernel>(
+        &self,
+        ctx: &mut EvalContext<'_, K>,
+        links: &BTreeMap<BodyUid, OccurrenceLink>,
+    ) -> Result<Target<K::Shape>, String> {
+        let body_of = |ctx: &mut EvalContext<'_, K>, uid: BodyUid| match links.get(&uid) {
+            None => ctx.body(uid),
+            Some(link) => {
+                let (component, transform) =
+                    ctx.linked(link).map_err(|e| format!("body {uid}: {e}"))?;
+                let shape = ctx.body_in(component, uid)?;
+                ctx.kernel
+                    .transform_shape(&shape, &transform, None)
+                    .map_err(|e| format!("body {uid}: {e}"))
+            }
+        };
         Ok(match self {
             Self::Plane { plane } => {
                 let plane = ctx.plane(plane)?;
@@ -91,14 +124,27 @@ impl ExtentObject {
                 face,
                 chained,
             } => {
-                let shape = ctx.body(*body)?;
-                if ctx
-                    .kernel
-                    .count_faces(&shape, face)
-                    .map_err(|e| e.to_string())?
-                    == 0
-                {
-                    return Err(format!("body {body} has no face {face}"));
+                let mut shape = body_of(ctx, *body)?;
+                let has = |ctx: &EvalContext<'_, K>, shape: &K::Shape| {
+                    ctx.kernel
+                        .count_faces(shape, face)
+                        .map_err(|e| e.to_string())
+                        .map(|n| n > 0)
+                };
+                if !has(ctx, &shape)? {
+                    // A pattern's copy: the face as the original found it,
+                    // where the original itself took it away (a join up to
+                    // the face of the body it joins).
+                    let before = match ctx.objects_before {
+                        Some(original) if !links.contains_key(body) => {
+                            ctx.body_before(original, *body)
+                        }
+                        _ => None,
+                    };
+                    match before {
+                        Some(earlier) if has(ctx, &earlier)? => shape = earlier,
+                        _ => return Err(format!("body {body} has no face {face}")),
+                    }
                 }
                 Target::Face {
                     body: shape,
@@ -107,7 +153,7 @@ impl ExtentObject {
                 }
             }
             Self::Body { body, through } => Target::Body {
-                body: ctx.body(*body)?,
+                body: body_of(ctx, *body)?,
                 through: *through,
             },
         })

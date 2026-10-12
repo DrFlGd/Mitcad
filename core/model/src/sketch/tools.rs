@@ -297,7 +297,14 @@ impl SketchEdit<'_> {
         }
         let id = self.id();
         let center = self.point(center)?;
-        let mut e = Entity::new(id, EntityKind::Circle { center, radius });
+        let mut e = Entity::new(
+            id,
+            EntityKind::Circle {
+                center,
+                radius,
+                start: 0.0,
+            },
+        );
         e.construction = construction;
         self.push(e);
         for t in tangents {
@@ -459,6 +466,7 @@ impl SketchEdit<'_> {
             EntityKind::Circle {
                 center: c,
                 radius: if inscribed { big } else { r },
+                start: 0.0,
             },
             true,
         );

@@ -70,8 +70,32 @@ struct FileOut<'a> {
     // A hybrid assembly allowed without asking (mitcad#171), when it is.
     #[serde(skip_serializing_if = "is_false")]
     hybrid_assembly: bool,
+    // Flat Patterns of sheet-metal bodies (mitcad#208), when there are any.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    flat_patterns: Vec<FlatPatternOut<'a>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     marker: Option<usize>,
+}
+
+/// A Flat Pattern: its body and settings.
+#[derive(Serialize)]
+struct FlatPatternOut<'a> {
+    body: BodyUid,
+    #[serde(flatten)]
+    def: &'a crate::sheet::flat::FlatPatternDef,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct FlatPatternIn {
+    body: BodyUid,
+    stationary: crate::sheet::PanelId,
+    #[serde(default)]
+    x_axis: crate::sheet::flat::FlatXAxis,
+    #[serde(default)]
+    reference_side: Option<crate::sheet::SheetReferenceSide>,
+    #[serde(default)]
+    shown: bool,
 }
 
 #[derive(Serialize)]
@@ -101,6 +125,8 @@ struct OccurrenceOut {
     grounded: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     visible: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pattern: Option<crate::features::point_pattern::PatternInstance>,
 }
 
 fn is_root(component: &ComponentUid) -> bool {
@@ -220,6 +246,7 @@ pub(super) fn save(state: &DocState) -> String {
                 transform: (!o.transform.is_identity()).then(|| matrix_rows(&o.transform)),
                 grounded: o.grounded,
                 visible: (!o.visible).then_some(false),
+                pattern: o.pattern.clone(),
             })
             .collect(),
         active_component: (!assembly.active.is_root()).then_some(assembly.active),
@@ -264,6 +291,11 @@ pub(super) fn save(state: &DocState) -> String {
         render: &state.render,
         configurations: &state.configurations,
         hybrid_assembly: state.hybrid_assembly,
+        flat_patterns: state
+            .flat_patterns
+            .iter()
+            .map(|(body, def)| FlatPatternOut { body: *body, def })
+            .collect(),
         marker: (state.marker < state.features.len()).then_some(state.marker),
     };
     let mut json =
@@ -351,6 +383,8 @@ struct OccurrenceIn {
     grounded: bool,
     #[serde(default = "visible")]
     visible: bool,
+    #[serde(default)]
+    pattern: Option<crate::features::point_pattern::PatternInstance>,
 }
 
 struct FeatureIn {
@@ -368,7 +402,7 @@ struct FeatureIn {
     shapes: Option<Value>,
 }
 
-const TOP_FIELDS: [&str; 19] = [
+const TOP_FIELDS: [&str; 20] = [
     "format",
     "version",
     "units",
@@ -390,6 +424,8 @@ const TOP_FIELDS: [&str; 19] = [
     "configurations",
     // A hybrid assembly allowed without asking (mitcad#171).
     "hybrid_assembly",
+    // Flat Patterns of sheet-metal bodies (mitcad#208).
+    "flat_patterns",
 ];
 
 fn schema(message: impl Into<String>) -> FileError {
@@ -531,6 +567,7 @@ fn assembly_in(top: &mut Map<String, Value>) -> Result<Assembly, FileError> {
             grounded: o.grounded,
             visible: o.visible,
             number: o.number,
+            pattern: o.pattern,
         });
     }
     match top.remove("active_component") {
@@ -651,6 +688,14 @@ pub(super) fn load(value: Value) -> Result<(DocState, Vec<String>), FileError> {
         Some(Value::Bool(allowed)) => allowed,
         Some(_) => return Err(schema("\"hybrid_assembly\" must be true or false")),
     };
+    let flat_patterns = array(&mut top, "flat_patterns", false)?
+        .into_iter()
+        .enumerate()
+        .map(|(i, f)| {
+            serde_json::from_value::<FlatPatternIn>(f)
+                .map_err(|e| schema(format!("flat_patterns[{i}]: {e}")))
+        })
+        .collect::<Result<Vec<_>, FileError>>()?;
     let marker = match top.remove("marker") {
         None => None,
         Some(value) => Some(
@@ -702,6 +747,10 @@ pub(super) fn load(value: Value) -> Result<(DocState, Vec<String>), FileError> {
         if let FeatureDef::Helix(helix) = &mut def {
             helix.settle_construction(HelixConstruction::Freecad);
         }
+        if let FeatureDef::SheetFace(face) = &mut def {
+            face.settle(None);
+        }
+        crate::features::sheet_folded::settle(&mut def, None);
         if let (Some(shapes), FeatureDef::Sketch(sketch)) = (&f.shapes, &mut def)
             && let Ok(shapes) = serde_json::from_value::<Vec<LegacyShape<String>>>(shapes.clone())
         {
@@ -743,6 +792,15 @@ pub(super) fn load(value: Value) -> Result<(DocState, Vec<String>), FileError> {
             .def
             .info()
             .check(&ctx)
+            .and_then(|()| crate::joints::check_generated_references(&assembly, &ctx, &entry.def))
+            .and_then(|()| match &entry.def {
+                FeatureDef::Extrude(extrude) => {
+                    extrude.cut_scope.as_ref().map_or(Ok(()), |scope| {
+                        scope.check_components(&assembly, &ctx, entry.component)
+                    })
+                }
+                _ => Ok(()),
+            })
             .and_then(|()| check_components(&assembly, &entries, entry))
             .map_err(|e| invalid(format!("features[{i}] ({}): {e}", entry.name)))?;
     }
@@ -876,6 +934,24 @@ pub(super) fn load(value: Value) -> Result<(DocState, Vec<String>), FileError> {
     }
     state.configurations = configurations;
     state.hybrid_assembly = hybrid_assembly;
+    // Flat Patterns (mitcad#208): evaluated when asked for, so one whose
+    // body or panel is gone loads and says why.
+    for (i, f) in flat_patterns.into_iter().enumerate() {
+        let def = crate::sheet::flat::FlatPatternDef {
+            stationary: f.stationary,
+            x_axis: f.x_axis,
+            reference_side: f
+                .reference_side
+                .unwrap_or(crate::sheet::SheetReferenceSide::Front),
+            shown: f.shown,
+        };
+        if state.flat_patterns.insert(f.body, def).is_some() {
+            return Err(invalid(format!(
+                "flat_patterns[{i}]: body {} is listed more than once",
+                f.body
+            )));
+        }
+    }
     // One shown at a time: the first shown one.
     let mut shown = false;
     for analysis in &mut state.analyses {

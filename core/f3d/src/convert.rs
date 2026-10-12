@@ -1139,6 +1139,50 @@ pub fn edge_curve_along(
     }
 }
 
+/// The position of a vertex of a body at a history state (`view`, as for
+/// [`convert_body_at`]), in millimetres in the body's component's
+/// coordinates (the body's transform applied).
+pub fn vertex_position(
+    file: &AsmFile,
+    body: usize,
+    vertex: usize,
+    options: &Options,
+    view: Option<&HashMap<usize, Option<usize>>>,
+) -> Result<P3, GeomError> {
+    let mut ctx = Ctx {
+        file,
+        view,
+        opt: *options,
+        body: Body::default(),
+        issues: Vec::new(),
+        vertex_map: HashMap::new(),
+        edge_map: HashMap::new(),
+        degenerate_edges: 0,
+        tidied: LoopTidy::default(),
+        surface_map: HashMap::new(),
+    };
+    let mut c = ctx.cursor(body)?;
+    c.ptr()?; // lump
+    c.ptr()?; // wire
+    let transform = match ptr_index(file, c.ptr()?) {
+        Some(t) => Some(ctx.transform(t)?).filter(|t| !is_identity(t)),
+        None => None,
+    };
+    let v = ctx.vertex(vertex)?;
+    let p = ctx.body.vertices[v].point;
+    Ok(match transform {
+        Some(tr) => brep::add(
+            [
+                brep::dot(tr.m[0], p),
+                brep::dot(tr.m[1], p),
+                brep::dot(tr.m[2], p),
+            ],
+            tr.t,
+        ),
+        None => p,
+    })
+}
+
 /// One face of a body in the neutral model, as [`face_surface`] gives it.
 #[derive(Clone, Debug)]
 pub struct FaceSurface {

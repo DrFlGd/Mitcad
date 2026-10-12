@@ -22,8 +22,8 @@ Entry points:
 - `mitcad-cli import-f3d part.f3d [--save part.mitcad] [--report
   report.json] [--design <doc>] [--dump dump.json] [--no-verify]
   [--no-fallback] [--no-compare] [--time-limit S] [--hang-limit S]
-  [--threads N] [--json]`; `--bodies-only` imports the bodies without
-  the history;
+  [--threads N] [--references DIR]... [--no-references] [--json]`;
+  `--bodies-only` imports the bodies without the history;
 - the document command `{"cmd": "import_f3d", "path": …}` and
   `Document::import_f3d_timeline(path, json)`, implemented in
   `core/ffi/src/f3d_import.rs`;
@@ -36,7 +36,7 @@ Entry points:
 |---|---|
 | `params.rs` | User and model parameters with the file's names and expressions, in dependency order. Expressions that do not evaluate become values; names Mitcad reserves get `_1`. A model parameter is adopted by the feature or sketch that made it (`Document::adopt_parameters`). |
 | `sketch.rs` | Points, lines, circles, arcs (counter-clockwise), ellipses, splines (control points, weights, full knots), texts (style, flips, multi-line frame and alignment, text along or fitted to a path), constraints and dimensions by type. Ids are renumbered into Mitcad's one id space (points first). Positions are the file's stored solution; the sketch is accepted when Mitcad's solve keeps them (1e-4 mm), else retried with driven dimensions, then without constraints (`partial`). `sketch/groups.rs`: polygons, sketch patterns, offsets and concentric circle dimensions (*Sketch patterns, offsets and polygons* below). |
-| `features.rs` | Sketch planes (origin planes; imported construction planes with the exact frame as `frame`; planar faces found geometrically; else a fixed construction plane), construction planes (offset from an origin plane or a face found by distance, else fixed), extrude, revolve, fillet, chamfer. |
+| `features.rs` | Sketch planes (origin planes; imported construction planes with the exact frame as `frame`; planar faces found geometrically; else a fixed construction plane), construction planes (from the entities the decoder reads, mitcad#178: offset, angle, tangent, mid plane, two edges, along a path; through three points, tangent at a point, offset through a point, mitcad#186; else offset from an origin plane or a face found by distance; each checked against the file's plane; else fixed), construction points (at a vertex, at the centre of a circle, where three planes meet) and axes (through two points, along an edge or sketch line, through a round face, where two planes meet) checked against where the file has them (mitcad#186; else fixed), extrude, revolve, fillet, chamfer. |
 | `ops.rs` | Combine, mirror, circular and rectangular patterns, shell, offset faces, move, split body, hole, thread, replace face — from external dumps (SCHEMA.md §2), or from the history when the stream decoder gives no inputs (see below). |
 | `sweeps.rs` | Sweeps, pipes and lofts (*Sweeps, pipes and lofts* below). |
 | `components.rs` | Components and occurrences. |
@@ -46,6 +46,9 @@ Entry points:
 | `history.rs` | The bodies stored in the file (`StoredGeometry`: the ASM history states and the stored design) and matching of body sets (volume, area, centre of mass, face count). |
 | `report.rs` | The import report (JSON and text). |
 | `timeline_notes.rs` | The report's outcomes on the timeline (mitcad#170): import notes on fallbacks' base features, partial items and placeholders of items suppressed or failed in the file (*The outcomes on the timeline* below). |
+| `suppressed.rs` | Items suppressed in the file as suppressed features with their definitions (mitcad#180, *Items suppressed in the file* below). |
+| `references.rs` | Components of other documents filled from those documents' own imports, and the captured positions inside them (mitcad#196, *Components of other documents* below). |
+| `reference_folder.rs` | Where the files of the documents a design refers to are: the reference folder next to it, folders and files given, an `.f3z` package's designs, the GUIDs the files' manifests list (mitcad#196). |
 
 ### The history as the reference
 
@@ -97,7 +100,7 @@ Matching rules:
   bodies or fails; an item without a translation, such as a base feature
   that brings no body, stays as before), failed in the file: an extrusion
   that found no body to cut. It is
-  skipped as a suppressed item is (`failed in the file: …`), and the bodies
+  skipped with a placeholder (`failed in the file: …`), and the bodies
   stay as the items before left them, with no base feature (mitcad#156).
   The file stores no failure state of its own for it: the three state
   bytes of the item tail and its health object are those of a healthy
@@ -255,16 +258,33 @@ just before the item (its `_f3d.result_no`) and finds them there
   - n inputs of one item with the same names, where exactly n edges fit
     them (n edges between the same two faces, without end faces to tell
     them apart), take one edge each;
-  - the import finds a closed edge by its circle and length (the file
-    gives its middle half way along its parameter, opposite its seam,
-    which the replay puts elsewhere), an open one whose middle is up to
+  - the import finds a closed edge by its circle or ellipse and length
+    (the file gives its middle half way along its parameter, opposite its
+    seam, which the replay puts elsewhere; an ellipse's axes follow from
+    its two ends of an axis, its direction at the middle and its length), an open one whose middle is up to
     0.05 mm off by its length (the parameter middle of a B-spline or
-    ellipse edge), and an edge the replay splits in two by the two pieces
-    on its segment or circle whose lengths add up to its
-    (`refs::dressup_edge_match`);
+    ellipse edge), an open one whose middle is within 0.01 mm and whose
+    length is up to 2 % off (a blend's approximated length), an open one by
+    its two ends (within 1e-3 mm) and a length up to 2 % off where its
+    middle is further off (a blend's or spline's parameter middle lies
+    elsewhere on the replay's curve), and an edge the replay splits into
+    pieces: two or more edges of one body on its segment or circle whose
+    lengths add up to its and, on an open edge, follow each other from its
+    start to its end; an open edge that is not a line (an elliptical arc,
+    a spline) by pieces that follow each other by their ends from its
+    start to its end, when their lengths add up to its and the file's
+    middle lies within 2 % of its length of them
+    (`refs::dressup_edge_match`). Two edges between the
+    same ends of the same length are not told apart;
+  - the edge's body: the edge refers to its body's record like a body
+    input does, so `_f3d.producer` and `_f3d.body_index` name the item that
+    made the body. Bodies that touch have edges in the same place (the slot
+    of one is the wedge of another); the import matches the edge among the
+    bodies that item made first (`Importer::match_dressup_edge`), and among
+    all bodies only where those hold none;
   - replay matches with midpoint-plus-length scores tied within
     `1e-9` mm in one body are refused (mitcad#106); coincident copies in
-    different bodies keep the existing first-body rule. Repeated aliases
+    different bodies of other items keep the existing first-body rule. Repeated aliases
     of the same body and edge name count once. Matcher failures distinguish
     `decoder_unresolved` (no decoded edge geometry),
     `missing_fingerprint` (no external fingerprint geometry),
@@ -407,13 +427,19 @@ measured from; a tapped hole's thread is the hole's sub-item, read alike.
 The translation (`ops.rs`, `commands.md` *From the dump IR*):
 
 - **Threads**: a `thread` on the faces found through the history, with
-  the size Mitcad's table lists (ISO metric, also the `M` sizes of other
-  metric types; Unified; the parallel pipe threads `G <size>-<tpi>` as
+  the size Mitcad's table lists (ISO metric, the ISO 261 series up to
+  M300, above M64 with fine pitches only, also the `M` sizes of other
+  metric types; the forming (tapping) screw threads `ST3.5x1.3`, also
+  stored without the `ST`; Unified; the parallel pipe threads `G <size>-<tpi>` as
   Mitcad's `G <size>`). A class Mitcad does not list for the face's side
   is left out (it only labels the thread), with a note. A partial thread
   starts at the end the file's cylinder axis points to (or the other):
   where Mitcad's cylinder of the face runs the other way, the ends swap.
-  Forming screw threads and sizes Mitcad lacks fall back.
+  Sizes Mitcad lacks fall back. A cylindrical face the file keeps whole
+  may be in pieces in the replay (a join across a bore splits it where
+  the file's face goes on): the thread is tried first on the face with the
+  pieces of the same cylinder end to end with it (a modelled thread one
+  per piece, each piece's start angle measured), then on the face alone.
 - **Sized faces**: a thread in the file, a cosmetic one too, also sizes
   its whole faces, an external one to the thread's major diameter, an
   internal one to its minor diameter (the reference models: a bolt of 10
@@ -569,15 +595,29 @@ candidates against the next state:
   and a region is selected when its inside point lies inside one by the
   even-odd rule against the listed curve pieces, with the file's curve
   geometry (a curve cut where the other curves of its loop cross it, the
-  pieces numbered along its parameter); where a profile lists curves
-  without such geometry (ellipses, splines) or selects nothing, its outer
+  pieces numbered along its parameter; lines, arcs, circles, ellipses,
+  elliptical arcs and splines, the last three met numerically); where a
+  numerically cut curve's pieces contradict the piece count the file gives, or
+  it selects nothing, its outer
   loops select the regions whose outer loops share most of their curves.
   Over both private corpora the history accepted the decoded regions for
   1509 of the 1532 settled extrusions that have the loops (most others
   are sets it cannot tell apart from them) and for all 97 settled
   revolutions. Those regions are tried first, before any ranking
   (`Candidate::first`), with the decoded extent; without a history they
-  are the ones used. Then, as before the loops were read:
+  are the ones used. Checked against the item's own state, their
+  definitions (the decoded extent, each choice of participants) are
+  translated and tried on their own first, and the other sets below only
+  when none of them gave the state (mitcad#181: probing the next states
+  for those sets took 10–30 s an extrusion on bodies of thousands of
+  faces, mostly in vain); they keep their order, and the others come in
+  the order they would have had among all. If a later pattern or mirror
+  may copy the extrusion, all definitions are translated together so an
+  exact match still keeps alternatives for *Profiles a pattern or mirror
+  needs*. This conservatively includes every later pattern and mirror:
+  decoded body selections can also fall back to feature copies. The learning dump
+  (`MITCAD_IMPORT_LEARN`) still gets all of them at once. Then, as before
+  the loops were read:
   1. regions whose material the next states change, found by probing a
      point inside each region (in its outline, not its holes:
      `Region::holes`) halfway along the extent on both sides
@@ -667,7 +707,11 @@ candidates against the next state:
   first, then its own state's guesses, the next state's only when those
   gave no state, in the same order as all at once (finding the edges a
   state lost takes seconds on large bodies, and the item's own state or
-  the names usually give it).
+  the names usually give it). Once the item's own state lost edges of the
+  replay, the later states are not looked at (mitcad#181): their guesses
+  add only edges the item's state did not lose, which no definition that
+  gives that state rounds, or the same edges again (a fillet of a design at
+  the time limit found the same 32 edges in three later states, 13 s).
   - A rounding or bevel that removes a neighbouring face exactly (full
     round, chamfer as wide as a step), which OCCT cannot build, is built
     1e-3 smaller (`geometry/src/dressup.cpp`). Its body then differs
@@ -691,7 +735,16 @@ candidates against the next state:
 - **Combine** target and tools, when the decoded ones are not found: the
   bodies the next state changed (a body with a stored body's measures
   counts as unchanged even where its faces are split otherwise), the
-  decoded operation first.
+  decoded operation first. A join or intersection that consumes its tools
+  gives the same solid whichever of its bodies is the target: once one
+  gave bodies the history rejects, the same combine with another target
+  is not built (mitcad#181). On bodies that carry an earlier item's
+  approximation (*Matching rules*) only the decoded combine is tried; its
+  guesses come in the try on the state before it exactly, where they are
+  as good: on the near-coincident faces of such bodies each boolean took
+  10–15 s, on the state's 0.2 s (two combines of a design took a minute
+  each; where the bodies cannot be brought to that state, the guesses are
+  tried on the bodies as they are after all).
 - **Split bodies** the tool does not divide: the file's split leaves such
   a selected body as it is, Mitcad's fails, so each body alone is tried
   after the decoded set (mitcad#96).
@@ -765,7 +818,16 @@ candidates against the next state:
   last, after the history's guesses too: repeating roundings on tens of
   copies of a large body takes tens of seconds, and most such items'
   states do not need it (a design at the time limit lost items to them
-  otherwise); without a history, with them first. A circular
+  otherwise); without a history, with them first. Where the file's compute
+  option is optimized (read from the pattern's data object, above) the
+  definition with them copies the faces the features made instead of
+  rounding at each copy (`commands.md`, *Optimized: copying the faces*):
+  the pattern of a pin and its two roundings on 14 × 77 copies, which
+  OCCT's rounding failed on at copy 133 to 146 (71 s to fail), is replayed
+  in 7 s and matches the file's state to 2e-5 in volume (14 copies where
+  the support under the pin's foot ends at an opening's edge differ by
+  15 mm³, the file keeping a little more of them than the copies' own
+  faces give; 3 faces). A circular
   pattern whose axis entity (a face, an edge) is not found in the replay
   turns about the line its direction input stores (a construction
   axis' stores its direction times its length); a construction axis that
@@ -789,12 +851,14 @@ candidates against the next state:
 
 ### Fallback
 
-- A modelling item the file keeps no result for (its result number is -1
-  and one of the three state bytes before its health reference is set:
-  suppressed or failed in the file, mitcad#96) is skipped at once: it
-  changed nothing in the file, and no state could check a definition of
-  it (its edges and faces are not in any state either). Before, every
-  definition and guess was tried and the history then skipped it.
+- A modelling item suppressed in the file (its result number is -1 and
+  the first or second of the three state bytes before its health
+  reference is set) comes in as a suppressed feature with its
+  definition, unchecked, or as a placeholder (*Items suppressed in the
+  file*, mitcad#180). One whose third byte is set made its change in
+  other components only (its parts there, mitcad#169) and is skipped at
+  once, as an `.ipt` part's feature whose state the history does not
+  hold is (mitcad#96).
 - A modelling item whose operation the history holds but which changed no
   body, and which none of its definitions reproduces, failed in the file
   and is skipped too (*Matching rules*, mitcad#156).
@@ -863,17 +927,156 @@ timeline and the report say the same:
   exactly, the stored bodies at the end) gets the report's warning about
   it (`Importer::base_warning`, which writes both).
 - A `partial` item's features get `Partly imported: <its note>`.
-- An item skipped as suppressed in the file, as one the file keeps no
-  result for, or as failed in the file gets a suppressed `placeholder`
-  at its place in its component (`Importer::placeholder`), its note the
-  item's note; items of no geometry (`Class::NoGeometry`) get none. The
-  placeholder is not in the item's `features` (it builds nothing), so the
-  report and the coverage counts are as before.
+- An item skipped as suppressed in the file (one whose definition did not
+  come in, mitcad#180), as one the file keeps no result for, or as
+  failed in the file gets a suppressed `placeholder` at its place in its
+  component (`Importer::placeholder`), its note the item's note; items
+  of no geometry (`Class::NoGeometry`) get none. The placeholder is not
+  in the item's `features` (it builds nothing), so the report and the
+  coverage counts are as before.
+- An item suppressed in the file that came in as suppressed features
+  (mitcad#180): its features get its note (`suppressed in the file; not
+  checked against the file's history`); a suppressed sketch's says
+  `suppressed in the file` after what it says otherwise.
 
 The FreeCAD import does the same from its report
 (`timeline_notes::freecad_notes`: fallbacks with their notes, partial
 sketches and features) and adds a placeholder for a feature suppressed in
 FreeCAD (`suppressed in FreeCAD; not replayed: ...`).
+
+### Items suppressed in the file
+
+mitcad#180 (`suppressed.rs`). **The state bytes.** The three bytes before
+an item tail's health reference (`_f3d.flags`) are set only on items with
+result number -1 (both corpora, 9043 items). With result -1:
+
+| Bytes | Items in the corpora | What they mean |
+|---|---|---|
+| `000100` | 50 (extrusions, fillets, sketches, revolves, threads, a chamfer, a canvas) | suppressed itself (the user's action: the design API, the timeline menu, a configuration's row or a suppressed group's member give the same bytes) |
+| `010000` | 64 (fillets, extrusions, sketches, revolves, threads, a chamfer) | suppressed through an item it depends on (a fillet of a suppressed hole's rim, the extrusion of a suppressed sketch) |
+| `000001` | 5 (4 extrusions, a revolution) | the change is all in other components, in the item's parts there (mitcad#169); each has its part |
+| `000000` | sketches, construction geometry, assembly items; modelling items at the end of the timeline | no result to keep, or after the timeline marker (never computed) |
+
+Which of the two suppressed bytes an item has was settled with the
+controlled variants: an item and its dependent are suppressed
+together by suppressing the first, and then the dependent has `010000`
+and the first `000100` (suppressing the dependent too afterwards leaves
+`010000`); suppress the dependent alone and it has `000100`;
+two independent items suppressed one by one both have `000100`. A
+dependent's other bytes are the same as when it is suppressed itself
+(the two models of a fillet differ in these two bytes alone). In the
+corpora 24 of the 27 designs with suppressed items begin with a `000100`
+item, as an item suppressed through another cannot come first; the other
+three are versions of one design, whose first suppressed item is a fillet
+with `010000` that follows a coil (its parent is not seen: unexplained).
+Of the suppressed fillets, 32 of the 39 with `010000` have a face of an
+edge that no history state holds (the parent's, or no edge between
+the faces named), and none of the 9 with
+`000100` has (the census). Items with these bytes also have
+`01 01 00` where the others have `01 00 00` after the health reference
+(the middle byte is 1 for either), and -1 where the others have the
+number of their start state (the result number before theirs). An item
+that failed in the file has the bytes and numbers of a healthy item; the
+history tells it (mitcad#156, *Fallback*). `decode::item_state` reads the bytes,
+`decode::item_suppression` tells the two apart (`Suppression::Direct`,
+`Indirect`), the stream decoder writes `isSuppressed: true` for a
+suppressed item, and `TimelineItem::file_state` and
+`TimelineItem::suppression` give the import the state from either (an
+external dump's `isSuppressed` has no bytes and counts as direct).
+
+**After the timeline marker**. Two more state bytes stand in
+front of an item's last reference (`_f3d.after`: the two bytes before the
+`6CCF41D5` reference that follows the health reference's `5FBE538E`
+one). They are `00 00` on every ordinary item; the first is 1 on a
+suppressed item (the middle one of `01 01 00` above) and on most items
+after the timeline marker; the second is 1 on every item after the
+marker (rolled back in the file). The controlled variant of a rolled-back
+hole and fillet has `00 01` on both (the items keep their result
+numbers, which the history no longer holds). In the corpora 52 items have
+the second byte (10 of them with a result number), among them every one
+of the 26 modelling items that have result -1 and no state byte (the 13
+removal items, which have no result of their own, are no such items),
+and they are the end of the timeline in 15 of the 16 designs that have
+any (the sixteenth lists a component inserted from another design after
+the root's last item). The decoder writes `isRolledBack: true` on such
+items and the timeline's `original_marker_position` and
+`restored_marker_position` (the position of the first of them).
+
+**Suppressed features.** A modelling item suppressed in the file is
+translated as any other (its inputs are decoded as on other items), its
+definitions tried in their order (those a proven rule decoded first), no
+guesses: no history state checks them, as the file keeps no result for
+the item. The first that builds is taken: `parametric`, not verified,
+note `suppressed in the file; not checked against the file's history`;
+then it is suppressed. Items suppressed in a row (an extrusion and the
+fillets of its edges, a sketch and its extrusion) stay built until the
+next item that is not suppressed, so that each is translated on the
+bodies the ones before it make, as in the file; then the run is
+suppressed, the last first, and the bodies are those before it (a
+warning says so if not). An item whose definitions do not build on the
+run's bodies is tried on the bodies without them (it may have been made
+while they were suppressed); when it builds there, the run before it is
+suppressed and a new one starts with it. Suppressed sketches and
+construction geometry come in as usual and are suppressed with their run.
+Unsuppressing a feature in Mitcad builds it where it stands (the items
+before it in its run unsuppressed too, where it uses them, as in the
+original application).
+
+**Placeholders.** Where no definition builds (no translation, no inputs
+decoded, only guesses, every definition fails, or the import gave up on
+the item: stopped, out of time or memory, after the fallback to the
+stored bodies), the item is `skipped` with `suppressed in the file; its
+definition did not come in: <why>` and gets the placeholder of mitcad#170.
+Suppressed assembly items get a placeholder, suppressed items of no
+geometry none.
+
+The report counts the suppressed modelling items
+(`suppressed.suppressed_as_features`, `suppressed_as_placeholders`; the
+text: `suppressed in the file: n modelling items as suppressed features,
+m as placeholders`, with `(k of them through another suppressed item)`
+for those suppressed through another, `suppressed_indirectly`, whose
+placeholders' notes end `(suppressed through an item it depends on)`);
+the corpus test prints their totals.
+
+**Rolled-back items**. Where the timeline ends with items
+after the file's marker (*After the timeline marker* above; not when
+an item that is not rolled back comes after them), a modelling item after
+it is taken as a suppressed one is: its definitions in their order, no
+guesses, the first that builds, `parametric`, not verified, note `rolled
+back in the file (after its timeline marker); not checked against the
+file's history`, else a `skipped` placeholder `rolled back in the file
+(after its timeline marker); its definition did not come in: <why>`. The
+items stay built on each other while the import runs; at its end the
+marker is moved before the first of them (`close_rolled_back`), so they
+come in rolled back (status `rolled_back`) and the final bodies, which
+the import then compares with the file's, are those before them.
+Sketches and construction geometry after the marker come in as usual,
+after it. The inputs are looked for in the state after the last item
+before the item, as a suppressed item's (`inputs::no_result_state`).
+The report counts them (`suppressed.rolled_back_as_features`,
+`rolled_back_as_placeholders`; the text `rolled back in the file: n
+modelling items as features after the marker, m as placeholders`). Before
+this the items were tried against states the file does not keep and ended
+as placeholders or fallbacks; Mitcad moves the marker with its timeline
+commands, so unrolling them builds them where they stand.
+
+**Inputs.** The decoder finds a suppressed item's named inputs (fillet
+and chamfer edges, faces, bodies) as any item's, in the state just
+before it; the file keeps no state of its own for it, so that is the
+state after the last item of its component before it
+(`inputs::starts`, `Timeline::state_at`), and the notes say `before item
+n (suppressed in the file)`. A fillet's edges between faces that a
+suppressed item before it made (a fillet of a suppressed extrusion) are
+in no state the file keeps: such a fillet stays a placeholder (`a face
+of the edge is not in the history state`). A placeholder of a fillet or
+chamfer gives why its edges found by their names did not build; the
+history's guesses of its edges are not worked out (none could be taken).
+
+Limits: a suppressed item after a pending fallback is translated on the
+bodies before the pending items, and a later base feature that replaces
+those bodies overrides what it builds when unsuppressed; a feature
+suppressed in the file is not checked, so a definition that builds but
+differs from the file's (another direction, other regions) is not seen.
 
 ### Time limit, stop and hangs
 
@@ -1175,6 +1378,153 @@ processors are all busy: on a machine loaded already, an import with
 eight threads can take longer than one with one. *Work beside the
 replay* below runs more of an import in parallel.
 
+**The time limit on large designs** (mitcad#181). The five designs of
+the private corpora that lost the most items to the 300 s limit (one
+thread, as the coverage runs import) spent it, by their traces and
+stack samples, on: probing the next states for an extrusion's region
+sets while its decoded profiles gave the state (10–30 s an extrusion on
+bodies of thousands of faces), the same combine built with each of its
+bodies as the target on bodies carrying an approximation (15 s each),
+a fillet's edge guesses against later states that gave the same edges
+(5 s a state), OCCT's checker on large bodies (37 s for a stored body of
+23 000 faces, half of each body built from the file), finding faces by
+name on such bodies (each lookup read every face's names) and the
+pattern edits of extrusions' other definitions. Each is cut
+(*What the history settles*, `docs/architecture.md`); the items the
+limit took went from 81 to none on a 199-item design (in both corpora),
+from 48 to none on a 142-item one (the import 385 → 252 s and
+348 → 246 s), from 50 to 45 and from 123 to 86–117 (the load of the
+machine decides) on the other two, with no item's outcome changed but
+those the limit took. What the two keep (one thread):
+
+- healing the stored bodies of every history state (OCCT's ShapeFix,
+  mostly its wires' self-intersection checks: 6–7 s a state for a body
+  of 5 000 faces, about 80 such states in one design), which threads
+  build ahead of the replay (*Work beside the replay*);
+- definitions that do not give the state and use the item's whole time:
+  guessed patterns (classifying their copies' points against a body of
+  4 500 faces took 10 s a guess), through-all cuts of every body that
+  reach stored bodies of 14 000–23 000 faces (OCCT rebuilding the cut
+  solid, 30 s a definition), a decoded join that OCCT leaves invalid;
+- the first base feature's bodies of 14 662 and 23 430 faces (45 s).
+
+A second round on the six designs that still hit the limit (traces of
+each import, stack samples of the slowest items) cut, in the same way:
+
+- **Patterns that are not searched.** A circular or rectangular pattern
+  whose decoded definition has read inputs, or whose copied feature did not
+  come in, is no longer given the history's suggestions (the other features,
+  axes and counts of `guessed_copies`): of the settled patterns with read
+  inputs none took a suggestion, while on the rejected ones twenty
+  definitions of a large body's copies used the item's whole time (125 s
+  and more a pattern, and the rest of the import with it). Two designs went
+  from 71 and 37 items lost to the limit to 6 and none (110 → 168 and
+  100 → 127 parametric items) with this change alone.
+- **Sweeps** take the decoded profiles' regions first (`_f3d_profile_loops`,
+  as extrusions do) and no longer probe the next history states for other
+  region sets: a sweep along a thread took 12 s the first and 30 s the
+  second time to translate, now 0.3 s.
+- **Boxes that hold a body.** A pattern decides which of its copies reach a
+  body by their boxes, and the name lookups skip bodies by theirs; both
+  used the optimal box (`BRepBndLib::AddOptimal`, a particle swarm on each
+  spline face: a third of the active time of a pattern over a body of 4 400
+  faces). `Kernel::enclosing_box` gives the box of the control points and
+  tolerances instead (the tight one where it was measured already).
+- **Fillets and chamfers repeated on copies** are applied in groups of 128
+  copies: OCCT compares every pair of the roundings of one operation
+  (`OverlappingStripes`, a minute for a thousand copies), and the faces at
+  the contours' edges are found once per operation, not once per edge.
+- **No other extrusion definitions after the time.** A pattern whose
+  candidates used the item's time does not go on to edit the extrusions it
+  copies (each edit would evaluate the same long definition again).
+
+What keeps these designs from importing within the limit (not import
+mistakes, the geometry kernel's time or failure): booleans on stored bodies
+of 4 400–14 700 faces (15–70 s a definition, the pattern's or extrusion's
+cut), a guide-surface sweep along a stored thread of 720 spline faces that
+the kernel fails after 8 s and the variants of which take 10 s each, the
+roundings repeated on a thousand copies (the kernel cannot end the rounding
+at a vertex on some copies), and the healing of the stored bodies (45 s for
+the 14 662-face base feature). An item that fails after such time leaves the
+later items on stored states, and each item still takes the item time while
+its definitions fail.
+
+A third round, on the two designs that still went past the limit (a
+116-item design whose body grows to 5 000 faces over 60 history states, and
+the 256-item design of the 14 662- and 23 430-face base feature), by the
+import's traces, stack samples and the reference dumps' bodies after each
+item:
+
+- **Healed faces reused between history states.** Each state's stored body
+  was built and healed with ShapeFix as a whole (25–45 s a state for 5 000
+  faces, built again after the limit for every item). A build of a large
+  body (256 faces or more) now keeps its healed faces, edges and vertices by
+  the content of their data (`brep::Healed`: two 64-bit hashes of a face's
+  surface, its loops' edges, their curves and vertices; a part whose key
+  the body has twice is left out), as healing left them (what its
+  `ShapeBuild_ReShape` put in their place, an edge it split as the chain of
+  its pieces, a seam it added to a closed face with the face). The next
+  state's build of the same blob (`StoredFile::healed`, the last three builds
+  of each blob) takes the faces it shares with the build that shares the
+  most as copies of those healed there, builds the others from its data,
+  heals only those with ShapeFix (their edges made same-parameter and their
+  vertex tolerances fixed where they meet the copies) and checks the whole
+  body: when fewer than half of the faces are shared or the result is not a
+  valid solid, the body is built and healed as a whole as before. The
+  states' signatures stay the same (103 of 104 identical in the 116-item
+  design, the other within 5 · 10⁻³ mm³ of 600 000), and a state of 4 500–
+  5 200 faces takes 2–7 s instead of 25–45 s (4 300–4 900 faces taken).
+- **The body the file continues keeps its id.** A base feature that takes a
+  history state paired each new body with the nearest old one; stored bodies
+  now carry their ASM record (`StoredBody::lineage`, the same in every state
+  of the blob), and a new body with the record of an old one replaces it. A
+  split that came in as base features gave its first new piece the id of the
+  body it split, so a later cut that names the split's first new body (its
+  `body_index` 0) took another piece. The base feature that brings the
+  bodies to the state before an item from the item's own start
+  (`item_start`: the operations no item names right before its own) is now
+  counted as the item's (`Importer::start_bases`): a split whose history
+  holds two operations made the new bodies of both.
+- **Named participants alone.** A join, cut or intersection with decoded
+  participants was also tried on all bodies; where the item's history state
+  changed only bodies it names, that is not tried (on all bodies the
+  operation gives those the same and must leave the others as they are),
+  which took 30 s a definition on the 14 000-face bodies.
+- **No inverted-solid check in booleans.** OCCT checked each solid of a
+  boolean for being inverted by building a point classifier of all its
+  faces on one thread; Mitcad's solids are oriented, so the check is off
+  (`SetCheckInverted(false)`).
+- **A pattern's consecutive cuts in one operation.** A pattern of features
+  cut each place (a feature at one of the places a pattern of patterns gives
+  it) with its own copies: a pattern of a hole and of a circular pattern of
+  21 of it, 28 times along an axis, was 44 cuts of 28 copies each from a
+  body of 4 000 faces (more than a minute). With Identical and Optimized,
+  consecutive places that cut the same bodies are cut together with all
+  their copies (10 s, and the pattern matches its state).
+- **Probes in one call.** Probing a sketch's regions against the next
+  states (*What the history settles*) crossed each body with one segment
+  per region and side, each call setting up every face the segment reaches
+  (its intersector and the classifier of its wires: 1.5 s a probe on a body
+  of 5 000 faces whose large faces hold hundreds of holes, 66 probes and
+  98 s for one extrusion). `Kernel::segments_crossings` takes all the
+  segments and sets each face up once.
+
+What these designs keep: the 256-item design imports within the limit (213
+items parametric, from 104–111; 106 inputs read, from 10–14); its fallbacks
+included a rectangular pattern of a pin and its two roundings on 14 × 77
+copies, whose second rounding the geometry kernel cannot end at a vertex on
+copy 146 (its definition with the read axis takes 71 s to fail; the
+optimized option's face copy replays it since, see *Pattern and mirror
+objects*), and still include a cleanup
+cut whose boolean OCCT gets wrong (the cut of its decoded profiles leaves
+the body 2 mm³ larger where the file removes 31 mm³), and three splits
+whose tool is not decoded. The 116-item design gets further (69 items parametric, from 62;
+the pattern above and six joins and roundings after it now replayed) but
+still reaches the limit near its 50th item: its joins and roundings on the
+5 000-face body take 20–60 s an item (OCCT's general fuse, its checker on
+the whole result and the face merge after it), and three joins whose
+decoded definitions OCCT leaves invalid try their other definitions.
+
 ### Work beside the replay
 
 The timeline's items are replayed one after another; with `threads`
@@ -1281,8 +1631,9 @@ occurrence tree before the replay:
   (`Screw1`, `Component Insert2`: the decoder gives each occurrence item
   the occurrence it made), else `Inserted component` (mitcad#75). Their
   bodies are not in the file, but joints, captured positions and ground
-  items name them; what is inside them (their own occurrences) is not
-  decoded. The report counts them apart (`external`).
+  items name them. The report counts them apart (`external`). Once the
+  replay is done, those documents' own files fill them where they are
+  found (*Components of other documents* below).
 
 The file has one timeline for the whole design; every item goes into a
 component:
@@ -1396,6 +1747,126 @@ placements say, the copy does not follow it and the item falls back.
 Joints come in only where they hold where the file places the
 occurrences (*Joints*); occurrence moves are not replayed (*Limits*).
 
+### Components of other documents (mitcad#196)
+
+A design can place components of other documents (inserted designs,
+fasteners). The `.f3d` file of the design does not hold those documents,
+and a multi-design package of such a design cannot always be made, so
+their files are kept beside it: next to `<design> vN.f3d` a folder
+`<design> vN.refs/` holds one `.f3d` per referenced document at the
+version the design uses (`<name> v<version>.f3d`), for the whole tree of
+references, and `references.json`, whose tree maps each document's
+version id (the URN the design names it by) to its file (format:
+`core/model/src/api/commands.md`, *Components of other documents*).
+
+**What the design stores about them** (the decoder's reading,
+`core/import/SCHEMA.md` §5.2):
+
+- The MetaStream's tail lists the external documents: per document a key
+  (`u64`), two GUIDs (`str16`), the URN (`str16`,
+  `urn:…:fs.file:vf.<id>?version=N`), a GUID (`str16`) and a `u32`.
+  References into another document carry the key: `01 id [str8 guid] 01
+  key 00 str8(guid) 00`, where `id` is the object's id in *that* document
+  and the GUID names its class.
+- An occurrence (`CE2913AA`) of a component of another document refers
+  to the component that way: the root component of the other document
+  (its `id` there). The reader took such a reference only when the id
+  happened to be an object of this design as well (a root component has
+  the same small id in many designs), so occurrences whose component id
+  was none of the design's own were missing from the occurrence tree (one
+  of five in the first design looked at). The reader now takes it by the
+  key and the class GUID alone. The transform after it is the
+  occurrence's placement, as for any occurrence.
+- The occurrence object carries GUIDs (`str16`); the paths of captured
+  positions and relationships name each level by one of them
+  (`path_guids`). A level inside a component of another document is an
+  occurrence of that document, named by a GUID its own occurrence object
+  carries in its own file (checked on a bearing whose balls' positions an
+  assembly captured).
+- The external document's first GUID is in the objects of its
+  occurrences too; the last one is one of the GUIDs the referenced file's
+  `Manifest.dat` lists (the same for every version of that document in
+  the files read), which tells the file without its name. The design
+  stores no name of the document.
+- Joints, as-built joints and relationships name occurrences of these
+  components as of any other; their geometry inside such a component is
+  named through the key as above.
+
+**The import.** The replay places each occurrence of such a component as
+an occurrence of an empty component (*Components* above), as before, and
+records them (`ComponentReport::inserted`, with the document's URN and
+GUID), the GUIDs of all occurrences, and the captured positions whose
+paths go inside them (`positions_inside`). Then `mitcad-ffi`
+(`f3d_references.rs`) finds each document's file
+(`reference_folder.rs`: a file given for it; the reference folder next to
+the design or one given, by `references.json`, else another version of
+the same document there with a note; another design of an `.f3z`
+package; a `.f3d` of those folders whose manifest lists the document's
+GUID), imports it on its own with the same options and its own references
+(the same folders; a document that refers back to one being imported is
+not imported again; 16 levels at most), and `references.rs` copies it
+with its history into the empty component (`Document::fill_component_copy`,
+named after the document), one copy per document shared by all its
+occurrences. The captured positions inside it then place the copies'
+occurrences: each path's levels inside the document by their GUIDs, the
+last captured placement where the paths agree (a copy shared by several
+occurrences of the document has one placement for its own occurrences).
+It is all one undo step with the import.
+
+The replay does not see the copies: it matches the design's own history,
+which holds none of their bodies, so filling the components before it
+would make every comparison of bodies count them. So joints and
+relationships whose sides are on geometry inside those components are as
+before: on the components' origins, or left out. Re-trying them once the
+components are filled is left for later.
+
+**Not found.** A document whose file is not found leaves its components
+empty, as before; the report lists it (`missing`, or `skipped` where the
+user declined to give it) and a warning names it. The application asks
+for each one with a file dialog naming the document (its name where a
+reference folder gives one, else the design's, and its version), whose
+Skip leaves it out; a chosen file's folder is searched for the others
+([app/COMMANDS.md](../../app/COMMANDS.md), *Files*). `mitcad-cli
+import-f3d` never asks: `--references DIR` adds folders,
+`--no-references` leaves the components empty.
+
+**The report** (`references`): per document its URN, name, version,
+file and how it was found, `status` (`linked`, `missing`, `skipped`,
+`failed`), a note, Mitcad's components, the occurrences, its own import's
+items by outcome and its own references; `components.linked` counts the
+occurrences filled, `components.placed_inside` the captured positions
+inside them that placed copied occurrences.
+
+**Tests.** `mitcad_f3d::testreferences` writes a synthetic assembly that
+places a part once and a sub-assembly (which places the part) twice, and
+its reference folder; `core.f3d` reads its occurrences and documents,
+`core.import` the folder's lookups and the filling on the mock kernel
+(a two-document dump with a captured position inside the part),
+`cli.import_f3d_references*` the import from the folder, without it (the
+documents missing) and from a folder given (found by their GUIDs), and
+`app.ui-windows-references` the application's dialogs (skipped, then a
+file chosen whose folder holds the other).
+
+**Two real assemblies** with their folders (single designs, not a corpus
+run):
+
+- `b210bf9b`: five documents. Before, four occurrences in the tree (the
+  fifth, a bearing whose root component id is none of the assembly's, was
+  missing) and no bodies; now all five, each document imported with its
+  history (its items parametric/fallback/skipped: 22/3/3, 2/1/0, 8/0/0,
+  4/0/0, 15/0/0) and 12 placed bodies. The folder held a later version
+  of one document than the design uses: taken, with the note.
+- `57d68164`: ten documents in two levels (a sub-assembly placed six
+  times, with five documents of its own), 15 occurrences filled, the one
+  captured position inside them placed; before, no bodies. One body of a
+  referenced file is stored invalid and cannot be moved where the design
+  places it: `mitcad-cli`'s report now says so for that body instead of
+  ending (`core/model/src/api/report.rs`).
+
+The census's counts before and after (*positions inside other documents'
+components*, 47) are left to a coverage run with the reference folders
+on the Linux machine.
+
 ### Parts of items, face profiles and sketch heights
 
 Three readings of mitcad#169 (a design whose base body is moved into a
@@ -1460,6 +1931,66 @@ base's second fillet gone; the lid's first body still falls back until
 the face its profile selects, on the root's body, is found in another
 component's history (mitcad#161); with that lookup it comes in
 parametric (no fallback left, 66 items parametric, 38 history matches).
+
+### Joins that merge bodies, tapers that close, symmetric sketch patterns
+
+Fixes from re-importing designs the last census left non-parametric. Over
+the 37 re-imports of the designs these touch: parametric items 1522 →
+1713, fallbacks 304 → 121, partial items 13 → 5; 25 imports improved and
+none got worse (the final bodies of all still agree with the file's).
+
+- **Bodies a join merged stay in the history.** A join that merges bodies
+  into another (an extrusion, revolution or sweep joining several
+  participant bodies) leaves the merged bodies in the ASM history's state
+  as they were, as a combine's consumed tools do (above): the same stored
+  body id, the same solid, though the design no longer has them (the API
+  reference dumps of such designs list one body less after the join). The
+  candidate's result is matched against the state without such bodies too:
+  those of the state before it that are unchanged and that no body of the
+  candidate's result is (`history::without_merged`). A match retires them
+  from that state on (`Oracle::retire`), so that the later items and the
+  final comparison do not expect them; the merged volume must be in the
+  result body, so a candidate that did not merge them does not match this
+  way. Before, such an item fell back to the stored bodies, and the items
+  after it that built on them often with it: one design 112 → 173
+  parametric items (77 → 16 fallbacks), another 92 → 127, a third 104 → 106.
+- **A face profile keeps its taper.** An extrusion of a body's faces
+  (*Parts of items, face profiles and sketch heights* above) gave the
+  sketch of the face's projected boundary an extent without the file's
+  taper; the decoded faces' candidate now takes the taper too (the
+  candidates found by the faces' areas are for untapered prisms, and stay
+  so). Its provenance is `read` where the stream's extent kinds say the
+  distance goes along the sketch's normal.
+- **Tapers that close the profile** (geometry kernel, `tapered`): the
+  stored designs end a tapered extrusion where its sides meet when that is
+  before the end of its distance, instead of failing: a hexagonal socket
+  becomes a pyramid, a round pocket a cone, and the volume agrees with the
+  API reference dumps (the pyramid's `A h / 3`). The sides of a
+  convex profile of lines are intersected as half-spaces (a pyramid, or a
+  roof with a ridge for a rectangle), a circle closes into a cone; the far
+  cap is gone. OCCT's draft fails on the first and loops on the second. 13
+  imports of 3 models (one keeps a thread that falls back for another cause)
+  went from a fallback to a parametric extrusion; a profile with holes or
+  arcs among its lines that a taper closes stays an error.
+- **Three points on a line.** A collinear constraint whose entities are
+  three points (a centre line's ends and the origin it passes) is a
+  coincidence of the third point with the sketch's line through the other
+  two. The API reference dumps cannot read such a constraint (an
+  assertion on the geometry count), six have it, all the same sketch
+  shape; 4 imports' sketches came in whole.
+- **Symmetric rectangular patterns.** The stream's rectangular pattern
+  flags are (distance kind, symmetric in direction one, symmetric in
+  direction two): all 41 patterns of the API reference dumps agree with
+  `distanceType`, `isSymmetricInDirectionOne` and `…Two` (two are symmetric
+  in direction one, with 5 and 11 instances; none is in direction two). A
+  symmetric direction has the originals as its middle instance, so the
+  copies lie on both sides: `patterns[].symmetric` in the sketch (model,
+  [commands.md](../model/src/api/commands.md), *sketch*), the copies'
+  indices counting from the end against the direction. An even count
+  stays an error. 3 imports' sketches came in whole.
+- **An offset without curves** (the stored list of its offset curves is
+  empty: the curves were deleted) binds nothing and no longer makes its
+  sketch partial (1 import).
 
 ### Joints
 
@@ -1722,9 +2253,10 @@ their class (`core/f3d/src/design/classes.rs`, `ITEM_TYPES` and
   (`DraftFeature`), whose inputs are not decoded; cylinder and sphere
   primitives (`CylinderFeature`, `SphereFeature`), whose operation and
   sizes are decoded (mitcad#154) but whose placement is not;
-  components mirrored into new ones (`MirrorComponent`), bodies derived
-  from other designs (`DerivedContext`) and bodies copied or moved by
-  pasting (`CopyPasteBodies`). Bodies moved into a new component
+  components mirrored into new ones (`MirrorComponent`) and bodies derived
+  from other designs (`DerivedContext`). Copies and cuts of bodies
+  (`CopyPasteBodies`) come in as Mitcad's except a cut whose body the file
+  lost. Bodies moved into a new component
   (`ComponentFromBodies`) come in as Mitcad's where the history settles
   them (*Components*), else so.
 - Lofts of another class are `LoftFeature`s, translated (*Sweeps, pipes
@@ -1795,8 +2327,10 @@ memory cannot be caught: a fillet with a strip 1e-4 wide did, hence the
   decoded: which profiles (only how many, see *What the history settles*),
   a two-sided extent's object side (it falls back), which way a one-sided
   extent through all goes when the stream's flag is not set (the vector is
-  the sketch's normal; the history settles it), thin walls and participant
-  bodies.
+  the sketch's normal; the history settles it), and thin walls. Participant
+  bodies come from their explicit input slot when that slot and its body
+  references decode (mitcad#186); unresolved selections retain the older
+  reading and history alternatives.
 - Features that use bodies of two components at once fall back, and so
   do features across components whose components are placed more than
   once (*Across components*).
@@ -2018,8 +2552,8 @@ One line (`schema` 1):
 | `context.sketches` | per sketch the candidates use (`T<index>`): `regions[]` as Mitcad computes them, in the file's ids (`key`, `outer` and `holes` curve lists, `area` mm², `centroid` and an `inside` point in sketch mm), the `frame` the import placed the sketch on (`origin`, `x_axis`, `y_axis`, `normal`; model mm, the space of an extrusion's stored direction) and `curves` by the file's ids (`object`, `class`, the `u64` root attributes such as `crv_primary_id`, `crv_secondary_id`, `pt_tag`; `type`, `construction`, `geometry` from the dump, sketch space in cm). Curves Mitcad made itself appear as `m<id>` |
 | `context.bodies`, `context.edges` | the bodies before the item (`uid`, `volume`, `area`, `center`, `faces`; at most 200) and the edges the candidates name (`mid`, `length`, `body`), mm |
 | `context.resolved` | the bodies, faces and edges the decoder gave for the item (by JSON pointer into `known`, e.g. `/detail/edgeSets/0/edges/2`) as the replay's (`{"kind": "body", "uid"}`, `{"kind", "body", "name"}`; `null`: not found), so that a decoded input can be compared with the answer |
-| `context.edge_matches` | additive dressup matcher diagnostics for decoded edge inputs at those same pointers (mitcad#106): `status` (`matched`, `decoder_unresolved`, `missing_in_replay`, `ambiguous_in_replay`), `decoder_found` (the decoder's `found` text), `count` and either `matches[]` (`body`, `name`, `mid` mm, `direction`) or ambiguity `candidates[]` (`body`, `name`). The first 64 decoded inputs are considered, with at most 16 matches or candidates per edge; `count` retains the full number. Bodies and names use the file's timeline indices. This uses the actual dressup matcher, including circles and split edges; `context.resolved` retains its older midpoint matching for compatibility. No recipe-tail rule is applied |
-| `candidates[]` | in the order tried, the first 1000 (`cost.candidates` counts all, `accepted` is the rank among all): `defs` (Mitcad feature definitions in the file's terms: feature uids as timeline indices `T<i>`, profile regions as `{"sketch": "T<i>", "region": <index in regions>}`, sketch curves by the file's ids), `note`, `guess`, `predicted` |
+| `context.edge_matches` | additive dressup matcher diagnostics for decoded edge inputs at those same pointers (mitcad#106): `status` (`matched`, `decoder_unresolved`, `missing_in_replay`, `ambiguous_in_replay`), `decoder_found` (the decoder's `found` text), `count` and either `matches[]` (`body`, `name`, `mid` mm, `direction`) or ambiguity `candidates[]` (`body`, `name`). A matched result also has `chosen_from_multiple`: at least one match selected among multiple distinct replay edges (absent in older dumps). The first 64 decoded inputs are considered, with at most 16 matches or candidates per edge; `count` retains the full number. Bodies and names use the file's timeline indices. This uses the actual dressup matcher, including circles and split edges; `context.resolved` retains its older midpoint matching for compatibility. The recipe tail's order of the faces round the edge's ends (`_f3d.end_faces`) tells equal mirror-image edges apart in the decoder (EDGE_ORDER.md) |
+| `candidates[]` | in the order tried, the first 1000 (`cost.candidates` counts all, `accepted` is the rank among all): `defs` (Mitcad feature definitions in the file's terms: feature uids as timeline indices `T<i>`, profile regions as `{"sketch": "T<i>", "region": <index in regions>}`, sketch curves by the file's ids), `note`, `guess`, `input_provenance` (`read`, `inferred`, `unknown`), `predicted` |
 | `accepted`, `answer` | the accepted candidate's rank and the candidate itself |
 | `cost` | `candidates`, `rank`, `seconds` from the translation to the acceptance |
 
@@ -2075,6 +2609,1021 @@ the dump `_f3d.extrude.flag`, `slot_roles`, `full_length` and
 `extentOne.entity`). Then (mitcad#104): both sides of a two-sided
 extrusion up to objects, a combine's body removals in other components
 (*Components*) and an oblique stored extrusion vector.
+
+#### Input decoding audit (mitcad#186)
+
+The audit starts from the existing 11 October 2026 learning snapshot on
+`bd34bc6b`: the complete main corpus and the 78 largest backup designs.
+The snapshot is retained unchanged while rules and corrections are
+checked. Its counts include unsettled dressups with no candidates; those
+records still contain useful input and translation-failure evidence.
+
+| Input group | Settled / unsettled examples | Reading or remaining uncertainty |
+| --- | ---: | --- |
+| Circular patterns | 83 / 14 | All 97 have decoded seeds. The direct path now resolves sketch-line axes as well as origin/construction axes. Compute/symmetry flags have no contrasting accepted labels here, so this snapshot cannot establish their byte meanings. |
+| Rectangular patterns and mirrors | 18 / 20; 18 / 6 | All 38 rectangular patterns have seeds and a first direction; use those on the direct path, including body/face seeds. Keep either decoded mirror input when the other is missing. A stored-vector priority rule matches 13 settled axes, contradicts one and cannot compare four; flipping by the distance sign contradicts ten. Neither rule is adopted. Spacing/extent and symmetry also lack contrasting labels. |
+| Fillet/chamfer edge sets | 808 / 176; 194 / 9 | Bind size-parameter holders to their set records, then the counted selection list, rather than flat input order; bind fillet options by the same holder. The input/option consistency check explains 802 settled + 173 unsettled fillets and 191 + 9 chamfers, with no contradictions; nine settled and three unsettled examples are not comparable. Of 1,191 known sets, 1,178 have the checked framing: 1,170 retain their selections and eight previously missing sets in four items are recovered. Independently checked on 43 sets in 42 reference features. This verifies decoded inputs, not successful kernel replay. |
+| Extrusion direction, extent and participants | 1054 / 95 | Role-8 slots exist in 925 examples. They exclude termination references wrongly included in 80 old lists; six extras identify distinct replay bodies. Comparing against explicit accepted participants gives 254 matches and five existing resolver disagreements (795 not comparable); alternatives remain for unresolved replay. No new direction/extent rule was established. |
+| Extrusion profiles and sketch selection | Same 1054 / 95 extrusions | Exact loop-to-region curve membership explains 572 settled choices, contradicts nine and abstains on 473; it is insufficient for curve pieces and child loops and is not adopted. A previous-sketch fallback is marked inferred. The groups overlap and must not be added together. |
+| Thread inputs | 42 / 1 | All 43 records agree with their decoded ThreadInfo values and modeled/full/location flags. Candidate thread parameters are unchanged across all alternatives; 12 tube and two offset acceptances change geometric representation only. Fourteen items have a nonzero phase obtained from later history, an inferred input. Unsupported layouts remain undecoded; handedness is decoded from the controlled variants (below). |
+
+The old candidate `guess` flag controls replay policy: some candidates
+need history, including alternative geometric representations. Accepted
+rank also describes the search, not whether an input was read. In this
+snapshot, rank greater than zero or `guess` selects 72 circular patterns,
+18 rectangular patterns, 18 mirrors, 64 fillets, 14 chamfers, 80 extrusions
+and 14 threads. Those are screening counts, not counts of decoding
+failures: the 14 threads comprise 12 tube and two offset alternatives.
+
+The completed baseline later supplied all 48 main-corpus and 325 backup
+designs. Rules were rechecked on that larger existing dump without another
+geometry run. Counts below include every record, including empty candidate
+lists; design versions are separate observations.
+
+| Group in the full baseline | Settled / unsettled | Independent recheck |
+| --- | ---: | --- |
+| Circular patterns | 117 / 22 | All 139 retain decoded seeds. Compute and symmetry labels still provide no contrasting evidence for a byte rule. |
+| Rectangular patterns and mirrors | 26 / 30; 22 / 8 | All 56 rectangular patterns and 30 mirrors have decoded seeds. Stored-axis prediction: 18 matches, one contradiction, seven unscored; distance-sign prediction: seven matches, 12 contradictions, seven unscored. Both remain rejected. No sketch-axis examples occur here; synthetic tests cover that path. |
+| Fillets and chamfers | 1379 / 282; 294 / 17 | Input/option checks explain 1368 + 278 fillets and 290 + 17 chamfers, with zero contradictions. Of 1978 sets, 1947 have comparable framing: 1939 retain their selection, eight recover a missing selection. All 1578 previously read fillet-option sets retain their holder link; 1563 support an unambiguous option comparison, all matching. |
+| Extrusion participants | 1730 / 163 | Role 8 occurs in 1485 items; 122 old lists include termination references, still only six distinct extra replay bodies. Prediction gives 331 matches, the same five resolver disagreements and 1394 unscored settled items; 35 unsettled predictions occur among candidates, 96 do not and 32 are unscored. |
+| Extrusion profiles | Same 1730 / 163 | Exact curve membership gives 1041 matches, the same nine contradictions and 680 unscored settled items; unsettled membership is 60 among, one outside and 102 unscored. The proposed replacement remains refuted; no `isThinExtrude` is decoded. |
+| Threads | 77 / 3 | All 80 raw field/option checks and cross-candidate parameter comparisons agree. Twenty-one nonzero phases came from history; those on whole cylinders with the axis up are now read from the seam. The legacy screening count of 31 is 29 tube and two offset alternatives. |
+
+Full-baseline settled legacy screening counts are 106 circular, 24 rectangular,
+22 mirror, 143 fillet, 23 chamfer, 100 extrusion and 31 thread items.
+The conservative fillet field/raw-option guard described below extends
+to 1237 settled and 217 unsettled items, with no contradictory raw options.
+Reading counted participant references directly also recovers three lists
+that the learning dump's diagnostic tokenizer mislabels as string data;
+this changes applicability counts, not the prediction results or decoder.
+
+The report and learning candidates carry separate `input_provenance`:
+`read` requires accounting for every needed input, `inferred` records at
+least one heuristic or history-derived input, and `unknown` leaves an
+incomplete audit explicit. A stored-body fallback has no accepted-input
+provenance. This metadata does not change candidate ordering, the `guess`
+policy or the history comparison.
+
+The initial `read` path is deliberately narrow: constant-radius G1
+fillets with an explicit positive radius, tangent-chain flag, rolling-ball
+corners and complete native edge references, all uniquely resolved in
+the replay. Choosing the best of several possible replay edges is
+`inferred`, even if the history accepts it. Splitting the same selected
+edges into tangent-chain kernel operations preserves their provenance.
+The field and raw-option guard holds on 703 settled and 148 unsettled
+fillets, with no contradictory raw options. These are eligibility counts,
+not final `read` counts: the old dump does not retain every considered
+replay edge needed to establish uniqueness.
+
+Other paths remain `unknown` unless a known inference applies. In
+particular, no native extrusion in the snapshot has a decoded
+`isThinExtrude`, and the profile mapper combines exact and heuristic
+paths. `unknown` is not counted as read merely because rank zero worked.
+Omitting dressups from a decoded mixed pattern selection, using the only
+solid for an unresolved shell body, and taking a thread phase from later
+history are examples of inputs reported as inferred. The corrections
+above use decoded selections directly while retaining alternatives for
+inputs or replay mappings that remain open.
+
+Verification used an immutable optimized macOS build on `bb45f056` plus
+the decoding batch, the original 48+78 design selection, 300-second
+limits and two workers with 6 GiB each. All 126 design reports completed.
+The historical Linux baseline is older, so these differences also include
+intervening main changes and platform effects:
+
+| Outcome | Main corpus before / after | Selected backup designs before / after |
+| --- | ---: | ---: |
+| Parametric | 1132 / 1182 | 2733 / 2832 |
+| Partial | 38 / 38 | 93 / 93 |
+| Fallback | 210 / 161 | 699 / 602 |
+| Skipped | 261 / 260 | 705 / 703 |
+
+Final bodies remain within 0.1% of their stored volumes, with none off,
+missing or extra. Three versions of one fillet become fallback relative
+to the old Linux run. A clean same-platform `bb45f056` control reproduces
+the same self-intersecting-wire failure at `a9e82a9a` item 45, without
+this change. In contrast, `64052a50` item 16 is fallback on that control
+and parametric with the decoded rectangular inputs, matching history and
+retaining the final bodies. Paired learning comparisons exclude three duplicate
+(file label, item, type) keys rather than overwrite them. On items settled
+in both runs, legacy screening gives the following before/after counts;
+this is not a causal measurement of input decoding alone:
+
+| Group | Paired settled items | Rank > 0 or legacy guess, before / after |
+| --- | ---: | ---: |
+| Circular | 83 | 72 / 72 |
+| Rectangular and mirror | 36 | 36 / 36 |
+| Fillet and chamfer | 997 | 75 / 74 |
+| Extrusion (both input groups) | 1052 | 80 / 72 |
+| Thread | 42 | 14 / 14 |
+
+The subsequent provenance batch passes 180 import unit tests, scoped
+clippy and formatting, and the C++ import test. Three targeted models
+(`64052a50`, `11d7acd2`, `d03dcc34`) retain identical per-item results and
+final-body reports after removing only the new provenance field: 16
+accepted items are read, four inferred and 34 unknown; 47 other items
+have no accepted-candidate provenance. This includes a read tangent-chain
+representation, a history-selected fillet and a fillet missing options.
+These are targeted counts, not extrapolated totals for the 126 designs.
+
+After integrating the performance changes of mitcad#181, a separate six-design
+run on `2c0c22b5` exercises normal import without learning's eager candidate
+collection. Five retain their outcomes; `a9e82a9a` gains 21 parametric items
+from previous fallbacks. All 117 final bodies match within the exact-volume
+threshold; no item outcome worsens. The original frozen-run counts above
+remain separate. A regression test also preserves alternative extrusion
+profiles needed by a later pattern, with and without learning enabled.
+
+Two held-out body patterns (`143d219b` item 60, `b2b33a5b` item 3) also
+produce direct candidates from resolved named inputs. The existing volume
+ranking can still accept a history-derived candidate first. That remaining
+candidate-ordering limitation is separate from input decoding; a direct
+candidate's presence does not establish that it was tried or accepted.
+
+The learning tool keeps records with no candidates. `test --unsettled`
+also evaluates `check(ex)` rules, honours the selected class version and
+fails on rule errors. A prediction for an item with no candidates is
+reported as unscored, rather than silently omitted or treated as a
+contradiction. A candidate match on an unsettled item is a consistency
+check, not a history-verified answer.
+
+Accepted suppressed definitions (mitcad#180) retain their input provenance
+and learning answer too. They stay unverified and in the unsettled dataset;
+suppressed placeholders have no accepted-candidate provenance.
+
+The final integration with mitcad#178, #180 and #181 passes 186 import
+tests, 98 f3d unit tests, the f3d corpus/reference-model tests, formatting,
+scoped clippy, the warning-free optimized macOS build and the C++ import
+test. The geometry ctest passed after the performance merge. These scoped
+checks do not replace or relabel the frozen coverage evidence above.
+
+##### Extrusion options from one-option variants (mitcad#186)
+
+Thirty-four reference models each differ from their siblings in one
+extrusion option (sides, extent, through all, thin wall, profile selection,
+direction, operation, distance). Their records were lined up byte by byte
+and the findings tested as rules on the census learning dump (1730 settled
+and 163 unsettled extrusions of the main corpus and the backup designs;
+design versions counted separately) and on the variants' own dump (45
+settled). The decoder reads them in `core/f3d` (`decode::extrude_fields`,
+dump keys `_f3d.extrude.*`); the import takes them as the first candidate.
+
+| Option | Encoding | Census (settled: explained / contradicted / n/a; unsettled) | Variants |
+| --- | --- | --- | --- |
+| Operation | the first `u32` after the root part: 1 join, 2 cut, 3 intersect, 4 new body. Code 3 was not read before: an intersection came in as a new body and its item was a fallback | 1730 / 0 / 0; all 163 unsettled among the candidates | explained |
+| Extent kind per side | after the seven reference slots `u32 one`, then (unless one is 2, up to an object, which has none) nine bytes and `u32 two`: 1 distance, 2 up to an object, 4 through all; with the codes `extent_a` 1 one side, 2 two sides, 3 symmetric. The newer writer keeps `u8 0 \| u32 a \| u32 b` in the nine bytes (`a` 2 for a side through all, `b` 1 on two sides and symmetric extents); earlier the decoder dropped `sides` for those records | 1729 / 1 / 0; the one is a one-sided through all whose accepted answer was both sides; unsettled: 161 among the candidates, 2 not | 45 / 0 / 0; `sides` is read on every variant |
+| Symmetric length | the byte `LL` of `00 LL 00 00 00` before the thin-wall block: 1 the whole length, 2 half of it each way | 14 / 0 / 1716 | 6 / 0 |
+| One-sided distance direction | not a byte: the sign of the distance parameter. The negative-direction, the negative-distance and the UI-typed variants store the same direction vector and flag as the positive one; only the parameter's expression and value differ (`-( 20 mm )`, `-20 mm`, both -2 cm). The two encodings are one geometry. So a one-sided distance goes along the sketch's normal times the sign of its parameter, whatever the stored vector says | 1485 / 1 / 244; the one is a class version 6 extrusion | explained |
+| Two-sided distances | each side by its parameter's sign, along the normal | 22 of 23 settled `distance/distance` went along the normal | explained |
+| Through all and up to an object | the flag byte decides the side in every writer: 1 against the sketch's normal, 0 along it. The census had 76 of 77 settled one-sided through-alls with flag 1 going against the normal, and every up-to-an-object extrusion with flag 1; with flag 0 the history's accepted answer went against in 15 of 22, which the API reference dumps refute: `isPositiveDirection` is the flag byte 0 on all 78 through-all extents (see the round-2 subsection below). The through-all variants store a different vector sign for the two directions but build the same body, so the vector does not decide it | as stated | positive and negative through all both: flip false, accepted after the history |
+| Thin wall | class version 8, after the side kinds: `[6 × 0] [slot] [00 LL 00 00 00] [u8 thin] [u32 location] [slot] [5 × 0] [u32 1] [ref input slot]`, found back from the first input slot. The first `slot` is the second side's parameter holder or one absent byte; the second is the wall thickness's parameter holder (a thin extrusion) or one absent byte (a solid). `thin` 0/1; `location` 0 side one, 1 centre, 2 side two; the thickness is the parameter of role `Side1WallThickness` (its holder is the second slot) | 1714 solid explained, 0 contradicted, 16 n/a (class versions 5 and 6 have no block); no thin extrusion in the census, so it cannot contradict a thin reading | all 5 explained: solid, side one 2 and 3 mm, side two, centre |
+| Thin wall side | the file's side one lies inside the profile (60 × 40 × 20 mm, 2 mm: 7.68 cm³ volume), side two outside (8.32), the centre half each way (8.00). The model's `Thin.location` side one is away from the material, so the import swaps side one and side two | | volumes match |
+| Profile selection | `_f3d_profile_loops`: per profile its loops are the outline of the union of the selected regions (the outer loop, holes where unselected material is enclosed); with more than one region selected, its children are the individual regions' loops (two or more are listed even where the union is one face). The curve pieces numbered by the cuts of the curves within the loop. The even-odd rule on the pieces selects the regions | 1612 of 1634 settled items with a decoded set agree with the accepted regions; of the 22 others 11 add only regions below 1 mm², 5 name curves the sketch no longer has (a stale profile), 4 miss or differ and 2 add larger regions | all six selections (the left region with and without its hole, the right region, the disc, and their unions) agree |
+
+The refuted exact rule of the earlier audit compared curve membership
+instead of the pieces; the pieces and the even-odd rule above explain the
+selections, the remaining differences are tiny regions the file may or may
+not select (the history cannot tell) and profiles older than the sketch's
+last edit, whose records name curves the sketch no longer has.
+
+*Read provenance.* An extrusion candidate is `read` when its profile
+selection is exact (every record of its loops found in the sketch with its
+piece numbered, no curve-overlap fallback), its operation code, start
+support and thin-wall block are read, the participants are read (none for a
+new body, else the decoded slot's bodies), and its extent comes from the
+stream: a distance, symmetric (with its length byte), two-side or two-sided
+through-all extent by the side kinds and the parameters' signs, a
+one-sided through all with its flag byte (0 or 1), or an up-to-an-object extent
+whose object the stream names and whose side comes from where the object lies
+(or the flag). Alternatives stay `inferred`, every other extent `unknown`.
+On the 45 extrusions of the variants (before: 5 fallbacks, the four thin
+variants and an intersection, with 39 `unknown` and one `inferred`
+accepted) every one comes in parametric, 42 `read`, and the three
+through-all cuts without the flag byte stay `unknown` or `inferred`. A thin extrusion of a two-sided extent is not
+read (its second wall is not decoded: no variant).
+
+Not decoded: the second wall of a two-sided thin extrusion (location two
+and thickness two, no variant), the
+meaning of the words `a` and `b` beyond the correlations above, and the
+two doubles near the end of the record (differ on every file: not geometry).
+
+##### Threads, suppression and the timeline marker (mitcad#186)
+
+Decoded from the controlled one-option variants (15 thread and 16
+suppression models, each differing from its siblings in the option alone,
+checked against the design API's dumps) and verified on the census (363
+designs, 1,132 + 5,169 parametric items).
+
+| Option | Encoding found | Census |
+| --- | --- | --- |
+| Thread side (external / internal) | the flag byte after the angle (1 external, 0 internal), as read before; the class (`6g`/`6H`) and diameters follow it | 78 + 3 threads agree with their decoded ThreadInfo |
+| Thread kind (cosmetic / modelled) | the modelled byte after the diameters, and a list of one `(1, id)` pair before the class (`u32 n`, n × 16 bytes, `(1, id)` of another object of the file; none on a cosmetic thread, one per face on a modelled one) | as before |
+| Thread designation, class, length | strings (`M10x1.5`, `6g` / `4g6g`), the full-length byte and the thread length and offset parameters (`10 mm` / `3 mm`; a full thread keeps the default `10 mm` and `0 mm`) | all agree |
+| Thread handedness | one byte after the object's two references following the pitch diameter (1 right-handed, 0 left-handed; the hole reference, a null byte for a thread item, comes before them): the left-handed variants of a cosmetic and a modelled thread differ from their right-handed ones in this byte (and the list) alone | 81 threads (versions 4 and 5) have 1, none 0; the census has no left-handed thread, so the rule cannot be contradicted. Version 1 and 2 layouts are not read. Implemented: `ThreadInfo.isRightHanded`, read first by the import; a thread that is not modelled, whose faces the decoder named, whose handedness is read and whose class Mitcad lists has `input_provenance` `read` (a modelled thread keeps `inferred` for its start angle) |
+| Thread start angle (phase) | not found: no field of the thread's object, its sub-objects or the body object its list names holds it (checked for the angle in degrees and radians on the 20 census threads with a nonzero phase); the variants all start at 0. It stays inferred from the history | n/a |
+| Suppressed itself or through a dependent | `000100` or `010000`, see *Items suppressed in the file* | 24 of 27 designs consistent, 3 (one design) not explained; 32 of 39 `010000` fillets have a face no state holds, 0 of 9 `000100` |
+| Suppression by API, timeline menu, configuration, group | the same bytes (the hole's object in the API, UI and configuration variants differs in ids and a random value only) | n/a |
+| Configuration table | `DesignConfigurationTable.<id>.dsgcfg` is JSON: columns (a part number property and one per configured object: `configuredObject` with the feature's object id and the title, a boolean column for a suppression), rows (`Configuration n`, a cell per column) and the table view's order; the active row's id is a string in the design stream, in the object named `DesignConfigurationRoot` (two models that differ only in the active row differ in this string and in the item bytes of what the row changes). The active row's effect is in the items' own bytes | no census file has a configuration table, so the import does not read it |
+| Rolled back | the second of the two bytes in front of an item's last reference, see *After the timeline marker* | 52 items, 15 of the 16 designs have them as the end of the timeline |
+
+##### Patterns and mirrors: the data object's settings (mitcad#186)
+
+The audit above found no contrasting examples for a pattern's compute
+option, symmetry, distance type and suppressed elements. One-option variant
+models (a design per value of each option, made from scripts; the flip of a
+rectangular pattern also by hand) show them in the bytes of the pattern's
+data object, the item's first reference after its root part
+(`core/f3d/src/design/build/patterns.rs` has the layout; the decoder gives
+the dump IR's `isSymmetric`, `isSymmetricInDirectionOne/Two`,
+`patternComputeOption`, `patternDistanceType`, `suppressedElementsIds` and
+a mirror's `isCombine`):
+
+| Option | Encoding (found by the bytes that differ between the siblings) |
+| --- | --- |
+| Compute option | `u32 compute \| u32 kind \| i32 -1` ends the head of the circular, rectangular and mirror data objects: 0 optimized, 1 identical, 2 adjust; `kind` 0 faces, 1 features, 2 bodies. Four or eight bytes lie before it (after the `u32 n \| n` body records); the oldest layout has neither them nor the `-1` |
+| Circular pattern symmetric | the byte after the object's root part, 1 for a symmetric pattern |
+| Mirror joined | the same byte of a mirror's data object: `isCombine`; always 0 for a mirror of features (the old reading, no new body, gave 1 for 12 of the corpora's feature mirrors) |
+| Total angle (360, 180, 90) | no byte: the angle is the parameter `TotalAngle` and the item's float, as before |
+| Rectangular distance type | the byte after the `-1`: 0 spacing, 1 extent |
+| Rectangular symmetric | one byte each for direction one and two, right after the two distances' parameter holders |
+| One or two directions | one or two direction inputs, a null byte instead of the second. A one-direction pattern keeps the second direction's quantity and distance (defaults), as the API reports them |
+| Axis kind | the direction input names the entity: an origin axis, an edge, or a sketch line (whose entity input has no target object: decoded from the sketch curve's tags, new in this change) |
+| Flip | no flag, and the stored vector does not change: the sign of the distance parameter (`-20 mm` in the API's and in the UI's pattern) |
+| Suppressed elements | `u32 s \| s` `u32` at the object's end. A circular pattern's numbers count the original as 1: the API's id 3 is stored as 4 (one variant). A rectangular pattern's element numbers follow no order the variants explain, so only an empty list is read |
+| Objects (features, bodies, faces, with fillets or chamfers) and mirror planes | already decoded; the variants confirm the object type, the plane kind (origin, construction, face) and the object list |
+
+The first four rows hold in the corpora too: the layout parses in all 259
+circular patterns, rectangular patterns and mirrors of both private corpora
+(a decoder run over every file); `kind` agrees with the decoder's own reading
+of the objects in 137 of 137 circular patterns, 54 of 54 rectangular patterns
+and 30 of 30 mirrors of the census learning dump, and a rectangular pattern's
+second direction agrees with the decoded directions in 54 of 54. Settled and
+unsettled items, learning dump (before the import used the settings):
+
+| Rule | Explained | Contradicted | Not comparable |
+| --- | ---: | ---: | ---: |
+| Circular symmetric flag = accepted answer's `symmetric` | 110 | 2 (one design, two versions, 180 degrees: run again, the import accepts `symmetric` true there, so the old answer was ambiguous) | 24 (22 unsettled, one with the flag set, which is a design the import now settles; 2 unread by the tool) |
+| Circular compute (0 / 1 / 2) | the code is never another in 112 settled and 22 unsettled: the accepted answer is the default (`adjust`), so the history cannot test it; 15 of the 22 unsettled have a non-default code against 17 of the 112 settled | | |
+| Rectangular distance type = accepted `distance_type` | 25 | 1 (extent with four elements; the answer was a spacing) | 0 |
+| Rectangular symmetric, second direction | 3 unsettled have the symmetry set and 3 a second direction; none of the 26 settled | | |
+| Rectangular extent | 17 of the 28 unsettled are extent, against 2 of 26 settled (one with two elements, where extent and spacing agree) | | |
+| Mirror joined flag = the old reading (no new body) | 14 of 14 mirrors of bodies, 4 of 16 mirrors of features | 12 of 16 mirrors of features (the flag is 0, the old reading 1) | |
+| Suppressed list | empty in every one of the 134 circular and 54 rectangular patterns: only the variant gives a non-empty one | | |
+
+Against the original application's own dumps of the real designs (the
+API reference dumps; `mitcad-f3d-inspect design --json` joined by
+design and timeline index), every decoded setting agrees and none is
+contradicted: 90 circular patterns (symmetric 3 true / 87 false; compute
+78 adjust / 9 identical / 3 optimized; suppressed lists all empty), 22
+rectangular patterns (distance type 14 spacing / 8 extent; symmetric in
+direction one 1 true / 21 false, in direction two 2 false; compute 14 adjust /
+6 identical / 2 optimized; suppressed lists all empty) and 13 mirrors (joined
+6 true / 7 false; compute 11 adjust / 2 identical). The compute option of a
+mirror, which the variants cannot show, is therefore read from the layout it
+shares with the patterns on real data too. The same dumps confirm the
+flip: in all 30 rectangular patterns the decoded signed distance equals the
+API's `distanceOne` and the stored vector equals its `directionOne` (never
+flipped by the sign), a second direction is present exactly where the API has
+one (2 of 30), and the entity kinds agree (2 construction axes, 27 edges; one
+edge not resolved by the decoder).
+
+The rules the audit found rejected were not rules of a stored flag: the
+distance's sign *is* the flip, so "the axis flipped by the distance sign"
+(10 or 12 contradictions) counts the flip twice, and the stored vector is the
+entity's direction (an axis' or an edge's) without it. Of the 26 settled
+rectangular patterns, 19 answers with an origin axis or a stored line have
+that axis equal to the stored vector (the signed distance flips them); the
+one that does not is a pattern whose edge direction stored as -x was accepted
+as +x with a negative distance (history-ambiguous or a reversed stored edge:
+undecided). A direction named by an edge, face, sketch line or construction
+axis is therefore also tried by its stored vector after the entity (an edge's
+direction in the replay need not point where the file's does).
+
+A symmetric pattern does not mean what the model assumed: the variants show
+that a symmetric rectangular pattern of three elements puts them at -1, 0 and
++1 and a symmetric circular one of four over 90 degrees at -60, -30, 0 and
++30 degrees (the same spacing, the quantity in total, the extra element of an
+even quantity before the original). The model's `symmetric` now means that
+(it was the quantity on each side, 2q - 1 elements: an assumption of the
+study, K41, never checked); the guesses for patterns without stored
+directions follow.
+
+The import tries a pattern or mirror whose objects, axis or plane, counts
+and settings are all read first, with `read` provenance (not the dressup
+variant, which stays after the history's suggestions); the guesses follow.
+A rectangular pattern whose direction names an edge, face, sketch line or
+construction axis gets a second definition with the stored vectors as fixed
+directions (read too), after the first.
+
+On the 35 pattern and mirror items of this group's variant models: before,
+21 were accepted as inferred and 11 as unknown (none read), two were
+fallback and one skipped; after, all 35 are parametric with `read`
+provenance (the two with fillets or chamfers repeated on the copies at rank
+2, the rest at rank 0). Of the 14 census designs whose patterns or mirrors
+were unsettled with a non-default option (the unsettled items with the
+extent distance type, the symmetry flag or a second direction set, and a
+symmetric circular pattern) and that were imported again, 31 pattern and
+mirror items are comparable with the learning dump: 24 were unsettled
+(fallback or skipped) before and 8 are after (one design's import stopped:
+its debug build overflows in the solver's analysis, as before this change);
+the 16 that came in are 15 rectangular patterns and the circular one, and
+of the 23 settled in all, 20 are read and 3 inferred. The ones that stay unsettled
+are four mirrors (other causes) and four rectangular patterns (a copy
+reaches no body in two, the history does not hold the result in two; one
+of them keeps defaults of a second direction without an entity).
+
+#### Twin edges and a thread's start angle (mitcad#106, mitcad#186)
+
+Two groups the corpus alone could not teach were read from controlled
+one-option variant models (a shaft with a milled flat, a block with a bore
+breaking through a face, each with the fillet or chamfer on either mirror-image
+edge or both; a revolved shaft with its seam turned 0, 45 and 90 degrees, a
+thread with offsets 0, 1 and 2.5 mm) and checked on the census.
+
+- **Twin edges.** Edges between the same two faces with the same faces at their
+  ends fit the same recipe names. The recipe's tail lists the faces round each
+  end vertex counter-clockwise seen from outside the body
+  ([`core/f3d/EDGE_ORDER.md`](../f3d/EDGE_ORDER.md): layout, proof). The
+  decoder writes them as `_f3d.end_faces` and takes, among edges that fit
+  equally, those whose faces are in that order (`NamedState::edges_fitting_ordered`),
+  or one of edges at the same place; the edge then has its geometry in the
+  dump and its input is `read`, not chosen by the history. The layout holds
+  for all 1,559 distinct tails of the corpora
+  (`tools/f3d-learn/rules/edge_tail_grammar.py`: 1,932 fillet and chamfer items
+  explained, none contradicted, unsettled ones included). Of 157 edge inputs
+  in the 538 designs that did not fit one edge, 29 now do; no edge found
+  before changed, and the 13 new edges in the 321 reference designs that the reference
+  dumps list are the selected edges, not their mirror images. The other 128
+  remain: end faces the recipe names as an earlier state had them, closed
+  edges, vertex fans that repeat a face, patterned copies with the same order,
+  and the n inputs of one item with the same names (each would choose alone and
+  two could take the same edge; they take the n edges that fit in order, as
+  before).
+- **A thread's start angle.** The variants differ in the seam of the threaded
+  cylinder only, and the angle found in later states follows it (0, 45, 90
+  degrees) while the offset (0, 1, 2.5 mm), length and location change
+  nothing. The file's helix starts at the seam of the cylinder's surface at
+  the end of the face the file's axis starts from. The decoder gives a whole
+  cylinder's seam direction (`_f3d.seam`); with the file's axis pointing up
+  (Mitcad's helix starts at the low end of the axis pointing up) the import's
+  angle is the seam's direction about the axis from the world X (Y) reference
+  (`thread_phase`), and the measurement in later states is skipped. Of the
+  census' 20 modelled threads of this kind 18 agree exactly and two within
+  2.3 degrees; with a right-handed thread only (a left-handed one, a part of a
+  cylinder and an axis pointing down go on being measured). For an axis
+  pointing down the file's helix starts at the other end; the angle there
+  follows the face's length and the pitch by a formula that agrees with the
+  census threads of this kind whose length is a whole number of turns
+  (a half-turn from the seam) but not with the two that are not (the
+  face is cut obliquely there), so it is not adopted. The learning rule
+  `tools/f3d-learn/rules/thread_seam_phase.py` checks a dump made with the
+  decoder that writes the seam. A modelled thread whose angle was read, whose
+  faces were named and whose handedness was read has `read` provenance.
+
+#### Where a circle starts (its seam)
+
+A sketch circle record always names the sketch's x axis as its reference
+direction, but the closed edge the file's bodies hold for it starts
+elsewhere: on the x axis, on the opposite side or at another angle, with no
+rule of the sketch's frame, the extrusion's direction or its operation (in
+the designs checked the opposite side and the x axis split about 60 to 40;
+every edge's parameter runs from -pi, so the start vertex is opposite the
+curve's major axis). The replay started every circle on the x axis, so the
+cylinder's seam edge and the vertices at it were on the other side: a plane
+through three seam vertices, a tangent plane at one, a seam edge in a
+fillet's set and the items after such an item failed.
+
+The decoder reads the start from the bodies (`_f3d_seam`, SCHEMA.md): for
+each whole sketch circle an extrusion uses, the closed edges of the state the
+first such extrusion made are searched for one on the circle's axis and in a
+plane across the sketch's normal with its radius; at the sketch's plane
+first, else at the other end of the extrusion if the ends agree; its start
+vertex's angle from the sketch's x axis is the circle's start. The model's
+sketch circle has `start_angle` (radians, default 0, so Mitcad's own
+sketches are unchanged), carried into the profile (`SegmentGeometry::Circle`
+`start`), the path curves of sweeps and the kernel's circle (the axes of the
+circle are turned by it, so the one edge, the cylinder's seam and its
+vertices are there). Of the 5722 sketch circles of the 170 designs that had
+problems in the census, 3508 are found in the bodies (3146 start elsewhere
+than the x axis, in 128 designs); the rest are circles no extrusion uses or
+that the bodies hold only split. An extrusion up to a surface that the
+sweep crosses twice (a cylinder entered from outside) now ends at its first
+crossing.
+
+Run again on the 125 of those 128 designs that finished both runs (one run
+with the seams read, one without, the same build): 3 items went from
+fallback or partial to parametric (two dressups whose edge sets name a
+seam edge, a plane through seam vertices), 3 got worse where the
+geometry kernel is sensitive to where the seam lies (a chamfer that fails,
+a modelled thread whose volume is 0.7 % off, and a fillet after an item
+that now reaches the kernel and fails there instead of being skipped
+unchecked); parametric items read from the file rose by 2.
+
+#### Construction datums, sketch constraints and dimension classes (mitcad#186)
+
+Read from one-option variant models (`diff_cplane_*`, `diff_caxis_*`,
+`diff_conline_*`, `diff_constraint_*`, `diff_dim_*`, plus the reference
+models `cons_axes`, `cons_points`, `sk_text`, `sk_spline_control`,
+`con_smooth`), each with the API dump of the original application as ground
+truth, and checked on the real designs against their API dumps (`f3d-api-ref`).
+The learning dump holds no datum items, so there are no `learn.py` rules; the
+checks are the reference-model tests in `core/f3d/tests/design_models.rs`
+(`construction_definitions_match_the_reference_dumps`: 123 definitions agree,
+none differ or are left undecoded; `sketch_dimension_and_constraint_types_
+match_the_reference_dumps`: 1212 sketch lists agree) and counts against the real
+designs' API dumps, below.
+
+| Option | Where it is stored | Verified |
+| --- | --- | --- |
+| Plane definition | the `u32` after a one byte flag behind the item's root part (`_f3d.datum_code`): 0 offset (also parallel through a point), 1 angle, 2 three points, 3 mid plane, 5 and 10 tangent, 6 along a path, 7 two edges, 9 tangent at a point. Items made by older writers store a tangent plane as 1 or 5; the face as the line of an angle makes it a tangent plane | codes against definitions in the real designs: 164 planes, every code one kind (1 and 5 tangent or angle) |
+| Vertex input | a `FACE_REF` input whose recipe is `vertex_recipe_data`: the faces that meet there, one entity each; the position is found in the history state at the item's place (`NamedState::find_vertex`) | 3 vertices of the three-point plane models and the point models: all positions as the API's |
+| Input wrapper | class `2CA5A1CD` before each wrapped input, the role of the input after its slot key object (not read) | skipped in the item's inputs |
+| Point definition | code 0 at a vertex or point (one input), 3 at the centre of a circle (an edge), 2 where three planes meet; its position from the key point input | `cons_points`, the vertex variants, the corpus' one point |
+| Axis definition | no code: by the inputs: an edge or a sketch line, a face (round: through it; planar, with no other input: perpendicular to it at the axis' own origin), a face and a point (normal to it at the point), two points, two planes | `cons_axes`, ten `diff_caxis_*`, 4 of 8 axes of real designs (the others: normal to a sketch profile at a point) |
+| Constraint bits | `0x200` smooth; bit 31 the control polygon of a control point spline; bit 40 the box of a sketch text; bit 41 a text and a curve (unverified). The last three constrain no geometry (the API lists none) and leave the sketch whole | `con_smooth`, `sk_spline_control`, `sk_text`; real designs' sketches: 1259 agree with the API's constraints by type |
+| Rectangular pattern constraint of newer writers | the same record, the sketch reference over 200 bytes into it | 2 constraints, values as the API's |
+| Line kind | construction and centre line flags, read already | 36 `diff_conline_*` and `diff_constraint_*` models: every type on normal, construction and centre lines decodes, with the flags |
+| Dimension classes | ellipse radii: the one set byte of the last eight flag bytes, 1 or 4 major and 2 or 8 minor; class `A9E23439` the distance of a line from a circle or arc; a point or line with a reference to a face or plane outside the sketch | all `diff_dim_*` models; real designs: 1261 sketches' dimension types agree with the API's (two sketches of one design differ by index) |
+
+Not decoded: the point of a perpendicular axis is not an input, only the
+axis' origin; four axes normal to a sketch profile at a point; the face or
+plane of a dimension outside the sketch (an `error` reference). Mitcad has
+no line-to-circle or point-to-surface dimension, so those dimensions are left
+out of the sketch (`partial`). A smooth join with a fitted spline cannot be
+kept either (the spline's control points are fixed, not shared with the
+arc's end). A vertex at a circle's seam is found now that the replay's circles start where the file's do (see "Where a circle starts" below), so a tangent plane at such a vertex and a plane through three of them are parametric.
+
+The import takes a definition's first reading as `read` where the file names
+every entity outright, the others as `inferred`, and keeps a datum only
+where it lies where the file has it (planes: normal and distance; points;
+axes: line and direction, the reverse direction as a second candidate).
+A planar face is its whole plane for the point of an axis perpendicular to
+it (`commands.md`), so that a point off the face projects as the original
+does. New plane definition `offset_through_point`.
+
+On the 27 designs of both private corpora that hold the planes left fixed,
+the axes and the one point (a targeted run, not a coverage run): of 33 fixed
+planes 9 are now parametric and read, of 8 fixed axes 4 (inferred: the stored
+direction is the reverse of Mitcad's rule) and the point (read); 40 planes
+of 93 datum items are `read` (none was before). What stays fixed: items with no ASM state to
+find a vertex in, faces the replay cannot name, planes along several sketch
+curves, a mid plane and an offset whose inputs the file does not name, and
+four axes normal to a sketch profile.
+
+##### Against the API reference dumps
+
+The reference dumps hold the original application's own answer for 321 of
+the corpus designs (5,224 timeline items; the per-step walk, so dressup
+edges and every input are as the application read them). The decoder's dump
+IR has the schema of the dumps, so `tools/f3d-learn/apiref.py` joins the
+two per timeline item (a global alignment on type, name and index: 5,184
+items paired, 40 only in the reference, 64 only in the decoder's dump,
+mostly items it names by their class) and the learning dump's accepted
+answer by item index. It counts each field of each input group once per
+item or sketch element as agree, differs, decoder missing or reference
+missing, and the accepted answer against the reference in the same way;
+entities compare by what they are (faces and edges by geometry, sketch
+curves by their geometry in the sketch, features by name), numbers with a
+tolerance of 1e-4 cm. Output: a table per group, and per field the
+mismatches with the design, item, the decoder's or the accepted value and the
+reference's.
+
+```bash
+python3 tools/f3d-learn/apiref.py compare --api DUMPS --ir IR --census LEARN \
+    --index DUMPS/index.tsv --root CORPUS_ROOT --out OUT
+```
+
+Decoder against the reference (items or elements; measured on the build with
+the one-option decoding of extrusions, patterns, threads and datums):
+
+| Group | Reference values | Decoder agrees | Remaining |
+| --- | ---: | ---: | --- |
+| Timeline items | 5,184 | names 4,735, types 5,082 | Names: 449 differ (368 occurrences, whose names carry the component and a counter; 43 sketches, 34 of them renamed by the user under a name the file keeps outside the item; 20 joints, as-built joints and rigid groups and 14 constraint sets, which the application numbers by kind). 165 construction planes, axes and joint origins were shown under the file's internal names and now agree. Suppression (80 items) and the rolled-back marker (43 items) 5,184 of 5,184. Health (12 errors, 52 warnings) is not stored in the items |
+| Extrusions | 1,281 | operation 1,281, extent type 1,281 (symmetric included), distances 1,148 (their sign is the side), taper 1,281, direction 1,219, extent kinds (distance, through all, symmetric, up to an object) 1,281 and 32 second sides, through-all direction 78 of 78 (and 4 of 4 second sides), symmetric length 7 of 7, `hasTwoExtents` 1,281, start kind 1,281 and the profile plane 1,188 of 1,192, up to an object: chain 55 of 55, nearest solution 55 of 55, direction hint 55 of 55 (and 2 of 2 second sides) | up to an object: the face 52 of 55 and 2 of 2 second sides (the three others are one design whose faces the name lookup resolves to other faces); no thin extrusion occurs in the corpus (the thin flag is read on 1,265 of 1,281, the 16 others are class versions without the block); the accepted answers: through-all side 62 of 68 |
+| Extrusion profiles | 2,623 regions | exactly 2,114, held by a decoder region with extra curves 295, by one outline 2 and in another loop structure 1 | 211 missing, 149 extra regions: 134 and 95 in 37 items whose stored loops name curves the sketch no longer has (822 of 27,589 records), 77 and 54 in 33 items whose records all resolve (the application splits and merges loops differently; see the round-2 subsection); 211 profiles name no curves in the reference; the participants the operation visibly changed are among the decoder's in 913 of 968 |
+| Revolutions | 101 | operation, angle 101, axis 101 (the accepted answers 71 of 81), solid 101, symmetric 101, project axis 94, participants 34 of 39 | project axis of the 7 class version 1 revolutions (no byte); regions 63 exact, 7 held, 10 missing |
+| Circular patterns | 105 | axis 101 of 104, quantity, angle, compute option (87 adjust, 10 identical, 8 optimized) and symmetry (3) 104 of 105 | the accepted answers say adjust and not symmetric: compute agrees 73 of 84, symmetry 82 of 84 |
+| Rectangular patterns, mirrors | 39; 17 | direction, quantity, spacing, compute option, distance type, symmetry 31 of 39; mirror plane, compute option 15 of 17, `isCombine` 15 of 15 | 8 patterns of occurrences carry no inputs; the accepted answers: rectangular compute 7 of 12 |
+| Fillets | 1,158 | edge sets 1,158, edges 1,026 (the reference lists no edge for 46 sets), options: tangent chain, continuity and corner flag 1,158 | 86 edge lists differ: 43 other edges (27 are equally long edges elsewhere on a symmetric or patterned part, which the names and the recipe's tail do not settle), 21 whose names fit several edges equally or none, 11 in items whose references the application reports lost and 11 in items rolled back after the timeline marker, for which the file keeps no state (*Fillet and chamfer edges against the reference*) |
+| Chamfers | 193 | edge sets 193, edges 186 (the reference lists none for 2), sizes in the sets | 5 edge lists differ; tangent-chain and flipped options are not decoded (the reference has none false); the accepted answers' edges differ in 6 of 176 sets, a two-distance chamfer's side in 11 of 46 |
+| Holes, threads | 10; 77 | threads: every decoded field of 77 (designation, class, diameters, flags, length, offset, location) | holes: extent (all 10 through all), position (face, both offsets, edges 7 of 7 and 7 of 7) agree; handedness 75 of 77 and 2 of 10 holes (the class version 1 thread object has no handedness byte; all are right-handed); no direction, default direction, taper or hub fields (constants in all 10 holes and 77 threads) |
+| Shells, combines | 4; 33 | operation, keep-tools 33, thickness 4; shells: tangent chain, type, faces 4 of 4; combines: target and tools 25 of 31 | combines: 6 of 31 whose bodies have no producer in the decoder or share a name with another body; `isNewComponent` (false in all 33) has no contrasting byte |
+| Construction planes, axes | 123; 8 | geometry 123 and 8, definition type 123 and 8 of 8, offsets, angles, distances, line inputs 8 of 8, path inputs 21 of 21, plane faces 42 of 48, profile inputs, point inputs of the axes 4 of 4 | 6 plane faces, the vertices of 5 three-point planes and 2 tangent faces are not found by name in the history (ambiguous or stale names; the same designs' faces); `isParametric` (true in all) is not stored per item |
+| Sketch curves | 29,762 | geometry of every curve (4,394 of 4,394 circles); type 29,762 (the 108 control-point and fitted splines included); construction 29,762, centre-line 16,237, fixed (717 set) and linked (18,577 set) flags 29,762 of 29,762 each | none left: see [Sketch curve flags, spline kinds and sketches without a link](#sketch-curve-flags-spline-kinds-and-sketches-without-a-link-mitcad186) |
+| Sketch points, constraints, dimensions | 39,658; 9,919; 3,867 | points 39,622; constraints 9,888; dimensions 3,859 | 31 constraints (23 of them rectangular-pattern constraints); 36 points, the corners of text boxes; driving flag 3,862 of 3,862 (63 offset dimensions without a parameter are driving, not driven) |
+| Parameters | 12,332 | 10,509 by name; expressions 10,372, values 10,383, units 10,457, roles 10,174 | half of the 1,823 missing are in five assembly designs |
+
+The accepted answers (settled items only) mostly agree where they carry a
+field: extrusion operation and extent 1,116, distances 995, regions by area
+1,038 of 1,066; circular axis 74 of 74 comparable, quantity and angle 84 of
+84, revolution operation and angle 81 of 81, axis 71 of 75. Where the history
+cannot tell, the guess is wrong-but-accepted: compute option 18 of 108
+patterns and mirrors, a through-all extrusion's side 6 of 68; the edge list
+of 63 of 906 fillet sets and 6 of 176 chamfer sets (the first comparison
+counted 252 and 63: it compared a closed circle by its middle, which the
+file puts opposite its seam and a replay elsewhere, read only the first
+definition of an answer made of one feature per tangent chain and counted
+the pieces a replay splits an edge into as other edges; the comparison now
+accepts the circle, joins the definitions and the pieces and takes a face
+selection and a spline's middle as they are meant). Participants are not exposed by the
+reference (its value is an object handle): they are derived from the
+bodies whose volume the step changed, so a participant that changes nothing
+is not counted.
+
+##### Round 2: extents, holes, revolutions, shells and datums (the API reference dumps)
+
+The comparison above was run on the extrusion, hole, revolution, combine,
+shell and datum groups, and each mismatch classified as the comparison
+tool's own noise, an input the decoder reads wrongly or not at all, or an
+input the file does not hold. Every rule below was found on bytes (the
+controlled one-option models and the corpus' records), checked against all
+the reference dumps, and read by the import before the history's guess.
+Fields agreeing, before and after (the tool's own fixes, below, are part of
+the change):
+
+| Group | Agree before | Agree after | Differ / decoder missing after |
+| --- | ---: | ---: | --- |
+| Extrusions | 16,784 | 21,956 | 281 / 1,836 (mostly the 1,194 profile areas, which are computed, not stored; the regions; 45 participants; 16 thin flags) |
+| Holes | 182 | 256 | 0 / 118 (constants of all 10 holes: default direction, taper and hub fields) |
+| Revolutions | 721 | 1,057 | 18 / 147 (99 profile areas, 7 project-axis bytes, 26 unresolved profiles) |
+| Combines | 66 | 116 | 8 / 37 |
+| Shells | 6 | 16 | 0 / 0 |
+| Construction planes | 448 | 482 | 17 / 129 (123 `isParametric`) |
+| Construction axes | 15 | 27 | 1 / 8 |
+
+| Input | Encoding found | Against the reference dumps |
+| --- | --- | --- |
+| Through-all direction (every writer) | the flag byte after the extent codes belongs to the side through all, whichever side that is: 0 along the sketch's normal (`isPositiveDirection` true), 1 against it; also on a symmetric through all (flag 0) and a two-sided extrusion's second side | 78 of 78 first sides and 4 of 4 second sides; the accepted answers had 62 of 68. The import's first candidate follows the byte, the opposite side and both sides stay guesses, and the extent is `read` with either byte value |
+| Symmetric extent | extent code 3 with the side kinds `[1, 1]` (a distance, whose length byte says whole or half) or `[4, 4]` (through all, the whole length by definition); the dump gives `SymmetricExtentDefinition` as `extentOne` and `symmetricExtent` | 11 of 11 types, 7 of 7 lengths. The import keeps the other length as a guess |
+| Up to an object | the slot role 17 (18 where the faces join a chain) names the object: `isChained` is the role; the byte after the object's reference is `isMinimumSolution`; `directionHint` is the stored vector turned round by the flag byte; two sides both up to an object keep their slots second side first; a role 5 slot with bodies as its input is an extent up to a body | chain 55 of 55, nearest solution 55 of 55 (one is 1), hint 55 of 55, the faces 52 of 55, the two second sides 2 of 2, up to a body 2 of 2 |
+| Extents' other fields | `isSymmetric` false on a distance; `hasTwoExtents` by the extent code; the start kind byte 0 is a `ProfilePlaneStartDefinition` whose plane is the sketch's x-y plane in sketch coordinates | 1,167 of 1,167 distances, 1,281 of 1,281, 1,188 of 1,192 |
+| Hole extent | a distance unless the hole has a slot of role 5: bodies as its input mean through all, a plane or face means up to it (the controlled models: a distance `[4]`, through all `[5, 4]`, up to a plane `[5, 4]`). The byte the earlier decoder read as the through-all flag is 0 on four of the ten through-all holes of the dumps; it is 1 where only one of the two position edges is referenced (6 of 6) | 10 of 10 through all (the accepted answers 6 of 10) |
+| Hole position | the direction input's face, the two edges (the slots of role 33, in order) and the two reference dimensions | face 10 of 10, offsets 10 of 10, edges 7 of 7 and 7 of 7 (three first edges are stale in the application, which gives an error there) |
+| Revolution record | after the operation `u32 2 | u8 | u8 project axis | u8 solid | u8 symmetric | u8 two sides | [second angle holder or 00] | angle holder` (class version 1 has no project-axis byte); the axis input may be a cylindrical or conical face or an edge; the participants are the slot of role 4 or 8 | solid 101, symmetric 101 (1 symmetric), project axis 94 (the 7 others are version 1), axis 101 (the accepted answers 71 of 81), participants 34 of 39. The import reads the extent of a full turn, a symmetric one or two angles, and a face axis is fixed where the face was found |
+| Shell options | the two bytes after the root part: tangent-chain flag, shell type (1 rounded, 0 sharp) | 4 of 4 shells and the 4 controlled models |
+| Datum profiles | a profile source among a plane's or axis' inputs is a profile of its sketch | planes 2 of 2, axes 4 of 4 |
+
+Tool noise found and fixed in `apiref.py` (and its unit tests): a face's
+plane has no side (the same plane with either normal: 12 extent faces, 2
+shell faces, 11 plane inputs); bodies are compared by the item that made them
+and their place among its bodies, not by the application's names (50 combine
+bodies and 2 extent bodies); an empty list of participants says nothing; a plane's
+`pathEntity` is the decoder's list of path edges; a hole's thread is a
+reference in the application and a reflected record in the dump; a solid
+extrusion's wall location is the application's default; two regions over
+the same curves in another loop structure, and regions an outline holds, are
+counted apart.
+
+Profiles. Of the 211 regions missing and 149 extra: 134 and 95 are in 37
+items whose stored loops contain records for curves the sketch no longer has
+(822 of the 27,589 loop-curve records: 727 ids exist nowhere in the file,
+95 name a curve that was split afterwards under another secondary id; the
+profile is older than the sketch's last edit, so nothing in the record
+names the current curves). The other 77 and 54, in 33 items, have every
+record resolved; in the ones examined the application's loops merge holes that
+touch along a curve, or list the regions of a union one by one where the file
+keeps the union's outline, or list a curve whole that the records split into
+pieces. The decoder reads the stored loops as they are; the import's even-odd
+rule on the pieces (above) selects the regions.
+
+Not read. Combine `isNewComponent` (a byte after the keep-tools byte is 0 on
+all 33; no contrast). A hole's direction and default direction (the stored
+vector is the start face's outward normal on all 10 holes and the application's
+direction its opposite; a flipped hole would go with it, and no byte for that
+is known). A revolution's direction of a partial angle (two partial
+revolutions in the dumps). Thread fields of a tapered or hub thread, and the
+handedness of the class version 1 thread object (all constants in the dumps).
+The faces of 6 planes, 5 three-point planes' vertices and 2 tangent faces,
+three extent faces of one design: the names are found in no state or in
+several bodies (a face named by tag and operation only, in a history of six
+bodies that share the names).
+##### Sketch curve flags, spline kinds and sketches without a link (mitcad#186)
+
+Every sketch curve class ends with the sketch-curve part (class `9FF71F46`),
+whose last bytes are the block `01 | u32 n | n references | 13 bytes | f32
+1.0, f32 1.0`. The block holds offset chains (`n` is 0 for all but the
+curves an offset touches) and moves with them; the flags lie a fixed
+number of bytes before its `01`, by the class's version (`curve_flags` in
+`core/f3d/src/design/sketch.rs` has the table; versions 7, 8 and 9 occur).
+The earlier rule (kind 22 bytes before the pair) was right for version 9 and
+no references only, and gave nothing for curves with a reference (the
+construction lines of offsets) and the older layouts. Against the API
+reference dumps, 29,762 curves of 321 designs:
+
+| Field | Set in the dumps | Before | After |
+| --- | ---: | ---: | ---: |
+| `isConstruction` | 585 | 29,729 agree | 29,762 |
+| `isCenterLine` | 26 | 16,237 of 16,237 lines | 16,237 |
+| `isFixed` | 717 | not read | 29,762 (717 set) |
+| `isLinked`, `isReference` (always equal) | 18,577 | not read | 29,762 (18,577 set) |
+
+A linked curve comes in as a fixed reference entity (Mitcad's `fixed` and
+`reference` flags, as the model gives its own projections) and the sketch's
+import note counts them. The model has linked projections (`Projection`:
+a topological name and the entities made from it), but the curve does not
+say what it follows: no source reference was found in the curve, the
+sketch or any object that refers to the curves (the API's referenced entity
+is a face for 1,491 of 1,512 linked curves of five sampled designs, an edge
+for 20 and a sketch entity for one). Importing them as projections needs that source in the
+file and the face or edge resolved to a replayed body's name; neither is
+decoded, so the curves stay without their source.
+
+Linked curves on the model's edges. The numbers stored for a linked curve
+are single-precision rounded, up to 1e-5 mm and more off the geometry it
+follows, while the replay's edge is exact: a join along the wall the
+curve follows then no longer touched it, and a tool face tangent to the
+circle gave an invalid boolean. Before the sketch is added, each linked
+line, circle, arc and ellipse that an edge of the replay's bodies projects
+onto within 2e-3 mm goes to that projection (`snap.rs`; its shared points
+with it; the note counts them: "(n on the model's edges)"). Elliptical edges
+and splines are not matched (the kernel lists no curve for them). Of the
+35 designs this was tried on, it made 9 extrusions in 9 designs
+parametric, and the sketches of four designs that could not be solved
+(fixed elliptical arcs whose stored end was a few millionths of a
+millimetre off the ellipse; the sketch solve now retries at 1e-7 of the
+sketch size when the first does not converge).
+
+Spline kinds. The comparison pairs 404 splines of the dumps (102
+control-point, 6 fitted, 296 fixed); the type agrees for all. A fitted
+spline has a filled fit-point list (`F81C561A`: the sketch points between
+its ends, ending with the reference back to the spline) or handle list
+(`4224E565`: its tangent handle lines): 6 of 6, and no other spline has
+either list filled. A control-point spline is one an offset made (a child
+of the offset's chain) or one with the fixed flag; of the 96 splines that
+a join by their control points pairs, 10 are offset children and 86 have
+the flag, and no fixed spline has it. Every other spline is a fixed spline. The
+dump IR gives the type and, for a fitted spline, `fitPoints` (the ends and
+the points between); the import keeps all three as the stored NURBS curve
+(a fitted spline of the file is a degree 5 curve, which the model's cubic
+fitted spline does not reproduce). The handle lines are no curves of the
+sketch (the API lists none), so they are left out and a constraint on one
+names the line itself, as the API does.
+
+Sketches without a link. A sketch whose feature names it through a recipe
+object (`7ACC2A03`) was not found from the sketch; the feature's own
+reference to the sketch now finds it (seven circles and eight constraints
+of the dumps, in one design). Remaining against the dumps: the reference
+plane of 913 sketches (a face the decoder does not name; not a curve
+flag), 36 points that are the corners of text boxes, 31 constraints.
+##### Parameters, timeline names and the small input groups against the API reference dumps
+
+What was the comparison's own noise and what the decoder's. The comparison
+now pairs parameters by their creating item, leaves out what the reference
+cannot answer, and compares by family where the two name one thing twice.
+
+| Noise in the comparison | Count | Handling |
+| --- | ---: | --- |
+| Parameters of the other designs a file links to (the reference lists every component design's table, whose names `d1`, `d2`, ... repeat the root's; the file holds only its own) | 1,840 | left out when no decoder parameter pairs with them (they had inflated "missing" and, paired by name order, 431 wrong expressions, values, units and roles) |
+| Parameter sections the reference failed to dump | 43 designs | left out |
+| Driven dimensions: the reference gives the measurement of the sketch as it is now, the file the value of the last solve | 187 | values and expressions not compared |
+| Creator kind written differently (a sketch's text or pattern distance is `feature` of type `Sketch`, a plane's offset `feature` of type `ConstructionPlane`) | 221 | normalised |
+| Item types named by class (`ComponentInsert`, `GeometricRelationship`, ...) and occurrence names (the component's name with a counter, or `Component Insert <name>`) | 102; 368 | compared by family and by base name |
+| Object handles the reference's interface could not convert (participants, guide surfaces, offset faces) | 147 | not compared |
+| A sweep's or pipe's path entities carry their spline, type and parent path; a loft's end conditions point back at their section; a move's definition repeats the item | 44 | the entities and the section's own fields are compared |
+
+Decoder errors found and read from the file (all against every reference
+dump; the learning dump's accepted answers do not carry these fields):
+
+| Cause | Bytes and rule | Before | After |
+| --- | --- | ---: | ---: |
+| Sketch names given by the user | the sketch object holds `ref anchor`, `str16 name`, `u8 0`, `u32 n`, `ref[n]` in that order; the item's tail never holds the name a user gave a sketch, and a custom name in a tail is one the sketch no longer has (an empty name in the sketch means the default `Sketch<n>`); some sketch items refer to their sketch where the sketch has no reference back | 43 sketch names, 34 renamed | 2 (the default number of a sketch in a copied component) |
+| Unnamed components (`Component<n>`) | a component's name is the text after its last identifier, empty while it has the default name; the text before it is its material, which was read as the name; the default number is the one in its occurrence item's tail | 5 garbled names | 0 |
+| Count parameters of patterns and sketch texts without an owner | the count's holder (`A085449A`) and the text's holder (`E5460B7B`) have the layout of a parameter holder, the owner is its root reference | creator kind 265 missing, owner 386 | creator kind 10,260 of 10,260, owner 10,134 (125 differ by the item names below, 1 missing) |
+| Features of a component's own list (outside the timeline) as creators | named by their item tail, sketches by their sketch object | owner names missing for about 110 | 0 |
+| Favorites | the third byte from the end of the flags after the expression | 10,509 missing | 10,475 of 10,475 (6 favorites) |
+| Dependents | the reference lists every parameter that depends on one, through the others (`d3 = d2 / 2`, `d2 = width + 1 mm` give `width` the dependents `d2`, `d3`) | 4 differ | 307 of 307 |
+| Text parameters | a text keeps a default `1 mm` where the other parameters keep nothing: not a comment, and no number | comment 2, value 2 extra | 0 |
+| Sketches whose item refers to the sketch only | `sketch.dimensions`: 22,639 of 22,639 compared values agree (before 22,949 of 22,988, 5 missing, 34 differ; the 187 driven dimensions' values are left out, they were 31 of the differences), and the sketches' circles and points followed | 8 | 0 |
+
+The import creates the file's parameters with their names, expressions,
+units, comments and favorites (`params.rs`); the count parameters now name
+their pattern, and the star of a favorite is kept.
+
+After: parameters 82,964 of 83,107 values agree (125 differ, 18 missing,
+174 only in the decoder). The 125 differences are the owner names of joints,
+constraint sets and rigid groups; the 174 are parameters the reference does
+not list (thread offsets and lengths 90, the counts and stitch tolerance of
+mirrors 30, the joints' offsets and angles of one assembly 32, a sweep's
+distances and angles 13, others). Timeline: names 5,140 of 5,184 agree, types 5,184.
+
+Still open: the default names of joints, as-built joints, constraint sets
+and rigid groups (30 items): `Rigid`/`Revolute`/... from the joint's motion,
+and one number shared by joints, constraint sets and rigid groups in
+creation order, a single constraint numbered as the constraints so far
+counting the members of sets; designs whose earlier items live in other
+files cannot be numbered from the file. Canvas names (2), the names of
+fasteners and pasted occurrences, which are their component's name in a file
+the design links to (4), the health state and warning text (not stored in
+the item: computed when the application recomputes; 5,161 and 64), the
+names of the bodies a move, split, removal or copy takes (32 inputs; the
+body names the user gave are in the file but not read, the default
+`Body<n>` ones are numbered by the application), a sweep's guide rail (the
+decoder reads one in 3 of 4 sweeps, the reference gives none), the constants
+of lofts, sweeps and pipes (closed, solid, edge alignments, orientation,
+profile scaling: 90 values, the same in every design, no variant model to
+read them from) and the one draft.
+##### Fillet and chamfer edges against the reference (mitcad#186)
+
+The decoder's and the accepted answers' edge sets, compared with the API
+reference dumps (1,158 fillet and 193 chamfer sets):
+
+| Field (fillets) | Before | After |
+| --- | ---: | ---: |
+| Tangent chain, continuity (agree / not decoded) | 1,081 / 77 | 1,158 / 0 |
+| Corner flag (agree / not decoded) | 1,057 / 101 | 1,158 / 0 |
+| Edges (agree / differ / the reference lists none) | 1,026 / 86 / 46 | unchanged |
+
+*Options of older records.* The 77 sets without options are in items of
+class version 2 (and a few of 3). The set's options follow its root part: version
+10 of the set class `u8 asymmetric | u8 0 | u8 constant | u8 flipped | u8
+curvature | u8 tangent chain | u8 0 | u8 0`, version 9 `u8 asymmetric | u8
+constant | u8 flipped | u8 tangent chain | u8 0 | u8 0` and version 4 the
+same without the last byte, then the set input; five sets have a block of 20
+zero bytes in between. The tangent chain byte agrees on all 1,158 sets (24
+are off; the 12 off among the older records too); the fifth byte of the older
+layouts sits where version 10 keeps the curvature flag and is 0 on all, but
+no reference set has a curvature continuity, so a set with it is not read. The
+corner flag (`u32 0 | u8`) was dropped by a guard against a following
+health reference: the flag, a zero and a one read as a reference to the
+object with id 256 in every design that has such a health object, which
+removed 27 sets; the flag is read there now (the variant models'
+rolling-ball and setback corners differ in this byte alone). With the
+options the history-accepted answers' tangent chain agrees on all 196 settled
+sets of 32 designs (183 before; the unset option was taken as on).
+
+*The edges the replay lacks.* Of the accepted answers' edge lists that
+differ from the reference (items, old learning dump, comparison folded as
+above): 35 have a decoded edge, which agrees with the reference, that
+`refs::dressup_edge_match` did not find in the replay, so no decoded
+candidate was tried; 25 have a decoded selection that is itself another
+edge than the reference's (below); 8 had the decoded candidate tried first
+and the history contradicts it (the kernel fails, or the file's feature
+rounds a neighbouring edge too, a tangent chain beyond what the kernel
+follows), so a guess was accepted; the rest are partly unresolved decoder
+edges. The decoded candidate was first wherever it existed (*Named inputs*:
+the ranking only reorders candidates that predict a volume change), so
+no ordering changed. The matcher changed instead: an edge the replay splits
+into any number of pieces, a curve found by its ends and a length up to 2 %
+off, and a middle within 0.01 mm with a length up to 2 % off (*Named
+inputs*). On 32 designs chosen from the mismatch list, imported one by
+one, the accepted answers' edge lists agree with the reference in 175 of 207
+sets (158 before, the same learning dump comparison). One item gets worse: a
+later fillet whose edge the replay cannot name now builds on the file's nine
+edges of its predecessor instead of the seven the history accepted, and
+falls back.
+
+*What stays open (decoder).* 86 fillet edge lists differ from the reference.
+Edges the decoder lists without geometry: 21 (the names fit two, three or
+eight edges equally where the recipe's tail cannot be compared with the
+state's faces, one end of the edge having been renamed since; or no edge
+between the faces named), 11 in items whose references the application
+reports lost, 11 in items rolled back after the timeline marker, which the
+file keeps no state for. Other edges: 43, of which 27 are equally long
+edges elsewhere on a symmetric or patterned part (twin copies, closed
+edges, copies of a mirrored component), and a tangent chain the reference
+lists in full where the file names one edge. The tail picked the right edge
+on 6 of 6 edges it decided outside one item. Chamfers: 5 of 193 sets differ;
+the chamfers' tangent-chain and flipped options are not decoded (the
+reference has no chain off and no flipped set, so no byte can be told
+from it).
+
+*Comparison.* `apiref.py` accepts a closed circle by its circle, folds the
+definitions of an answer (one per tangent chain or body) into one input,
+takes pieces of an edge for the edge, the edges on a selected face for the
+face, a spline's middle within a tenth of its length, and counts a set the
+reference lists no edge for apart.
+
+##### Fillets and chamfers that fall back for reading reasons
+
+Fillets and chamfers that fell back although their edges were decoded were
+read item by item against the API reference dumps (edge count, positions
+and lengths, sizes) and the import's trace. Where the decoded set agrees
+with the reference (edges, sizes, the state before the item) and the item
+still falls back, the geometry kernel is the cause (below). Three readings
+were wrong or missing:
+
+- *The body of an edge.* Bodies that touch have edges in the same place,
+  and the matcher kept the first body of the coincident copies. An edge's
+  input refers to its body's record, so the decoder gives it
+  `_f3d.producer` and `_f3d.body_index` like a body input, and the import
+  matches the edge on the bodies of that item first
+  (`Importer::match_dressup_edge`). A fillet of the edge of a thin wedge
+  that sits in a slot of another body was rounded on the slot's body (the
+  wrong body: volume and faces never matched, and the items after it
+  needed the file's bodies): it builds now, and the edge counts as read.
+  On the 50 designs imported again (those that reach the import's time
+  limit left out), 17 fillet and chamfer items that were `inferred` (the
+  first-body choice) are `read` or `unknown` now, one fillet more is
+  parametric, and no item got worse.
+- *Closed ellipses.* A closed edge that is not a circle (a round hole cut
+  at an angle) was found by nothing, a split replay copy of it least. Its
+  axes follow from the file's start (one end of an axis), its middle
+  (the other end), its direction at the middle and its length (the
+  perimeter fixes the second axis); the replay's edge, or its pieces, are
+  found on that ellipse (`FileCurve::Ellipse`). The edge of one design (an
+  ellipse the replay splits in two at the ends of its axis) is found by its
+  name now.
+- *Elliptical arcs and splines the replay splits.* A circle through the
+  three points the file gives can have the arc's length without the arc's
+  pieces lying on it (an ellipse near its minor axis), so the pieces were
+  never taken for the edge. An open edge that is not a line is found, when
+  nothing else finds it, by pieces of one body that follow each other by
+  their ends from its start to its end, whose lengths add up to its and
+  that pass within 2 % of its length of the file's middle
+  (`refs::chains_by_ends`); two such chains are ambiguous.
+
+What the kernel does, seen on the items whose decoded sets agree with the
+reference (counts are items):
+
+- a rounding or bevel as wide as the face next to it takes the face away
+  exactly. A chamfer of the width of the annulus beside it is built 0.1 %
+  smaller, which moves the edges the next items name by a few micrometres,
+  so they are not found and the items after it fall back (1 item). At the
+  exact width the bevel of another item came out as a solid that lost 14 %
+  of the volume instead of gaining 2 %: valid for the checks, so not built
+  again smaller (1 item). A fillet wider than the face beside it builds a
+  shape with four faces more than the file's (1 item);
+- a bevel or fillet ends at a vertex where a neighbouring bevel meets it,
+  or along the junction of two blend faces that become tangent to a plane
+  at its end: the volume differs by 0.1 to 5 % of the body, with the same
+  faces in two of the 3 items;
+- fillets on both sides of a slot narrower than twice the radius (1 item),
+  and a rounding of 0.1 mm that fails where 0.05 mm builds (1 item).
+
+##### Chamfer options, moves, sweep rails and face profiles (round 2, mitcad#186)
+
+Chamfers, moves, sweeps and extrusions of faces were read item by item
+against the API reference dumps and the controlled models.
+
+- *Chamfer sets.* The byte right after the root part of a chamfer's set
+  record (class version 2) is the set's tangent-chain option. It is 1 on the
+  309 sets of the API reference dumps (all `isTangentChain` true) and 0 on
+  the 15 sets of the controlled models made by script (all false), so the
+  decoder gives `isTangentChain` per set (and per feature where the sets
+  agree) and the decoded value agrees on 324 of 324 sets. The record has no
+  byte for `isFlipped` of a two-distance chamfer (every dump set has it off,
+  whatever the bytes), so the sides keep coming from the edges' directions
+  in the file (*Named inputs*), the other reading staying a guess. An equal
+  or two-distance chamfer whose corner type, sizes, tangent-chain option and
+  edges are all decoded fields is `read` when its decoded definition is
+  the one the history accepts (`read_chamfer_inputs`, as for fillets); a
+  distance-and-angle chamfer's angle side is not decoded, so it stays
+  `unknown`. On the 11 designs imported again that have chamfers, 19 items
+  went from `unknown` to `read` and no outcome changed.
+- *Moves.* A move's transform object that stores no matrix (its `u32 5`
+  followed by `u8 1 | u16 0 | u8 1 | u32 0 | ref` where the 128 bytes of a
+  matrix go) is the identity: 2 of the 27 moves of the API reference
+  dumps, both identity there; the other 25 store their matrix and all 27
+  agree with the dumps. A move whose bodies and matrix are decoded is
+  `read`.
+- *Sweep rails.* The rail slot of a sweep (class version 6) holds curves of
+  the profile's own sketch in 3 of the 4 sweeps of the API reference dumps
+  (the fourth has none), where the dumps list no rail; the one controlled
+  model with a rail has it in the path's sketch. Curves of the profile's own
+  sketch are not taken for a rail now, so the 4 sweeps agree (3 differed).
+  The two designs whose sweep fell back because the rail was in its way (the
+  volume it made was a third of the file's) are parametric now.
+- *Two-sided extrusions with a negative distance.* A cut through all one
+  way with a negative second distance (one case) removes what a cut through
+  all one way plus the same cut the other way by that distance removes,
+  which is the file's state exactly, so the sign of a two-sided distance
+  does not turn its side; before, the model refused it.
+- *Extrusions of a face up to an object.* A profile that is only a face of
+  a body (no sketch region) was made into a sketch on the face and
+  extruded by a distance only; an extent up to a decoded face or plane is
+  made the same way now, the side chosen by the history.
+
+- *Tangent circles.* A region whose hole is a circle touching its outer
+  boundary at a point (two circles that meet at one point)
+  failed to build as a face (`intersecting
+  wires`), and the prisms of such regions did not fuse with the regions beside
+  them (no body at all). The hole's wire shares the outer boundary's vertex
+  now and touching regions are united as faces before they are extruded; the
+  design's three regions come out as the file's body (volume, area and faces
+  equal), and the design is parametric.
+- *Combines, shells and pipe threads.* A combine whose bodies, operation and
+  keep flag are decoded, and a shell whose body or faces, thickness, type and
+  tangent-chain flag are, are `read` (the dumps agree on all 33 combines'
+  operation and keep flag and on all 7 shells' type and chain). A pipe
+  thread's class `A` is on the internal threads of the stored designs (6 of
+  6), which Mitcad's table listed for the external ones only, so the class was
+  left out with a note and the thread stayed `unknown`; the table lists it for
+  both. On one design with 94 items, 7 items (a shell and six threads) went from `unknown` to `read`.
+
+What the file does not give in these items (counts): the profile records of
+a sweep or revolution whose sketch curves were edited after the feature
+(their ids name curves that are gone: `unknown`), and profile curves that
+are splines, which the region matching does not follow (`unknown`).
+
+##### Fillets and chamfers that fall back: a second pass (mitcad#186)
+
+98 fillet and chamfer items of 26 designs (some are versions of one another)
+fell back with `its result is not in the file's history`, a volume that is
+off, `edge … no longer exists after …` or an invalid shape. Each was read
+against the API reference dumps (the sets' edge counts, lengths, middles and
+sizes). 9 of the items have no row there (8 are of a design the reference
+application could not walk); of the other 89 the decoded input agrees in 83
+(82 before the change below): 4 are references the file lost (below), one
+set lists the same edge twice (the same set of edges) and one input names two
+edges equally (the history's guesses decide). So the kernel is the cause of
+the rest, as before. Two readings were new:
+
+- *Inputs that fit the same edges.* The recipes of the edges of one set that
+  lie between the same two faces can differ in the faces at their ends only
+  (the 8 edges between a plane and a free-form face), so each fits all of
+  them and none was found. Where the inputs of a set that fit the same edges
+  are as many as those edges, each takes one (`core/f3d/EDGE_ORDER.md`,
+  *Inputs that fit the same edges*). Of the 92 inputs of the 358 reference
+  designs the names fit several edges for, 36 are found now; 3 edge sets that
+  differed from the reference agree, no set that agreed changed. One of the
+  98 items is such a set (8 edges, a free-form patch): its decoded definition
+  is the first candidate now (`read`), and it fails in the kernel (an invalid
+  shape, 16 s a try). A fillet of another design that was `inferred` from the
+  history's next state is `read` and verified now.
+- *Edge references the file lost.* The health of an item is not in the file,
+  but its inputs show it: a name whose faces are not in the history state the
+  item was made from, or between whose faces no edge lies. Of the 25 fillets
+  and chamfers of 16 reference designs with such an input, 23 are items the
+  reference reports as having lost edge references, using the geometry they
+  had cached (7 errors, none of them lists an edge; 16 warnings: the edges
+  the reference lists are the edges found in 8 of the 16, in the others the
+  decoder finds more edges or fewer than it lists); the other 2 are one item
+  in two versions of a design. Such an item gets its result from the file,
+  not from its inputs, so no definition of its inputs can rebuild it: its
+  note says `N of its M edge references are lost in the file …` before the
+  last kernel failure (4 of the 98 items).
+
+What the kernel does with the rest: the decoded definition was built on the
+replay and on the stored state before the item; then the size scaled by 0.5
+and by 0.1 in a replay of the decoded design (tells a size too large for the
+part from a case the kernel cannot do at any size); `isTangentChain` off
+(tells whether the kernel's chain is longer than the selection); the
+narrowest face beside the edges, the reference's face areas divided by the
+edge lengths, against the radius. The classes of the 98 items (the same case
+in versions of a design counts each):
+
+| Class | Items |
+| --- | ---: |
+| the file's edge references are lost (above) | 4 |
+| the kernel builds a result that is not the file's | 16 |
+| fails at the full size, builds at a smaller one, a face beside the edges narrower than two radii | 20 |
+| the same, no narrow face (or no reference row) | 16 |
+| fails at every size scaled: the rounding cannot end at a vertex 17, the radius may be too large 15, an invalid shape 8 | 40 |
+| the time limit (the kernel's tries of 16 to 100 s) | 1 |
+| not scaled (no reference row) | 1 |
+
+Of the 16 that build something else: in one the face beside the edge is as
+wide as the rounding (a closed edge, a ring face 2.48 mm wide rounded by
+2.5 mm: the result has the volume it had before and 15 faces fewer than the
+file's); in two the kernel's contour follows a tangent continuation the
+file's rounding did not take (the file's next state lost exactly the
+selected edges; the kernel cannot round the selection alone); in three the
+volume is within 1.5 % of the file's with other new faces (blend surfaces
+and corners); in eight it is 4 to 77 % off; in two (chamfers, with the file's
+number of faces) the volume removed is too large.
+These go to the kernel work (mitcad#121); none is decoding.
+
+#### Sketch texts (mitcad#186)
+
+The decoder reads a sketch text (class `E0618268`) into the dump's `texts`:
+the string, the font family, the height, the weight (bold from 600), the
+alignments, and for a text in a box the box's four lines and, in some files,
+the placement matrix (the box corner and the baseline's direction: `position`
+and `angle`; the API gives neither). The lines come from the text's own
+`TextBoxConstraint` (its curves in order, a corner point among them left
+out); the curve of a text on a path from its `TextPathConstraint`. The corner
+points a box makes (class `00D157C2`) keep their coordinates in the sub-chunk:
+before, the box's points had none. Checked against the API reference dumps:
+the string, height, font, style, alignments and kind (box or path) of all 10
+texts of the 6 dumps with texts (3 designs, 9 in a box and 1 on a path) agree,
+and so do the reference model's; 11 more texts of a design without a dump
+decode (all in a box).
+
+The file's texts are measured as follows (derived from the API dumps'
+bounding boxes of three texts: the reference model's, a rotated one and a
+wrapped one, to within a font's glyph shapes; `cap_height` and `wrap` of the
+sketch text):
+
+- the height is the height of the capital letters, not the font's em;
+- a line's outline, not its pen advance, is aligned: left to the box's left
+  side (without the first letter's side bearing), right, or centred;
+- a text in a box aligns vertically by its capitals: the top of the first
+  line's capitals at the box's top, the last baseline at the bottom;
+- lines are one ascender plus descender apart (no line gap);
+- a line breaks at its spaces to fit the box's width (a word wider than the
+  box stays whole and overflows).
+
+Without the box, the first line's direction gives the text's angle.
+
+The font: the glyph outlines come from the installed font of that family
+(OCCT's font manager); a family that is not installed gives the bundled
+Droid Sans and the sketch a warning ("the font Arial is not installed;
+Droid Sans is used"). The glyphs then differ from the file's, so a text
+extrusion's volume differs from the history's and the extrusion stays a
+fallback on a machine without the font (nothing is substituted by shape).
+A text on a path is placed from its start; the file's per-glyph matrices
+(where on a closed path the text starts and which way it runs) are not
+decoded yet.
 
 #### What the file does not settle yet (mitcad#104)
 
@@ -2409,18 +3958,18 @@ it (*What the history settles*).
 | Timeline record: context reference and ordered items; items without a scope; order = authored order (both) | read | the only non-empty timeline is the design's (mitcad#37 reads each component's list) |
 | Parameter records: expression, role, unit, name, value in cm/rad, owner; the three header forms; owner frames and companions with time stamps (both) | read differently | we read every class version found (including the 2026 writers' version 8) by locating the strings; the owner frames and companions are not read, the holder object gives the owner (section 7 of the format study) |
 | Sketch points (versions 0, 8, 10, 11), their companion with incident curves (cadmpeg) | read | coordinates and the curves that use each point |
-| Sketch lines: start, displacement, direction, auxiliary normal (both) | read | |
+| Sketch lines: start, displacement, direction, auxiliary normal (both) | read | **subclasses now** (mitcad#178): the subclass `16DEFC4D` keeps the line in its sub-chunk, `AE42BAB6` after a reference of its own; read at the base class's place before, 158 lines of 20 sketches came out as denormal numbers |
 | Sketch arcs and circles (ezf3d: by their point count) | read | |
 | Sketch NURBS curves: nullable carrier, nested header, degree, fit tolerance, counted knots, weights, control points (cadmpeg) | **read now** (mitcad#154) | `sketch::splines`; ref. models' fitted and control-point splines exact; fitted and control-point splines are not told apart (both come in as fixed splines) |
 | Sketch ellipses and elliptical arcs (neither) | **read now** (mitcad#154) | `sketch::ellipses`, read on the reference model and the corpus' arcs; centre, unit major and minor directions, radii, angles |
 | Sketch texts (`textex_tag`, `txt_tag`): font, height, width factor, colour, string, frame transform or path (cadmpeg) | not read | 21 texts in 7 corpus files; texts come in from external dumps only |
 | Sketch relations: member runs, relation ordinals, constraint bits (cadmpeg) | read | constraint types by bit (format study); the ordinal meaning is new to us and not needed |
-| Dimension frames (paired, counted, null-locus, annotated) and the rules that bind a parameter to geometry by measurement (cadmpeg) | read differently | we read each dimension object's entities and holder directly; the measurement rules are the description's way to recover what we read |
+| Dimension frames (paired, counted, null-locus, annotated) and the rules that bind a parameter to geometry by measurement (cadmpeg) | read differently | we read each dimension object's entities and holder directly; the measurement rules are the description's way to recover what we read; a driven dimension has a null holder reference, read since mitcad#178 |
 | Sketch container, member runs, placement matrix, visibility flag (cadmpeg) | read | the transform object; the light bulb (mitcad#6) |
 | Profile regions: loops by endpoint incidence, containment, arrangement (both) | read differently | Mitcad computes the regions itself; the decoder reads the selected loops (`_f3d_profile_loops`, mitcad#96) |
 | Construction recipes (body, face, bounded face, edge, vertex), generic tag attributes on the B-rep, recipe resolution against the history (cadmpeg) | read | `recipe.rs`, `names.rs`, `inputs.rs`; vertex recipes not read |
 | Parameter scopes: state identities, ordered reference table, family name and ordinal (cadmpeg) | read differently | our item tail (result number, base name, index, sub-items, state bytes) |
-| Extrude: operation, direction (one side, two sides, symmetric), face-extend option, direction reversal, geometry kind, start support, profile normal, per-side extent kinds (both; ezf3d the first three) | read; **solid and per-side kinds now** | the reversal is our flag (mitcad#96), the normal our stored vector; `_f3d.extrude.solid`, `start`, `sides` (mitcad#154): every corpus extrusion where read is a solid, sides agree with the parameters and slots; corpora have no "up to next"; `isSolid` checked on 243 ref. model extrusions (4 surfaces) |
+| Extrude: operation, direction (one side, two sides, symmetric), face-extend option, direction reversal, geometry kind, start support, profile normal, per-side extent kinds (both; ezf3d the first three) | read; **solid, per-side kinds, thin-wall block and the intersect code now** | the reversal is our flag (mitcad#96), the normal our stored vector; `_f3d.extrude.solid`, `start`, `sides` (mitcad#154): every corpus extrusion where read is a solid, sides agree with the parameters and slots; corpora have no "up to next"; `isSolid` checked on 243 ref. model extrusions (4 surfaces); `thin`, `thin_location`, `thin_holder` (mitcad#186: see *Extrusion options from one-option variants*) |
 | Extrude: groups by role (profile 0x41, existing bodies 0x04/0x08, termination 0x11/0x12, start face, shape target 0x05) (cadmpeg) | read differently | our input slots and their role numbers (65, 8, 5, 17, 18) are these roles' high words |
 | Extrude profile selection by points and history transitions (cadmpeg) | read differently | we read the loops directly (mitcad#96) |
 | Revolve: operation, extent kind, direction kind, profile and axis groups, angle scalars (cadmpeg) | read (operation, profile, sketch-line axis) | axes that are faces or edges stay history guesses |
@@ -2441,7 +3990,7 @@ it (*What the history settles*).
 | Coil: operation, clockwise, extent kind, section, position, placement (cadmpeg) | not read | three corpus coils; Mitcad's coil exists, the import does not translate it yet |
 | Base feature: result bodies by entity suffix, state pair (cadmpeg) | read differently | the history's states stand in for base features |
 | Component insert, local occurrences, copy-paste, derived instances, occurrence patterns (cadmpeg) | read | occurrence placements (mitcad#75, mitcad#81) |
-| Work planes, axes, points: placement frames, solved axis, point data (cadmpeg) | read (planes: frame and definition; axes partly) | construction axes without decoded geometry are skipped |
+| Work planes, axes, points: placement frames, solved axis, point data (cadmpeg) | read (planes: frame, definition and, since mitcad#178, the entities they are measured from; axes partly) | construction axes without decoded geometry are skipped; axes are fixed (their inputs are not read) |
 | Joint origins, joints, as-built joints, assembly operand frames, alignment owners (cadmpeg) | read | mitcad#66; the description's alignment lanes agree with our owner order |
 | Mirror and patterns: seed groups, counts, angle, axis record (origin and displacement), plane group (cadmpeg) | read | the axis record is our `_f3d_axis` (mitcad#96) |
 | Sheet metal base flange, edge flange, hem (cadmpeg) | not read | Mitcad has no sheet metal |
@@ -2474,7 +4023,7 @@ the reference models (one model per option, against their dumps):
 | what a set selects (edges, faces, a face's edges) | the set input (mitcad#96) | read | read |
 | full round, rule fillet | face groups (description) | not read | not read (no corpus item) |
 | chamfer corners (chamfer, miter, blend) | the chamfer object: the `u32` after its root part | not read (built with chamfer corners) | read, verified |
-| chamfer tangent chain and flip | the chamfer set object (`0D383DB2`) | not read | not read (every reference model's chamfer has both off, so nothing tells the bytes) |
+| chamfer tangent chain and flip | the chamfer set object (`0D383DB2`): `u8 tangent chain`, `u8 flipped` after its root part | not read | read from the API reference dumps' 312 sets (the flipped byte agrees on all; the chain byte 324 of 324 with dumps and models); older class versions not read |
 | options of the older set records (class version 9 and earlier) | another layout | not read | not read (no reference model) |
 
 Over both private corpora every fillet set is a constant radius with G1
@@ -2627,6 +4176,746 @@ other's state cannot be rebuilt (its input comes after a fallback).
   face profiles and sketch heights*). Their records also hold the number
   of the operation before theirs in their component (seen on the parts
   looked at; not decoded), which may be the chain the description means.
+
+#### Removals, deleted faces, copies, splits and cut profiles (model by model)
+
+Found by importing real designs one at a time; each rule is general.
+
+- **Removals** (`RemoveFeature`): the item's body input is decoded
+  (`itemToRemove`) and imported as `remove_body`. The history keeps the
+  removed body as it was, so it cannot check the item against a state: the
+  body is the stored body of the state the replay stands for that has its
+  measures, and that stored body leaves the history from the replay's state
+  on (`removal.rs`, as the tools a combine consumed do). A split's new piece
+  is found by its index among the split's own new bodies, not among the
+  bodies the split divides as well (`producers.rs`).
+- **Deleted faces** (`DeleteFaceFeature`): the face inputs are decoded
+  (`deletedFaces`) and imported as `delete_face`, one feature per body.
+  Face recipes with a second entity list (faces and bounded faces; the first
+  list names the face as it does for edges) now decode. A face whose point
+  lies on its surface but off the replay's trimmed face is not found.
+- **Copies and cut and paste of bodies** (`CopyPasteBodies`): the source
+  bodies are decoded (`sourceBody`). A copy stays in its component: a
+  `move` with `copy` and an identity transform. A cut and paste into
+  another component is the Move to Component command with an existing
+  destination (`pasting.rs`): the bodies and the features that made them go
+  into the component the item is in, an existing one placed once like the
+  source, and the bodies keep their identity and their place in the design.
+  The item has no state of its own, so the check is that the replay's
+  bodies are unchanged and the destination's afterwards; a second command
+  that also takes the bodies a feature ties to the first ones is tried when
+  the first is refused. Bodies that went with an earlier cut (the features
+  that made them also made the bodies of that cut) are in the destination
+  already: the item is satisfied. A cut whose item has no body input (the
+  file keeps the cached result of a reference that failed there) says so.
+  A copy, a cut and a removal use no sketch of another component (the
+  copies of the last sketch made for items that use none are gone).
+- **Split tools**: a plane the file no longer has (the construction plane
+  was deleted after the split used it) is stored with the entity input as an
+  origin and two unit directions (`PLANE_FRAME`); it is decoded as the
+  "reconstructed" plane of the API dumps (the two designs checked agree
+  exactly). A tool selection may hold several tools (`splittingTools`): the
+  split's `more_tools` divide the pieces in turn. A tool body (or the body of
+  a tool face) of another component than the split bodies' is read there by
+  the split's `tool_links`, as a combine's tools are (the paths to the two
+  components, each placed once), and the split goes where its bodies are.
+- **Cut profiles**: the regions the faces a profile selects cover leave out
+  slivers (below a millionth of the face's area, left where the file's lines
+  nearly meet); with the sketch region selected too, a sliver made the XOR
+  of the regions an empty tool. The sketch's region tolerance is at least
+  1e-6 mm: lines of a file that lie 4e-8 mm apart on each other no longer
+  join the regions either side of them. A cut's pieces below a millionth of
+  the largest piece's volume stay in its body as lumps, as the file keeps
+  them: an extrusion's, a revolution's and a combine's cut alike.
+- **Sketch regions at tangent contacts**: the bounds that decide which
+  curves of a sketch can meet were those of the sampled points, so an arc's
+  top fell short of the line that ends tangent on it and the contact was
+  never tried (the lens between the line and the arc was no region, and the
+  extrusion that selected it fell back). Round curves now bound their
+  extremes.
+- **Tangent distance** (`SketchTangentDistanceDimension`): the gap between
+  a circle or arc and a line (the centre's distance from the line less the
+  radius) is the model's `tangent_distance` dimension, solved with the
+  sketch's other dimensions.
+- **Reference curves that do not meet**: curves the file keeps linked to
+  the model are locked in the sketch; where two of them share ends that lie
+  off one of them (projected ellipses differ by micrometres) no solution
+  keeps all of them, and the sketch did not solve. Each level of the
+  sketch's import is now tried with those curves locked, then free (their
+  ends settle where the curves meet), before it gives up constraints.
+- **Tangent handles**: a fitted spline's fit points are held at the middle
+  of their tangent handles by midpoint constraints whose curve is a line the
+  sketch does not list. The spline's curve is kept as the file has it, so
+  these constraints bind nothing and no longer count as left out.
+- **Offsets with round corners**: an offset of a chain whose offset curves
+  include arcs of the offset distance about a vertex of the chain (the
+  corners the file rounds where the chain turns away from the offset side)
+  has no copy of each curve alone: Mitcad's exact offset of lines and arcs
+  meets its curves at the corners. It is imported as the derived offset
+  (computed from the source chain, as an offset of ellipses and splines is):
+  the chain in the file's order, each curve's offset, and the corner arcs
+  by the join they close (the offsets of the chain's curves `join` and
+  `join + 1`). Nothing else can constrain the computed curves. Mitcad
+  rounds a corner where the chain turns away from the offset side and trims
+  it where the chain turns toward it; where the file does otherwise (in the
+  two designs seen, one corner is extended to meet the next offset curve
+  while another is rounded), the model refuses the offset and it is left
+  out as before, the curves staying as the file has them, after the
+  sketch's levels with it (the sketch is partial).
+- **Midpoint of two lines**: a midpoint constraint that names two curves
+  (the API gives its `midPointCurve` only: the other is no point) puts the
+  middle of the first line on the second; a point at that middle holds the
+  two constraints.
+- **Curves drawn twice**: two curves that lie on each other along a stretch
+  (the same edge projected twice) were cut at every sampled piece of it, so
+  that the pieces of the two curves did not pair and left slivers that kept
+  the regions either side of the curves from being separate. Their
+  intersection now stops at the ends of the stretch, where the arrangement
+  keeps one of the two. A revolved cut of a sketch with several such edges
+  selected too few profiles before.
+- **Splines the decoder calls periodic**: a spline with an unclamped knot
+  vector is flagged periodic; one whose control polygon does not wrap is an
+  open B-spline and imports as one (the projected arcs of a cylinder came
+  with such knot vectors).
+- **Not translated** (causes found): extrusion profiles that are sketch
+  text (the sketch's texts are not decoded); a tapered cut whose tool lies
+  away from the material (the replay's tool does not reach the body); cuts
+  whose boolean the geometry kernel reports as invalid; a cut across
+  components whose parts differ in two of seven bodies; primitives' placement
+  (the record's entity inputs are not decoded).
+
+### Census of the non-parametric items (mitcad#178)
+
+What still does not come in parametric, by cause, so that decoding work
+goes where it moves the most items. One coverage run of both private
+corpora (release build, three files at a time, with the learning dump;
+*Coverage runs in parallel*); every item whose outcome is a fallback,
+partial, or skipped with geometry (items suppressed or failed in the
+file, items of no geometry and waiting items the history shows no
+change by are left out) is grouped by its report note, normalised (names
+and numbers taken out), and by its item type. A fallback is a **root**
+where it is the first of its component, or where its note is not a
+symptom of the replay's bodies differing; the symptoms after a root in
+its component ("its result is not in the file's history", "does not cut
+into any participant body", "no copy ... reaches a body", "no body
+changes ...") are counted as **downstream** of it, since they mostly
+follow from it. Extrusions and revolutions with a symptom were traced
+to their profile sketch through the learning dump (a partial sketch, a
+sketch on a fixed plane, an earlier fallback). The backup corpus repeats
+some designs of `MITCAD_F3D_CORPUS`, so the counts are instances.
+
+Totals (parametric / partial / fallback / skipped), before this ticket's
+work and after its batch (the "after" also has mitcad#161, merged into
+main meanwhile):
+
+| | `MITCAD_F3D_CORPUS` | backup corpus |
+|---|---|---|
+| before | 1132 / 38 / 210 / 261 | 5169 / 185 / 936 / 1112 |
+| after | 1147 / 28 / 206 / 260 | 5249 / 120 / 923 / 1110 |
+
+Final bodies as before: 492 and 3086 exact, 9 and 61 within 0.1 %, none
+off.
+
+Non-parametric items by category, both corpora (before → after):
+
+| Category | Items | |
+|---|---|---|
+| the import's time limit (6 designs; mitcad#181) | 418 → 405 | |
+| reading and translation: fallbacks | 303 → 297 | the causes below |
+| geometry kernel: fillets, chamfers, tapers, booleans that fail or come out off the file's | 220 → 221 | mitcad#121 and others |
+| the file's own base features (bodies without a parametric history in the file) | 166 → 166 | nothing to read |
+| construction planes as fixed planes | 96 → 40 | done below |
+| no translation in Mitcad (bodies of other designs 20, sheet metal 18, copied bodies 14, deleted faces 8, primitives 8, forming threads 5, removed items 4, coils, electronics boards, mirrored components 3 each) | 93 → 93 | |
+| sketches partial | 72 → 53 | done below |
+| positions inside components of other documents (captured positions, relationships) | 47 → 47 | not in the file |
+| after a fallback to the stored bodies (no history to continue from) | 18 → 18 | |
+| construction axes as fixed axes | 8 → 8 | their inputs are not read |
+
+Reading causes, ranked (roots + downstream, before; and what was done):
+
+| Cause | Roots | Downstream | Done |
+|---|---|---|---|
+| construction planes whose inputs the decoder did not read (fixed planes) | 96 (partial) | – | read: 96 → 40 |
+| extrusions "not in the file's history" | 36 | 24 | three of the five whose sketch was partial and on a face of another component come in (mitcad#161 with the driven dimensions), and two on sketches on tangent planes; the rest are single cases (profiles the decoder reads but whose prism is not the state, participants, a sketch with three profiles and one region) |
+| sketches with dimensions "not decoded" | 28 sketches (137 dimensions) | – | driven dimensions read: 28 → 7 sketches (11 dimensions left: 8 linear dimensions to geometry outside the sketch, 3 of a class not read) |
+| fillets "not in the file's history" | 19 | 7 | not reading: the edges are found by their names (tiny edges, results the kernel builds otherwise) |
+| sketches with constraints "not decoded" | 13 sketches (23) | – | not done: a constraint type bit (`0x100_0000_0000`) on four construction lines in 5 designs, and 4 constraints whose record is not read |
+| combines "no body changes in the next history states" | 6 | 10 | not done |
+| revolutions "not in the file's history" or without profiles | 9 | 14 | one revolution (lines of a subclass; one design, stored in both corpora) comes in |
+| sweeps "not in the file's history" | 3 | 7 | not done |
+| extrusions "do not cut into any participant body" | 5 | 13 | not done |
+| rectangular patterns "not in history", "no copy reaches a body" | 9 | 4 | not done |
+| sketch lines of two subclasses read as denormal numbers | 158 lines in 20 sketches | – | read |
+
+What was read (each checked before the import relies on it):
+
+- **Driven dimensions.** A dimension without a parameter stores a null
+  reference, one zero byte, where the parameter holder is, then its
+  entities as any other (`sketch::parse_dimension`). The decoder gave
+  such a dimension no type (130 in 22 designs, all between two lines or
+  a point and a line); it now reads them as driven dimensions with the
+  value they show (`_f3d.expression`). Checked against the sketch's
+  geometry: all 130 shown values are the distances the decoded lines
+  and points have.
+- **Sketch lines of subclasses.** Two subclasses of the sketch line keep
+  the line elsewhere: `16DEFC4D` has its own two point references after
+  the root part and the line (12 doubles and the point references) in
+  its sub-chunk after the chunk's header; `AE42BAB6` has one reference of
+  its own before the line. Read at the base class's place, 158 lines of
+  20 sketches in 14 files came out as denormal or huge numbers (lines
+  without points, construction rectangles of nonsense); now every such
+  line's ends are at its points.
+- **Construction planes' inputs.** A plane item lists its parameter
+  holder, a frame input and the entities it is measured from. The
+  decoder gives them by the plane's definition: an offset's face or
+  plane; an angle's line (a construction or origin axis, an edge, a
+  sketch line), and where it is a cylindrical or conical face, the plane
+  is tangent to it; a distance along a path's edges or sketch curve
+  (a fraction where the parameter has no unit, else a length); and for
+  planes without a parameter, two planar faces a mid plane, two lines a
+  plane through both (a line and a point, three points likewise). Faces
+  and edges are looked for in the history at the plane's place in the
+  timeline (a plane has no state of its own), as other components'
+  inputs are (mitcad#161). The import builds each reading, with the
+  previous guesses after it (offsets from planar faces at the distance,
+  the origin planes for an angle without a plane, both sides of a
+  tangent, both ends of a path), and keeps only a plane that lies where
+  the file's is: every definition but a fixed one is now checked (before,
+  offset planes were taken unchecked). Left fixed: 20 planes whose
+  inputs are vertices (vertex recipes are not read) or not decoded, 12
+  along paths of several sketch curves (Mitcad's path is one curve or
+  connected edges), 8 offsets from faces the file's history has no
+  names for (faces of inserted components or of base features, named by
+  operations before the history's first), 7 tangent planes and 5 offsets whose
+  readings do not give the file's plane.
+
+Items moved, both corpora: 56 planes and 20 sketches partial →
+parametric; extrusions 8, revolutions 2, fillets 4, moves 4 and mirrors 2
+fallback or skipped → parametric (13 of these are items of three large
+designs that the time limit reached later). The one item lost: an
+extrusion of the backup corpus whose earlier extrusions now come in
+parametric (two of them fell back before) finds no participant body
+where the file's body was taken before.
+
+### Items that fell back after the census: extrusions, patterns, planes, sketches
+
+A second pass over the designs whose extrusions, patterns, datums and
+sketches fell back (98 designs, imported one by one, release build) found
+these causes; each is a rule that holds for any design:
+
+- **Sketch edges a little apart.** Regions are cut from the arrangement of
+  the curves with a tolerance of 1e-9 of the sketch's size; in a sketch of
+  some millimetres that is 2e-8 mm, and edges that the file meant to
+  coincide but stores 2e-7 mm apart (a small rectangle on the edge of a
+  bigger one) made a region with a hole whose wall touches the outline: an
+  extrusion with a face too many. The tolerance is now at least 1e-6 mm
+  (`sketch/regions.rs`). Designs: 1 extrusion → parametric.
+- **Patterns of extrusions up to an object.** `adjust` moved the finished
+  tool to each copy, which ends where the object would be if it moved too;
+  the file builds each copy again against the unmoved object. An extrusion
+  whose end depends on bodies (up to an object, through all, a start
+  object) now rebuilds its tool with the profile moved (`placed_tool`,
+  `features/extrude.rs`). Designs: 1 circular pattern → parametric.
+- **A rectangular pattern's second direction.** A second direction with no
+  entity has its vector in the pattern's data object, 24 bytes after a
+  `-1` marker, before the two distances' parameter holders (the API
+  reference dumps: 4 of 4 patterns with a second direction of more than
+  one element agree; one-direction patterns store zeros). The importer
+  tried positive origin axes only and fell back. Designs: 1 pattern →
+  parametric, the inputs read.
+- **A plane's face found in an earlier history state.** A plane taken from
+  the faces of a body (a midplane between two faces) can name a face the
+  decoder found in an earlier state, with a point on a part that a later
+  cut removed; the point then lies on no face of the replay. A plane
+  reference now falls back to the replay's face in the same plane
+  (`refs::resolve_face_by_plane`). Designs: 1 plane → parametric.
+- **Ellipse dimensions that hold the whole axis.** An ellipse's major or
+  minor dimension with flag 4 or 8 (the reference models have 1 and 2)
+  holds twice the radius, as in the API dumps (4 of 4); the import used
+  the value as the radius and the sketch did not keep the stored
+  positions. Designs: 1 sketch → parametric.
+- **Constraints the stored positions break.** A sketch that was not solved
+  again after the geometry it is linked to changed has a constraint its
+  own positions do not satisfy (a midpoint of a linked line at a point
+  that is not the midpoint); the solve then moved the whole sketch and the
+  import dropped all constraints. The solver names the constraints a
+  position does not satisfy (`System::violated`, `stored_violations` of the
+  sketch status) and the import leaves out only those (a dimension among
+  them stays as a driven one), keeping the rest; the sketch is partial
+  with the number left out in its note. Designs: 1 sketch, from "without
+  constraints" to one constraint left out.
+
+Of the 98 designs 15 had items change outcome (fallbacks, partials
+and skipped items became parametric, among them items of designs whose other items
+came in because a sketch did), none got worse; final bodies as before
+(one design's final body is 0.007 % off, the chamfer after the pattern,
+which the file's state accepts at 7e-5).
+
+Found and left: extrusions up to an object whose face the decoder gives as
+many candidate entities (a face of an imported body: the extrusion runs
+along the face's plane); (an extrusion up to a body of another component
+was left here until it got `object_links`, see the next section); planes
+and axes defined by sketch lines
+that the file stores in three dimensions, and by faces of components of
+other documents (the item has no history state); sketch texts (not decoded
+from the streams, and an extrusion of a text needs the font); a taper that
+closes a profile before the end (a circular segment 0.5 mm deep at 0.3°
+over 50 mm: the draft fails where the file's solid ends in an edge).
+
+### Datums and extrusions that name other components (model by model)
+
+Re-imports of the 19 designs that still had a fixed plane or axis, an
+extrusion up to another component's body or a mirror falling back (run
+one by one, release build; the API reference dumps for the comparison):
+
+- **A path of several sketch curves.** A plane along a path whose
+  `pathEntities` are lines and arcs of one sketch had no definition: the
+  path was tried as one curve or as edges of a body. A path is now also
+  `{"sketch", "curves"}` (`PathRef::SketchCurves`): the curves joined end
+  to end as a sweep's path is, from the free end of the first listed one
+  (the file's order), a corner taking the tangent of the curve before it.
+  Planes: 2 in each of 2 designs (the API reference dumps: 21 planes along a
+  path of edges or sketch curves, all agree on the stored plane).
+- **An axis normal to a profile at a point.** The profile is the plane of
+  its sketch; an axis normal to a face at a point now takes a plane too
+  (`Want::FaceOrPlane`), the profile as the fixed plane of its sketch as
+  the other definitions on profiles have it, and the axis is `read`
+  (4 of 4 in the API reference dumps).
+- **A cylinder cut away by later features.** The face a tangent plane
+  touches was found by its point, which a later feature had removed; a
+  datum needs the surface only, so the replay's face on the same cylinder
+  is taken (`refs::resolve_cylinder_surface`). Planes: 4 of 4 in 1 design.
+- **Faces that keep their names in pieces.** A recipe whose names fit
+  several faces on one plane or cylinder (a face the history split) gave
+  no face at all; for a plane's or point's inputs the first of them is
+  taken (`NamedState::find_face_surface`), since only the surface counts.
+  The API reference dumps: 6 fewer undecoded fields of the 166 on
+  planes, no field changed.
+- **Extrusions up to a body or face of another component.** An extrusion
+  has `object_links` (as a combine's `tool_links`, mitcad#104) for the
+  bodies its objects are or are faces of; the import adds them and the
+  extrusion goes where its sketch is. Through a body from a profile that
+  starts inside it, each part of the profile now runs to the body's far
+  side (columns over the parts, as for the first face). Designs: 1
+  extrusion fallback → parametric, verified.
+
+Planes and axes still fixed: 24 → 14 over the 19 designs (14 are the ones
+below); no design got worse (outcomes and provenance counts
+of every re-imported design equal or better).
+
+Found and left, each with its cause:
+
+- **Planes through sketch lines in three dimensions** (2 designs: a plane
+  through two edges of a pyramid drawn in a sketch): the import flattens
+  a sketch's points into its plane, and Mitcad's sketches are planar;
+  the lines are not representable. 11 of 358 designs have such a sketch.
+- **Three vertices at tangent contacts** (1 design: a plane through three
+  vertices of a cylinder, where a plate's face touches it along a line):
+  the file has an edge and vertices there, the replay's boolean has none.
+- **Vertices of a body moved into a component of its own** (4 designs):
+  the recipe names faces by operations the history blobs do not have
+  (their last operation is the move's), and one of the three vertices
+  names two equally good corners. Stripping the move's operation matched
+  the wrong corners (checked against the API dumps) and was not kept.
+- **Faces of components of other documents** (6 designs): the replay has
+  no such component; with the referenced documents imported as linked
+  components (mitcad#196) the offset's base face would be found by the
+  plane the file stores, as the guesses already do for a face of the
+  replay.
+- **A midplane to a profile of a sketch that is not in the file** (1
+  design): the input names a sketch object the file does not hold.
+- **At-angle planes without usable geometry** (1 design): the stored
+  frame of one is the angle-0 plane, of the other absent.
+- **Sketch regions of fixed splines crossing a circle** (1 design): the
+  region's hole loops intersect its outer loop (`BRepCheck_IntersectingWires`
+  after healing).
+- **A mirror whose copy is 0.0103 mm³ off** (1 design): the mirror of an
+  extrusion and its chamfer gives twice the file's new faces and a volume
+  1e-5 off; not diagnosed further.
+
+### Designs with several remaining problems (model by model, second round)
+
+Fifteen designs (three of them in two versions) that still had several
+items outside `parametric` and `read` were imported one by one (release
+build) and each remaining item read against the API reference dumps and the
+import's trace. Rules that hold for any design:
+
+- **Pieces of an edge that is an ellipse's arc.** An edge the replay splits
+  in two or more pieces (a blend's or an intersection's curve) was found by
+  the chain of pieces only where the file's middle lies within 2 % of the
+  edge's length of the polyline through the pieces' ends and middles
+  (`refs::chains_by_ends`). A long piece curves away from its polyline (4 %
+  on one edge), so the chain also counts when the middle lies within 2 %
+  of the arc through a piece's ends and middle (`refs::arc_distance`). One
+  design's edge set that stopped at its fifth edge reaches its 25th now.
+- **A sketch circle or arc as a pattern's axis.** A circular pattern about
+  a circle or an arc of a sketch (the line through its centre normal to the
+  sketch) fell back with `curve … is not a line`: the model's axis from a
+  sketch curve (`GeomRef::SketchCurves`, `Want::Axis`) takes circles and
+  arcs now, and the import uses the file's stored axis line where the
+  sketch faces the other way (`Importer::circular_axis`), so that a partial
+  pattern turns the file's way. Designs: 1 pattern → parametric.
+- **Chamfer sets' options.** A chamfer set's record (class version 2) holds
+  `u8 tangent chain | u8 flipped` after its root part, then its parameter
+  holder (a `u8 0` more before it in the sets of equal and of two
+  distances). Of the 312 sets of the API reference dumps the flipped byte
+  agrees on all (the one flipped set, a distance and an angle, and 311
+  that are not); the tangent chain byte is the application's own rule (1 on
+  the sets made through its user interface, 0 on the controlled models made
+  by script, 324 of 324 against dumps and models). Older class versions
+  keep their options elsewhere and are not read.
+  A chamfer whose sets are equal distances, or two distances whose sides the
+  edges' directions give, with the size in millimetres, the options, the
+  corner type and its edges found by their names is `read`
+  (`read_chamfer_inputs`); a set of a distance and an angle stays unread (the
+  face the angle belongs to is not decoded). On the 15 designs 17 of the 18
+  chamfer items that came in parametric are `read` (all were `unknown`).
+- **Combines and splits.** A combine whose operation and keep-tools flag are
+  decoded and whose target and tools are the bodies the items that made
+  them gave (`produced_body`, not bodies found by names or measures alone)
+  is `read`; so is a split whose bodies are produced that way, whose tools
+  are planes of the file's geometry, faces the decoder named or such bodies,
+  and whose extend flag is decoded.
+- **A tool a few nanometres from a body.** A circle projected from an edge
+  into a sketch keeps the file's geometry, which is 1e-6 mm off the edge's
+  own (a ring around a tube wall: its inner circle 0.0000012 mm outside the
+  wall). The join then "did not touch any body" (contact within 1e-6 mm) and
+  the extrusion fell back. A join that touches nothing is fused again with a
+  fuzzy value of 1e-5 mm (`geometry/src/boolean.cpp`, only on that failure
+  path, for the targets within 1e-5 mm), and a target joins where the tool
+  merged with it. Designs: 1 extrusion → parametric.
+
+- **Participants of an extrusion of faces.** The bodies an extrusion joins or
+  cuts were taken from the file (and from the history after them) only for
+  extrusions of a sketch's profiles; an extrusion of faces joined every body
+  its tool touches, merging bodies the file's join leaves apart. Its
+  candidates have the participants now (`with_decoded_participants`), and
+  where the file names no body that is in the replay (a stale reference),
+  the bodies the history's state changed, and each of them alone where
+  several changed (one of them may differ from the history's state only by
+  the replay's small errors). Designs: 6 extrusions of faces in 2 designs → parametric,
+  `inferred`.
+
+Over the 15 designs (the census re-import before, and this round's build
+with the rules of the branches merged meanwhile, counting items):
+parametric 631 → 652, fallback 99 → 83, `read` 337 → 377, `unknown` 71 →
+42, `inferred` 35 → 40 (planes that came in as parametric from fixed ones,
+which were `unknown`, are `inferred`: a tangent plane has no reference
+plane in the file or in the API reference dumps).
+
+Found and left, each with its cause:
+
+- **Faces of components of other documents** (planes offset from such a
+  face, cuts and copies of their bodies: 4 designs): see the section above
+  (mitcad#196).
+- **Fillets and chamfers the kernel fails** (the rounding cannot end at a
+  vertex, the radius may be too large, an invalid shape, a volume off; 10
+  designs, 35 items, and the patterns that repeat them): their decoded
+  inputs agree with the API reference dumps where a dump exists, as in the
+  classes above (mitcad#121).
+- **Sketch texts** (1 design: 5 extrusions): the profile loops of a text
+  have no curve records, and the regions come from the glyph outlines of
+  the font the file names, which is not installed.
+- **Primitives and coils** (a cylinder, a sphere and a coil: 9 items in 2
+  designs): the API dumps give no detail for them, the sizes are in the
+  parameter table (diameter, section size, pitch, revolutions) and the
+  placement is not decoded.
+- **Extrusions whose profile records name curves the sketch no longer has**
+  (stale selections, `inferred`): the regions come from the history.
+- **Where a circle starts (its seam)** is read now (see "Where a circle
+  starts" under the input decoding audit).
+
+### Profile selections: ellipses, splines and stale holes (model by model)
+
+A profile selection is *exact* (and so `read`) when every record of its
+loops is found in the sketch with its piece numbered. 74 designs that had
+extrusions or revolutions with `unknown` inputs were imported one by one
+and each such item's reason read from the trace (the *extrude read* and
+*revolve read* lines, and `profile …` lines naming the records that did
+not resolve). Of the 133 `unknown` extrusions and revolutions of the
+census re-import 55 were extrusions of faces (a different input), 18 had
+ellipses or splines in their loops, 43 had records that name curves the
+sketch no longer has (7 of them only in holes), 17 had a different cause.
+
+- **Ellipses, elliptical arcs and splines take part in the piece
+  matching** (`src/profiles/curves.rs`). An ellipse is parameterised from
+  its major axis end, an arc by its start and end angles, a NURBS curve
+  (rational or not, clamped or not) by its knot domain. Where each of them
+  meets another curve is found on the curves flattened to polylines and
+  refined on the curves themselves (Newton's method in both parameters);
+  the ends of a curve that lie on another cut it there, and the meeting
+  points inside a stretch where two curves lie on each other (a spline
+  along an arc) count as the ends of the stretch only. The even-odd ray
+  test is exact for ellipses and numeric (bisection on the curve) for
+  splines. Before, a profile that listed such a curve selected its regions
+  by the share of curves (`unknown`).
+- **The file's own piece count validates the numbering.** A record names
+  piece `piece` of `pieces` of its curve. Where the cuts of the record's
+  loop give another count (the curve is cut by curves in other loops of
+  the profile, or by curves of the sketch the profile does not list), the
+  cuts of all curves of the profile and then those of the sketch (without
+  construction curves) are tried, and the set that gives the file's count
+  numbers the curve (3 records of the 149 that disagree). For a curve
+  that is an ellipse or spline, or is cut by one, where no set agrees the
+  numbering is not trusted and the loops are left to the curve-overlap
+  rule (a spline that wavers across an arc meets it where the file
+  counts no cut: 1 profile). For lines, arcs and circles the loop's
+  numbering stays as it was where no set agrees (duplicated, overlapping
+  lines of a sketch number their pieces in a way the cuts do not give:
+  about 150 records in 27 designs).
+- **A hole whose records name no curve of the sketch any more is
+  dropped.** The sketch was edited after the profile and the hole's
+  curves were deleted; the profile is what its other loops enclose, the
+  regions inside the former hole are selected with the rest. The
+  application's profile list agrees with this on all 5 of the 7 items (in
+  the 74 designs) whose records are stale only
+  in holes that have one; the selection is exact.
+- **What the file does not give: the curves a stale record stands for.**
+  The curve objects carry the root attributes `EntityGenesis`,
+  `crv_primary_id` and `crv_secondary_id` only (the numeric ones listed on
+  all designs, the raw bytes of a replacement curve inspected on one);
+  nothing names the curve that replaced a deleted one.
+  Of 231 stale records 213 name a primary id the sketch no longer has,
+  18 a primary id that other curves still carry under other secondary
+  ids (a curve split afterwards: the pieces' secondary ids are new, a
+  record's secondary id of the old state is not among them).
+  There is no mapping to read, so a selection with a stale record in an
+  outer loop (35 items) stays `unknown`: the regions come out as before
+  (agreeing with the API reference dumps' profile lists in 28 of 36
+  where a dump exists, counting each design version; in the others the
+  application's profile is one
+  region that Mitcad's sketch splits, or the reverse).
+
+On the 74 designs (the extrusion and revolve items; the before column is
+the branch's base, and the 5 fallback items fewer come from other changes
+merged into it meanwhile):
+
+| | before | after |
+|---|---|---|
+| `unknown` | 92 | 65 |
+| `read` | 1057 | 1085 |
+| `inferred` | 68 | 72 |
+| fallback items (all kinds) | 316 | 311 |
+
+The 28 items that became `read` have selections that agree with the
+application's profile lists (areas, 20 of 23 where a dump exists; the
+other three differ by 0.2–0.6 % in the area of a spline-bounded region,
+the same regions). The remaining `unknown` ones: 35 stale outer loops, 4
+with ellipses or splines whose cuts the file's counts contradict, 26 whose
+profiles are exact but whose participants (6) or extent (the rest) are not
+read, which this section does not change.
+
+### A large assembly design and its sibling (model by model, third round)
+
+Two related designs (one of them stored in both corpora) that still had 16
+and 10 items falling back after the earlier rounds were imported one by one
+(release build) and each remaining item and each `inferred` or `unknown`
+input read against the API reference dumps and the import's trace. Rules
+that hold for any design:
+
+- **Faces extruded through all or up to an object.** An extrusion whose
+  profile selects faces of bodies (mitcad#169) took a distance only; one
+  through all or up to an object fell back to the last sketch before it.
+  The decoded faces now take any one-sided extent as the sketch's regions
+  do (`face_profiles_without_distance`): one sketch on the faces, the side
+  read where the file gives it (through all: the direction flag; up to an
+  object: the side of the faces' plane the object lies on) and the other
+  side after it as a guess, with the bodies it joins or cuts as decoded
+  first (also for a distance). A planar face the replay does not have as it
+  is goes by its plane.
+- **Curves on the edges of the sketch's face.** The file's geometry is
+  exact to 1e-5 mm. A sketch on a face whose curves lie on the face's edges
+  in the file can lie 1e-6 mm off them in the replay: the file's stored
+  radius is 85.0000013 mm where its dimension says 170 mm, the replay solves
+  that sketch to 85 mm, and a later sketch drawn on the extruded face
+  without a dimension keeps 85.0000013 mm. Walls extruded from it then stood
+  1e-6 mm off the body's walls: the join left them apart or split edges in
+  two. Every line, circle and arc of a sketch on a face, drawn or linked,
+  that lies on one of the face's edges within 1e-5 mm now takes that
+  edge's curve before the sketch is solved (`sketch/edges.rs`; a point two
+  such curves share goes where their curves meet; a curve whose points
+  cannot all move within the tolerance stays). The sketch's note counts
+  them. The snap of linked curves onto any edge of the model (`snap.rs`)
+  runs after it: it moves a point two curves share where the first one
+  puts it and leaves the second curve as it was, so on its own it left an
+  arc whose end moved off its circle (an extrusion of such a profile
+  failed, a sketch lost a constraint); with the face's edges first, those
+  points are already where both curves meet.
+- **Slivers are no pieces.** OCCT's union of walls that continue a body's
+  walls exactly can leave strips 1e-6 mm wide as solids of two faces beside
+  the result; a solid of up to six faces whose volume is under its area
+  times 1e-6 mm is now left out of a boolean's pieces (where it is not the
+  only solid), so it no longer becomes a body.
+- **A pattern's copies find a face the original took away.** A pattern
+  (Adjust) builds each copy of an extrusion up to an object again; an
+  extrusion that joins a body up to that body's own face takes the face
+  away, so the copies found no face. The copies now take the face from the
+  body as it was before the original feature where the current body lacks
+  it (`EvalContext::objects_before`, `body_before`).
+- **Up to a body, the other solution too.** An extrusion up to a body
+  stores the far side's flag in the file but ends at the body's first face
+  (it fills a pocket of its participant up to the body above); the other
+  solution is tried after the decoded one, as a guess.
+- **Moves as defined.** The decoder gives the move's definition from its
+  parameters' roles (`RotateAngle` with the entity input as the axis;
+  `TranslateX`, `TranslateY`, `TranslateZ`) or, for a move with neither
+  parameters nor point, direction or entity inputs, the free move of its
+  matrix. The import makes a rotation or translation with the parameters
+  (inputs `read`), a free move `read`, and keeps the fixed matrix after it.
+  Against the API reference dumps: 19 free moves and 3 rotations agree, none
+  differs; 2 point-to-point moves are not decoded.
+
+Outcomes (parametric / partial / fallback; inputs read / inferred /
+unknown), before → after, final bodies exact before and after:
+
+| | items | inputs |
+|---|---|---|
+| first design | 176 / 0 / 16 → 178 / 1 / 13 | 94 / 6 / 20 → 109 / 6 / 8 |
+| its sibling | 127 / 1 / 10 → 130 / 1 / 7 | 70 / 3 / 14 → 83 / 3 / 4 |
+
+(The partial item is a sketch whose linked arc the snap onto the model's
+edges moves 7.5e-4 mm, off the tangency the file keeps. Chamfers,
+combines and splits became `read` through other work merged
+meanwhile.) One item went the other way: a two-distance chamfer on the
+circle now split in two arcs of the extruded walls (the replay's edges),
+which the geometry kernel refuses with the 2 mm distance on the wall side
+and builds 1 % off the file's with the other reading; before, it rounded the
+stored body that the failing extrusion left.
+
+Left, each with its cause:
+
+- **A face the replay merged with its neighbour** (an extrusion through all
+  of ten lens-shaped faces): the file keeps the faces where a revolution's
+  face meets an earlier body's coplanar face; the replay's union merges
+  them into one face, so the profile's faces resolve to that whole face.
+- **Fillets and chamfers the kernel fails or builds otherwise, with inputs
+  that agree with the dumps** (mitcad#121): full rounds of 1.5 mm on 3 mm
+  faces (two items), roundings that end at vertices (six items), two
+  roundings overlapping on a 2.5 mm face, a patterned chamfer at one copy
+  (a self-intersecting wire), and the chamfer above.
+- **A fillet whose references the file itself lost** (16 of 48 edges).
+- **Moved faces**: no translation; the reference dumps give no inputs.
+- **A cut of stored bodies 1.8 mm³ off** the file's change on the exact
+  history state (OCCT's boolean).
+- **Inputs not read**: decoded profile loops that name a curve the sketch
+  no longer has or a piece its cuts do not give (four extrusions), the
+  side of a revolution by a negative angle, a mirror and three extrusions
+  whose decoded definitions do not give the state (the history picks
+  another), positions and relationships.
+
+### Face profiles and extents up to objects on two sides (model by model)
+
+Of the extrusions with `unknown` or `inferred` inputs left on the 58
+designs that had any, 7 take a face of a body in their profile together
+with a sketch's regions (the face's boundary is projected into the sketch)
+and 8 take faces only. Their faces were never part of the read condition.
+
+- **A profile face is read when the decoder found it by the file's own
+  names and the replay has exactly one such face.** The decoder resolves
+  the face's recipe (the names of the entities that bound it) in the
+  history and gives a point on it and its plane
+  (`refs::face_resolved_uniquely`): no other face of the surface type
+  passes through the point and faces the same way, and the face is the
+  one the replay resolved. As for the dressup edges, a reference the
+  decoder could not complete (no point: the history lacks the face), a
+  face without the file's names, and a face the replay has twice are not
+  read. With a sketch beside them the regions of the sketch on the faces
+  must make up the faces' area, as before. The other inputs (operation,
+  start, thin wall, participants, extent) follow the rules of sketch
+  profiles; an extrusion of faces only is read when the stream's side
+  kinds say one distance along the normal or one extent up to an object
+  that lies on the side the extrusion goes to.
+- **The faces agree with the API reference dumps.** The profile faces of
+  all 71 extrusions whose faces the decoder found were compared with the
+  dumps' profile faces by plane: 68 are the same plane in the item's
+  coordinates, 3 lie in a placed occurrence and are the same plane after
+  its placement (the decoder's normal there points the other way than the
+  dump's after the placement; the replay's face is chosen by the side of
+  its own normal and the check passes).
+- **An extent up to objects on two sides is read** when the stream's side
+  code names side one's object (2), side two's object block is in the
+  stream (its nearest-solution byte, which the side codes do not name
+  after an object) and the extrusion goes towards the side of the sketch
+  that side one's object lies on. Before, only two distances and sides
+  through all were read.
+
+What stays unread among the exact selections: the participants of 4
+extrusions and 2 suppressed revolutions (the stream's body recipes of
+bodies that the history state lacks, or a body recipe with a second list
+whose meaning is not known: the import finds no body for them) and the
+angle's direction of a partial revolution (the stream gives no direction
+byte; 1 item).
+
+On the 58 designs (single-design imports, the extrusion and revolve items):
+
+| | before | after |
+|---|---|---|
+| `unknown` | 65 | 59 |
+| `read` | 802 | 812 |
+| `inferred` | 59 | 55 |
+
+The outcomes of all 3541 items are unchanged (2890 parametric or partial,
+407 skipped, 244 fallback items before and after): only the provenance
+changed. Of the 15 face items 9 became `read`; the other 6 stay: 2 with a
+selection that is not exact, 4 whose participants the history chose.
+
+### Four designs whose remaining items had geometric causes (model by model, third round)
+
+Four designs with one to four items outside `parametric` were imported one by
+one and each item traced:
+
+- **Splines that follow a circle or a line.** A projected edge kept as a
+  spline lies within a micron of the circle or arc drawn on it, crossing it
+  in places. The sketch's arrangement cut the circle at every crossing, so
+  the regions around such curves carried slivers and holes of 1e-3 mm²
+  between the two, and the profile faces failed (`a profile loop is not
+  closed`). Two pieces with the same ends that run along each other within
+  1000 tolerances (`Arrangement::run_along`: points along the one lie on the
+  other's stretch, both ways) are one edge now, and of a spline and another
+  curve the spline stays (the faces next to a projected edge follow it
+  exactly: with the circle in its place the next extrusion, a micron off,
+  did not merge with the body). Designs: 1 extrusion → parametric.
+- **Up to a chained face.** The face and the faces next to it were the
+  target; the chain of faces joined tangentially (`tangent_closure`) is now
+  (`isChained`). Designs: 1 extrusion → parametric, and the extrusion that
+  follows it, which sat on the old base feature, is parametric.
+- **Splitting a sweep with its target.** A profile whose edges are splines
+  near a circle gave a splitting that missed the target's first crossing
+  (the sweep ran through the body to the far wall); the splitting takes
+  features within a micron (1e-3 mm) as one (`kSplitFuzzy`).
+- **A revolution of a profile that straddles the axis line.** A face with
+  an edge on the axis and a part beyond it was refused (`crosses the
+  revolve axis`). It is parted at the line, its regions that touch united
+  first (fusing the solids of regions that share a surface lost one of
+  them, by the order of the arguments), and each part is swept on its own
+  side. 1 revolution: the profile builds now; its result still differs
+  from the file's (below).
+- **A sketch used in a component placed several times.** A sketch of the
+  parent component made the extrusion of a patterned component (an
+  occurrence pattern follows it) land in the parent: the sketch copy took
+  the parent's construction plane, and the placement of a component that is
+  placed more than once was unknown. The copy takes planes of its own
+  component and the first occurrence's placement
+  (`Importer::original_placement_at`, and the links of an extrusion's
+  objects). Designs: 2 extrusions → parametric (`read`).
+- **The join pre-check** (the volume a prism can add) did not count the
+  bodies a join merges, which the history keeps as they were: the check
+  counts them (`feasible`). Designs: 1 extrusion → parametric.
+
+Over the four designs (items; the queue run before, this round after):
+parametric 133 → 142, fallback 15 → 7, partial 2 → 1 (the 13 items without
+geometry of the largest design stay skipped). Left, with causes:
+
+- A revolution about an edge line of a profile that straddles it: the
+  result is 2 % larger than the file's (107173 against 104719 mm³); which
+  input differs is not known (no API dump of this design).
+- Fillets and chamfers the kernel fails (2 in one design, 1 pattern of
+  fillets in another): see above.
+- A pattern's time out, an extrusion of 12 profiles out of time and a
+  split whose plane is not decoded, in the design with 91 items.
+- Profile loops that name spline curves are not mapped to regions (`profile
+  curve … is not a line, arc or circle`): the extrusions of such sketches
+  are parametric but not `read`.
 
 ## FreeCAD import (.FCStd)
 

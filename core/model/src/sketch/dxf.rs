@@ -114,7 +114,7 @@ pub fn insert_drawing(
                     },
                 );
             }
-            Geometry::Circle { center, radius } => {
+            Geometry::Circle { center, radius, .. } => {
                 let c = place(*center);
                 if !finite(&[c]) || !(radius.is_finite() && *radius > TOLERANCE) {
                     skip(&mut result, "a circle without radius");
@@ -127,6 +127,7 @@ pub fn insert_drawing(
                     EntityKind::Circle {
                         center,
                         radius: *radius,
+                        start: 0.0,
                     },
                 );
             }
@@ -149,6 +150,7 @@ pub fn insert_drawing(
                         EntityKind::Circle {
                             center,
                             radius: *radius,
+                            start: 0.0,
                         },
                     );
                     continue;

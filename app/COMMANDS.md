@@ -76,6 +76,10 @@ Modifiers:
 - `withVisible(test)`: the row is shown only while `test(state)` holds;
   hidden inputs are not checked and not highlighted. A list's child gets
   its row's state (`state.row(list, i)`).
+- `withHeading(text)`: a bold heading row above the input, shown and
+  hidden with it: the first input of a group (Thread's and Hole's Extra
+  clearance: Radial clearance and Flank clearance, shown for modelled
+  threads only).
 - `withAccepts(test)`: narrows a selection beyond its kinds (only straight
   edges and sketch lines: `item.geometry == "line"`); the view then
   highlights and picks only what the input takes.
@@ -211,6 +215,13 @@ References (`commands/CommandSupport`):
 
 ### What the framework does
 
+- In Solid mode, `AutoselectPanel` offers the last unused sketch's profile
+  groups from the model's `autoselect_profiles` query. Group clicks apply
+  the viewport's per-item Ctrl-toggle semantics to the current selection;
+  they preserve unrelated items and pass every selected profile to the
+  next command as normal preselection. Hover is a separate highlight list.
+  Scene refresh clears that preview, replaces the groups and removes idle
+  profile selections whose exact keys no longer occur in `profiles`.
 - Pre-selection goes to the first input that takes each item. The first
   selection still needed is active (else the first); a click toggles an
   item in the active input, a one-item input takes the new one, and a
@@ -243,6 +254,13 @@ References (`commands/CommandSupport`):
   or section view must keep these right.
 - Long panels scroll (`m_panelScroll`); adding or removing a list row logs
   the panel's places again.
+- The panel is never wider than its page, which does not scroll sideways
+  (mitcad#198): its message (`CommandMessage`) breaks between words and
+  inside a word longer than the line (a profile's or face's name), shows
+  at most six lines and scrolls beyond them, can be selected and copied
+  whole, and is hidden when empty; the notes under the fields break long
+  words too (`breakableText`). A row that still asks for more width is
+  squeezed rather than pushing the fields and OK and Cancel out of sight.
 
 ## Actions and tools
 
@@ -422,14 +440,20 @@ only when the answers changed). They only show and emit;
   done; a new feature whose references moved (`feature_references`
   query) is added to the new component (`add_feature`'s `component`).
   Move to Component (a body's row, a timeline feature: `bodies` or
-  `features`), Move Features into a Component (a component's row) and
-  Move the Features That Made It into the Component (a
-  `component_from_bodies` in the timeline: `move_history_into_component`)
-  run `moveToComponent`, which shows the plan's conflicts and offers Keep
-  Them Together (`together`). Log lines: `Hybrid assembly question: Root
+  `features`) and Move Features into a Component (a component's row) run
+  `moveToComponent`. Its dialog always asks for an existing destination or
+  Create New, with a name and parent, before running a command. Component
+  paths and occurrence identifiers distinguish repeated names; browser
+  rows also supply `source_occurrence`. The plan lists expanded sketches,
+  features and bodies, shows target problems, and offers Keep Them Together
+  (`together`) for conflicts. Cancel makes no model change; a failed move
+  leaves the dialog open. These explicit moves send `destination`; Hybrid
+  Assembly keeps its automatic new-component behavior. Move the Features
+  That Made It into the Component uses `move_history_into_component` for a
+  `component_from_bodies` feature. Log lines: `Hybrid assembly question: Root
   has Body1`, `Hybrid assembly: move|continue as is[, don't ask again]`,
   `Moved Sketch1, Extrude1 into Component1`. Test:
-  `tools/ui-hybrid-test.sh`.
+  `tools/ui-hybrid-test.sh`; explicit destination dialog checks: `app.unit`.
 - **Selection:** rows set the selection outside commands
   (`DocumentHost::pickItems`); in a command a row goes to the active input
   like a click in the view; while Create Sketch waits for a plane, a plane
@@ -477,7 +501,8 @@ only when the answers changed). They only show and emit;
   not in the file's history)", "Partly imported: left out: ..."). A
   placeholder (type `placeholder`, the `feature` icon) of an item the file
   had suppressed or failed is drawn suppressed with a yellow outline, its
-  tooltip "Suppressed: <the file's state>". The failures badge counts only
+  tooltip "Suppressed: <the file's state>"; so is an `.f3d` item
+  suppressed in the file that came in as its own feature (mitcad#180). The failures badge counts only
   features that failed; beside it a yellow badge (`BrowserController::
   warnings`, in the status bar in the docked layout and the browser card's
   header in the floating one) counts the features of
@@ -485,6 +510,35 @@ only when the answers changed). They only show and emit;
   failed) and goes to them like the failures badge: to the one, or
   through a menu of them. An edit of the feature that builds clears its
   note (the model's). Test: `tools/ui-import-status-test.sh`.
+- **Timeline search** (mitcad#179): the timeline's search button, Ctrl+F
+  (`QKeySequence::Find`, Cmd+F on macOS) in `keyPressEvent` of the
+  timeline's strip and the browser's tree (`BrowserPanel::searchRequested`;
+  no window shortcut, so it acts only where the timeline or the browser
+  has the keys), and `view.search_timeline` (Edit › Search Timeline, the
+  command search; disabled in the native macOS UI, whose history is its
+  own) call `TimelineWidget::openSearch`: a field after the filter button
+  (`m_searchBar`: field, "n of m", previous and next), in both layouts
+  (the dock and the floating card hold the same widget). The text is read
+  by `TimelineQuery` (`browser/TimelineSearch.*`, plain Qt Core, unit
+  tested in `app.unit`): words the name or the type must contain, `in:`
+  (`component:`) and `is:` (`status:`) filters with abbreviations, an
+  unknown status matching nothing. It searches the features the
+  component filter shows (`Item::filtered`); `is:warning` counts as the
+  warnings badge does (`DocumentSnapshot::warnings`), `is:rolled-back` is
+  after the marker. Matches are outlined (`TimelineStrip::setFound`,
+  `kFoundBorder`) and listed with their component's colour and name in
+  `m_searchList`, a `QTreeWidget` child of the host window
+  (`GlassCard::hostWindow`) placed over the field, without focus. The
+  field takes Enter, Esc, Up and Down before the window's OK and Cancel
+  (ShortcutOverride): Enter and Down step forward, Shift+Enter and Up
+  back (wrapping), Esc closes; a step is `selectFeature` (scroll, a folded
+  group opened) plus `featuresClicked`, as a click. When the text becomes
+  non-empty the scroll position and the timeline's selection are kept and
+  `searchStarted` lets the controller keep the window's selection; when
+  it becomes empty after a step and the step's match is still the
+  selection, both come back and `searchRestored` makes the controller
+  pick its kept selection again (outside commands). Test:
+  `tools/ui-timeline-search-test.sh` (both layouts).
 - **Analysis folder** (mitcad#41): the analyses kept in the document (the
   `analyses` query, `DocumentSnapshot::analyses`), after the root's other
   rows. Light bulb: `set_analysis_visible`; showing one hides the others,
@@ -496,6 +550,15 @@ only when the answers changed). They only show and emit;
   reason in its tooltip, and cuts nothing. Remove Section Analysis hides
   the shown analysis (it stays in the folder); Flip Section Analysis edits
   it with `flip` toggled.
+- **Section coordinates** (mitcad#204): preview, the manipulator and saved
+  analyses share the model's `section_plane` resolver. A selected component
+  face or construction plane keeps its occurrence path, including when an
+  analysis is reopened. Distance is applied along the world normal before
+  Flip reverses it. Each displayed body converts the same world plane to
+  its local coordinates before clipping and keeps its usual placement;
+  caps use those clipped faces. Section area and outline length count
+  visible occurrences. Regression: `tools/ui-macos-section-test.sh` checks
+  the actual retained volumes and world bounds, plus screenshots.
 - **Edit Appearances** (`solid.appearances`, mitcad#46; also Appearance...
   in a body's browser menu and in the view's menu of bodies, faces, edges
   and vertices): the `appearances` query's library and the design's own
@@ -655,6 +718,83 @@ build with a message.
   Animate, Suppress, Rename, Delete, Find in Timeline; the folder's: New
   Joint, New As-Built Joint, New Rigid Group. A joint row stands for its
   feature (`SelectKind::Feature`), which Drive Joint takes.
+
+## Sheet metal
+
+The SHEET METAL group of the SOLID tab (mitcad#210,
+`commands/SheetCommands.cpp`, `MainWindowSheet.cpp`; the model's side in
+commands.md, "Sheet rules and base Face" to "Sheet-metal command UI and Flat
+Pattern DXF"). Picks on a sheet body are faces and edges; `build` asks the
+model's `sheet_reference` (and for two panels `sheet_seam`) what they stand
+for, and the definitions keep the semantic references (panels, bends,
+boundaries, corners); `load` makes the faces and edges that carry those names
+again (a wall `F3:sheet_side0(F2:sheet_curve(c2[c1,c3]))`, a panel's
+`sheet_front(<slot>)`, a bend's `sheet_bend_front(<slot>)`, a corner's edge
+between two walls), so an edit highlights what the feature uses.
+
+- **Face** (`sheet.face`): Profiles (the newest unused one), Rules: New Rules
+  (the default while the design has none: Thickness, Bend Radius, K-Factor,
+  Sketch Side; reliefs at round 1 x 2 mm) or one of the design's rules
+  features (the newest is preselected once there are some). New Rules is an
+  inline definition the model adds as a `sheet_rules` feature just before the
+  Face, one undo step; an edit lists only existing rules.
+- **Flange** (`sheet.flange`): a straight edge of a flat face or its side face,
+  Angle with Flip (the angle's sign), Length and where it is Measured
+  (tangent, inner, outer), Position (bend line, inside, outside), Offsets from
+  the Ends, Own Bend Radius, Own Bend Relief.
+- **Bend** (`sheet.bend`): Fixed and Moving: two flat faces of one sheet (their
+  common seam, `virtual_sharp`; where the kernel joined their caps into one
+  face, a click on each side of the seam) or an edge of each at the bend
+  (placed sheets, `tangent_ports`; another body becomes `moving_body`), Angle,
+  Flip, overrides.
+- **Fold** (`sheet.fold`): the flat face, a sketch line on it, Fixed Side,
+  Angle, Flip, Position, overrides.
+- **Corner Round**, **Corner Chamfer** (`sheet.corner_round`,
+  `sheet.corner_chamfer`): edges through the thickness at corners (between two
+  walls), Radius or Distance 1 and 2.
+- **Sheet Cut** (`sheet.cut`): Profiles (of one or several sketches on the
+  face), the flat Face they lie on, Across Bends (bends opened for the cut).
+- **Corner Relief** (`sheet.corner_relief`, mitcad#209): faces of the two
+  bends, the Face they leave when they leave several (for bends on different
+  faces, the face held, one next to either bend; mitcad#125), Own Corner
+  Relief (shape, size; a tear has none).
+- **Unfold** (`sheet.unfold`): the Fixed Face and faces of the bends to open.
+  **Refold** (`sheet.refold`): the Unfold (a choice of the design's, the newest
+  at the start) and the bends to close, none for all.
+- **Flat Pattern** (`sheet.flat_pattern`, a model command): the fixed face (or
+  the body: keep its fixed face), Seen From (front, back), Show Flat;
+  `set_flat_pattern` on OK. Opened on a body with a pattern, it starts with
+  the pattern's settings.
+- **Sheet Rules** (`sheet.rules`): a rules feature of its own (Thickness, Bend
+  Radius, K-Factor, Sketch Side, bend and corner reliefs); its edit is
+  **Edit Sheet Rules** (`sheet.edit_rules`, an action: the rules of the
+  selected sheet, or of the only one), which every sheet using them follows.
+- **Show Flat Pattern** (`sheet.show_flat`): `set_flat_pattern` with `shown`
+  toggled for the selected sheet (or the first with a pattern). The view shows
+  the developed solid (`analysis_shape` `flat_pattern`) in place of the body,
+  without a section's clip (`MainWindow::modelBodies`).
+- **Export Flat Pattern** (`sheet.export_dxf`): a save dialog ("Export Flat
+  Pattern", the body's name `.dxf`), then `export_flat_pattern_dxf` in the
+  document's unit when it is inches, else millimetres; a refusal shows the
+  model's reasons. Allowed in a read-only window.
+
+In the browser a sheet-metal body's row has two rows under it (expanded by
+default; `BrowserNode::Type::SheetRules`, `FlatPattern`): its rules
+(`SheetRules1 (2 mm, R 3 mm, K 0.3)`; double-click and Edit Sheet Rules edit
+the feature, Find in Timeline) and, once set, its Flat Pattern (light bulb:
+Show Flat; double-click and Edit Flat Pattern open Flat Pattern on it; Show
+Flat/Folded, Export DXF..., Delete). A Flat Pattern that is not valid is red
+with the reasons in its tooltip. The body's menu adds Edit Sheet Rules and
+Create Flat Pattern or Export Flat Pattern. The rows come from the
+`sheet_bodies` query (`DocumentSnapshot::sheets`). Test:
+`tools/ui-windows-sheet-test.ps1` (ctest `app.ui-windows-sheet`: Face with its
+own rules, Flange, rule edits of thickness, K and radius, Cancel, Flat
+Pattern, Show Flat and Undo, the DXF read back, an edit from the timeline, the
+Floating layout) and `tools/ui-windows-sheet-ops-test.ps1` (ctest
+`app.ui-windows-sheet-ops`: Fold with Cancel, Bend at a seam, Corner Round and
+Chamfer in the Floating layout, Corner Relief (also of flanges on different
+panels), Sheet Cut across a bend, Unfold and Refold, each with its picks,
+preview, analytic volumes or flat areas, an edit from the timeline and Undo).
 
 ## The view
 
@@ -886,6 +1026,7 @@ UI thread.
 | `commands/HoleCommands.cpp` | Hole, Thread |
 | `commands/PrimitiveCommands.cpp` | New Component, Box, Cylinder, Sphere, Torus |
 | `commands/PatternCommands.cpp` | Rectangular, Circular and Path Pattern, Mirror |
+| `commands/PointPatternCommands.cpp` | Pattern at Points: sources and referenced targets, optional anchor, model-reported preview marker |
 | `commands/ModifyCommands.cpp` | `registerModifyCommands`: the MODIFY group in menu order |
 | `commands/FilletCommands.cpp` | Press Pull, Fillet and Chamfer |
 | `commands/FaceCommands.cpp` | Shell, Draft, Offset Face, Replace Face, Split Face, Split Body, Delete Face |
@@ -894,15 +1035,19 @@ UI thread.
 | `commands/InspectCommands.cpp` | `registerInspectCommands`: Measure, Interference, Section Analysis, Physical Properties |
 | `commands/JointCommands.cpp` | `registerAssembleCommands`: the ASSEMBLE group: Joint, As-Built Joint, Joint Origin, Rigid Group, Drive Joint (mitcad#55); New Component (`PrimitiveCommands.cpp`) leads the group, Animate Joint, Insert Component and Insert from Library (the main window) end it |
 | `MainWindowJoints.cpp` | dragging components the joints move, Animate Joint |
+| `commands/SheetCommands.cpp` | `registerSheetMetalCommands`: the SHEET METAL group (mitcad#210): Face, Flange, Bend, Fold, Corner Round, Corner Chamfer, Sheet Cut, Corner Relief, Unfold, Refold, Flat Pattern, Sheet Rules |
+| `MainWindowSheet.cpp` | Edit Sheet Rules, Show Flat Pattern, Export Flat Pattern and its dialog |
 | `commands/SketchCommands.cpp` | the SKETCH tab: drawing tools, Sketch Dimension, constraints, Offset, Mirror, patterns, Project, sketch Fillet and Chamfer, Move/Copy, Trim, Extend, Construction, Delete |
 | `sketch/SketchController.*` | sketch mode: mouse and keys, typed values, drags, `SketchOp` |
 | `sketch/SketchTool.hpp`, `DrawTools.cpp`, `EditTools.cpp` | the tools (`SketchTool`) and their factories |
 | `sketch/SketchOverlay.*` | drawn over the view: constraint glyphs, dimensions, previews, snaps, DOF |
 | `sketch/SketchSnap.*`, `SketchGeometry.*`, `SketchModel.*` | snapping; plane curves; the `sketch` query parsed |
-| `sketch/SketchPalette.*` | the sketch palette (options, constraints, DOF) in the command panel's place |
+| `sketch/SketchPalette.*` | the sketch palette (options, constraints, DOF, the drawing tool's auto constraints) in the command panel's place |
+| `sketch/AutoConstraint.*` | auto constraints while drawing (mitcad#189): the types a tool offers, their definitions, the geometry that satisfies them, the tool session's first and last entities |
 | `browser/DocumentSnapshot.*` | the document's structure read once per change; feature icons; body volume logs |
 | `browser/BrowserPanel.*` | the browser (model tree) |
 | `browser/TimelineWidget.*` | the timeline with the marker and playback buttons |
+| `browser/TimelineSearch.*` | the timeline search's words and filters (mitcad#179) |
 | `browser/ParametersDialog.*` | Change Parameters |
 | `browser/AppearanceDialog.*` | Edit Appearances |
 | `browser/BrowserController.*` | what the browser, timeline, parameters dialog and failed-features summary do |
@@ -965,6 +1110,22 @@ nothing of it is kept. The window then loads the design unsaved (`*`)
 and shows the import report. For tests,
 `MITCAD_TEST_RECOMPUTE_DELAY_MS=import_f3d=<ms>` slows every definition
 the worker tries.
+
+**Documents the design refers to** (mitcad#196): before the worker starts,
+the window lists the documents an `.f3d` design's components come from
+(`import_f3d_timeline` with `list_references`) and, for each one whose
+file is not found (no reference folder next to the design, or no file
+there for it), opens a file dialog titled with the document's name (where
+a reference folder gives one) and version, `Find Part, Version 2`, whose
+buttons are **Use** and **Skip**. A chosen file is used for that document
+and its folder is searched for the others (by the GUIDs their files
+list), so the list is read again after each; a skipped one leaves its
+components empty, the report saying `skipped`. The worker gets the chosen
+files and the skipped documents as `reference_files` and
+`skipped_references` (`--import-options <json>`); the import report lists
+the documents referred to, where each came from (core/model/src/api/commands.md,
+*Components of other documents*). Test: `tools/ui-windows-references-test.ps1`
+(`app.ui-windows-references`).
 
 ### Export and 3D Print
 
@@ -1526,6 +1687,38 @@ the topmost layer, which clears the depth), and a polygon offset brings a
 face's highlight just in front of the face. Test:
 `tools/ui-hover-test.sh`.
 
+### Selection inputs
+
+A command's selection input keeps each model item once (mitcad#199,
+`sameEntry` in `framework/Selection.hpp`). A profile is a region of a
+sketch: the occurrence that places the sketch in the view is not part of
+it, and a definition keeps the key it stored for a region after the
+sketch changed while the view names the region by its current key; the
+model's `profile` query names the region a key means now
+(`CommandSession::resolver`, asked once per item and pick). So:
+
+- A click toggles: a click on a selected region takes out every entry for
+  it (`toggleEntry`), whatever key or occurrence it was put there with;
+  clicking a region twice gives back the selection before, in any order.
+  The model composes the selected regions odd/even ([commands.md, Profile
+  selections](../core/model/src/api/commands.md#profile-selections)):
+  clicks on nested squares' rings and centre leave exactly the regions
+  clicked an odd number of times.
+- Selections filled from elsewhere than clicks (the newest profile of
+  `init`, the selection made before the command, a definition loaded for
+  editing) are made canonical when the command starts
+  (`canonicalizeSelections`): profiles placed by the occurrence the view
+  shows the sketch in (`CommandHost::profileOccurrence`), so that their
+  highlights lie on the shown profiles and a click on one is on its entry,
+  and each region once (`uniqueProfiles`). Before, a click on the newest
+  profile of a placed component's sketch added the region a second time,
+  and the feature failed with "profile … is listed more than once".
+- An empty selection is the usual missing-selection hint ("Select
+  profiles.") with OK refused.
+
+Tests: `app.unit` (`selectionEntryTests`), `tools/ui-profile-toggle-test.sh`,
+part 14 of `tools/ui-windows-workflow-test.ps1`.
+
 ## Icons
 
 24 x 24 SVG, drawn for Mitcad (MIT, SPDX line first): dark outline
@@ -1601,10 +1794,10 @@ SVG at several sizes (`themeIcon`).
 | `<command> <input>: 2 edges [edge E{…} of F2.b0; …]` | a selection input changed |
 | `<command> <input>: d1*2 = 120 mm`, `… is invalid: <reason>` | a value was evaluated |
 | `<command>: <input> = <choice>` / `= on` | a choice or check changed |
-| `Preview <command>: ok`, `Preview <command>: failed: <reason>`, `<command>: OK refused` | |
+| `Preview <command>: ok`, `Preview <command>: failed: <reason>`, `Preview <command>: not built: <reason>` (the inputs make no definition), `<command>: OK refused` | |
 | `Added <name> as F5`, `Edited F2`, the command's `describe` line | OK |
 | `Press Pull opened Fillet1 for its radius` | a command's inputs asked for another feature's edit, which opens next |
-| `Body Body1 (F2.b0): volume a -> b mm3`, `New body …`, `Removed body …` | the bodies OK changed, measured by the model (with `MITCAD_LOG_VOLUMES=1`, which the tests set: the first change after opening a large design would measure every body) |
+| `Body Body1 (F2.b0): volume a -> b mm3`, `New body …`, `Removed body …` | the bodies OK, Undo or Redo changed, measured by the model (with `MITCAD_LOG_VOLUMES=1`, which the tests set: the first change after opening a large design would measure every body) |
 | `Cosmetic threads shown: 1` | the cosmetic threads drawn as rings changed |
 | `Sketches shown: F1, …` | the sketches the view shows |
 | `Timing refresh: 36.5 ms`, `Timing display: 1093 ms, 166 bodies, 166 new`, `Timing hover: …`, `Timing frame: …`, `Timing open: …` | with `MITCAD_LOG_TIMING=1` (`framework/Diagnostics.hpp`): how long the steps take, for `tools/perf-measure.sh` |
@@ -1617,9 +1810,11 @@ SVG at several sizes (`themeIcon`).
 | `Sketch value length: 40 = 40 mm`, `Sketch value editor at x,y with 40.00` | typed values, a dimension's value editor |
 | `Added dimension k5 length d1 = 40 mm`, `Added driven dimension k7 length`, `Editing dimension k5 (40 mm)`, `Dimension k5 = 50 mm (d1)`, `Moved dimension k5 to (x, y)` | dimensions |
 | `Added constraint perpendicular k6 on c1, c2`, `Constraint perpendicular refused: <reason>`, `Fixed …`, `Construction on: [...]`, `Deleted c4, k2` | constraints and modify commands |
+| `Palette Auto constraint: Link to first ( ), Link to last (x); Equal (x), Horizontal/Vertical alignment ( ), Concentric ( )` (or `hidden`), `Palette paletteAutoLast at x,y` (`paletteAutoFirst`, `paletteAuto_equal`, …, the section `paletteAutoConstraint`), `Auto constraint link: first`, `Auto constraint equal: on (checked: equal)`, `Auto constraint target c2`, `Auto constraint reference highlighted: c2` / `highlight off`, `Auto constraint equal k7 on c2, c4` (the reference first; the alignment as `horizontal_points`/`vertical_points` of the curves' centres), `Auto constraint equal on c2, c4 refused: <reason>`, `Auto constraint dialog: Equal: <reason>`, `Auto constraint accepted: c4 kept without them` / `cancelled: c4 taken back`, `Auto constraint entities: c2, c4` | the palette's Auto constraint section (mitcad#189): its state when it changes, its places, the choices, the reference the preview targets, the constraints each new entity gets, a refused one's dialog and answer, the tool session's entities |
 | `Dragged p5 to (x, y)`, `Dragged c7 to (x, y)`, `Drag of p5 did not move it` | a drag ended: where the point is, or the curve's point nearest the cursor |
 | `Double-click on t26: sketch.edit_text`, `Edited text t26: "MIT", Droid Sans, center`, `Edited pattern k8: 4 in all`, `Edited offset k13: 3 mm` | the edit panels of texts, patterns and offsets |
 | `Timeline Sketch1 at x,y`, `Timeline marker at x,y`, `Timeline button back at x,y` (start, back, forward, end) | the timeline's items, when they changed |
+| `Timeline search opened` / `closed`, `Timeline search field at x,y`, `Timeline button search at x,y` (`search-previous`, `search-next`), `Timeline search "fillet in:cover": 2 matches: Fillet2 (Cover), Fillet7 (Cover)` (`no matches`, `unknown filter is:x`), `Timeline search result Fillet2 (Cover) at x,y`, `Timeline search results hidden`, `Timeline search match 1 of 2: Fillet2 (Cover)`, `Timeline search cleared` / `cleared: selected Plane1 again, scrolled to 0`, `Selection restored after the timeline search: 1 item(s)` | the timeline search (mitcad#179): its field, the matches (when they change), the listed ones in sight, a step, the end and what it restored |
 | `Timeline colours: dark, marker #c8d0da, buttons #f0f0f0, window #323232` (`light, marker #2b3a4a, buttons the style's, …`), `Asking the platform for the dark colour scheme` | the timeline's palette colours at start and when the theme changes; the switch of `MITCAD_TEST_COLOR_SCHEME` |
 | `Feature faces highlighted: F3 1, F4 2` / `none` | the faces of the features selected on the timeline (uid and number of faces), when they change |
 | `Timeline group Group1 at x,y` (its band, or its folded cell), `Timeline group Group1 collapsed` / `expanded`, `Timeline selected: F1, F2, F4` (a Shift+click run, or what the browser's rows selected; `nothing`), `Grouped Sketch1, Extrude1 as Group1`, `Renamed group Group1 to Body`, `Ungrouped Body` | timeline groups |
@@ -1637,11 +1832,12 @@ SVG at several sizes (`themeIcon`).
 | `Parameters favorites: width` / `none`, `Parameters width favorite at x,y`, `Parameter width favorite: on = 30 mm` | favourites |
 | `Parameters dialog opened`, `Parameters: d1 = width + 5 mm (35 mm); …`, `Parameters d1 expression at x,y` (name, unit, expression, comment), `Parameters add/delete/OK at x,y`, `Added parameter width = 30 mm`, `Parameter d1 expression: width + 5 mm = 35 mm`, `Parameter width expression: d2 / 2 refused: <reason>`, `Delete parameter w refused: <reason>` | Change Parameters (places in the main window's coordinates) |
 | `Panel Fillet input sets.1.radius at x,y`, `Panel Fillet input add sets at x,y`, `… input remove sets.1 at x,y`, `… input up_sections.2 at x,y`, `… input down_sections.0 at x,y` | a list's rows and buttons, an ordered selection's buttons |
+| `Panel Extrude width 284 of 284` (after its places), `Panel Extrude message 284x36, panel width 284 of 284` (`message hidden`; `284x96 scrolling`) | the panel's width and its page's (mitcad#198): with its places, and once laid out after its message or a note under a field changed (`tools/ui-panel-message-test.sh`) |
 | `Pick places:` then `Pick face F2.b0/F2:end(…) at x,y`, `Pick edge …`, `Pick vertex …`, `Pick profile F1/r{…} at x,y` | an input became active (with `MITCAD_LOG_PICKS=1`, which the tests set): where a click picks each item it takes (`ui_click_pick`) |
 | `View ghosts: O2 (1 body)`, `View ghosts: none` | the occurrences a command draws as ghosts changed (`withGhosts`, mitcad#147); logged before the pick places of the input that picks through them |
 | `Manipulator <command> <input> at x,y`, `Manipulator <command> <input> dragged to <value>` | a handle's knob, a drag ended |
 | `Manipulator Circular Pattern suppressed.2 at x,y` (`… (off) at` when suppressed), `Manipulator Circular Pattern suppressed.2 toggled`, `Circular Pattern Suppressed: 2` | a pattern's instance dots |
-| `Inspect <command>: <log>`, `Closed <command>` | an inspection's result (Measure: `area 2400, distance 45, angle 90 deg`; Interference: `Body1 x Body2: <volume>` or `none`; Section Analysis: `area …, length …`) |
+| `Inspect <command>: <log>`, `Closed <command>` | an inspection's result (Measure: `area 2400, distance 45, angle 90 deg`, of a circle or arc `length 31.416, radius 5, diameter 10`; Interference: `Body1 x Body2: <volume>` or `none`; Section Analysis: `area …, length …`) |
 | `Kept Section Analysis as Section1`, `Edited analysis Section1`, `Deleted analysis Section1`, `Section analysis at {"plane":{"normal":[1,0,0],"origin":[10,0,0]}}`, `Section analysis off` | Section Analysis kept in the document (mitcad#41); the plane the bodies are cut at changed |
 | `Physical properties: Body1 volume … mass … center (…)` | the Properties dialog opened |
 | `Done <command>` | a model command panel's OK |
@@ -1652,10 +1848,11 @@ SVG at several sizes (`themeIcon`).
 | `Orientation cube arrow up at x,y` (up, down, left, right, cw, ccw), `Orientation cube arrow cw`, `Orientation cube arrows hidden` | the cube's arrows: where they are when the view comes to rest face on, a click |
 | `Visual style Shaded with Hidden Edges`, `Camera perspective`, `Background #525761 #1f2126`, `Layout grid off`, `Snap to grid on`, `Grid spacing 10 mm` | display settings |
 | `Saved named view NamedView1`, `View NamedView1`, `Deleted named view …` | named views |
-| `Rendered view on`/`off`, `No render worker (mitcad-render) next to the application: no rendered view`, `Render worker started (pid <n>): <path of mitcad-render>`, `Render frame memory 1: 910 x 735` (debug; the frame memory's id and capacity), `Render worker ready: Cycles 5.3.0 on <CPU>`, `Render scene 1: 2 bodies, 1 meshes sent (F4.b0), 1 meshed, 0 released`, `Render scene 1 applied in 2.1 ms: received F4.b0; added -; changed F4.b0; moved -; removed -; kept 1; meshes 3; instanced 0`, `Render view 3: orthographic 728 x 588` (debug), `Render view 3: first frame (145 x 117) after 26 ms`, `Render view 3: first denoised frame (145 x 117, 1 samples) after 60 ms`, `Render frame view 3 728x588 samples 4 denoised covers x0,y0 x1,y1` (debug; what the frame's alpha covers, in view pixels; `denoised` for a denoised frame), `Render view 3: 64 samples in 2.91 s`, `Render worker stopped: <reason>`, `View message: <text>`, `Render worker ended` | View > Rendered (`tools/ui-render-test.sh`) |
+| `Rendered view on`/`off`, `No render worker (mitcad-render) next to the application: no rendered view`, `Render worker started (pid <n>): <path of mitcad-render>`, `Render frame memory 1: 910 x 735` (debug; the frame memory's id and capacity), `Render worker ready: Cycles 5.3.0 on <CPU>`, `Render scene 1: 2 bodies, 1 meshes sent (F4.b0), 1 meshed, 0 released`, `Render scene 1 applied in 2.1 ms: received F4.b0; added -; changed F4.b0; moved -; removed -; kept 1; meshes 3; instanced 0`, `Render view 3: orthographic 728 x 588` (debug; a view sent to the worker, once a navigation of the view ends, mitcad#214), `Render view 3: first frame (145 x 117) after 26 ms`, `Render view 3: first denoised frame (145 x 117, 1 samples) after 60 ms`, `Render frame view 3 728x588 samples 4 denoised covers x0,y0 x1,y1` (debug; what the frame's alpha covers, in view pixels; `denoised` for a denoised frame), `Render view 3: 64 samples in 2.91 s`, `Render worker stopped: <reason>`, `View message: <text>`, `Render worker ended` | View > Rendered (`tools/ui-render-test.sh`) |
 | `Preferences opened: General, 640 x 330` (the page shown and the size the window asks for), `Preferences: navigation middle-orbit, zoom to cursor on, …, autosave every 5 min` (or `…, autosave off`), `Shortcut overview: 23 command shortcuts` | the dialogs |
 | `Section caps: 2 face(s) at {"normal":[1,0,0],"origin":[30,…]}` | the caps of Section Analysis or Hide Above Sketch drawn (when they change) |
 | `Hide Above Sketch on`/`off`, `In front of the sketch plane: F2.b0 5.0, F5.b0 10.0` | the sketch palette's option; in sketch mode, how far each shown body reaches in front of the sketch plane (mm, when it changes; 0 or less once cut, a body cut away entirely is left out) |
+| `Exported <path>: dxf flat pattern of Body1, 5 entities (CUT_OUTER 4, BEND_DOWN 1), mm`, `Export of the flat pattern of Body1 refused: <reasons>`, `Flat pattern of Body1 shown` (`folded`), `Flat pattern of Body1: valid, area 1086.39 mm2, 1 bend(s)`, `Deleted the flat pattern of Body1`, `Added sheet face of 1 profile(s), new rules, thickness 2`, `Added flange, length 15 (tangent), angle 90 deg`, `Sheet rules: thickness …` | sheet metal (mitcad#210): the Flat Pattern's export, display and item, the commands' describe lines |
 | `Export dialog: STEP AP214 (*.step) to <path>`, `Exported <path>: step, 1 body(ies), mm` (with occurrences `…, mm, design coordinates` or `component coordinates`), `Exported <path>: usdz, 1 body(ies), 1 material(s)`, `Exported <path>: dxf, 4 entities` | export |
 | `3D Print dialog: 3 visible: Plate, Cube, Pin; format stl, refinement high, slicer Fake slicer (/path <files>); slicers None: … \| …`, `3D Print: left out Surface1 (a surface body)`, `3D Print: 3 bodies as stl (high) to <folder>: Plate.stl, Cube.stl, Pin.stl` (a body shown twice: `Pin (Pin_1).stl, Pin (Pin_2).stl`; 3MF: `parts.3mf`… per body `Plate 12 triangles, 1000.000 mm3`), `3D Print: started <program> <arguments>`, `3D Print: <slicer> did not start`, `3D Print: opened <folder>`, `3D Print cancelled`, `Preferences: slicer <slicer>` (or `automatic`) | 3D Print |
 | `Export dialog opened: unit mm (mm \| cm \| m \| in \| ft)` (with occurrences also `, coordinates design (design \| component)`), `Insert Mesh dialog opened: unit …`, `Insert DXF dialog opened: unit …`, `Units dialog opened: mm (…)`, `Add User Parameter dialog opened: unit mm`, `Grid settings dialog opened: automatic, fixed spacing 10 mm` | a dialog that offers units opened, with its default first |
@@ -1663,6 +1860,7 @@ SVG at several sizes (`themeIcon`).
 | `Imported block.step as Base1: 1 body(ies)`, `Inserted drawing.dxf into Sketch2: 4 curves, 4 points, 0 texts, 1 profiles, 0 warnings`, `Inserted component block (linked) from block.mitcad` | import |
 | `Insert DXF drawing: unit mm, layers Outline (4) \| Holes (1) off`, `Insert DXF place lower_left at x,y`, `Insert DXF x at …`, `Insert DXF layer Holes at …`, `Insert DXF OK at …`, `Insert DXF: lower left corner at (10, 5), layers Outline` | the Insert DXF dialog (places in the main window's coordinates) and what it chose |
 | `Import of part.f3d started`, `Import item 3: Extrude2 parametric`, `Import of part.f3d: stop requested after 12 s`, `Import of part.f3d stopping: the remaining items take the file's bodies`, `Import of part.f3d cancelled`, `Import of part.f3d failed: …`, `Imported part.f3d: 2 bodies; items …[; stopped at Extrude3 (item 5)]`, `Import report: part.f3d: 28 items (25 parametric, …), 2 bodies, 2 of the file's 2 solids match[, stopped at Extrude3 (item 5)]`, `Import report summary: <the report's text above its list>`, `Import report kept: Pad.Length = Sheet.w * 2: <why>` | an `.f3d` or FreeCAD import (`stopped after the last item` when only the final comparison was left; `kept`: a FreeCAD expression kept as its value) |
+| `References dialog: Part version 2 of Assembly v1.f3d` (`?` without a name), `References dialog: chose Part v2.f3d`, `References dialog: skipped`, `Import references of Assembly v1.f3d: 2 found, 0 skipped`, `Imported Assembly v1.f3d: documents referred to: Part linked, Holder skipped` | an `.f3d` design's documents referred to (mitcad#196): a file dialog for one not found, the choice, the documents found before the import, how each came in |
 | `Recent files: a.mitcad \| b.step`, `Dropped <paths>`, `Document closed`, `File menu: New Design \| Open \| Open Recent > \| … \| - \| Project > [New Project \| … \| Project Settings] \| … \| Exit` (debug, as it opens: `-` a separator, names without underlines and dots, mitcad#175) | the File menu |
 | `Remote status: synced` (`ahead N`, `behind N`, `push`, `fetch`, `sync`, `conflict`, `offline`, `sign-in needed`, `remote not found`), `Remote task <command> started\|done\|failed (<class>): <message>`, `Remote push: sent N version(s) to origin/main`, `Remote check: ahead N, behind M`, `Remote notice: <text> [Sync Now, Dismiss]`, `Sync: <case>[ (<class>)], N replayed, sent\|nothing sent`, `Sync conflict: <path> (<kind>): <choice>`, `Sync done: <text>` | the current Cloud project's remote: its state (the indicator shows it), a remote task, a push, a check, the notice, a sync and its conflicts |
 | `Computing part.mitcad started`, `Computing part.mitcad: 57 of 196, Extrude6` (when the feature changes, at most 5 a second, after the first 50 ms), `Progress dialog shown: part.mitcad`, `Computing part.mitcad: cancel requested after <ms> ms`, `Computing part.mitcad cancelled after <ms> ms`, `Computing part.mitcad done in <ms> ms (<n> evaluated)`, `Opening part.mitcad cancelled` | a job on the model's worker thread (opening a design, an imported design, New, Close) |

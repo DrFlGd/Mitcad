@@ -199,7 +199,7 @@ void MainWindow::createFileMenu() {
   connect(m_recentMenu, &QMenu::aboutToShow, this, &MainWindow::updateRecentMenu);
   updateRecentMenu();
   command(file, "file.open_read_only", tr("Open Rea&d-Only..."));
-  add(tr("&Close"), QKeySequence(Qt::CTRL | Qt::Key_W), &MainWindow::closeDocument);
+  add(tr("&Close"), QKeySequence(Qt::CTRL | Qt::Key_W), &MainWindow::closeDocument)->setObjectName(QStringLiteral("command_file.close"));
   file->addSeparator();
   add(tr("&Save"), QKeySequence::Save, &MainWindow::save);
   // QKeySequence::SaveAs has no key on Windows.
@@ -803,6 +803,25 @@ void MainWindow::startF3dImport(const QString& path) {
                                      .arg(bodies)
                                      .arg(importCounts(result))
                                      .arg(stop.isEmpty() ? QString() : QStringLiteral("; stopped %1").arg(stop));
+            // The documents the design refers to (mitcad#196).
+            const QJsonArray references = result.value(QStringLiteral("report"))
+                                              .toObject()
+                                              .value(QStringLiteral("designs"))
+                                              .toArray()
+                                              .first()
+                                              .toObject()
+                                              .value(QStringLiteral("references"))
+                                              .toArray();
+            if (!references.isEmpty()) {
+              QStringList statuses;
+              for (const QJsonValue& reference : references) {
+                const QJsonObject r = reference.toObject();
+                statuses << QStringLiteral("%1 %2").arg(r.value(QStringLiteral("name")).toString(),
+                                                        r.value(QStringLiteral("status")).toString());
+              }
+              qInfo().noquote() << QStringLiteral("Imported %1: documents referred to: %2")
+                                       .arg(name, statuses.join(QStringLiteral(", ")));
+            }
             showHint(stop.isEmpty()
                          ? tr("Imported %1.").arg(name)
                          : tr("Imported %1; stopped early, the rest came in as the file's bodies.").arg(name));

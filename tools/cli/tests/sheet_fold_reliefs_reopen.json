@@ -1,0 +1,5 @@
+[
+  {"comment":"SPDX-License-Identifier: MIT. Reopen the interior Fold with positive tear clearance."},
+  {"expect":{"feature":"F5","status":"ok","body":"F3.b0","volume":2129.71681469282,"min":[-30,0,-2],"max":[30,20,30.172566611769184]}},
+  {"expect":{"query":{"query":"sheet_state","body":"F3.b0"},"result":{"status":"valid"}}}
+]

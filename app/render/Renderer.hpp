@@ -195,6 +195,8 @@ struct FrameBuffers {
   std::uint16_t* catcher = nullptr;
 };
 
+struct DeviceInfo;
+
 // Where the renderer's frames go. Called from the renderer's own thread.
 class FrameSink {
 public:
@@ -208,6 +210,16 @@ public:
   virtual void endFrame(std::uint64_t view, int samples, bool denoised) = 0;
   // All samples of the view are rendered.
   virtual void finished(std::uint64_t view, int samples, double seconds) = 0;
+  // The actual denoising device, after its first successful frame.
+  virtual void denoisingDevice(const DeviceInfo&) {}
+};
+
+struct DenoiserInfo {
+  std::string id;
+  std::string type;
+  std::string name;
+  bool executed = false;
+  std::string message;
 };
 
 // A device the renderer can render on (mitcad#50, docs/rendering.md
@@ -216,8 +228,15 @@ struct DeviceInfo {
   std::string id;   // unique on the machine: "CPU", or Cycles' id of a GPU ("CUDA_<name>_<bus id>")
   std::string type; // CPU, CUDA, OPTIX, HIP, METAL or ONEAPI
   std::string name; // as its vendor names it
-  // Open Image Denoise runs on the device itself (else on the CPU).
+  // A completed denoise ran on the rendering GPU (not mere capability).
   bool denoisesOnDevice = false;
+  // Metal diagnostics: enumeration reports the automatic policy; a running
+  // renderer reports the actual device state (including Cycles overrides).
+  bool metalRTAvailable = false;
+  bool metalRTDefault = false;
+  bool metalRT = false;
+  bool denoiserAvailable = false; // Cycles reports OIDN support on this GPU.
+  DenoiserInfo denoiser{}; // Selected at startup; confirmed after a successful denoise.
 };
 
 class Renderer {
@@ -262,15 +281,26 @@ struct RendererOptions {
   bool interactive = false;
   // The device (one of cyclesDevices()); an empty id is the CPU.
   DeviceInfo device;
-  // The folder Cycles finds its GPU kernels in (lib/kernel_sm_61.cubin.zst
-  // and so on); empty: next to the executable.
+  // Cycles' runtime resource root: lib/kernel_*.cubin.zst for CUDA and
+  // source/{kernel,util} for Metal; empty: next to the executable.
   std::string kernelFolder;
+  // Test-only, independent of the render device: empty/auto, cpu or metal.
+  std::string denoisingDevice;
+  std::string testDenoisingFailure;
+  bool cpuDenoisingFallback = false; // Retries ignore GPU overrides and test failures.
 };
 
 // The devices of this build of Cycles on this machine, the CPU first;
 // after it the GPUs in Cycles' order. Initialises Cycles' paths (with
 // `kernelFolder`) the first time.
 std::vector<DeviceInfo> cyclesDevices(const std::string& kernelFolder);
+
+// Open Image Denoise's own view of the GPUs (mitcad#202, the worker's
+// --probe-denoiser): a line with the physical devices it finds, then a line
+// per GPU of cyclesDevices() saying whether OIDN creates and commits its
+// device there with the arguments Cycles' GPU denoiser uses, or OIDN's
+// error (which Cycles does not read).
+std::vector<std::string> probeDenoisers(const std::string& kernelFolder);
 
 // Cycles on the options' device; null with the reason in `error` when it
 // cannot start. Interactive: each change restarts from a lower resolution,

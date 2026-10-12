@@ -19,6 +19,8 @@ namespace mitcad {
 // Optional per-cell edit permission for views whose Qt delegates are
 // opened manually. An unset role uses the view's normal edit policy.
 inline constexpr int NativeEditableRole = Qt::UserRole + 4096;
+// Stable identifiers for native model checkboxes and focused UI tests.
+inline constexpr int NativeControlIdentifierRole = Qt::UserRole + 4097;
 
 // Secondary AppKit views bind the existing Qt presenter widgets' data,
 // signals and models. They do not embed or draw those widgets.

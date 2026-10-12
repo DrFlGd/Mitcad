@@ -43,6 +43,10 @@ QString dialogOpenFileName(QWidget* parent, const QString& title = {}, const QSt
 QString dialogSaveFileName(QWidget* parent, const QString& title = {}, const QString& directory = {},
                            const QString& filter = {}, QString* selectedFilter = nullptr);
 QString dialogDirectory(QWidget* parent, const QString& title = {}, const QString& directory = {});
+// An existing file, with the dialog's buttons named (Use, Skip): a file the
+// user may decline to give (mitcad#196). Empty when declined.
+QString dialogChooseFile(QWidget* parent, const QString& title, const QString& directory, const QString& filter,
+                         const QString& acceptLabel, const QString& rejectLabel);
 QColor dialogColor(const QColor& initial, QWidget* parent, const QString& title = {},
                    QColorDialog::ColorDialogOptions options = {});
 

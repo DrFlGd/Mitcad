@@ -233,7 +233,7 @@ impl Kernel for GeoKernel {
                     cross(along, prism.frame.normal()),
                 ))
             }
-            Some(SegmentGeometry::Circle { center, radius }) => Ok(SurfaceGeometry::Cylinder {
+            Some(SegmentGeometry::Circle { center, radius, .. }) => Ok(SurfaceGeometry::Cylinder {
                 origin: prism.at(*center, (prism.start + prism.end) / 2.0),
                 axis: prism.frame.normal(),
                 radius: *radius,
@@ -269,7 +269,7 @@ impl Kernel for GeoKernel {
                 start: prism.at(*start, offset),
                 end: prism.at(*end, offset),
             }),
-            (Some(offset), SegmentGeometry::Circle { center, radius }) => {
+            (Some(offset), SegmentGeometry::Circle { center, radius, .. }) => {
                 let start = prism.at([center[0] + radius, center[1]], offset);
                 Ok(CurveGeometry::Circle {
                     center: prism.at(*center, offset),
@@ -279,7 +279,7 @@ impl Kernel for GeoKernel {
                     end: start,
                 })
             }
-            (None, SegmentGeometry::Circle { center, radius }) => {
+            (None, SegmentGeometry::Circle { center, radius, .. }) => {
                 // The seam of the cylinder.
                 let at = [center[0] + radius, center[1]];
                 Ok(CurveGeometry::Line {
@@ -794,6 +794,40 @@ fn planes_through_edges_and_points() {
     );
     assert_near(&leaning["normal"], unit([0.0, -1.0, 2.0]).unwrap());
     assert_near(&leaning["origin"], [0.0, 0.0, 0.0]);
+}
+
+#[test]
+fn planes_offset_through_a_point() {
+    let mut doc = block();
+    // Parallel to the XY plane through the top corner (0, 0, 20): the
+    // frame is the XY plane's, moved up.
+    let level = plane(
+        &mut doc,
+        json!({"type": "offset_through_point", "plane": "xy",
+               "point": vertex([&side(LEFT), &side(FRONT), &top()])}),
+    );
+    assert_near(&level["normal"], [0.0, 0.0, 1.0]);
+    assert_near(&level["origin"], [0.0, 0.0, 20.0]);
+    assert_near(&level["x_axis"], [1.0, 0.0, 0.0]);
+    // Parallel to the right side, through the origin point's feature at the
+    // far corner (60, 0, 0).
+    let corner = point(
+        &mut doc,
+        json!({"type": "point", "point": vertex([&side(FRONT), &side(RIGHT), &bottom()])}),
+    );
+    assert_near(&corner["point"], [60.0, 0.0, 0.0]);
+    let through = plane(
+        &mut doc,
+        json!({"type": "offset_through_point", "plane": "yz", "point": "F4"}),
+    );
+    assert_near(&through["normal"], [1.0, 0.0, 0.0]);
+    assert_near(&through["origin"], [60.0, 0.0, 0.0]);
+    let error = command_error(
+        &mut doc,
+        json!({"cmd": "add_feature", "def": {"type": "construction_plane",
+               "definition": {"type": "offset_through_point", "plane": "xy", "point": "xy"}}}),
+    );
+    assert!(error.contains("is not a point or a vertex"), "{error}");
 }
 
 #[test]
@@ -1525,4 +1559,97 @@ fn scripts_check_query_answers() {
             .to_string();
         assert!(error.contains(expected), "{error}");
     }
+}
+
+#[test]
+fn a_planar_face_is_its_whole_plane_for_a_point_off_it() {
+    let mut doc = block();
+    // A point beside the top face: the axis goes through its projection
+    // onto the face's plane, along the outward normal.
+    let beside = axis(
+        &mut doc,
+        json!({"type": "perpendicular_at_point", "face": face(&top()),
+               "point": {"point": [-30.0, 20.0, 5.0]}}),
+    );
+    assert_near(&beside["origin"], [-30.0, 20.0, 20.0]);
+    assert_near(&beside["direction"], [0.0, 0.0, 1.0]);
+}
+
+#[test]
+fn an_axis_is_normal_to_a_plane_at_a_point() {
+    // A plane stands for a planar face (an imported profile is the plane
+    // of its sketch): through the point's projection, along the normal.
+    let mut doc = block();
+    let through = axis(
+        &mut doc,
+        json!({"type": "normal_to_face_at_point", "face": "xy",
+               "point": {"point": [10.0, 20.0, 5.0]}}),
+    );
+    assert_near(&through["origin"], [10.0, 20.0, 5.0]);
+    assert_near(&through["direction"], [0.0, 0.0, 1.0]);
+    let fixed = axis(
+        &mut doc,
+        json!({"type": "normal_to_face_at_point",
+               "face": {"origin": [0.0, 0.0, 3.0], "normal": [1.0, 0.0, 0.0]},
+               "point": {"point": [10.0, 20.0, 5.0]}}),
+    );
+    assert_near(&fixed["direction"], [1.0, 0.0, 0.0]);
+    // Perpendicular-at-point still wants a face.
+    let error = command_error(
+        &mut doc,
+        json!({"cmd": "add_feature", "def": {"type": "construction_axis", "definition":
+               {"type": "perpendicular_at_point", "face": "xy",
+                "point": {"point": [10.0, 20.0, 5.0]}}}}),
+    );
+    assert!(error.contains("not a face"), "{error}");
+}
+
+#[test]
+fn planes_along_a_path_of_several_sketch_curves() {
+    // The block's rectangle: c1 (0,0)-(60,0) and c2 (60,0)-(60,40), joined
+    // end to end, run from the free end of c1.
+    let mut doc = block();
+    let path = json!({"sketch": "F1", "curves": ["c1", "c2"]});
+    let half = plane(
+        &mut doc,
+        json!({"type": "along_path", "path": path, "distance": 0.5}),
+    );
+    assert_near(&half["origin"], [50.0, 0.0, 0.0]);
+    assert_near(&half["normal"], [1.0, 0.0, 0.0]);
+    // Past the corner, on the second curve.
+    let second = plane(
+        &mut doc,
+        json!({"type": "along_path", "path": path, "distance": 70, "physical": true}),
+    );
+    assert_near(&second["origin"], [60.0, 10.0, 0.0]);
+    assert_near(&second["normal"], [0.0, 1.0, 0.0]);
+    // On the corner itself: the first curve's end tangent.
+    let corner = plane(
+        &mut doc,
+        json!({"type": "along_path", "path": path, "distance": 60, "physical": true}),
+    );
+    assert_near(&corner["origin"], [60.0, 0.0, 0.0]);
+    assert_near(&corner["normal"], [1.0, 0.0, 0.0]);
+    // The curves are listed in the order the path starts from.
+    let reversed = plane(
+        &mut doc,
+        json!({"type": "along_path",
+               "path": {"sketch": "F1", "curves": ["c2", "c1"]},
+               "distance": 10, "physical": true}),
+    );
+    assert_near(&reversed["origin"], [60.0, 30.0, 0.0]);
+    assert_near(&reversed["normal"], [0.0, -1.0, 0.0]);
+    let near = plane(
+        &mut doc,
+        json!({"type": "normal_at_point", "path": path, "point": {"point": [61.0, 25.0, 3.0]}}),
+    );
+    assert_near(&near["origin"], [60.0, 25.0, 0.0]);
+    // One curve is not a path of several, and a point is no curve.
+    let error = command_error(
+        &mut doc,
+        json!({"cmd": "add_feature", "def": {"type": "construction_plane", "definition":
+               {"type": "along_path", "path": {"sketch": "F1", "curves": ["c1"]},
+                "distance": 0.5}}}),
+    );
+    assert!(error.contains("at least two"), "{error}");
 }

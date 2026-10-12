@@ -246,6 +246,22 @@ impl<K: Kernel> EvalContext<'_, K> {
         }
     }
 
+    /// A body as it was just before an earlier feature `before` (the shape
+    /// the last feature before it set); None when no feature before it set
+    /// the body. The read covers that feature's whole result.
+    pub(crate) fn body_before(&mut self, before: FeatureUid, body: BodyUid) -> Option<K::Shape> {
+        let at = self.env.history.iter().position(|r| r.uid == before)?;
+        let result = self.env.history[..at]
+            .iter()
+            .rev()
+            .find(|r| r.status.is_ok() && r.shape_set(body).is_some())?;
+        self.reads.push(Read::Output(
+            result.uid,
+            result.output.as_ref().map(|o| o.version),
+        ));
+        result.shape_set(body).cloned()
+    }
+
     /// The bodies an earlier feature's result set or removed. The read
     /// covers the feature's whole result.
     pub(crate) fn feature_changed_bodies(

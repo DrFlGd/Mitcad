@@ -38,6 +38,25 @@ namespace {
 
 // Shapes closer than this touch.
 constexpr double kContact = 1.0e-6;
+// A tool this close to a body (and no closer than kContact) still joins it:
+// the file's geometry carries a few nanometres of noise.
+constexpr double kNearContact = 1.0e-5;
+
+// The distance within which the touch measuring below (touches) counts shapes as
+// touching: kContact, or kNearContact within a ContactScope. Per thread: the
+// import runs booleans of several definitions at once.
+thread_local double t_contact = kContact;
+
+class ContactScope {
+public:
+  explicit ContactScope(double contact) : m_before(t_contact) { t_contact = contact; }
+  ~ContactScope() { t_contact = m_before; }
+  ContactScope(const ContactScope&) = delete;
+  ContactScope& operator=(const ContactScope&) = delete;
+
+private:
+  double m_before;
+};
 
 const char* operation_name(BooleanOp op) {
   switch (op) {
@@ -67,7 +86,7 @@ struct FaceBoxes {
     for (TopExp_Explorer it(shape, TopAbs_FACE); it.More(); it.Next()) {
       Bnd_Box box;
       BRepBndLib::Add(it.Current(), box);
-      box.Enlarge(kContact);
+      box.Enlarge(t_contact);
       faces.emplace_back(it.Current(), box);
       int count = 0;
       for (TopExp_Explorer edge(it.Current(), TopAbs_EDGE); edge.More(); edge.Next()) {
@@ -132,7 +151,7 @@ bool within(const TopoDS_Shape& a, const TopoDS_Shape& b, double limit) {
   const gp_Pnt high = box.CornerMax();
   const double away = box.CornerMin().Distance(high) + limit + 1.0;
   const gp_Pnt start(high.X() + away, high.Y() + away, high.Z() + away);
-  const gp_Pnt end(start.X() + limit + kContact, start.Y(), start.Z());
+  const gp_Pnt end(start.X() + limit + t_contact, start.Y(), start.Z());
   BRep_Builder builder;
   TopoDS_Compound with_a;
   builder.MakeCompound(with_a);
@@ -160,7 +179,7 @@ bool may_reach(const Bnd_Box& box, const TopoDS_Shape& faces) {
   const gp_Pnt high = box.CornerMax();
   const gp_Pnt centre((low.XYZ() + high.XYZ()) / 2.0);
   return within(BRepBuilderAPI_MakeVertex(centre).Vertex(), faces,
-                low.Distance(high) / 2.0 + kContact);
+                low.Distance(high) / 2.0 + t_contact);
 }
 
 // The faces of `from` (of those marked in `among`) that may come within
@@ -198,7 +217,7 @@ bool faces_touch(const FaceBoxes& a, const TopoDS_Shape& part, const Bnd_Box& pa
   if (!any_marked(kept_a)) {
     return false;
   }
-  return within(a.compound(kept_a), faces.compound(kept), kContact);
+  return within(a.compound(kept_a), faces.compound(kept), t_contact);
 }
 
 // A point of a shape (its first vertex), if it has one.
@@ -229,7 +248,7 @@ public:
     }
     TopAbs_State found = TopAbs_OUT;
     for (const auto& classifier : m_classifiers) {
-      classifier->Perform(point, kContact);
+      classifier->Perform(point, t_contact);
       if (classifier->State() == TopAbs_IN) {
         return TopAbs_IN;
       }
@@ -282,9 +301,9 @@ bool vertex_touches(const TopoDS_Shape& part, const Bnd_Box& box_a, Inside& insi
     if (state == TopAbs_ON) {
       Bnd_Box around;
       around.Add(point);
-      around.Enlarge(kContact);
+      around.Enlarge(t_contact);
       const std::vector<bool> near = faces_a.near(around);
-      if (any_marked(near) && within(it.Current(), faces_a.compound(near), kContact)) {
+      if (any_marked(near) && within(it.Current(), faces_a.compound(near), t_contact)) {
         return true;
       }
     }
@@ -300,7 +319,7 @@ bool vertex_touches(const TopoDS_Shape& part, const Bnd_Box& box_a, Inside& insi
 // (vertex_touches).
 bool touches(const Shape& a, const Shape& b) {
   Bnd_Box box_a = box_of(a);
-  box_a.Enlarge(kContact);
+  box_a.Enlarge(t_contact);
   std::optional<FaceBoxes> faces_a;
   Inside inside_a(a.occt());
   std::vector<TopoDS_Shape> parts;
@@ -313,7 +332,7 @@ bool touches(const Shape& a, const Shape& b) {
   for (const TopoDS_Shape& part : parts) {
     Bnd_Box box;
     BRepBndLib::Add(part, box);
-    box.Enlarge(kContact);
+    box.Enlarge(t_contact);
     if (box.IsOut(box_a)) {
       continue;
     }
@@ -422,7 +441,7 @@ std::unique_ptr<BRepAlgoAPI_BooleanOperation> make_operation(BooleanOp op) {
 detail::FaceNamer run_operation(BooleanOp op, const std::vector<std::pair<const Shape*, int>>& targets,
                                 const Shape& tool, int tool_tag, bool simplify = true,
                                 std::vector<TopoDS_Shape>* seen = nullptr, bool reduce = true,
-                                bool* split = nullptr) {
+                                bool* split = nullptr, double fuzzy = 0.0) {
   std::vector<TopoDS_Shape> inputs;
   for (const auto& target : targets) {
     inputs.push_back(target.first->occt());
@@ -445,6 +464,9 @@ detail::FaceNamer run_operation(BooleanOp op, const std::vector<std::pair<const 
   tools.Append(copy.shape(targets.size()));
   operation->SetArguments(arguments);
   operation->SetTools(tools);
+  if (fuzzy > 0.0) {
+    operation->SetFuzzyValue(fuzzy);
+  }
   // As before T0e: OCCT copies the sub-shapes whose tolerances it widens.
   operation->SetNonDestructive(true);
   // The face and edge pairs are intersected on all cores: booleans were
@@ -452,6 +474,11 @@ detail::FaceNamer run_operation(BooleanOp op, const std::vector<std::pair<const 
   // boxes, SetUseOBB, changed a corpus result: a hole cut left an extra
   // edge, and the hole no longer matched the stored history.)
   operation->SetRunParallel(true);
+  // The solids are not inverted (bodies are oriented, the stored ones when
+  // they are built): OCCT's check of each one builds a point classifier of
+  // all its faces, on one thread (mitcad#181: on bodies of 3 000–5 000 faces
+  // most of a pattern's cut, 30 s of it).
+  operation->SetCheckInverted(false);
   detail::build(*operation);
   if (!operation->IsDone() || operation->HasErrors()) {
     throw std::runtime_error("the boolean operation failed");
@@ -474,14 +501,29 @@ detail::FaceNamer run_operation(BooleanOp op, const std::vector<std::pair<const 
   if (!far) {
     namer.finish();
   }
-  if (simplify && !detail::is_valid(namer.result())) {
+  // A cut that leaves its target as it was (no face of it modified or
+  // removed, the merge included) is not checked: its result is the target's
+  // faces as they were, which the caller finds unchanged (volume_changed)
+  // and leaves alone (mitcad#181: checking a large body that a through-all
+  // cut's tool passed by took 20–30 s).
+  const bool untouched = op == BooleanOp::Cut && targets.size() == 1 && [&] {
+    for (const TopoDS_Shape& argument : arguments) {
+      for (TopExp_Explorer it(argument, TopAbs_FACE); it.More(); it.Next()) {
+        if (operation->IsDeleted(it.Current()) || !operation->Modified(it.Current()).IsEmpty()) {
+          return false;
+        }
+      }
+    }
+    return true;
+  }();
+  if (simplify && !untouched && !detail::is_valid(namer.result())) {
     // The merge can break a result the operation made valid (a join of a
     // corpus design: its merged faces made a shell that cannot be
     // oriented); then the result keeps the faces as the operation left
     // them.
-    return run_operation(op, targets, tool, tool_tag, false, seen, reduce, split);
+    return run_operation(op, targets, tool, tool_tag, false, seen, reduce, split, fuzzy);
   }
-  if (!simplify) {
+  if (!simplify && !untouched) {
     detail::require_valid(namer.result(), "the boolean operation");
   }
   if (split != nullptr) {
@@ -515,7 +557,7 @@ detail::FaceNamer run_operation(BooleanOp op, const std::vector<std::pair<const 
   // tool, and from the faces it changed).
   const std::optional<detail::FarFeatures::Restored> restored = far->restore(operation->Shape(), *operation);
   if (!restored) {
-    return run_operation(op, targets, tool, tool_tag, simplify, seen, false, split);
+    return run_operation(op, targets, tool, tool_tag, simplify, seen, false, split, fuzzy);
   }
   ShapeMap replaced;
   for (const auto& entry : restored->replaced) {
@@ -687,8 +729,10 @@ BooleanResult boolean(BooleanOp op, const std::vector<const Shape*>& targets, co
       // Only the targets the tool touches: fusing all of them would also
       // merge targets that overlap each other but not the tool.
       std::vector<std::pair<const Shape*, int>> near;
+      Bnd_Box join_box = tool_box;
+      join_box.Enlarge(kNearContact);
       for (std::size_t i = 0; i < targets.size(); ++i) {
-        if (!tool_box.IsOut(box_of(*targets[i]))) {
+        if (!join_box.IsOut(box_of(*targets[i]))) {
           near.emplace_back(targets[i], static_cast<int>(i));
         }
       }
@@ -743,6 +787,49 @@ BooleanResult boolean(BooleanOp op, const std::vector<const Shape*>& targets, co
         }
       }
       if (joined.empty()) {
+        // Geometry the file stores differs from the model's by a few
+        // nanometres (a circle projected from an edge into a sketch is
+        // that far off the edge's own circle): a tool that far from a body
+        // joins it, as the file's own join does. The targets within
+        // kNearContact are fused with a fuzzy value that wide (the faces
+        // between them are not reduced), and a target joins where the tool
+        // merged with it. This is the failure path only (no target touched
+        // within kContact), and tools farther away are as untouched as
+        // before.
+        std::vector<std::pair<const Shape*, int>> close;
+        {
+          const ContactScope scope(kNearContact);
+          for (const auto& [target, i] : near) {
+            if (touches(*target, tool)) {
+              close.emplace_back(target, i);
+            }
+          }
+        }
+        for (const auto& entry : close) {
+          const Shape* const target = entry.first;
+          const int i = entry.second;
+          std::vector<detail::FaceNamer::Piece> solids;
+          try {
+            solids = run_operation(op, {{target, i}}, tool, tool_tag, true, nullptr, false, nullptr, kNearContact)
+                         .pieces();
+          } catch (const Cancelled&) {
+            throw;
+          } catch (...) {
+            continue;
+          }
+          const bool merged = std::any_of(solids.begin(), solids.end(), [&](const auto& piece) {
+            return piece.sources.count(tool_tag) > 0 && piece.sources.count(i) > 0;
+          });
+          if (merged) {
+            joined.emplace_back(target, i);
+            result.touched[static_cast<std::size_t>(i)] = true;
+          }
+        }
+        if (joined.empty()) {
+          return result;
+        }
+        result.pieces = pieces_of(
+            run_operation(op, joined, tool, tool_tag, true, nullptr, false, nullptr, kNearContact));
         return result;
       }
       result.pieces = pieces_of(run_operation(op, joined, tool, tool_tag));

@@ -15,7 +15,7 @@
 //!
 //! The checks keep version 1's own error messages, which name features.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fmt;
 use std::sync::Arc;
 
@@ -416,6 +416,8 @@ impl Converter<'_> {
                     flip: false,
                     operation,
                     participants,
+                    cut_scope: None,
+                    object_links: BTreeMap::new(),
                 })
             }
             FileFeature::Fillet {

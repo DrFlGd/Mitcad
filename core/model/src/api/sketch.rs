@@ -209,6 +209,10 @@ pub(super) enum SketchCommand {
         flip_x: bool,
         #[serde(default)]
         flip_y: bool,
+        #[serde(default)]
+        cap_height: bool,
+        #[serde(default)]
+        wrap: bool,
     },
     // Sketch text edited afterwards (P3).
     #[serde(rename = "sketch.edit_text")]
@@ -241,6 +245,10 @@ pub(super) enum SketchCommand {
         flip_x: Option<bool>,
         #[serde(default)]
         flip_y: Option<bool>,
+        #[serde(default)]
+        cap_height: Option<bool>,
+        #[serde(default)]
+        wrap: Option<bool>,
     },
     #[serde(rename = "sketch.add_constraint")]
     AddConstraint {
@@ -388,6 +396,9 @@ pub(super) enum SketchCommand {
         direction: [f64; 2],
         count: [u32; 2],
         spacing: [ValueInput; 2],
+        // Per direction: the originals in the middle (an odd count).
+        #[serde(default)]
+        symmetric: [bool; 2],
     },
     // Sketch patterns and offsets edited afterwards (P4).
     #[serde(rename = "sketch.edit_pattern")]
@@ -653,7 +664,7 @@ pub(super) fn report_json(report: &EditReport, def: Option<&SketchDef>) -> Value
 fn curve_json(curve: &Curve2) -> Value {
     match curve {
         Curve2::Line { a, b } => json!({"start": a, "end": b}),
-        Curve2::Circle { center, radius } => json!({"center": center, "radius": radius}),
+        Curve2::Circle { center, radius, .. } => json!({"center": center, "radius": radius}),
         Curve2::Arc {
             center,
             radius,
@@ -1080,6 +1091,8 @@ impl<K: Kernel> Document<K> {
                     path,
                     flip_x,
                     flip_y,
+                    cap_height,
+                    wrap,
                     ..
                 } => {
                     let mut t = SketchText {
@@ -1093,6 +1106,8 @@ impl<K: Kernel> Document<K> {
                         path,
                         flip_x,
                         flip_y,
+                        cap_height,
+                        wrap,
                         ..SketchText::new(EntityUid(0), &text, at.unwrap_or_default(), height)
                     };
                     match (frame, at, path) {
@@ -1125,6 +1140,8 @@ impl<K: Kernel> Document<K> {
                     path,
                     flip_x,
                     flip_y,
+                    cap_height,
+                    wrap,
                     ..
                 } => {
                     let uid = crate::ids::parse_number(&id, "t")
@@ -1175,6 +1192,12 @@ impl<K: Kernel> Document<K> {
                     }
                     if let Some(v) = flip_y {
                         t.flip_y = v;
+                    }
+                    if let Some(v) = cap_height {
+                        t.cap_height = v;
+                    }
+                    if let Some(v) = wrap {
+                        t.wrap = v;
                     }
                     made_ref.push(id);
                 }
@@ -1333,6 +1356,7 @@ impl<K: Kernel> Document<K> {
                     direction,
                     count,
                     spacing,
+                    symmetric,
                     ..
                 } => {
                     let id = edit.rectangular_pattern(
@@ -1340,6 +1364,7 @@ impl<K: Kernel> Document<K> {
                         direction,
                         count,
                         [&spacing[0], &spacing[1]],
+                        symmetric,
                     )?;
                     *made_ref = pattern_made(&edit.def, id);
                 }

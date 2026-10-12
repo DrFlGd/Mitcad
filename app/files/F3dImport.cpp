@@ -245,7 +245,11 @@ int runImportWorker(int argc, char* argv[]) {
                                  QStringLiteral("folder"));
   const QCommandLineOption minMs(QStringLiteral("persist-min-ms"), QStringLiteral("Milliseconds"),
                                  QStringLiteral("ms"));
-  parser.addOptions({worker, output, result, store, minMs});
+  // More options of the import (JSON): the files of the documents the
+  // design refers to that the user chose (mitcad#196).
+  const QCommandLineOption more(QStringLiteral("import-options"), QStringLiteral("Import options (JSON)"),
+                                QStringLiteral("file"));
+  parser.addOptions({worker, output, result, store, minMs, more});
   parser.process(app);
   const QByteArray path = parser.value(worker).toUtf8();
 
@@ -277,7 +281,14 @@ int runImportWorker(int argc, char* argv[]) {
   } catch (const std::exception&) {
     // The import itself says what is wrong with the file.
   }
-  const QJsonObject command =
+  QJsonObject moreOptions;
+  if (parser.isSet(more)) {
+    QFile file(parser.value(more));
+    if (file.open(QIODevice::ReadOnly)) {
+      moreOptions = QJsonDocument::fromJson(file.readAll()).object();
+    }
+  }
+  QJsonObject command =
       freecad ? QJsonObject{{QStringLiteral("cmd"), QStringLiteral("import_fcstd")},
                             {QStringLiteral("path"), QString::fromUtf8(path)},
                             {QStringLiteral("bodies_only"), false}}
@@ -290,6 +301,11 @@ int runImportWorker(int argc, char* argv[]) {
                             // An item's definitions evaluated in parallel
                             // (mitcad#95): the logical cores, at most 8.
                             {QStringLiteral("threads"), importThreads()}};
+  if (!freecad && !ipt) {
+    for (auto it = moreOptions.begin(); it != moreOptions.end(); ++it) {
+      command.insert(it.key(), it.value());
+    }
+  }
   QJsonObject answer;
   document->attach_job(**control);
   try {
@@ -353,6 +369,9 @@ void F3dImport::start() {
   });
 
   const QString name = QFileInfo(m_path).fileName();
+  if (!isFreeCadFile(m_path) && !isIptFile(m_path)) {
+    m_options = askReferences();
+  }
   m_dialog = new ImportProgress(
       m_window, [this] { stop(); }, [this] { cancel(); });
   m_dialog->setStoppable(!isFreeCadFile(m_path) && !isIptFile(m_path));
@@ -374,7 +393,82 @@ void F3dImport::start() {
     arguments << QStringLiteral("--result-store") << store << QStringLiteral("--persist-min-ms")
               << QString::number(resultStoreMinMs());
   }
+  if (!m_options.isEmpty()) {
+    const QString options = m_dir.filePath(QStringLiteral("options.json"));
+    if (writeFile(options, QJsonDocument(m_options).toJson(QJsonDocument::Compact))) {
+      arguments << QStringLiteral("--import-options") << options;
+    }
+  }
   m_process->start(QCoreApplication::applicationFilePath(), arguments);
+}
+
+QJsonObject F3dImport::askReferences() {
+  QJsonObject files;
+  QJsonArray skipped;
+  QStringList asked;
+  QString folder = QFileInfo(m_path).absolutePath();
+  const QString design = QFileInfo(m_path).fileName();
+  for (;;) {
+    // Listed again after each chosen file: its folder may hold the others,
+    // and a document found refers to its own.
+    QJsonObject listed;
+    try {
+      const QJsonObject options{{QStringLiteral("list_references"), true},
+                                {QStringLiteral("reference_files"), files}};
+      listed = parseObject(new_document()->import_f3d_timeline(rustStr(m_path.toUtf8()), rustStr(compactJson(options))));
+    } catch (const std::exception& e) {
+      // The import itself says what is wrong with the file.
+      qInfo().noquote() << QStringLiteral("Import references of %1 not listed: %2").arg(design, QString::fromUtf8(e.what()));
+      break;
+    }
+    QJsonObject missing;
+    int found = 0;
+    for (const QJsonValue& value : listed.value(QStringLiteral("documents")).toArray()) {
+      const QJsonObject document = value.toObject();
+      if (!document.value(QStringLiteral("file")).isString()) {
+        if (missing.isEmpty() && !asked.contains(document.value(QStringLiteral("document")).toString())) {
+          missing = document;
+        }
+      } else {
+        ++found;
+      }
+    }
+    if (missing.isEmpty()) {
+      qInfo().noquote() << QStringLiteral("Import references of %1: %2 found, %3 skipped")
+                               .arg(design)
+                               .arg(found)
+                               .arg(skipped.size());
+      break;
+    }
+    const QString urn = missing.value(QStringLiteral("document")).toString();
+    asked.append(urn);
+    const QString name = missing.value(QStringLiteral("name")).toString();
+    const int version = missing.value(QStringLiteral("version")).toInt();
+    const QString what = name.isEmpty() ? tr("a Document %1 Refers To").arg(design) : name;
+    const QString title = version > 0 ? tr("Find %1, Version %2").arg(what).arg(version) : tr("Find %1").arg(what);
+    qInfo().noquote() << QStringLiteral("References dialog: %1 version %2 of %3")
+                             .arg(name.isEmpty() ? QStringLiteral("?") : name)
+                             .arg(version)
+                             .arg(design);
+    const QString file =
+        dialogChooseFile(m_window, title, folder, tr("Designs (*.f3d *.f3z)"), tr("&Use"), tr("&Skip"));
+    if (file.isEmpty()) {
+      skipped.append(urn);
+      qInfo().noquote() << QStringLiteral("References dialog: skipped");
+      continue;
+    }
+    files.insert(urn, file);
+    folder = QFileInfo(file).absolutePath();
+    qInfo().noquote() << QStringLiteral("References dialog: chose %1").arg(QFileInfo(file).fileName());
+  }
+  QJsonObject options;
+  if (!files.isEmpty()) {
+    options.insert(QStringLiteral("reference_files"), files);
+  }
+  if (!skipped.isEmpty()) {
+    options.insert(QStringLiteral("skipped_references"), skipped);
+  }
+  return options;
 }
 
 void F3dImport::readProgress() {

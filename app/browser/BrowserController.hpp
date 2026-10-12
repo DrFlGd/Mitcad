@@ -84,6 +84,9 @@ private:
   // none in the timeline.
   void featureMenu(const QString& uid, const QPoint& at, const BrowserNode& row);
   void findInTimeline(const QString& uid);
+  // The timeline's search was cleared (mitcad#179): the selection from
+  // before it again.
+  void restoreSearchSelection();
   // A slow second click on a browser row (mitcad#177).
   void renameClicked(const BrowserNode& node);
   // Timeline groups (P9): a group's menu, and grouping features.
@@ -96,6 +99,9 @@ private:
   void renameFeature(const QString& uid, const QString& name);
   void deleteNode(const BrowserNode& node);
   void deleteFeature(const QString& uid);
+  // Opens Flat Pattern on a sheet-metal body: its settings, or a new one
+  // (mitcad#210).
+  void editFlatPattern(const QString& body);
   void featuresClicked(const QStringList& uids);
   void reorder(const QString& uid, int index);
   void setMarker(int position);
@@ -136,6 +142,9 @@ private:
   // The selection shown in the browser, and the features whose rows show it.
   Selection m_shownItems;
   QStringList m_shownFeatures;
+  // What was selected when the timeline's search began (mitcad#179).
+  Selection m_searchItems;
+  QStringList m_searchFeatures;
   QString m_loggedFailures;
   QString m_loggedWarnings;
   QString m_loggedBadge; // the warnings badge (mitcad#170)

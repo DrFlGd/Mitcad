@@ -236,6 +236,11 @@ record! {
         "external_key" => external_key: String,
         /// URN of that document.
         "external_document" => external_document: String,
+        /// The GUIDs (`str16`) in the occurrence object's data, lower case:
+        /// occurrence paths of captured positions and relationships name
+        /// it by one of them, also from a design that inserted this one
+        /// (mitcad#196).
+        "guids" => guids: Vec<String>,
         /// Transform relative to the parent component (nested occurrences;
         /// the full-path composition is not verified).
         "local_transform" => local_transform: Mat4,
@@ -338,6 +343,46 @@ impl TimelineItem {
         };
         props.and_then(Value::as_bool).or(visible)
     }
+
+    /// The item's state in the file (mitcad#180): suppressed where
+    /// `isSuppressed` says so (the stream decoder sets it from the state
+    /// bytes, external dumps have their own), else what `_f3d`'s result
+    /// number and state bytes say ([`super::decode::item_state`]).
+    pub fn file_state(&self) -> super::decode::ItemState {
+        use super::decode::{ItemState, item_state};
+        if self.is_suppressed == Some(true) {
+            return ItemState::Suppressed;
+        }
+        match self.result_and_flags() {
+            Some((result_no, flags)) => item_state(result_no, flags),
+            None => ItemState::Normal,
+        }
+    }
+
+    /// How the item is suppressed in the file, when it is,
+    /// [`super::decode::Suppression`]): from `_f3d`'s state bytes. An
+    /// item an external dump says is suppressed (`isSuppressed` without
+    /// bytes) is suppressed directly.
+    pub fn suppression(&self) -> Option<super::decode::Suppression> {
+        use super::decode::{Suppression, item_suppression};
+        match self.result_and_flags() {
+            Some((result_no, flags)) => item_suppression(result_no, flags)
+                .or_else(|| (self.is_suppressed == Some(true)).then_some(Suppression::Direct)),
+            None => (self.is_suppressed == Some(true)).then_some(Suppression::Direct),
+        }
+    }
+
+    /// `_f3d`'s result number and three state bytes, when it has both.
+    fn result_and_flags(&self) -> Option<(i32, [u8; 3])> {
+        let f3d = self.f3d.as_ref()?;
+        let flags = f3d.flags.as_deref().and_then(|f| {
+            let bytes = (0..3)
+                .map(|i| u8::from_str_radix(f.get(2 * i..2 * i + 2)?, 16).ok())
+                .collect::<Option<Vec<u8>>>()?;
+            (f.len() == 6).then(|| [bytes[0], bytes[1], bytes[2]])
+        })?;
+        Some((f3d.result_no?, flags))
+    }
 }
 
 record! {
@@ -356,8 +401,14 @@ record! {
         /// Name given by the user, empty if none.
         "custom_name" => custom_name: String,
         "result_no" => result_no: i32,
-        /// The three state bytes (hex); suppression/error, meaning open.
+        /// The three state bytes (hex): with result -1, `010000` or
+        /// `000100` suppressed, `000001` the change all in parts in other
+        /// components (`decode::item_state`, mitcad#180).
         "flags" => flags: String,
+        /// Two more state bytes (hex):
+        /// `0000` on a healthy item, the first 1 suppressed, the
+        /// second after the timeline marker.
+        "after" => after: String,
         /// Sub-items (a hole's thread, say); `None` for null references.
         "sub_features" => sub_features: Vec<Option<u64>>,
         /// Raw extrude fields.
@@ -376,6 +427,9 @@ record! {
         /// makes the item's change there; it follows the item, with an
         /// index after the timeline's items.
         "part_of" => part_of: i64,
+        /// A construction plane's or point's stored definition code (the
+        /// `u32` after its root part and seven bytes; mitcad#186).
+        "datum_code" => datum_code: u32,
     }
 }
 
@@ -412,6 +466,13 @@ record! {
         /// Each side's extent kind (mitcad#154): 0 none, 1 a distance, 2 up
         /// to an object, 3 up to the next face, 4 through all.
         "sides" => sides: Vec<u32>,
+        /// A thin extrusion (mitcad#186): the stream's thin-wall flag, read
+        /// on class version 8 where the block is consistent.
+        "thin" => thin: bool,
+        /// The thin wall's location: 0 side one, 1 centre, 2 side two.
+        "thin_location" => thin_location: u32,
+        /// The object id of the thin wall's thickness parameter holder.
+        "thin_holder" => thin_holder: u64,
     }
 }
 
@@ -435,6 +496,8 @@ pub enum Detail {
     Coil(Box<CoilDetail>),
     ConstructionPlane(Box<ConstructionPlaneDetail>),
     JointOrigin(Box<JointOriginDetail>),
+    ConstructionPoint(Box<ConstructionPointDetail>),
+    ConstructionAxis(Box<ConstructionAxisDetail>),
     /// Any other type (or an unknown one): the JSON object as is.
     Other(Map<String, Value>),
 }
@@ -467,6 +530,12 @@ impl Detail {
                 Detail::ConstructionPlane(Box::new(ConstructionPlaneDetail::from_map(map)))
             }
             Some("JointOrigin") => Detail::JointOrigin(Box::new(JointOriginDetail::from_map(map))),
+            Some("ConstructionPoint") => {
+                Detail::ConstructionPoint(Box::new(ConstructionPointDetail::from_map(map)))
+            }
+            Some("ConstructionAxis") => {
+                Detail::ConstructionAxis(Box::new(ConstructionAxisDetail::from_map(map)))
+            }
             _ => Detail::Other(map),
         }
     }
@@ -618,6 +687,12 @@ record! {
         "referencedEntity" => referenced_entity: Reference,
         /// Decoder: class GUID of a curve whose type is not decoded.
         "_f3d_class" => f3d_class: String,
+        /// Decoder: where a whole circle starts in the file (radians,
+        /// counter-clockwise about the sketch normal from the sketch x
+        /// axis; its seam), read from the closed edge the first feature
+        /// that uses the circle made in the stored bodies. Absent when
+        /// no stored body holds the circle.
+        "_f3d_seam" => f3d_seam: f64,
     }
 }
 
@@ -694,6 +769,13 @@ record! {
         "class" => class: String,
         /// The flag bytes before the parameter holder (hex).
         "flags" => flags: Option<String>,
+        /// A driven dimension's shown value, as stored (it has no
+        /// parameter; mitcad#178).
+        "expression" => expression: String,
+        /// An ellipse's major or minor dimension whose value is the whole
+        /// axis, not the radius (flag 4 or 8 of the last eight flag bytes,
+        /// where the reference models' radius dimensions have 1 or 2).
+        "axisLength" => axis_length: bool,
     }
 }
 
@@ -997,9 +1079,11 @@ record! {
         "direction" => direction: Vec3,
         /// A body: the timeline index of the item that made it (its body
         /// record's producer, mitcad#96), by which the import finds it
-        /// among the bodies that item made.
+        /// among the bodies that item made. A fillet's or chamfer's edge
+        /// gives the producer of the body it is on the same way.
         "producer" => producer: i64,
-        /// A body: its index among the bodies its producer made.
+        /// A body: its index among the bodies its producer made (also
+        /// for the edge of a fillet or chamfer: its body's).
         "body_index" => body_index: i64,
         /// An edge or face found in another component's history than
         /// the item's (mitcad#161): that component (`components[]._f3d.
@@ -1009,6 +1093,15 @@ record! {
         /// spread over it (cm), by which the import finds every piece of
         /// it where the replay splits the face.
         "face_points" => face_points: Vec<Vec3>,
+        /// A cylindrical face found that goes all the way round (a thread's):
+        /// the unit direction of its surface's parameter origin, its seam,
+        /// where a modelled thread's helix starts.
+        "seam" => seam: Vec3,
+        /// An edge: the entities (indices into `entities`) of the faces
+        /// round each of its end vertices, the start first, in cyclic
+        /// order as the recipe lists them (mitcad#106: they tell mirror-image
+        /// edges between the same two faces apart).
+        "end_faces" => end_faces: Vec<Vec<i64>>,
     }
 }
 
@@ -1033,6 +1126,9 @@ record! {
         "taperAngle" => taper_angle: Reference,
         "angleOne" => angle_one: Reference,
         "angleTwo" => angle_two: Reference,
+        /// A start definition's plane (`ProfilePlaneStartDefinition`): the
+        /// profile's plane.
+        "profilePlane" => profile_plane: Geometry,
     }
 }
 
@@ -1185,7 +1281,7 @@ record! {
         "extentDefinition" => extent_definition: Definition,
         "position" => position: Vec3,
         "direction" => direction: Vec3,
-        "holePositionDefinition" => hole_position_definition: Value,
+        "holePositionDefinition" => hole_position_definition: HolePositionDefinition,
         "participantBodies" => participant_bodies: Vec<Reference>,
         "tappedHoleInfo" => tapped_hole_info: Value,
         "clearanceHoleInfo" => clearance_hole_info: Value,
@@ -1195,6 +1291,20 @@ record! {
         "isTapped" => is_tapped: bool,
         /// Schema version 1 only.
         "threadInfo" => thread_info: Value,
+    }
+}
+
+record! {
+    /// A hole's position definition (`PlaneAndOffsetsHolePositionDefinition`:
+    /// a face and the distances to two edges; others keep their keys in
+    /// `other`).
+    pub struct HolePositionDefinition {
+        "_type" => definition_type: String,
+        "planarEntity" => planar_entity: Reference,
+        "edgeOne" => edge_one: Reference,
+        "edgeTwo" => edge_two: Reference,
+        "offsetOne" => offset_one: Reference,
+        "offsetTwo" => offset_two: Reference,
     }
 }
 
@@ -1298,6 +1408,26 @@ record! {
 }
 
 record! {
+    /// `ConstructionPoint` detail: what the point is made from
+    /// (`ConstructionPointPointDefinition`: `pointEntity`, a vertex) and
+    /// where it is (cm).
+    pub struct ConstructionPointDetail {
+        "definition" => definition: Definition,
+        "geometry" => geometry: Vec3,
+        "isParametric" => is_parametric: bool,
+    }
+}
+
+record! {
+    /// `ConstructionAxis` detail: what the axis is made from and its line.
+    pub struct ConstructionAxisDetail {
+        "definition" => definition: Definition,
+        "geometry" => geometry: Geometry,
+        "isParametric" => is_parametric: bool,
+    }
+}
+
+record! {
     /// `JointOrigin` detail.
     pub struct JointOriginDetail {
         "geometry" => geometry: Value,
@@ -1352,6 +1482,14 @@ record! {
         /// Key (16 hex digits) that references to it carry.
         "key" => key: String,
         "urn" => urn: String,
+        /// The version the URN names (`?version=N`).
+        "version" => version: u32,
+        /// The two GUIDs before the URN (occurrences of its components
+        /// carry the first, mitcad#196).
+        "guids" => guids: Vec<String>,
+        /// The GUID after the URN: one of the GUIDs the referenced file's
+        /// `Manifest.dat` lists, which tells the file (mitcad#196).
+        "document_guid" => document_guid: String,
     }
 }
 

@@ -7,8 +7,9 @@
 #     and fill the view, the orientation cube stays on top, and the
 #     rendered block's silhouette matches the shaded one (screenshots).
 #   - Orbit, pan and zoom send the worker the new camera (a new view with
-#     its first frame's latency logged); the framing still matches the
-#     shaded view after them.
+#     its first frame's latency logged) once they end (mitcad#214): none
+#     while the button is held, one after the release, one after a burst of
+#     wheel steps; the framing still matches the shaded view after them.
 #   - A larger window renders larger frames, in a larger frame memory.
 #   - Killing the worker leaves the app working, with a message in the
 #     view; the mode starts it again, and leaving the mode ends it.
@@ -176,18 +177,53 @@ python3 "$STATS" "$WORK/rendered.xwd" $(ui_logged_at "Orientation cube front") 4
 echo "ok   the orientation cube is drawn over the render"
 
 echo "--- Orbit, pan and zoom"
+# Each navigation sends the worker one view, once it ends (mitcad#214): no
+# view while the button is held, however long it keeps still, one after the
+# release; a burst of wheel steps one after the quiet time.
+views_since() { tail -n +"$(($1 + 1))" "$UI_LOG" | grep -cE "Render view [0-9]+: (orthographic|perspective) "; }
+# one_view mark description: exactly one view was sent since the mark.
+one_view() {
+  local sent
+  sleep 1
+  sent=$(views_since "$1")
+  [ "$sent" = 1 ] || ui_fail "$2: $sent views sent to the worker (1 wanted)"
+  echo "ok   $2: one view sent"
+}
 before=$(last_view)
-orbit() { xdotool keydown shift; ui_view_drag 2 40 50 55 45; xdotool keyup shift; }
+ui_mark
+orbit() {
+  local i
+  xdotool keydown shift
+  ui_apart $(ui_view_at 40 50)
+  xdotool mousemove $(ui_view_at 40 50) mousedown 2
+  for i in 1 2 3 4 5; do
+    xdotool mousemove $(ui_view_at $((40 + 3 * i)) $((50 - i)))
+    sleep 0.05
+  done
+  sleep 0.7 # longer than the quiet time of a wheel burst
+  HELD=$(views_since "$UI_MARK")
+  xdotool mouseup 2
+  xdotool keyup shift
+}
 ui_step "orbit (Shift + middle drag)" orbit
+[ "$HELD" = 0 ] || ui_fail "$HELD views sent to the worker while the button was held"
+echo "ok   no view sent while the button was held"
 expect_new_view "$before" "the orbit restarted the render"
+one_view "$UI_MARK" "the orbit"
 before=$NEW_VIEW
+ui_mark
 ui_step "pan (middle drag)" ui_view_drag 2 50 50 45 55
 expect_new_view "$before" "the pan restarted the render"
+one_view "$UI_MARK" "the pan"
 before=$NEW_VIEW
-# Out: zoomed in, the block would reach past the region's edges, where the
-# silhouettes take their rows' background from.
-ui_step "zoom (wheel)" xdotool mousemove $(ui_view_at 50 50) click 5
+# Out in the end (two steps in, three out): zoomed in, the block would reach
+# past the region's edges, where the silhouettes take their rows'
+# background from.
+ui_mark
+ui_step "zoom (a burst of 5 wheel steps)" xdotool mousemove $(ui_view_at 50 50) \
+  click --repeat 2 --delay 50 4 click --repeat 3 --delay 50 5
 expect_new_view "$before" "the zoom restarted the render"
+one_view "$UI_MARK" "the wheel burst"
 expect_done "$NEW_VIEW" "the zoomed view refined"
 shot rendered-moved
 ui_step "leave the rendered view" ui_command "Rendered"

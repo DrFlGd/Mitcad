@@ -113,6 +113,42 @@ fn extents_starts_tapers_and_walls_reach_the_kernel() {
         spec.ends_with("along [-0.0, -0.0, -1.0] from offset 0: distance 5 taper 0"),
         "{spec}"
     );
+    // The sign of a two-sided extrusion's distance does not turn its side:
+    // each goes its own way by the size.
+    for (side1, side2, flip, expected) in [
+        (
+            json!({"type": "distance", "distance": 15}),
+            json!({"type": "distance", "distance": -4}),
+            false,
+            "along [0.0, 0.0, 1.0] from offset 0: distance 15 taper 0; distance 4 taper 0",
+        ),
+        (
+            json!({"type": "distance", "distance": -4}),
+            json!({"type": "distance", "distance": -15}),
+            true,
+            "along [-0.0, -0.0, -1.0] from offset 0: distance 4 taper 0; distance 15 taper 0",
+        ),
+    ] {
+        let (spec, status) = extrude_with(
+            &mut b,
+            json!({"type": "two_sides", "side1": side1, "side2": side2}),
+            json!({"flip": flip}),
+        );
+        assert!(spec.ends_with(expected), "{side1} {side2} {flip}: {spec}");
+        assert_eq!(status, FeatureStatus::Ok);
+    }
+    // Through all one way with a negative distance the other way.
+    let (spec, status) = extrude_with(
+        &mut b,
+        json!({"type": "two_sides", "side1": {"type": "through_all"},
+               "side2": {"type": "distance", "distance": -8}}),
+        json!({}),
+    );
+    assert!(
+        spec.contains("distance 26 taper 0; distance 8 taper 0"),
+        "{spec}"
+    );
+    assert_eq!(status, FeatureStatus::Ok);
 }
 
 #[test]
@@ -149,11 +185,11 @@ fn extrude_values_get_parameters_and_checks() {
     let rejected = [
         (
             extrude_def(
-                json!({"type": "two_sides", "side1": {"type": "distance", "distance": -1},
-                       "side2": {"type": "distance", "distance": 5}}),
+                json!({"type": "two_sides", "side1": {"type": "distance", "distance": 0},
+                       "side2": {"type": "distance", "distance": 0}}),
                 json!({}),
             ),
-            "must not be negative",
+            "add up to more than zero",
         ),
         (
             extrude_def(
@@ -754,6 +790,200 @@ fn cosmetic_threads_are_data_and_modelled_ones_geometry() {
         .unwrap_err()
         .to_string();
     assert!(error.contains("has no offset"), "{error}");
+}
+
+#[test]
+fn modelled_threads_take_extra_clearance() {
+    let mut doc = rod();
+    // Without clearance nothing changes: no fields, the same kernel call.
+    let plain = thread_def("F2:side(c1)", json!({"modeled": true}));
+    let uid = doc.add_feature(&plain, None).unwrap().uid;
+    let basic = "thread F2:side(c1) pitch 1.5 diameters 10.0000/8.3762/9.0257 angle 0.000000 \
+                 right true part None";
+    assert_eq!(last_spec(&doc), basic);
+    assert!(!doc.to_json().contains("clearance"), "{}", doc.to_json());
+
+    // Radial and flank clearance go to the kernel with the size unchanged:
+    // the same diameters, pitch, hand and part.
+    let loose = thread_def(
+        "F2:side(c1)",
+        json!({"modeled": true, "radial_clearance": 0.2, "flank_clearance": "0.05 mm",
+               "length": 12, "offset": 2, "thread": {"designation": "M10x1.5", "class": "6g",
+               "right_handed": false}}),
+    );
+    doc.edit_feature(uid, &loose).unwrap();
+    assert_eq!(status(&doc, uid), FeatureStatus::Ok);
+    assert_eq!(
+        last_spec(&doc),
+        "thread F2:side(c1) pitch 1.5 diameters 10.0000/8.3762/9.0257 angle 0.000000 \
+         right false part Some((12.0, 2.0, true)) clearance 0.2000/0.0500"
+    );
+    // Saved with the feature and loaded again as they were.
+    let FeatureDef::Thread(saved) = &doc.feature(uid).unwrap().def else {
+        panic!("a thread");
+    };
+    assert!(saved.radial_clearance.is_some() && saved.flank_clearance.is_some());
+    let text = doc.to_json();
+    assert!(text.contains("radial_clearance"), "{text}");
+    let loaded = Document::from_json(&text, MockKernel::default()).unwrap();
+    assert_eq!(loaded.to_json(), text);
+    assert_eq!(
+        loaded.feature(uid).unwrap().def,
+        doc.feature(uid).unwrap().def
+    );
+
+    // Undo and redo bring the values back and forth.
+    doc.undo();
+    assert!(!doc.to_json().contains("clearance"));
+    doc.redo();
+    assert!(doc.to_json().contains("flank_clearance"));
+
+    // A parameter expression: the thread follows the parameter, and fails
+    // (not clamped) once the parameter goes negative.
+    doc.add_parameter("gap", 0.1, "").unwrap();
+    let by_name = thread_def(
+        "F2:side(c1)",
+        json!({"modeled": true, "radial_clearance": "gap * 2"}),
+    );
+    doc.edit_feature(uid, &by_name).unwrap();
+    assert_eq!(status(&doc, uid), FeatureStatus::Ok);
+    assert!(
+        last_spec(&doc).ends_with("clearance 0.2000/0.0000"),
+        "{}",
+        last_spec(&doc)
+    );
+    doc.set_parameter("gap", 0.15).unwrap();
+    assert!(
+        last_spec(&doc).ends_with("clearance 0.3000/0.0000"),
+        "{}",
+        last_spec(&doc)
+    );
+    doc.set_parameter("gap", -0.1).unwrap();
+    let FeatureStatus::Failed(message) = status(&doc, uid) else {
+        panic!("a negative clearance");
+    };
+    assert!(
+        message.contains("radial clearance must be a finite length of 0 or more"),
+        "{message}"
+    );
+    doc.set_parameter("gap", 0.1).unwrap();
+    assert_eq!(status(&doc, uid), FeatureStatus::Ok);
+
+    // Zero is no clearance: the same kernel call as without.
+    let zero = thread_def(
+        "F2:side(c1)",
+        json!({"modeled": true, "radial_clearance": 0, "flank_clearance": 0}),
+    );
+    doc.edit_feature(uid, &zero).unwrap();
+    assert_eq!(last_spec(&doc), basic);
+
+    // Negative values, clearance on a cosmetic thread, and a flank
+    // clearance that leaves no tooth (the basic crest is P/8 = 0.1875 wide;
+    // 0.1 per flank takes 0.231 off it).
+    let negative = thread_def(
+        "F2:side(c1)",
+        json!({"modeled": true, "flank_clearance": -0.05}),
+    );
+    let error = doc.edit_feature(uid, &negative).unwrap_err().to_string();
+    assert!(
+        error.contains("flank clearance must be a finite length of 0 or more"),
+        "{error}"
+    );
+    let cosmetic = thread_def("F2:side(c1)", json!({"radial_clearance": 0.2}));
+    let error = doc.edit_feature(uid, &cosmetic).unwrap_err().to_string();
+    assert!(error.contains("only a modelled thread"), "{error}");
+    let too_much = thread_def(
+        "F2:side(c1)",
+        json!({"modeled": true, "flank_clearance": 0.1}),
+    );
+    doc.edit_feature(uid, &too_much).unwrap();
+    let FeatureStatus::Failed(message) = status(&doc, uid) else {
+        panic!("no tooth left");
+    };
+    assert!(message.contains("leaves no usable tooth"), "{message}");
+    // A radial clearance that leaves an external thread no core.
+    let no_core = thread_def(
+        "F2:side(c1)",
+        json!({"modeled": true, "radial_clearance": 4.5}),
+    );
+    doc.edit_feature(uid, &no_core).unwrap();
+    let FeatureStatus::Failed(message) = status(&doc, uid) else {
+        panic!("no core left");
+    };
+    assert!(message.contains("no core"), "{message}");
+}
+
+#[test]
+fn tapped_holes_take_extra_clearance() {
+    let mut b = block();
+    let on_top = json!({"type": "face", "body": "F2.b0", "face": TOP, "points": [[10, 10, 20]]});
+    let uid = b
+        .doc
+        .add_feature(
+            &hole_def(
+                on_top.clone(),
+                json!({"thread": {"designation": "M6x1", "class": "6H", "modeled": true,
+                                  "radial_clearance": 0.15, "flank_clearance": 0.02}}),
+            ),
+            None,
+        )
+        .unwrap()
+        .uid;
+    assert_eq!(status(&b.doc, uid), FeatureStatus::Ok);
+    // The bore stays the size's minor diameter; the thread gets the
+    // clearance with the size's own diameters.
+    assert_eq!(
+        last_spec(&b.doc),
+        "thread F3:hole0.wall pitch 1 diameters 6.0000/4.9175/5.3505 angle 0.000000 \
+         right true part None clearance 0.1500/0.0200"
+    );
+    let text = b.doc.to_json();
+    let loaded = Document::from_json(&text, MockKernel::default()).unwrap();
+    assert_eq!(loaded.to_json(), text);
+
+    // Checked as the thread feature's: negative, cosmetic, no tooth left
+    // (an internal M6x1's crest is P/4 = 0.25 wide; 0.12 per flank takes
+    // 0.277 off it).
+    let error = b
+        .doc
+        .edit_feature(
+            uid,
+            &hole_def(
+                on_top.clone(),
+                json!({"thread": {"designation": "M6x1", "modeled": true, "radial_clearance": -1}}),
+            ),
+        )
+        .unwrap_err()
+        .to_string();
+    assert!(
+        error.contains("radial clearance must be a finite length of 0 or more"),
+        "{error}"
+    );
+    let error = b
+        .doc
+        .edit_feature(
+            uid,
+            &hole_def(
+                on_top.clone(),
+                json!({"thread": {"designation": "M6x1", "flank_clearance": 0.02}}),
+            ),
+        )
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("only a modelled thread"), "{error}");
+    b.doc
+        .edit_feature(
+            uid,
+            &hole_def(
+                on_top,
+                json!({"thread": {"designation": "M6x1", "modeled": true, "flank_clearance": 0.12}}),
+            ),
+        )
+        .unwrap();
+    let FeatureStatus::Failed(message) = status(&b.doc, uid) else {
+        panic!("no tooth left");
+    };
+    assert!(message.contains("leaves no usable tooth"), "{message}");
 }
 
 #[test]

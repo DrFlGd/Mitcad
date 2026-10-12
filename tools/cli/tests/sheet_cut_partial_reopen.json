@@ -1,0 +1,8 @@
+[
+  {"comment":"SPDX-License-Identifier: MIT. The reopened partial cut history (mitcad#208)."},
+  {"expect":{"feature":"F10","status":"ok","body":"F3.b0","volume":2480.2831491339555,"min":[-30,0,-17],"max":[20.654866776461628,20,0]}},
+  {"cmd":"set_marker","position":9},
+  {"expect":{"body":"F3.b0","volume":2500.3893421169302,"min":[-30,0,-2],"max":[20,20,18]}},
+  {"cmd":"undo"},
+  {"expect":{"query":{"query":"flat_pattern","body":"F3.b0"},"result":{"status":"valid","area":1227.5752039526186}}}
+]

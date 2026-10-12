@@ -79,7 +79,7 @@ const char* const kUsage = R"(usage:
   mitcad-cli import-f3d <file.f3d> [--save <out.mitcad>] [--report <report.json>] [--json]
                         [--design <name>] [--dump <dump.json>] [--no-verify] [--no-fallback]
                         [--no-compare] [--time-limit <seconds>] [--hang-limit <seconds>]
-                        [--threads N] [--learn <dir>]
+                        [--threads N] [--learn <dir>] [--references <dir>]... [--no-references]
       Imports an .f3d or .f3z design with its timeline: parameters,
       sketches and features replayed as Mitcad features, checked against
       the file's ASM history; an item that cannot be replayed becomes a
@@ -97,6 +97,14 @@ const char* const kUsage = R"(usage:
       most 8; 1: one after another); the import is the same, only faster.
       --learn writes the items the history settled, with their raw records,
       to <dir> (also MITCAD_IMPORT_LEARN; core/import/README.md).
+      Components of other documents (inserted designs) are imported from
+      their documents' files: those of the folder next to the design
+      (<design> vN.refs/, with its references.json) and of the folders
+      given with --references (by references.json or by the GUID each file
+      lists), each with its history and its own references, and placed
+      where the design places them; documents not found leave their
+      components empty, the report naming them. It never asks for them.
+      --no-references leaves them all empty.
   mitcad-cli import-f3d <file.f3d> --bodies-only [--history] [--owners] [--save <out.mitcad>] [--json]
       Imports the bodies of an .f3d or .f3z file without their
       history: one base feature per body, built from the file's B-rep data.
@@ -184,6 +192,14 @@ const char* const kUsage = R"(usage:
   mitcad-cli export-sketch <file.mitcad> <sketch> <out.dxf> [--r12]
       Writes the geometry of a sketch (uid or name) to a DXF file (R2000,
       or R12 with --r12).
+  mitcad-cli export-flat <file.mitcad> <body> <out.dxf> [--unit mm|cm|m|in|ft]
+                         [--back] [--tangents] [--r12]
+      Writes the Flat Pattern of a sheet-metal body (uid or name) to a DXF
+      file: the cut contours on CUT_OUTER and CUT_INNER, bend centre lines
+      on BEND_UP and BEND_DOWN (--tangents: tangent lines on BEND_TANGENT),
+      in the fixed panel's frame seen from its front (--back: the back),
+      in millimetres unless --unit says otherwise. An invalid pattern is
+      refused with its reasons.
 )"
                           // MSVC takes at most 16 KiB in one literal (C2026).
                           R"(  mitcad-cli project init <folder> [--author "Name <email>"] [--no-history]
@@ -668,6 +684,37 @@ int export_sketch(const std::vector<std::string>& args) {
   }
   std::string command = R"({"cmd": "export_sketch", "sketch": )" + json_string(a.positional[1]) +
                         R"(, "path": )" + json_string(a.positional[2]);
+  if (a.flag("--r12")) {
+    command += R"(, "version": "r12")";
+  }
+  command += "}";
+  rust::Box<mitcad::Document> document = open_document(a.positional[0]);
+  const std::string result(document->command(command));
+  std::cout << (a.flag("--json") ? result : "Exported: " + result) << "\n";
+  return 0;
+}
+
+// The Flat Pattern of a sheet-metal body as a DXF drawing (mitcad#210).
+int export_flat(const std::vector<std::string>& args) {
+  Arguments a;
+  std::string problem;
+  if (!parse_arguments(args, {"--unit"}, {"--back", "--tangents", "--r12", "--json"}, a, problem)) {
+    return usage(problem);
+  }
+  if (a.positional.size() != 3) {
+    return usage("export-flat needs a design, a sheet-metal body and an output file");
+  }
+  std::string command = R"({"cmd": "export_flat_pattern_dxf", "body": )" + json_string(a.positional[1]) +
+                        R"(, "path": )" + json_string(a.positional[2]);
+  if (const std::string* unit = a.option("--unit")) {
+    command += R"(, "unit": )" + json_string(*unit);
+  }
+  if (a.flag("--back")) {
+    command += R"(, "reference_side": "back")";
+  }
+  if (a.flag("--tangents")) {
+    command += R"(, "tangents": true)";
+  }
   if (a.flag("--r12")) {
     command += R"(, "version": "r12")";
   }
@@ -1199,6 +1246,9 @@ int run(int argc, char* argv[]) {
     }
     if (mode == "export-sketch") {
       return export_sketch(args);
+    }
+    if (mode == "export-flat") {
+      return export_flat(args);
     }
     if (mode == "measure") {
       return measure(args);

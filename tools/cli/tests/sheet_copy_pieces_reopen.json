@@ -1,0 +1,10 @@
+[
+  {"comment":"SPDX-License-Identifier: MIT. Reopened copy of split sheet pieces with their Flat Patterns (mitcad#125)."},
+  {"expect":{"bodies":4}},
+  {"expect":{"body":"F9.b0","volume":300}},
+  {"expect":{"body":"F12.b0","volume":1107.809724509617}},
+  {"expect":{"query":{"query":"sheet_state","body":"F12.b0"},"result":{"body":"F12.b0","owner":"C2","rules":"F7","status":"valid"}}},
+  {"expect":{"query":{"query":"flat_pattern","body":"F9.b0"},"result":{"status":"valid","area":300,"stationary":{"feature":"F9","slot":0}}}},
+  {"expect":{"query":{"query":"flat_pattern","body":"F12.b0"},"result":{"status":"valid","area":1103.097335529233,"stationary":{"feature":"F9","slot":0},"settings":{"reference_side":"back"}}}},
+  {"expect":{"query":{"query":"flat_pattern","body":"F6.b0"},"result":{"status":"valid","area":1103.097335529233}}}
+]

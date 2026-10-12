@@ -135,11 +135,16 @@ convert values as follows:
   gave for them. A body reference also has `producer` and `body_index`
   where its record names them: the timeline index of the item that made
   the body and the body's position among that item's bodies (mitcad#96);
-  a body whose recipe does not decode has only those. An edge found there gets `mid_point`, `length`,
-  `start_point` and `end_point`; a body `_f3d.edge_points` (middle points
+  a body whose recipe does not decode has only those. A fillet's or
+  chamfer's edge (or face) has them too, from the record of the body it is
+  on, where it refers to one. An edge found there gets `mid_point`, `length`,
+  `start_point` and `end_point` (and, from the tail of its recipe, `_f3d.end_faces`:
+  per end vertex, the start first, the entities, indices into `_f3d.entities`, of the faces
+  round it counter-clockwise seen from outside; core/f3d/EDGE_ORDER.md); a body `_f3d.edge_points` (middle points
   of some of its edges); a cylindrical face `geometry` (`Cylinder`:
   origin, axis as the file's surface has it, radius), `point_on_face` and
-  `normal_at_point`; a face of another surface type its `geometry`
+  `normal_at_point` (a whole cylinder also `_f3d.seam`: the unit direction
+  of its surface's parameter origin, where a modelled thread's helix starts); a face of another surface type its `geometry`
   (`Plane`, `Cone`, `Sphere`, `Torus` with their data, `NurbsSurface` for
   any free-form surface, type only), `point_on_face` and
   `normal_at_point`, and a free-form one `_f3d.face_points` (more points
@@ -152,7 +157,11 @@ convert values as follows:
   out a timeline item in another component's feature list (a cut through
   the bodies of two components) comes as an item of its own right after
   its item, with an `index` after the timeline's items and
-  `_f3d.part_of`, the item's index (mitcad#169).
+  `_f3d.part_of`, the item's index (mitcad#169). A construction plane's or
+  point's stored definition code is `_f3d.datum_code` (planes: 0 offset
+  or parallel through a point, 1 angle, 2 three points, 3 mid plane, 5 and
+  10 tangent, 6 along a path, 7 two edges, 9 tangent at a point; points: 0
+  at a vertex or point, 2 three planes, 3 centre of a circle; mitcad#186).
 - **External dumps** come from other tools that read a design and write
   more than the decoder: feature inputs as B-rep fingerprints, bodies
   after each timeline item (`steps`), final bodies with faces (`final`),
@@ -359,6 +368,21 @@ transform, so the last one is where the file shows the occurrence. A
 nested occurrence whose path the file does not name gets them only where
 the tree has one node of it.
 
+Components of other documents (mitcad#196): an occurrence with
+`isReferencedComponent` has `_f3d.external_key` and
+`_f3d.external_document` (the document's key in this design and its URN,
+`…?version=N`) and `_f3d.component_object`, the component's object id in
+that document (its root component's, in the designs read). Every
+occurrence has `_f3d.guids`: the GUIDs (`str16`) in its object, lower
+case; the occurrence paths of captured positions and relationships name
+their levels by one of them (`path_guids`), also the levels inside a
+component of another document, which are occurrences of that document.
+`_f3d.external_documents` lists the documents: `key`, `urn`, `version`
+(the URN's), `guids` (the two GUIDs before the URN in the MetaStream's
+tail; occurrences of the document's components carry the first) and
+`document_guid` (the GUID after it: one of the GUIDs the referenced
+file's `Manifest.dat` lists, which tells the file).
+
 ### 5.3 timeline
 
 ```
@@ -379,11 +403,11 @@ its group in `group`.
 |---|---|
 | `index` | timeline index |
 | `group` | `{name, index}` of the containing group, or null |
-| `name` | timeline item name |
+| `name` | timeline item name. The stream decoder gives the custom name, else the default name the application shows: the file keeps construction planes, axes and joint origins under the internal bases `WorkPlane`, `WorkAxis` and `JointOrigin`, shown as `Plane1`, `Axis1` and `Joint Origin1` |
 | `objectType` | short type of the item's entity (`Sketch`, `ExtrudeFeature`, `ConstructionPlane`, `Occurrence`, `Joint`, ...), null if unknown. The stream decoder also names items it knows only by their class (`ComponentInsert`, `Fastener`, `GeometricRelationship`, `Group`, `FlangeFeature`, ...: [README](README.md#items-without-a-translation)) |
 | `entityToken`, `component` | of the entity; `component` is the owning component's name (the stream decoder: the component whose feature list holds the item, also for occurrence items, whose external dumps name the occurrence's component; its object id is `_f3d.component`) |
-| `isRolledBack` | at the document's original marker position |
-| `isSuppressed`, `healthState`, `errorOrWarningMessage` | read with the marker at the end; `healthState` is the health state's name |
+| `isRolledBack` | at the document's original marker position. The stream decoder writes `isRolledBack: true` (and nothing otherwise) for an item after the timeline marker: the second of the two state bytes before its last reference (`_f3d.after`), and the marker positions of the timeline ([README](README.md#items-suppressed-in-the-file)) |
+| `isSuppressed`, `healthState`, `errorOrWarningMessage` | read with the marker at the end; `healthState` is the health state's name. The stream decoder writes `isSuppressed: true` (and nothing otherwise) for an item its tail marks suppressed: result number -1 with the first or second of the three state bytes (`_f3d.flags`) set (`000100` an item the user suppressed, `010000` one suppressed through an item it depends on: `decode::item_suppression`); a third byte set alone (`000001`) marks an item whose change is all in its parts in other components (`_f3d.part_of`) (mitcad#180, [README](README.md#items-suppressed-in-the-file)) |
 | `detail_marker` | marker position when `detail` and `props` were read |
 | `detail` | dedicated fields (below) |
 | `props` | reflection fallback: the entity's other properties, two levels deep, without output collections |
@@ -456,15 +480,44 @@ which.
   `radius?`, `majorAxisRadius?`, `minorAxisRadius?`, `rhoValue?`, `degree?`,
   `isClosed?`, `length?`, `majorAxis?` (vec3); `geometry` (curve geometry
   in sketch space, including NURBS data for splines); `referencedEntity?`
-  (reference, for projected/included curves with `isReference`).
+  (reference, for projected/included curves with `isReference`). The
+  stream decoder gives the true flags `isConstruction`, `isCenterLine`,
+  `isFixed` and `isLinked` with `isReference` (always equal) and the three
+  spline types (mitcad#186); for a fitted spline `fitPoints` lists the end
+  points and those between; it gives no `referencedEntity`, and a fitted
+  spline's tangent handle lines are no curves (a constraint on one holds
+  the `sketch_entity` reference with its geometry). A whole circle the
+  stored bodies hold also carries `_f3d_seam`: where the file's circle
+  starts, in radians counter-clockwise about the sketch normal from the
+  sketch x axis (the circle record's own reference direction is always the
+  x axis), read from the start vertex of the closed edge the first
+  extrusion using it made.
 - `Constraint`: `id`, `type` (`CoincidentConstraint`,
   `HorizontalConstraint`, `TangentConstraint`, ...), `refs`, `props`.
+  The stream decoder also gives `SmoothConstraint` (type bit `0x200`) and
+  three types the API does not list, which constrain no geometry
+  (mitcad#186): `ControlPolygonConstraint` (bit 31: the lines of a control
+  point spline's polygon and the spline) and `TextBoxConstraint` (bit 40:
+  the four lines of a sketch text's box, and its corner point in some
+  files) and `TextPathConstraint` (bit 41: a text and one curve; unverified).
 - `Dimension`: `id`, `type` (`SketchLinearDimension`,
   `SketchDiameterDimension`, `SketchAngularDimension`, ...), `parameter`
   (parameter reference; null for some driven dimensions, K6), `isDriving`,
   `value` (internal units, cm or rad; for driven dimensions the only
   value), `textPosition` (vec3, sketch space; selects the quadrant of
-  angular dimensions, K3), `refs`, `props`.
+  angular dimensions, K3), `refs`, `props`. The stream decoder gives a
+  driven dimension (no parameter: a null holder reference) `isDriving`
+  false and the value it shows as stored in `_f3d.expression` (except a
+  distance between two lines or a point and a line, `SketchOffsetDimension`,
+  with no holder: those are driving, with no parameter); the class
+  of a dimension it cannot read is in `_f3d.class` (mitcad#178). It also
+  gives (mitcad#186) `SketchEllipseMajorRadiusDimension` and
+  `SketchEllipseMinorRadiusDimension` (one ellipse; `_f3d.axisLength` when its value is the whole axis, twice the radius), 
+  `SketchTangentDistanceDimension` (a line and a circle or arc: the
+  distance between them) and, for a point or line and a face or plane
+  outside the sketch, `SketchDistanceBetweenPointAndSurfaceDimension` and
+  `SketchDistanceBetweenLineAndPlanarSurfaceDimension` (the surface is an
+  `error` reference: not decoded).
   - `refs`: every property of the constraint or dimension whose value is
     an entity, keyed by property name (`point`, `entity`, `lineOne`,
     `curveTwo`, `entityOne`, ...). The value is a sketch-local id string
@@ -487,7 +540,17 @@ which.
     centre last.
 - `Text`: `id`, `text`, `height`, `position`, `fontName`, `angle`,
   `isHorizontalFlip`, `isVerticalFlip`, `textStyle` (raw value),
-  `boundingBox`, `definition?`.
+  `boundingBox`, `definition?`. `height` is the capital letters' height (cm).
+  The API gives no `position` and `angle` for a text in a box or on a path;
+  the stream decoder writes them when the file stores the text's placement
+  matrix (the box's corner and the baseline's direction), and `definition`
+  as `MultiLineTextDefinition` (`rectangleLines`: the box's four curves
+  `{kind: "sketch_entity", id}` in order, the first running along the
+  baseline from the text's corner; `horizontalAlignment`,
+  `verticalAlignment` as the API's names) or `AlongPathTextDefinition`
+  (`path`: the curve). `textStyle` bit 1 (bold) comes from the font weight
+  (600 and up); italic and underline are not decoded. `_f3d` holds the raw
+  flags, weight, width factor and kind.
 - `Profile`: `index`, `loops` (`[{isOuter, curves: [{curve, geometry}]}]`:
   `curve` is the id of the sketch curve the profile curve lies on,
   `geometry` the profile curve's own geometry, possibly part of that
@@ -522,22 +585,22 @@ parentheses.
 
 | objectType | detail keys |
 |---|---|
-| ExtrudeFeature | operation, profile, extentType, extentOne, extentTwo (`ToEntityExtentDefinition`: entity, isChained, offset, isMinimumSolution, directionHint; `ThroughAllExtentDefinition`: isPositiveDirection; `SymmetricExtentDefinition`: distance, isFullLength, taperAngle), hasTwoExtents, symmetricExtent, startExtent, taperAngleOne, taperAngleTwo, participantBodies, isSolid, isThinExtrude, thinExtrudeWallLocationOne/Two, thinExtrudeWallThicknessOne/Two |
-| RevolveFeature | operation, profile, axis, isProjectAxis, extentDefinition (angle, isSymmetric / angleOne, angleTwo / to-entity), isSolid, participantBodies |
-| HoleFeature | holeType, holeTapType, holeDiameter, tipAngle, counterboreDiameter, counterboreDepth, countersinkDiameter, countersinkAngle, isDefaultDirection, extentDefinition, position, direction, holePositionDefinition, participantBodies, tappedHoleInfo (a ThreadInfo), clearanceHoleInfo, thread (the hole's ThreadFeature: isModeled, isFullLength, threadLength, threadOffset, threadLocation, isRightHanded). The stream decoder gives a tapped hole's `holeTapType` (`TappedHoleTapType`), `tappedHoleInfo` and `thread` (`isModeled`, `isFullLength`, `threadLocation`, `threadLength` the thread depth, `threadOffset`) from its thread sub-item. It also gives (mitcad#67) `position`, the first of the hole's points (`_f3d_positions`, every point, in the component, cm), `holeType` (from the counterbore or countersink sizes among its parameters, else `SimpleHoleType`), `counterboreDiameter`, `counterboreDepth` and an `extentDefinition` `AllExtentDefinition` for a hole through all; not an extent up to an object, `direction` or `holePositionDefinition` |
-| ThreadFeature | threadInfo (isInternal, isRightHanded, isTapered, threadType, threadSize, threadDesignation, threadClass, majorDiameter, minorDiameter, pitchDiameter, threadPitch, threadAngle, ...), isModeled, isFullLength, threadLength, threadOffset, threadLocation, isRightHanded, inputCylindricalFaces, inputCylindricalFace, hole. The stream decoder gives `threadInfo` (type, size, designation, class, `isInternal`, the angle in degrees, the diameters and pitch in cm; not `isRightHanded`), `isModeled`, `isFullLength`, `threadLocation`, `threadLength`, `threadOffset` and `inputCylindricalFaces` (named faces, §2). The `.ipt` import gives a face as `{kind: face, geometry: {type: Cylinder, axis}, start_point, end_point}`: the thread's two ends (cm), on its cylinder's surface or axis, the import taking the cylinder through both |
+| ExtrudeFeature | operation, profile, extentType, extentOne, extentTwo (`ToEntityExtentDefinition`: entity, isChained, offset, isMinimumSolution, directionHint; `ThroughAllExtentDefinition`: isPositiveDirection; `SymmetricExtentDefinition`: distance, isFullLength, taperAngle), hasTwoExtents, symmetricExtent, startExtent, taperAngleOne, taperAngleTwo, participantBodies, isSolid, isThinExtrude, thinExtrudeWallLocationOne/Two, thinExtrudeWallThicknessOne/Two. The stream decoder gives the extents from the extrude record: `extentType` and `hasTwoExtents`; a side through all with `isPositiveDirection` (the flag byte: 0 along the sketch normal, 1 against it); `SymmetricExtentDefinition` (also as `symmetricExtent`) with its length byte as `isFullLength`; `ToEntityExtentDefinition` with `isChained` (the slot role 17 or 18), `isMinimumSolution` (the byte after the object reference) and `directionHint` (the stored direction vector, turned round by the flag byte); `isSymmetric` false on distances; `startExtent` `ProfilePlaneStartDefinition` (its `profilePlane` the sketch plane in sketch coordinates) |
+| RevolveFeature | operation, profile, axis, isProjectAxis, extentDefinition (angle, isSymmetric / angleOne, angleTwo / to-entity), isSolid, participantBodies. The stream decoder gives `operation`, `isSolid`, `isProjectAxis` (class version 2), `extentDefinition` (`isSymmetric`; `TwoSidesAngleExtentDefinition` with `angleOne`, `angleTwo`), `axis` (an origin or construction axis, a sketch line, a cylindrical or conical face, an edge) and `participantBodies` of a join or cut |
+| HoleFeature | holeType, holeTapType, holeDiameter, tipAngle, counterboreDiameter, counterboreDepth, countersinkDiameter, countersinkAngle, isDefaultDirection, extentDefinition, position, direction, holePositionDefinition, participantBodies, tappedHoleInfo (a ThreadInfo), clearanceHoleInfo, thread (the hole's ThreadFeature: isModeled, isFullLength, threadLength, threadOffset, threadLocation, isRightHanded). The stream decoder gives a tapped hole's `holeTapType` (`TappedHoleTapType`), `tappedHoleInfo` and `thread` (`isModeled`, `isFullLength`, `threadLocation`, `threadLength` the thread depth, `threadOffset`) from its thread sub-item. It also gives (mitcad#67) `position`, the first of the hole's points (`_f3d_positions`, every point, in the component, cm), `holeType` (from the counterbore or countersink sizes among its parameters, else `SimpleHoleType`), `counterboreDiameter`, `counterboreDepth` and an `extentDefinition` from the hole's slot of role 5 (`AllExtentDefinition` with the bodies as its input, `OneSideToExtentDefinition`, its type only, with a plane or face; a hole without such a slot goes to its depth), and `holePositionDefinition` (`PlaneAndOffsetsHolePositionDefinition`: `planarEntity`, `edgeOne`, `edgeTwo`, `offsetOne`, `offsetTwo`); not `direction` or `isDefaultDirection` |
+| ThreadFeature | threadInfo (isInternal, isRightHanded, isTapered, threadType, threadSize, threadDesignation, threadClass, majorDiameter, minorDiameter, pitchDiameter, threadPitch, threadAngle, ...), isModeled, isFullLength, threadLength, threadOffset, threadLocation, isRightHanded, inputCylindricalFaces, inputCylindricalFace, hole. The stream decoder gives `threadInfo` (type, size, designation, class, `isInternal`, `isRightHanded` (versions 4 and 5 of the thread object), the angle in degrees, the diameters and pitch in cm), `isModeled`, `isFullLength`, `threadLocation`, `threadLength`, `threadOffset` and `inputCylindricalFaces` (named faces, §2). The `.ipt` import gives a face as `{kind: face, geometry: {type: Cylinder, axis}, start_point, end_point}`: the thread's two ends (cm), on its cylinder's surface or axis, the import taking the cylinder through both |
 | FilletFeature | filletFeatureType, edgeSets (`ConstantRadiusFilletEdgeSet`: edges, radius, isTangentChain, continuity, tangencyWeight; variable radius: startRadius, endRadius, midRadii, midPositions; chord length; asymmetric), isRollingBallCorner, ruleFilletSettings, fullRoundFilletFaceSets; retired isG2, isTangentChain |
 | ChamferFeature | edgeSets (distance / distanceOne, distanceTwo / distance, angle; isFlipped, isTangentChain), cornerType; retired chamferType, chamferTypeDefinition, edges, isTangentChain |
-| ShellFeature | inputEntities, insideThickness, outsideThickness, isTangentChain, shellType. The `.ipt` decoder gives the body as `inputEntities` and the number of faces removed as `_ipt_removed_faces`, not the faces: the import finds them with the history (the faces of the body the next state no longer has) |
+| ShellFeature | inputEntities, insideThickness, outsideThickness, isTangentChain, shellType. The stream decoder gives `isTangentChain` and `shellType` (`RoundedOffsetShellType` or `SharpOffsetShellType`) from the two bytes after the root part. The `.ipt` decoder gives the body as `inputEntities` and the number of faces removed as `_ipt_removed_faces`, not the faces: the import finds them with the history (the faces of the body the next state no longer has) |
 | DraftFeature | inputFaces, plane, isTangentChain, isDirectionFlipped, draftDefinition (angles, symmetry); preview draftType, partingLineType, partingLineCurves, movingPartingLineDirection, movingPartingLineFixedEdges |
 | SweepFeature | profile, path, guideRail, guideSurfaces, operation, orientation, distanceOne, distanceTwo, taperAngle, twistAngle, isSolid, profileScaling, extent, isDirectionFlipped, isChainSelection, participantBodies, solidBody, solidOrientation, solidAlignedAxis, solidTwistAxis. The stream decoder gives `operation`, `profile` (one profile reference per selected profile, with its sketch only), `path` and `guideRail` (`PathEntity` items of sketch curves or named edges, §2), `guideSurfaces` (their named faces, when there are some), the distances, `taperAngle` and `twistAngle` |
 | LoftFeature | loftSections (entity, index, endCondition), centerLineOrRails, centerLineOrRails.isCenterLine, operation, isSolid, isClosed, isTangentEdgesMerged, startLoftEdgeAlignment, endLoftEdgeAlignment, participantBodies. The stream decoder gives `operation`, `loftSections` (`entity` a profile with its sketch only, a sketch point, or a list of `PathEntity` items of named edges; the first and last sections' `endCondition` with its `weight` and `angle`), and `centerLineOrRails` as a list of paths (`PathEntity` lists) with `centerLineOrRails.isCenterLine` |
 | PipeFeature | path, sectionType, sectionSize, sectionThickness, isHollow, operation, distanceOne, distanceTwo, participantBodies. The stream decoder gives `operation`, `path` (as a sweep's), `sectionSize`, `sectionThickness` and the distances, not `sectionType` and `isHollow` |
 | CoilFeature, RibFeature, WebFeature | external dumps: no inputs are recorded; their model parameters (`parameters.model`: `role`, `createdBy`) give the sizes. The stream decoder gives a coil's `diameter`, `pitch`, `revolutions`, `angle` and `sectionSize` (the same parameters); its plane, frame and choices are not decoded. The `.ipt` import gives `coilType`, `pitch`, `height`, `revolutions`, `angle`, `operation`, `profile` (profile references) and `axis` (a sketch line, an origin axis, or a work axis by its geometry, fixed where it is) with `flip` (the coil runs against the axis reference), without the hand |
-| RectangularPatternFeature | inputEntities, patternEntityType, directionOneEntity, directionTwoEntity, directionOne, directionTwo (vectors), quantityOne, quantityTwo, distanceOne, distanceTwo, patternDistanceType, isSymmetricInDirectionOne/Two, patternComputeOption, suppressedElementsIds. The stream decoder gives `inputEntities` (bodies, features as `feature` references, or faces) with `patternEntityType`, and each direction's entity (an origin or construction axis, a sketch line, an edge or a face) with its vector where one is stored (mitcad#67) |
-| CircularPatternFeature | inputEntities, patternEntityType, axis, quantity, totalAngle, isSymmetric, patternComputeOption, suppressedElementsIds. The stream decoder gives `inputEntities` and `patternEntityType` as for rectangular patterns, and the `axis` (an origin or construction axis, a sketch line, an edge or a face) |
+| RectangularPatternFeature | inputEntities, patternEntityType, directionOneEntity, directionTwoEntity, directionOne, directionTwo (vectors), quantityOne, quantityTwo, distanceOne, distanceTwo, patternDistanceType, isSymmetricInDirectionOne/Two, patternComputeOption, suppressedElementsIds. The stream decoder gives `inputEntities` (bodies, features as `feature` references, or faces) with `patternEntityType`, and each direction's entity (an origin or construction axis, a sketch line, an edge or a face) with its vector where one is stored (mitcad#67), and the data object's settings (mitcad#186): `patternDistanceType`, `isSymmetricInDirectionOne` (and `Two` for a second direction), `patternComputeOption` and, for a pattern with no suppressed element, `suppressedElementsIds` `[]`. A second direction with no entity has its vector from the data object (24 bytes after a `-1` marker before the two distances' holders; all zero when the pattern has one direction, then none is given). A flipped direction is a negative `distanceOne`; no flag and no changed vector |
+| CircularPatternFeature | inputEntities, patternEntityType, axis, quantity, totalAngle, isSymmetric, patternComputeOption, suppressedElementsIds. The stream decoder gives `inputEntities` and `patternEntityType` as for rectangular patterns, and the `axis` (an origin or construction axis, a sketch line, an edge or a face), and the data object's settings (mitcad#186): `isSymmetric`, `patternComputeOption` and `suppressedElementsIds` (the API's numbering, the original 0) |
 | PathPatternFeature | inputEntities, patternEntityType, path, quantity, distance, startPoint, patternDistanceType, isFlipDirection, isOrientationAlongPath, isSymmetric, patternComputeOption, suppressedElementsIds |
-| MirrorFeature | inputEntities, mirrorPlane, patternComputeOption, isCombine, stitchTolerance. The stream decoder gives `inputEntities` and `patternEntityType` as for patterns, and `mirrorPlane` (an origin or construction plane, or a planar face by its names) |
+| MirrorFeature | inputEntities, mirrorPlane, patternComputeOption, isCombine, stitchTolerance. The stream decoder gives `inputEntities` and `patternEntityType` as for patterns, and `mirrorPlane` (an origin or construction plane, or a planar face by its names), `isCombine` and `patternComputeOption` (mitcad#186) |
 | CombineFeature | targetBody, toolBodies, operation, isKeepToolBodies, isNewComponent. The stream decoder gives `operation`, `isKeepToolBodies`, `targetBody` and `toolBodies` (bodies by their names, mitcad#67). The `.ipt` decoder reads them from the record and marks them `_ipt_inputs`: the history then guesses bodies, not other operations |
 | SplitBodyFeature | splitBodies, splittingTool, isSplittingToolExtended. The stream decoder gives `splitBodies`, `isSplittingToolExtended` and `splittingTool` when the tool is one plane, face or body (mitcad#67) |
 | SplitFaceFeature | facesToSplit, splittingTool, splitType, directionEntity, isSplittingToolExtended. The `.ipt` decoder gives `splittingTool` (profiles of a sketch, or a construction plane) and the `body`, not the faces: the import finds them with the history (the faces of the body the next state changed that it no longer has whole); profiles are split along the curves around their regions, then along the whole sketch |
@@ -551,8 +614,8 @@ parentheses.
 | RemoveFeature | itemToRemove |
 | OffsetFeature, PatchFeature, StitchFeature, ExtendFeature, TrimFeature, RuledSurfaceFeature, SilhouetteSplitFeature, BoundaryFillFeature | their input entities and parameters (unverified) |
 | BaseFeature | sourceBodies |
-| ConstructionPlane | definition (e.g. `ConstructionPlaneOffsetDefinition`: planarEntity, offset; the `.ipt` import also gives `ConstructionPlaneMidplaneDefinition`: planarEntityOne, planarEntityTwo, `ConstructionPlaneAtAngleDefinition`: linearEntity, planarEntity, angle, `ConstructionPlaneThreePointsDefinition`: pointEntityOne, pointEntityTwo, pointEntityThree, `ConstructionPlaneTwoEdgesDefinition`: linearEntityOne, linearEntityTwo, `ConstructionPlaneLineAndPointDefinition` (through both) and `ConstructionPlaneNormalToLineDefinition` (through the point, normal to the line): linearEntity, pointEntity; a plane, axis or point (`Point3D` with its `origin`) off the timeline by its `geometry`), geometry, transform, isParametric |
-| ConstructionAxis, ConstructionPoint | definition, geometry, isParametric |
+| ConstructionPlane | definition (e.g. `ConstructionPlaneOffsetDefinition`: planarEntity, offset; the `.ipt` import also gives `ConstructionPlaneMidplaneDefinition`: planarEntityOne, planarEntityTwo, `ConstructionPlaneAtAngleDefinition`: linearEntity, planarEntity, angle, `ConstructionPlaneThreePointsDefinition`: pointEntityOne, pointEntityTwo, pointEntityThree, `ConstructionPlaneTwoEdgesDefinition`: linearEntityOne, linearEntityTwo, `ConstructionPlaneLineAndPointDefinition` (through both) and `ConstructionPlaneNormalToLineDefinition` (through the point, normal to the line): linearEntity, pointEntity; a plane, axis or point (`Point3D` with its `origin`) off the timeline by its `geometry`), geometry, transform, isParametric. The stream decoder (mitcad#178) gives the offset's planarEntity, the angle's linearEntity (an axis, an edge, a sketch line, or a cylindrical or conical face: a tangent plane) and planarEntity where the item names one (a face, a plane or a sketch profile, `kind: profile`), `ConstructionPlaneDistanceOnPathDefinition`'s distance and `pathEntities` (edges or sketch curves), and, for items without a parameter, the midplane, two-edge, line-and-point and three-point definitions from what their inputs are; faces and edges with their geometry where the history at the item's place in the timeline has them |
+| ConstructionAxis, ConstructionPoint | definition, geometry, isParametric. The stream decoder (mitcad#186) gives, from the entities an item names (`_f3d.datum_code`: its stored definition code), a plane's definitions through three points (vertices, construction points or sketch points: `pointEntityOne`, `pointEntityTwo`, `pointEntityThree`), tangent to a face at a point (`ConstructionPlaneTangentAtPointDefinition`: `tangentFace`, `pointEntity`), tangent to a face with a reference plane and an angle (`ConstructionPlaneTangentDefinition`: `tangentFace`, `planarEntity`, `angle`) and parallel to a plane through a point (`ConstructionPlaneOffsetThroughPointDefinition`: `planarEntity`, `point`, the offset parameter being the distance); a point's `ConstructionPointPointDefinition` (`pointEntity`), `ConstructionPointCenterDefinition` (`circularEntity`) and `ConstructionPointThreePlanesDefinition` (`planeOne`, `planeTwo`, `planeThree`); an axis' `ConstructionAxisEdgeDefinition` (`edgeEntity`: an edge or sketch line), `ConstructionAxisCircularFaceDefinition` (`circularFace`), `ConstructionAxisTwoPointDefinition` (`pointEntityOne`, `pointEntityTwo`) `ConstructionAxisTwoPlaneDefinition` (`planarEntityOne`, `planarEntityTwo`) and `ConstructionAxisNormalToFaceAtPointDefinition` (`face`, which may be a sketch profile, `pointEntity`). A vertex is `{"kind": "vertex", "objectType": "BRepVertex", "point": [x, y, z], "_f3d": ...}`, its position (cm) found in the history at the item's place; a point's `geometry` is `[x, y, z]` (cm), an axis' the line the item stores |
 | Occurrence | component, fullPathName, transform2, transform (retired), initialTransform, isGrounded, isGroundToParent, isReferencedComponent, isLightBulbOn, isVisible. The stream decoder (mitcad#75) gives the items that place occurrences (`Occurrence`, `ComponentInsert`, `Fastener`, `CopyPasteOccurrence`, `DerivedInstance`) `occurrence`: the occurrence the item made, an `occurrence` reference whose `_f3d.path` is its object id |
 | Joint | occurrenceOne, occurrenceTwo, geometryOrOriginOne, geometryOrOriginTwo, jointMotion, offset, angle, isFlipped, isLocked. The stream decoder (mitcad#66) gives `occurrenceOne`/`Two` (`occurrence` references with `component` and `_f3d`: `path`, the occurrence object ids from the joint's component down, `null` for a level in another document (one level of the file can name several occurrences, a path inside a component of another document: each is a level here, mitcad#75); `path_guids`; `context_component`), `geometryOrOriginOne`/`Two` (a `JointGeometry`: `origin`, `primaryAxisVector`, `secondaryAxisVector`, `thirdAxisVector` of the side's frame in its component, `entityOne`/`entityTwo` the faces or edges its key point and direction name, by their names; `_f3d`: `frame`, `key_points`, `directions` with their codes; or a `feature` reference to a joint origin on the timeline; or `{_type: JointOrigin, _f3d: {entity_input, target}}` for an origin in another document), `jointMotion` (`<Kind>JointMotion` with `jointType`, `rotationLimits`/`slideLimits` (`JointLimits` of parameter references) and `_f3d`: `type_code` (rigid 0, revolute 1, slider 2, cylindrical 4, pin-slot 6, planar 7, ball 8; mitcad#81) and `motions`, the free motions in the order turns about x, y, z, slides along x, y, z, each `{motion, axis, limits}` (`rx` … `tz`, an axis code, the stored maximum, minimum and rest values; the current values are not stored with the joint: the occurrences' `placements` give them)), `angle`, `offset` (z) and `offsetX`, `offsetY` (parameter references), `isFlipped` (the frames' z axes opposed), and `_f3d`: `opposed` (the same as a byte), `frames` (each side's stored frame, the identity where none is stored), `aligned_frame` (side one's frame with the alignment applied). With the occurrences' placements after the joint (`_f3d.placements`), `world(one) · frame one · Rx(π if isFlipped) · T(−offset) · Rz(−angle) = world(two) · frame two` (mitcad#81: the joint test model's joints at 30°, flipped and not); a ball joint's values are `Rz(pitch) · Rx(yaw) · Rz(roll)` about its pitch and yaw axes |
 | AsBuiltJoint | occurrenceOne, occurrenceTwo, geometry, jointMotion, offset. The stream decoder gives `occurrenceOne`/`Two`, `geometry` (a `JointGeometry` or null), `jointMotion` as for joints, and `_f3d.placements`: each occurrence with the frame recorded in its component (`{occurrence, frame}`), the recorded placement |
@@ -568,6 +631,30 @@ parentheses.
 Detail keys are left out of `props`, so nothing is repeated. The stream
 decoder writes the main fields of the types it decodes; what the import
 reads is listed in `core/model/src/api/commands.md` (*From the dump IR*).
+
+Input selection details (mitcad#186):
+
+- An extrusion's `participantBodies` is read from its role-8 input slot.
+  Body references in termination slots are not participants. A decoded
+  empty slot remains an empty list; a missing or unresolved slot retains
+  the older body-input traversal. This field names the input selection;
+  resolving it to a replayed body is a separate step.
+- For constant-radius fillets and chamfers, a size parameter's holder
+  identifies its set record and that record's counted selection input.
+  A reordered flat input list therefore does not reorder the edge sets.
+  The direct reading requires one set and one selection group, selector
+  8 or 16, and a complete nonempty list of decoded edge/face references.
+  Unsupported or incomplete layouts keep the older group reading.
+  Fillet options are associated by the size parameter's holder too.
+- A mirror keeps a decoded `inputEntities` selection even when its
+  `mirrorPlane` is missing, and keeps its plane when selection decoding
+  fails. Absence of one field does not erase the other.
+
+The import report and learning dump have a separate `input_provenance`
+field (`read`, `inferred`, `unknown`); it is not part of this design IR.
+It describes an accepted candidate's inputs independently of geometric
+verification or the candidate's history-only `guess` policy. See
+`README.md`, *Input decoding audit*.
 
 ### 5.4 steps
 

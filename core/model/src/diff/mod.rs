@@ -26,7 +26,8 @@
 //! - **Components** and **occurrences** by uid (placements as moves and
 //!   turns), **bodies** (names and attributes) by uid, **timeline
 //!   groups**, **named views** and **analyses** by name, the document's
-//!   **appearances** by id.
+//!   **appearances** by id, and the sheet-metal **Flat Pattern** items by
+//!   body uid (mitcad#125).
 //! - **Geometry** (optional, [`DesignDiff::add_geometry`]): the volume and
 //!   area of each body of two computed documents.
 //!
@@ -303,6 +304,9 @@ pub struct DesignDiff {
     pub analyses: Vec<ItemChange>,
     /// The document's own appearances (mitcad#46), by id.
     pub appearances: Vec<ItemChange>,
+    /// Sheet-metal Flat Pattern items (mitcad#125), by body uid: their fixed
+    /// panel, orientation, viewed side and display choice.
+    pub flat_patterns: Vec<ItemChange>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub geometry: Option<GeometryDiff>,
 }
@@ -343,6 +347,7 @@ pub fn diff_states(from: &DocState, to: &DocState) -> DesignDiff {
         views: view_changes(from, to),
         analyses: analysis_changes(from, to),
         appearances: appearance_changes(from, to),
+        flat_patterns: flat_pattern_changes(from, to),
         ..DesignDiff::default()
     };
     diff.finish();
@@ -417,6 +422,7 @@ impl DesignDiff {
             && self.views.is_empty()
             && self.analyses.is_empty()
             && self.appearances.is_empty()
+            && self.flat_patterns.is_empty()
             && self
                 .geometry
                 .as_ref()
@@ -1487,6 +1493,27 @@ fn appearance_changes(a: &DocState, b: &DocState) -> Vec<ItemChange> {
                     );
                 }
                 (appearance.id.clone(), appearance.name.clone(), value)
+            })
+            .collect()
+    };
+    item_changes(list(a), list(b), true, &|_, _| {})
+}
+
+/// Flat Pattern items by their body's uid, named after the body
+/// (`Flat Pattern of Bracket`).
+fn flat_pattern_changes(a: &DocState, b: &DocState) -> Vec<ItemChange> {
+    let list = |state: &DocState| -> Vec<(BodyUid, String, Value)> {
+        state
+            .flat_patterns
+            .iter()
+            .map(|(body, def)| {
+                let name = state
+                    .body_names
+                    .get(body)
+                    .cloned()
+                    .unwrap_or_else(|| body.to_string());
+                let value = serde_json::to_value(def).expect("flat patterns serialize");
+                (*body, format!("Flat Pattern of {name}"), value)
             })
             .collect()
     };

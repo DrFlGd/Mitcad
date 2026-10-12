@@ -220,8 +220,6 @@ def load(data, kinds=None, unsettled=False):
                 raw = json.loads(line)
                 if kinds and raw.get("type") not in kinds:
                     continue
-                if not raw.get("candidates"):
-                    continue
                 out.append(Example(raw))
     return out
 
@@ -497,23 +495,41 @@ def cmd_test(args, examples):
                                                                    r, short(p), short(a)))
         for path in args.path or []:
             show_object(ex.obj(path), path)
-    if args.unsettled and predict is not None:
+    failed = counts["contradicted"] > 0 or counts["error"] > 0
+    if args.unsettled:
         un = load(args.data, [args.kind], unsettled=True)
+        if args.version is not None:
+            un = [ex for ex in un if ex.version == args.version]
         c2 = Counter()
         for ex in un:
+            if check is not None:
+                result, predicted, actual = run_rule(ex, predict, check, args.target)
+                c2[result] += 1
+                if result in ("contradicted", "error"):
+                    failed = True
+                    if c2["contradicted"] + c2["error"] <= args.n:
+                        print("--- unsettled %s %s: predicted %s, answer %s" % (
+                            result, ex.key, short(predicted), short(actual)))
+                continue
             try:
                 p = predict(ex)
             except Exception:  # noqa: BLE001 - a rule may fail on any example
                 c2["error"] += 1
+                failed = True
                 continue
             if p is None:
                 c2["n/a"] += 1
+                continue
+            if not ex.candidates:
+                # A failed translation has no candidate answer to check.
+                # Keep it visible; absence is not a contradiction.
+                c2["no candidates"] += 1
                 continue
             ranks = [i for i, c in enumerate(ex.candidates)
                      if (lambda v: v is not None and same(p, v))(target(ex, args.target, c))]
             c2["among candidates" if ranks else "not among candidates"] += 1
         print("unsettled items (%d): %s" % (len(un), dict(c2)))
-    return 0 if counts["contradicted"] == 0 and counts["error"] == 0 else 1
+    return 1 if failed else 0
 
 
 def short(v, n=160):

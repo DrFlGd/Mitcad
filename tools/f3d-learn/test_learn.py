@@ -159,6 +159,42 @@ class LearnTest(unittest.TestCase):
             os.unlink(f.name)
         self.assertEqual(code, 0, out)
 
+    def test_unsettled_items_without_candidates_are_kept_and_unscored(self):
+        with tempfile.TemporaryDirectory() as data:
+            os.makedirs(os.path.join(data, "settled"))
+            os.makedirs(os.path.join(data, "unsettled"))
+            raw = example(9, 1, False)
+            raw.update(status="unsettled", candidates=[], answer=None, accepted=None)
+            with open(os.path.join(data, "unsettled", "failed.jsonl"), "w") as f:
+                f.write(json.dumps(raw) + "\n")
+            self.assertEqual(len(learn.load(data, unsettled=True)), 1)
+            code, out = run("test", "--data", data, "--kind", "ExtrudeFeature",
+                            "--target", "flip", "--expr", "False", "--unsettled")
+            self.assertEqual(code, 0, out)
+            self.assertIn("unsettled items (1): {'no candidates': 1}", out)
+            _, out = run("stats", "--data", data)
+            self.assertRegex(out, r"ExtrudeFeature\s+0\s+1\s")
+
+    def test_unsettled_checks_are_executed_and_fail_on_contradictions(self):
+        code, out = run("test", "--data", self.data, "--kind", "ExtrudeFeature",
+                        "--check", "ex.settled", "--unsettled")
+        self.assertEqual(code, 1, out)
+        self.assertIn("unsettled items (1): {'contradicted': 1}", out)
+        self.assertIn("unsettled contradicted synthetic.f3d:9", out)
+
+    def test_unsettled_checks_respect_version_filter(self):
+        code, out = run("test", "--data", self.data, "--kind", "ExtrudeFeature",
+                        "--version", "99", "--check", "False", "--unsettled")
+        self.assertEqual(code, 0, out)
+        self.assertIn("unsettled items (0): {}", out)
+
+    def test_unsettled_prediction_errors_fail_the_rule(self):
+        code, out = run("test", "--data", self.data, "--kind", "ExtrudeFeature",
+                        "--target", "flip", "--expr", "target('flip') if ex.settled else 1 / 0",
+                        "--unsettled")
+        self.assertEqual(code, 1, out)
+        self.assertIn("unsettled items (1): {'error': 1}", out)
+
     def test_search_finds_the_planted_fields(self):
         code, out = run("search", "--data", self.data, "--kind", "ExtrudeFeature", "--target", "regions")
         self.assertEqual(code, 0)

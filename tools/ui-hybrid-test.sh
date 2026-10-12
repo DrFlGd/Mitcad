@@ -13,7 +13,7 @@
 #   - "Don't ask again for this design" (the browser's New Component) is
 #     saved with the design: the next New Component does not ask.
 #   - Move to Component on a feature in the timeline moves it with what
-#     goes with it into a component named after its body.
+#     goes with it into an explicitly named new component.
 #
 # Runs headless on Xvfb (see ui-test-lib.sh).
 # Usage: tools/ui-hybrid-test.sh [screenshot.png]
@@ -160,6 +160,13 @@ echo "--- Move to Component on a feature in the timeline"
 ui_mark
 ui_step "right-click Extrude1"           ui_click_logged "Timeline Extrude1" 3
 ui_step "choose Move to Component..."    ui_menu_choose "Move to Component..."
+ui_focus_dialog '^Move to Component$'
+ui_step "Create New (Alt+N)"             ui_key alt+n
+ui_step "parent Root (Alt+P, Home)"      ui_key alt+p Home
+ui_step "name field (Alt+A)"             ui_key alt+a
+ui_step "name it Body1"                 ui_type_text "Body1"
+ui_step "move (Alt+M)"                   ui_key alt+m
+ui_focus_main
 ui_expect_new "Moved Sketch1, Extrude1 into Body1" "moved into a component named after its body"
 ui_expect_new "Bodies shown: F2.b0 in O4" "the block shown in Body1:1"
 ui_sync

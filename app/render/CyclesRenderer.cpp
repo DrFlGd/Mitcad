@@ -2,12 +2,15 @@
 // The renderer on Cycles (docs/rendering.md). Cycles' headers need C++20,
 // so this file is compiled on its own (mitcad_cycles_renderer) and nothing
 // else includes them.
+#include "render/RenderCamera.hpp"
+#include "render/RenderDevices.hpp"
 #include "render/Renderer.hpp"
 
 #include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <cmath>
+#include <cstdlib>
 #include <cstring>
 #include <functional>
 #include <map>
@@ -21,6 +24,7 @@
 #include <OpenImageIO/imageio.h>
 
 #include "device/device.h"
+#include "integrator/denoiser.h"
 #include "scene/background.h"
 #include "scene/camera.h"
 #include "scene/film.h"
@@ -38,11 +42,16 @@
 #include "session/output_driver.h"
 #include "session/session.h"
 #include "util/colorspace.h"
+#include "util/debug.h"
 #include "util/log.h"
 #include "util/path.h"
 #include "util/tbb.h"
 #include "util/transform.h"
 #include "util/version.h"
+
+#ifdef WITH_OPENIMAGEDENOISE
+#include <OpenImageDenoise/oidn.h>
+#endif
 
 namespace mitcad::render {
 
@@ -227,7 +236,12 @@ constexpr float kOutdoorGround = 0.12f;
 // below.
 void initCycles(const std::string& kernelFolder);
 bool findCyclesDevice(const std::string& id, ccl::DeviceInfo& found);
+ccl::vector<ccl::DeviceInfo> allCyclesDevices();
 DeviceInfo deviceInfoOf(const ccl::DeviceInfo& info);
+std::string probeOidn(const ccl::DeviceInfo& info);
+
+// What Cycles' GPU denoiser says when Open Image Denoise gives it no device.
+constexpr const char* kOidnDeviceFailed = "Failed to create OIDN device";
 
 class CyclesRenderer : public Renderer {
 public:
@@ -250,6 +264,42 @@ public:
     }
     m_device = m_params.device.description;
     m_deviceInfo = deviceInfoOf(m_params.device);
+    m_params.device.use_hardware_raytracing = automaticRayTracing(
+        m_deviceInfo.type, m_params.device.use_hardware_raytracing, m_params.device.use_metalrt_by_default);
+    // SessionParams defaults to a CPU denoising device even when rendering
+    // on Metal. Select it explicitly and let Cycles validate OIDN support.
+    if (!findCyclesDevice({}, m_params.denoise_device)) {
+      error = "Cycles found no CPU denoising device";
+      return false;
+    }
+    const std::string& denoising = m_options.denoisingDevice;
+    if (!denoising.empty() && denoising != "auto" && denoising != "cpu" && denoising != "metal") {
+      error = "Invalid test denoising device: " + denoising;
+      return false;
+    }
+    if (!m_options.cpuDenoisingFallback && denoising != "cpu") {
+      if (denoising == "metal") {
+        for (const ccl::DeviceInfo& candidate : allCyclesDevices()) {
+          if (candidate.type == ccl::DEVICE_METAL && (candidate.denoisers & ccl::DENOISER_OPENIMAGEDENOISE) != 0) {
+            m_params.denoise_device = candidate;
+            break;
+          }
+        }
+        if (m_params.denoise_device.type == ccl::DEVICE_CPU) {
+          m_deviceInfo.denoiser.message = "Metal OIDN is unavailable; using CPU denoising";
+        }
+      } else if (m_deviceInfo.denoiserAvailable) {
+        m_params.denoise_device = m_params.device;
+      } else if (m_params.device.type != ccl::DEVICE_CPU) {
+        m_deviceInfo.denoiser.message = "OIDN is unavailable on the render device; using CPU denoising";
+      }
+    }
+    m_params.denoise_device.use_hardware_raytracing = automaticRayTracing(
+        ccl::Device::string_from_type(m_params.denoise_device.type),
+        m_params.denoise_device.use_hardware_raytracing, m_params.denoise_device.use_metalrt_by_default);
+    m_deviceInfo.denoiser.id = m_params.denoise_device.id;
+    m_deviceInfo.denoiser.type = ccl::Device::string_from_type(m_params.denoise_device.type);
+    m_deviceInfo.denoiser.name = m_params.denoise_device.description;
     m_params.background = !m_interactive;
     // Not headless: a non-interactive render hands its image so far to the
     // output driver every second or two (the final render's preview).
@@ -264,6 +314,11 @@ public:
     sceneParams.bvh_type = m_interactive ? ccl::BVH_TYPE_DYNAMIC : ccl::BVH_TYPE_STATIC;
     sceneParams.background = !m_interactive;
     m_session = std::make_unique<ccl::Session>(m_params, sceneParams);
+    if (m_params.device.type == ccl::DEVICE_METAL && m_session->device) {
+      // Query the device after construction: Cycles' CYCLES_METALRT
+      // environment override can change its state from the default policy.
+      m_deviceInfo.metalRT = (m_session->device->get_bvh_layout_mask(0) & ccl::BVH_LAYOUT_METAL) != 0;
+    }
     if (m_interactive) {
       m_session->set_display_driver(std::make_unique<SinkDisplayDriver>(
           [this](int width, int height, int fullWidth, int fullHeight) {
@@ -364,6 +419,7 @@ public:
           m_bounds = bounds;
           m_sceneGround = update.ground;
           buildGround(scene);
+          placeCamera(scene); // an orthographic one behind the new bounds
         }
         changes.restarted = true;
       }
@@ -403,6 +459,7 @@ public:
       }
       buildWorld(s);
       buildGround(s);
+      placeCamera(s); // the ground may have come or gone
       buildLights(s);
       restart();
     }
@@ -416,19 +473,14 @@ public:
     {
       const ccl::thread_scoped_lock lock(m_session->scene->mutex);
       ccl::Camera& camera = *m_session->scene->camera;
+      m_viewData = view;
+      m_hasView = true;
       const ccl::float3 eye = float3Of(view.eye);
-      const ccl::float3 forward = ccl::normalize(float3Of(view.target) - eye);
-      const ccl::float3 right = ccl::normalize(ccl::cross(forward, float3Of(view.up)));
-      const ccl::float3 up = ccl::cross(right, forward);
-      // Cycles' camera looks along its +Z with +Y up and +X to the right.
-      ccl::Transform matrix;
-      matrix.x = ccl::make_float4(right.x, up.x, forward.x, eye.x);
-      matrix.y = ccl::make_float4(right.y, up.y, forward.y, eye.y);
-      matrix.z = ccl::make_float4(right.z, up.z, forward.z, eye.z);
-      camera.set_matrix(matrix);
       const float aspect = static_cast<float>(view.width) / static_cast<float>(view.height);
       const auto halfHeight = static_cast<float>(view.halfHeight);
       if (view.perspective) {
+        // Nothing the 3D view shows is nearer to the eye than its own near
+        // plane, which is farther than this.
         const auto distance = static_cast<float>(ccl::len(float3Of(view.target) - eye));
         camera.set_camera_type(ccl::CAMERA_PERSPECTIVE);
         camera.set_fov(2.0f * std::atan(halfHeight / std::max(distance, 1e-6f)));
@@ -438,8 +490,8 @@ public:
         camera.set_viewplane_top(1.0f);
         camera.set_nearclip(std::max(1e-3f, distance * 1e-4f));
       } else {
-        // An orthographic camera's view plane is in scene units (mm). The
-        // eye may stand inside the scene: clip nothing in front of it.
+        // An orthographic camera's view plane is in scene units (mm); the
+        // camera stands behind the scene (placeCamera).
         camera.set_camera_type(ccl::CAMERA_ORTHOGRAPHIC);
         camera.set_viewplane_left(-halfHeight * aspect);
         camera.set_viewplane_right(halfHeight * aspect);
@@ -450,12 +502,10 @@ public:
       camera.set_farclip(1e8f);
       camera.set_full_width(view.width);
       camera.set_full_height(view.height);
-      camera.need_flags_update = true;
-      camera.need_device_update = true;
       m_width = view.width;
       m_height = view.height;
       m_view = view.sequence;
-      m_camera = matrix;
+      placeCamera(*m_session->scene);
       // Lights relative to the camera follow it.
       if (std::any_of(m_environment.lights.begin(), m_environment.lights.end(),
                       [](const LightData& light) { return light.camera; })) {
@@ -504,7 +554,10 @@ public:
 
   int currentSample() const override { return m_session->progress.get_current_sample(); }
 
-  DeviceInfo device() const override { return m_deviceInfo; }
+  DeviceInfo device() const override {
+    const std::lock_guard<std::mutex> lock(m_deviceMutex);
+    return m_deviceInfo;
+  }
 
   // Cycles stops the render on a device error (Session::run_main_render_loop)
   // and keeps the message in its progress.
@@ -513,10 +566,74 @@ public:
       return {};
     }
     std::string message = m_session->progress.get_error_message();
-    return message.empty() ? std::string("unknown device error") : message;
+    if (message.empty()) {
+      return "unknown device error";
+    }
+    // Cycles does not read Open Image Denoise's own error (mitcad#202):
+    // OIDN's answer to the same call, once.
+    if (message.find(kOidnDeviceFailed) != std::string::npos && m_params.denoise_device.type != ccl::DEVICE_CPU) {
+      std::call_once(m_oidnProbed, [this] { m_oidnProbe = probeOidn(m_params.denoise_device); });
+      message += "; Open Image Denoise's own probe: " + m_oidnProbe;
+    }
+    return message;
   }
 
 private:
+  // The patched dependency exposes the actual pass state. Older prefixes
+  // retain the original scheduling flag without confirming a device.
+  bool hasDenoisedResult(bool scheduled) const {
+#ifdef MITCAD_CYCLES_DENOISER_DIAGNOSTICS
+    return scheduled && m_session->has_denoised_result();
+#else
+    return scheduled;
+#endif
+  }
+
+  // Called on Cycles' render thread after successful denoising, never from
+  // device enumeration. The optional getter exposes the actual denoiser,
+  // including Cycles' own CPU fallback, instead of predicting execution.
+  bool recordDenoising(bool denoised) {
+    if (!denoised) {
+      return true;
+    }
+    if (!m_options.cpuDenoisingFallback && !m_options.testDenoisingFailure.empty()) {
+#ifdef MITCAD_CYCLES_DENOISER_DIAGNOSTICS
+      const ccl::Denoiser* denoiser = m_session->get_denoiser();
+      if (denoiser != nullptr && denoiser->get_denoiser_device() != nullptr) {
+        // Let Cycles forward this error through its normal render loop,
+        // including a denoiser on a device separate from path tracing.
+        denoiser->get_denoiser_device()->set_error("OIDN test failure: " + m_options.testDenoisingFailure);
+      }
+#else
+      m_session->device->set_error("OIDN test failure: " + m_options.testDenoisingFailure);
+#endif
+      return false;
+    }
+    if (m_denoisingReported) {
+      return true;
+    }
+    m_denoisingReported = true;
+#ifdef MITCAD_CYCLES_DENOISER_DIAGNOSTICS
+    const ccl::Denoiser* denoiser = m_session->get_denoiser();
+    if (denoiser == nullptr || denoiser->get_denoiser_device() == nullptr) {
+      return true;
+    }
+    const ccl::DeviceInfo& info = denoiser->get_denoiser_device()->info;
+    DeviceInfo device;
+    {
+      const std::lock_guard<std::mutex> lock(m_deviceMutex);
+      m_deviceInfo.denoiser.id = info.id;
+      m_deviceInfo.denoiser.type = ccl::Device::string_from_type(info.type);
+      m_deviceInfo.denoiser.name = info.description;
+      m_deviceInfo.denoiser.executed = true;
+      m_deviceInfo.denoisesOnDevice = info.type != ccl::DEVICE_CPU && info.id == m_deviceInfo.id;
+      device = m_deviceInfo;
+    }
+    m_sink.denoisingDevice(device);
+#endif
+    return true;
+  }
+
   // The world (the default environment until the application sends its
   // own, buildWorld) and the film; denoising with Open Image Denoise.
   void setUpScene() {
@@ -534,6 +651,7 @@ private:
     ccl::Integrator& integrator = *scene.integrator;
     integrator.set_aa_samples(m_samples);
     integrator.set_use_denoise(true);
+    integrator.set_denoise_use_gpu(m_params.denoise_device.type != ccl::DEVICE_CPU);
     integrator.set_denoiser_type(ccl::DENOISER_OPENIMAGEDENOISE);
     integrator.set_denoiser_prefilter(ccl::DENOISER_PREFILTER_FAST);
     integrator.set_denoiser_passes(ccl::DENOISER_PASS_ALBEDO | ccl::DENOISER_PASS_NORMAL);
@@ -1101,6 +1219,43 @@ private:
     }
   }
 
+  // The camera of the last view (m_viewData): its frame from the view's eye,
+  // target and up (m_camera, which the lights that follow the camera use),
+  // and Cycles' camera there, except that an orthographic one stands behind
+  // the bodies and the ground (mitcad#215, orthographicEye): its rays go
+  // forward from its plane only. Again whenever their bounds change.
+  void placeCamera(ccl::Scene& scene) {
+    if (!m_hasView) {
+      return;
+    }
+    const ViewData& view = m_viewData;
+    const ccl::float3 eye = float3Of(view.eye);
+    const ccl::float3 forward = ccl::normalize(float3Of(view.target) - eye);
+    const ccl::float3 right = ccl::normalize(ccl::cross(forward, float3Of(view.up)));
+    const ccl::float3 up = ccl::cross(right, forward);
+    // Cycles' camera looks along its +Z with +Y up and +X to the right.
+    ccl::Transform matrix;
+    matrix.x = ccl::make_float4(right.x, up.x, forward.x, eye.x);
+    matrix.y = ccl::make_float4(right.y, up.y, forward.y, eye.y);
+    matrix.z = ccl::make_float4(right.z, up.z, forward.z, eye.z);
+    m_camera = matrix;
+    ccl::BoundBox bounds = m_bounds;
+    if (m_groundBounds.valid()) {
+      bounds.grow(m_groundBounds);
+    }
+    if (!view.perspective && bounds.valid()) {
+      const std::array<double, 3> placed =
+          orthographicEye(view, {bounds.min.x, bounds.min.y, bounds.min.z}, {bounds.max.x, bounds.max.y, bounds.max.z});
+      matrix.x.w = static_cast<float>(placed[0]);
+      matrix.y.w = static_cast<float>(placed[1]);
+      matrix.z.w = static_cast<float>(placed[2]);
+    }
+    ccl::Camera& camera = *scene.camera;
+    camera.set_matrix(matrix);
+    camera.need_flags_update = true;
+    camera.need_device_update = true;
+  }
+
   // A ground under the bodies (or at the asked height), much larger than
   // they are, that only shows their shadows and, when glossy, their
   // reflections (Cycles' shadow catcher). Glass does not see it: refracted
@@ -1112,6 +1267,7 @@ private:
     // The catcher's passes with the ground (and the environment's behind
     // it when the camera sees it).
     updatePasses(scene);
+    m_groundBounds = ccl::BoundBox::empty;
     if (!m_hasGround) {
       return;
     }
@@ -1119,6 +1275,8 @@ private:
     const float extent = 50.0f * std::max({size.x, size.y, size.z, 1.0f});
     const ccl::float3 middle = m_bounds.center();
     const float z = e.groundAtHeight ? static_cast<float>(e.groundHeight) : m_bounds.min.z;
+    m_groundBounds = ccl::BoundBox(ccl::make_float3(middle.x - extent, middle.y - extent, z),
+                                   ccl::make_float3(middle.x + extent, middle.y + extent, z));
     auto graph = std::make_unique<ccl::ShaderGraph>();
     ccl::DiffuseBsdfNode* diffuse = graph->create_node<ccl::DiffuseBsdfNode>();
     diffuse->set_color(ccl::make_float3(m_groundAlbedo, m_groundAlbedo, m_groundAlbedo));
@@ -1215,6 +1373,10 @@ private:
     const bool environment = m_seesEnvironment.load();
     const std::lock_guard<std::mutex> frame(m_frameMutex);
     m_frame.passes = false;
+    m_frame.denoised = hasDenoisedResult(m_denoise);
+    if (!recordDenoising(m_frame.denoised)) {
+      return false;
+    }
     m_frame.environment = environment;
     if (!ground) {
       return true;
@@ -1256,6 +1418,13 @@ private:
   // image so far, or the finished one (`last`, denoised), with the ground's
   // catcher factors, to the sink.
   bool deliver(const ccl::OutputDriver::Tile& tile, bool last) {
+    if (!deviceError().empty()) {
+      return false;
+    }
+    const bool denoised = hasDenoisedResult(m_denoise && last);
+    if (!recordDenoising(denoised)) {
+      return false;
+    }
     const int width = tile.size.x;
     const int height = tile.size.y;
     const std::size_t count = static_cast<std::size_t>(width) * height * 4;
@@ -1290,8 +1459,7 @@ private:
     if (target.catcher != nullptr && !catcher.empty()) {
       toHalf(catcher.data(), count, target.catcher);
     }
-    // The last image is denoised, the ones so far are not.
-    m_sink.endFrame(m_view.load(), m_session->progress.get_current_sample(), last);
+    m_sink.endFrame(m_view.load(), m_session->progress.get_current_sample(), denoised);
     return true;
   }
 
@@ -1328,7 +1496,7 @@ private:
     {
       const std::lock_guard<std::mutex> schedule(m_scheduleMutex);
       const int from = m_denoiseAt[m_stage];
-      denoised = lowResolution ? from <= 1 : samples >= from;
+      denoised = m_denoise && (lowResolution ? from <= 1 : samples >= from) && m_frame.denoised;
       shown = denoised || !m_shownDenoised;
       if (denoised) {
         // Noisy frames still follow the denoised first frame (at a lower
@@ -1439,6 +1607,9 @@ private:
   // Cycles' progress changed (its render thread): passes a frame on
   // (interactive), or reports the end of a view's samples once.
   void progressed() {
+    if (!deviceError().empty()) {
+      return;
+    }
     if (m_interactive) {
       publishFrame();
       return;
@@ -1463,6 +1634,11 @@ private:
   RendererOptions m_options;
   std::string m_device;
   DeviceInfo m_deviceInfo;
+  mutable std::mutex m_deviceMutex;
+  bool m_denoisingReported = false; // render thread only
+  // Open Image Denoise's own answer once its device failed (deviceError).
+  mutable std::once_flag m_oidnProbed;
+  mutable std::string m_oidnProbe;
   ccl::SessionParams m_params;
   std::unique_ptr<ccl::Session> m_session;
   // The scene: meshes by key, Cycles meshes by mesh and material, shaders
@@ -1496,6 +1672,10 @@ private:
   ccl::Pass* m_backgroundPass = nullptr;
   bool m_denoise = true; // the render denoises (setFinal)
   ccl::BoundBox m_bounds = ccl::BoundBox::empty; // of the bodies
+  ccl::BoundBox m_groundBounds = ccl::BoundBox::empty; // of the ground's quad, when there is one
+  // The last view (setView), for placeCamera.
+  ViewData m_viewData;
+  bool m_hasView = false;
   bool m_sceneGround = true;
   float m_groundAlbedo = 0.5f;
   int m_samples = 64;
@@ -1511,6 +1691,7 @@ private:
     std::vector<std::uint16_t> pixels;
     // The batch's other passes (readPasses), floats of the whole view.
     bool passes = false;
+    bool denoised = false; // captured on the render thread alongside the passes
     bool environment = false; // composite the ground over the background pass
     std::vector<float> catcherNoisy;
     std::vector<float> catcherDenoised;
@@ -1540,12 +1721,20 @@ private:
 // Devices (mitcad#50, docs/rendering.md "Devices")
 
 // Cycles' log and paths, once per process: the kernels of its GPU devices
-// are in <kernelFolder>/lib.
+// are in <kernelFolder>/lib (CUDA) or <kernelFolder>/source (Metal).
 void initCycles(const std::string& kernelFolder) {
   static std::once_flag once;
   std::call_once(once, [&kernelFolder] {
     ccl::log_init(nullptr);
     ccl::path_init(kernelFolder);
+#ifdef WITH_METAL
+    // Cycles still compiles on its shader threads. Use the blocking Metal
+    // API there: asynchronous pipeline callbacks can stall on virtual GPUs,
+    // and this separate worker process owns cancellation and shutdown.
+    if (std::getenv("CYCLES_METAL_ASYNC_PSO_CREATION") == nullptr) {
+      ccl::DebugFlags().metal.use_async_pso_creation = false;
+    }
+#endif
   });
 }
 
@@ -1575,15 +1764,67 @@ bool findCyclesDevice(const std::string& id, ccl::DeviceInfo& found) {
   return false;
 }
 
+// Open Image Denoise's own answer on the GPU (mitcad#202): its device
+// created and committed with the arguments of Cycles' GPU denoiser
+// (OIDNDenoiserGPU::denoise_create_if_needed: the device's number, a null
+// stream), and OIDN's error when that fails, which Cycles does not read.
+// On the calling thread: Cycles' own call runs on its render thread.
+std::string probeOidn(const ccl::DeviceInfo& info) {
+#ifdef WITH_OPENIMAGEDENOISE
+  OIDNDevice device = nullptr;
+  const char* call = nullptr;
+#  if defined(OIDN_DEVICE_CUDA) && defined(WITH_CUDA)
+  if (info.type == ccl::DEVICE_CUDA || info.type == ccl::DEVICE_OPTIX) {
+    cudaStream_t stream = nullptr;
+    call = "oidnNewCUDADevice";
+    device = oidnNewCUDADevice(&info.num, &stream, 1);
+  }
+#  endif
+#  if defined(OIDN_DEVICE_HIP) && defined(WITH_HIP)
+  if (info.type == ccl::DEVICE_HIP) {
+    hipStream_t stream = nullptr;
+    call = "oidnNewHIPDevice";
+    device = oidnNewHIPDevice(&info.num, &stream, 1);
+  }
+#  endif
+  if (call == nullptr) {
+    return std::string("not probed: this build has no Open Image Denoise device for ") +
+           ccl::Device::string_from_type(info.type);
+  }
+  const char* message = nullptr;
+  if (device == nullptr) {
+    // The error of a device that was not created is the thread's.
+    oidnGetDeviceError(nullptr, &message);
+    return std::string(call) + " failed: " + (message != nullptr ? message : "no error message");
+  }
+  oidnCommitDevice(device);
+  const OIDNError error = oidnGetDeviceError(device, &message);
+  oidnReleaseDevice(device);
+  if (error != OIDN_ERROR_NONE) {
+    return std::string(call) + " created a device, committing it failed: " +
+           (message != nullptr ? message : "no error message");
+  }
+  return std::string(call) + " works";
+#else
+  (void)info;
+  return "not probed: this build has no Open Image Denoise";
+#endif
+}
+
 DeviceInfo deviceInfoOf(const ccl::DeviceInfo& info) {
   DeviceInfo device;
   device.id = info.id;
   device.type = ccl::Device::string_from_type(info.type);
   device.name = info.description;
+  if (info.type == ccl::DEVICE_METAL) {
+    device.metalRTAvailable = info.use_hardware_raytracing;
+    device.metalRTDefault = info.use_metalrt_by_default;
+    device.metalRT = automaticRayTracing(device.type, device.metalRTAvailable, device.metalRTDefault);
+  }
   // Cycles denoises with Open Image Denoise on the GPU when the device
   // supports it (OIDN's device module for it is there, Turing and newer
   // for CUDA), else on the CPU (Denoiser::create).
-  device.denoisesOnDevice =
+  device.denoiserAvailable =
       info.type != ccl::DEVICE_CPU && (info.denoisers & ccl::DENOISER_OPENIMAGEDENOISE) != 0;
   return device;
 }
@@ -1597,6 +1838,35 @@ std::vector<DeviceInfo> cyclesDevices(const std::string& kernelFolder) {
     devices.push_back(deviceInfoOf(info));
   }
   return devices;
+}
+
+std::vector<std::string> probeDenoisers(const std::string& kernelFolder) {
+  initCycles(kernelFolder);
+  std::vector<std::string> lines;
+#ifdef WITH_OPENIMAGEDENOISE
+  const std::map<int, const char*> types = {{OIDN_DEVICE_TYPE_CPU, "CPU"},
+                                            {OIDN_DEVICE_TYPE_SYCL, "SYCL"},
+                                            {OIDN_DEVICE_TYPE_CUDA, "CUDA"},
+                                            {OIDN_DEVICE_TYPE_HIP, "HIP"},
+                                            {OIDN_DEVICE_TYPE_METAL, "METAL"}};
+  std::string physical = "Open Image Denoise " OIDN_VERSION_STRING " finds:";
+  const int count = oidnGetNumPhysicalDevices();
+  for (int i = 0; i < count; ++i) {
+    const auto type = types.find(oidnGetPhysicalDeviceInt(i, "type"));
+    const char* name = oidnGetPhysicalDeviceString(i, "name");
+    std::string label = name != nullptr ? name : "";
+    label.erase(label.find_last_not_of(' ') + 1); // CPU names come padded
+    physical += std::string(i == 0 ? " " : ", ") + (type != types.end() ? type->second : "another type") + " \"" +
+                label + "\"";
+  }
+  lines.push_back(count == 0 ? physical + " no devices" : physical);
+#endif
+  for (const ccl::DeviceInfo& info : allCyclesDevices()) {
+    if (info.type != ccl::DEVICE_CPU) {
+      lines.push_back(info.description + " (" + ccl::Device::string_from_type(info.type) + "): " + probeOidn(info));
+    }
+  }
+  return lines;
 }
 
 std::unique_ptr<Renderer> makeCyclesRenderer(FrameSink& sink, const RendererOptions& options, std::string& error) {

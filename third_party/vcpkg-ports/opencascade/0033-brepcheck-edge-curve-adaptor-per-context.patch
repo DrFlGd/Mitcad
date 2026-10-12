@@ -1,0 +1,81 @@
+Mitcad's patch to OCCT 8.0.1, under OCCT's licence:
+SPDX-License-Identifier: LGPL-2.1-only WITH OCCT-exception-1.0
+
+BRepCheck: in parallel mode (BRepCheck_Analyzer's theIsParallel)
+BRepCheck_Analyzer checks the faces on several threads, and each face checks
+its edges in its context (BRepCheck_Edge::InContext), so an edge is checked
+in the contexts of its two faces at the same time. Both compared the curves
+on the faces with the edge's one curve adaptor (myHCurve, made by
+Minimum()), and an adaptor of a B-spline curve caches the span it evaluated
+last: one thread could evaluate the curve with the span another thread had
+just cached and find the edge off its face (BRepCheck_InvalidCurveOnSurface),
+which made the face unorientable (BRepCheck_UnorientableShape). A valid shape
+then came out valid or invalid from run to run (the cut of a round groove
+swept along a helix from a nut, mitcad#203). Each context now evaluates its
+own copy of the adaptor (ShallowCopy(), as GeomLib_CheckCurveOnSurface does
+for its threads); the sequential mode is unchanged, and so are the checks
+and their statuses.
+diff --git a/src/ModelingAlgorithms/TKTopAlgo/BRepCheck/BRepCheck_Edge.cxx b/src/ModelingAlgorithms/TKTopAlgo/BRepCheck/BRepCheck_Edge.cxx
+index 9e33400..4031666 100644
+--- a/src/ModelingAlgorithms/TKTopAlgo/BRepCheck/BRepCheck_Edge.cxx
++++ b/src/ModelingAlgorithms/TKTopAlgo/BRepCheck/BRepCheck_Edge.cxx
+@@ -344,8 +344,15 @@ void BRepCheck_Edge::inContext(const TopoDS_Shape& S, const bool theToFind)
+           return;
+         }
+         //  Modified by skv - Tue Apr 27 11:48:14 2004 End
+-        double First = myHCurve->FirstParameter();
+-        double Last  = myHCurve->LastParameter();
++        // In parallel mode the edge is checked in the context of each of its
++        // faces at the same time, on different threads: each context
++        // evaluates its own copy of the edge's curve adaptor (an adaptor of a
++        // B-spline caches the span it last evaluated, and threads sharing one
++        // read each other's span).
++        const occ::handle<Adaptor3d_Curve> anEdgeCurve =
++          myIsParallel && !myHCurve.IsNull() ? myHCurve->ShallowCopy() : myHCurve;
++        double First = anEdgeCurve->FirstParameter();
++        double Last  = anEdgeCurve->LastParameter();
+ 
+         occ::handle<BRep_TFace>&         TF    = *((occ::handle<BRep_TFace>*)&S.TShape());
+         const TopLoc_Location&           Floc  = S.Location();
+@@ -425,7 +432,7 @@ void BRepCheck_Edge::inContext(const TopoDS_Shape& S, const bool theToFind)
+               occ::handle<Geom2dAdaptor_Curve>      GHPC = new Geom2dAdaptor_Curve(PC, f, l);
+               occ::handle<Adaptor3d_CurveOnSurface> ACS  = new Adaptor3d_CurveOnSurface(GHPC, GAHS);
+ 
+-              BRepLib_ValidateEdge aValidateEdge(myHCurve, ACS, SameParameter);
++              BRepLib_ValidateEdge aValidateEdge(anEdgeCurve, ACS, SameParameter);
+               aValidateEdge.SetExitIfToleranceExceeded(Tol);
+               aValidateEdge.SetExactMethod(myIsExactMethod);
+               aValidateEdge.SetParallel(toRunParallel);
+@@ -452,7 +459,7 @@ void BRepCheck_Edge::inContext(const TopoDS_Shape& S, const bool theToFind)
+                 GHPC->Load(cr->PCurve2(), f, l); // same bounds
+                 ACS->Load(GHPC, GAHS);           // sans doute inutile
+ 
+-                BRepLib_ValidateEdge aValidateEdgeOnClosedSurf(myHCurve, ACS, SameParameter);
++                BRepLib_ValidateEdge aValidateEdgeOnClosedSurf(anEdgeCurve, ACS, SameParameter);
+                 aValidateEdgeOnClosedSurf.SetExitIfToleranceExceeded(Tol);
+                 aValidateEdgeOnClosedSurf.SetExactMethod(myIsExactMethod);
+                 aValidateEdgeOnClosedSurf.SetParallel(toRunParallel);
+@@ -502,7 +509,7 @@ void BRepCheck_Edge::inContext(const TopoDS_Shape& S, const bool theToFind)
+               occ::handle<GeomAdaptor_Surface> GAHS = new GeomAdaptor_Surface(P);
+ 
+               // Dub - Normalement myHCurve est une GeomAdaptor_Curve
+-              occ::handle<GeomAdaptor_Curve> Gac = occ::down_cast<GeomAdaptor_Curve>(myHCurve);
++              occ::handle<GeomAdaptor_Curve> Gac = occ::down_cast<GeomAdaptor_Curve>(anEdgeCurve);
+               occ::handle<Geom_Curve>        C3d = Gac->Curve();
+               occ::handle<Geom_Curve>        ProjOnPlane =
+                 GeomProjLib::ProjectOnPlane(new Geom_TrimmedCurve(C3d, First, Last),
+@@ -514,11 +521,12 @@ void BRepCheck_Edge::inContext(const TopoDS_Shape& S, const bool theToFind)
+               ProjLib_ProjectedCurve           proj(GAHS, aHCurve);
+               occ::handle<Geom2d_Curve>        PC = Geom2dAdaptor::MakeCurve(proj);
+               occ::handle<Geom2dAdaptor_Curve> GHPC =
+-                new Geom2dAdaptor_Curve(PC, myHCurve->FirstParameter(), myHCurve->LastParameter());
++                new Geom2dAdaptor_Curve(PC, anEdgeCurve->FirstParameter(),
++                                        anEdgeCurve->LastParameter());
+ 
+               occ::handle<Adaptor3d_CurveOnSurface> ACS = new Adaptor3d_CurveOnSurface(GHPC, GAHS);
+ 
+-              BRepLib_ValidateEdge aValidateEdgeProj(myHCurve, ACS, SameParameter);
++              BRepLib_ValidateEdge aValidateEdgeProj(anEdgeCurve, ACS, SameParameter);
+               aValidateEdgeProj.SetExitIfToleranceExceeded(Tol);
+               aValidateEdgeProj.SetExactMethod(myIsExactMethod);
+               aValidateEdgeProj.SetParallel(toRunParallel);

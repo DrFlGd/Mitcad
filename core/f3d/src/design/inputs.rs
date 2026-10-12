@@ -4,7 +4,9 @@
 //! The streams name a feature's face, edge and body inputs by the names the
 //! bodies carry ([`super::recipe`], [`crate::names`]). The entities exist in
 //! the history state before the item: the `.smbh` blobs rolled back to just
-//! before the item's own state (its `_f3d.result_no`). There they are found
+//! before the item's own state (its `_f3d.result_no`; for an item
+//! suppressed in the file, which has none, the state after the last item
+//! of its component before it: [`starts`], mitcad#180). There they are found
 //! by their names (some inputs name faces as they were a few states
 //! earlier: those states are searched next, up to [`EARLIER`] back), and
 //! their geometry goes into the fingerprints, as an
@@ -153,6 +155,79 @@ impl Timeline {
     }
 }
 
+// Inputs of items suppressed in the file (mitcad#180).
+
+/// Where an item's inputs are looked for in its own component's history:
+/// per blob that holds its start, the blob's index and the position `k`
+/// (states newest first) whose `view(k)` holds the bodies just before
+/// the item. That is the state before the item's own (`result`); for an
+/// item suppressed in the file, which the file keeps no result for, the
+/// state after the last item of its component before it
+/// ([`Timeline::state_at`]): the bodies it would change if unsuppressed.
+fn starts(at: &At, blobs: &[Blob], result: Option<i32>) -> Vec<(usize, usize)> {
+    match result.filter(|&r| r > 0) {
+        Some(r) => blobs
+            .iter()
+            .enumerate()
+            .filter_map(|(i, b)| {
+                let pos = b.history.states.iter().position(|s| s.id == i64::from(r))?;
+                Some((i, pos + 1))
+            })
+            .collect(),
+        None if at.suppressed => {
+            let Some(owner) = at.timeline.points.get(at.position).and_then(|p| p.owner) else {
+                return Vec::new();
+            };
+            let links = at.timeline.links(blobs);
+            (0..blobs.len())
+                .filter(|&b| links.get(b).copied().flatten() == Some(owner))
+                .filter_map(|b| Some((b, at.timeline.state_at(blobs, b, at.position)?)))
+                .collect()
+        }
+        None => Vec::new(),
+    }
+}
+
+/// What the found inputs' notes say the state is ([`starts`]): `state r`,
+/// or for an item suppressed in the file `item n`.
+fn start_label(at: &At, result: Option<i32>) -> String {
+    match result.filter(|&r| r > 0) {
+        Some(r) => format!("state {r}"),
+        None => format!("item {} (suppressed in the file)", at.position),
+    }
+}
+
+/// Why an item's inputs are not looked for when [`starts`] gives no
+/// blob.
+fn no_start(at: &At, result: Option<i32>) -> String {
+    match result.filter(|&r| r > 0) {
+        Some(r) => format!("no ASM history holds state {r}"),
+        None if at.suppressed => {
+            "suppressed in the file: no ASM history of its component holds a state before it"
+                .to_owned()
+        }
+        None => "the item has no ASM state".to_owned(),
+    }
+}
+
+/// An item's own result number.
+fn input_result(item: &TimelineItem) -> Option<i32> {
+    item.f3d.as_ref().and_then(|f| f.result_no)
+}
+
+/// The file keeps no result for the item: it is suppressed, or after the
+/// timeline marker (rolled back; its result number is -1 or one
+/// the history no longer holds). Its inputs are looked for in the state
+/// after the last item before it.
+fn no_result_state(item: &TimelineItem) -> bool {
+    item.file_state() == super::decode::ItemState::Suppressed || item.is_rolled_back == Some(true)
+}
+
+/// [`input_result`], or -1 for an item the file keeps no result for.
+fn result_of(item: &TimelineItem, at: &At) -> Option<i32> {
+    input_result(item).map(|r| if at.suppressed { -1 } else { r })
+}
+
 /// How many inputs were found.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Resolved {
@@ -168,7 +243,12 @@ fn named_entities(detail: &mut Detail) -> Vec<&mut Fingerprint> {
     // found.) A thread's faces and an extrusion's object are faces.
     let faces = matches!(
         detail,
-        Detail::Thread(_) | Detail::Extrude(_) | Detail::Shell(_) | Detail::OffsetFaces(_)
+        Detail::Thread(_)
+            | Detail::Extrude(_)
+            | Detail::Shell(_)
+            | Detail::OffsetFaces(_)
+            | Detail::Hole(_)
+            | Detail::Revolve(_)
     );
     let refs: Vec<&mut Reference> = match detail {
         Detail::Fillet(f) => f
@@ -195,6 +275,16 @@ fn named_entities(detail: &mut Detail) -> Vec<&mut Fingerprint> {
         // A shell's removed faces and offset faces (mitcad#154).
         Detail::Shell(s) => s.input_entities.iter_mut().flatten().collect(),
         Detail::OffsetFaces(o) => o.input_faces.iter_mut().flatten().collect(),
+        // A revolution's axis face or edge.
+        Detail::Revolve(r) => r.axis.iter_mut().collect(),
+        // A hole's position: its face and the two edges it is measured
+        // from.
+        Detail::Hole(h) => h
+            .hole_position_definition
+            .iter_mut()
+            .flat_map(|p| [&mut p.planar_entity, &mut p.edge_one, &mut p.edge_two])
+            .flatten()
+            .collect(),
         _ => Vec::new(),
     };
     refs.into_iter()
@@ -221,10 +311,15 @@ fn locate(
     fp: &mut Fingerprint,
     entities: &[Vec<EntityName>],
     twin: (usize, usize),
-) -> Result<(), String> {
+    surface: bool,
+) -> Result<(&'static str, Option<usize>), String> {
     let cm = |p: [f64; 3]| p.map(|x| x / 10.0);
     if fp.object_type.as_deref() == Some("BRepFace") {
-        let i = state.find_face(entities)?;
+        let i = if surface {
+            state.find_face_surface(entities)?
+        } else {
+            state.find_face(entities)?
+        };
         // A planar face (a mirror plane, a split tool; mitcad#67).
         if let (Err(_), Ok(p)) = (state.cylinder(i), state.plane(i)) {
             fp.geometry = Some(Geometry {
@@ -235,7 +330,7 @@ fn locate(
             });
             fp.point_on_face = Some(cm(p.point));
             fp.normal_at_point = Some(p.normal);
-            return Ok(());
+            return Ok(("", None));
         }
         let g = match state.cylinder(i) {
             Ok(g) => g,
@@ -265,7 +360,7 @@ fn locate(
                 {
                     f.face_points = Some(s.spread.into_iter().map(cm).collect());
                 }
-                return Ok(());
+                return Ok(("", None));
             }
         };
         fp.geometry = Some(Geometry {
@@ -277,17 +372,101 @@ fn locate(
         });
         fp.point_on_face = Some(cm(g.point));
         fp.normal_at_point = Some(g.normal);
-        return Ok(());
+        // Where a thread's helix starts round a whole cylinder.
+        if g.full
+            && let Some(f) = fp.f3d.as_mut()
+        {
+            f.seam = Some(g.ref_dir);
+        }
+        return Ok(("", None));
     }
-    let fits = state.edges_fitting(entities)?;
-    let i = match (&fits[..], twin) {
-        ([i], _) => *i,
-        (top, (k, n)) if top.len() == n => top[k],
-        (top, _) => return Err(format!("{} edges fit the names", top.len())),
-    };
+    // A vertex (a plane or point through vertices): where the faces named
+    // meet.
+    if fp.object_type.as_deref() == Some("BRepVertex") {
+        let (vertex, body) = state.find_vertex(entities)?;
+        fp.point = Some(cm(state.vertex(vertex, body)?));
+        return Ok(("", None));
+    }
+    // The faces round the edge's ends in the order the recipe lists them.
+    let tail = fp
+        .f3d
+        .as_ref()
+        .and_then(|f| f.end_faces.as_ref())
+        .map(|fans| super::recipe::EdgeTail {
+            faces: [0, 1],
+            fans: fans
+                .iter()
+                .map(|fan| {
+                    fan.iter()
+                        .filter_map(|&i| usize::try_from(i).ok())
+                        .collect()
+                })
+                .collect(),
+        });
+    let (i, how) = pick_edge(state, entities, tail.as_ref(), twin)?;
     let g = state.edge(i)?;
     edge_geometry(fp, &g);
-    Ok(())
+    Ok((how, Some(i)))
+}
+
+/// The edge a recipe names among those that fit its names: the one that
+/// fits when only one does; one of several that coincide (the same
+/// geometry, as when a body is in the state twice); else, for an edge of
+/// its own names (`twin` (0, 1)), the one whose faces round its ends are in
+/// the order the recipe's tail lists them (mitcad#106: mirror-image edges
+/// between the same two faces); else the k-th of n for `twin` (k, n) as
+/// [`locate`] says. The tail is not used for the n inputs of the same
+/// names of an item (n > 1): each would choose among the edges that fit
+/// alone, and two could choose the same one.
+fn pick_edge(
+    state: &NamedState,
+    entities: &[Vec<EntityName>],
+    tail: Option<&super::recipe::EdgeTail>,
+    twin: (usize, usize),
+) -> Result<(usize, &'static str), String> {
+    let (k, n) = twin;
+    let fits = state.edges_fitting_ordered(entities, tail.filter(|_| n == 1))?;
+    if let [i] = fits[..] {
+        // (By the order of the tail when the names alone leave several.)
+        let by_tail = n == 1
+            && tail.is_some()
+            && state
+                .edges_fitting_ordered(entities, None)
+                .is_ok_and(|all| all.len() > 1);
+        return Ok((
+            i,
+            if by_tail {
+                " (by the recipe's tail)"
+            } else {
+                ""
+            },
+        ));
+    }
+    if let Some(first) = coincident(state, &fits) {
+        return Ok((first, " (one of coincident copies)"));
+    }
+    if fits.len() == n {
+        return Ok((fits[k], " (one of the edges of the same names)"));
+    }
+    Err(format!("{} edges fit the names", fits.len()))
+}
+
+/// The first of several edges with the same geometry (start, end and
+/// middle points, length), if they have.
+fn coincident(state: &NamedState, edges: &[usize]) -> Option<usize> {
+    let (&first, rest) = edges.split_first()?;
+    let a = state.edge(first).ok()?;
+    let same = |x: [f64; 3], y: [f64; 3]| (0..3).all(|k| (x[k] - y[k]).abs() <= 1e-6);
+    rest.iter()
+        .all(|&i| {
+            state.edge(i).is_ok_and(|b| {
+                same(a.start, b.start)
+                    && same(a.end, b.end)
+                    && same(a.mid, b.mid)
+                    && (a.length - b.length).abs() <= 1e-6
+            })
+        })
+        .then_some(first)
 }
 
 /// An edge's geometry into its fingerprint (cm).
@@ -335,7 +514,13 @@ fn face_edges(
 /// state before the item, else up to [`EARLIER`] states before it, as
 /// [`find_named`] finds edges. A face not found stays a face reference
 /// with the reason.
-fn expand_faces(blobs: &[Blob], result: Option<i32>, detail: &mut Detail, out: &mut Resolved) {
+fn expand_faces(
+    at: &At,
+    blobs: &[Blob],
+    result: Option<i32>,
+    detail: &mut Detail,
+    out: &mut Resolved,
+) {
     let sets = match detail {
         Detail::Fillet(f) => f.edge_sets.as_mut(),
         Detail::Chamfer(c) => c.edge_sets.as_mut(),
@@ -357,41 +542,24 @@ fn expand_faces(blobs: &[Blob], result: Option<i32>, detail: &mut Detail, out: &
     }
     let mut found: HashMap<(usize, usize), Vec<Fingerprint>> = HashMap::new();
     let mut why: HashMap<(usize, usize), String> = HashMap::new();
-    let at: Vec<(&Blob, usize)> = match result.filter(|&r| r > 0) {
-        Some(result) => blobs
-            .iter()
-            .filter_map(|b| {
-                let pos = b
-                    .history
-                    .states
-                    .iter()
-                    .position(|s| s.id == i64::from(result))?;
-                Some((b, pos))
-            })
-            .collect(),
-        None => Vec::new(),
-    };
-    if result.is_none_or(|r| r <= 0) {
+    let own: Vec<(&Blob, usize)> = starts(at, blobs, result)
+        .into_iter()
+        .map(|(b, k)| (&blobs[b], k))
+        .collect();
+    if own.is_empty() {
+        let none = no_start(at, result);
         for &key in &left {
-            why.insert(key, "the item has no ASM state".to_owned());
-        }
-        left.clear();
-    } else if at.is_empty() {
-        for &key in &left {
-            why.insert(
-                key,
-                format!("no ASM history holds state {}", result.unwrap_or(0)),
-            );
+            why.insert(key, none.clone());
         }
         left.clear();
     }
-    let result = result.unwrap_or(0);
+    let label = start_label(at, result);
     for earlier in [0..1, 1..EARLIER + 1] {
         if left.is_empty() {
             break;
         }
         let views: Vec<(&Blob, usize, View)> = earlier
-            .flat_map(|e| at.iter().map(move |&(b, pos)| (b, e, pos + 1 + e)))
+            .flat_map(|e| own.iter().map(move |&(b, k)| (b, e, k + e)))
             .filter(|(b, _, k)| *k <= b.history.states.len())
             .map(|(b, e, k)| (b, e, b.history.view(k)))
             .collect();
@@ -424,9 +592,9 @@ fn expand_faces(blobs: &[Blob], result: Option<i32>, detail: &mut Detail, out: &
             match hit {
                 Some((mut edges, entry, e)) => {
                     let text = match e {
-                        0 => format!("{entry} before state {result} (an edge of a face)"),
+                        0 => format!("{entry} before {label} (an edge of a face)"),
                         e => {
-                            format!("{entry} {e} states before state {result} (an edge of a face)")
+                            format!("{entry} {e} states before {label} (an edge of a face)")
                         }
                     };
                     for fp in &mut edges {
@@ -480,9 +648,11 @@ pub fn resolve(dump: &mut Dump, doc: &F3dFile) -> Resolved {
             doc,
             timeline: &timeline,
             position,
+            suppressed: no_result_state(item),
         };
         resolve_item(item, &at, &mut out);
     }
+    circle_seams(items, &blobs, doc, &timeline);
     out
 }
 
@@ -493,30 +663,185 @@ struct At<'a> {
     doc: &'a F3dFile,
     timeline: &'a Timeline,
     position: usize,
+    /// The item is suppressed in the file or rolled back ([`starts`],
+    /// [`no_result_state`], mitcad#180).
+    suppressed: bool,
 }
 
 /// [`resolve`] for one item.
 fn resolve_item(item: &mut TimelineItem, at: &At, out: &mut Resolved) {
     let (blobs, doc) = (at.blobs, at.doc);
-    let result = item.f3d.as_ref().and_then(|f| f.result_no);
-    resolve_bodies(item, blobs, doc, out);
+    let result = result_of(item, at);
+    resolve_bodies(item, at, result, out);
     resolve_path_edges(item, at, out);
     let Some(detail) = item.detail.as_mut() else {
         return;
     };
+    if let Detail::ConstructionPlane(p) = detail {
+        resolve_plane_inputs(p.definition.as_mut(), at, out);
+        // An angle about a face (a line is an edge or axis) is a tangent plane (mitcad#186:
+        // the API lists those as `ConstructionPlaneTangentDefinition`, with
+        // the face as `tangentFace`; 11 planes of the real designs).
+        if let Some(def) = p.definition.as_mut()
+            && def.definition_type.as_deref() == Some("ConstructionPlaneAtAngleDefinition")
+            && let Some(Value::Object(face)) = def.other.get("linearEntity")
+            && matches!(Reference::from_map(face.clone()), Reference::Face(_))
+        {
+            let face = def.other.remove("linearEntity").expect("present");
+            def.other.insert("tangentFace".to_owned(), face);
+            def.definition_type = Some("ConstructionPlaneTangentDefinition".to_owned());
+        }
+        return;
+    }
+    if let Detail::ConstructionPoint(p) = detail {
+        resolve_plane_inputs(p.definition.as_mut(), at, out);
+        return;
+    }
+    if let Detail::ConstructionAxis(a) = detail {
+        resolve_plane_inputs(a.definition.as_mut(), at, out);
+        // A face that is no cylinder, cone or torus alone is the face of
+        // an axis perpendicular to it at a point (mitcad#186): the file
+        // stores the face and the axis' own origin, which the API gives
+        // as `point`.
+        let origin = a.geometry.as_ref().and_then(|g| g.origin);
+        if let Some(def) = a.definition.as_mut()
+            && def.definition_type.as_deref() == Some("ConstructionAxisCircularFaceDefinition")
+            && let Some(Value::Object(face)) = def.other.get("circularFace")
+            && let Reference::Face(fp) = Reference::from_map(face.clone())
+            && fp
+                .geometry
+                .as_ref()
+                .and_then(|g| g.geometry_type.as_deref())
+                == Some("Plane")
+            && let Some(origin) = origin
+        {
+            let face = def.other.remove("circularFace").expect("present");
+            def.other.insert("face".to_owned(), face);
+            def.other
+                .insert("point".to_owned(), serde_json::json!(origin));
+            def.definition_type = Some("ConstructionAxisPerpendicularAtPointDefinition".to_owned());
+        }
+        return;
+    }
     if matches!(detail, Detail::Fillet(_) | Detail::Chamfer(_)) {
         let blobs = blobs.get(doc);
-        expand_faces(blobs, result, detail, out);
+        expand_faces(at, blobs, result, detail, out);
     }
     // Faces of other components only where an item may take them (an
     // extrusion's extent or profile): a fillet's, chamfer's, thread's or
     // shell's inputs are on the bodies it changes.
     let others = matches!(detail, Detail::Extrude(_));
+    let sets = named_edge_sets(detail);
     let edges = named_entities(detail);
     if edges.is_empty() {
         return;
     }
-    find_named(at, result, edges, true, others, out);
+    find_named(at, result, edges, Some(&sets), others, false, out);
+}
+
+/// The edge set of each input [`named_entities`] gives of a fillet or
+/// chamfer (none for another item's).
+fn named_edge_sets(detail: &Detail) -> Vec<usize> {
+    let sets: Vec<&Option<Vec<Reference>>> = match detail {
+        Detail::Fillet(d) => d.edge_sets.iter().flatten().map(|s| &s.edges).collect(),
+        Detail::Chamfer(d) => d.edge_sets.iter().flatten().map(|s| &s.edges).collect(),
+        _ => return Vec::new(),
+    };
+    sets.iter()
+        .enumerate()
+        .flat_map(|(i, edges)| {
+            edges
+                .iter()
+                .flatten()
+                .filter(|r| matches!(r, Reference::Edge(fp) if fp.mid_point.is_none() && fp.f3d.is_some()))
+                .map(move |_| i)
+        })
+        .collect()
+}
+
+/// The keys of a construction plane's definition that hold the entities
+/// it is measured from (mitcad#178; `planarEntity` is a field of its own).
+const PLANE_INPUT_KEYS: [&str; 18] = [
+    "linearEntity",
+    "planarEntityOne",
+    "planarEntityTwo",
+    "linearEntityOne",
+    "linearEntityTwo",
+    "pointEntity",
+    "pointEntityOne",
+    "pointEntityTwo",
+    "pointEntityThree",
+    "tangentFace",
+    "point",
+    // Points and axes (mitcad#186).
+    "edgeEntity",
+    "circularFace",
+    "face",
+    "circularEntity",
+    "planeOne",
+    "planeTwo",
+    "planeThree",
+];
+
+/// A construction plane's or point's named faces, edges and vertices
+/// (mitcad#178). A datum has no ASM state of its own: they are looked for
+/// in each history at its point of the timeline (the state after the last
+/// item of the history's component before it), as other components'
+/// inputs are.
+fn resolve_plane_inputs(def: Option<&mut super::ir::Definition>, at: &At, out: &mut Resolved) {
+    let Some(def) = def else {
+        return;
+    };
+    let mut refs: Vec<(Option<&str>, Reference)> = Vec::new();
+    if let Some(r) = def.planar_entity.take() {
+        refs.push((None, r));
+    }
+    for k in PLANE_INPUT_KEYS {
+        if let Some(Value::Object(m)) = def.other.remove(k) {
+            refs.push((Some(k), Reference::from_map(m)));
+        }
+    }
+    let mut paths: Vec<Reference> = match def.other.remove("pathEntities") {
+        Some(Value::Array(v)) => v
+            .into_iter()
+            .filter_map(|v| match v {
+                Value::Object(m) => Some(Reference::from_map(m)),
+                _ => None,
+            })
+            .collect(),
+        _ => Vec::new(),
+    };
+    let named: Vec<&mut Fingerprint> = refs
+        .iter_mut()
+        .map(|(_, r)| r)
+        .chain(paths.iter_mut())
+        .filter_map(|r| match r {
+            Reference::Edge(fp) if fp.mid_point.is_none() && fp.f3d.is_some() => Some(&mut **fp),
+            Reference::Face(fp) if fp.point_on_face.is_none() && fp.f3d.is_some() => {
+                Some(&mut **fp)
+            }
+            Reference::Vertex(fp) if fp.point.is_none() && fp.f3d.is_some() => Some(&mut **fp),
+            _ => None,
+        })
+        .collect();
+    if !named.is_empty() {
+        find_named(at, None, named, None, true, true, out);
+    }
+    for (k, r) in refs {
+        match k {
+            None => def.planar_entity = Some(r),
+            Some(k) => {
+                def.other
+                    .insert(k.to_owned(), serde_json::to_value(&r).expect("serializes"));
+            }
+        }
+    }
+    if !paths.is_empty() {
+        def.other.insert(
+            "pathEntities".to_owned(),
+            serde_json::to_value(&paths).expect("serializes"),
+        );
+    }
 }
 
 // Inputs found on several threads (mitcad#103).
@@ -551,6 +876,7 @@ pub fn resolve_on(dump: &mut Dump, doc: &F3dFile, threads: usize) -> Resolved {
                 doc,
                 timeline: &timeline,
                 position,
+                suppressed: no_result_state(item),
             };
             resolve_item(item, &at, &mut out);
         }
@@ -570,6 +896,7 @@ pub fn resolve_on(dump: &mut Dump, doc: &F3dFile, threads: usize) -> Resolved {
         }
         work();
     });
+    circle_seams(items, &blobs, doc, &timeline);
     found
         .into_inner()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -581,14 +908,20 @@ pub fn resolve_on(dump: &mut Dump, doc: &F3dFile, threads: usize) -> Resolved {
 struct Input<'f> {
     fp: &'f mut Fingerprint,
     twin: (usize, usize),
+    /// The edge set of the fillet or chamfer the input belongs to (none for the inputs of other items).
+    set: Option<usize>,
     entities: Vec<Vec<EntityName>>,
     why: String,
     hit: Option<(usize, usize)>,
+    /// The edge found, in the state of `hit`.
+    edge: Option<usize>,
+    /// How an edge was picked where several fit ([`pick_edge`]).
+    how: &'static str,
 }
 
 /// An input not found yet, with its place among the item's inputs of the
-/// same names ([`locate`]).
-type Left<'f> = Vec<(&'f mut Fingerprint, (usize, usize))>;
+/// same names ([`locate`]) and its edge set.
+type Left<'f> = Vec<(&'f mut Fingerprint, (usize, usize), Option<usize>)>;
 
 /// Finds named edges and faces in the history state before the item
 /// whose state is `result`, else up to [`EARLIER`] states before it; what
@@ -596,35 +929,22 @@ type Left<'f> = Vec<(&'f mut Fingerprint, (usize, usize))>;
 /// point of the timeline (mitcad#161: a sweep along an edge of another
 /// component's body), else up to [`EARLIER`] states before that.
 ///
-/// With `twins`, inputs of the same names take the edges that fit them
-/// one each ([`locate`]; fillets and chamfers).
+/// With `twins` (the edge set of each input; fillets and chamfers), inputs
+/// of the same names take the edges that fit them one each ([`locate`]), and
+/// inputs of one set that fit the same edges alike too ([`resolve_alike`]).
 fn find_named(
     at: &At,
     result: Option<i32>,
     edges: Vec<&mut Fingerprint>,
-    twins: bool,
+    twins: Option<&[usize]>,
     others: bool,
+    surface: bool,
     out: &mut Resolved,
 ) {
     let blobs = at.blobs.get(at.doc);
-    let result = result.filter(|&r| r > 0);
-    // The blobs that hold the item's state, with its position (newest
-    // first).
-    let own: Vec<(usize, usize)> = match result {
-        Some(result) => blobs
-            .iter()
-            .enumerate()
-            .filter_map(|(i, b)| {
-                let pos = b
-                    .history
-                    .states
-                    .iter()
-                    .position(|s| s.id == i64::from(result))?;
-                Some((i, pos))
-            })
-            .collect(),
-        None => Vec::new(),
-    };
+    // The blobs that hold the item's start, with the position of the
+    // state just before it (newest first; [`starts`]).
+    let own = starts(at, blobs, result);
     // Inputs with the same names: each the k-th of n.
     let keys: Vec<String> = edges
         .iter()
@@ -637,40 +957,42 @@ fn find_named(
             .unwrap_or_default()
         })
         .collect();
-    let twins: Vec<(usize, usize)> = (0..keys.len())
+    let nth: Vec<(usize, usize)> = (0..keys.len())
         .map(|i| {
-            if !twins {
+            if twins.is_none() {
                 return (0, 1);
             }
             let k = keys[..i].iter().filter(|x| **x == keys[i]).count();
             (k, keys.iter().filter(|x| **x == keys[i]).count())
         })
         .collect();
-    let mut left: Left = edges.into_iter().zip(twins).collect();
-    match result {
-        None => note_left(&mut left, "the item has no ASM state"),
-        Some(r) if own.is_empty() => {
-            note_left(&mut left, &format!("no ASM history holds state {r}"))
-        }
-        Some(r) => {
-            // The state just before the item; for what is not there, the
-            // earlier ones (some inputs name faces as an earlier state had
-            // them).
-            for earlier in [0..1, 1..EARLIER + 1] {
-                if left.is_empty() {
-                    break;
-                }
-                let views = earlier
-                    .flat_map(|e| own.iter().map(move |&(b, pos)| (b, e, pos + 1 + e)))
-                    .filter(|&(b, _, k)| k <= blobs[b].history.states.len());
-                left = search(blobs, left, views, out, &|b, e| {
-                    let entry = &blobs[b].entry;
-                    match e {
-                        0 => format!("{entry} before state {r}"),
-                        e => format!("{entry} {e} states before state {r}"),
-                    }
-                });
+    let mut left: Left = edges
+        .into_iter()
+        .zip(nth)
+        .enumerate()
+        .map(|(i, (fp, twin))| (fp, twin, twins.and_then(|s| s.get(i).copied())))
+        .collect();
+    if own.is_empty() {
+        note_left(&mut left, &no_start(at, result));
+    } else {
+        // The state just before the item; for what is not there, the
+        // earlier ones (some inputs name faces as an earlier state had
+        // them).
+        let label = start_label(at, result);
+        for earlier in [0..1, 1..EARLIER + 1] {
+            if left.is_empty() {
+                break;
             }
+            let views = earlier
+                .flat_map(|e| own.iter().map(move |&(b, k)| (b, e, k + e)))
+                .filter(|&(b, _, k)| k <= blobs[b].history.states.len());
+            left = search(blobs, left, views, out, surface, &|b, e| {
+                let entry = &blobs[b].entry;
+                match e {
+                    0 => format!("{entry} before {label}"),
+                    e => format!("{entry} {e} states before {label}"),
+                }
+            });
         }
     }
     if left.is_empty() || !others {
@@ -689,7 +1011,7 @@ fn find_named(
         .filter(|&(b, _, k)| k <= blobs[b].history.states.len());
     let position = at.position;
     let mut found = Vec::new();
-    left = search_marked(blobs, left, views, &mut found, &|b, e| {
+    left = search_marked(blobs, left, views, &mut found, surface, &|b, e| {
         let entry = &blobs[b].entry;
         match e {
             0 => format!("{entry} (another component's history) at item {position}"),
@@ -715,10 +1037,11 @@ fn search<'f>(
     left: Left<'f>,
     views: impl Iterator<Item = (usize, usize, usize)>,
     out: &mut Resolved,
+    surface: bool,
     found: &dyn Fn(usize, usize) -> String,
 ) -> Left<'f> {
     let mut hits = Vec::new();
-    let left = search_marked(blobs, left, views, &mut hits, found);
+    let left = search_marked(blobs, left, views, &mut hits, surface, found);
     out.found += hits.len();
     left
 }
@@ -729,6 +1052,7 @@ fn search_marked<'f>(
     left: Left<'f>,
     views: impl Iterator<Item = (usize, usize, usize)>,
     hits: &mut Vec<(&'f mut Fingerprint, usize)>,
+    surface: bool,
     found: &dyn Fn(usize, usize) -> String,
 ) -> Left<'f> {
     // Each input takes the first state (in this order) it is found in, and
@@ -738,16 +1062,19 @@ fn search_marked<'f>(
     // of memory (mitcad#132).
     let mut inputs: Vec<Input> = left
         .into_iter()
-        .filter_map(|(fp, twin)| {
+        .filter_map(|(fp, twin, set)| {
             let f = fp.f3d.as_mut()?;
             let entities = f.entities.clone().unwrap_or_default();
             let why = f.found.take().unwrap_or_default();
             Some(Input {
                 fp,
                 twin,
+                set,
                 entities,
                 why,
                 hit: None,
+                edge: None,
+                how: "",
             })
         })
         .collect();
@@ -759,37 +1086,120 @@ fn search_marked<'f>(
         let view: View = blob.history.view(k);
         let state = NamedState::new(&blob.file, Some(&view));
         for input in inputs.iter_mut().filter(|i| i.hit.is_none()) {
-            match locate(&state, input.fp, &input.entities, input.twin) {
-                Ok(()) => input.hit = Some((b, e)),
+            match locate(&state, input.fp, &input.entities, input.twin, surface) {
+                Ok((how, edge)) => {
+                    input.hit = Some((b, e));
+                    input.edge = edge;
+                    input.how = how;
+                }
                 Err(err) if input.why.is_empty() => input.why = err,
                 Err(_) => {}
             }
         }
+        resolve_alike(&state, &mut inputs, (b, e));
     }
     let mut still = Vec::new();
     for Input {
-        fp, twin, why, hit, ..
+        fp,
+        twin,
+        set,
+        why,
+        hit,
+        how,
+        ..
     } in inputs
     {
         let f = fp.f3d.as_mut().expect("named");
         match hit {
             Some((b, e)) => {
-                f.found = Some(found(b, e));
+                f.found = Some(format!("{}{how}", found(b, e)));
                 hits.push((fp, b));
             }
             None => {
                 f.found = Some(why);
-                still.push((fp, twin));
+                still.push((fp, twin, set));
             }
         }
     }
     still
 }
 
+/// The edge inputs of one edge set of a fillet or chamfer that the names fit
+/// alike: several edges of the state fit the names of each, the same edges
+/// for every one of them, and the inputs are as many as the edges (the
+/// edges of a ring between the same two faces, whose recipes differ in the
+/// faces at the ends only: [`locate`] cannot tell them apart), so the set
+/// is those edges, and each input takes one. Edges other inputs of the set
+/// found take are left out of the others' candidates first, so that the rest
+/// may be as many as what is left (mitcad#186: on the API reference dumps
+/// the edges agree).
+fn resolve_alike(state: &NamedState, inputs: &mut [Input], view: (usize, usize)) {
+    use std::collections::{BTreeMap, HashSet};
+    // The edges taken, by edge set.
+    let mut taken: HashSet<(usize, usize)> = inputs
+        .iter()
+        .filter(|i| i.hit == Some(view))
+        .filter_map(|i| Some((i.set?, i.edge?)))
+        .collect();
+    // The inputs still open, with the edges that fit their names.
+    let mut open: Vec<(usize, usize, Vec<usize>)> = Vec::new();
+    for (k, input) in inputs.iter().enumerate() {
+        let Some(set) = input.set else { continue };
+        if input.hit.is_some()
+            || matches!(
+                input.fp.object_type.as_deref(),
+                Some("BRepFace" | "BRepVertex")
+            )
+        {
+            continue;
+        }
+        if let Ok(fits) = state.edges_fitting_ordered(&input.entities, None)
+            && fits.len() > 1
+        {
+            open.push((k, set, fits));
+        }
+    }
+    if open.is_empty() {
+        return;
+    }
+    loop {
+        let mut groups: BTreeMap<(usize, Vec<usize>), Vec<usize>> = BTreeMap::new();
+        for (k, set, fits) in &open {
+            let mut left: Vec<usize> = fits
+                .iter()
+                .copied()
+                .filter(|&e| !taken.contains(&(*set, e)))
+                .collect();
+            left.sort_unstable();
+            groups.entry((*set, left)).or_default().push(*k);
+        }
+        let mut progress = false;
+        for ((set, edges), members) in groups {
+            if edges.is_empty() || members.len() != edges.len() {
+                continue;
+            }
+            for (&k, &edge) in members.iter().zip(&edges) {
+                let Ok(g) = state.edge(edge) else { continue };
+                let input = &mut inputs[k];
+                edge_geometry(input.fp, &g);
+                input.hit = Some(view);
+                input.edge = Some(edge);
+                input.how = " (one of the edges the inputs of the set name alike)";
+                taken.insert((set, edge));
+                progress = true;
+            }
+            open.retain(|(k, _, _)| inputs[*k].hit.is_none());
+        }
+        if !progress || open.is_empty() {
+            break;
+        }
+    }
+}
+
 /// Notes why the inputs left were not found (the first reason each
 /// keeps).
 fn note_left(left: &mut Left, why: &str) {
-    for (fp, _) in left.iter_mut() {
+    for (fp, _, _) in left.iter_mut() {
         if let Some(f) = fp.f3d.as_mut()
             && f.found.is_none()
         {
@@ -846,6 +1256,7 @@ fn resolve_path_edges(item: &mut TimelineItem, at: &At, out: &mut Resolved) {
                 | "RectangularPatternFeature"
                 | "MirrorFeature"
                 | "SplitBodyFeature"
+                | "DeleteFaceFeature"
         )
     ) {
         return;
@@ -880,8 +1291,8 @@ fn resolve_path_edges(item: &mut TimelineItem, at: &At, out: &mut Resolved) {
             Fingerprint::from_map(map.unwrap_or_default())
         })
         .collect();
-    let result = item.f3d.as_ref().and_then(|f| f.result_no);
-    find_named(at, result, fps.iter_mut().collect(), false, true, out);
+    let result = result_of(item, at);
+    find_named(at, result, fps.iter_mut().collect(), None, true, false, out);
     for (p, fp) in pointers.iter().zip(&fps) {
         if let Some(slot) = v.pointer_mut(p) {
             *slot = serde_json::to_value(fp).expect("serializes");
@@ -925,7 +1336,7 @@ fn named_bodies(v: &mut Value, f: &mut dyn FnMut(&mut Map<String, Value>)) {
 /// The bodies an item's detail names (moved, split, patterned, mirrored
 /// bodies), found in the state just before the item: some of their edges'
 /// middle points go into `_f3d.edge_points`.
-fn resolve_bodies(item: &mut TimelineItem, blobs: &Blobs, doc: &F3dFile, out: &mut Resolved) {
+fn resolve_bodies(item: &mut TimelineItem, at: &At, result: Option<i32>, out: &mut Resolved) {
     let Some(detail) = item.detail.as_ref() else {
         return;
     };
@@ -935,31 +1346,26 @@ fn resolve_bodies(item: &mut TimelineItem, blobs: &Blobs, doc: &F3dFile, out: &m
     if count == 0 {
         return;
     }
-    let result = item.f3d.as_ref().and_then(|f| f.result_no).unwrap_or(-1);
-    let blobs = blobs.get(doc);
-    let views: Vec<(&Blob, View)> = blobs
-        .iter()
-        .filter_map(|b| {
-            let pos = b
-                .history
-                .states
-                .iter()
-                .position(|s| s.id == i64::from(result))?;
-            Some((b, b.history.view(pos + 1)))
-        })
+    let blobs = at.blobs.get(at.doc);
+    let views: Vec<(&Blob, View)> = starts(at, blobs, result)
+        .into_iter()
+        .filter(|&(b, k)| k <= blobs[b].history.states.len())
+        .map(|(b, k)| (&blobs[b], blobs[b].history.view(k)))
         .collect();
     let named: Vec<(&Blob, NamedState)> = views
         .iter()
         .map(|(b, view)| (*b, NamedState::new(&b.file, Some(view))))
         .collect();
+    let none = no_start(at, result);
+    let label = start_label(at, result);
     named_bodies(&mut v, &mut |m| {
         let mut fp = Fingerprint::from_map(std::mem::take(m));
         let f = fp.f3d.get_or_insert_with(Default::default);
         let entities = f.entities.clone().unwrap_or_default();
-        let mut why = match result {
-            r if r <= 0 => "the item has no ASM state".to_owned(),
-            r if named.is_empty() => format!("no ASM history holds state {r}"),
-            _ => String::new(),
+        let mut why = if named.is_empty() {
+            none.clone()
+        } else {
+            String::new()
         };
         let mut hit = None;
         for (b, state) in &named {
@@ -977,7 +1383,7 @@ fn resolve_bodies(item: &mut TimelineItem, blobs: &Blobs, doc: &F3dFile, out: &m
         }
         match hit {
             Some((entry, points)) => {
-                f.found = Some(format!("{entry} before state {result}"));
+                f.found = Some(format!("{entry} before {label}"));
                 f.edge_points = Some(points.iter().map(|p| p.map(|x| x / 10.0)).collect());
                 out.found += 1;
             }
@@ -993,6 +1399,233 @@ fn resolve_bodies(item: &mut TimelineItem, blobs: &Blobs, doc: &F3dFile, out: &m
     if let Value::Object(map) = v {
         let object_type = item.object_type().map(str::to_owned);
         item.detail = Some(Detail::typed(object_type.as_deref(), map));
+    }
+}
+
+// Where the file's circles start.
+
+/// A whole circle of a sketch, looked for among the stored bodies' closed
+/// edges (mm, in the sketch's component space).
+struct SeamCircle {
+    curve: usize,
+    center: [f64; 3],
+    radius: f64,
+}
+
+/// A sketch's circles and its frame.
+struct SeamSketch {
+    circles: Vec<SeamCircle>,
+    x: [f64; 3],
+    y: [f64; 3],
+}
+
+/// Where each whole sketch circle starts in the file: the start vertex of
+/// the closed edge the first extrusion that uses the circle made in the
+/// stored bodies, as an angle about the sketch normal from the sketch x
+/// axis (`_f3d_seam`). The file's sketch circle record always has the x
+/// axis as its reference direction; the stored edge's start is elsewhere
+/// (the file puts it at the x axis, the opposite side or at another angle,
+/// by how the circle was drawn), and the replay needs it to make its
+/// cylinders' seams, vertices and edges where the file has them.
+fn circle_seams(items: &mut [TimelineItem], blobs: &Blobs, doc: &F3dFile, timeline: &Timeline) {
+    let cm = |p: [f64; 3]| p.map(|v| v * 10.0);
+    let mut sketches: HashMap<i64, SeamSketch> = HashMap::new();
+    for item in items.iter() {
+        let Some(Detail::Sketch(sk)) = &item.detail else {
+            continue;
+        };
+        let (Some(frame), Some(curves)) = (sk.model_frame.as_ref(), sk.curves.as_ref()) else {
+            continue;
+        };
+        let (Some(origin), Some(x), Some(y)) = (frame.origin, frame.x_axis, frame.y_axis) else {
+            continue;
+        };
+        let circles: Vec<SeamCircle> = curves
+            .iter()
+            .enumerate()
+            .filter(|(_, c)| c.curve_type.as_deref() == Some("SketchCircle"))
+            .filter_map(|(i, c)| {
+                let g = c.geometry.as_ref()?;
+                let (centre, radius) = (g.center?, g.radius?);
+                let at = [
+                    origin[0] + centre[0] * x[0] + centre[1] * y[0],
+                    origin[1] + centre[0] * x[1] + centre[1] * y[1],
+                    origin[2] + centre[0] * x[2] + centre[1] * y[2],
+                ];
+                Some(SeamCircle {
+                    curve: i,
+                    center: cm(at),
+                    radius: radius * 10.0,
+                })
+            })
+            .collect();
+        if !circles.is_empty() {
+            sketches.insert(item.index.unwrap_or(-1), SeamSketch { circles, x, y });
+        }
+    }
+    if sketches.is_empty() {
+        return;
+    }
+    let mut found: HashMap<(i64, usize), f64> = HashMap::new();
+    for (position, item) in items.iter().enumerate() {
+        let Some(Detail::Extrude(d)) = &item.detail else {
+            continue;
+        };
+        let at = At {
+            blobs,
+            doc,
+            timeline,
+            position,
+            suppressed: no_result_state(item),
+        };
+        let Some(result) = result_of(item, &at).filter(|&r| r > 0) else {
+            continue;
+        };
+        // The sketches the extrusion's profiles lie in.
+        let mut used: Vec<i64> = Vec::new();
+        for r in d.profile.iter().flatten() {
+            if let Reference::Profile(p) = r
+                && let Some(Some(s)) = p.sketch_timeline_index
+                && sketches.contains_key(&s)
+                && !used.contains(&s)
+            {
+                used.push(s);
+            }
+        }
+        let wanted = |found: &HashMap<(i64, usize), f64>| {
+            used.iter()
+                .flat_map(|s| sketches[s].circles.iter().map(move |c| (*s, c.curve)))
+                .any(|k| !found.contains_key(&k))
+        };
+        if used.is_empty() || !wanted(&found) {
+            continue;
+        }
+        let blobs = blobs.get(doc);
+        // The closed edges on each circle's axis and in its plane: the
+        // distance along the axis from the sketch's plane and the angle.
+        let mut cands: HashMap<(i64, usize), Vec<(f64, f64)>> = HashMap::new();
+        for (b, k) in starts(&at, blobs, Some(result)) {
+            if k == 0 || k > blobs[b].history.states.len() {
+                continue;
+            }
+            // The bodies the extrusion made.
+            let view = blobs[b].history.view(k - 1);
+            let state = NamedState::new(&blobs[b].file, Some(&view));
+            let closed = closed_circles(&state);
+            for s in &used {
+                for (curve, along, angle) in seam_candidates(&closed, &sketches[s]) {
+                    if !found.contains_key(&(*s, curve)) {
+                        cands.entry((*s, curve)).or_default().push((along, angle));
+                    }
+                }
+            }
+        }
+        // The edge in the sketch's plane, else the circles at the other
+        // end if they agree.
+        for (key, list) in cands {
+            let same = |a: f64, b: f64| (a - b).abs() < 1e-6;
+            if let Some(&(_, angle)) = list.iter().find(|(t, _)| *t < 0.01) {
+                found.insert(key, angle);
+            } else if list.iter().all(|&(_, a)| same(a, list[0].1)) {
+                found.insert(key, list[0].1);
+            }
+        }
+    }
+    for item in items.iter_mut() {
+        let index = item.index.unwrap_or(-1);
+        if let Some(Detail::Sketch(sk)) = &mut item.detail
+            && let Some(curves) = sk.curves.as_mut()
+        {
+            for (i, c) in curves.iter_mut().enumerate() {
+                if let Some(&angle) = found.get(&(index, i)) {
+                    c.f3d_seam = Some(angle);
+                }
+            }
+        }
+    }
+}
+
+/// A closed edge that is a whole circle (mm): its start, its centre, its
+/// radius and its direction at the middle.
+struct ClosedCircle {
+    start: [f64; 3],
+    centre: [f64; 3],
+    radius: f64,
+    direction: [f64; 3],
+}
+
+/// The whole circles among a state's edges: those that start and end at
+/// one vertex with the length of a circle.
+fn closed_circles(state: &NamedState) -> Vec<ClosedCircle> {
+    let mut out = Vec::new();
+    for (i, e) in state.edges.iter().enumerate() {
+        if e.vertices[0].is_none() || e.vertices[0] != e.vertices[1] {
+            continue;
+        }
+        let Ok(g) = state.edge(i) else {
+            continue;
+        };
+        // The middle is half way along the parameter: opposite the start.
+        let radius = crate::brep::dist(g.start, g.mid) / 2.0;
+        if radius <= 0.0
+            || crate::brep::dist(g.start, g.end) > 1e-6
+            || (g.length - std::f64::consts::TAU * radius).abs() > 1e-3 * radius
+        {
+            continue;
+        }
+        out.push(ClosedCircle {
+            start: g.start,
+            centre: crate::brep::scale(crate::brep::add(g.start, g.mid), 0.5),
+            radius,
+            direction: g.direction,
+        });
+    }
+    out
+}
+
+/// The circles of a sketch (by their curve index) that whole circles of
+/// a state lie on the axis of and in a plane across the sketch's normal
+/// with: the distance of each along the axis from the sketch's plane and
+/// its start as an angle ([`seam_angle`]).
+fn seam_candidates(closed: &[ClosedCircle], sk: &SeamSketch) -> Vec<(usize, f64, f64)> {
+    let normal = crate::brep::normalize(crate::brep::cross(sk.x, sk.y));
+    let mut out = Vec::new();
+    for g in closed {
+        let d = crate::brep::sub(g.start, g.centre);
+        // In a plane across the sketch's normal.
+        if crate::brep::dot(d, normal).abs() > 0.01
+            || crate::brep::dot(g.direction, normal).abs() > 1e-3
+        {
+            continue;
+        }
+        for c in &sk.circles {
+            if (c.radius - g.radius).abs() > 0.01 {
+                continue;
+            }
+            // On the circle's axis (the extrusion's other end too).
+            let apart = crate::brep::sub(g.centre, c.center);
+            let along = crate::brep::dot(apart, normal);
+            let off = crate::brep::sub(apart, crate::brep::scale(normal, along));
+            if crate::brep::norm(off) > 0.01 {
+                continue;
+            }
+            out.push((c.curve, along.abs(), seam_angle(d, sk.x, sk.y)));
+        }
+    }
+    out
+}
+
+/// The angle of `d` about the normal of a sketch with axes `x` and `y`,
+/// counter-clockwise from `x`, in (-pi, pi]: a start on the x axis is 0
+/// (not a rounding error from it), one on the opposite side pi.
+fn seam_angle(d: [f64; 3], x: [f64; 3], y: [f64; 3]) -> f64 {
+    let angle = crate::brep::dot(d, y).atan2(crate::brep::dot(d, x));
+    if angle.abs() < 1e-9 {
+        0.0
+    } else if angle.abs() > std::f64::consts::PI - 1e-9 {
+        std::f64::consts::PI
+    } else {
+        angle
     }
 }
 
@@ -1013,4 +1646,212 @@ fn history_blobs(doc: &F3dFile) -> Vec<Blob> {
             })
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::testdata;
+
+    fn n(tag: &str) -> EntityName {
+        EntityName {
+            tag: tag.to_owned(),
+            kind: 0,
+            ops: vec![301],
+        }
+    }
+
+    /// The cube's edges along x at the bottom front and at the top front
+    /// fit the names of "1" or "2" and "3" equally; their ends tell which
+    /// (mitcad#106). Edges at the same place are one edge for a
+    /// fingerprint.
+    #[test]
+    fn picks_the_edge_the_recipe_names() {
+        let data = testdata::named_cube_blob();
+        let file = AsmFile::parse(&data).unwrap();
+        let state = NamedState::new(&file, None);
+        // The bottom or top face, the front face, the left and right ones.
+        let entities = vec![
+            vec![n("1"), n("2")],
+            vec![n("3")],
+            vec![n("6")],
+            vec![n("4")],
+        ];
+        let tail = |fans: [[usize; 3]; 2]| super::super::recipe::EdgeTail {
+            faces: [0, 1],
+            fans: fans.iter().map(|f| f.to_vec()).collect(),
+        };
+        let mut found = Vec::new();
+        for fans in [[[0, 1, 2], [1, 0, 3]], [[1, 0, 2], [0, 1, 3]]] {
+            let (i, how) = pick_edge(&state, &entities, Some(&tail(fans)), (0, 1)).unwrap();
+            assert_eq!(how, " (by the recipe's tail)");
+            found.push(state.edge(i).unwrap().mid[2]);
+        }
+        // The bottom front edge and the top front edge.
+        assert!(
+            found[0].abs() < 1e-9 && (found[1] - 10.0).abs() < 1e-9,
+            "{found:?}"
+        );
+        // Without the tail, two fit: one of two inputs of the item each.
+        assert_eq!(
+            pick_edge(&state, &entities, None, (0, 1)),
+            Err("2 edges fit the names".to_owned())
+        );
+        assert!(pick_edge(&state, &entities, None, (1, 2)).is_ok());
+        // Edges at the same place are the same for a fingerprint; others
+        // are not.
+        let all = state.edges_fitting(&entities).unwrap();
+        assert_eq!(coincident(&state, &[all[0], all[0]]), Some(all[0]));
+        assert_eq!(coincident(&state, &all), None);
+        assert_eq!(coincident(&state, &[]), None);
+    }
+
+    fn open_input<'f>(
+        fp: &'f mut Fingerprint,
+        entities: Vec<Vec<EntityName>>,
+        set: usize,
+    ) -> Input<'f> {
+        Input {
+            fp,
+            twin: (0, 1),
+            set: Some(set),
+            entities,
+            why: String::new(),
+            hit: None,
+            edge: None,
+            how: "",
+        }
+    }
+
+    /// Inputs whose names differ (in the faces at the ends, which tell
+    /// nothing here) but fit the same two edges, as many as the edges, take
+    /// one each; edges other inputs took are left out first; inputs of
+    /// other edge sets share nothing (mitcad#186).
+    #[test]
+    fn inputs_that_fit_the_same_edges_take_one_each() {
+        let data = testdata::named_cube_blob();
+        let file = AsmFile::parse(&data).unwrap();
+        let state = NamedState::new(&file, None);
+        // The bottom front and the top front edge fit; an end face that
+        // is no face of the state stands for any.
+        let front = |end: &str| {
+            vec![
+                vec![n("1"), n("2")],
+                vec![n("3")],
+                vec![n(end)],
+                vec![n(end)],
+            ]
+        };
+        let view = (0, 0);
+        let (mut a, mut b) = (Fingerprint::default(), Fingerprint::default());
+        let mut inputs = [
+            open_input(&mut a, front("98"), 0),
+            open_input(&mut b, front("99"), 0),
+        ];
+        resolve_alike(&state, &mut inputs, view);
+        assert!(inputs.iter().all(|i| i.hit == Some(view)));
+        let (x, y) = (inputs[0].edge.unwrap(), inputs[1].edge.unwrap());
+        assert_ne!(x, y);
+        let heights: Vec<f64> = [x, y]
+            .iter()
+            .map(|&e| state.edge(e).unwrap().mid[2])
+            .collect();
+        assert!(heights.iter().any(|z| z.abs() < 1e-9));
+        assert!(heights.iter().any(|z| (z - 10.0).abs() < 1e-9));
+        assert!(a.mid_point.is_some());
+        // More inputs than the edges that fit, or inputs of two sets:
+        // nothing is decided.
+        let (mut a, mut b, mut c) = (
+            Fingerprint::default(),
+            Fingerprint::default(),
+            Fingerprint::default(),
+        );
+        let mut inputs = [
+            open_input(&mut a, front("97"), 0),
+            open_input(&mut b, front("98"), 0),
+            open_input(&mut c, front("99"), 0),
+        ];
+        resolve_alike(&state, &mut inputs, view);
+        assert!(inputs.iter().all(|i| i.hit.is_none()));
+        let (mut a, mut b) = (Fingerprint::default(), Fingerprint::default());
+        let mut inputs = [
+            open_input(&mut a, front("98"), 0),
+            open_input(&mut b, front("99"), 1),
+        ];
+        resolve_alike(&state, &mut inputs, view);
+        assert!(inputs.iter().all(|i| i.hit.is_none()));
+        // An input that found its edge already leaves the other no choice.
+        let (mut a, mut b) = (Fingerprint::default(), Fingerprint::default());
+        let all = state.edges_fitting(&front("98")).unwrap();
+        let mut inputs = [
+            open_input(&mut a, front("98"), 0),
+            open_input(&mut b, front("99"), 0),
+        ];
+        inputs[0].hit = Some(view);
+        inputs[0].edge = Some(all[0]);
+        resolve_alike(&state, &mut inputs, view);
+        assert_eq!(inputs[1].edge, Some(all[1]));
+    }
+
+    /// A circle's start is read from the closed edge round the cylinder
+    /// (radius 10 mm, from z = 0 to 20), as an angle in the sketch's own
+    /// axes, at either end of the extrusion.
+    #[test]
+    fn a_circle_starts_where_the_closed_edge_does() {
+        let data = testdata::cylinder_blob();
+        let file = AsmFile::parse(&data).unwrap();
+        let state = NamedState::new(&file, None);
+        let closed = closed_circles(&state);
+        assert_eq!(closed.len(), 2, "the bottom and the top circle");
+        let sketch = |x: [f64; 3], y: [f64; 3]| SeamSketch {
+            circles: vec![SeamCircle {
+                curve: 7,
+                center: [0.0, 0.0, 0.0],
+                radius: 10.0,
+            }],
+            x,
+            y,
+        };
+        let angle_of = |sk: &SeamSketch| {
+            let hits = seam_candidates(&closed, sk);
+            assert_eq!(hits.len(), 2, "{hits:?}");
+            // The one in the sketch's plane (z = 0) and the other end.
+            let near = hits.iter().find(|h| h.1 < 1e-9).unwrap();
+            let far = hits.iter().find(|h| (h.1 - 20.0).abs() < 1e-9).unwrap();
+            assert_eq!((near.0, far.0), (7, 7));
+            assert!((near.2 - far.2).abs() < 1e-9, "one seam for both ends");
+            near.2
+        };
+        let start = state.edge(0).unwrap().start;
+        // The start vertex's direction from the axis, in the world axes.
+        let (sx, sy) = (start[0], start[1]);
+        assert!((sx.hypot(sy) - 10.0).abs() < 1e-9);
+        let expected = sy.atan2(sx);
+        let a = angle_of(&sketch([1.0, 0.0, 0.0], [0.0, 1.0, 0.0]));
+        assert!((a - expected).abs() < 1e-9 || (a.abs() - std::f64::consts::PI).abs() < 1e-9);
+        // The sketch's axes turned a quarter turn: the angle follows.
+        let turned = angle_of(&sketch([0.0, 1.0, 0.0], [-1.0, 0.0, 0.0]));
+        let wrapped = (expected - std::f64::consts::FRAC_PI_2 + std::f64::consts::PI)
+            .rem_euclid(std::f64::consts::TAU)
+            - std::f64::consts::PI;
+        assert!(
+            (turned - wrapped).abs() < 1e-9 || (turned.abs() - std::f64::consts::PI).abs() < 1e-9
+        );
+        // A sketch in another plane (across x), or a circle of another
+        // radius, finds none.
+        assert!(seam_candidates(&closed, &sketch([0.0, 1.0, 0.0], [0.0, 0.0, 1.0])).is_empty());
+        let mut other = sketch([1.0, 0.0, 0.0], [0.0, 1.0, 0.0]);
+        other.circles[0].radius = 5.0;
+        assert!(seam_candidates(&closed, &other).is_empty());
+    }
+
+    #[test]
+    fn a_seam_angle_is_zero_on_the_axis_and_pi_opposite() {
+        let (x, y) = ([1.0, 0.0, 0.0], [0.0, 1.0, 0.0]);
+        assert_eq!(seam_angle([5.0, 1e-12, 0.0], x, y), 0.0);
+        assert_eq!(seam_angle([-5.0, -1e-12, 0.0], x, y), std::f64::consts::PI);
+        assert_eq!(seam_angle([-5.0, 1e-12, 0.0], x, y), std::f64::consts::PI);
+        assert!((seam_angle([0.0, 5.0, 0.0], x, y) - std::f64::consts::FRAC_PI_2).abs() < 1e-12);
+        assert!((seam_angle([0.0, -5.0, 0.0], x, y) + std::f64::consts::FRAC_PI_2).abs() < 1e-12);
+    }
 }

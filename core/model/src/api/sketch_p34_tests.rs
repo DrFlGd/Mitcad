@@ -106,6 +106,7 @@ fn curve(s: &Value, id: &str) -> Curve2 {
         "circle" => Curve2::Circle {
             center: p(&g["center"]),
             radius: f(&g["radius"]),
+            start: 0.0,
         },
         "arc" => Curve2::Arc {
             center: p(&g["center"]),
@@ -321,6 +322,64 @@ fn rectangular_pattern_spacing_and_count_change_afterwards() {
                    "spacing": [0, 5]})
         )
         .contains("greater than zero")
+    );
+}
+
+#[test]
+fn a_symmetric_rectangular_pattern_has_the_originals_in_the_middle() {
+    let mut d = with_sketch();
+    command(
+        &mut d,
+        json!({"cmd": "sketch.add_circle", "sketch": "F1", "center": [0, 0], "diameter": 4}),
+    );
+    let made = command(
+        &mut d,
+        json!({"cmd": "sketch.rectangular_pattern", "sketch": "F1", "entities": ["c1"],
+               "count": [5, 1], "spacing": [10, 10], "symmetric": [true, false]}),
+    );
+    let pattern = made["constraints"][0].as_str().unwrap().to_owned();
+    let s = sketch(&d);
+    assert_eq!(s["dof"], 0);
+    let copies = s["patterns"][0]["copies"].as_array().unwrap();
+    assert_eq!(copies.len(), 4);
+    // The copies lie 10 and 20 mm to each side of the original; the
+    // pattern's index counts from the left end.
+    let centre = |index: u32| -> [f64; 2] {
+        let copy = copies
+            .iter()
+            .find(|c| c["index"] == json!([index, 0]))
+            .unwrap();
+        at(&s, copy["entities"]["p2"].as_str().unwrap())
+    };
+    for (index, x) in [(0, -20.0), (1, -10.0), (3, 10.0), (4, 20.0)] {
+        assert!(
+            near(centre(index), [x, 0.0]),
+            "{index}: {:?}",
+            centre(index)
+        );
+    }
+    assert_eq!(s["patterns"][0]["symmetric"], json!([true, false]));
+    // A new spacing keeps the symmetry.
+    command(
+        &mut d,
+        json!({"cmd": "sketch.edit_pattern", "sketch": "F1", "pattern": pattern,
+               "spacing": [6, 10]}),
+    );
+    let s = sketch(&d);
+    let copies = s["patterns"][0]["copies"].as_array().unwrap();
+    let far = copies.iter().find(|c| c["index"] == json!([4, 0])).unwrap();
+    assert!(near(
+        at(&s, far["entities"]["p2"].as_str().unwrap()),
+        [12.0, 0.0]
+    ));
+    // An even count has no middle instance.
+    assert!(
+        rejected(
+            &mut d,
+            json!({"cmd": "sketch.rectangular_pattern", "sketch": "F1", "entities": ["c1"],
+                   "count": [4, 1], "spacing": [10, 10], "symmetric": [true, false]})
+        )
+        .contains("odd count")
     );
 }
 
@@ -942,4 +1001,62 @@ fn text_in_a_frame_and_along_a_path() {
         json!({"cmd": "sketch.remove", "sketch": "F1", "items": [line]}),
     );
     assert_eq!(sketch(&d)["texts"][1]["path"], Value::Null);
+}
+
+/// A text that is measured as the `.f3d` files' texts are (mitcad#186):
+/// `height` is the capitals' height, a frame's top is the capitals' top and
+/// its bottom the baseline, lines align by their outlines, and a line
+/// breaks at its spaces to fit the frame (the mock font's letters are 0.7
+/// em high, 0.5 em wide with 0.1 em of side bearing, and advance 0.7 em).
+#[test]
+fn text_measured_by_its_capitals_and_outlines_in_a_frame() {
+    let letters = |frame: Value, text: &str, extra: Value| {
+        let mut d = with_sketch();
+        let mut cmd = json!({"cmd": "sketch.add_text", "sketch": "F1", "text": text,
+                             "height": 7, "frame": frame, "valign": "top",
+                             "cap_height": true, "wrap": true});
+        for (k, v) in extra.as_object().unwrap() {
+            cmd[k] = v.clone();
+        }
+        let made = command(&mut d, cmd);
+        let t = made["texts"][0].as_str().unwrap().to_owned();
+        (sketch(&d), t)
+    };
+    let corner = |frame: [f64; 2]| json!({"corner": [0, 0], "diagonal": frame});
+
+    // 7 mm capitals: the em is 10 mm. The first letter's outline touches
+    // the frame's left side (not its pen position, 1 mm to the left) and
+    // the capitals' top the frame's top.
+    let (s, t) = letters(corner([40.0, 20.0]), "O", json!({}));
+    let (_, at) = region(&s, &format!("r{{{t}.g0.c0}}"));
+    assert!(near(at, [2.5, 16.5]), "{at:?}");
+
+    // Aligned right by the outlines.
+    let (s, t) = letters(corner([40.0, 20.0]), "O", json!({"align": "right"}));
+    let (_, at) = region(&s, &format!("r{{{t}.g0.c0}}"));
+    assert!(near(at, [37.5, 16.5]), "{at:?}");
+
+    // Bottom: the baseline on the frame's bottom (the outline's bottom
+    // for a letter without descender).
+    let (s, t) = letters(corner([40.0, 20.0]), "O", json!({"valign": "bottom"}));
+    let (_, at) = region(&s, &format!("r{{{t}.g0.c0}}"));
+    assert!(near(at, [2.5, 3.5]), "{at:?}");
+
+    // Two words that do not fit side by side: two lines, from the
+    // ascender to the descender (10 em of 10 mm) apart, both on the left.
+    let (s, t) = letters(corner([12.0, 30.0]), "O O", json!({}));
+    let (_, first) = region(&s, &format!("r{{{t}.g0.c0}}"));
+    let (_, second) = region(&s, &format!("r{{{t}.g2.c0}}"));
+    assert!(near(first, [2.5, 26.5]), "{first:?}");
+    assert!(near(second, [2.5, 16.5]), "{second:?}");
+
+    // The same frame without wrapping: one line, the words side by side.
+    let (s, t) = letters(corner([12.0, 30.0]), "O O", json!({"wrap": false}));
+    let (_, second) = region(&s, &format!("r{{{t}.g2.c0}}"));
+    assert!(near(second, [13.0, 26.5]), "{second:?}");
+
+    // A word wider than the frame stays whole on its line.
+    let (s, t) = letters(corner([4.0, 30.0]), "OO", json!({}));
+    let (_, second) = region(&s, &format!("r{{{t}.g1.c0}}"));
+    assert!(near(second, [9.5, 26.5]), "{second:?}");
 }

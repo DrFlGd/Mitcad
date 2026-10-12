@@ -74,6 +74,11 @@ DocumentSnapshot DocumentSnapshot::read(const CommandContext& model) {
   snapshot.namedViews = model.queryArray(QStringLiteral("named_views"));
   snapshot.analyses = model.queryArray(QStringLiteral("analyses"));
   snapshot.joints = model.queryObject({{QStringLiteral("query"), QStringLiteral("joints")}});
+  // Sheet-metal bodies with their rules and Flat Patterns (mitcad#210).
+  try {
+    snapshot.sheets = model.queryArray(QStringLiteral("sheet_bodies"));
+  } catch (const std::exception&) {
+  }
   const QJsonObject display = document.value(QStringLiteral("display")).toObject();
   snapshot.originShown = display.value(QStringLiteral("origin")).toBool();
   for (const QJsonValue& value : display.value(QStringLiteral("isolated")).toArray()) {
@@ -89,7 +94,8 @@ DocumentSnapshot DocumentSnapshot::read(const CommandContext& model) {
     snapshot.isolation.append(item);
   }
   snapshot.key = QJsonDocument(QJsonArray{timeline, components, bodies, profiles, snapshot.lengthUnit,
-                                          snapshot.namedViews, display, snapshot.analyses, snapshot.joints})
+                                          snapshot.namedViews, display, snapshot.analyses, snapshot.joints,
+                                          snapshot.sheets})
                      .toJson(QJsonDocument::Compact);
 
   snapshot.marker = timeline.value(QStringLiteral("marker")).toInt();
@@ -273,6 +279,15 @@ int DocumentSnapshot::occurrenceDof(const QString& uid) const {
   return -1;
 }
 
+QJsonObject DocumentSnapshot::sheet(const QString& body) const {
+  for (const QJsonValue& value : sheets) {
+    if (value.toObject().value(QStringLiteral("body")).toString() == body) {
+      return value.toObject();
+    }
+  }
+  return {};
+}
+
 QString featureIcon(const QString& type) {
   static const QHash<QString, QString> icons = {
       {QStringLiteral("sketch"), QStringLiteral("sketch")},
@@ -286,6 +301,7 @@ QString featureIcon(const QString& type) {
       {QStringLiteral("draft"), QStringLiteral("draft")},
       {QStringLiteral("offset_face"), QStringLiteral("press-pull")},
       {QStringLiteral("delete_face"), QStringLiteral("delete")},
+      {QStringLiteral("remove_body"), QStringLiteral("delete")},
       {QStringLiteral("replace_face"), QStringLiteral("replace-face")},
       {QStringLiteral("split_body"), QStringLiteral("split")},
       {QStringLiteral("split_face"), QStringLiteral("split-face")},
@@ -296,6 +312,7 @@ QString featureIcon(const QString& type) {
       {QStringLiteral("rectangular_pattern"), QStringLiteral("rectangular-pattern")},
       {QStringLiteral("circular_pattern"), QStringLiteral("circular-pattern")},
       {QStringLiteral("path_pattern"), QStringLiteral("path-pattern")},
+      {QStringLiteral("pattern_at_points"), QStringLiteral("pattern-at-points")},
       {QStringLiteral("mirror"), QStringLiteral("mirror")},
       {QStringLiteral("combine"), QStringLiteral("combine")},
       {QStringLiteral("move"), QStringLiteral("move")},
@@ -324,6 +341,18 @@ QString featureIcon(const QString& type) {
       {QStringLiteral("constraint_set"), QStringLiteral("constraint")},
       // Placeholders of imported items that did not come in (mitcad#170).
       {QStringLiteral("placeholder"), QStringLiteral("feature")},
+      // Sheet metal (mitcad#206-mitcad#210).
+      {QStringLiteral("sheet_rules"), QStringLiteral("sheet-rules")},
+      {QStringLiteral("sheet_face"), QStringLiteral("sheet-face")},
+      {QStringLiteral("sheet_flange"), QStringLiteral("sheet-flange")},
+      {QStringLiteral("sheet_bend"), QStringLiteral("sheet-bend")},
+      {QStringLiteral("sheet_fold"), QStringLiteral("sheet-fold")},
+      {QStringLiteral("sheet_corner_round"), QStringLiteral("sheet-corner-round")},
+      {QStringLiteral("sheet_corner_chamfer"), QStringLiteral("sheet-corner-chamfer")},
+      {QStringLiteral("sheet_unfold"), QStringLiteral("sheet-unfold")},
+      {QStringLiteral("sheet_refold"), QStringLiteral("sheet-refold")},
+      {QStringLiteral("sheet_cut"), QStringLiteral("sheet-cut")},
+      {QStringLiteral("sheet_corner_relief"), QStringLiteral("sheet-corner-relief")},
   };
   return icons.value(type, QStringLiteral("feature"));
 }

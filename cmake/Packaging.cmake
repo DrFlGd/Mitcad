@@ -32,6 +32,12 @@ install(TARGETS mitcad-render RUNTIME_DEPENDENCY_SET mitcad_runtime RUNTIME DEST
 get_property(mitcad_oidn_dlls GLOBAL PROPERTY MITCAD_OIDN_DLLS)
 install(FILES ${mitcad_oidn_dlls} DESTINATION bin)
 set(mitcad_runtime_directories "${MITCAD_RENDER_DEPS}/install/oidn/bin")
+# The GPU devices' kernels (build-cycles.ps1 -Cuda, mitcad#202) where the
+# worker looks for them: cycles\lib next to it, as in the build folder.
+get_property(mitcad_cycles_kernels GLOBAL PROPERTY MITCAD_CYCLES_KERNELS)
+if(mitcad_cycles_kernels)
+  install(FILES ${mitcad_cycles_kernels} DESTINATION bin/cycles/lib)
+endif()
 
 # Qt's DLLs and plugins (platforms/qwindows.dll, styles, image formats, the
 # SVG icon engine) through windeployqt. The software OpenGL (opengl32sw.dll)

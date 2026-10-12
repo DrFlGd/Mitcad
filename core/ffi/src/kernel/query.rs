@@ -42,6 +42,9 @@ pub mod ffi {
         /// The measures of OCCT's fixed Gauss points (mitcad#139).
         fn fixed_point_properties(shape: &Shape) -> Result<MassProperties>;
         fn bounding_box(shape: &Shape) -> Result<BoundingBox>;
+        /// A box that holds the shape, cheaper and looser than
+        /// `bounding_box` on bodies of many curved faces.
+        fn enclosing_box(shape: &Shape) -> Result<BoundingBox>;
         /// The number of edges or faces a name resolves to.
         fn count_edges(shape: &Shape, name: &str) -> usize;
         fn count_faces(shape: &Shape, name: &str) -> usize;

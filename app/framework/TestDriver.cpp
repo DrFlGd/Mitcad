@@ -42,6 +42,7 @@
 #include "../MainWindow.hpp"
 #include "../browser/TimelineWidget.hpp"
 #include "GlassCard.hpp"
+#include "mitcad/geometry/geometry.hpp"
 
 namespace mitcad {
 namespace {
@@ -87,6 +88,7 @@ const StepSpec kSpecs[] = {
     {"dblclick", 2, 4, kInputOfMain},
     {"drag", 4, 6, kInputOfMain},
     {"wheel", 3, 4, kInputOfMain},
+    {"wheel-burst", 4, 5, kInputOfMain},
     {"click-logged", 1, 3, kInputOfMain},
     {"dblclick-logged", 1, 2, kInputOfMain},
     {"click-pick", 1, 2, kInputOfMain},
@@ -101,6 +103,7 @@ const StepSpec kSpecs[] = {
     {"popup", 1, 1, kInputOfTarget},
     {"button", 1, 1, kInputOfTarget},
     {"native-click", 1, 1, kInputOfTarget},
+    {"native-hover", 2, 2, kInputOfTarget},
     {"native-type", 2, 2, kInputOfTarget},
     {"native-choice", 2, 2, kInputOfTarget},
     {"native-action", 1, 1, kInputOfMain},
@@ -128,9 +131,11 @@ const StepSpec kSpecs[] = {
     {"capture-view-orientation", 1, 1, kIdle},
     {"expect-view-orientation", 2, 2, kIdle},
     {"expect-view-buttons", 1, 1, kIdle},
+    {"expect-selection", 2, 2, kIdle},
     {"expect-native-text", 2, 2, kIdle},
     {"expect-native-enabled", 2, 2, kIdle},
     {"expect-native-visible", 2, 2, kIdle},
+    {"expect-native-present", 2, 2, kIdle},
     {"expect-native-layout", 0, 0, kIdle},
     {"expect-native-history", 0, -1, kIdle},
     {"native-history-drag", 1, 2, kInputOfMain},
@@ -139,6 +144,7 @@ const StepSpec kSpecs[] = {
     {"capture-undo-depth", 1, 1, kIdle},
     {"expect-undo-depth", 2, 2, kIdle},
     {"expect-model-bodies", 2, 2, kIdle},
+    {"expect-shown-body", 3, 9, kIdle},
     {"expect-native-dialog-gone", 1, 2, kPlain},
     {"focus-dialog", 1, 2, kPlain},
     {"focus-main", 0, 0, kPlain},
@@ -1250,6 +1256,45 @@ void TestDriver::run(const Step& step) {
       m_waitDetail = QStringLiteral("%1 bodies, total volume %2 mm3").arg(bodies.size()).arg(actual, 0, 'g', 12);
       return bodies.size() == count && std::abs(actual - volume) <= std::max(1e-5, volume * 1e-6);
     }, 6, QStringLiteral("expected %1 bodies with total volume %2 mm3").arg(count).arg(volume));
+  } else if (name == QLatin1String("expect-shown-body")) {
+    std::array<double, 7> expected{};
+    bool valid = a.size() == 3 || a.size() == 9;
+    for (int i = 2; valid && i < a.size(); ++i) valid = toNumber(a.at(i), expected[static_cast<std::size_t>(i - 2)]);
+    if (!valid || expected[0] < 0) {
+      fail(line, QStringLiteral("expect-shown-body <uid> <occurrence|-> <volume> [min-x min-y min-z max-x max-y max-z]"));
+      return;
+    }
+    const QString uid = a.at(0);
+    const QString occurrence = a.at(1) == QLatin1String("-") ? QString() : a.at(1);
+    const bool bounds = a.size() == 9;
+    whenReady([this, uid, occurrence, expected, bounds] {
+      auto* window = qobject_cast<MainWindow*>(m_main.data());
+      if (!window || window->modelBusy()) return false;
+      const auto close = [](double actual, double wanted) {
+        return std::isfinite(actual) && std::abs(actual - wanted) <= std::max(1e-5, std::abs(wanted) * 1e-6);
+      };
+      for (const BodyDisplay& body : window->viewer().shownBodies()) {
+        if (QString::fromStdString(body.uid) != uid || QString::fromStdString(body.occurrence) != occurrence) continue;
+        if (!body.shape) break;
+        const double volume = geometry::volume(*body.shape);
+        m_waitDetail = QStringLiteral("shown %1 at %2: volume %3 mm3").arg(uid, occurrence).arg(volume, 0, 'g', 12);
+        if (!close(volume, expected[0])) return false;
+        if (!bounds) return true;
+        const geometry::Shape world(body.shape->occt().Moved(body.placement));
+        const auto box = geometry::bounding_box(world);
+        if (box.empty) { m_waitDetail += QStringLiteral(", empty bounds"); return false; }
+        const std::array<double, 6> actual{box.min.X(), box.min.Y(), box.min.Z(), box.max.X(), box.max.Y(), box.max.Z()};
+        for (std::size_t i = 0; i < actual.size(); ++i) {
+          if (!close(actual[i], expected[i + 1])) {
+            m_waitDetail += QStringLiteral(", bound %1: %2 instead of %3").arg(i).arg(actual[i]).arg(expected[i + 1]);
+            return false;
+          }
+        }
+        return true;
+      }
+      m_waitDetail = QStringLiteral("no displayed shape for %1 at %2").arg(uid, occurrence);
+      return false;
+    }, 6, QStringLiteral("displayed geometry differs for %1 at %2").arg(uid, occurrence));
   } else if (name == QLatin1String("expect-native-history")) {
     if (!mac::test::active()) { fail(line, QStringLiteral("expect-native-history requires the native macOS UI")); return; }
     const bool checkSelection = !a.isEmpty();
@@ -1296,6 +1341,23 @@ void TestDriver::run(const Step& step) {
       QString error;
       if (!mac::test::setAppearance(a.at(0), error)) fail(line, error);
     });
+  } else if (name == QLatin1String("expect-selection")) {
+    double total = 0;
+    double profiles = 0;
+    if (!toNumber(a.at(0), total) || !toNumber(a.at(1), profiles) || total < 0 || profiles < 0 ||
+        total != std::floor(total) || profiles != std::floor(profiles) || profiles > total) {
+      fail(line, QStringLiteral("expect-selection <total-count> <profile-count>")); return;
+    }
+    whenReady([this, total, profiles] {
+      auto* window = qobject_cast<MainWindow*>(m_main.data());
+      if (!window || window->modelBusy()) return false;
+      const Selection& selected = window->selection();
+      const auto count = std::count_if(selected.cbegin(), selected.cend(), [](const SelectionItem& item) {
+        return item.kind == SelectKind::Profile;
+      });
+      m_waitDetail = QStringLiteral("actual selection: %1 items, %2 profiles").arg(selected.size()).arg(count);
+      return selected.size() == total && count == profiles;
+    }, 6, QStringLiteral("expected %1 selected items, including %2 profiles").arg(total).arg(profiles));
   } else if (name == QLatin1String("expect-view-buttons")) {
     const QHash<QString, Aspect_VKeyMouse> buttons = {
       {QStringLiteral("none"), Aspect_VKeyMouse_NONE},
@@ -1509,7 +1571,7 @@ void TestDriver::run(const Step& step) {
       if (!ok) fail(line, error);
     });
   } else if (name == QLatin1String("expect-native-text") || name == QLatin1String("expect-native-enabled") ||
-             name == QLatin1String("expect-native-visible")) {
+             name == QLatin1String("expect-native-visible") || name == QLatin1String("expect-native-present")) {
     if (!mac::test::active()) {
       fail(line, QStringLiteral("'%1' requires the native macOS UI").arg(name));
       return;
@@ -1528,10 +1590,12 @@ void TestDriver::run(const Step& step) {
       const QString id = a.at(0);
       const bool expected = value == QStringLiteral("true");
       const bool visibility = name == QLatin1String("expect-native-visible");
-      whenReady([id, expected, visibility] {
+      const bool presence = name == QLatin1String("expect-native-present");
+      whenReady([id, expected, visibility, presence] {
+        if (presence) return mac::test::present(id, expected);
         return visibility ? mac::test::visible(id, expected) : mac::test::enabled(id, expected);
       }, 6, QStringLiteral("native control '%1' was not %2=%3")
-                .arg(id, visibility ? QStringLiteral("visible") : QStringLiteral("enabled"), value));
+                .arg(id, presence ? QStringLiteral("present") : visibility ? QStringLiteral("visible") : QStringLiteral("enabled"), value));
     }
   } else if (name.startsWith(QLatin1String("native-")) && name != QLatin1String("native-key-now")) {
     if (!mac::test::active()) {
@@ -1539,6 +1603,9 @@ void TestDriver::run(const Step& step) {
       return;
     }
     const QString identifier = a.at(0);
+    if (name == QLatin1String("native-hover") && a.at(1) != QStringLiteral("enter") && a.at(1) != QStringLiteral("leave")) {
+      fail(line, QStringLiteral("native-hover <id> enter|leave")); return;
+    }
     Qt::KeyboardModifiers modifiers;
     if (name == QLatin1String("native-select") && a.size() == 2) {
       if (a.at(1) == QStringLiteral("shift")) modifiers = Qt::ShiftModifier;
@@ -1548,6 +1615,7 @@ void TestDriver::run(const Step& step) {
     const auto perform = [this, line, name, identifier, a, modifiers] {
       QString error;
       const bool ok = (name == QLatin1String("native-click") || name == QLatin1String("native-click-now")) ? mac::test::click(identifier, error) :
+                      name == QLatin1String("native-hover") ? mac::test::hover(identifier, a.at(1) == QStringLiteral("enter"), error) :
                       (name == QLatin1String("native-type") || name == QLatin1String("native-type-now")) ? mac::test::replaceText(identifier, a.at(1), error) :
                       name == QLatin1String("native-choice") ? mac::test::choose(identifier, a.at(1), error) :
                       name == QLatin1String("native-activate") ? mac::test::activate(identifier, error) :
@@ -1641,6 +1709,26 @@ void TestDriver::run(const Step& step) {
     }
     queue([this, at] { sendMouse(QEvent::MouseMove, at, Qt::NoButton, Qt::NoButton, Qt::NoModifier); });
     queue([this, at, notches, modifiers] { sendWheel(at, qRound(notches), modifiers); });
+  } else if (name == QLatin1String("wheel-burst")) {
+    double x = 0;
+    double y = 0;
+    double notches = 0;
+    double count = 0;
+    Qt::KeyboardModifiers modifiers;
+    if (!toNumber(a.at(0), x) || !toNumber(a.at(1), y) || !toNumber(a.at(2), notches) || !toNumber(a.at(3), count) ||
+        count < 1 || (a.size() > 4 && !parseModifiers(a.at(4), modifiers))) {
+      fail(line, QStringLiteral("wheel-burst <x%> <y%> <notches> <count> [mods]"));
+      return;
+    }
+    QPoint at;
+    if (!viewPoint(x, y, at)) {
+      fail(line, QStringLiteral("no 3D view"));
+      return;
+    }
+    queue([this, at] { sendMouse(QEvent::MouseMove, at, Qt::NoButton, Qt::NoButton, Qt::NoModifier); });
+    for (int i = 0; i < qRound(count); ++i) {
+      queue([this, at, notches, modifiers] { sendWheel(at, qRound(notches), modifiers); });
+    }
 
     // --- The mouse where the application logged a place
   } else if (name == QLatin1String("click-logged") || name == QLatin1String("dblclick-logged") ||

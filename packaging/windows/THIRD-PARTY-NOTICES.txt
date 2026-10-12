@@ -24,9 +24,17 @@ Brotli)
 The renderer (mitcad-render.exe)
   Cycles (https://projects.blender.org/blender/cycles), linked statically
   into mitcad-render.exe: Apache License 2.0, with the code it bundles
-  under Apache-2.0, BSD and MIT licences; see licenses\cycles.
+  under Apache-2.0, BSD and MIT licences; see licenses\cycles (with
+  Cycles' CUDA device also cuew, Blender Foundation, Apache License 2.0
+  with a stricter trademark clause: cuew-license.txt; it loads the
+  system's NVIDIA driver at run time, nothing of NVIDIA's is shipped; the
+  GPU kernels in bin\cycles\lib are Cycles' code compiled for the GPU).
   Open Image Denoise (OpenImageDenoise*.dll): Apache License 2.0; see
-  licenses\openimagedenoise.
+  licenses\openimagedenoise. Its CUDA device
+  (OpenImageDenoise_device_cuda.dll) also contains code of CUTLASS
+  (BSD-3-Clause, in third-party-programs.txt there) and of NVIDIA's CCCL
+  headers (Apache License 2.0 with LLVM exception); it calls the
+  system's NVIDIA driver, nothing else of NVIDIA's is shipped.
   Embree, oneTBB, OpenImageIO, OpenColorIO, OpenEXR and the other
   libraries of the renderer come from vcpkg (above).
 

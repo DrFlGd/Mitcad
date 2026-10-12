@@ -975,7 +975,11 @@ impl SketchEdit<'_> {
         ) {
             let radius = dist(self.at(*center)?, point);
             let center = *center;
-            self.def.entity_mut(id).expect("a curve").kind = EntityKind::Circle { center, radius };
+            self.def.entity_mut(id).expect("a curve").kind = EntityKind::Circle {
+                center,
+                radius,
+                start: 0.0,
+            };
             self.drop_if_unused(old_start);
             self.drop_if_unused(old_end);
             return Ok(());
@@ -1335,7 +1339,7 @@ impl SketchEdit<'_> {
                         middle: (start + end) / 2.0,
                     }
                 }
-                Curve2::Circle { center, radius } if chain.curves.len() == 1 => {
+                Curve2::Circle { center, radius, .. } if chain.curves.len() == 1 => {
                     let r = radius + d;
                     if r <= 0.0 {
                         return Err("the offset is larger than the circle's radius".to_owned());
@@ -1394,6 +1398,7 @@ impl SketchEdit<'_> {
                 Offset::Circle(_, r) => EntityKind::Circle {
                     center: self.center_of(original)?,
                     radius: *r,
+                    start: 0.0,
                 },
             };
             self.push(Entity::new(ids[i], kind));
@@ -1609,6 +1614,7 @@ impl Offset {
             Self::Arc { center, radius, .. } | Self::Circle(center, radius) => Curve2::Circle {
                 center: *center,
                 radius: *radius,
+                start: 0.0,
             },
         }
     }

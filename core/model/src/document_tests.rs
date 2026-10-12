@@ -682,10 +682,8 @@ fn rejected_commands_change_nothing() {
             extrude(sketch, &[&region], 5.0, "new_body", &[body]),
             "a new body has no participant bodies",
         ),
-        (
-            extrude(sketch, &[&region, &region], 5.0, "new_body", &[]),
-            "is listed more than once",
-        ),
+        // A profile listed twice is no error: the profiles are a set
+        // (mitcad#199, profile_selection_tests.rs).
         (
             def(
                 json!({"type": "extrude", "profiles": [{"sketch": sketch, "region": region}],

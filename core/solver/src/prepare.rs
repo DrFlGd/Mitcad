@@ -984,6 +984,16 @@ fn constraint_equations(
                 side: rec.side,
             }
         }),
+        TangentDistance { circle, line, .. } => b.push(dim, |v, x| {
+            let (a1, a2) = x.line(line.index());
+            EqKind::CircleLine {
+                c: x.p(v, x.centre(circle.index())),
+                r: x.rad(v, circle.index()),
+                a: x.p(v, a1),
+                b: x.p(v, a2),
+                side: rec.side,
+            }
+        }),
         LineDistance { a, b: l2, .. } => b.push(dim, |v, x| {
             let (a1, a2) = x.line(a.index());
             let (b1, b2) = x.line(l2.index());

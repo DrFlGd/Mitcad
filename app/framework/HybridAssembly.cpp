@@ -49,9 +49,9 @@ QHash<QString, QString> featureNames(const QJsonObject& plan) {
   return out;
 }
 
-} // namespace
-
-bool moveToComponent(QWidget* parent, const HybridModel& model, const QJsonObject& selection) {
+// Hybrid Assembly deliberately creates one new component per planned group.
+// Explicit context-menu moves choose their destination in MoveToComponentDialog.
+bool moveToNewComponents(QWidget* parent, const HybridModel& model, const QJsonObject& selection) {
   const QString what = QObject::tr("Move to Component");
   QJsonObject query = selection;
   query.insert(QStringLiteral("query"), QStringLiteral("move_to_component"));
@@ -126,6 +126,8 @@ bool moveToComponent(QWidget* parent, const HybridModel& model, const QJsonObjec
   }
   return true;
 }
+
+} // namespace
 
 ComponentAnswer askHybridAssembly(QWidget* parent, const HybridModel& model, const ComponentRequest& request) {
   ComponentAnswer answer;
@@ -211,7 +213,7 @@ ComponentAnswer askHybridAssembly(QWidget* parent, const HybridModel& model, con
     for (const QJsonValue& body : selected) {
       groups.append(QJsonArray{body});
     }
-    if (!moveToComponent(parent, model, {{QStringLiteral("groups"), groups}})) {
+    if (!moveToNewComponents(parent, model, {{QStringLiteral("groups"), groups}})) {
       answer.outcome = ComponentAnswer::Outcome::Cancel;
       return answer;
     }

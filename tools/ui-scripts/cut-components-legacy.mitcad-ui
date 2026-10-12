@@ -1,0 +1,19 @@
+# SPDX-License-Identifier: MIT
+wait-idle 30
+expect-model-bodies 2 7840
+menu 'View/Show History'
+mark
+native-activate native.history.F4
+expect-log 'Editing F4 with Extrude'
+expect-native-visible row_cut_scope false
+# The local selector is below the fold; real input scrolls it into view.
+native-click input_objects
+expect-native-visible input_objects true
+native-type input_distance '5 mm'
+expect-shown-body F1.b0 - 3920
+expect-shown-body F2.b0 O1 4000
+native-click commandOk
+expect-log 'Edited F4' 30
+expect-model-bodies 2 7920
+expect-shown-body F2.b0 O1 4000
+expect-never 'TestDriver: FAIL|The document was read while a job computes it|Native Mac canvas:|OCCT view event failed'

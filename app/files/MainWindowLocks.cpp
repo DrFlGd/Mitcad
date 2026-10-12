@@ -104,6 +104,8 @@ bool MainWindow::readOnlyModelCommand(const QString& name) {
       QStringLiteral("edit_analysis"),    QStringLiteral("delete_analysis"),  QStringLiteral("rename_analysis"),
       QStringLiteral("set_analysis_visible"), QStringLiteral("merge_undo"),
       QStringLiteral("begin_command"),    QStringLiteral("restore_command"), QStringLiteral("discard_command"),
+      // A Flat Pattern's drawing (mitcad#210).
+      QStringLiteral("export_flat_pattern_dxf"),
   };
   return allowed.contains(name);
 }

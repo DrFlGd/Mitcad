@@ -81,6 +81,12 @@ pub mod constraint_set;
 
 // Placeholders of imported items that did not come in (mitcad#170).
 pub mod placeholder;
+// Pattern at independently referenced points (mitcad#197).
+pub mod point_pattern;
+pub use point_pattern::PointPatternDef;
+// Bodies taken out of the design.
+pub mod remove_body;
+pub use remove_body::RemoveBodyDef;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
@@ -144,6 +150,24 @@ pub use joint::{
 pub use constraint_set::{ConstraintRow, ConstraintSetDef, ConstraintType};
 // Placeholders of imported items that did not come in (mitcad#170).
 pub use placeholder::PlaceholderDef;
+// Assembly-scoped Extrude Cut (mitcad#200).
+pub mod extrude_scope;
+pub mod sheet;
+pub use sheet::{SheetFaceDef, SheetRulesDef};
+pub mod sheet_folded;
+pub use sheet_folded::{
+    SheetBendDef, SheetCornerChamferDef, SheetCornerRoundDef, SheetFlangeDef, SheetFoldDef,
+};
+// Sheet-metal Unfold, Refold and the minimal Cut (mitcad#208).
+pub mod sheet_unfold;
+pub use sheet_unfold::{SheetRefoldDef, SheetUnfoldDef};
+pub mod sheet_cut;
+pub use sheet_cut::SheetCutDef;
+// Sheet-metal corner relief (mitcad#209).
+pub mod sheet_relief;
+pub use sheet_relief::SheetCornerReliefDef;
+// The faces a pattern's optimized compute option copies.
+mod face_copy;
 
 use crate::assembly::Assembly;
 use crate::datum::Datum;
@@ -264,6 +288,15 @@ feature_types! {
     ConstraintSet(ConstraintSetDef),
     // Placeholders of imported items that did not come in (mitcad#170).
     Placeholder(PlaceholderDef),
+    PatternAtPoints(PointPatternDef),
+    SheetRules(SheetRulesDef), SheetFace(SheetFaceDef),
+    SheetFlange(SheetFlangeDef), SheetBend(SheetBendDef), SheetFold(SheetFoldDef), SheetCornerRound(SheetCornerRoundDef), SheetCornerChamfer(SheetCornerChamferDef),
+    // Sheet-metal Unfold, Refold and the minimal Cut (mitcad#208).
+    SheetUnfold(SheetUnfoldDef), SheetRefold(SheetRefoldDef), SheetCut(SheetCutDef),
+    // Bodies taken out of the design.
+    RemoveBody(RemoveBodyDef),
+    // Sheet-metal corner relief (mitcad#209).
+    SheetCornerRelief(SheetCornerReliefDef),
 }
 
 /// Brings a feature definition in an earlier form up to date before it is
@@ -403,8 +436,13 @@ pub trait Evaluate<K: Kernel> {
 /// state passes it by.
 #[derive(Debug)]
 pub struct FeatureOutput<S> {
+    pub sheet_rules: Option<SheetRulesDef<f64>>,
+    pub sheets: BTreeMap<BodyUid, crate::sheet::SheetChange>,
     pub sketch: Option<SketchOutput>,
     pub changes: Vec<BodyChange<S>>,
+    /// Explicit ownership for cross-component results, including split pieces.
+    /// Missing entries retain each feature's existing implicit ownership rules.
+    pub owners: BTreeMap<BodyUid, ComponentUid>,
     /// The tool body before a boolean, for previews.
     pub tool: Option<S>,
     /// The plane, axis or point of a construction feature.
@@ -416,8 +454,11 @@ pub struct FeatureOutput<S> {
 impl<S> Default for FeatureOutput<S> {
     fn default() -> Self {
         Self {
+            sheet_rules: None,
+            sheets: BTreeMap::new(),
             sketch: None,
             changes: Vec::new(),
+            owners: BTreeMap::new(),
             tool: None,
             datum: None,
             placements: Vec::new(),
@@ -509,6 +550,8 @@ impl CheckContext<'_> {
 
 /// What evaluation reads besides the kernel.
 pub(crate) struct Env<'a, S> {
+    pub sheets: &'a crate::sheet::SheetStates,
+    pub sheet_rules: &'a crate::sheet::SheetRules,
     pub params: &'a Parameters,
     /// The bodies of the feature's component.
     pub bodies: &'a BodyState<S>,
@@ -530,6 +573,7 @@ pub(crate) struct Env<'a, S> {
 /// Inputs of an evaluating feature. Every read is recorded, so the
 /// recompute cache can tell whether a stored result still applies.
 pub struct EvalContext<'a, K: Kernel> {
+    pub(crate) sheet_footprint: BTreeSet<BodyUid>,
     pub kernel: &'a K,
     /// The feature being evaluated.
     pub uid: FeatureUid,
@@ -540,23 +584,72 @@ pub struct EvalContext<'a, K: Kernel> {
     /// A pattern's elements, suppressed ones too (P9: the panel shows a
     /// toggle at each), by element number; element 0 is the original.
     pub(crate) elements: Vec<Transform>,
+    pub(crate) pattern_anchor: Option<point_pattern::PatternAnchor>,
+    pub(crate) cut_targets: Option<extrude_scope::CutTargets>,
+    /// A pattern's copy of this feature (its tool rebuilt in place): an
+    /// object that is no longer in its body is found in the body as it was
+    /// before this feature, as the original found it.
+    pub(crate) objects_before: Option<FeatureUid>,
     next_body: u32,
 }
 
 impl<'a, K: Kernel> EvalContext<'a, K> {
     pub(crate) fn new(kernel: &'a K, uid: FeatureUid, env: Env<'a, K::Shape>) -> Self {
         Self {
+            sheet_footprint: BTreeSet::new(),
             kernel,
             uid,
             env,
             reads: Vec::new(),
             warnings: Vec::new(),
             elements: Vec::new(),
+            pattern_anchor: None,
+            cut_targets: None,
+            objects_before: None,
             next_body: 0,
         }
     }
 
     /// The feature succeeded with a caveat: it is shown as a warning.
+    pub(crate) fn sheet_rules(
+        &mut self,
+        uid: FeatureUid,
+    ) -> Result<Versioned<SheetRulesDef<f64>>, String> {
+        let rules = self.env.sheet_rules.get(&uid);
+        self.reads
+            .push(Read::SheetRules(uid, rules.map(|r| r.version)));
+        rules
+            .cloned()
+            .ok_or_else(|| format!("sheet rules {uid} are unavailable"))
+    }
+
+    pub(crate) fn sheet(&mut self, body: BodyUid) -> Option<Versioned<crate::sheet::SheetState>> {
+        let state = self.env.sheets.get(&body);
+        self.reads.push(Read::Sheet(body, state.map(|s| s.version)));
+        state.cloned()
+    }
+
+    /// Reads valid material domains; blocked retained geometry cannot be used
+    /// as a successful upstream sheet result by a later sheet operation.
+    pub fn require_sheet(&mut self, body: BodyUid) -> Result<crate::sheet::SheetState, String> {
+        let state = self
+            .sheet(body)
+            .ok_or_else(|| format!("sheet {body} is unavailable"))?;
+        if state.value.status() != "valid" {
+            return Err(format!("sheet {body} is {}", state.value.status()));
+        }
+        let owner = self.env.owners.get(&body).copied();
+        let shape = owner
+            .and_then(|c| self.env.components.get(&c))
+            .and_then(|b| b.get(&body));
+        if owner != Some(state.value.owner)
+            || shape.is_none_or(|b| format!("{:032x}", b.version) != state.value.shape_generation)
+        {
+            return Err(format!("sheet {body} does not match current geometry"));
+        }
+        Ok(state.value)
+    }
+
     pub fn warn(&mut self, message: impl Into<String>) {
         let message = message.into();
         if !self.warnings.contains(&message) {
@@ -657,8 +750,24 @@ impl<'a, K: Kernel> EvalContext<'a, K> {
         link: &crate::links::OccurrenceLink,
     ) -> Result<(ComponentUid, Transform), String> {
         let assembly = self.env.assembly;
+        for uid in link.source.0.iter().chain(&link.target.0) {
+            self.placement(*uid);
+        }
         let source = link.source_component(assembly)?;
         let component = self.component();
+        let target = link.target_path(assembly, component)?;
+        for uid in link.source.0.iter().chain(&target) {
+            self.placement(*uid);
+            if assembly
+                .occurrence(*uid)
+                .is_some_and(|o| o.pattern.is_some())
+                && !self.env.placements.contains_key(uid)
+            {
+                return Err(format!(
+                    "pattern occurrence {uid} is unavailable at this timeline position"
+                ));
+            }
+        }
         let transform = link.transform(assembly, component, &mut |o| self.placement(o))?;
         Ok((source, transform))
     }

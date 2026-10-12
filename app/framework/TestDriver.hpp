@@ -66,6 +66,8 @@
 //   dblclick <x%> <y%> [button] [mods]
 //   drag <x1%> <y1%> <x2%> <y2%> [button] [mods]     with moves between
 //   wheel <x%> <y%> <notches> [mods]                 positive: away from you
+//   wheel-burst <x%> <y%> <notches> <count> [mods]   <count> wheel events of
+//                           <notches>, one per tick (a quick burst)
 //   click-logged <regex> [button]       the last log line matching regex that
 //                           has "at <x>,<y>" ("Datum xy at ...", "Ribbon ...
 //                           at ...", "Panel <command> input <id> at ...")
@@ -93,6 +95,8 @@
 //                           whose text (without '&') matches
 //   native-action <id>      dispatch the native AppKit menu command
 //   native-click <id>       click a native control by accessibilityIdentifier
+//   native-hover <id> enter|leave send an AppKit tracking event through the
+//                           control's registered hover owner
 //   native-type <id> <text> replace an AppKit field editor's text
 //   native-choice <id> <title> choose a native popup's menu item
 //   native-activate <id>    edit a native history icon or activate a model row
@@ -132,6 +136,7 @@
 //   capture-view-orientation <var> record actual camera direction and up
 //   expect-view-orientation <before> changed|unchanged compare that orientation
 //   expect-view-buttons none|left|right|middle inspect OCCT's actual held buttons
+//   expect-selection <total> <profiles> inspect the actual shared selection
 //   capture-view-height <var> record the actual OCCT camera height in mm
 //   expect-view-zoom <before> in|out|unchanged compare actual camera height
 //                           [control-before control-after] also compares
@@ -142,6 +147,7 @@
 //                           file panel's public filename/folder properties.
 //   expect-native-enabled <id> true|false assert native control state (6 s)
 //   expect-native-visible <id> true|false assert native document view state
+//   expect-native-present <id> true|false assert document view membership, including hidden views
 //   expect-native-layout    full-window canvas, floating card geometry and
 //                           real AppKit hit testing above/around the canvas
 //   expect-native-history [uid...] compare horizontal native history icons,
@@ -157,6 +163,9 @@
 //   capture-undo-depth <var> read the real document's undo depth
 //   expect-undo-depth <base> <change> assert its change since capture
 //   expect-model-bodies <count> <volume-mm3> query real OCCT body volumes
+//   expect-shown-body <uid> <occurrence|-> <volume-mm3>
+//                           [min-x min-y min-z max-x max-y max-z] compare
+//                           the viewer's actual clipped shape and world bounds
 //   expect-native-dialog-gone <regex> [seconds] assert native window closed
 //                           These native steps require the macOS AppKit UI.
 //                           key/type/button/menu/focus-dialog/screenshot

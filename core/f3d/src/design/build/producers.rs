@@ -96,4 +96,27 @@ impl Builder<'_> {
             ..Fingerprint::default()
         })))
     }
+
+    /// The bodies of a fillet's or chamfer's edges: each edge (or face)
+    /// input of the sets refers to its body's record like a body input
+    /// does, so the item that made the body goes into the edge's `_f3d`
+    /// too (`producer`, `body_index`). Bodies that touch share edges in the
+    /// same place (the slot of one is the wedge of another): the position
+    /// alone does not tell which body the file's edge is on.
+    pub(super) fn edge_set_bodies(&self, sets: &mut [EdgeSet]) {
+        for r in sets.iter_mut().flat_map(|s| s.edges.iter_mut().flatten()) {
+            let (Reference::Edge(fp) | Reference::Face(fp)) = r else {
+                continue;
+            };
+            let Some(f3d) = fp.f3d.as_mut() else {
+                continue;
+            };
+            let Some((producer, index)) = f3d.object_id.and_then(|input| self.producer(input))
+            else {
+                continue;
+            };
+            f3d.producer = Some(producer);
+            f3d.body_index = Some(index);
+        }
+    }
 }

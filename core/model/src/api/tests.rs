@@ -578,7 +578,7 @@ fn previews_report_without_committing() {
         report,
         json!({"uid": "F3", "name": "Extrude2", "status": "ok", "error": null, "warnings": [],
                "bodies": [{"uid": "F2.b0", "name": "Body1", "changed": true}],
-               "removed": [], "tool": true})
+               "removed": [], "tool": true, "sheet_states": []})
     );
     assert_eq!(query(&doc, json!({"query": "document"}))["features"], 2);
     let edit = json!({"cmd": "edit_feature", "uid": "F2", "def": {"type": "extrude",

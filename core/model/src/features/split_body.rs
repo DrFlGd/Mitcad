@@ -10,10 +10,19 @@
 //! bodies of the split (`<split>.b0`, ...), named `Body<n>` like new bodies.
 //! The cut faces are `<split>:split`, after a face tool
 //! `<split>:split(<tool face>)`; split faces of the body get `#k`.
+//!
+//! A tool body, or the body of a tool face, may belong to another component
+//! (`tool_links`, as a combine's, mitcad#104): it is read in its component
+//! and moved into the split's coordinates by the placements at the split's
+//! point of the timeline.
+
+use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
-use super::face_refs::{check_tool, kernel_error, map_offset, resolve_tool};
+use super::face_refs::{
+    Resolved, check_tool, kernel_error, map_offset, require_faces, resolve_tool,
+};
 use super::geom_ref::{GeomRef, Want};
 use super::pattern::none;
 use super::{
@@ -22,6 +31,7 @@ use super::{
 use crate::datum::Vec3;
 use crate::ids::BodyUid;
 use crate::kernel::Kernel;
+use crate::links::OccurrenceLink;
 use crate::parameters::ParamId;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -29,6 +39,11 @@ use crate::parameters::ParamId;
 pub struct SplitBodyDef<P = ParamId> {
     pub bodies: Vec<BodyUid>,
     pub tool: GeomRef,
+    /// Further tools the bodies are divided by as well, one after another
+    /// (the pieces a tool does not reach stay as they are): the cells are
+    /// the same as with all tools at once.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub more_tools: Vec<GeomRef>,
     /// Moves a plane tool along its normal.
     #[serde(default = "none", skip_serializing_if = "Option::is_none")]
     pub offset: Option<P>,
@@ -37,6 +52,10 @@ pub struct SplitBodyDef<P = ParamId> {
     pub direction: Option<Vec3>,
     #[serde(default = "yes", skip_serializing_if = "is_true")]
     pub extend: bool,
+    /// Tool bodies (and bodies of tool faces) of other components, by body
+    /// (mitcad#104): where each and the split's component are seen.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub tool_links: BTreeMap<BodyUid, OccurrenceLink>,
 }
 
 fn yes() -> bool {
@@ -47,9 +66,22 @@ fn is_true(value: &bool) -> bool {
     *value
 }
 
+/// The body a tool is, or belongs to.
+fn tool_body(tool: &GeomRef) -> Option<BodyUid> {
+    match tool {
+        GeomRef::Body(body) | GeomRef::Face { body, .. } => Some(*body),
+        _ => None,
+    }
+}
+
 impl<P> SplitBodyDef<P> {
     pub const TYPE: &'static str = "split_body";
     pub const BASE_NAME: &'static str = "SplitBody";
+
+    /// The tools, the first one then the further ones.
+    fn tools(&self) -> impl Iterator<Item = &GeomRef> {
+        std::iter::once(&self.tool).chain(&self.more_tools)
+    }
 
     pub fn map_params<Q, E>(
         &self,
@@ -58,9 +90,11 @@ impl<P> SplitBodyDef<P> {
         Ok(SplitBodyDef {
             bodies: self.bodies.clone(),
             tool: self.tool.clone(),
+            more_tools: self.more_tools.clone(),
             offset: map_offset(&self.offset, f)?,
             direction: self.direction,
             extend: self.extend,
+            tool_links: self.tool_links.clone(),
         })
     }
 }
@@ -72,6 +106,9 @@ impl FeatureInfo for SplitBodyDef {
             references.body(*body);
         }
         self.tool.add_to(&mut references);
+        for tool in &self.more_tools {
+            tool.add_to(&mut references);
+        }
         references
     }
 
@@ -93,10 +130,21 @@ impl FeatureInfo for SplitBodyDef {
             self.direction,
             "the splitting tool",
         )?;
-        match &self.tool {
-            GeomRef::Body(body) if self.bodies.contains(body) => {
-                Err(format!("body {body} cannot split itself"))
-            }
+        for tool in &self.more_tools {
+            check_tool(ctx, tool, Want::Tool, false, None, "a splitting tool")?;
+        }
+        if let Some(other) = self
+            .tool_links
+            .keys()
+            .find(|b| !self.tools().any(|t| tool_body(t) == Some(**b)))
+        {
+            return Err(format!("body {other} is linked but not a tool"));
+        }
+        match std::iter::once(&self.tool)
+            .chain(&self.more_tools)
+            .find(|tool| matches!(tool, GeomRef::Body(body) if self.bodies.contains(body)))
+        {
+            Some(GeomRef::Body(body)) => Err(format!("body {body} cannot split itself")),
             _ => Ok(()),
         }
     }
@@ -108,21 +156,59 @@ impl FeatureInfo for SplitBodyDef {
 
 impl<K: Kernel> Evaluate<K> for SplitBodyDef {
     fn evaluate(&self, ctx: &mut EvalContext<'_, K>) -> Result<FeatureOutput<K::Shape>, String> {
-        let tool = resolve_tool(ctx, &self.tool, self.offset, self.direction)?;
+        let tool = split_tool(
+            ctx,
+            &self.tool_links,
+            &self.tool,
+            self.offset,
+            self.direction,
+        )?;
+        let mut more = Vec::with_capacity(self.more_tools.len());
+        for t in &self.more_tools {
+            more.push(split_tool(ctx, &self.tool_links, t, None, None)?);
+        }
         let mut output = FeatureOutput::default();
         for body in &self.bodies {
             let shape = ctx.body(*body)?;
+            let label = |message: String| {
+                if self.bodies.len() > 1 {
+                    format!("body {body}: {message}")
+                } else {
+                    message
+                }
+            };
             let pieces = ctx
                 .kernel
                 .split_body(ctx.uid, &shape, &tool.input(), self.extend)
-                .map_err(|e| {
-                    let message = kernel_error(e);
-                    if self.bodies.len() > 1 {
-                        format!("body {body}: {message}")
-                    } else {
-                        message
+                .map_err(|e| label(kernel_error(e)))?;
+            // Each further tool divides the pieces it reaches; one that
+            // reaches none divides nothing.
+            let mut pieces = pieces;
+            for (k, t) in more.iter().enumerate() {
+                let mut next = Vec::with_capacity(pieces.len());
+                let mut divided = false;
+                let mut last_error = None;
+                for piece in pieces {
+                    match ctx
+                        .kernel
+                        .split_body(ctx.uid, &piece, &t.input(), self.extend)
+                    {
+                        Ok(parts) => {
+                            divided = true;
+                            next.extend(parts);
+                        }
+                        Err(e) => {
+                            last_error = Some(kernel_error(e));
+                            next.push(piece);
+                        }
                     }
-                })?;
+                }
+                if !divided {
+                    let why = last_error.unwrap_or_else(|| "it divides nothing".to_owned());
+                    return Err(label(format!("splitting tool {}: {why}", k + 2)));
+                }
+                pieces = next;
+            }
             let mut pieces = pieces.into_iter();
             let first = pieces
                 .next()
@@ -134,4 +220,37 @@ impl<K: Kernel> Evaluate<K> for SplitBodyDef {
         }
         Ok(output)
     }
+}
+
+/// A tool evaluated: one on a body of another component is read there and
+/// moved into the split's coordinates, the rest as [`resolve_tool`].
+fn split_tool<K: Kernel>(
+    ctx: &mut EvalContext<'_, K>,
+    links: &BTreeMap<BodyUid, OccurrenceLink>,
+    tool: &GeomRef,
+    offset: Option<ParamId>,
+    direction: Option<Vec3>,
+) -> Result<Resolved<K::Shape>, String> {
+    let Some(body) = tool_body(tool) else {
+        return resolve_tool(ctx, tool, offset, direction);
+    };
+    let Some(link) = links.get(&body) else {
+        return resolve_tool(ctx, tool, offset, direction);
+    };
+    let (component, transform) = ctx.linked(link).map_err(|e| format!("tool {body}: {e}"))?;
+    let shape = ctx.body_in(component, body)?;
+    let shape = ctx
+        .kernel
+        .transform_shape(&shape, &transform, None)
+        .map_err(|e| format!("tool {body}: {e}"))?;
+    Ok(match tool {
+        GeomRef::Face { face, .. } => {
+            require_faces(ctx, body, &shape, std::slice::from_ref(face))?;
+            Resolved::Face {
+                shape,
+                face: face.clone(),
+            }
+        }
+        _ => Resolved::Body { shape },
+    })
 }

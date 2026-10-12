@@ -13,7 +13,7 @@ endif()
 include(cmake/RenderDeps.cmake)
 
 project(Mitcad
-  VERSION 0.2.4
+  VERSION 0.3.0
   DESCRIPTION "Open source parametric desktop CAD"
   LANGUAGES CXX)
 
@@ -125,11 +125,13 @@ if(BUILD_TESTING)
   if(BASH_EXECUTABLE AND NOT WIN32)
     add_test(NAME repo.spdx COMMAND "${BASH_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tools/check-spdx.sh")
   endif()
-  # The hypothesis tester of the .f3d import's learning dump (mitcad#96).
+  # The hypothesis tester of the .f3d import's learning dump (mitcad#96) and
+  # the comparison with the API reference dumps (apiref.py).
   find_package(Python3 COMPONENTS Interpreter QUIET)
   if(Python3_Interpreter_FOUND)
     add_test(NAME tools.f3d_learn
-      COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tools/f3d-learn/test_learn.py")
+      COMMAND "${Python3_EXECUTABLE}" -m unittest discover
+        -s "${CMAKE_CURRENT_SOURCE_DIR}/tools/f3d-learn" -p "test_*.py")
     set_tests_properties(tools.f3d_learn PROPERTIES ENVIRONMENT "PYTHONDONTWRITEBYTECODE=1")
   endif()
 endif()

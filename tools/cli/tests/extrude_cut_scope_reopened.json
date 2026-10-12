@@ -1,0 +1,15 @@
+[
+  {"comment":"SPDX-License-Identifier: MIT. Reopen the scoped cuts: exclusions, target ownership and split IDs are persisted."},
+  {"expect":{"feature":"F7","status":"ok","bodies":7,"instances":7,"world_volume":16450}},
+  {"expect":{"feature":"F9","status":"ok"}},
+  {"expect":{"body":"F1.b0","volume":3250}},
+  {"expect":{"body":"F2.b0","volume":3450}},
+  {"expect":{"body":"F3.b0","volume":4000}},
+  {"expect":{"body":"F5.b0","volume":3250}},
+  {"expect":{"query":{"query":"bodies"},"result":[{"uid":"F1.b0","component":"C1"},{"uid":"F2.b0","component":"C1"},{"uid":"F3.b0","component":"C2"},{"uid":"F4.b0","component":"C4"},{"uid":"F5.b0"},{"uid":"F9.b0","component":"C4"},{"uid":"F9.b1","component":"C4"}]}},
+  {"cmd":"suppress_feature","uid":"F7"},
+  {"expect":{"feature":"F7","status":"suppressed","bodies":6,"world_volume":19000}},
+  {"expect":{"feature":"F9","status":"ok"}},
+  {"cmd":"undo"},
+  {"expect":{"feature":"F7","status":"ok","bodies":7,"world_volume":16450}}
+]

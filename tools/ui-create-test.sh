@@ -11,7 +11,8 @@
 #     counterdrills; a counterdrilled, tapered hole at a sketch's circle
 #     (as the FreeCAD import makes them) opens for editing with its values
 #     and keeps its counterdrill when its taper changes.
-#   - Thread: suggested from the cylinder, cosmetic, edited to modelled.
+#   - Thread: suggested from the cylinder, cosmetic, edited to modelled,
+#     then given extra radial and flank clearance.
 #   - Box, Cylinder, Sphere and Torus placed with a click on XY; New
 #     Component.
 #
@@ -273,6 +274,18 @@ ui_expect_volume "Body Body1 (F2.b0): volume 1570.796 -> \([0-9.]*\) mm3" 1302.8
 [ "$(grep -o 'Cosmetic threads shown: [0-9]*' "$UI_LOG" | tail -1)" = "Cosmetic threads shown: 0" ] ||
   ui_fail "a modelled thread is drawn as rings"
 echo "ok   a modelled thread has no rings"
+
+echo "--- Extra clearance (thread_clearance in f1_thread.json, mitcad#195)"
+ui_mark
+ui_step "double-click Thread1"             ui_double_click_logged "Timeline Thread1"
+ui_expect_new "Editing F3 with Thread" "editing Thread1 again"
+ui_step "radial clearance 0.2"           ui_type_in "Panel Thread input radial_clearance" "0.2"
+ui_step "flank clearance 0.05"             ui_type_in "Panel Thread input flank_clearance" "0.05"
+ui_expect_new "Preview Thread: ok" "the loosened thread previewed" 120
+ui_step "OK (Enter)"                       ui_key Return
+ui_expect_new "Edited F3" "Thread1 edited with clearance" 60
+ui_expect_volume "Body Body1 (F2.b0): volume 130[0-9.]* -> \([0-9.]*\) mm3" 1156.647335933055 \
+  "the profile moved in and its flanks relieved (thread_clearance)" 1e-3
 
 # primitive name volume body plane: placed with a click on an origin plane
 # (on xy, xz, yz: away from each other) or a face.

@@ -227,6 +227,7 @@ pub fn convert<P>(shapes: Vec<LegacyShape<P>>, size: &dyn Fn(&P) -> Option<f64>)
                         EntityKind::Circle {
                             center: c,
                             radius: d / 2.0,
+                            start: 0.0,
                         },
                     ),
                 );

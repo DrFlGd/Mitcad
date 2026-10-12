@@ -26,6 +26,7 @@
 #include <QPair>
 #include <QPushButton>
 #include <QScrollArea>
+#include <QSet>
 #include <QStackedWidget>
 #include <QStandardPaths>
 #include <QStatusBar>
@@ -76,6 +77,7 @@
 #include "projects/ProjectsPanel.hpp"
 #include "files/VersionDialogs.hpp"
 #include "framework/Appearances.hpp"
+#include "framework/AutoselectPanel.hpp"
 #include "framework/Dialogs.hpp"
 #include "framework/CommandRegistry.hpp"
 #include "framework/ChromeStyle.hpp"
@@ -248,10 +250,10 @@ MainWindow::MainWindow(bool demo, QWidget* parent, bool nativeUi)
   // Components the joints move are dragged in the view (mitcad#55).
   setUpOccurrenceDrag();
 
-  m_sketch = new sketch::SketchController(*this, *m_viewer, this);
+  m_registry = new CommandRegistry(this);
+  m_sketch = new sketch::SketchController(*this, *m_viewer, *m_registry, this);
   connect(m_sketch, &sketch::SketchController::toolChanged, this, [this] { updateIdleView(); });
 
-  m_registry = new CommandRegistry(this);
   // Help > Send Feedback and the error reports (mitcad#61, mitcad#62).
   m_reports = new ReportCenter(
       *this,
@@ -318,7 +320,11 @@ MainWindow::MainWindow(bool demo, QWidget* parent, bool nativeUi)
 #endif
 
   recompute();
-  showHint(tr("Create a sketch to start modelling. S searches for commands."));
+  showHint(m_registry->shortcutWarnings().isEmpty()
+               ? tr("Create a sketch to start modelling. %1 finds commands.")
+                     .arg(m_registry->shortcutHint(QStringLiteral("tools.search")))
+               : tr("Some saved keyboard shortcuts conflict and are disabled. Open Keyboard Shortcuts "
+                    "to repair them; commands remain available in menus."));
   TestSync::singleShot(500, this, [this] { m_ribbon->logLayout(); });
   m_updates->startUp();
   m_remote->startUp();
@@ -390,6 +396,9 @@ void MainWindow::registerCommands() {
   // into CREATE after New Component.
   registerCreateCommands(*m_registry, *this, sketch);
   registerModifyCommands(*m_registry, *this);
+  // SHEET METAL (mitcad#210): its features, then the main window's actions.
+  registerSheetMetalCommands(*m_registry, *this);
+  registerSheetActions();
   registerAssembleCommands(*m_registry, *this);
   registerConstructCommands(*m_registry, *this);
   registerInspectCommands(*m_registry, *this, this, [this] { return m_selection; });
@@ -491,6 +500,25 @@ void MainWindow::registerCommands() {
   search.shortcut = QKeySequence(Qt::Key_S);
   search.tooltip = tr("Find a command by name");
   m_registry->add(search);
+  // The timeline's search (mitcad#179); Ctrl+F (Cmd+F) where the timeline
+  // or the browser has the keys, so no shortcut of its own.
+  CommandDef timelineSearch = action("view.search_timeline", tr("Search Timeline"), "search", CommandDef::Mode::Any,
+                                     [this] {
+#ifdef MITCAD_MACOS_NATIVE_UI
+                                       if (m_nativeWindow) {
+                                         m_nativeWindow->showTimelineSearch();
+                                         return;
+                                       }
+#endif
+                                       m_controller->timeline()->openSearch();
+                                     });
+  timelineSearch.tooltip = tr("Finds features by name, type, component and status (%1 in the timeline or the browser)")
+                               .arg(QKeySequence(QKeySequence::Find).toString(QKeySequence::NativeText));
+  timelineSearch.keywords = {QStringLiteral("find"), QStringLiteral("feature"), QStringLiteral("history"),
+                             QStringLiteral("failed"), QStringLiteral("warning")};
+  timelineSearch.duringCommands = true;
+  timelineSearch.enabled = [this] { return m_controller != nullptr; };
+  m_registry->add(timelineSearch);
 
   CommandDef shortcuts = action("tools.shortcuts", tr("Keyboard Shortcuts..."), "keyboard",
                                 CommandDef::Mode::Any, [this] { editShortcuts(); });
@@ -560,6 +588,7 @@ void MainWindow::createMenus() {
   edit->addAction(m_registry->action(QStringLiteral("edit.redo")));
   edit->addSeparator();
   edit->addAction(m_registry->action(QStringLiteral("solid.parameters")));
+  edit->addAction(m_registry->action(QStringLiteral("view.search_timeline")));
   QMenu* view = menuBar()->addMenu(tr("&View"));
   view->setObjectName(QStringLiteral("viewMenu"));
   view->addAction(m_registry->action(QStringLiteral("view.fit")));
@@ -755,7 +784,7 @@ void MainWindow::createPanels() {
     m_commandPages = new QStackedWidget(this);
     m_idleInfo = new QLabel;
     m_idleInfo->setWordWrap(true);
-    m_commandPages->addWidget(m_idleInfo);
+    createIdlePage();
     m_palette = new sketch::SketchPalette(*m_sketch, *m_registry, sketchConstraintCommands());
     m_commandPages->addWidget(m_palette);
     m_commandPages->hide();
@@ -790,7 +819,7 @@ void MainWindow::createPanels() {
   m_idleInfo->setWordWrap(true);
   m_idleInfo->setAlignment(Qt::AlignTop | Qt::AlignLeft);
   m_idleInfo->setMargin(6);
-  m_commandPages->addWidget(m_idleInfo);
+  createIdlePage();
   m_palette = new sketch::SketchPalette(*m_sketch, *m_registry, sketchConstraintCommands());
   m_commandPages->addWidget(m_palette);
   auto* commandDock = new QDockWidget(tr("Command"), this);
@@ -833,7 +862,7 @@ void MainWindow::createFloatingPanels() {
   m_idleInfo->setWordWrap(true);
   m_idleInfo->setAlignment(Qt::AlignTop | Qt::AlignLeft);
   m_idleInfo->setMargin(6);
-  m_commandPages->addWidget(m_idleInfo);
+  createIdlePage();
   m_palette = new sketch::SketchPalette(*m_sketch, *m_registry, sketchConstraintCommands());
   m_commandPages->addWidget(m_palette);
   m_commandCard = new GlassCard;
@@ -855,7 +884,7 @@ void MainWindow::createFloatingPanels() {
           &FloatingLayout::requestLayout);
   connect(m_commandPages, &QStackedWidget::currentChanged, this, [this] { updateCommandCard(); });
   setCentralWidget(m_floating);
-  m_floating->watchContent(m_idleInfo);
+  m_floating->watchContent(m_idlePage);
   m_floating->watchContent(m_palette);
 
   // The View menu shows and hides the cards as it did the docks.
@@ -870,13 +899,45 @@ void MainWindow::createFloatingPanels() {
   }
 }
 
+void MainWindow::createIdlePage() {
+  m_idlePage = new QWidget;
+  auto* layout = new QVBoxLayout(m_idlePage);
+  layout->setContentsMargins(0, 0, 0, 0);
+  layout->addWidget(m_idleInfo);
+  m_autoselect = new AutoselectPanel;
+  layout->addWidget(m_autoselect);
+  layout->addStretch();
+  connect(m_autoselect, &AutoselectPanel::toggleRequested, this, [this](const Selection& candidates) {
+    if (m_mode == Mode::Idle && !modelBusy()) {
+      setSelection(toggleSelectionGroup(m_selection, candidates));
+    }
+  });
+  connect(m_autoselect, &AutoselectPanel::clearRequested, this, [this] {
+    if (m_mode == Mode::Idle && !modelBusy()) {
+      setSelection({});
+    }
+  });
+  connect(m_autoselect, &AutoselectPanel::previewChanged, this, [this](const Selection& candidates) {
+    const Selection preview = m_mode == Mode::Idle && !modelBusy() ? candidates : Selection();
+    if (preview != m_autoselectPreview) {
+      m_autoselectPreview = preview;
+      qDebug().noquote() << "Autoselect preview:" << summarize(preview);
+    }
+    if (!modelBusy()) {
+      updateIdleView();
+    }
+  });
+  m_commandPages->addWidget(m_idlePage);
+}
+
 int MainWindow::commandContentHeight() const {
   QWidget* page = m_commandPages->currentWidget();
   if (auto* scroll = qobject_cast<QScrollArea*>(page)) {
     return scroll->widget() != nullptr ? scroll->widget()->sizeHint().height() + 2 : 0;
   }
-  if (page == m_idleInfo) {
-    return m_idleInfo->heightForWidth(m_commandCard->width() - 16);
+  if (page == m_idlePage) {
+    const int height = m_idlePage->layout()->totalHeightForWidth(m_commandCard->width() - 16);
+    return height >= 0 ? height : m_idlePage->sizeHint().height();
   }
   return page != nullptr ? page->sizeHint().height() : 0;
 }
@@ -885,9 +946,8 @@ void MainWindow::updateCommandCard() {
   if (m_commandCard == nullptr) {
     return;
   }
-  // Idle with nothing to tell (no selection): no card.
-  const bool idle = m_commandPages->currentWidget() == m_idleInfo;
-  m_commandCard->setVisible(!(idle && m_idleInfo->text().isEmpty()));
+  const bool idle = m_commandPages->currentWidget() == m_idlePage;
+  m_commandCard->setVisible(!(idle && m_idleInfo->text().isEmpty() && !m_autoselect->available()));
   m_floating->requestLayout();
 }
 
@@ -936,6 +996,7 @@ bool MainWindow::isAvailable(const CommandDef& def) const {
 }
 
 void MainWindow::updateActions() {
+  m_autoselect->setActive(m_mode == Mode::Idle);
   // The commands' availability checks share their queries' answers.
   QHash<QString, QJsonValue> memo;
   m_queryMemo = &memo;
@@ -1201,7 +1262,7 @@ void MainWindow::onCommandFinished(bool committed) {
   m_commandInSketch = false;
   m_sketch->setPaused(false);
   m_commandPages->setCurrentWidget(m_mode == Mode::Sketch ? static_cast<QWidget*>(m_palette)
-                                                          : static_cast<QWidget*>(m_idleInfo));
+                                                          : m_idlePage);
   if (session != nullptr) {
     session->deleteLater();
   }
@@ -1271,7 +1332,9 @@ void MainWindow::openCommandSearch() {
 void MainWindow::editShortcuts() {
   ShortcutDialog dialog(*m_registry, this);
   prepareModal(&dialog);
-  execDialog(&dialog);
+  if (execDialog(&dialog) == QDialog::Accepted) {
+    updateActions(); // refresh the native menu and its effective shortcut list
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -1850,6 +1913,7 @@ void MainWindow::refreshScene() {
   ScopedTiming sketches("refresh sketches");
   ScopedTiming profiles("refresh profiles");
   showProfiles();
+  refreshAutoselect();
   profiles.finish();
   ScopedTiming entities("refresh sketch entities");
   showSketches();
@@ -1869,12 +1933,13 @@ void MainWindow::refreshScene() {
   if (m_mode != Mode::Command) {
     // What was selected may be gone.
     Selection kept;
-    for (const SelectionItem& item : m_selection) {
+    for (const SelectionItem& item : retainCurrentProfiles(m_selection, m_currentProfiles)) {
       if (keepSelected(item)) {
         kept.append(item);
       }
     }
     m_selection = kept;
+    m_controller->showSelection(m_selection);
     updateIdleView();
   }
   updateActions();
@@ -1979,6 +2044,19 @@ std::vector<BodyDisplay> MainWindow::modelBodies() const {
     }
     return faceLooks;
   };
+  // Sheets shown flat (mitcad#210): their valid Flat Pattern's developed
+  // solid in place of the folded body, in the body's coordinates.
+  QSet<QString> flat;
+  try {
+    for (const QJsonValue& value : queryArray(QStringLiteral("sheet_bodies"))) {
+      const QJsonObject pattern = value.toObject().value(QStringLiteral("flat_pattern")).toObject();
+      if (pattern.value(QStringLiteral("shown")).toBool() &&
+          pattern.value(QStringLiteral("status")).toString() == QStringLiteral("valid")) {
+        flat.insert(value.toObject().value(QStringLiteral("body")).toString());
+      }
+    }
+  } catch (const std::exception&) {
+  }
   std::vector<BodyDisplay> bodies;
   for (const QJsonValue& value : queryArray(QStringLiteral("instances"))) {
     const QJsonObject instance = value.toObject();
@@ -1991,12 +2069,25 @@ std::vector<BodyDisplay> MainWindow::modelBodies() const {
     if (!shape) {
       continue;
     }
-    if (!cut.isNull()) {
+    if (flat.contains(uid)) {
       try {
+        if (auto developed = idleDocument().analysis_shape(rustStr(
+                compactJson({{QStringLiteral("shape"), QStringLiteral("flat_pattern")}, {QStringLiteral("body"), uid}})))) {
+          shape = developed;
+        }
+      } catch (const std::exception&) {
+        // No valid pattern now: the folded body.
+      }
+    }
+    if (!cut.isNull() && !flat.contains(uid)) {
+      try {
+        // The cut is in design coordinates. Clip in this occurrence's
+        // local coordinates, then retain its normal display placement.
         const auto clipped = idleDocument().analysis_shape(
             rustStr(compactJson({{QStringLiteral("shape"), QStringLiteral("clip")},
                                  {QStringLiteral("plane"), cut},
-                                 {QStringLiteral("body"), uid}})));
+                                 {QStringLiteral("body"), uid},
+                                 {QStringLiteral("occurrence"), occurrence}})));
         if (clipped) {
           shape = clipped;
         }
@@ -2141,6 +2232,7 @@ void MainWindow::showProfiles() {
   QHash<QString, ProfileFace> faces;
   const QJsonArray all =
       query({{QStringLiteral("query"), QStringLiteral("profiles")}, {QStringLiteral("hashes"), true}}).toArray();
+  m_currentProfiles = all;
   for (const QJsonValue& value : all) {
     const QJsonObject profile = value.toObject();
     const QString sketch = profile.value(QStringLiteral("sketch")).toString();
@@ -2191,6 +2283,12 @@ void MainWindow::showProfiles() {
   }
   m_profileFaces = faces;
   m_viewer->setProfiles(profiles, occurrences);
+}
+
+void MainWindow::refreshAutoselect() {
+  const QJsonObject answer = queryObject({{QStringLiteral("query"), QStringLiteral("autoselect_profiles")}});
+  const QString sketch = answer.value(QStringLiteral("sketch")).toString();
+  m_autoselect->setProfiles(AutoselectProfiles::read(answer, placingOccurrence(sketch)));
 }
 
 QString MainWindow::placingOccurrence(const QString& feature) const {
@@ -2766,6 +2864,7 @@ void MainWindow::setSelection(const Selection& items) {
 }
 
 void MainWindow::updateIdleView() {
+  m_autoselect->setActive(m_mode == Mode::Idle);
   if (m_mode == Mode::Command) {
     return;
   }
@@ -2797,6 +2896,11 @@ void MainWindow::updateIdleView() {
       highlights.push_back({item, shape, kSelectionColor});
     }
   }
+  for (const SelectionItem& item : m_autoselectPreview) {
+    if (!m_selection.contains(item)) {
+      highlights.push_back({item, itemShape(item), QColor(0x2f, 0x9b, 0xff)});
+    }
+  }
   m_viewer->setHighlights(highlights);
   const QString logged = featureFaces.isEmpty() ? QStringLiteral("none") : featureFaces.join(QStringLiteral(", "));
   if (logged != m_loggedFeatureFaces) {
@@ -2819,7 +2923,11 @@ void MainWindow::updateIdleView() {
     text = m_selection.isEmpty() ? QString() : text.mid(text.indexOf(QStringLiteral("<br><br>")) + 8);
   }
   m_idleInfo->setText(text);
+  m_idleInfo->setVisible(!text.isEmpty());
   updateCommandCard();
+#ifdef MITCAD_MACOS_NATIVE_UI
+  refreshNativeInspector();
+#endif
 }
 
 void MainWindow::showContextMenu(const QPoint& globalPosition, const SelectionItem& item) {
@@ -3057,8 +3165,12 @@ void MainWindow::enterSketch(const QString& uid, bool existing) {
   m_ribbon->setSketchMode(true);
   m_commandPages->setCurrentWidget(m_palette);
   refreshScene();
-  showHint(tr("Sketch: Line (L), Rectangle (R), Circle (C), Sketch Dimension (D); "
-              "Finish Sketch with Ctrl+Enter."));
+  showHint(tr("Sketch: %1, %2, %3, %4; %5.")
+               .arg(m_registry->shortcutHint(QStringLiteral("sketch.line")),
+                    m_registry->shortcutHint(QStringLiteral("sketch.rectangle")),
+                    m_registry->shortcutHint(QStringLiteral("sketch.circle")),
+                    m_registry->shortcutHint(QStringLiteral("sketch.dimension")),
+                    m_registry->shortcutHint(QStringLiteral("sketch.finish"))));
   TestSync::singleShot(300, this, [this] {
     m_ribbon->logLayout();
     m_palette->logLayout();
@@ -3109,7 +3221,7 @@ void MainWindow::leaveSketchMode() {
   m_viewer->restoreCamera();
   m_viewer->setGridPlane(gp_Ax3()); // back on XY
   m_ribbon->setSketchMode(false);
-  m_commandPages->setCurrentWidget(m_idleInfo);
+  m_commandPages->setCurrentWidget(m_idlePage);
   m_sketchExisting = false;
   m_sketchRestoreMarker = -1;
 }
@@ -3198,11 +3310,14 @@ void MainWindow::undo() {
       return;
     }
   }
+  // What Undo changes is logged like a command's change (MITCAD_LOG_VOLUMES).
+  const QJsonObject before = bodyVolumes(*this);
   QJsonObject result;
   if (!runCommand({{QStringLiteral("cmd"), QStringLiteral("undo")}}, &result)) {
     return;
   }
   qDebug().noquote() << "Undo:" << result.value(QStringLiteral("label")).toString();
+  logVolumeChanges(*this, before);
   if (m_mode == Mode::Sketch && !sketchExists(m_sketch->uid())) {
     // The active sketch itself was taken back.
     leaveSketchMode();
@@ -3214,11 +3329,13 @@ void MainWindow::redo() {
   if (m_mode == Mode::Command || m_mode == Mode::PickPlane) {
     return;
   }
+  const QJsonObject before = bodyVolumes(*this);
   QJsonObject result;
   if (!runCommand({{QStringLiteral("cmd"), QStringLiteral("redo")}}, &result)) {
     return;
   }
   qDebug().noquote() << "Redo:" << result.value(QStringLiteral("label")).toString();
+  logVolumeChanges(*this, before);
   refreshScene();
 }
 

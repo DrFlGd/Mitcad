@@ -8,7 +8,7 @@
 //! which dumps give no inputs of, fall back to the stored bodies.
 
 use mitcad_f3d::design::ir::{PipeDetail, Reference, SweepDetail, TimelineItem};
-use mitcad_model::{EdgeName, FeatureUid};
+use mitcad_model::{EdgeName, FaceName, FeatureUid};
 // Inputs on other components' bodies (mitcad#161).
 use mitcad_f3d::design::ir::Fingerprint;
 use mitcad_model::{BodyUid, ComponentUid};
@@ -63,6 +63,7 @@ fn with_operations(
                     }
                 }
                 c.guess = true;
+                c.input_provenance = crate::InputProvenance::Inferred;
             }
             ranked.push((i + k, c));
         }
@@ -273,9 +274,27 @@ impl<K: crate::ImportKernel> Importer<'_, K> {
         }
     }
 
+    /// The face a fingerprint names, among the bodies of the component the
+    /// decoder found it in where it gives one, else among those of the
+    /// item's own component (a feature works on its component's bodies; the
+    /// faces of a split's pieces and of the balls that cut them lie on each
+    /// other), else among all.
+    pub(crate) fn face_input(&self, fp: &Fingerprint) -> Option<(BodyUid, FaceName)> {
+        let keep = self.input_bodies(fp);
+        let own = self.component;
+        let given = fp.f3d.as_ref().is_some_and(|f| f.component.is_some());
+        given
+            .then(|| refs::resolve_face_where(self.doc, fp, &keep))
+            .flatten()
+            .or_else(|| {
+                refs::resolve_face_where(self.doc, fp, &|b| self.doc.body_component(b) == Some(own))
+            })
+            .or_else(|| refs::resolve_face(self.doc, fp))
+    }
+
     /// Traces how far the faces of the bodies `keep` keeps are from a face
     /// fingerprint's point, when the face is not found (`MITCAD_IMPORT_TRACE`).
-    fn trace_nearest_faces(&self, fp: &Fingerprint, keep: &dyn Fn(BodyUid) -> bool) {
+    pub(crate) fn trace_nearest_faces(&self, fp: &Fingerprint, keep: &dyn Fn(BodyUid) -> bool) {
         if !crate::tracing() {
             return;
         }
@@ -327,7 +346,7 @@ impl<K: crate::ImportKernel> Importer<'_, K> {
 
     /// Traces the edges of the bodies `keep` keeps with an end near an edge
     /// fingerprint's ends, when the edge is not found (`MITCAD_IMPORT_TRACE`).
-    fn trace_edges_near(&self, fp: &Fingerprint, keep: &dyn Fn(BodyUid) -> bool) {
+    pub(crate) fn trace_edges_near(&self, fp: &Fingerprint, keep: &dyn Fn(BodyUid) -> bool) {
         let ends: Vec<[f64; 3]> = [fp.start_point.flatten(), fp.end_point.flatten()]
             .into_iter()
             .flatten()
@@ -373,18 +392,6 @@ impl<K: crate::ImportKernel> Importer<'_, K> {
     /// where the sweep goes): the occurrence paths to the body's component
     /// and to `own`, each placed once, as a combine's `tool_links`.
     fn body_links(&self, own: ComponentUid, def: &Value) -> Result<Map<String, Value>, String> {
-        let assembly = self.doc.assembly();
-        let only_path = |c| match assembly.paths_to(c).as_slice() {
-            [path] => Ok(path
-                .iter()
-                .map(ToString::to_string)
-                .collect::<Vec<_>>()
-                .join("/")),
-            _ => Err(format!(
-                "its path or guide surfaces are on another component, and {} is not placed once",
-                assembly.name(c)
-            )),
-        };
         let bodies = def["path"]["body"].as_str().into_iter().chain(
             def["guide_surfaces"]
                 .as_array()
@@ -392,6 +399,57 @@ impl<K: crate::ImportKernel> Importer<'_, K> {
                 .flatten()
                 .filter_map(|f| f["body"].as_str()),
         );
+        self.links_of(own, bodies, "its path or guide surfaces are")
+    }
+
+    /// The links of the bodies an extrusion's objects are or are faces of
+    /// that belong to another component than `own` (the profile sketch's,
+    /// where the extrusion goes), as [`Importer::body_links`].
+    pub(crate) fn object_links(
+        &self,
+        own: ComponentUid,
+        def: &Value,
+    ) -> Result<Map<String, Value>, String> {
+        let objects = [
+            &def["start"]["object"],
+            &def["extent"]["object"],
+            &def["extent"]["side1"]["object"],
+            &def["extent"]["side2"]["object"],
+        ];
+        let bodies = objects.into_iter().filter_map(|o| o["body"].as_str());
+        self.links_of(own, bodies, "its objects are")
+    }
+
+    /// The links of `bodies` of other components than `own`: the occurrence
+    /// paths to the body's component, placed once, and to `own`, placed once or
+    /// else (an occurrence pattern) at its first occurrence, the original that
+    /// the file's features are made in.
+    fn links_of<'a>(
+        &self,
+        own: ComponentUid,
+        bodies: impl Iterator<Item = &'a str>,
+        what: &str,
+    ) -> Result<Map<String, Value>, String> {
+        let assembly = self.doc.assembly();
+        let only_path = |c, first: bool| match assembly.paths_to(c).as_slice() {
+            [path] => Ok(path
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+                .join("/")),
+            paths if first && !paths.is_empty() => Ok(paths
+                .iter()
+                .min()
+                .into_iter()
+                .flatten()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+                .join("/")),
+            _ => Err(format!(
+                "{what} on another component, and {} is not placed once",
+                assembly.name(c)
+            )),
+        };
         let mut links = Map::new();
         for body in bodies {
             let Some(c) = body
@@ -404,7 +462,7 @@ impl<K: crate::ImportKernel> Importer<'_, K> {
             if c != own && !links.contains_key(body) {
                 links.insert(
                     body.to_owned(),
-                    json!({"source": only_path(c)?, "target": only_path(own)?}),
+                    json!({"source": only_path(c, false)?, "target": only_path(own, true)?}),
                 );
             }
         }
@@ -486,7 +544,12 @@ impl<K: crate::ImportKernel> Importer<'_, K> {
         }
         let path = self.path_of(d.path.as_ref(), "path")?;
         let (sketch, _) = self.profile_sketch(&profiles, index)?;
-        let sets = self.region_sets(&profiles, sketch, None, None)?;
+        // The decoded profiles' regions first, and without probing the
+        // history's next states for others (mitcad#181: a probe of a
+        // thread's states took 12–30 s on every try of the item).
+        let decoded = self.mapped_set(&d.other, sketch).is_some();
+        let mut sets = self.region_sets_probing(&profiles, sketch, None, None, !decoded)?;
+        self.mapped_first(&mut sets, &d.other, sketch);
         let uid = self.sketches[&sketch].uid.to_string();
         let mut base = json!({"type": "sweep", "path": path,
                               "operation": Self::operation(d.operation.as_deref())});
@@ -605,6 +668,11 @@ impl<K: crate::ImportKernel> Importer<'_, K> {
                     note: None,
                     guess: set.guess || k > 0,
                     predicted: None,
+                    input_provenance: if set.guess || k > 0 {
+                        crate::InputProvenance::Inferred
+                    } else {
+                        crate::InputProvenance::Unknown
+                    },
                     first: false,
                 };
                 candidates.push((k + s, candidate));
@@ -683,6 +751,11 @@ impl<K: crate::ImportKernel> Importer<'_, K> {
             .enumerate()
             .map(|(k, def)| Candidate {
                 guess: k > 0 && d.section_type.is_none(),
+                input_provenance: if k > 0 && d.section_type.is_none() {
+                    crate::InputProvenance::Inferred
+                } else {
+                    crate::InputProvenance::Unknown
+                },
                 ..Candidate::new(def)
             })
             .collect();
@@ -843,6 +916,11 @@ impl<K: crate::ImportKernel> Importer<'_, K> {
                 def["sections"] = Value::Array(chosen);
                 Candidate {
                     guess: k > 0,
+                    input_provenance: if k > 0 {
+                        crate::InputProvenance::Inferred
+                    } else {
+                        crate::InputProvenance::Unknown
+                    },
                     ..Candidate::new(def)
                 }
             })

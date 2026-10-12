@@ -12,7 +12,9 @@
 #   - the rpaths are relative (@...), so that they leak no build path;
 #   - `lipo -archs` contains arm64.
 # It also checks Info.plist, the executable, the icon and the licence
-# texts, and that no symbolic link leaves the bundle.
+# texts, signed OIDN CPU/Metal modules (including the embedded Metal kernels),
+# Cycles' complete Metal runtime source tree against its manifest,
+# and that no symbolic link leaves the bundle.
 #
 # Runs on macOS only (otool, lipo, plutil). Bash 3.2 compatible.
 # Usage: tools/check-bundle-macos.sh <path to Mitcad.app>
@@ -24,6 +26,9 @@ if [ $# -ne 1 ] || [ ! -d "$1" ]; then
 fi
 bundle=$(cd "$1" && pwd -P)
 contents="$bundle/Contents"
+SCRIPT_DIR=$(cd "$(dirname "$0")" && pwd)
+# shellcheck source=tools/dev-env/versions.sh
+. "$SCRIPT_DIR/dev-env/versions.sh"
 
 failures=0
 fail() {
@@ -69,7 +74,7 @@ if [ ! -f "$contents/Resources/licenses/QtKeychain-BSD-3-Clause.txt" ]; then
 fi
 
 # Every bundle includes the render worker, its dynamically opened denoiser
-# device and its notices; the Mach-O checks below cover its linked
+# devices and their notices; the Mach-O checks below cover their linked
 # dependency graph.
 licenses="$contents/Resources/licenses"
 worker="$contents/MacOS/mitcad-render"
@@ -86,8 +91,32 @@ done
 if ! ls "$licenses/cycles/"*license*.txt >/dev/null 2>&1; then
   fail "$licenses/cycles" "the licence texts of Cycles' bundled code are missing"
 fi
-if ! ls "$contents/Frameworks/"libOpenImageDenoise_device_cpu*.dylib >/dev/null 2>&1; then
-  fail "$contents/Frameworks" "Open Image Denoise's runtime-loaded CPU device is missing"
+for device in cpu metal; do
+  module="$contents/Frameworks/libOpenImageDenoise_device_$device.$OIDN_VERSION.dylib"
+  if [ ! -s "$module" ]; then
+    fail "$module" "Open Image Denoise's runtime-loaded $device device is missing or empty"
+  elif ! codesign --verify --strict "$module" 2>/dev/null; then
+    fail "$module" "Open Image Denoise's $device device has no valid code signature"
+  fi
+done
+# OIDN 2.5.1's oidn_metal.cmake converts metal_kernels.metallib to C++ and
+# embeds it in the signed Metal module. No external OIDN kernels are needed;
+# bundling this module also covers the kernel resource and its integrity.
+
+# Metal compiles from source at run time. The manifest covers every file
+# exported from the pinned Cycles kernel and util trees, including the
+# .metal entry point that a header-only or flat-kernel copy would lose.
+cycles_runtime="$contents/Resources/cycles"
+for resource in source/kernel/device/metal/kernel.metal source/kernel/device/metal/compat.h \
+                source/kernel/device/metal/globals.h source/kernel/device/gpu/kernel.h \
+                source/util/types.h source.sha256; do
+  if [ ! -s "$cycles_runtime/$resource" ]; then
+    fail "$cycles_runtime/$resource" "Cycles' Metal runtime source is missing or empty"
+  fi
+done
+if [ -s "$cycles_runtime/source.sha256" ] && \
+   ! (cd "$cycles_runtime" && shasum -a 256 -c source.sha256 >/dev/null); then
+  fail "$cycles_runtime/source.sha256" "Cycles' runtime sources do not match the complete source manifest"
 fi
 
 # Symbolic links must stay inside the bundle: an absolute target is a path

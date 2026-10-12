@@ -29,9 +29,10 @@ OCCT's rolling ball fillet build roundings it failed on (mitcad#121), and
 0020 to 0026 fix other failures and crashes of it (mitcad#122,
 mitcad#133). Patches 0030 to 0032 make an allocation that fails throw
 instead of crashing, let a caller learn of it and leave the collections
-valid (mitcad#132). Patch 0060 changes no result either: it removes repeated
-work that made ShapeFix's repair of intersecting edges quadratic in the
-wires of a face (mitcad#60). Patches 0090 and 0091 fix a heap overflow of
+valid (mitcad#132), and 0033 makes the checker's parallel mode give the
+sequential mode's results (mitcad#203). Patch 0060 changes no result
+either: it removes repeated work that made ShapeFix's repair of
+intersecting edges quadratic in the wires of a face (mitcad#60). Patches 0090 and 0091 fix a heap overflow of
 OCCT's chamfer and fillet (mitcad#160).
 
 - `0006-shapeupgrade-unifysamedomain-seam-search-by-vertex.patch`: the face
@@ -222,6 +223,19 @@ The patches 0030 to 0032 make OCCT handle an allocation that fails
   their destructors freed nodes twice (a boolean ended the process so
   under a memory limit). `NCollection_BaseMap::BeginResize` leaked its
   first bucket array when the second failed.
+
+- `0033-brepcheck-edge-curve-adaptor-per-context.patch`: in the checker's
+  parallel mode (`BRepCheck_Analyzer`'s `theIsParallel`, which Mitcad's
+  checks use since mitcad#181) the faces are checked on several threads,
+  and an edge in the contexts of its two faces at the same time
+  (`BRepCheck_Edge::InContext`). Both evaluated the edge's one curve
+  adaptor, which caches the span of a B-spline it evaluated last, so a
+  thread could take another's span, find the edge off its face
+  (`BRepCheck_InvalidCurveOnSurface`) and call the face unorientable: a
+  valid shape came out valid or invalid from run to run (a round groove
+  swept along a helix and cut from a nut, mitcad#203). Each context now
+  evaluates its own copy of the adaptor (`ShallowCopy`); the sequential
+  mode, the checks and their statuses are unchanged.
 
 - `0060-shapefix-intersecting-edges-once-per-face.patch`: the repair of
   a wire's intersecting edges (`ShapeFix_IntersectionTool::FixSelfIntersectWire`,
@@ -469,7 +483,8 @@ mitcad#92 (0009); for 0010 to 0019 and 0050 and later, mitcad#121 and the tests 
 where they can; for 0020 to 0023, mitcad#122 and
 `geometry/tests/test_fillet_kernel.cpp`; for 0024 to 0026, mitcad#133
 and `geometry/tests/test_fillet_ends.cpp`; for 0030 to 0032, mitcad#132
-and `geometry/tests/test_allocation.cpp`; for 0060, mitcad#60 and
+and `geometry/tests/test_allocation.cpp`; for 0033, mitcad#203 and the
+helix cases of `geometry/tests/test_sweeps.cpp`; for 0060, mitcad#60 and
 `geometry/tests/test_shapefix.cpp`, whose expected results are OCCT's
 without the patch; for 0090 and 0091, mitcad#160 and
 `geometry/tests/test_chamfer_kernel.cpp`, which aborts without them. Sending them upstream is the

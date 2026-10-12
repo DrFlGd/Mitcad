@@ -3,7 +3,7 @@
 //! closest points, bounds, sampling and pieces between parameters (with
 //! B-spline knot insertion), in sketch coordinates.
 
-use std::f64::consts::TAU;
+use std::f64::consts::{PI, TAU};
 
 use crate::profile::SegmentGeometry;
 
@@ -379,6 +379,8 @@ pub enum Curve2 {
     Circle {
         center: P2,
         radius: f64,
+        /// Where the whole circle starts (its seam), as an angle.
+        start: f64,
     },
     Arc {
         center: P2,
@@ -432,7 +434,7 @@ impl Curve2 {
     pub fn eval(&self, t: f64) -> [P2; 3] {
         match self {
             Self::Line { a, b } => [lerp(*a, *b, t), sub(*b, *a), [0.0, 0.0]],
-            Self::Circle { center, radius } | Self::Arc { center, radius, .. } => {
+            Self::Circle { center, radius, .. } | Self::Arc { center, radius, .. } => {
                 let (s, c) = t.sin_cos();
                 [
                     add(*center, [radius * c, radius * s]),
@@ -522,11 +524,46 @@ impl Curve2 {
     /// Bounds of the whole curve (approximate for splines: their control
     /// polygon).
     pub fn bounds(&self) -> (P2, P2) {
+        let (t0, t1) = self.domain();
         match self {
             Self::Nurbs(n) => bounds(&n.control),
+            Self::Line { .. } => bounds(&self.sample(t0, t1)),
+            // Round curves: the ends and the extremes the range holds, not
+            // the sampled points (a chord falls short of its arc's top,
+            // where a tangent line touches it).
             _ => {
-                let (t0, t1) = self.domain();
-                bounds(&self.sample(t0, t1))
+                let extremes: Vec<f64> = match self {
+                    Self::Ellipse {
+                        major,
+                        minor,
+                        rotation,
+                        ..
+                    }
+                    | Self::EllipticalArc {
+                        major,
+                        minor,
+                        rotation,
+                        ..
+                    } => {
+                        let (rs, rc) = rotation.sin_cos();
+                        let tx = (-minor * rs).atan2(major * rc);
+                        let ty = (minor * rc).atan2(major * rs);
+                        vec![tx, tx + PI, ty, ty + PI]
+                    }
+                    _ => vec![0.0, PI / 2.0, PI, 3.0 * PI / 2.0],
+                };
+                let mut points = vec![self.point(t0), self.point(t1)];
+                for t in extremes {
+                    if self.is_periodic() {
+                        points.push(self.point(t));
+                    } else {
+                        let s = angle_after(t0 - 1e-12, t);
+                        if s <= t1 {
+                            points.push(self.point(s));
+                        }
+                    }
+                }
+                bounds(&points)
             }
         }
     }
@@ -545,7 +582,7 @@ impl Curve2 {
                 };
                 (t, dist(p, self.point(t)))
             }
-            Self::Circle { center, radius } => {
+            Self::Circle { center, radius, .. } => {
                 let v = sub(p, *center);
                 let t = v[1].atan2(v[0]).rem_euclid(TAU);
                 (t, (norm(v) - radius).abs())
@@ -610,7 +647,7 @@ impl Curve2 {
                 start: self.point(t0),
                 end: self.point(t1),
             },
-            Self::Circle { center, radius } | Self::Arc { center, radius, .. } => {
+            Self::Circle { center, radius, .. } | Self::Arc { center, radius, .. } => {
                 SegmentGeometry::Arc {
                     center: *center,
                     radius: *radius,
@@ -657,9 +694,14 @@ impl Curve2 {
     /// The whole curve as profile geometry.
     pub fn whole(&self) -> SegmentGeometry {
         match self {
-            Self::Circle { center, radius } => SegmentGeometry::Circle {
+            Self::Circle {
+                center,
+                radius,
+                start,
+            } => SegmentGeometry::Circle {
                 center: *center,
                 radius: *radius,
+                start: *start,
             },
             Self::Ellipse {
                 center,
@@ -850,6 +892,7 @@ mod tests {
         let circle = Curve2::Circle {
             center: [1.0, 1.0],
             radius: 2.0,
+            start: 0.0,
         };
         let (t, d) = circle.closest([1.0, 5.0]);
         assert!((t - std::f64::consts::FRAC_PI_2).abs() < 1e-12 && (d - 2.0).abs() < 1e-12);

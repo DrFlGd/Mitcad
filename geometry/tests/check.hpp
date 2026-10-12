@@ -157,5 +157,7 @@ void shell_vanishing_tests();
 // Walked roundings that are true rolling balls, with the port's patches
 // 0075-0077 (mitcad#121).
 void fillet_rolling_ball_tests();
+// The faces a run of features made, copied by a pattern.
+void face_copy_tests();
 
 } // namespace test

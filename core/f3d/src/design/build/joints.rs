@@ -81,7 +81,7 @@ pub(super) struct Guids {
 }
 
 /// The 36-character `str16` values of object data, in order.
-fn guid_strings(d: &[u8]) -> Vec<String> {
+pub(super) fn guid_strings(d: &[u8]) -> Vec<String> {
     let mut out = Vec::new();
     let mut p = 0;
     while p + 4 < d.len() {

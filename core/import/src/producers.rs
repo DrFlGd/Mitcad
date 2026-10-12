@@ -35,10 +35,14 @@ impl<K: Kernel> Importer<'_, K> {
         let Some(report) = self.report.items.iter().find(|r| r.index == index) else {
             return (Vec::new(), false);
         };
-        let features: Vec<FeatureUid> = report
-            .features
-            .iter()
-            .filter_map(|f| f.parse().ok())
+        // (The base feature that brought in the operations of the item
+        // before its own comes first: a split's first piece, mitcad#181.)
+        let features: Vec<FeatureUid> = self
+            .start_bases
+            .get(&index)
+            .copied()
+            .into_iter()
+            .chain(report.features.iter().filter_map(|f| f.parse().ok()))
             .collect();
         let mut current: Vec<BodyUid> = self.doc.bodies().iter().map(|b| b.uid).collect();
         current.sort();
@@ -112,10 +116,28 @@ impl<K: Kernel> Importer<'_, K> {
     /// Where a base feature took the item's state, the body found by its
     /// names comes first. `None` when the decoder gives no producer, or the
     /// replay does not have that body.
-    fn produced_body(&self, fp: &Fingerprint) -> Option<BodyUid> {
+    pub(crate) fn produced_body(&self, fp: &Fingerprint) -> Option<BodyUid> {
         let f3d = fp.f3d.as_ref()?;
         let producer = f3d.producer?;
         let (made, own) = self.made_by(producer);
+        if crate::tracing() {
+            let kernel = self.doc.kernel();
+            let made: Vec<String> = made
+                .iter()
+                .map(|b| {
+                    let volume = self
+                        .doc
+                        .body_shape(*b)
+                        .and_then(|s| Sig::of(kernel, s))
+                        .map_or(-1.0, |s| s.volume);
+                    format!("{b} ({volume:.1} mm3)")
+                })
+                .collect();
+            eprintln!(
+                "import: a body item {producer} made (index {:?}, its own features {own}): {made:?}",
+                f3d.body_index
+            );
+        }
         let live = |b: &BodyUid| self.doc.body_shape(*b).is_some();
         if own && let [only] = made[..] {
             return live(&only).then_some(only);
@@ -127,7 +149,68 @@ impl<K: Kernel> Importer<'_, K> {
             return Some(named);
         }
         let index = usize::try_from(f3d.body_index.unwrap_or(0)).ok()?;
+        // The bodies a split divides keep their ids and are made by the
+        // items that made them: the split's own records are its new pieces
+        // only, which its index counts.
+        let kept = self.split_kept(producer);
+        if !kept.is_empty() {
+            let pieces: Vec<BodyUid> = made.iter().copied().filter(|b| !kept.contains(b)).collect();
+            if !pieces.is_empty() {
+                return pieces.get(index).copied().filter(live);
+            }
+        }
         made.get(index).copied().filter(live)
+    }
+
+    /// The bodies the splits of the item `index` divide (they stay among
+    /// the bodies [`Importer::made_by`] lists).
+    fn split_kept(&self, index: i64) -> Vec<BodyUid> {
+        let Some(report) = self.report.items.iter().find(|r| r.index == index) else {
+            return Vec::new();
+        };
+        report
+            .features
+            .iter()
+            .filter_map(|f| f.parse::<FeatureUid>().ok())
+            .filter_map(|uid| match &self.doc.feature(uid)?.def {
+                FeatureDef::SplitBody(def) => Some(def.bodies.clone()),
+                _ => None,
+            })
+            .flatten()
+            .collect()
+    }
+
+    /// The replay's bodies a dressup edge may be on: the live bodies the
+    /// item that made the edge's body made (`_f3d.producer`). Empty when
+    /// the decoder gives no producer or the replay holds none of its
+    /// bodies.
+    fn edge_bodies(&self, fp: &Fingerprint) -> Vec<BodyUid> {
+        let Some(producer) = fp.f3d.as_ref().and_then(|f| f.producer) else {
+            return Vec::new();
+        };
+        let (made, _) = self.made_by(producer);
+        made.into_iter()
+            .filter(|b| self.doc.body_shape(*b).is_some())
+            .collect()
+    }
+
+    /// A fillet's or chamfer's edge given by its fingerprint among the
+    /// replay's edges ([`refs::dressup_edge_match`]), on the bodies of the
+    /// item that made the edge's body first: bodies that touch have edges
+    /// in the same place, and the file's edge is on one of them. Where
+    /// those bodies do not hold it, among the edges of all bodies.
+    pub(crate) fn match_dressup_edge(
+        &self,
+        replay: &refs::ReplayEdges,
+        fp: &Fingerprint,
+    ) -> Result<Vec<refs::FoundEdge>, refs::DressupEdgeFailure> {
+        let bodies = self.edge_bodies(fp);
+        if !bodies.is_empty()
+            && let Ok(found) = refs::dressup_edge_match(&replay.only(&bodies), fp)
+        {
+            return Ok(found);
+        }
+        refs::dressup_edge_match(replay, fp)
     }
 
     /// A body input among the replay's bodies: by the item that made it
@@ -151,6 +234,43 @@ impl<K: Kernel> Importer<'_, K> {
             }
         }
         Some(out)
+    }
+
+    /// The bodies a join consumed that the history's state still holds: the
+    /// ASM history keeps every body a join merged into another as it was
+    /// (the same stored body as in the state before, unchanged), though the
+    /// design no longer has it, as for a combine's tools. Of the state
+    /// `states.after`, the signatures without the bodies that are the
+    /// state before's own, unchanged, and that no body of the candidate's
+    /// result `current` is (the candidate merged them), with their stored
+    /// ids; None when there are none. The caller checks that the rest is
+    /// the candidate's result before it retires them
+    /// ([`crate::history::Oracle::retire`]).
+    pub(crate) fn merged_by_join(
+        &mut self,
+        states: crate::geometric::States,
+        current: &[Sig],
+    ) -> Option<(Vec<Sig>, Vec<u64>)> {
+        if !self.oracle.enabled {
+            return None;
+        }
+        let before = states.before?;
+        let kernel = self.doc.kernel();
+        let earlier: Vec<(u64, Sig)> = self
+            .oracle
+            .state(kernel, before)
+            .ok()?
+            .iter()
+            .filter_map(|(b, s)| Some((b.id?, *s)))
+            .collect();
+        let later: Vec<(Option<u64>, Sig)> = self
+            .oracle
+            .state(kernel, states.after)
+            .ok()?
+            .iter()
+            .map(|(b, s)| (b.id, *s))
+            .collect();
+        crate::history::without_merged(&earlier, &later, current)
     }
 
     /// A combine whose tools the file says it consumed

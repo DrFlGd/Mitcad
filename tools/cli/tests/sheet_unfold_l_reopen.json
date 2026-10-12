@@ -1,0 +1,18 @@
+[
+  {"comment":"SPDX-License-Identifier: MIT. Reopened Unfold/Refold history and Flat Pattern settings recompute the same configurations (mitcad#208)."},
+  {"expect":{"feature":"F5","status":"ok"}},
+  {"expect":{"feature":"F7","status":"ok"}},
+  {"expect":{"feature":"F8","status":"ok","bodies":1,"body":"F3.b0","volume":2051.3274122871835,"min":[-30,0,-2],"max":[5,20,18]}},
+  {"expect":{"query":{"query":"flat_pattern","body":"F3.b0"},"result":{"status":"valid","stationary":{"feature":"F3","slot":0},"area":1013.0973355292326,"volume":2026.1946710584651,"bounds":{"min":[-30,0],"max":[20.654866776461628,20]}}}},
+  {"cmd":"set_marker","position":7},
+  {"expect":{"body":"F3.b0","volume":2026.1946710584651,"min":[3,0,-32.65486677646163],"max":[5,20,18]}},
+  {"expect":{"query":{"query":"flat_pattern","body":"F3.b0"},"result":{"status":"valid","area":1013.0973355292326,"bounds":{"min":[-30,0],"max":[20.654866776461628,20]}}}},
+  {"cmd":"undo"},
+  {"cmd":"edit_feature","uid":"F7","def":{"type":"sheet_unfold","body":"F3.b0","stationary":{"feature":"F3","slot":0},"bends":[{"feature":"F4","slot":0}]}},
+  {"expect":{"feature":"F8","status":"ok","body":"F3.b0","volume":2051.3274122871835,"min":[-30,0,-2],"max":[5,20,18]}},
+  {"cmd":"set_marker","position":7},
+  {"expect":{"body":"F3.b0","volume":2026.1946710584651,"min":[-30,0,-2],"max":[20.654866776461628,20,0]}},
+  {"cmd":"undo"},
+  {"cmd":"undo"},
+  {"expect":{"feature":"F8","status":"ok","body":"F3.b0","volume":2051.3274122871835,"min":[-30,0,-2],"max":[5,20,18]}}
+]

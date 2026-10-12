@@ -1,0 +1,6 @@
+[
+  {"comment":"SPDX-License-Identifier: MIT. The saved Flat Pattern exports the same drawing after reopening (mitcad#210)."},
+  {"expect":{"query":{"query":"flat_pattern","body":"F3.b0"},"result":{"status":"valid","area":1000.5309649148734}}},
+  {"cmd":"export_flat_pattern_dxf","body":"F3.b0","path":"sheet_flat_reopen.dxf"},
+  {"expect":{"query":{"query":"dxf_info","path":"sheet_flat_reopen.dxf"},"result":{"unit":"mm","entities":6,"bounds":{"min":[-30,0],"max":[20.654866776461628,20]}}}}
+]

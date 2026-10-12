@@ -16,8 +16,10 @@ use crate::analysis::{
 };
 use crate::datum::{Datum, DatumPlane, OriginDatum, Vec3};
 use crate::document::{BodyView, Document};
+use crate::features::OccurrencePath;
 use crate::features::geom_ref::GeomRef;
-use crate::ids::{BodyUid, FeatureUid};
+use crate::ids::{BodyUid, ComponentUid, FeatureUid};
+use crate::joints::path_component;
 use crate::kernel::{Kernel, KernelError};
 use crate::topo::{EdgeName, FaceName, TopoName, VertexName};
 
@@ -131,6 +133,10 @@ pub(super) struct SectionQuery {
     plane: GeomRef,
     #[serde(default)]
     bodies: Vec<BodyUid>,
+    /// Section each visible occurrence in design coordinates, as displayed.
+    /// Omission retains the original local body query contract.
+    #[serde(default)]
+    world: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -172,12 +178,22 @@ enum ShapeRequest {
         plane: GeomRef,
         body: BodyUid,
         #[serde(default)]
+        occurrence: Option<OccurrencePath>,
+        #[serde(default)]
         curves: bool,
     },
     /// A body without the half-space on the plane's normal side.
-    Clip { plane: GeomRef, body: BodyUid },
+    Clip {
+        plane: GeomRef,
+        body: BodyUid,
+        #[serde(default)]
+        occurrence: Option<OccurrencePath>,
+    },
     /// The overlap of two bodies.
     Interference { a: BodyUid, b: BodyUid },
+    /// The developed solid of a body's valid Flat Pattern (mitcad#210), in
+    /// the body's coordinates; none for an invalid one.
+    FlatPattern { body: BodyUid },
 }
 
 fn datum_size() -> f64 {
@@ -546,7 +562,68 @@ impl<K: Kernel> Document<K> {
         self.resolve_plane(input).map_err(ApiError)
     }
 
+    /// An occurrence-aware display request receives a design-space plane
+    /// and returns a local shape, ready for the caller's usual placement.
+    fn analysis_body_plane(
+        &self,
+        input: &GeomRef,
+        body: BodyUid,
+        occurrence: Option<&OccurrencePath>,
+    ) -> Result<DatumPlane, ApiError> {
+        let Some(path) = occurrence else {
+            return self.plane_of(input);
+        };
+        let owner =
+            path_component(self.assembly(), ComponentUid::ROOT, &path.0).map_err(ApiError)?;
+        if self.body_component(body) != Some(owner) {
+            return Err(ApiError(format!(
+                "occurrence {path} does not own body {body}"
+            )));
+        }
+        let plane = self.analysis_plane(input, None).map_err(ApiError)?;
+        let inverse = crate::assembly::inverse(&self.path_transform(&path.0));
+        Ok(DatumPlane {
+            origin: inverse.apply_point(plane.origin),
+            x_axis: inverse.apply_vector(plane.x_axis),
+            y_axis: inverse.apply_vector(plane.y_axis),
+        })
+    }
+
     pub(super) fn section_json(&self, query: &SectionQuery) -> Result<Value, ApiError> {
+        if query.world {
+            // Validate explicit body filters even when no occurrence is visible.
+            for body in &query.bodies {
+                self.require_body(*body)?;
+            }
+            let plane = self.analysis_plane(&query.plane, None).map_err(ApiError)?;
+            let fixed = GeomRef::FixedPlane {
+                origin: plane.origin,
+                normal: plane.normal(),
+                x_axis: Some(plane.x_axis),
+            };
+            let (mut length, mut area) = (0.0, 0.0);
+            let mut bodies = Vec::new();
+            for instance in self.instances().into_iter().filter(|i| {
+                i.visible && (query.bodies.is_empty() || query.bodies.contains(&i.body))
+            }) {
+                let occurrence = OccurrencePath(instance.path);
+                let local = self.analysis_body_plane(&fixed, instance.body, Some(&occurrence))?;
+                let section = self
+                    .kernel()
+                    .section(self.require_body(instance.body)?, &local)
+                    .map_err(kernel_error(&instance.name))?;
+                length += section.length;
+                area += section.area;
+                bodies.push(json!({"uid": instance.body, "name": instance.name,
+                    "occurrence": occurrence, "component": instance.component,
+                    "edges": section.edge_count, "faces": section.face_count,
+                    "length": section.length, "area": section.area}));
+            }
+            return Ok(
+                json!({"plane": {"origin": plane.origin, "normal": plane.normal()},
+                "bodies": bodies, "length": length, "area": area}),
+            );
+        }
         let plane = self.plane_of(&query.plane)?;
         let mut bodies = Vec::new();
         let (mut length, mut area) = (0.0, 0.0);
@@ -782,9 +859,10 @@ impl<K: Kernel> Document<K> {
             ShapeRequest::Section {
                 plane,
                 body,
+                occurrence,
                 curves,
             } => {
-                let plane = self.plane_of(&plane)?;
+                let plane = self.analysis_body_plane(&plane, body, occurrence.as_ref())?;
                 let section = kernel
                     .section(self.require_body(body)?, &plane)
                     .map_err(kernel_error("section"))?;
@@ -799,8 +877,12 @@ impl<K: Kernel> Document<K> {
                     section.faces
                 }))
             }
-            ShapeRequest::Clip { plane, body } => {
-                let plane = self.plane_of(&plane)?;
+            ShapeRequest::Clip {
+                plane,
+                body,
+                occurrence,
+            } => {
+                let plane = self.analysis_body_plane(&plane, body, occurrence.as_ref())?;
                 kernel
                     .clip(self.require_body(body)?, &plane)
                     .map(Some)
@@ -813,6 +895,7 @@ impl<K: Kernel> Document<K> {
                     .map_err(kernel_error("interference"))?;
                 Ok(found.into_iter().next().map(|i| i.shape))
             }
+            ShapeRequest::FlatPattern { body } => Ok(self.flat_pattern_shape(body)),
         }
     }
 }
@@ -876,9 +959,11 @@ fn measurement_text(text: &mut String, label: &str, m: &Value) {
         parts.push(format!("at {}", point(vec3(&m["point"]))));
     }
     if let Some(circle) = m.get("circle") {
+        // The diameter (mitcad#194) from the radius before rounding.
+        let radius = circle["radius"].as_f64().unwrap_or(0.0);
         parts.push(format!(
-            "radius {:.6} mm, centre {}",
-            circle["radius"].as_f64().unwrap_or(0.0),
+            "radius {radius:.6} mm, diameter {:.6} mm, centre {}",
+            2.0 * radius,
             point(vec3(&circle["center"]))
         ));
     }

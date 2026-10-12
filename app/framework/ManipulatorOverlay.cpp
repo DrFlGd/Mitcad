@@ -97,7 +97,7 @@ ManipulatorOverlay::Drawn ManipulatorOverlay::draw(const Handle& handle) const {
   if (!std::isfinite(handle.value)) {
     return drawn;
   }
-  if (m.kind == Manipulator::Kind::Toggle) {
+  if (m.kind == Manipulator::Kind::Toggle || m.kind == Manipulator::Kind::Marker) {
     drawn.origin = m_viewer.toWidgetF(m.origin);
     drawn.handle = drawn.origin;
     drawn.tip = drawn.origin;
@@ -137,6 +137,9 @@ int ManipulatorOverlay::handleAt(const QPointF& position) const {
   int best = -1;
   double nearest = kGrabPixels;
   for (std::size_t i = 0; i < m_handles.size(); ++i) {
+    if (m_handles[i].manipulator.kind == Manipulator::Kind::Marker) {
+      continue; // annotations never intercept point selection or dragging
+    }
     const Drawn drawn = draw(m_handles[i]);
     if (!drawn.valid) {
       continue;
@@ -368,7 +371,21 @@ void ManipulatorOverlay::paintEvent(QPaintEvent*) {
     }
     const bool active = static_cast<int>(i) == m_drag || static_cast<int>(i) == m_hover;
     const QColor color = active ? kActiveColor : kHandleColor;
-    if (m_handles[i].manipulator.kind == Manipulator::Kind::Toggle) {
+    if (m_handles[i].manipulator.kind == Manipulator::Kind::Marker) {
+      const QPointF at = drawn.handle;
+      painter.setPen(QPen(QColor(0x2b, 0x3a, 0x4a), 2.0));
+      painter.setBrush(QColor(0xff, 0xd1, 0x80));
+      painter.drawEllipse(at, 7.0, 7.0);
+      painter.drawLine(at + QPointF(-11, 0), at + QPointF(11, 0));
+      painter.drawLine(at + QPointF(0, -11), at + QPointF(0, 11));
+      const QRectF label = painter.fontMetrics().boundingRect(m_handles[i].label).adjusted(-5, -3, 5, 3);
+      const QRectF box(at + QPointF(15, -label.height() / 2), label.size());
+      painter.setPen(Qt::NoPen);
+      painter.setBrush(QColor(0xff, 0xf7, 0xe8, 235));
+      painter.drawRoundedRect(box, 3, 3);
+      painter.setPen(QColor(0x2b, 0x3a, 0x4a));
+      painter.drawText(box, Qt::AlignCenter, m_handles[i].label);
+    } else if (m_handles[i].manipulator.kind == Manipulator::Kind::Toggle) {
       // A pattern's instance (P9): filled while it is made, hollow when
       // suppressed.
       painter.setPen(QPen(active ? kActiveColor : QColor(0x2b, 0x3a, 0x4a), 1.5));
@@ -420,6 +437,12 @@ void ManipulatorOverlay::logPlaces() {
                              ? (drawn.handle + drawn.tip) / 2.0
                              : drawn.handle;
     const QPoint at = mapTo(window(), grab.toPoint());
+    if (handle.manipulator.kind == Manipulator::Kind::Marker) {
+      const gp_Pnt& point = handle.manipulator.origin;
+      lines << QStringLiteral("Preview marker %1 %2 world %3,%4,%5 at %6,%7")
+                   .arg(m_command, handle.label).arg(point.X()).arg(point.Y()).arg(point.Z()).arg(at.x()).arg(at.y());
+      continue;
+    }
     const QString key = handle.manipulator.kind == Manipulator::Kind::Toggle
                             ? QStringLiteral("%1.%2%3")
                                   .arg(handle.key)

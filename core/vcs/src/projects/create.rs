@@ -16,7 +16,9 @@ use std::path::{Path, PathBuf};
 
 use mitcad_model::Project;
 use mitcad_model::file::PROJECT_MARKER;
-use mitcad_model::file::settings::{SharedSettings, write_shared};
+use mitcad_model::file::settings::{
+    LOCAL_LIVE, LOCAL_NAME, LOCAL_SYNC, LocalSettings, SharedSettings, write_local, write_shared,
+};
 use serde::Serialize;
 
 use super::inspect::{ProjectRemote, remotes_of, valid_relative};
@@ -48,6 +50,8 @@ pub struct CreateOptions {
     /// The shared settings (edit locks, live updates) the first version's
     /// marker holds; None: the defaults (none written).
     pub shared: Option<SharedSettings>,
+    /// This computer's settings, kept outside version history.
+    pub local: Option<LocalSettings>,
 }
 
 /// A project made ([`create_project`]).
@@ -154,6 +158,7 @@ struct Before {
     /// Files Mitcad writes or extends, with what they held.
     files: Vec<(PathBuf, Option<Vec<u8>>)>,
     mitcad: bool,
+    local: bool,
     git: bool,
     /// The first design, when Mitcad wrote it.
     design: Option<PathBuf>,
@@ -162,6 +167,9 @@ struct Before {
 impl Before {
     fn take(dir: &Path) -> Self {
         let mut files: Vec<PathBuf> = vec![dir.join(".gitattributes"), dir.join(".gitignore")];
+        // Settings may predate the project marker. Preserve them if creating
+        // the project fails or is cancelled before the first version.
+        files.extend([LOCAL_LIVE, LOCAL_SYNC, LOCAL_NAME].map(|name| dir.join(name)));
         let git = dir.join(".git").exists();
         if git {
             files.push(dir.join(".git").join("config"));
@@ -177,6 +185,7 @@ impl Before {
                 })
                 .collect(),
             mitcad: dir.join(".mitcad").exists(),
+            local: dir.join(".mitcad/local").exists(),
             git,
             design: None,
         }
@@ -196,10 +205,17 @@ impl Before {
         } else {
             remove_clone(&self.dir.join(".mitcad"), false);
         }
+        if self.mitcad && !self.local {
+            remove_clone(&self.dir.join(".mitcad/local"), false);
+        }
         if !self.git {
             remove_clone(&self.dir.join(".git"), false);
         }
         for (path, content) in &self.files {
+            if path.starts_with(self.dir.join(".mitcad")) && content.is_none() {
+                let _ = fs::remove_file(path);
+                continue;
+            }
             if !self.git && path.starts_with(self.dir.join(".git")) {
                 continue;
             }
@@ -253,6 +269,9 @@ fn make_project(
     if let Some(shared) = &options.shared {
         let marker = repo.root().join(PROJECT_MARKER);
         write_shared(repo.root(), shared).map_err(|e| io_error("write", &marker, e))?;
+    }
+    if let Some(local) = &options.local {
+        write_local(repo.root(), local).map_err(|e| io_error("write", repo.root(), e))?;
     }
     let mut files: Vec<PathBuf> = [PROJECT_MARKER, ".gitattributes", ".gitignore"]
         .iter()

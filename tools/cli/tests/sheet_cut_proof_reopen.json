@@ -1,0 +1,8 @@
+[
+  {"comment":"SPDX-License-Identifier: MIT. The reopened cross-bend cut history recomputes the same folded and developed masks (mitcad#208)."},
+  {"expect":{"feature":"F9","status":"ok","body":"F3.b0","volume":1948.9557368467721,"min":[-30,0,-2],"max":[20.654866776461628,20,0]}},
+  {"cmd":"set_marker","position":8},
+  {"expect":{"body":"F3.b0","volume":1969.0619298297468,"min":[-30,0,-2],"max":[5,20,18]}},
+  {"cmd":"undo"},
+  {"expect":{"query":{"query":"flat_pattern","body":"F3.b0"},"result":{"status":"valid","area":974.4778684233861,"regions":[{"loops":[{},{}]}]}}}
+]

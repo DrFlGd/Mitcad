@@ -5,6 +5,7 @@
 #include <utility>
 
 #include <QButtonGroup>
+#include <QCheckBox>
 #include <QComboBox>
 #include <QCoreApplication>
 #include <QDateTime>
@@ -25,6 +26,7 @@
 #include <QProgressBar>
 #include <QPushButton>
 #include <QRadioButton>
+#include <QScrollArea>
 #include <QTimer>
 #include <QVBoxLayout>
 #include <QtLogging>
@@ -35,6 +37,7 @@
 #include "../framework/TestSync.hpp"
 #include "../framework/Theme.hpp"
 #include "CloudSection.hpp"
+#include "ProjectSettingsFields.hpp"
 #include "Projects.hpp"
 #include "RemoteTask.hpp"
 #include "mitcad_bridge/lib.h"
@@ -336,7 +339,7 @@ private:
   QLabel* m_authorNote = nullptr;
   QGroupBox* m_cloudBox = nullptr;
   CloudSection* m_section = nullptr;
-  QComboBox* m_live = nullptr;
+  ProjectSettingsFields* m_fields = nullptr;
   QLabel* m_folderNote = nullptr;
   QLabel* m_problem = nullptr;
   ProgressRow* m_progress = nullptr;
@@ -352,7 +355,16 @@ private:
 NewProjectDialog::NewProjectDialog(QWidget* parent, const NewProjectOptions& options)
     : QDialog(parent) {
   setWindowTitle(options.title.isEmpty() ? tr("New Project") : options.title);
-  auto* layout = new QVBoxLayout(this);
+  auto* outer = new QVBoxLayout(this);
+  auto* scroll = new QScrollArea;
+  scroll->setWidgetResizable(true);
+  scroll->setFrameShape(QFrame::NoFrame);
+  scroll->setMinimumSize(620, 400);
+  scroll->setMaximumHeight(620);
+  auto* contents = new QWidget;
+  auto* layout = new QVBoxLayout(contents);
+  scroll->setWidget(contents);
+  outer->addWidget(scroll);
   layout->addWidget(note(tr("A project is a folder whose designs keep their versions: Local on this computer, or "
                             "Cloud in a git repository that others share.")));
   auto* form = new QFormLayout;
@@ -373,6 +385,8 @@ NewProjectDialog::NewProjectDialog(QWidget* parent, const NewProjectOptions& opt
   }
   m_local = new QRadioButton(tr("&Local – versions on this computer"));
   m_cloudChoice = new QRadioButton(tr("Cl&oud (git) – versions also in a git repository, shared"));
+  m_local->setObjectName(QStringLiteral("projectStorageLocal"));
+  m_cloudChoice->setObjectName(QStringLiteral("projectStorageCloud"));
   auto* storage = new QButtonGroup(this);
   storage->addButton(m_local);
   storage->addButton(m_cloudChoice);
@@ -380,40 +394,20 @@ NewProjectDialog::NewProjectDialog(QWidget* parent, const NewProjectOptions& opt
   storageColumn->addWidget(m_local);
   storageColumn->addWidget(m_cloudChoice);
   form->addRow(tr("Storage:"), storageColumn);
-  m_name = new QLineEdit;
-  m_name->setObjectName(QStringLiteral("projectAuthorName"));
-  m_name->setPlaceholderText(tr("Your Name"));
-  m_email = new QLineEdit;
-  m_email->setObjectName(QStringLiteral("projectAuthorEmail"));
-  m_email->setPlaceholderText(tr("you@example.com"));
-  auto* authorRow = new QHBoxLayout;
-  authorRow->addWidget(m_name, 1);
-  authorRow->addWidget(m_email, 1);
-  auto* authorLabel = new QLabel(tr("Au&thor:"));
-  authorLabel->setBuddy(m_name);
-  form->addRow(authorLabel, authorRow);
   layout->addLayout(form);
-  m_authorNote = note(tr("With Cloud, the name and email go into every version: anyone who can read the repository "
-                         "sees them."));
-  setWarningStyleSheet(m_authorNote);
-  layout->addWidget(m_authorNote);
   m_cloudBox = new QGroupBox(tr("Cloud"));
   auto* cloudColumn = new QVBoxLayout(m_cloudBox);
   m_section = new CloudSection(checkRemote, describeForNewProject);
   cloudColumn->addWidget(m_section);
-  auto* liveRow = new QFormLayout;
-  m_live = new QComboBox;
-  m_live->addItem(tr("None"), QString());
-  const RemoteSettings remote = RemoteSettings::load();
-  if (remote.allowLive && !remote.defaultBroker.isEmpty()) {
-    m_live->addItem(remote.defaultBroker, remote.defaultBroker);
-    m_live->setCurrentIndex(1);
-  }
-  m_live->setToolTip(tr("Edit locks and new versions reach the others at once through an MQTT broker; without "
-                        "one they are polled"));
-  liveRow->addRow(tr("Live upd&ates:"), m_live);
-  cloudColumn->addLayout(liveRow);
   layout->addWidget(m_cloudBox);
+  m_fields = new ProjectSettingsFields;
+  m_name = m_fields->m_name;
+  m_email = m_fields->m_email;
+  layout->addWidget(m_fields);
+  m_authorNote = note(tr("With Cloud, the name and email go into every version: anyone who can read the repository "
+                         "sees them."));
+  setWarningStyleSheet(m_authorNote);
+  layout->addWidget(m_authorNote);
   m_folderNote = note();
   layout->addWidget(m_folderNote);
   const GitState git = gitState();
@@ -425,9 +419,9 @@ NewProjectDialog::NewProjectDialog(QWidget* parent, const NewProjectOptions& opt
   m_section->setDefaultConnect(git.credentialHelper ? CloudConnect::Https : CloudConnect::Ssh);
   m_problem = note();
   setErrorStyleSheet(m_problem);
-  layout->addWidget(m_problem);
+  outer->addWidget(m_problem);
   m_progress = new ProgressRow;
-  layout->addWidget(m_progress);
+  outer->addWidget(m_progress);
   m_buttons = new QDialogButtonBox(QDialogButtonBox::Cancel);
   m_openInstead = m_buttons->addButton(tr("Open It &Instead"), QDialogButtonBox::ActionRole);
   m_localForNow = m_buttons->addButton(tr("Create as Local for &Now"), QDialogButtonBox::ActionRole);
@@ -437,7 +431,7 @@ NewProjectDialog::NewProjectDialog(QWidget* parent, const NewProjectOptions& opt
     button->hide();
   }
   m_buttons->button(QDialogButtonBox::Cancel)->setAutoDefault(false);
-  layout->addWidget(m_buttons);
+  outer->addWidget(m_buttons);
   // Enter creates, also while Create waits for a check (the button is the
   // dialog's default only once it is in the dialog).
   m_create->setDefault(true);
@@ -447,6 +441,7 @@ NewProjectDialog::NewProjectDialog(QWidget* parent, const NewProjectOptions& opt
   m_cloudChoice->setChecked(preset);
   m_local->setChecked(!preset);
   m_cloudBox->setVisible(preset);
+  m_fields->m_everyone->setVisible(preset);
   m_authorNote->setVisible(preset);
   fillAuthor(m_name, m_email);
   m_section->setFolderName(QFileInfo(folder()).fileName());
@@ -464,6 +459,7 @@ NewProjectDialog::NewProjectDialog(QWidget* parent, const NewProjectOptions& opt
   });
   connect(m_cloudChoice, &QRadioButton::toggled, this, [this](bool on) {
     m_cloudBox->setVisible(on);
+    m_fields->m_everyone->setVisible(on);
     m_authorNote->setVisible(on);
     qInfo().noquote() << QStringLiteral("New Project dialog: storage %1")
                              .arg(on ? QStringLiteral("cloud") : QStringLiteral("local"));
@@ -632,7 +628,7 @@ void NewProjectDialog::createClicked() {
 
 void NewProjectDialog::setBusy(bool busy) {
   for (QWidget* widget : std::initializer_list<QWidget*>{m_folder, m_browse, m_local, m_cloudChoice, m_name, m_email,
-                                                         m_section, m_live, m_create, m_openInstead,
+                                                         m_section, m_fields, m_create, m_openInstead,
                                                          m_localForNow}) {
     widget->setEnabled(!busy);
   }
@@ -648,19 +644,25 @@ void NewProjectDialog::create(bool asCloud) {
   QJsonObject command{{QStringLiteral("cmd"), QStringLiteral("create_project")},
                       {QStringLiteral("dir"), dir},
                       {QStringLiteral("author"), author},
-                      {QStringLiteral("include_designs"), true}};
+                      {QStringLiteral("include_designs"), true},
+                      {QStringLiteral("local"), m_fields->localChosen(true)}};
   // No first design (mitcad#145): the project starts empty, or with the
   // designs its folder has; New Design in the Projects panel adds one.
   const QString url = asCloud ? m_section->url() : QString();
   const bool bare = asCloud && m_section->needsBareRepository();
   if (asCloud) {
     command.insert(QStringLiteral("url"), url);
-    const QString broker = m_live->currentData().toString();
-    if (!broker.isEmpty()) {
-      // Live updates for everyone, in the first version's marker.
-      command.insert(QStringLiteral("shared"),
-                     QJsonObject{{QStringLiteral("live_updates"), QJsonObject{{QStringLiteral("broker"), broker}}}});
-    }
+    command.insert(QStringLiteral("shared"), m_fields->sharedChosen());
+    command.insert(QStringLiteral("push"), m_fields->m_sendAtOnce->isChecked());
+  }
+  // Validate through the core before even making a shared-folder remote:
+  // invalid broker/prefix or local settings must leave no repository behind.
+  QJsonObject validation = command;
+  validation.insert(QStringLiteral("cmd"), QStringLiteral("validate_create_project"));
+  const QJsonObject checked = projectsCommand(validation);
+  if (!errorClassOf(checked).isEmpty()) {
+    m_problem->setText(errorMessageOf(checked));
+    return;
   }
   m_section->stopCheck();
   m_problem->clear();
@@ -703,13 +705,18 @@ void NewProjectDialog::finished(RemoteTask* task, bool asCloud) {
     }
     result.url = asCloud ? m_section->url() : QString();
     result.answer = answer;
-    result.broker = asCloud ? m_live->currentData().toString() : QString();
+    const QString liveHere = m_fields->m_liveHere->currentData().toString();
+    if (asCloud && liveHere != QLatin1String("off")) {
+      result.broker = liveHere == QLatin1String("broker") ? m_fields->m_hereBroker->text().trimmed()
+                      : m_fields->m_liveBroker->isChecked() ? m_fields->m_broker->text().trimmed() : QString();
+    }
     m_result = result;
     const QString cls = errorClassOf(answer);
     qInfo().noquote() << QStringLiteral("New Project: created %1: version %2 on %3%4")
                              .arg(result.folder, answer.value(QStringLiteral("commit")).toString().left(7),
                                   answer.value(QStringLiteral("branch")).toString(),
-                                  cls.isEmpty() ? (asCloud ? QStringLiteral(", sent") : QString())
+                                  cls.isEmpty() ? (asCloud && m_fields->m_sendAtOnce->isChecked()
+                                                        ? QStringLiteral(", sent") : QString())
                                                 : QStringLiteral(", not sent (%1)").arg(cls));
     QDialog::accept();
     return;
@@ -717,13 +724,13 @@ void NewProjectDialog::finished(RemoteTask* task, bool asCloud) {
   setBusy(false);
   const QString cls = errorClassOf(answer);
   qInfo().noquote() << QStringLiteral("New Project failed (%1): %2").arg(cls, errorMessageOf(answer));
+  updateState();
   if (cls == QLatin1String("cancelled")) {
     m_problem->setText(tr("Cancelled: the folder is as it was."));
   } else {
     m_problem->setText(errorMessageOf(answer).isEmpty() ? tr("The project could not be made.")
                                                         : errorMessageOf(answer));
   }
-  updateState();
   if (asCloud && (cls == QLatin1String("network") || cls == QLatin1String("timed_out"))) {
     m_localForNow->show();
   }

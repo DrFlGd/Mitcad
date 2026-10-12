@@ -1,0 +1,134 @@
+# SPDX-License-Identifier: MIT
+# Solid Autoselect: actual AppKit tracking/clicks, shared selection, three
+# circle profiles handed to Extrude, and undo/timeline invalidation.
+expect-ever 'Native UI: AppKit shell with embedded OCCT viewport'
+expect-ever 'View area'
+sleep 800
+native-resize 1280 820
+expect-native-visible autoselectPanel false
+
+mark
+native-action solid.box
+expect-log 'Command Box started'
+click-logged 'Datum xy'
+native-type input_x '-30 mm'
+native-type input_y '-15 mm'
+native-type input_length '60 mm'
+native-type input_width '30 mm'
+native-type input_height '10 mm'
+native-click commandOk
+expect-log 'Added box \(New Body\)' 30
+expect-model-bodies 1 18000
+
+mark
+native-action sketch.create
+expect-log 'Create Sketch: select a plane'
+click-logged 'Datum xy'
+expect-log 'Sketch started on xy'
+expect-native-present autoselectPanel false
+
+mark
+native-action sketch.circle
+sketch-click -20 0
+native-type sketchField_diameter '10 mm'
+key Return
+expect-log 'Added circle, diameter 10 mm' 30
+key Escape
+mark
+native-action sketch.circle
+sketch-click 0 0
+native-type sketchField_diameter '10 mm'
+key Return
+expect-log 'Added circle, diameter 10 mm' 30
+key Escape
+mark
+native-action sketch.circle
+sketch-click 20 0
+native-type sketchField_diameter '10 mm'
+key Return
+expect-log 'Added circle, diameter 10 mm' 30
+key Escape
+native-click native.ribbon.sketch.finish
+expect-log 'Sketch finished' 30
+expect-native-visible autoselectPanel true
+expect-native-text autoselect_drawn '^Drawings \(3\)$'
+expect-native-text autoselect_all '^All profiles \(3\)$'
+expect-native-visible autoselect_projected false
+expect-native-visible autoselect_hybrid false
+native-click autoselect_clear
+expect-selection 0 0
+native-action view.bottom
+native-action view.fit
+
+# The registered AppKit hover owner must forward enter/leave to the
+# presenter without changing the actual selection; capture the preview.
+mark
+native-hover autoselect_drawn enter
+expect-log 'Autoselect preview: 3 profiles'
+expect-selection 0 0
+screenshot '${MITCAD_TEST_WORK}/native-macos-autoselect-hover.png'
+native-click autoselect_drawn
+expect-selection 3 3
+native-hover autoselect_drawn leave
+expect-log 'Autoselect preview: nothing'
+expect-selection 3 3
+native-click autoselect_drawn
+expect-selection 0 0
+
+# A body selected through the real browser remains selected through both
+# group toggles, while Clear selection removes it too.
+native-expand native.modelTree
+native-select native.model.body:F1.b0@
+expect-selection 1 0
+native-click autoselect_drawn
+expect-selection 4 3
+native-click autoselect_all
+expect-selection 1 0
+native-click autoselect_clear
+expect-selection 0 0
+native-click autoselect_drawn
+expect-selection 3 3
+screenshot '${MITCAD_TEST_WORK}/native-macos-autoselect-selected.png'
+native-action view.iso
+
+mark
+native-action solid.extrude
+expect-log 'Command Extrude started'
+expect-native-text input_profiles '^3 selected$'
+expect-native-present autoselectPanel false
+native-type input_distance '10 mm'
+native-choice input_operation Cut
+expect-native-enabled commandOk true
+native-click commandOk
+expect-log 'Added extrude \(Cut\), distance 10' 30
+expect-model-bodies 1 15643.8055098077
+expect-native-visible autoselectPanel false
+screenshot '${MITCAD_TEST_WORK}/native-macos-autoselect-cut.png'
+
+# Undo restores eligibility and counts; redo consumes the sketch again.
+native-action edit.undo
+expect-model-bodies 1 18000
+expect-native-text autoselect_drawn '^Drawings \(3\)$'
+expect-native-visible autoselectPanel true
+native-action edit.redo
+expect-model-bodies 1 15643.8055098077
+expect-native-visible autoselectPanel false
+native-action edit.undo
+expect-model-bodies 1 18000
+native-click autoselect_drawn
+expect-selection 3 3
+
+# Moving before the sketch invalidates its exact region selection. Moving
+# back to the end offers current groups without resurrecting old picks.
+menu 'View/Show History'
+native-click native.history.back
+expect-native-visible autoselectPanel false
+expect-selection 0 0
+native-click native.history.end
+expect-native-visible autoselectPanel true
+expect-native-text autoselect_drawn '^Drawings \(3\)$'
+expect-selection 0 0
+expect-file '${MITCAD_TEST_WORK}/native-macos-autoselect-hover.png'
+expect-file '${MITCAD_TEST_WORK}/native-macos-autoselect-selected.png'
+expect-file '${MITCAD_TEST_WORK}/native-macos-autoselect-cut.png'
+expect-never 'The document was read while a job computes it|Native Mac canvas:|OCCT view event failed|TestDriver: FAIL'

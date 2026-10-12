@@ -1,0 +1,9 @@
+[
+  {"comment":"SPDX-License-Identifier: MIT. The reopened corner relief and the cut across a bend relief recompute the same folded, developed and flat results (mitcad#209)."},
+  {"expect":{"feature":"F6","status":"ok","body":"F3.b0"}},
+  {"expect":{"feature":"F10","status":"ok","bodies":1,"body":"F3.b0","volume":1808.04311705843}},
+  {"cmd":"set_marker","position":9},
+  {"expect":{"body":"F3.b0","volume":1799.2743157957}},
+  {"cmd":"undo"},
+  {"expect":{"query":{"query":"flat_pattern","body":"F3.b0"},"result":{"status":"valid","area":1799.2743157957}}}
+]

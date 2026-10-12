@@ -34,6 +34,10 @@ pub mod components;
 pub mod geom;
 pub mod history;
 pub mod params;
+// Components of other documents filled from their files (mitcad#196).
+pub mod references;
+// Where the files of the documents a design refers to are (mitcad#196).
+pub mod reference_folder;
 pub mod report;
 pub mod sketch;
 // FreeCAD documents (.FCStd): bodies and structure.
@@ -48,6 +52,7 @@ mod sweeps;
 mod joints;
 // Captured positions (mitcad#75).
 mod captures;
+pub use captures::InsidePosition;
 // The material a history state removed (mitcad#85).
 mod removed;
 // The learning dump of settled items (mitcad#96).
@@ -58,12 +63,19 @@ mod profiles;
 mod producers;
 // Assembly relationships as constraint sets (mitcad#155).
 mod relationships;
+// Linked sketch curves on the edges they project.
+mod snap;
+// Bodies the file removed from the design.
+mod removal;
+// Bodies the file cut and pasted into other components.
+mod pasting;
 
 use std::cell::Cell;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};
 
+use mitcad_f3d::design::decode::ItemState;
 use mitcad_f3d::design::ir::{Detail, Dump, TimelineItem};
 use mitcad_model::assembly::inverse;
 use mitcad_model::features::{FeatureDef, ValueInput};
@@ -75,8 +87,8 @@ use serde_json::Value;
 
 pub use history::{NoGeometry, Oracle, SheetSig, Sig, StoredBody, StoredGeometry};
 pub use report::{
-    BodyReport, ComponentReport, DesignReport, ImportReport, ItemReport, JointReport,
-    LightBulbReport, LowMemoryReport, Outcome, StopReport,
+    BodyReport, ComponentReport, DesignReport, ImportReport, InputProvenance, ItemReport,
+    JointReport, LightBulbReport, LowMemoryReport, Outcome, ReferenceReport, StopReport,
 };
 
 use params::ParamMap;
@@ -501,6 +513,9 @@ pub(crate) struct Candidate {
     pub note: Option<String>,
     /// A guess only the history can confirm: not used without one.
     pub guess: bool,
+    /// Design-input provenance for reporting only. `guess` controls
+    /// replay policy and may also describe a geometry representation.
+    pub input_provenance: InputProvenance,
     /// The volume it should add (negative: remove), mm³, when it can be
     /// estimated without the kernel; guesses closest to the history's next
     /// states are tried first.
@@ -518,6 +533,7 @@ impl Candidate {
             defs: vec![def],
             note: None,
             guess: false,
+            input_provenance: InputProvenance::Unknown,
             predicted: None,
             first: false,
         }
@@ -628,6 +644,15 @@ pub(crate) struct Importer<'a, K: Kernel> {
     /// Set while [`Importer::try_state`] translates a fillet or chamfer:
     /// its edge guesses come one history state at a time.
     guesses: Option<Guesses>,
+    /// Set while a combine is tried on bodies that carry an earlier item's
+    /// approximation (mitcad#181): only its decoded definitions there, its
+    /// guesses on the state before it exactly ([`Importer::verified_at`]).
+    defer_guesses: bool,
+    /// The base features that brought the bodies to the state before an
+    /// item from its start (`StoredGeometry::item_start`): the operations
+    /// no item names right before its own, made by it (a split's first
+    /// piece), by item index ([`Importer::made_by`]).
+    start_bases: HashMap<i64, FeatureUid>,
     /// When the time of the item being replayed (or of the part of it
     /// being tried) is over: the definitions being tried stop there, also
     /// inside the kernel's long operations ([`Importer::interruptible`],
@@ -651,6 +676,9 @@ pub(crate) struct Importer<'a, K: Kernel> {
     dressups: HashMap<i64, Vec<FeatureUid>>,
     /// What the timeline's notes of the import are made of (mitcad#170).
     notes: timeline_notes::Notes,
+    /// The items suppressed in the file in a row, built until the next
+    /// item that is not (mitcad#180).
+    suppressed: suppressed::Run,
 }
 
 /// Where the edge guesses of a fillet or chamfer go on from, when they come
@@ -659,9 +687,15 @@ pub(crate) struct Importer<'a, K: Kernel> {
 /// the edges found by their names) usually gives it, so the next states'
 /// are found only when the definitions before gave no state. The
 /// definitions come in the same order as all at once.
+///
+/// An extrusion's definitions come the same way (mitcad#181): those of the
+/// profiles as decoded first, the others (the sets of regions the history
+/// suggests, which probing the next states finds, seconds on large bodies)
+/// only when those gave no state.
 #[derive(Debug, Default)]
 pub(crate) struct Guesses {
-    /// The edges found by their names were tried (they come first).
+    /// The edges found by their names were tried (they come first); for
+    /// an extrusion, the definitions of its decoded profiles.
     pub named: bool,
     /// How many of the next history states were looked at.
     pub states: usize,
@@ -671,6 +705,12 @@ pub(crate) struct Guesses {
     pub seen: BTreeSet<Vec<String>>,
     /// Definitions were given already.
     pub given: bool,
+    /// The item's own history state (mitcad#181): once the edges it lost
+    /// were found, the later states' guesses are not looked for (an edge
+    /// the item's state did not lose is no edge of the item's).
+    pub own: Option<usize>,
+    /// The item's own state lost edges of the replay.
+    pub own_gone: bool,
 }
 
 /// Imports a design into the document (normally a new one). The report
@@ -727,6 +767,8 @@ pub fn import_design<K: ImportKernel>(
         trying: false,
         alternatives: HashMap::new(),
         guesses: None,
+        defer_guesses: false,
+        start_bases: HashMap::new(),
         deadline: None,
         captures: captures::Captures::default(),
         memory_released: 0,
@@ -735,6 +777,7 @@ pub fn import_design<K: ImportKernel>(
         learn: learn::store(options),
         dressups: HashMap::new(),
         notes: Default::default(),
+        suppressed: Default::default(),
     };
     if !options.verify {
         importer.oracle.enabled = false;
@@ -768,6 +811,11 @@ const LOW_MEMORY: &str = "the import ran low on memory";
 /// The note of a modelling item whose result the file does not keep
 /// (mitcad#96).
 const NO_RESULT: &str = "the file keeps no result for it (suppressed or failed in the file)";
+
+/// The note of a modelling item whose tail says its change is all in parts
+/// in other components when none of its parts was found (mitcad#180).
+const IN_PARTS: &str = "the file keeps no result for it in its own component (its change is in \
+                        other components), and none of its parts there was found";
 
 /// The note of an item whose definitions built, none to the file's result.
 const NOT_IN_HISTORY: &str = "its result is not in the file's history";
@@ -855,6 +903,10 @@ mod geometric;
 // The import's outcomes on the timeline (mitcad#170).
 mod timeline_notes;
 
+// Items suppressed in the file as suppressed features (mitcad#180).
+mod suppressed;
+pub use suppressed::SuppressedReport;
+
 fn item_name(item: &TimelineItem) -> String {
     item.name().unwrap_or("?").to_owned()
 }
@@ -909,6 +961,29 @@ fn bounded(c: &Candidate) -> bool {
 /// regions' areas come from sampled outlines: 5 % of slack.
 fn can_change(bound: f64, change: f64) -> bool {
     bound * change <= 0.0 || bound.abs() >= 0.95 * change.abs()
+}
+
+/// The candidates that can make a volume change of `change` mm³: without
+/// the extrusions whose prism holds less ([`bounded`], [`can_change`]). A
+/// join also takes in the bodies it touches, which the history's state
+/// still holds as they were (the ASM history keeps a body a join merged
+/// into another): `mergeable` mm³ of the bodies that state has unchanged
+/// may add to its prism.
+fn feasible(name: &str, mut c: Vec<Candidate>, change: f64, mergeable: f64) -> Vec<Candidate> {
+    let before = c.len();
+    let joins = |c: &Candidate| c.defs.last().is_some_and(|d| d["operation"] == "join");
+    c.retain(|c| {
+        !bounded(c)
+            || c.predicted
+                .is_some_and(|p| can_change(if joins(c) { p + mergeable } else { p }, change))
+    });
+    if c.len() < before {
+        trace!(
+            "{name}: {} of {before} extrusions cannot change the volume by {change:.3}",
+            before - c.len()
+        );
+    }
+    c
 }
 
 /// How many more definitions are tried for an extrusion whose result
@@ -1280,6 +1355,46 @@ fn symmetric_combine(c: &Candidate) -> Option<(String, BTreeSet<String>)> {
     Some((operation.to_owned(), bodies))
 }
 
+/// Whether a candidate cannot change the volume of the bodies: splits of
+/// bodies and faces and moves that do not copy. The file's change for
+/// such an item is rounding noise of its states, no measure of the item.
+fn preserves_volume(c: &Candidate) -> bool {
+    !c.defs.is_empty()
+        && c.defs.iter().all(|d| match d["type"].as_str() {
+            Some("split_body" | "split_face") => true,
+            Some("move") => d["copy"] != true,
+            _ => false,
+        })
+}
+
+/// The file's change for an item, for the candidate's check: none for one that
+/// cannot change the volume (a split or a move: the file's change for it is
+/// rounding noise of its states, no measure of the item).
+fn own_of(own: Option<history::Change>, c: &Candidate) -> Option<history::Change> {
+    own.filter(|_| !preserves_volume(c))
+}
+
+/// Whether a candidate joins its result to the bodies it touches.
+fn joins(c: &Candidate) -> bool {
+    c.defs
+        .iter()
+        .any(|d| d.get("operation").and_then(Value::as_str) == Some("join"))
+}
+
+/// A [`symmetric_combine`] that consumes its tools: whichever of its bodies
+/// is the target, the result is the same solid (mitcad#181), so once one
+/// such combine gave bodies the history rejects, the others are not built
+/// (each took 15 s on large bodies carrying an earlier approximation).
+fn same_result_combine(c: &Candidate) -> Option<(String, BTreeSet<String>)> {
+    let [def] = c.defs.as_slice() else {
+        return None;
+    };
+    if def["keep_tools"] == true {
+        return None;
+    }
+    symmetric_combine(c)
+}
+
 /// Every string in a JSON value.
 fn strings<'v>(value: &'v Value, out: &mut Vec<&'v str>) {
     match value {
@@ -1395,6 +1510,7 @@ impl<'a, K: ImportKernel> Importer<'a, K> {
             &mut self.report.warnings,
         );
         self.captures = captures::read(self.dump, &self.components, self.doc.assembly());
+        self.report.components.positions_inside = self.captures.inside.clone();
         let captures = &self.captures;
         components::assign_items(
             self.dump,
@@ -1424,6 +1540,8 @@ impl<'a, K: ImportKernel> Importer<'a, K> {
             self.oracle.cursor = self.oracle.find(self.doc.kernel(), 0, &[]);
         }
         let dump = self.dump;
+        // The items after the file's timeline marker.
+        self.suppressed.rolled_from = suppressed::rolled_from(dump.timeline_items());
         for (position, item) in dump.timeline_items().iter().enumerate() {
             // A try the watchdog gave up does nothing more (mitcad#71).
             if self.abandoned() {
@@ -1436,6 +1554,10 @@ impl<'a, K: ImportKernel> Importer<'a, K> {
             trace!("given up by the watchdog before the final bodies");
             return;
         }
+        // Items suppressed in the file at the end (mitcad#180), then the
+        // marker before the items rolled back in it.
+        self.close_suppressed_run();
+        self.close_rolled_back();
         self.finish();
     }
 
@@ -1598,6 +1720,7 @@ impl<'a, K: ImportKernel> Importer<'a, K> {
             outcome: Outcome::Skipped,
             features: Vec::new(),
             verified: None,
+            input_provenance: None,
             change_difference: None,
             geometric_check: None,
             note: None,
@@ -1624,8 +1747,23 @@ impl<'a, K: ImportKernel> Importer<'a, K> {
         if let Some(p) = &self.options.progress {
             p.at(index);
         }
-        if item.is_suppressed == Some(true) {
-            self.note(at, Outcome::Skipped, "suppressed in the file");
+        // Items suppressed in the file (mitcad#180): those in a row stay
+        // built until the next item that is not.
+        let state = item.file_state();
+        let suppressed = state == ItemState::Suppressed;
+        self.begin_rolled_back(position);
+        if suppressed {
+            self.begin_suppressed_run();
+        } else {
+            self.close_suppressed_run();
+        }
+        if suppressed
+            && matches!(
+                classify(object_type.as_deref()),
+                Class::NoGeometry | Class::Assembly
+            )
+        {
+            self.note(at, Outcome::Skipped, suppressed::SUPPRESSED);
             // A placeholder shows it on the timeline (mitcad#170).
             if classify(object_type.as_deref()) != Class::NoGeometry {
                 self.placeholder(at);
@@ -1638,23 +1776,37 @@ impl<'a, K: ImportKernel> Importer<'a, K> {
         // theirs (`Importer::within`).
         self.deadline = Some(started + seconds(self.options.item_seconds));
         let class = classify(object_type.as_deref());
-        // A modelling item the file keeps no result for (mitcad#96): its
-        // result number is -1 and a state flag is set (suppressed or
-        // failed in the file). It changed nothing there, and no state
-        // checks a definition of it. So with a state the history names but
-        // does not hold (an `.ipt` part's suppressed feature).
-        let flagged = item.f3d.as_ref().is_some_and(|f3d| {
-            f3d.result_no == Some(-1)
-                && f3d
-                    .flags
-                    .as_deref()
-                    .is_some_and(|f| f.chars().any(|c| c != '0'))
-        });
-        if class == Class::Geometry && (flagged || self.oracle.item_without_result(index)) {
+        if suppressed && class == Class::Geometry {
+            self.suppressed_item(at, index, item);
+            self.deadline = None;
+            return;
+        }
+        // A modelling item after the file's timeline marker:
+        // the file keeps no state for it, so its definition is taken
+        // unchecked, as a suppressed item's, and the marker goes before it
+        // at the end.
+        if class == Class::Geometry
+            && item.is_rolled_back == Some(true)
+            && self.suppressed.rolled_from.is_some()
+            && state != ItemState::InParts
+        {
+            self.rolled_back_item(at, index, item);
+            self.deadline = None;
+            return;
+        }
+        // A modelling item the file keeps no result for in its component
+        // (mitcad#96): its result number is -1 and its tail's third state
+        // byte is set. It changed nothing there, and no state checks a
+        // definition of it. So with a state the history names but does
+        // not hold (an `.ipt` part's suppressed feature).
+        let in_parts = state == ItemState::InParts;
+        if class == Class::Geometry && (in_parts || self.oracle.item_without_result(index)) {
             // An item whose change is all in other components' bodies has
             // no result of its own; its parts there have (mitcad#169).
             let parts = self.captures.parts_of(index);
-            let note = if parts.is_empty() {
+            let note = if parts.is_empty() && in_parts {
+                IN_PARTS.to_owned()
+            } else if parts.is_empty() {
                 NO_RESULT.to_owned()
             } else {
                 format!(
@@ -1677,6 +1829,15 @@ impl<'a, K: ImportKernel> Importer<'a, K> {
             return;
         }
         match class {
+            // (Suppressed in the file: suppressed with its run, mitcad#180.)
+            Class::Sketch | Class::Datum if suppressed => {
+                if class == Class::Sketch {
+                    self.sketch_item(at, index, item);
+                } else {
+                    self.datum_item(at, index, item);
+                }
+                self.suppressed_in_run(at);
+            }
             Class::Sketch => self.sketch_item(at, index, item),
             Class::Datum => self.datum_item(at, index, item),
             Class::Assembly => self.assembly_item(at, index, item),
@@ -1689,9 +1850,12 @@ impl<'a, K: ImportKernel> Importer<'a, K> {
                     .unwrap_or("no geometry"),
             ),
             Class::Geometry => {
-                // (A component made from bodies uses no sketch, and goes
-                // into the component of its bodies.)
-                let originals = if object_type.as_deref() == Some("ComponentFromBodies") {
+                // (A component made from bodies, a copy or cut of bodies
+                // and a removal use no sketch.)
+                let originals = if matches!(
+                    object_type.as_deref(),
+                    Some("ComponentFromBodies" | "CopyPasteBodies" | "RemoveFeature")
+                ) {
                     Vec::new()
                 } else {
                     self.sketches_into_component(at, index, item)
@@ -1738,6 +1902,9 @@ impl<'a, K: ImportKernel> Importer<'a, K> {
     fn note(&mut self, at: usize, outcome: Outcome, note: impl Into<String>) {
         let item = &mut self.report.items[at];
         item.outcome = outcome;
+        if matches!(outcome, Outcome::Fallback | Outcome::Skipped) {
+            item.input_provenance = None;
+        }
         let note = note.into();
         if !note.is_empty() {
             item.note = Some(note);
@@ -2079,10 +2246,14 @@ impl<'a, K: ImportKernel> Importer<'a, K> {
             // Moved by the placements at this item (mitcad#86): a copy made
             // for an item before a captured position does not do after it.
             let moved = self.doc.feature(info.uid).and_then(|f| {
-                let from = self.placement_at(f.component, index)?;
-                Some(inverse(&self.placement_at(self.component, index)?).after(&from))
+                let from = self.original_placement_at(f.component, index)?;
+                Some(inverse(&self.original_placement_at(self.component, index)?).after(&from))
             });
             let Some(moved) = moved else {
+                trace!(
+                    "sketch {i} not imported again into {}: where its component or this one is placed is not known",
+                    self.component
+                );
                 continue;
             };
             let made = self
@@ -2091,6 +2262,9 @@ impl<'a, K: ImportKernel> Importer<'a, K> {
                 .filter(|(t, _)| same_placement(t, &moved))
                 .map(|(_, copy)| copy.clone());
             let copy = made.or_else(|| self.copy_sketch(i, &info, &moved));
+            if copy.is_none() {
+                trace!("sketch {i} not imported again into {}", self.component);
+            }
             if let Some(copy) = copy {
                 self.report.items[at].features.push(copy.uid.to_string());
                 self.sketches.insert(i, copy);
@@ -2132,7 +2306,16 @@ impl<'a, K: ImportKernel> Importer<'a, K> {
                     .insert((i, self.component), (*moved, copy.clone()));
                 Some(copy)
             }
-            _ => {
+            (result, copy) => {
+                match (&result, &copy) {
+                    (Err(e), _) => trace!("sketch {i}: imported again, it failed: {e}"),
+                    (Ok(_), Some(c)) => trace!(
+                        "sketch {i}: imported again into {:?}, not into {}",
+                        self.doc.feature(c.uid).map(|f| f.component),
+                        self.component
+                    ),
+                    _ => {}
+                }
                 self.undo_to(depth);
                 None
             }
@@ -2145,6 +2328,20 @@ impl<'a, K: ImportKernel> Importer<'a, K> {
     /// (`captures.rs`, mitcad#86).
     pub(crate) fn placement_at(&self, component: ComponentUid, index: i64) -> Option<Transform> {
         components::placement(self.doc.assembly(), component, |o| {
+            self.captures
+                .placement_at(o.uid, index)
+                .unwrap_or(o.transform)
+        })
+    }
+
+    /// [`Importer::placement_at`]; a component placed several times (an
+    /// occurrence pattern) at its first occurrence.
+    pub(crate) fn original_placement_at(
+        &self,
+        component: ComponentUid,
+        index: i64,
+    ) -> Option<Transform> {
+        components::original_placement(self.doc.assembly(), component, |o| {
             self.captures
                 .placement_at(o.uid, index)
                 .unwrap_or(o.transform)
@@ -2164,10 +2361,15 @@ impl<'a, K: ImportKernel> Importer<'a, K> {
     fn datum_item(&mut self, at: usize, index: i64, item: &TimelineItem) {
         match self.translate_datum(item) {
             Ok(candidates) => {
+                trace!(
+                    "{}: {} datum definitions to try",
+                    item_name(item),
+                    candidates.len()
+                );
                 let mut last = String::new();
-                // A mid plane, a plane at an angle or one through points
-                // and lines (tried in several ways) lies where the dump has
-                // it.
+                // A plane of any definition but a fixed one (tried in
+                // several ways; mitcad#178: also from the inputs the
+                // stream decoder reads) lies where the dump has it.
                 let place = match &item.detail {
                     Some(Detail::ConstructionPlane(d)) => d
                         .geometry
@@ -2175,34 +2377,93 @@ impl<'a, K: ImportKernel> Importer<'a, K> {
                         .and_then(|g| Some((geom::mm3(g.origin?), geom::unit(g.normal?)?))),
                     _ => None,
                 };
+                // A point lies where the dump has it, an axis on its line
+                // in its direction (mitcad#186).
+                let spot = match &item.detail {
+                    Some(Detail::ConstructionPoint(d)) => d.geometry.map(geom::mm3),
+                    _ => None,
+                };
+                let line = match &item.detail {
+                    Some(Detail::ConstructionAxis(d)) => d
+                        .geometry
+                        .as_ref()
+                        .and_then(|g| Some((geom::mm3(g.origin?), geom::unit(g.direction?)?))),
+                    _ => None,
+                };
                 for c in candidates {
                     let depth = self.doc.undo_depth();
                     match self.add_all(&c, item.name()) {
                         Ok(uids)
-                            if place.is_some_and(|(o, n)| {
-                                matches!(
-                                    c.defs[0]["definition"]["type"].as_str(),
-                                    Some(
-                                        "midplane"
-                                            | "angle"
-                                            | "three_points"
-                                            | "two_edges"
-                                            | "edge_and_point"
-                                            | "normal_at_point"
+                            if line.is_some_and(|(o, v)| {
+                                c.defs[0]["definition"]["type"].as_str() != Some("fixed")
+                                    && uids.last().and_then(|u| self.doc.datum(*u)).is_some_and(
+                                        |d| match d {
+                                            mitcad_model::datum::Datum::Axis(a) => {
+                                                let off = geom::sub(o, a.origin);
+                                                let along = geom::dot(off, a.direction);
+                                                geom::dot(a.direction, v) < 1.0 - 1e-6
+                                                    || geom::norm(geom::sub(
+                                                        off,
+                                                        geom::scale(a.direction, along),
+                                                    )) > 1e-3
+                                            }
+                                            _ => false,
+                                        },
                                     )
-                                ) && uids
-                                    .last()
-                                    .and_then(|u| self.doc.datum(*u))
-                                    .is_some_and(|d| match d {
-                                        mitcad_model::datum::Datum::Plane(p) => {
-                                            geom::norm(geom::cross(p.normal(), n)) > 1e-6
-                                                || p.distance_to(o).abs() > 1e-3
-                                        }
-                                        _ => false,
-                                    })
                             }) =>
                         {
                             self.undo_to(depth);
+                            last = "it does not lie where the file has it".to_owned();
+                        }
+                        Ok(uids)
+                            if spot.is_some_and(|at| {
+                                c.defs[0]["definition"]["type"].as_str() != Some("fixed")
+                                    && uids.last().and_then(|u| self.doc.datum(*u)).is_some_and(
+                                        |d| match d {
+                                            mitcad_model::datum::Datum::Point(p) => {
+                                                geom::distance(p.point, at) > 1e-3
+                                            }
+                                            _ => false,
+                                        },
+                                    )
+                            }) =>
+                        {
+                            self.undo_to(depth);
+                            last = "it does not lie where the file has it".to_owned();
+                        }
+                        Ok(uids)
+                            if place.is_some_and(|(o, n)| {
+                                c.defs[0]["definition"]["type"].as_str() != Some("fixed")
+                                    && uids.last().and_then(|u| self.doc.datum(*u)).is_some_and(
+                                        |d| match d {
+                                            mitcad_model::datum::Datum::Plane(p) => {
+                                                geom::norm(geom::cross(p.normal(), n)) > 1e-6
+                                                    || p.distance_to(o).abs() > 1e-3
+                                            }
+                                            _ => false,
+                                        },
+                                    )
+                            }) =>
+                        {
+                            if tracing()
+                                && let Some(mitcad_model::datum::Datum::Plane(p)) =
+                                    uids.last().and_then(|u| self.doc.datum(*u))
+                            {
+                                trace!(
+                                    "{}: plane at {:?} normal {:?}, the file's at {:?} normal {:?}",
+                                    item_name(item),
+                                    p.frame().origin,
+                                    p.normal(),
+                                    place.map(|(o, _)| o),
+                                    place.map(|(_, n)| n)
+                                );
+                            }
+                            self.undo_to(depth);
+                            trace!(
+                                "{}: {} does not lie where the file has it",
+                                item_name(item),
+                                summary(&c)
+                            );
                             last = "it does not lie where the file has it".to_owned();
                         }
                         Ok(uids) => {
@@ -2212,7 +2473,10 @@ impl<'a, K: ImportKernel> Importer<'a, K> {
                             }
                             return;
                         }
-                        Err(e) => last = e,
+                        Err(e) => {
+                            trace!("{}: {} failed: {e}", item_name(item), summary(&c));
+                            last = e;
+                        }
                     }
                 }
                 self.note(at, Outcome::Skipped, last);
@@ -2242,9 +2506,21 @@ impl<'a, K: ImportKernel> Importer<'a, K> {
             }
             return;
         }
+        // A cut and paste into another component moves bodies and the
+        // features that made them: no state of the history checks it.
+        if item.object_type() == Some("CopyPasteBodies")
+            && self.halted(index).is_none()
+            && self.cut_paste_item(at, index, item)
+        {
+            return;
+        }
         if self.oracle.enabled {
             if item.object_type() == Some("ComponentFromBodies")
                 && self.component_from_bodies(at, index, item)
+            {
+                return;
+            }
+            if item.object_type() == Some("RemoveFeature") && self.remove_body_item(at, index, item)
             {
                 return;
             }
@@ -2344,6 +2620,7 @@ impl<'a, K: ImportKernel> Importer<'a, K> {
         let item = &mut self.report.items[at];
         item.features.extend(uids.iter().map(ToString::to_string));
         item.verified = verified;
+        item.input_provenance = Some(c.input_provenance);
         self.note(at, Outcome::Parametric, c.note.clone().unwrap_or_default());
     }
 
@@ -2558,7 +2835,14 @@ impl<'a, K: ImportKernel> Importer<'a, K> {
                     let matched = history::bodies_distance_within(target, &current, c.tolerance());
                     let taken = match matched {
                         Some(_) => self
-                            .change_check(&name, own, target, &current, &shapes, Some(states))
+                            .change_check(
+                                &name,
+                                own_of(own, c),
+                                target,
+                                &current,
+                                &shapes,
+                                Some(states),
+                            )
                             .map_err(|e| trace!("{name}: {} -> its state {state}: {e}", summary(c)))
                             .ok(),
                         None => None,
@@ -2583,6 +2867,12 @@ impl<'a, K: ImportKernel> Importer<'a, K> {
                             Some(n) if !n.is_empty() => format!("{n}; {chosen}"),
                             _ => chosen,
                         });
+                        // The later copies selected this input, even if
+                        // the original extrusion needed no inference.
+                        entry.input_provenance = Some(InputProvenance::Inferred);
+                        let revised_index = entry.index;
+                        let revised_note = entry.note.clone();
+                        self.learn_revised_definition(revised_index, def, revised_note.as_deref());
                         self.alternatives.remove(&f);
                         self.after_match(at, index, item, c, &[], state, d, 0.0);
                         return true;
@@ -2906,7 +3196,7 @@ impl<'a, K: ImportKernel> Importer<'a, K> {
                             let name = item_name(item);
                             match self.change_check(
                                 &name,
-                                own,
+                                own_of(own, c),
                                 &target,
                                 &current,
                                 &start_shapes,
@@ -3115,10 +3405,18 @@ impl<'a, K: ImportKernel> Importer<'a, K> {
         } else if let Some(s) = start {
             let depth = self.doc.undo_depth();
             let pending = !self.pending.is_empty();
+            // From the item's start: the operations brought in are its own.
+            let own_start = self
+                .oracle
+                .item_start(index)
+                .is_some_and(|b| self.oracle.cursor == Some(b) && b < s);
             match self.fallback_to(s, None) {
                 Ok(fallback) => {
                     if !pending && let Some(uid) = fallback {
                         self.exact_before(uid, &name);
+                        if own_start {
+                            self.start_bases.insert(index, uid);
+                        }
                     }
                     self.commit(Before::State(s), Some(s), fallback);
                 }
@@ -3146,8 +3444,18 @@ impl<'a, K: ImportKernel> Importer<'a, K> {
             before: start,
             after: state,
         };
+        // A combine on bodies that carry an earlier item's approximation:
+        // only its decoded definition on them, its guesses (other targets,
+        // tools and operations) on the state before it exactly below, where
+        // they are as good (mitcad#181: on the near-coincident faces of
+        // such bodies each boolean took 10–15 s, on the state's 0.2 s).
+        let defer = carried > history::EXACT
+            && start.is_some()
+            && item.object_type() == Some("CombineFeature");
+        self.defer_guesses = defer;
         let mut tried =
             self.try_state(at, index, item, states, &target, reference, carried, budget);
+        self.defer_guesses = false;
         // The bodies before it carry an earlier item's approximation, which
         // may keep it from matching: brought to the state before it exactly,
         // it is tried again (in half the time). So is a fillet or chamfer
@@ -3182,12 +3490,36 @@ impl<'a, K: ImportKernel> Importer<'a, K> {
                         self.undo_to(depth);
                     }
                 }
-                _ => self.undo_to(depth),
+                _ => {
+                    self.undo_to(depth);
+                    // (Not brought to the state: the guesses deferred are
+                    // tried on the bodies as they are after all.)
+                    if defer {
+                        tried = self.try_state(
+                            at, index, item, states, &target, reference, carried, budget,
+                        );
+                    }
+                }
             }
         }
         let last_error = match tried {
             Ok(()) => return,
             Err(e) => e,
+        };
+        // A fillet or chamfer whose edge references the file itself loses:
+        // the item keeps the geometry it had cached, so no definition of
+        // its inputs rebuilds it.
+        let last_error = match item
+            .detail
+            .as_ref()
+            .and_then(features::lost_edge_references)
+        {
+            Some((lost, all)) if !halts(&last_error) => format!(
+                "{lost} of its {all} edge references are lost in the file (the faces they name \
+                 are not in the model where the item was made; it keeps the geometry it had \
+                 before, so its inputs do not rebuild it); {last_error}"
+            ),
+            _ => last_error,
         };
         if fresh {
             self.tried_in_vain(index, &last_error);
@@ -3306,9 +3638,42 @@ impl<'a, K: ImportKernel> Importer<'a, K> {
         // only the bodies' measures (mitcad#121).
         let own = reference.and_then(|r| history::Change::new(r, &self.current_sigs(), target));
         let started = self.clock();
-        // A fillet's or chamfer's edge guesses one history state at a time.
-        let mut guesses = matches!(&item.detail, Some(Detail::Fillet(_) | Detail::Chamfer(_)))
-            .then(Guesses::default);
+        // A fillet's or chamfer's edge guesses one history state at a time;
+        // an extrusion's decoded profiles before the other sets of regions
+        // (mitcad#181; all at once for the learning dump, which keeps every
+        // definition offered).
+        let extrusion = matches!(&item.detail, Some(Detail::Extrude(_)));
+        // A later pattern or mirror may need another profile definition
+        // even when this extrusion gives its own state exactly. Keep those
+        // alternatives available; body selections can also fall back to
+        // feature copies when their decoded inputs do not give the state.
+        let later_copies = extrusion
+            && self
+                .dump
+                .timeline_items()
+                .iter()
+                .enumerate()
+                .any(|(p, it)| {
+                    it.index.unwrap_or(p as i64) > index
+                        && matches!(
+                            it.object_type(),
+                            Some(
+                                "CircularPatternFeature"
+                                    | "RectangularPatternFeature"
+                                    | "MirrorFeature"
+                            )
+                        )
+                });
+        let mut guesses = match &item.detail {
+            Some(Detail::Fillet(_) | Detail::Chamfer(_)) => Some(Guesses {
+                own: Some(state),
+                ..Guesses::default()
+            }),
+            Some(Detail::Extrude(_)) if self.learn.is_none() && !later_copies => {
+                Some(Guesses::default())
+            }
+            _ => None,
+        };
         let clock = std::time::Instant::now();
         let translated = match self.give_up(index) {
             Some(reason) => Err(reason),
@@ -3321,20 +3686,31 @@ impl<'a, K: ImportKernel> Importer<'a, K> {
         // Extrusions whose prism holds less than the state adds or
         // removes (or that change the volume the other way) are not tried;
         // they are left out before the likeliest are chosen.
+        let now = self.current_sigs();
         let change = target.iter().map(|s| s.volume).sum::<f64>()
-            - self.current_sigs().iter().map(|s| s.volume).sum::<f64>();
+            - now.iter().map(|s| s.volume).sum::<f64>();
+        let mergeable: f64 = now
+            .iter()
+            .filter(|s| target.iter().any(|t| t.same(s)))
+            .map(|s| s.volume)
+            .sum();
+        let mut translated = translated.map(|c| feasible(&name, c, change, mergeable));
+        // (Decoded profiles that cannot make the change: the other sets.)
+        while extrusion
+            && matches!(&translated, Ok(c) if c.is_empty())
+            && guesses.as_ref().is_some_and(|g| !g.done)
+        {
+            translated = self
+                .translate_part(index, item, &mut guesses)
+                .map(|c| feasible(&name, c, change, mergeable));
+        }
+        let translated = translated.map(|c| self.rank(c, state));
         let translated = translated.map(|mut c| {
-            let before = c.len();
-            c.retain(|c| !bounded(c) || c.predicted.is_some_and(|p| can_change(p, change)));
-            if c.len() < before {
-                trace!(
-                    "{name}: {} of {before} extrusions cannot change the volume by {change:.3}",
-                    before - c.len()
-                );
+            if self.defer_guesses {
+                c.retain(|c| !c.guess);
             }
             c
         });
-        let translated = translated.map(|c| self.rank(c, state));
         match translated {
             Ok(c) if c.is_empty() => last_error = "nothing to try".to_owned(),
             Ok(mut candidates) => {
@@ -3352,6 +3728,9 @@ impl<'a, K: ImportKernel> Importer<'a, K> {
                 // edges too (contour by contour, unless at a vertex): such
                 // guesses are left out.
                 let mut failed_dressups: Vec<(Value, BTreeSet<String>)> = Vec::new();
+                // Combines of the same bodies that gave bodies already (the
+                // same solid whichever is the target).
+                let mut combined: Vec<(String, BTreeSet<String>)> = Vec::new();
                 let mut attempt = 0;
                 // An extrusion that gives the state only approximately (a
                 // set of regions next to the right one can come within the
@@ -3389,6 +3768,12 @@ impl<'a, K: ImportKernel> Importer<'a, K> {
                             let mut part = self
                                 .translate_part(index, item, &mut guesses)
                                 .unwrap_or_default();
+                            // (An extrusion's other definitions: ranked as
+                            // they would be among all, after the decoded.)
+                            if extrusion {
+                                part = feasible(&name, part, change, mergeable);
+                                part = self.rank(part, state);
+                            }
                             part.truncate(room);
                             candidates.extend(part);
                         }
@@ -3451,6 +3836,18 @@ impl<'a, K: ImportKernel> Importer<'a, K> {
                         }
                         continue;
                     }
+                    if let Some(bodies) = same_result_combine(c)
+                        && combined.contains(&bodies)
+                    {
+                        trace!(
+                            "{name}: {} gives what the same combine with another target gave",
+                            summary(c)
+                        );
+                        if let Some(a) = &mut ahead {
+                            a.forget(k);
+                        }
+                        continue;
+                    }
                     if attempt >= self.options.max_attempts
                         || started.elapsed().as_secs_f64() > budget
                     {
@@ -3484,6 +3881,7 @@ impl<'a, K: ImportKernel> Importer<'a, K> {
                         .unwrap_or_else(|| tried.elapsed().as_secs_f64());
                     match evaluated.result.clone() {
                         Ok(_) => {
+                            combined.extend(same_result_combine(c));
                             let clock = std::time::Instant::now();
                             let bodies = match &evaluated.bodies {
                                 Some(bodies) => bodies.clone(),
@@ -3504,8 +3902,31 @@ impl<'a, K: ImportKernel> Importer<'a, K> {
                                 changed_by.push((def.clone(), changed));
                             }
                             let current: Vec<Sig> = bodies.iter().map(|(_, s)| *s).collect();
-                            let matched =
+                            let mut matched =
                                 history::bodies_distance_within(target, &current, c.tolerance());
+                            // The history keeps the bodies a join merged
+                            // into another as they were: the state without
+                            // them is the one to match.
+                            let mut consumed: Vec<u64> = Vec::new();
+                            let mut without_consumed: Option<Vec<Sig>> = None;
+                            if matched.is_none()
+                                && joins(c)
+                                && let Some((kept, ids)) = self.merged_by_join(states, &current)
+                                && let Some(m) =
+                                    history::bodies_distance_within(&kept, &current, c.tolerance())
+                            {
+                                matched = Some(m);
+                                consumed = ids;
+                                without_consumed = Some(kept);
+                            }
+                            let target: &[Sig] = without_consumed.as_deref().unwrap_or(target);
+                            let own = match &without_consumed {
+                                Some(kept) => reference.and_then(|r| {
+                                    let start: Vec<Sig> = before.values().copied().collect();
+                                    history::Change::new(r, &start, kept)
+                                }),
+                                None => own,
+                            };
                             // Its own change must be the file's; where the
                             // volumes do not settle that, its faces do, with
                             // the result in the document (mitcad#138).
@@ -3534,7 +3955,7 @@ impl<'a, K: ImportKernel> Importer<'a, K> {
                                 }
                                 let checked = self.change_check(
                                     &name,
-                                    own,
+                                    own_of(own, c),
                                     target,
                                     &current,
                                     &before_shapes,
@@ -3598,6 +4019,13 @@ impl<'a, K: ImportKernel> Importer<'a, K> {
                                     continue;
                                 }
                                 trace!("{name}: {} -> its state {state} ({d:.1e})", summary(c));
+                                if !consumed.is_empty() {
+                                    trace!(
+                                        "{name}: the bodies it merged stay in the history; \
+                                         left out from state {state}"
+                                    );
+                                    self.oracle.retire(state, &consumed);
+                                }
                                 self.oracle.cursor = Some(state);
                                 self.report.history.matched += 1;
                                 self.accepted(at, index, &uids, c, Some(true));
@@ -3657,7 +4085,7 @@ impl<'a, K: ImportKernel> Importer<'a, K> {
                             Some(_) => self
                                 .change_check(
                                     &name,
-                                    own,
+                                    own_of(own, c),
                                     target,
                                     &current,
                                     &before_shapes,
@@ -3690,8 +4118,11 @@ impl<'a, K: ImportKernel> Importer<'a, K> {
                     }
                 }
                 // A pattern or mirror of extrusions that gave other
-                // definitions' bodies too: with those definitions.
+                // definitions' bodies too: with those definitions (not when
+                // the item's time went to its definitions: each edit would
+                // evaluate the same long definition again, mitcad#181).
                 if !halts(&last_error)
+                    && !self.past_deadline()
                     && self.with_other_profiles(at, index, item, &candidates, target, own, states)
                 {
                     return Ok(());
@@ -4198,6 +4629,7 @@ impl<'a, K: ImportKernel> Importer<'a, K> {
                 (uid, sig, c)
             })
             .collect();
+        let old_lineages = self.replay_lineages(&current);
         let mut used = vec![false; current.len()];
         type Bodies<'b, S> = Vec<(&'b StoredBody<S>, &'b Sig)>;
         let mut new: BTreeMap<ComponentUid, Bodies<'_, K::Shape>> = BTreeMap::new();
@@ -4267,12 +4699,30 @@ impl<'a, K: ImportKernel> Importer<'a, K> {
             let mut old = old.remove(&component).unwrap_or_default();
             let added_sheets = new_sheets.remove(&component).unwrap_or_default();
             let mut removed_sheets = old_sheets.remove(&component).unwrap_or_default();
-            // Pair each new body with the nearest old one, so bodies keep
-            // their identity where they can; sheets in order with sheets.
+            // Pair each new body with the old one the file keeps as the same
+            // body (`StoredBody::lineage`: a split's original continues as
+            // one of its pieces, and the file counts the others as the
+            // split's new bodies), else with the nearest old one, so bodies
+            // keep their identity where they can; sheets in order with
+            // sheets.
             let mut replaces = Vec::new();
             let mut paired = Vec::new();
             let mut unpaired = Vec::new();
+            let mut rest = Vec::new();
             for (body, sig) in &new {
+                let same = body.lineage.and_then(|l| {
+                    old.iter()
+                        .position(|(uid, _)| old_lineages.get(uid) == Some(&l))
+                });
+                match same {
+                    Some(i) => {
+                        replaces.push(old.remove(i).0);
+                        paired.push(*body);
+                    }
+                    None => rest.push((*body, *sig)),
+                }
+            }
+            for (body, sig) in &rest {
                 let nearest = old
                     .iter()
                     .enumerate()
@@ -4366,6 +4816,37 @@ impl<'a, K: ImportKernel> Importer<'a, K> {
         }
         self.note_bases(&uids);
         Ok(uids.first().copied())
+    }
+
+    /// The lineages (`StoredBody::lineage`) of the replay's bodies that are
+    /// a body of the history state the replay is at (the cursor's): each
+    /// that has one body of the state of its measures in its component.
+    fn replay_lineages(
+        &mut self,
+        current: &[(BodyUid, Sig, ComponentUid)],
+    ) -> HashMap<BodyUid, u64> {
+        let mut out = HashMap::new();
+        let Some(q) = self.oracle.cursor else {
+            return out;
+        };
+        let kernel = self.doc.kernel();
+        let Ok(state) = self.oracle.state(kernel, q) else {
+            return out;
+        };
+        let state: Vec<(Sig, Option<u64>, Option<u64>)> = state
+            .iter()
+            .map(|(b, s)| (*s, b.component, b.lineage))
+            .collect();
+        for (uid, sig, component) in current {
+            let fits: Vec<&(Sig, Option<u64>, Option<u64>)> = state
+                .iter()
+                .filter(|(s, c, _)| s.same(sig) && self.components.of_body(*c) == *component)
+                .collect();
+            if let [(_, _, Some(lineage))] = fits[..] {
+                out.insert(*uid, *lineage);
+            }
+        }
+        out
     }
 
     /// The end of the timeline: pending items take the last history state,
@@ -4750,10 +5231,31 @@ fn def_component<K: Kernel>(
     {
         return c;
     }
+    // So does a split with tools of other components: where the split
+    // bodies are.
+    if def["type"] == "split_body"
+        && def
+            .get("tool_links")
+            .is_some_and(|l| l.as_object().is_some_and(|m| !m.is_empty()))
+        && let Some(c) = def["bodies"]
+            .as_array()
+            .and_then(|b| b.first())
+            .and_then(Value::as_str)
+            .and_then(|t| t.parse::<BodyUid>().ok())
+            .and_then(|b| doc.body_component(b))
+    {
+        return c;
+    }
     // A sweep along another component's body (mitcad#161) goes where its
-    // profile is: the linked bodies do not count.
-    let linked: BTreeSet<String> = match def.get("body_links") {
-        Some(Value::Object(links)) if def["type"] == "sweep" => links.keys().cloned().collect(),
+    // profile is: the linked bodies do not count; nor do those an
+    // extrusion's objects are on.
+    let linked: BTreeSet<String> = match (def.get("body_links"), def.get("object_links")) {
+        (Some(Value::Object(links)), _) if def["type"] == "sweep" => {
+            links.keys().cloned().collect()
+        }
+        (_, Some(Value::Object(links))) if def["type"] == "extrude" => {
+            links.keys().cloned().collect()
+        }
         _ => BTreeSet::new(),
     };
     let mut found = BTreeSet::new();

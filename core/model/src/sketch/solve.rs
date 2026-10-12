@@ -19,6 +19,11 @@ use super::pattern::{Binding, BindingKind};
 use super::{Constraint, ConstraintKind, ConstraintUid, DimensionKind, Entity, EntityKind, Ref};
 use crate::ids::EntityUid;
 
+/// The tolerance of a second solve where the first did not converge
+/// (relative to the sketch size, as [`SolveOptions::tolerance`]; 1e-5 mm
+/// on a sketch 100 mm across).
+const LOOSE_TOLERANCE: f64 = 1e-7;
+
 /// What a solver equation comes from.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum SolverItem {
@@ -52,6 +57,10 @@ pub struct SketchStatus {
     pub driven: BTreeMap<ConstraintUid, f64>,
     /// Lines that collapsed to a point, circles of zero radius.
     pub degenerate: Vec<EntityUid>,
+    /// The constraints and dimensions the stored positions did not
+    /// satisfy before the solve (those of an imported sketch the file's
+    /// own solution does not keep).
+    pub stored_violations: Vec<SolverItem>,
 }
 
 /// The solved sketch geometry.
@@ -199,7 +208,7 @@ impl Built {
                 EntityKind::Line { start, end, .. } => {
                     system.add_line(p(*start)?, p(*end)?).map_err(what)?
                 }
-                EntityKind::Circle { center, radius } => {
+                EntityKind::Circle { center, radius, .. } => {
                     system.add_circle(p(*center)?, *radius).map_err(what)?
                 }
                 EntityKind::Arc { center, start, end } => system
@@ -419,6 +428,11 @@ impl Built {
                 b: c(*b)?,
                 value,
             },
+            D::TangentDistance { circle, line } => S::TangentDistance {
+                circle: c(*circle)?,
+                line: c(*line)?,
+                value,
+            },
             D::Length { line } => S::Length {
                 line: c(*line)?,
                 value,
@@ -474,8 +488,30 @@ impl Built {
         items
     }
 
+    /// The items the stored positions do not satisfy (1e-4 mm), before
+    /// the first solve.
+    fn violated(&mut self) -> Vec<SolverItem> {
+        let ids = self.system.violated(1e-4);
+        self.items(&ids)
+    }
+
     fn solve(&mut self) -> Result<(), SolveError> {
-        let result = self.system.solve(&SolveOptions::default());
+        let mut result = self.system.solve(&SolveOptions::default());
+        if result.status == SolveStatus::NotConverged {
+            // Geometry that is fixed but not exact (a linked curve whose
+            // stored end lies a few millionths of a millimetre off its arc)
+            // leaves a residual no solve can remove: a looser tolerance
+            // takes it, one that still holds the constraints far below
+            // anything a design means.
+            let loose = SolveOptions {
+                tolerance: LOOSE_TOLERANCE,
+                ..SolveOptions::default()
+            };
+            let again = self.system.solve(&loose);
+            if again.status == SolveStatus::Converged {
+                result = again;
+            }
+        }
         match result.status {
             SolveStatus::Converged => {
                 // A second, tighter pass so that curves meet their shared
@@ -535,12 +571,13 @@ impl Built {
                     a: at(start),
                     b: at(end),
                 },
-                EntityKind::Circle { center, .. } => {
+                EntityKind::Circle { center, start, .. } => {
                     let radius = s.radius(id).expect("a circle");
                     radii.insert(e.id, radius);
                     Curve2::Circle {
                         center: at(center),
                         radius,
+                        start: *start,
                     }
                 }
                 EntityKind::Arc { center, start, end } => {
@@ -666,6 +703,13 @@ pub fn measure(kind: &DimensionKind, solved: &Solved) -> Option<f64> {
             let (b0, b1) = line(b)?;
             point_line([(b0[0] + b1[0]) / 2.0, (b0[1] + b1[1]) / 2.0], line(a)?)
         }
+        D::TangentDistance { circle, line: l } => {
+            let centre = match solved.curves.get(circle)? {
+                Curve2::Circle { center, .. } | Curve2::Arc { center, .. } => *center,
+                _ => return None,
+            };
+            point_line(centre, line(l)?) - radius(circle)?
+        }
         D::Length { line: l } => {
             let (a, b) = line(l)?;
             dist(a, b)
@@ -724,9 +768,11 @@ pub fn solve_extra(
 ) -> Result<Solved, SolveError> {
     let mut built =
         Built::new(entities, constraints, dimensions, extra).map_err(SolveError::new)?;
+    let violated = built.violated();
     built.solve()?;
     let mut solved = built.read(entities, dimensions);
     built.analyze(&mut solved);
+    solved.status.stored_violations = violated;
     Ok(solved)
 }
 

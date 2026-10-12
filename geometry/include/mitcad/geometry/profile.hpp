@@ -29,7 +29,7 @@ struct Segment {
   gp_Pnt2d center;                // Arc, Circle, Ellipse, EllipseArc
   double radius = 0.0;            // Arc, Circle; the major radius of an ellipse
   double minor_radius = 0.0;      // Ellipse, EllipseArc
-  double rotation = 0.0;          // ellipse major axis, from the sketch x axis
+  double rotation = 0.0;          // ellipse major axis, from the sketch x axis; where a whole circle starts
   double start_angle = 0.0;       // Arc, EllipseArc: counter-clockwise from
   double end_angle = 0.0;         // start to end (parameter angles of an ellipse)
   int degree = 0;                 // BSpline
@@ -66,11 +66,20 @@ struct Frame {
 struct ProfileFace {
   TopoDS_Face face;
   std::vector<std::pair<TopoDS_Edge, std::string>> edges;
+  // A hole of the region touches its outer boundary at a vertex they share;
+  // the prism of such a face is not a manifold solid, so touching profiles
+  // are merged before they are extruded.
+  bool pinched = false;
 };
 
 // Throws std::invalid_argument for invalid geometry (open loops, zero
 // sizes, a minor radius larger than the major one, ...).
 ProfileFace make_profile(const Frame& frame, const Region& region);
+
+// As above, with an explicit upper bound on gap healing instead of the
+// imported-sketch default. Material-domain construction supplies its own
+// modelling tolerance; larger gaps must not silently become closed contours.
+ProfileFace make_profile(const Frame& frame, const Region& region, double max_gap);
 
 // The faces of the regions, for display; unnamed.
 ShapePtr profile_shape(const Frame& frame, const std::vector<Region>& regions);

@@ -1,0 +1,123 @@
+# SPDX-License-Identifier: MIT
+# Native two-selection Pattern at Points workflow, real OCCT preview and model.
+# Run with an empty document through ui-macos-native-test.sh point-pattern.
+expect-ever 'Native UI: AppKit shell with embedded OCCT viewport'
+expect-ever 'View area'
+sleep 800
+native-resize 1280 820
+
+mark
+native-action solid.box
+expect-log 'Command Box started'
+click-logged 'Datum xy'
+native-type input_x '0 mm'
+native-type input_y '0 mm'
+native-type input_length '10 mm'
+native-type input_width '10 mm'
+native-type input_height '10 mm'
+native-click commandOk
+expect-log 'Added box \(New Body\)' 30
+expect-model-bodies 1 1000
+
+# The targets are free sketch points, not sampled coordinates in the feature.
+mark
+native-action sketch.create
+expect-log 'Create Sketch: select a plane'
+click-logged 'Datum xy'
+expect-log 'Sketch started on xy'
+native-action sketch.point
+sketch-click 30 0
+expect-log 'Added point p1 at' 30
+sketch-click 0 40
+expect-log 'Added point p2 at' 30
+key Escape
+native-click native.ribbon.sketch.finish
+expect-log 'Sketch finished' 30
+focus-main
+key F6
+
+# Selecting the source before opening the command leaves only Target Points
+# to pick. No source-anchor prompt is required for a complete preview.
+native-expand native.modelTree
+native-select native.model.body:F1.b0@
+mark
+native-action solid.pattern_at_points
+expect-log 'Command Pattern at Points started'
+expect-native-text input_anchor_mode '^Automatic$'
+expect-native-visible input_anchor false
+expect-native-enabled commandOk false
+click-logged 'Sketch entity F2/p1'
+click-logged 'Sketch entity F2/p2'
+expect-native-text input_targets '^2 selected$'
+expect-log 'Preview marker Pattern at Points Automatic anchor world 5,5,5 at' 30
+expect-native-enabled commandOk true
+screenshot '${MITCAD_TEST_WORK}/native-macos-point-pattern-automatic.png'
+
+# The override changes the marked source anchor, and a second choice restores
+# Automatic without retaining the explicit point in the command definition.
+mark
+native-choice input_anchor_mode 'Selected point'
+expect-native-visible input_anchor true
+expect-native-enabled commandOk false
+click-logged 'Datum origin'
+expect-log 'Preview marker Pattern at Points Selected anchor world 0,0,0 at' 30
+expect-native-enabled commandOk true
+screenshot '${MITCAD_TEST_WORK}/native-macos-point-pattern-selected.png'
+mark
+native-choice input_anchor_mode Automatic
+expect-native-visible input_anchor false
+expect-log 'Preview marker Pattern at Points Automatic anchor world 5,5,5 at' 30
+native-click commandOk
+expect-log 'Added pattern at 2 points of 1 bodies' 30
+expect-model-bodies 3 3000
+
+# Editing reconstructs both references and the default mode. An explicit
+# anchor is persisted by the edit; cancel and undo restore complete definitions.
+menu 'View/Show History'
+mark
+native-activate native.history.F3
+expect-log 'Editing F3 with Pattern at Points'
+expect-native-text input_targets '^2 selected$'
+expect-native-text input_anchor_mode '^Automatic$'
+native-choice input_anchor_mode 'Selected point'
+click-logged 'Datum origin'
+expect-log 'Preview marker Pattern at Points Selected anchor world 0,0,0 at' 30
+native-click commandOk
+expect-log 'Edited F3' 30
+expect-model-bodies 3 3000
+mark
+native-activate native.history.F3
+expect-log 'Editing F3 with Pattern at Points'
+expect-native-text input_anchor_mode '^Selected point$'
+native-choice input_anchor_mode Automatic
+native-click commandCancel
+expect-log 'Command Pattern at Points cancelled' 30
+expect-model-bodies 3 3000
+mark
+native-activate native.history.F3
+expect-log 'Editing F3 with Pattern at Points'
+expect-native-text input_anchor_mode '^Selected point$'
+native-click commandCancel
+expect-log 'Command Pattern at Points cancelled' 30
+focus-main
+mark
+native-action edit.undo
+expect-log 'Undo:' 30
+expect-model-bodies 3 3000
+native-activate native.history.F3
+expect-native-text input_anchor_mode '^Automatic$'
+expect-native-text input_targets '^2 selected$'
+native-click commandCancel
+expect-log 'Command Pattern at Points cancelled' 30
+focus-main
+mark
+native-action edit.redo
+expect-log 'Redo:' 30
+expect-model-bodies 3 3000
+native-activate native.history.F3
+expect-native-text input_anchor_mode '^Selected point$'
+native-click commandCancel
+expect-log 'Command Pattern at Points cancelled' 30
+expect-file '${MITCAD_TEST_WORK}/native-macos-point-pattern-automatic.png'
+expect-file '${MITCAD_TEST_WORK}/native-macos-point-pattern-selected.png'
+expect-never 'The document was read while a job computes it|Native Mac canvas:|OCCT view event failed|TestDriver: FAIL'

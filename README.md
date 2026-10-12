@@ -105,12 +105,15 @@ application is `build/dev/app/mitcad`; use a release build
 AppImage: [docs/development.md](docs/development.md#linux-appimage).
 
 Every build has the rendered view (a prototype with Cycles on the CPU,
-or an NVIDIA GPU with `build-cycles.sh --cuda`): the setup scripts run
-`tools/dev-env/build-cycles.sh` (`build-cycles.ps1` on Windows,
-`build-cycles-macos.sh` on macOS) once, which builds Cycles and Open Image
-Denoise from pinned sources outside the build folders
-([docs/rendering.md](docs/rendering.md#building)); without them the
-configure stops and names the script. The renderer is the
+or an NVIDIA GPU with Cycles' CUDA device on Linux and Windows, Metal on
+macOS): the setup scripts run `tools/dev-env/build-cycles.sh --cuda`
+(`build-cycles.ps1 -Cuda` on Windows, `build-cycles-macos.sh` on macOS)
+once, which builds Cycles, its GPU kernels and Open Image Denoise from
+pinned sources outside the build folders
+([docs/rendering.md](docs/rendering.md#building));
+`MITCAD_RENDER_CUDA=0` leaves out the CUDA kernels' build on a
+development machine. Without the prefix the configure stops and names the
+script. The renderer is the
 executable `mitcad-render` next to `mitcad` (only it links the renderer's
 libraries), and View > Rendered appears whenever it is there, with View
 > Render Environment for the design's light (with lights of one's own),
@@ -123,7 +126,7 @@ installer and the macOS bundle include it.
 Requirements: Visual Studio 2022 or newer with the C++ desktop tools.
 `setup-windows.ps1` installs Git, CMake, Ninja, ccache, Rust, Python, NSIS,
 cargo-deny, vcpkg and Qt (run it as an administrator), builds the
-renderer's libraries (`build-cycles.ps1`) and writes
+renderer's libraries (`build-cycles.ps1 -Cuda`) and writes
 `CMakeUserPresets.json`; `msvc.cmd` runs a command in the MSVC
 environment:
 
@@ -208,7 +211,7 @@ these conditions:
 
 ### Can we get faster RTX? Can we get OptiX?
 
-NO because Fuck you NVIDIA!
+NO because "Fuck you NVIDIA!"
 
 The renderer reaches the ray tracing cores of NVIDIA's RTX cards only
 through NVIDIA OptiX, and OptiX's licence does not fit open source

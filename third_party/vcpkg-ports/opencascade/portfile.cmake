@@ -38,6 +38,7 @@ vcpkg_from_github(
         0030-standard-failed-allocation-throws.patch
         0031-osd-threadpool-failed-allocations-to-launching-thread.patch
         0032-ncollection-containers-intact-when-allocation-fails.patch
+        0033-brepcheck-edge-curve-adaptor-per-context.patch
         0050-chfi3d-kpart-end-runs-into-end-face.patch
         0051-chfi3d-rolling-on-across-surfdatas.patch
         0052-chfi3d-rolling-start-beside-tangent-face.patch

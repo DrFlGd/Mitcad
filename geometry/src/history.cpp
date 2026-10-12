@@ -2,6 +2,7 @@
 #include "history.hpp"
 
 #include <algorithm>
+#include <cmath>
 #include <map>
 #include <stdexcept>
 #include <utility>
@@ -11,9 +12,11 @@
 #include <BRep_PointOnCurveOnSurface.hxx>
 #include <BRep_PointOnSurface.hxx>
 #include <BRep_TVertex.hxx>
+#include <BRepGProp.hxx>
 #include <BRep_Tool.hxx>
 #include <Geom2d_Curve.hxx>
 #include <Geom_Curve.hxx>
+#include <GProp_GProps.hxx>
 #include <Geom_Surface.hxx>
 #include <NCollection_List.hxx>
 #include <TopLoc_Location.hxx>
@@ -27,6 +30,24 @@
 namespace mitcad::geometry::detail {
 
 namespace {
+
+// Whether a solid of a few faces is no thicker than 1e-6 mm anywhere (its
+// volume under its area times that): a sliver an operation leaves between
+// faces that coincide (a join of walls that continue the body's walls left
+// strips of 1e-6 mm wide as solids of two faces), never a body.
+bool is_sliver(const TopoDS_Shape& solid) {
+  int faces = 0;
+  for (TopExp_Explorer f(solid, TopAbs_FACE); f.More(); f.Next()) {
+    if (++faces > 6) {
+      return false;
+    }
+  }
+  GProp_GProps volume;
+  BRepGProp::VolumeProperties(solid, volume);
+  GProp_GProps area;
+  BRepGProp::SurfaceProperties(solid, area);
+  return std::abs(volume.Mass()) <= 1e-6 * area.Mass();
+}
 
 // A vertex's points on curves and surfaces, as new representations (OCCT
 // updates their parameters in place).
@@ -308,6 +329,10 @@ std::vector<FaceNamer::Piece> FaceNamer::pieces() const {
     ++solids;
   }
   for (TopExp_Explorer it(m_result, TopAbs_SOLID); it.More(); it.Next()) {
+    // Slivers beside other solids are no pieces.
+    if (solids > 1 && is_sliver(it.Current())) {
+      continue;
+    }
     Piece piece;
     std::vector<Shape::NamedFace> own;
     for (TopExp_Explorer f(it.Current(), TopAbs_FACE); f.More(); f.Next()) {

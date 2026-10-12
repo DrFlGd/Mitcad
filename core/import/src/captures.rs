@@ -47,6 +47,23 @@ pub(crate) struct Captured {
     pub left_out: Vec<String>,
 }
 
+/// A captured position of an occurrence inside a component of another
+/// document ([`Captures::inside`]).
+#[derive(Debug, Clone, PartialEq)]
+pub struct InsidePosition {
+    /// The captured position's timeline index.
+    pub index: i64,
+    /// The path's occurrences in this design, from the captured position's
+    /// component down to the occurrence of the other document's component.
+    pub outer: Vec<OccurrenceUid>,
+    /// The GUIDs of the levels inside that component, from the outermost
+    /// down (the other document's occurrences carry them).
+    pub inner: Vec<String>,
+    /// The last level's placement in the captured position's component
+    /// (mm).
+    pub placement: Transform,
+}
+
 /// The file's captured positions in Mitcad's terms.
 #[derive(Debug, Default)]
 pub(crate) struct Captures {
@@ -64,6 +81,10 @@ pub(crate) struct Captures {
     steps: HashMap<OccurrenceUid, Vec<(Option<i64>, Transform)>>,
     /// The same in the occurrence's parent, for the items with an index.
     local_steps: HashMap<OccurrenceUid, Vec<(i64, Transform)>>,
+    /// The positions of occurrences inside components of other documents
+    /// (left out of the replay: those components are empty until the
+    /// import fills them from the documents' files, mitcad#196).
+    pub inside: Vec<InsidePosition>,
     /// The parts of items in other components (mitcad#169), by index:
     /// the index of their item, whose point of the timeline they are at
     /// (their own indices come after the timeline's items).
@@ -277,7 +298,19 @@ pub(crate) fn read(dump: &Dump, components: &Components, assembly: &Assembly) ->
         for e in list {
             let path = match resolve(e, components, assembly, &learnt) {
                 Ok(path) => path,
-                Err(why) => {
+                Err(Unresolved::Inside(outer, inner)) => {
+                    if let Some(placement) = e.matrix.as_ref().and_then(components::transform) {
+                        out.inside.push(InsidePosition {
+                            index,
+                            outer,
+                            inner,
+                            placement,
+                        });
+                    }
+                    captured.left_out.push(INSIDE.to_owned());
+                    continue;
+                }
+                Err(Unresolved::Why(why)) => {
                     captured.left_out.push(why);
                     continue;
                 }
@@ -506,9 +539,9 @@ fn resolve(
     components: &Components,
     assembly: &Assembly,
     learnt: &HashMap<String, OccurrenceUid>,
-) -> Result<Vec<OccurrenceUid>, String> {
+) -> Result<Vec<OccurrenceUid>, Unresolved> {
     if e.path.is_empty() {
-        return Err("a position names no occurrence".to_owned());
+        return Err(Unresolved::Why("a position names no occurrence".to_owned()));
     }
     let mut component = e.context;
     let mut path = Vec::new();
@@ -522,19 +555,33 @@ fn resolve(
                 .and_then(|o| assembly.occurrence(*o))
                 .is_some_and(|o| components.is_inserted(o.component));
             return Err(if inside {
-                "a position inside a component of another document".to_owned()
+                Unresolved::Inside(path, e.guids.get(k..).unwrap_or_default().to_vec())
             } else {
-                "a position of an occurrence not in the occurrence tree".to_owned()
+                Unresolved::Why("a position of an occurrence not in the occurrence tree".to_owned())
             });
         };
         if o.parent != component {
-            return Err(format!(
+            return Err(Unresolved::Why(format!(
                 "a position of {}, which is not placed where its path says",
                 assembly.occurrence_name(o.uid)
-            ));
+            )));
         }
         path.push(o.uid);
         component = o.component;
     }
     Ok(path)
 }
+
+/// Why a captured position's path is not one of this design's
+/// occurrences ([`resolve`]).
+enum Unresolved {
+    Why(String),
+    /// Inside a component of another document: the path's occurrences
+    /// down to the one of that component, and the GUIDs of the levels
+    /// inside it.
+    Inside(Vec<OccurrenceUid>, Vec<String>),
+}
+
+/// Why a captured position inside a component of another document is left
+/// out of the replay.
+pub(crate) const INSIDE: &str = "a position inside a component of another document";

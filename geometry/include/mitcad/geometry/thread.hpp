@@ -21,7 +21,8 @@ namespace mitcad::geometry {
 // other way round. The basic diameters (D, D1 = D - 5H/4, D2 = D - 3H/4,
 // H = 0.866025 P) give the basic profile; a tolerance class's diameters
 // (each the middle of its tolerance) give the class's profile with the
-// same flanks.
+// same flanks. Extra clearance (`radial_clearance`, `flank_clearance`)
+// moves and thins that profile for a looser fit.
 //
 // Along the threaded part of a face the material becomes exactly the
 // thread: what lies between the root and the face beyond the profile is
@@ -57,6 +58,19 @@ struct ThreadSpec {
   double length = 0.0;
   double offset = 0.0;
   bool high_end = true;
+  // Extra clearance (mitcad#195), both 0 or more. `radial_clearance` moves
+  // the whole profile (crests, roots, flanks and the pitch diameter) along
+  // the radius, outwards for an internal thread and inwards for an
+  // external one: 0.2 changes each diameter by 0.4. Then
+  // `flank_clearance` moves each flank by that distance perpendicular to
+  // itself into the tooth (an external thread's tooth thinner, an internal
+  // thread's groove wider): the flanks keep their angle and the pitch, and
+  // the crests and roots their radii, so each flank moves
+  // flank_clearance / cos 30 along the axis and the crests narrow by twice
+  // that. A clearance that leaves too narrow a crest (under P/50) or no
+  // core is refused.
+  double radial_clearance = 0.0;
+  double flank_clearance = 0.0;
 };
 
 // The body with the threads. The thread's new faces (flanks, crests and

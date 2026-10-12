@@ -70,6 +70,7 @@ pub fn font_glyphs(request: &FontRequest<'_>) -> Result<FontGlyphs, KernelError>
         fallback: outlines.fallback,
         ascender: outlines.ascender,
         descender: outlines.descender,
+        cap_height: 0.0,
         line_spacing: outlines.line_spacing,
         glyphs,
     })

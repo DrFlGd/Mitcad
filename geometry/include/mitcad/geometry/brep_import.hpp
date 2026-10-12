@@ -43,8 +43,10 @@
 // (a cone apex); the builder bounds the face there with a degenerated edge.
 
 #include <array>
+#include <cstddef>
 #include <cstdint>
 #include <functional>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -113,6 +115,16 @@ struct Body {
   std::vector<double> transform; // empty, or 3x3 rows then translation
 };
 
+// What the build of a body keeps for the builds of its other states
+// (mitcad#181: the states of a body's history share most of their faces,
+// and healing a body of thousands of faces takes tens of seconds): its
+// healed faces, edges and vertices by the content of their data. Immutable
+// once built; builds on other threads may read it at once.
+struct Healed;
+
+// Bodies of at least this many faces keep and reuse what was healed.
+constexpr std::size_t kMinReuseFaces = 256;
+
 struct BuildOptions {
   // Minimum tolerance of vertices and edges (mm).
   double tolerance = 1e-4;
@@ -127,6 +139,17 @@ struct BuildOptions {
   // .f3d import's watchdog, mitcad#82). Not called while a step of OCCT's
   // does not return. May be empty.
   std::function<void()> progress;
+  // Keep what the builds of the body's other states can take from this one
+  // (BuildResult::healed; a valid solid of at least kMinReuseFaces faces).
+  bool keep = false;
+  // What builds of other states of the body kept (BuildResult::healed):
+  // the faces whose data is the same as in the one that shares the most
+  // with this body are taken as healed there (copies), and only the others
+  // are healed. When less than half of the faces are shared, or the result
+  // is not valid, the body is built and healed as a whole.
+  std::vector<std::shared_ptr<const Healed>> bases;
+  // The smallest body (faces) that keeps and reuses what was healed.
+  std::size_t reuse_min_faces = kMinReuseFaces;
 };
 
 struct BuildReport {
@@ -154,12 +177,17 @@ struct BuildReport {
   int surfaces_failed = 0;
   int edges_failed = 0;
   int faces_failed = 0;
+  // Faces taken as healed from BuildOptions::bases (0: healed as a whole).
+  int reused_faces = 0;
   std::vector<std::string> messages;
 };
 
 struct BuildResult {
   TopoDS_Shape shape;
   BuildReport report;
+  // With BuildOptions::keep: for the builds of the body's other states
+  // (null when the body is not kept).
+  std::shared_ptr<const Healed> healed;
 };
 
 // Never throws; failures are reported in BuildReport.

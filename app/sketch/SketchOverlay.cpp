@@ -109,6 +109,19 @@ std::optional<Linear> linearOf(const DimensionData& d, const SketchModel& model,
     const V2 u = dist(foot, p) > 1e-9 ? unit(foot - p) : perp(dir);
     return Linear{p, foot, u};
   }
+  if (t == QStringLiteral("tangent_distance")) {
+    const CurveData* circle = r.curve(d.json, "circle");
+    const CurveData* line = r.curve(d.json, "line");
+    if (circle == nullptr || line == nullptr || !circle->isCircular() || !line->isLine()) {
+      return std::nullopt;
+    }
+    // From the circle's nearest point to the line, along the perpendicular.
+    const V2 dir = unit(line->curve.b - line->curve.a);
+    const V2 centre = circle->curve.center;
+    const V2 foot = line->curve.a + dir * dot(centre - line->curve.a, dir);
+    const V2 towards = dist(foot, centre) > 1e-9 ? unit(foot - centre) : perp(dir);
+    return Linear{centre + towards * circle->curve.radius, foot, towards};
+  }
   if (t == QStringLiteral("linear_diameter")) {
     const CurveData* axis = r.curve(d.json, "axis");
     const QString entity = d.json.value(QStringLiteral("entity")).toString();
@@ -779,6 +792,17 @@ void SketchOverlay::paintPreview(QPainter& painter, const ToolPreview& preview) 
     glyph.rect = QRectF(at.x(), at.y(), kGlyphSize, kGlyphSize);
     paintGlyph(painter, glyph, false, true);
   }
+  // The auto constraints the next click adds, in a row below right of
+  // their place (the inferred glyph is above it).
+  if (!preview.marks.isEmpty() && preview.marksAt && m_c.cursorInView()) {
+    const QPointF at = m_c.toScreen(*preview.marksAt) + QPointF(8, 8);
+    for (int i = 0; i < preview.marks.size(); ++i) {
+      Glyph glyph;
+      glyph.type = preview.marks.at(i);
+      glyph.rect = QRectF(at.x() + i * (kGlyphSize + 3), at.y(), kGlyphSize, kGlyphSize);
+      paintGlyph(painter, glyph, false, true);
+    }
+  }
 }
 
 void SketchOverlay::paintSnap(QPainter& painter) const {
@@ -907,6 +931,14 @@ void SketchOverlay::paintEvent(QPaintEvent* event) {
   }
 
   if (SketchTool* tool = m_c.tool()) {
+    // The auto constraints' reference while the pointer is over the
+    // palette's section (mitcad#189); the tools show it while previewing.
+    if (m_c.autoHover()) {
+      const QString reference = m_c.autoReference();
+      if (!reference.isEmpty()) {
+        paintEntityHighlight(painter, reference, kPickColor);
+      }
+    }
     ToolPreview preview;
     tool->paint(preview);
     paintPreview(painter, preview);

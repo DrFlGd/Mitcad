@@ -48,6 +48,7 @@ class QStackedWidget;
 namespace mitcad {
 
 class AutosaveManager;
+class AutoselectPanel;
 class BrowserController;
 class CommandRegistry;
 class CommandSearch;
@@ -166,6 +167,7 @@ public:
   void showSection(const QJsonValue& plane) override;
   QJsonValue section() const override { return m_section; }
   void editInstead(const QString& uid, const QString& input) override;
+  QString profileOccurrence(const QString& sketch) const override { return placingOccurrence(sketch); }
 
   // SketchHost
   const Selection& selection() const override { return m_selection; }
@@ -198,6 +200,7 @@ public:
   void setOriginShown(bool shown) override;
   bool originShown() const override { return m_originShown; }
   QString documentFolder() const override;
+  void exportFlatPattern(const QString& body) override;
 
 protected:
   void closeEvent(QCloseEvent* event) override;
@@ -238,6 +241,7 @@ private:
 #endif
   void createRibbon();
   void createPanels();
+  void createIdlePage();
   // Floating chrome: the panels as cards over the view.
   void createFloatingPanels();
   int commandContentHeight() const;
@@ -305,6 +309,7 @@ private:
   void recompute();
   void showBodies();
   void showProfiles();
+  void refreshAutoselect();
   void showSketches();
   void showDatums();
   // Where the shown bodies are in the window, for UI tests (when changed).
@@ -725,6 +730,7 @@ private:
   ModelWorker* m_worker = &m_documentSession->worker();
   bool m_closePending = false; // the window closes when the job is back
   QHash<QString, ProfileFace> m_profileFaces; // by "<sketch>|<region>"
+  QJsonArray m_currentProfiles; // exact region keys, including hidden profiles
   // Answers of queries while the actions are updated (updateActions).
   QHash<QString, QJsonValue>* m_queryMemo = nullptr;
   QString& m_filePath = m_documentSession->state().filePath;
@@ -803,6 +809,9 @@ private:
   QStackedWidget* m_commandPages = nullptr;
   QPointer<QWidget> m_panelScroll; // the running command's panel page
   QLabel* m_idleInfo = nullptr;
+  QWidget* m_idlePage = nullptr;
+  AutoselectPanel* m_autoselect = nullptr;
+  Selection m_autoselectPreview; // hover only; never part of the actual selection
   QLabel* m_statusLabel = nullptr;
   QLabel* m_rendererLabel = nullptr;
   FloatingLayout* m_floating = nullptr; // the central widget in Floating chrome
@@ -848,6 +857,14 @@ private:
     std::vector<BodyDisplay> bodies; // as shown when it began
   };
   std::optional<JointAnimation> m_animation;
+
+  // Sheet metal (mitcad#210, MainWindowSheet.cpp): Edit Sheet Rules, Show
+  // Flat Pattern and Export Flat Pattern; the sheet-metal body the
+  // selection stands for (else the only one, or the first with a Flat
+  // Pattern when `flat`), and the bodies shown flat.
+  void registerSheetActions();
+  QJsonObject sheetBody(bool flat) const;
+  void toggleFlatPattern(const QString& body);
 
   // The sketch being edited (sketch mode).
   bool& m_sketchExisting = m_documentSession->state().sketchExisting;

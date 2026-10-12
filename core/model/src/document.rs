@@ -25,6 +25,7 @@ mod browser;
 mod components;
 mod copy;
 mod datums;
+mod point_patterns;
 // Named views (U5).
 mod views;
 // The Origin folder, Isolate and favourite parameters (P9).
@@ -44,10 +45,16 @@ mod library_parts;
 pub use library_parts::{LibraryChange, LibraryPart, PartsListRow};
 // Move Features into a Component (mitcad#171).
 mod move_features;
+pub(crate) use move_features::MoveDestination;
 pub use move_features::{MoveConflict, MoveGroup, MovePlan, MovedGroup, PlannedGroup};
 // What the importers say about the features they made (mitcad#170).
 mod import_notes;
 pub(crate) use import_notes::{status_message as noted_message, status_text as noted_status};
+// Origin groups of the final unused sketch (mitcad#193).
+mod autoselect;
+pub use autoselect::AutoselectProfiles;
+// Sheet-metal Flat Patterns kept in the document (mitcad#208).
+mod flat_patterns;
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fmt;
@@ -189,6 +196,8 @@ pub struct DocState {
     /// of a skipped item. Shown as the feature's warning until an edit of
     /// its definition builds.
     pub(crate) import_notes: BTreeMap<FeatureUid, String>,
+    /// Flat Patterns of sheet-metal bodies (mitcad#208), by body.
+    pub(crate) flat_patterns: BTreeMap<BodyUid, crate::sheet::flat::FlatPatternDef>,
 }
 
 impl Default for DocState {
@@ -212,6 +221,7 @@ impl Default for DocState {
             configurations: Default::default(),
             hybrid_assembly: false,
             import_notes: BTreeMap::new(),
+            flat_patterns: BTreeMap::new(),
         }
     }
 }
@@ -260,6 +270,12 @@ impl DocState {
             all: &self.features,
         };
         entry.def.info().check(&ctx)?;
+        crate::joints::check_generated_references(&self.assembly, &ctx, &entry.def)?;
+        if let FeatureDef::Extrude(extrude) = &entry.def
+            && let Some(scope) = &extrude.cut_scope
+        {
+            scope.check_components(&self.assembly, &ctx, entry.component)?;
+        }
         check_components(&self.assembly, &self.features, entry)
     }
 
@@ -337,6 +353,13 @@ impl DocState {
             };
             helix.settle_construction(had.unwrap_or(HelixConstruction::Mitcad));
         }
+        if let FeatureDef::SheetFace(face) = &mut resolved {
+            face.settle(match old {
+                Some(FeatureDef::SheetFace(old)) => Some(old),
+                _ => None,
+            });
+        }
+        crate::features::sheet_folded::settle(&mut resolved, old);
         Ok((resolved, created))
     }
 
@@ -357,6 +380,17 @@ impl DocState {
                 .features
                 .iter()
                 .any(|f| affected.contains(f))
+                || crate::joints::referenced_occurrences(&entry.def)
+                    .iter()
+                    .any(|uid| {
+                        self.assembly
+                            .occurrence(*uid)
+                            .and_then(|o| o.pattern.as_ref())
+                            .is_some_and(|p| affected.contains(&p.feature))
+                    })
+                || matches!(&entry.def, FeatureDef::Extrude(extrude) if extrude.cut_scope.as_ref().is_some_and(|scope|
+                    self.features.iter().take_while(|f| f.uid != entry.uid).any(|f| affected.contains(&f.uid)
+                        && scope.depends_on(&self.assembly, f))))
             {
                 affected.insert(entry.uid);
                 dependents.push(entry.uid);
@@ -508,6 +542,11 @@ impl DocState {
             .filter(|f| removed.contains(&f.uid))
             .count();
         self.features.retain(|f| !removed.contains(&f.uid));
+        self.assembly.occurrences.retain(|o| {
+            o.pattern
+                .as_ref()
+                .is_none_or(|p| !removed.contains(&p.feature))
+        });
         self.marker -= before_marker;
         for owner in &order {
             self.release_params(*owner);
@@ -570,6 +609,7 @@ impl DocState {
             .map_err(ModelError::Invalid)?;
         self.check_values(&entry.def)?;
         self.features[position] = Arc::new(entry);
+        self.sync_point_pattern(uid)?;
         // The features after it may refer to what the edit removed.
         for later in position + 1..self.features.len() {
             let entry = self.features[later].clone();
@@ -592,6 +632,9 @@ pub(crate) fn check_components(
 ) -> Result<(), String> {
     if !assembly.exists(entry.component) {
         return Err(format!("component {} does not exist", entry.component));
+    }
+    if let FeatureDef::PatternAtPoints(def) = &entry.def {
+        return def.check_components(assembly, features, entry);
     }
     // Joints use geometry of the components their occurrences place
     // (mitcad#55).
@@ -805,6 +848,7 @@ pub struct RecomputeStats {
 /// The outcome of a previewed command.
 #[derive(Debug, Clone, PartialEq)]
 pub struct PreviewReport {
+    pub sheet_states: serde_json::Value,
     pub uid: FeatureUid,
     pub name: String,
     pub status: FeatureStatus,
@@ -812,6 +856,11 @@ pub struct PreviewReport {
     pub warnings: Vec<String>,
     /// A pattern's elements by number, suppressed ones too (P9).
     pub elements: Vec<crate::transform::Transform>,
+    pub anchor: Option<crate::features::point_pattern::PatternAnchor>,
+    /// New shared-body occurrence instances, in world coordinates.
+    pub instances: Vec<crate::assembly::Instance>,
+    pub removed_instances: Vec<(Vec<OccurrenceUid>, BodyUid)>,
+    pub cut_targets: Option<crate::features::extrude_scope::CutTargets>,
     /// Bodies at the marker after the command: id, name and whether the
     /// command changed or created it.
     pub bodies: Vec<(BodyUid, String, bool)>,
@@ -886,6 +935,8 @@ pub struct Document<K: Kernel> {
     /// The last loaded or saved design's folder. Runtime context only:
     /// copied appearances resolve relative image paths against it.
     source_directory: RwLock<Option<PathBuf>>,
+    /// Flat Pattern evaluations (mitcad#208), separate from modelling results.
+    flat_cache: flat_patterns::FlatCache<K::Shape>,
 }
 
 impl<K: Kernel> Document<K> {
@@ -919,6 +970,7 @@ impl<K: Kernel> Document<K> {
             monitor: None,
             resolver: None,
             source_directory: RwLock::new(None),
+            flat_cache: Default::default(),
         }
     }
 
@@ -1137,6 +1189,7 @@ impl<K: Kernel> Document<K> {
             monitor: None,
             resolver: self.resolver.clone(),
             source_directory: RwLock::new(self.source_directory()),
+            flat_cache: Default::default(),
         })
     }
 
@@ -1295,14 +1348,18 @@ impl<K: Kernel> Document<K> {
         profiles
     }
 
-    /// An evaluated profile region with its sketch frame.
+    /// An evaluated profile region with its sketch frame: the one a
+    /// reference with the key means, under its current key (the best match
+    /// when the key changed with the sketch, as features find it; see
+    /// `SketchOutput::resolved`), so that the application highlights what a
+    /// feature extrudes (mitcad#199).
     pub fn profile_region(
         &self,
         sketch: FeatureUid,
         region: &RegionKey,
     ) -> Option<(SketchFrame, &ProfileRegion)> {
         let output = &self.result.sketches.get(&sketch)?.value;
-        Some((output.frame, output.region(region)?))
+        Some((output.frame, output.resolved(region)?))
     }
 
     /// The output of an evaluated sketch: frame, solved geometry, status
@@ -2325,8 +2382,57 @@ impl<K: Kernel> Document<K> {
             }
         };
         let names = display_names(&state, &result);
+        let cut_targets = result
+            .result(uid)
+            .and_then(|r| r.output.as_ref())
+            .and_then(|o| o.cut_targets.clone())
+            .map(|mut targets| {
+                for row in &mut targets.rows {
+                    for body in &mut row.bodies {
+                        body.name = names
+                            .get(&body.body)
+                            .cloned()
+                            .unwrap_or_else(|| body.body.to_string());
+                    }
+                }
+                targets
+            });
         let current = &self.result.bodies;
+        let assembly = state.assembly.at_placements(&result.placements);
+        let mut preview_instances = assembly.instances(
+            &|o| {
+                result
+                    .placements
+                    .get(&o)
+                    .copied()
+                    .unwrap_or(crate::transform::Transform::IDENTITY)
+            },
+            &|c| {
+                result
+                    .owners
+                    .iter()
+                    .filter(|(_, owner)| **owner == c)
+                    .map(|(b, _)| *b)
+                    .collect()
+            },
+        );
+        for instance in &mut preview_instances {
+            instance.visible &= state
+                .body_attributes
+                .get(&instance.body)
+                .is_none_or(|a| a.visible);
+        }
+        let old_instances: BTreeSet<_> = self
+            .instances()
+            .into_iter()
+            .map(|i| (i.path, i.body))
+            .collect();
+        let new_instances: BTreeSet<_> = preview_instances
+            .iter()
+            .map(|i| (i.path.clone(), i.body))
+            .collect();
         let report = PreviewReport {
+            sheet_states: crate::sheet::state_query(&result, None),
             uid,
             name: state.entry(uid).map(|f| f.name.clone()).unwrap_or_default(),
             status: result
@@ -2341,6 +2447,16 @@ impl<K: Kernel> Document<K> {
                 .and_then(|r| r.output.as_ref())
                 .map(|o| o.elements.clone())
                 .unwrap_or_default(),
+            anchor: result
+                .result(uid)
+                .and_then(|r| r.output.as_ref())
+                .and_then(|o| o.pattern_anchor.clone()),
+            instances: preview_instances
+                .into_iter()
+                .filter(|i| !old_instances.contains(&(i.path.clone(), i.body)))
+                .collect(),
+            removed_instances: old_instances.difference(&new_instances).cloned().collect(),
+            cut_targets,
             bodies: result
                 .bodies
                 .iter()
@@ -2392,6 +2508,9 @@ impl<K: Kernel> Document<K> {
                 }
                 let children: Vec<_> = self.state.assembly.children(parent).cloned().collect();
                 for o in children {
+                    if o.pattern.is_some() && !self.placements.contains_key(&o.uid) {
+                        continue;
+                    }
                     let placed = self.placements.get(&o.uid).copied().unwrap_or(o.transform);
                     let world = now.after(&placed);
                     let old = before.and_then(|b| {

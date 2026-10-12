@@ -28,14 +28,15 @@ and [docs/development.md](docs/development.md) before larger changes.
   on a hidden Xvfb display (`tools/ui-*-test.sh`), Windows UI tests are
   the ctests `app.ui-windows*`, macOS ones `app.ui-macos*` in the macOS
   VM.
-- Before a commit or a merge to main: `tools/check-all.sh` in its
-  default, scoped mode on Linux
-  ([the check script](docs/development.md#the-check-script)); it runs
-  only the tests the change affects, and an occasional miss is accepted.
-  Build and test on Windows or macOS only when the change touches that
-  platform's own code (`app/platform/`, `Q_OS_*` branches, packaging,
-  its scripts). The full check (`check-all.sh --full` plus the Windows
-  and macOS builds with `ctest`) is for release builds only.
+- Before a commit or a merge to main: a scoped check on the machine's
+  own platform only, never on another platform's environment: on a Linux
+  machine `tools/check-all.sh` in its default, scoped mode
+  ([the check script](docs/development.md#the-check-script)), on a
+  Windows machine the warning-free build and the affected ctests in its
+  Windows environment, on a Mac its build and the affected ctests. An
+  occasional miss is accepted: every platform is checked in full by the
+  release build (`check-all.sh --full` plus the Windows and macOS builds
+  with the full `ctest`).
 
 ## Key design constraints
 

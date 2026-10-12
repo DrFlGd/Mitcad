@@ -3,6 +3,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <sstream>
 #include <stdexcept>
 #include <utility>
 #include <vector>
@@ -42,8 +43,11 @@ namespace {
 
 constexpr double kTwoPi = 6.28318530717958647692;
 constexpr double kTan30 = 0.57735026918962576451;
+constexpr double kCos30 = 0.86602540378443864676;
 // Radii closer than this are the same.
 constexpr double kSame = 1.0e-6;
+// The narrowest crest a flank clearance may leave, in pitches.
+constexpr double kMinCrest = 0.02;
 
 // One face's thread: the face's cylinder and the profile on it.
 struct Thread {
@@ -62,16 +66,23 @@ struct Thread {
   double minor_radius = 0.0;
   bool right_handed = true;
   double angle = 0.0;
+  // How far the flank clearance moves each flank along the axis, into the
+  // tooth (the radii above already carry the radial clearance).
+  double relief = 0.0;
 
   double crest() const { return internal ? minor_radius : major_radius; }
   double root() const { return internal ? major_radius : minor_radius; }
 
   // Half the width of the groove (the space between the teeth) at a
   // radius: a quarter pitch at the pitch diameter, wider towards the crest
-  // along flanks at 30 degrees.
+  // along flanks at 30 degrees, and wider by the flank relief.
   double groove_half(double radius) const {
-    return pitch / 4.0 + (internal ? pitch_radius - radius : radius - pitch_radius) * kTan30;
+    return pitch / 4.0 + relief + (internal ? pitch_radius - radius : radius - pitch_radius) * kTan30;
   }
+
+  // How far from the pitch diameter the flanks of a tooth meet: H/2 =
+  // 0.433 P, less where the flank relief has thinned the tooth.
+  double reach() const { return 0.433 * pitch - relief / kTan30; }
 
   // The middle of the groove at the pitch diameter, along the axis from
   // the origin, at an angle about the axis from the reference direction.
@@ -239,11 +250,17 @@ Thread thread_of(const CylinderFace& cylinder, const ThreadSpec& spec) {
   t.length = cylinder.length;
   t.internal = cylinder.internal;
   t.pitch = spec.pitch;
-  t.pitch_radius = spec.pitch_diameter / 2.0;
-  t.major_radius = spec.major / 2.0;
-  t.minor_radius = spec.minor / 2.0;
+  // The radial clearance moves the whole profile away from the material:
+  // out for a bore, in for a shaft.
+  const double shift = cylinder.internal ? spec.radial_clearance : -spec.radial_clearance;
+  t.pitch_radius = spec.pitch_diameter / 2.0 + shift;
+  t.major_radius = spec.major / 2.0 + shift;
+  t.minor_radius = spec.minor / 2.0 + shift;
   t.right_handed = spec.right_handed;
   t.angle = spec.angle;
+  // A flank moved by c perpendicular to itself, at 30 degrees to the
+  // radius, moves c / cos 30 along the axis.
+  t.relief = spec.flank_clearance / kCos30;
   return t;
 }
 
@@ -326,8 +343,8 @@ ShapePtr thread_face(const Shape& body, const std::string& face_reference, const
                                                  : tube(t, t.major_radius, face + margin, from, to);
     current = detail::local_boolean(*current, beyond_crest, detail::LocalOperation::Cut, name).shape;
   }
-  // The flanks meet H/2 = 0.433 P from the pitch diameter.
-  const double reach = 0.433 * t.pitch;
+  // Where the flanks of a tooth meet.
+  const double reach = t.reach();
   TopoDS_Shape cut;
   if (t.internal) {
     const double past = std::min(margin / 2.0, 0.5 * (t.minor_radius - (t.pitch_radius - reach)));
@@ -337,6 +354,33 @@ ShapePtr thread_face(const Shape& body, const std::string& face_reference, const
     cut = grooves(t, t.minor_radius, t.major_radius + past, from, to, t.major_radius + margin);
   }
   return detail::local_boolean(*current, cut, detail::LocalOperation::Cut, name).shape;
+}
+
+// Checks that the extra clearance leaves a thread on an internal or an
+// external face: the flank clearance a crest at least P/50 wide (it moves
+// each flank flank_clearance / cos 30 into the tooth, the crest keeping its
+// radius), the radial clearance an external thread a core.
+void check_clearance(const ThreadSpec& spec, bool internal) {
+  const auto text = [](double value) {
+    std::ostringstream out;
+    out << value;
+    return out.str();
+  };
+  if (spec.flank_clearance > 0.0) {
+    // The crest's width before the relief: half a pitch at the pitch
+    // diameter, narrowing along the 30-degree flanks to the crest.
+    const double depth = internal ? spec.pitch_diameter - spec.minor : spec.major - spec.pitch_diameter;
+    const double crest = spec.pitch / 2.0 - depth * kTan30 - 2.0 * spec.flank_clearance / kCos30;
+    if (crest < kMinCrest * spec.pitch) {
+      throw std::invalid_argument("the thread's flank clearance of " + text(spec.flank_clearance) +
+                                  " mm leaves no usable tooth: its crest would be " + text(crest) +
+                                  " mm wide, at least " + text(kMinCrest * spec.pitch) + " mm is needed");
+    }
+  }
+  if (!internal && spec.minor / 2.0 - spec.radial_clearance <= kSame) {
+    throw std::invalid_argument("the thread's radial clearance of " + text(spec.radial_clearance) +
+                                " mm leaves the external thread no core");
+  }
 }
 
 } // namespace
@@ -366,14 +410,23 @@ ShapePtr modeled_thread(const Shape& body, const ThreadSpec& spec) {
       throw std::invalid_argument("the thread offset must not be negative");
     }
   }
+  detail::require_finite("thread radial clearance", spec.radial_clearance);
+  detail::require_finite("thread flank clearance", spec.flank_clearance);
+  if (spec.radial_clearance < 0.0) {
+    throw std::invalid_argument("the thread's radial clearance must not be negative");
+  }
+  if (spec.flank_clearance < 0.0) {
+    throw std::invalid_argument("the thread's flank clearance must not be negative");
+  }
   return detail::run("thread", [&] {
     ShapePtr current = std::make_shared<Shape>(body);
     for (const std::string& face : spec.faces) {
       const CylinderFace cylinder = face_cylinder(*current, face);
-      if (!cylinder.internal && cylinder.radius <= spec.minor / 2.0 + kSame) {
+      check_clearance(spec, cylinder.internal);
+      if (!cylinder.internal && cylinder.radius <= spec.minor / 2.0 - spec.radial_clearance + kSame) {
         throw std::invalid_argument("face " + face + " is too thin for the thread");
       }
-      if (cylinder.internal && cylinder.radius >= spec.major / 2.0 - kSame) {
+      if (cylinder.internal && cylinder.radius >= spec.major / 2.0 + spec.radial_clearance - kSame) {
         throw std::invalid_argument("face " + face + " is too wide for the thread");
       }
       const double tolerance = 1.0e-6;

@@ -22,381 +22,28 @@
 //! curves the sketch no longer has (a profile older than the sketch's last
 //! edit) are left out.
 //!
-//! Where a profile has curves without geometry the rule can use (ellipses,
-//! splines) or selects nothing, its loops select the regions whose outer
+//! A curve cut into as many pieces as the file counts is numbered as the
+//! file numbers it; where the cuts of the record's loop do not give the
+//! file's count, the profile's other curves and then the sketch's are tried.
+//! A hole whose records name no curve of the sketch any more is dropped.
+//! Ellipses, elliptical arcs and splines ([`curves`]) take part like lines,
+//! arcs and circles; where their cuts contradict the file's count the
+//! rule gives way to the next one.
+//!
+//! Where a profile has curves the rule cannot use (a kind it does not follow,
+//! or cuts the file contradicts) or selects nothing, its loops select the regions whose outer
 //! loops share most of their curves (at least half of the two together),
 //! the pieces of a profile split by curves inside it (its children) each
 //! their own; a sketch of one region gives that one.
 
+mod curves;
+
 use std::collections::{BTreeSet, HashMap, HashSet};
-use std::f64::consts::TAU;
 
 use mitcad_f3d::design::ir::Geometry;
 use serde_json::Value;
 
-/// Distances (cm) within which curves meet.
-const TOL: f64 = 2e-5;
-
-/// A direction for the even-odd ray, unlikely to pass a vertex.
-const RAY_ANGLE: f64 = 0.813_771_9;
-
-type P = [f64; 2];
-
-fn sub(a: P, b: P) -> P {
-    [a[0] - b[0], a[1] - b[1]]
-}
-
-fn dot(a: P, b: P) -> f64 {
-    a[0] * b[0] + a[1] * b[1]
-}
-
-fn cross(a: P, b: P) -> f64 {
-    a[0] * b[1] - a[1] * b[0]
-}
-
-fn dist(a: P, b: P) -> f64 {
-    (a[0] - b[0]).hypot(a[1] - b[1])
-}
-
-/// A curve of the file's sketch, parameterised over [0, 1].
-#[derive(Debug, Clone, Copy, PartialEq)]
-enum Curve {
-    Line {
-        s: P,
-        e: P,
-    },
-    /// An arc or circle: the angle from `reference` towards `perp`, from
-    /// `a0` to `a1`.
-    Round {
-        c: P,
-        r: f64,
-        reference: P,
-        perp: P,
-        a0: f64,
-        a1: f64,
-        circle: bool,
-    },
-}
-
-impl Curve {
-    /// A line, arc or circle of the file's geometry (sketch space, cm).
-    fn of(g: &Geometry) -> Option<Curve> {
-        let two = |v: Option<[f64; 3]>| v.map(|v| [v[0], v[1]]);
-        match g.geometry_type.as_deref()? {
-            "Line3D" => Some(Curve::Line {
-                s: two(g.start_point)?,
-                e: two(g.end_point)?,
-            }),
-            t @ ("Arc3D" | "Circle3D") => {
-                let c = two(g.center)?;
-                let r = g.radius.filter(|r| *r > 1e-12)?;
-                let sign = if g.normal.map_or(1.0, |n| n[2]) >= 0.0 {
-                    1.0
-                } else {
-                    -1.0
-                };
-                let circle = t == "Circle3D";
-                let (reference, a0, a1) = if circle {
-                    ([1.0, 0.0], 0.0, TAU)
-                } else {
-                    (two(g.reference_vector)?, g.start_angle?, g.end_angle?)
-                };
-                Some(Curve::Round {
-                    c,
-                    r,
-                    reference,
-                    perp: [-reference[1] * sign, reference[0] * sign],
-                    a0,
-                    a1,
-                    circle,
-                })
-            }
-            _ => None,
-        }
-    }
-
-    fn point(&self, t: f64) -> P {
-        match *self {
-            Curve::Line { s, e } => [s[0] + t * (e[0] - s[0]), s[1] + t * (e[1] - s[1])],
-            Curve::Round {
-                c,
-                r,
-                reference,
-                perp,
-                a0,
-                a1,
-                ..
-            } => {
-                let a = a0 + t * (a1 - a0);
-                let (cos, sin) = (a.cos(), a.sin());
-                [
-                    c[0] + r * (cos * reference[0] + sin * perp[0]),
-                    c[1] + r * (cos * reference[1] + sin * perp[1]),
-                ]
-            }
-        }
-    }
-
-    /// The parameter of a point on the curve.
-    fn param(&self, p: P) -> f64 {
-        match *self {
-            Curve::Line { s, e } => {
-                let d = sub(e, s);
-                dot(sub(p, s), d) / dot(d, d)
-            }
-            Curve::Round {
-                c,
-                r,
-                reference,
-                perp,
-                a0,
-                a1,
-                circle,
-            } => {
-                let v = sub(p, c);
-                let mut a = (dot(v, perp).atan2(dot(v, reference)) - a0).rem_euclid(TAU);
-                if !circle && a > TAU - TOL / r {
-                    a -= TAU;
-                }
-                a / (a1 - a0)
-            }
-        }
-    }
-
-    fn length(&self) -> f64 {
-        match *self {
-            Curve::Line { s, e } => dist(s, e).max(1e-9),
-            Curve::Round { r, a0, a1, .. } => (r * (a1 - a0).abs()).max(1e-9),
-        }
-    }
-
-    fn is_circle(&self) -> bool {
-        matches!(self, Curve::Round { circle: true, .. })
-    }
-
-    fn contains(&self, t: f64) -> bool {
-        if self.is_circle() {
-            return true;
-        }
-        let tol = TOL / self.length();
-        (-tol..=1.0 + tol).contains(&t)
-    }
-
-    fn ends(&self) -> Vec<P> {
-        match self {
-            Curve::Line { s, e } => vec![*s, *e],
-            Curve::Round { circle: true, .. } => Vec::new(),
-            _ => vec![self.point(0.0), self.point(1.0)],
-        }
-    }
-}
-
-/// Where a line meets a circle (centre `c`, radius `r`), within the line.
-fn line_circle(s: P, e: P, c: P, r: f64) -> Vec<P> {
-    let d = sub(e, s);
-    let a = dot(d, d);
-    let len = a.sqrt();
-    let t0 = -dot(sub(s, c), d) / a;
-    let at = |t: f64| [s[0] + t * d[0], s[1] + t * d[1]];
-    let foot = at(t0);
-    let gap = dist(foot, c);
-    if gap > r + TOL {
-        return Vec::new();
-    }
-    let h2 = r * r - gap * gap;
-    let h = if h2 > 0.0 { h2.sqrt() } else { 0.0 };
-    let ts = if h < 3.0 * TOL || r - gap < TOL {
-        vec![t0]
-    } else {
-        vec![t0 - h / len, t0 + h / len]
-    };
-    ts.into_iter()
-        .filter(|t| (-TOL / len..=1.0 + TOL / len).contains(t))
-        .map(at)
-        .collect()
-}
-
-/// Where two curves meet; the ends of an overlap where they lie on each
-/// other.
-fn crossings(a: &Curve, b: &Curve) -> Vec<P> {
-    match (*a, *b) {
-        (Curve::Line { s: s1, e: e1 }, Curve::Line { s: s2, e: e2 }) => {
-            let (d1, d2) = (sub(e1, s1), sub(e2, s2));
-            let den = cross(d1, d2);
-            let (l1, l2) = (d1[0].hypot(d1[1]), d2[0].hypot(d2[1]));
-            if den.abs() < 1e-7 * l1 * l2 {
-                if cross(d1, sub(s2, s1)).abs() > TOL * l1 {
-                    return Vec::new();
-                }
-                let mut out: Vec<P> = [s2, e2]
-                    .into_iter()
-                    .filter(|p| a.contains(a.param(*p)))
-                    .collect();
-                out.extend([s1, e1].into_iter().filter(|p| b.contains(b.param(*p))));
-                return out;
-            }
-            let t = cross(sub(s2, s1), d2) / den;
-            let u = cross(sub(s2, s1), d1) / den;
-            if (-TOL / l1..=1.0 + TOL / l1).contains(&t)
-                && (-TOL / l2..=1.0 + TOL / l2).contains(&u)
-            {
-                vec![a.point(t)]
-            } else {
-                Vec::new()
-            }
-        }
-        (Curve::Line { s, e }, Curve::Round { c, r, .. }) => line_circle(s, e, c, r)
-            .into_iter()
-            .filter(|p| b.contains(b.param(*p)))
-            .collect(),
-        (Curve::Round { .. }, Curve::Line { .. }) => crossings(b, a),
-        (Curve::Round { c: c1, r: r1, .. }, Curve::Round { c: c2, r: r2, .. }) => {
-            let d = dist(c1, c2);
-            if d < 1e-9 {
-                if (r1 - r2).abs() >= TOL {
-                    return Vec::new();
-                }
-                let mut out: Vec<P> = a
-                    .ends()
-                    .into_iter()
-                    .filter(|p| b.contains(b.param(*p)))
-                    .collect();
-                out.extend(b.ends().into_iter().filter(|p| a.contains(a.param(*p))));
-                return out;
-            }
-            if d > r1 + r2 + TOL || d < (r1 - r2).abs() - TOL {
-                return Vec::new();
-            }
-            let x = (d * d + r1 * r1 - r2 * r2) / (2.0 * d);
-            let h = (r1 * r1 - x * x).max(0.0).sqrt();
-            let ex = [(c2[0] - c1[0]) / d, (c2[1] - c1[1]) / d];
-            let ey = [-ex[1], ex[0]];
-            let mut pts = vec![[c1[0] + x * ex[0] + h * ey[0], c1[1] + x * ex[1] + h * ey[1]]];
-            if h > TOL {
-                pts.push([c1[0] + x * ex[0] - h * ey[0], c1[1] + x * ex[1] - h * ey[1]]);
-            }
-            pts.into_iter()
-                .filter(|p| a.contains(a.param(*p)) && b.contains(b.param(*p)))
-                .collect()
-        }
-    }
-}
-
-/// Sorted values with those within `tol` of the one before left out.
-fn cluster(mut ts: Vec<f64>, tol: f64) -> Vec<f64> {
-    ts.sort_by(f64::total_cmp);
-    let mut out: Vec<f64> = Vec::new();
-    for t in ts {
-        if out.last().is_some_and(|l| t - l <= tol) {
-            continue;
-        }
-        out.push(t);
-    }
-    out
-}
-
-/// The pieces (parameter ranges) of `c` cut where the `others` cross it,
-/// in the file's order.
-fn pieces(c: &Curve, others: &[&Curve]) -> Vec<(f64, f64)> {
-    let tol = TOL / c.length();
-    let cuts: Vec<f64> = others
-        .iter()
-        .flat_map(|o| crossings(c, o))
-        .map(|p| c.param(p))
-        .collect();
-    if c.is_circle() {
-        let mut cuts = cluster(cuts.into_iter().map(|t| t.rem_euclid(1.0)).collect(), tol);
-        if cuts.len() > 1 && cuts[cuts.len() - 1] - cuts[0] > 1.0 - tol {
-            cuts.pop();
-        }
-        if cuts.is_empty() {
-            return vec![(0.0, 1.0)];
-        }
-        let mut out: Vec<(f64, f64)> = (0..cuts.len())
-            .map(|i| (cuts[i], cuts.get(i + 1).copied().unwrap_or(cuts[0] + 1.0)))
-            .collect();
-        // The piece holding the circle's start first.
-        if cuts[0] > tol {
-            out.rotate_right(1);
-        }
-        return out;
-    }
-    let mut ts = vec![0.0];
-    ts.extend(
-        cluster(cuts, tol)
-            .into_iter()
-            .filter(|t| tol < *t && *t < 1.0 - tol),
-    );
-    ts.push(1.0);
-    ts.windows(2).map(|w| (w[0], w[1])).collect()
-}
-
-/// Where the ray from `p` crosses a piece of a curve: the distances along
-/// the ray.
-fn ray_hits(c: &Curve, p: P, t0: f64, t1: f64) -> Vec<f64> {
-    let ray = [RAY_ANGLE.cos(), RAY_ANGLE.sin()];
-    let mut hits = Vec::new();
-    match *c {
-        Curve::Line { s, e } => {
-            let d = sub(e, s);
-            let den = cross(ray, d);
-            if den.abs() < 1e-12 {
-                return Vec::new();
-            }
-            let w = sub(s, p);
-            let along = cross(w, d) / den;
-            if along > 1e-9 {
-                hits.push((along, cross(w, ray) / den));
-            }
-        }
-        Curve::Round { c: centre, r, .. } => {
-            let f = sub(p, centre);
-            let b = dot(f, ray);
-            let disc = b * b - (dot(f, f) - r * r);
-            if disc < 0.0 {
-                return Vec::new();
-            }
-            let q = disc.sqrt();
-            for along in [-b - q, -b + q] {
-                if along > 1e-9 {
-                    hits.push((
-                        along,
-                        c.param([p[0] + along * ray[0], p[1] + along * ray[1]]),
-                    ));
-                }
-            }
-        }
-    }
-    hits.into_iter()
-        .filter(|(_, u)| {
-            if c.is_circle() {
-                (u - t0).rem_euclid(1.0) <= t1 - t0 + 1e-9
-            } else {
-                t0 - 1e-9 <= *u && *u <= t1 + 1e-9
-            }
-        })
-        .map(|(along, _)| along)
-        .collect()
-}
-
-/// Whether `p` lies inside the pieces by the even-odd rule; crossings at
-/// one place (coincident copies of a curve) count once.
-fn inside(pieces: &[(Curve, f64, f64)], p: P) -> bool {
-    let mut hits: Vec<f64> = pieces
-        .iter()
-        .flat_map(|(c, t0, t1)| ray_hits(c, p, *t0, *t1))
-        .collect();
-    hits.sort_by(f64::total_cmp);
-    let mut count = 0;
-    let mut last = f64::NEG_INFINITY;
-    for h in hits {
-        if h - last >= 1e-6 {
-            count += 1;
-            last = h;
-        }
-    }
-    count % 2 == 1
-}
+use curves::{Curve, inside, pieces};
 
 /// One record of a loop: the curve's sketch-local id (where the sketch
 /// has it) and its ids in the file, and which piece.
@@ -405,6 +52,8 @@ struct Piece {
     id: Option<String>,
     key: (u64, u64),
     piece: usize,
+    /// How many pieces the file says the curve is cut into.
+    pieces: usize,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -431,6 +80,7 @@ fn loops_of(v: &Value) -> Option<Vec<Loop>> {
                         id: c["id"].as_str().map(str::to_owned),
                         key: (c["primary"].as_u64()?, c["secondary"].as_u64()?),
                         piece: c["piece"].as_u64()? as usize,
+                        pieces: c["pieces"].as_u64()? as usize,
                     })
                 })
                 .collect::<Option<Vec<_>>>()?;
@@ -472,36 +122,126 @@ pub(crate) struct RegionView {
 /// (`_f3d_profile_loops`) select, by the module's rule; `curves` gives the
 /// file's geometry of the sketch's curves by their ids. None when the loops
 /// do not read or select nothing.
+#[cfg(test)]
 pub(crate) fn mapped_regions(
     loops: &Value,
     curves: &HashMap<String, Geometry>,
     regions: &[RegionView],
 ) -> Option<Vec<usize>> {
-    let profiles = profiles_of(loops)?;
-    let mut out = BTreeSet::new();
-    for p in &profiles {
-        let found = by_geometry(p, curves, regions)
-            .filter(|f| !f.is_empty())
-            .unwrap_or_else(|| by_curves(p, regions));
-        out.extend(found);
-    }
-    (!out.is_empty()).then(|| out.into_iter().collect())
+    mapped(loops, curves, regions).map(|(regions, _)| regions)
 }
 
-/// The regions inside a profile's loops; None when a curve it lists that
-/// the sketch has is no line, arc or circle.
+/// [`mapped_with`] without construction curves (for the tests).
+#[cfg(test)]
+pub(crate) fn mapped(
+    loops: &Value,
+    curves: &HashMap<String, Geometry>,
+    regions: &[RegionView],
+) -> Option<(Vec<usize>, bool)> {
+    mapped_with(loops, curves, &HashSet::new(), regions)
+}
+
+/// The selected regions and whether the selection is *exact* (mitcad#186):
+/// every profile's regions came from the even-odd rule alone, with every
+/// curve piece the profile lists found in the file's sketch and numbered
+/// (no listed curve missing, no piece beyond the curve's cuts, no
+/// by-curve-overlap fallback); only an exact selection counts as read.
+/// `construction` holds the ids of the sketch's construction curves, which cut
+/// no profile.
+pub(crate) fn mapped_with(
+    loops: &Value,
+    curves: &HashMap<String, Geometry>,
+    construction: &HashSet<String>,
+    regions: &[RegionView],
+) -> Option<(Vec<usize>, bool)> {
+    let profiles = profiles_of(loops)?;
+    let mut out = BTreeSet::new();
+    let mut exact = true;
+    for p in &profiles {
+        match by_geometry(p, curves, construction, regions).filter(|(f, _)| !f.is_empty()) {
+            Some((found, complete)) => {
+                exact &= complete;
+                out.extend(found);
+            }
+            None => {
+                exact = false;
+                out.extend(by_curves(p, regions));
+            }
+        }
+    }
+    (!out.is_empty()).then(|| (out.into_iter().collect(), exact))
+}
+
+/// The regions inside a profile's loops, and whether every record of its
+/// loops took part (found in the sketch, its piece numbered); None when a
+/// curve it lists that the sketch has is no line, arc or circle.
 fn by_geometry(
     p: &Profile,
     curves: &HashMap<String, Geometry>,
+    construction: &HashSet<String>,
     regions: &[RegionView],
-) -> Option<Vec<usize>> {
+) -> Option<(Vec<usize>, bool)> {
+    // The curves of the whole profile, and of the whole sketch, for the
+    // records whose curve the other curves of their loop do not cut into
+    // as many pieces as the file counts (built when one needs them).
+    let mut profile_cutters: Option<Vec<(String, Curve)>> = None;
+    let mut sketch_cutters: Option<Vec<(String, Curve)>> = None;
     let mut listed = Vec::new();
+    let mut complete = true;
     for l in &p.loops {
+        // A hole whose curves are all gone from the sketch is no hole any
+        // more: the profile is what its other loops enclose now (the
+        // sketch was edited after the profile; the material inside it is
+        // selected with the rest).
+        if !l.outer && !l.pieces.is_empty() && l.pieces.iter().all(|r| r.id.is_none()) {
+            if crate::tracing() {
+                eprintln!(
+                    "import: profile hole of {} records names no curve of the sketch: dropped",
+                    l.pieces.len()
+                );
+            }
+            continue;
+        }
         let mut known: Vec<(&Piece, Curve)> = Vec::new();
         for r in &l.pieces {
-            let Some(id) = &r.id else { continue };
-            let Some(g) = curves.get(id) else { continue };
-            known.push((r, Curve::of(g)?));
+            let Some(id) = &r.id else {
+                if crate::tracing() {
+                    eprintln!(
+                        "import: profile record {:?} has no curve id in the sketch",
+                        r.key
+                    );
+                }
+                complete = false;
+                if crate::tracing() {
+                    eprintln!("import:   a profile loop piece without a curve id");
+                }
+                continue;
+            };
+            let Some(g) = curves.get(id) else {
+                if crate::tracing() {
+                    eprintln!(
+                        "import: profile record {:?} names curve {id}, not in the file's sketch",
+                        r.key
+                    );
+                }
+                complete = false;
+                if crate::tracing() {
+                    eprintln!(
+                        "import:   a profile loop names curve {id}, which the sketch does not have"
+                    );
+                }
+                continue;
+            };
+            let Some(curve) = Curve::of(g) else {
+                if crate::tracing() {
+                    eprintln!(
+                        "import: profile curve {id} is a {:?}, not a line, arc or circle",
+                        g.geometry_type
+                    );
+                }
+                return None;
+            };
+            known.push((r, curve));
         }
         for (r, c) in &known {
             let others: Vec<&Curve> = known
@@ -509,18 +249,98 @@ fn by_geometry(
                 .filter(|(o, _)| o.id != r.id)
                 .map(|(_, c)| c)
                 .collect();
-            let all = pieces(c, &others);
-            let (t0, t1) = all
-                .get(r.piece.wrapping_sub(1))
-                .copied()
-                .unwrap_or((0.0, 1.0));
-            listed.push((*c, t0, t1));
+            let mut all = pieces(c, &others);
+            if all.len() != r.pieces {
+                let mut matched = "no cuts";
+                let own = r.id.as_deref();
+                let by_profile = profile_cutters.get_or_insert_with(|| {
+                    let mut seen = HashSet::new();
+                    p.loops
+                        .iter()
+                        .chain(p.children.iter().flatten())
+                        .flat_map(|l| l.pieces.iter())
+                        .filter_map(|r| r.id.as_deref())
+                        .filter(|id| seen.insert(*id))
+                        .filter_map(|id| Some((id.to_owned(), Curve::of(curves.get(id)?)?)))
+                        .collect()
+                });
+                let set: Vec<&Curve> = by_profile
+                    .iter()
+                    .filter(|(id, _)| Some(id.as_str()) != own)
+                    .map(|(_, c)| c)
+                    .collect();
+                let alt = pieces(c, &set);
+                if alt.len() == r.pieces {
+                    all = alt;
+                    matched = "the profile's curves";
+                } else {
+                    let by_sketch = sketch_cutters.get_or_insert_with(|| {
+                        curves
+                            .iter()
+                            .filter(|(id, _)| !construction.contains(*id))
+                            .filter_map(|(id, g)| Some((id.clone(), Curve::of(g)?)))
+                            .collect()
+                    });
+                    let set: Vec<&Curve> = by_sketch
+                        .iter()
+                        .filter(|(id, _)| Some(id.as_str()) != own)
+                        .map(|(_, c)| c)
+                        .collect();
+                    let alt = pieces(c, &set);
+                    if alt.len() == r.pieces {
+                        all = alt;
+                        matched = "the sketch's curves";
+                    }
+                }
+                if crate::tracing() {
+                    eprintln!(
+                        "import: profile record {:?} of curve {:?}: the file counts {} pieces, the loop's cuts give {}; {}",
+                        r.key,
+                        r.id,
+                        r.pieces,
+                        pieces(c, &others).len(),
+                        matched
+                    );
+                }
+                // Cuts found numerically that disagree with the file's own count
+                // number the pieces unreliably: the loops are left to the
+                // curve-overlap rule.
+                if matched == "no cuts" && (c.is_numeric() || others.iter().any(|o| o.is_numeric()))
+                {
+                    return None;
+                }
+            }
+            let (t0, t1) = match all.get(r.piece.wrapping_sub(1)) {
+                Some(&range) => range,
+                None => {
+                    if crate::tracing() {
+                        eprintln!(
+                            "import: profile record {:?} names piece {} of curve {:?}, which has {}",
+                            r.key,
+                            r.piece,
+                            r.id,
+                            all.len()
+                        );
+                    }
+                    complete = false;
+                    if crate::tracing() {
+                        eprintln!(
+                            "import:   a profile loop names piece {} of curve {:?}, which has {}",
+                            r.piece,
+                            r.id,
+                            all.len()
+                        );
+                    }
+                    (0.0, 1.0)
+                }
+            };
+            listed.push((c.clone(), t0, t1));
         }
     }
     if listed.is_empty() {
-        return Some(Vec::new());
+        return Some((Vec::new(), false));
     }
-    Some(
+    Some((
         regions
             .iter()
             .enumerate()
@@ -530,7 +350,8 @@ fn by_geometry(
             })
             .map(|(i, _)| i)
             .collect(),
-    )
+        complete,
+    ))
 }
 
 /// The regions whose outer loops share most curves with the profile's
@@ -620,6 +441,10 @@ mod tests {
         }
     }
 
+    fn rec_n(id: &str, piece: u64, pieces: u64) -> Value {
+        json!({"id": id, "primary": 1, "secondary": 0, "piece": piece, "pieces": pieces})
+    }
+
     fn rec(id: &str, piece: u64) -> Value {
         json!({"id": id, "primary": 1, "secondary": 0, "piece": piece, "pieces": 1})
     }
@@ -686,6 +511,43 @@ mod tests {
             mapped_regions(&all, &curves, &regions),
             Some(vec![0, 1, 2, 3])
         );
+        // Every record found in the sketch: exact (mitcad#186).
+        for loops in [&square, &half, &all] {
+            assert!(mapped(loops, &curves, &regions).unwrap().1);
+        }
+        // A record naming a curve the sketch no longer has, or a piece the
+        // curve does not have, leaves the selection inexact.
+        let stale = json!([{"loops": [
+            {"outer": true, "curves": [rec("c0", 1), rec("c1", 1), rec("c2", 1), rec("c3", 1),
+                                       rec("c9", 1)]},
+            {"outer": false, "curves": [rec("c4", 1)]}], "children": []}]);
+        let (found, exact) = mapped(&stale, &curves, &regions).unwrap();
+        assert_eq!(found, vec![0, 1]);
+        assert!(!exact);
+        let beyond = json!([{"loops": [
+            {"outer": true, "curves": [rec("c4", 1), rec("c5", 7)]}], "children": []}]);
+        assert!(!mapped(&beyond, &curves, &regions).unwrap().1);
+        // A hole whose curves are all gone is dropped: the square's
+        // regions, the circle's too, are inside the profile, exactly. A
+        // hole with a curve the sketch has and one it does not stays
+        // inexact, and so does an outer loop that lost its curves.
+        let no_curve = json!({"primary": 9, "secondary": 0, "piece": 1, "pieces": 1});
+        let outer = json!({"outer": true,
+            "curves": [rec("c0", 1), rec("c1", 1), rec("c2", 1), rec("c3", 1)]});
+        let gone = json!([{"loops": [outer.clone(),
+            {"outer": false, "curves": [no_curve.clone()]}], "children": []}]);
+        let (found, exact) = mapped(&gone, &curves, &regions).unwrap();
+        assert_eq!(found, vec![0, 1, 2, 3]);
+        assert!(exact);
+        let partly = json!([{"loops": [outer.clone(),
+            {"outer": false, "curves": [rec("c4", 1), no_curve.clone()]}], "children": []}]);
+        let (found, exact) = mapped(&partly, &curves, &regions).unwrap();
+        assert_eq!(found, vec![0, 1]);
+        assert!(!exact);
+        let lost = json!([{"loops": [
+            {"outer": true, "curves": [rec("c0", 1), rec("c1", 1), rec("c2", 1), no_curve]}],
+            "children": []}]);
+        assert!(mapped(&lost, &curves, &regions).is_none_or(|(_, exact)| !exact));
     }
 
     #[test]
@@ -704,6 +566,8 @@ mod tests {
             {"outer": true, "curves": [rec("c0", 1), rec("c1", 1), rec("c5", 1), rec("c4", 1)]}],
             "children": []}]);
         assert_eq!(mapped_regions(&triangle, &curves, &regions), Some(vec![0]));
+        // By the curves: not exact.
+        assert!(!mapped(&triangle, &curves, &regions).unwrap().1);
         // Children: each piece selects its own region.
         let split = json!([{"loops": [{"outer": true, "curves": [rec("c4", 1)]}], "children": [
             [{"outer": true, "curves": [rec("c4", 1), rec("c5", 1)]}]]}]);
@@ -713,5 +577,145 @@ mod tests {
         let stale = json!([{"loops": [{"outer": true, "curves": [
             {"primary": 9, "secondary": 0, "piece": 1, "pieces": 1}]}], "children": []}]);
         assert_eq!(mapped_regions(&stale, &curves, &regions), None);
+    }
+
+    fn ellipse(c: [f64; 2], major: [f64; 2], a: f64, b: f64) -> Geometry {
+        Geometry {
+            geometry_type: Some("Ellipse3D".into()),
+            center: Some([c[0], c[1], 0.0]),
+            normal: Some([0.0, 0.0, 1.0]),
+            major_axis: Some([major[0], major[1], 0.0]),
+            major_radius: Some(a),
+            minor_radius: Some(b),
+            ..Geometry::default()
+        }
+    }
+
+    /// The rational quadratic quarter of the unit circle from (1, 0) to
+    /// (0, 1), as a sketch spline stores it.
+    fn quarter_spline() -> Geometry {
+        Geometry {
+            geometry_type: Some("NurbsCurve3D".into()),
+            nurbs: Some(json!({
+                "degree": 2, "isRational": true, "isPeriodic": false,
+                "controlPointCount": 3,
+                "knots": [0.0, 0.0, 0.0, 1.0, 1.0, 1.0],
+                "controlPoints": [[1.0, 0.0, 0.0], [1.0, 1.0, 0.0], [0.0, 1.0, 0.0]],
+                "weights": [1.0, std::f64::consts::FRAC_1_SQRT_2, 1.0],
+            })),
+            ..Geometry::default()
+        }
+    }
+
+    #[test]
+    fn ellipses_are_cut_and_numbered_like_circles() {
+        let e = Curve::of(&ellipse([0.0, 0.0], [1.0, 0.0], 2.0, 1.0)).unwrap();
+        let l = Curve::of(&line([-3.0, 0.5], [3.0, 0.5])).unwrap();
+        // The line meets the ellipse at 30° and 150° of its parameter: the
+        // piece holding the start (150° round to 30°) comes first.
+        let p = pieces(&e, &[&l]);
+        assert_eq!(p.len(), 2);
+        assert!((p[0].0 - 5.0 / 12.0).abs() < 1e-9 && (p[0].1 - 13.0 / 12.0).abs() < 1e-9);
+        assert!((p[1].0 - 1.0 / 12.0).abs() < 1e-9 && (p[1].1 - 5.0 / 12.0).abs() < 1e-9);
+        // The line is cut at x = ±√3 of the 6 cm.
+        let q = pieces(&l, &[&e]);
+        assert_eq!(q.len(), 3);
+        assert!((q[1].0 - (3.0 - 3f64.sqrt()) / 6.0).abs() < 1e-9);
+        // A rotated ellipse: its parameter starts at the major axis end.
+        let r = Curve::of(&ellipse([1.0, 1.0], [0.0, 1.0], 2.0, 1.0)).unwrap();
+        let s = r.point(0.0);
+        assert!((s[0] - 1.0).abs() < 1e-9 && (s[1] - 3.0).abs() < 1e-9);
+        let t = r.point(0.25);
+        assert!((t[0] - 0.0).abs() < 1e-9 && (t[1] - 1.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn a_spline_is_cut_where_the_curves_cross_it() {
+        let s = Curve::of(&quarter_spline()).unwrap();
+        for k in 0..=10 {
+            let p = s.point(k as f64 / 10.0);
+            assert!((p[0].hypot(p[1]) - 1.0).abs() < 1e-12);
+        }
+        let d = Curve::of(&line([0.0, 0.0], [2.0, 2.0])).unwrap();
+        let p = pieces(&s, &[&d]);
+        assert_eq!(p.len(), 2);
+        assert!((p[0].1 - 0.5).abs() < 1e-9 && (p[1].0 - 0.5).abs() < 1e-9);
+        // A circle that the spline lies along is cut at the ends of the
+        // stretch only.
+        let c = Curve::of(&circle([0.0, 0.0], 1.0)).unwrap();
+        let p = pieces(&c, &[&s]);
+        assert_eq!(p.len(), 2);
+        assert!((p[0].1 - 0.25).abs() < 1e-6);
+        // A line ending on the spline cuts it there.
+        let t = Curve::of(&line([0.0, 0.0], [0.6, 0.8])).unwrap();
+        let p = pieces(&s, &[&t]);
+        assert_eq!(p.len(), 2);
+        let want = s.param([0.6, 0.8]);
+        assert!((p[0].1 - want).abs() < 1e-9);
+    }
+
+    /// A quarter disc of the unit circle (a spline for the arc) cut in two
+    /// by a diagonal, and a quarter ellipse beside it.
+    #[test]
+    fn profiles_of_ellipses_and_splines_select_exactly() {
+        let curves = HashMap::from([
+            ("c0".to_owned(), line([0.0, 0.0], [1.0, 0.0])),
+            ("c1".to_owned(), quarter_spline()),
+            ("c2".to_owned(), line([0.0, 1.0], [0.0, 0.0])),
+            ("c3".to_owned(), line([0.0, 0.0], [1.0, 1.0])),
+            ("c4".to_owned(), ellipse([5.0, 0.0], [1.0, 0.0], 2.0, 1.0)),
+            ("c5".to_owned(), line([3.0, 0.0], [7.0, 0.0])),
+        ]);
+        let region = |x: f64, y: f64| RegionView {
+            inside: Some([x * 10.0, y * 10.0]),
+            outer: None,
+        };
+        let regions = vec![
+            region(0.6, 0.2),
+            region(0.2, 0.6),
+            region(5.0, 0.5),
+            region(5.0, -0.5),
+        ];
+        // The lower half of the quarter disc: the first piece of the spline
+        // and of the diagonal, and the line along the x axis.
+        let lower = json!([{"loops": [{"outer": true, "curves": [
+            rec_n("c0", 1, 1), rec_n("c1", 1, 2), rec_n("c3", 1, 2)]}], "children": []}]);
+        // c1 is cut by c3 once (2 pieces): the loop lists piece 1 of the
+        // spline and, the diagonal being cut by the spline's end, 1 of 1.
+        let (found, exact) = mapped(&lower, &curves, &regions).unwrap();
+        assert_eq!(found, vec![0]);
+        assert!(exact);
+        // The ellipse cut by the line along its major axis: the upper half
+        // is the ellipse's first piece, from its start (0°) to 180°.
+        let upper = json!([{"loops": [{"outer": true, "curves": [
+            rec_n("c4", 1, 2), rec_n("c5", 1, 1)]}], "children": []}]);
+        let (found, exact) = mapped(&upper, &curves, &regions).unwrap();
+        assert_eq!(found, vec![2]);
+        assert!(exact);
+        // Pieces numbered by numeric cuts that the file's count contradicts
+        // are not trusted: no exact selection.
+        let miscounted = json!([{"loops": [{"outer": true, "curves": [
+            rec_n("c0", 1, 1), rec_n("c1", 1, 7), rec_n("c3", 1, 2)]}], "children": []}]);
+        assert!(mapped(&miscounted, &curves, &regions).is_none_or(|(_, exact)| !exact));
+        // A piece the curve does not have is not exact.
+        let beyond = json!([{"loops": [{"outer": true, "curves": [
+            rec_n("c4", 5, 2), rec_n("c5", 1, 1)]}], "children": []}]);
+        assert!(!mapped(&beyond, &curves, &regions).unwrap().1);
+    }
+
+    #[test]
+    fn a_curve_cut_by_curves_outside_the_loop_is_numbered_by_the_file_count() {
+        let (curves, regions) = sketch();
+        let rec_of = |id: &str, piece: u64, pieces: u64| json!({"id": id, "primary": 1, "secondary": 0, "piece": piece, "pieces": pieces});
+        // The circle is cut in two by the diagonal c5, which the loop does
+        // not list: the file's count of two pieces says the cuts of the
+        // sketch's other curves number the circle.
+        let by_sketch = json!([{"loops": [{"outer": true, "curves": [rec_of("c4", 2, 2)]}],
+                                "children": []}]);
+        assert!(mapped(&by_sketch, &curves, &regions).unwrap().1);
+        // A count that no cuts of the sketch give: the piece is not found.
+        let none = json!([{"loops": [{"outer": true, "curves": [rec_of("c4", 2, 5)]}],
+                           "children": []}]);
+        assert!(!mapped(&none, &curves, &regions).unwrap().1);
     }
 }

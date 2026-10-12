@@ -3,6 +3,7 @@
 
 #include <cmath>
 #include <cstddef>
+#include <memory>
 #include <new>
 #include <stdexcept>
 #include <string>
@@ -278,9 +279,10 @@ bool shape_is_valid(const geometry::Shape& shape) {
     return false;
   }
   // The checker catches an allocation that fails and calls the sub-shape
-  // invalid (mitcad#132): that is no answer.
+  // invalid (mitcad#132): that is no answer. (On OCCT's thread pool, whose
+  // jobs count as this thread's, mitcad#181.)
   const std::size_t failed = geometry::failed_allocations_in_thread();
-  const bool valid = BRepCheck_Analyzer(shape.occt()).IsValid();
+  const bool valid = BRepCheck_Analyzer(shape.occt(), true, true).IsValid();
   if (geometry::failed_allocations_in_thread() != failed) {
     throw std::bad_alloc();
   }
@@ -306,6 +308,47 @@ std::shared_ptr<geometry::Shape> f3d_build_body(const f3d::BrepBodyData& data) {
   }
   return std::make_shared<geometry::Shape>(result.shape);
 }
+
+std::unique_ptr<F3dBases> f3d_bases() { return std::make_unique<F3dBases>(); }
+
+void f3d_bases_add(F3dBases& bases, const std::shared_ptr<F3dBuilt>& built) {
+  if (built && built->healed) {
+    bases.bases.push_back(built->healed);
+  }
+}
+
+std::shared_ptr<F3dBuilt> f3d_build_body_from(const f3d::BrepBodyData& data, const F3dBases& bases) {
+  brep::BuildOptions options;
+  options.measure = false;
+  options.progress = [] { f3d_build_progress(); };
+  options.keep = true;
+  options.bases = bases.bases;
+  const brep::BuildResult result = brep::build_body(to_body(data), options);
+  if (result.report.out_of_memory) {
+    throw std::runtime_error("building a body of the file: out of memory");
+  }
+  auto built = std::make_shared<F3dBuilt>();
+  for (const std::string& message : result.report.messages) {
+    if (message.rfind("healed as a whole", 0) == 0 || message.rfind("kept ", 0) == 0 ||
+        message.rfind("taken in ", 0) == 0) {
+      built->note += (built->note.empty() ? "" : ", ") + message;
+    }
+  }
+  if (result.report.built && !result.shape.IsNull()) {
+    built->shape = std::make_shared<geometry::Shape>(result.shape);
+    built->healed = result.healed;
+    built->reused = static_cast<std::uint32_t>(result.report.reused_faces);
+  }
+  return built;
+}
+
+std::shared_ptr<geometry::Shape> f3d_built_shape(const F3dBuilt& built) { return built.shape; }
+
+std::uint32_t f3d_built_reused(const F3dBuilt& built) { return built.reused; }
+
+bool f3d_built_kept(const F3dBuilt& built) { return built.healed != nullptr; }
+
+rust::String f3d_built_note(const F3dBuilt& built) { return rust::String(built.note); }
 
 std::shared_ptr<geometry::Shape> f3d_read_body(rust::Slice<const std::uint8_t> data) {
   try {

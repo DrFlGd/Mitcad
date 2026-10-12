@@ -21,6 +21,7 @@ bool active();
 bool nativeFocused();
 bool controlExists(const QString& identifier);
 bool click(const QString& identifier, QString& error);
+bool hover(const QString& identifier, bool enter, QString& error);
 bool clickImmediately(const QString& identifier, QString& error);
 bool replaceText(const QString& identifier, const QString& text, QString& error);
 bool choose(const QString& identifier, const QString& title, QString& error);
@@ -33,6 +34,7 @@ bool textOf(const QString& identifier, QString& text);
 bool textMatches(const QString& identifier, const QRegularExpression& expression);
 bool enabled(const QString& identifier, bool expected);
 bool visible(const QString& identifier, bool expected);
+bool present(const QString& identifier, bool expected);
 bool resizeDocument(int width, int height, QString& error);
 bool setAppearance(const QString& name, QString& error);
 bool floatingLayout(QString& error);
@@ -58,6 +60,7 @@ inline bool active() { return false; }
 inline bool nativeFocused() { return false; }
 inline bool controlExists(const QString&) { return false; }
 inline bool click(const QString&, QString&) { return false; }
+inline bool hover(const QString&, bool, QString&) { return false; }
 inline bool clickImmediately(const QString&, QString&) { return false; }
 inline bool replaceText(const QString&, const QString&, QString&) { return false; }
 inline bool choose(const QString&, const QString&, QString&) { return false; }
@@ -70,6 +73,7 @@ inline bool textOf(const QString&, QString&) { return false; }
 inline bool textMatches(const QString&, const QRegularExpression&) { return false; }
 inline bool enabled(const QString&, bool) { return false; }
 inline bool visible(const QString&, bool) { return false; }
+inline bool present(const QString&, bool) { return false; }
 inline bool resizeDocument(int, int, QString&) { return false; }
 inline bool setAppearance(const QString&, QString&) { return false; }
 inline bool floatingLayout(QString&) { return false; }

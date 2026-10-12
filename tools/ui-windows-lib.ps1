@@ -48,6 +48,8 @@ public static class UiInput {
     [DllImport("user32.dll")] static extern bool GetKeyboardState(byte[] state);
     [DllImport("user32.dll")] static extern bool SetKeyboardState(byte[] state);
     [DllImport("kernel32.dll")] static extern uint GetCurrentThreadId();
+    [DllImport("user32.dll")] static extern IntPtr SendMessageTimeout(IntPtr hwnd, uint msg, IntPtr wparam, IntPtr lparam,
+                                                               uint flags, uint timeout, out IntPtr result);
 
     const uint WM_KEYDOWN = 0x100, WM_KEYUP = 0x101, WM_SYSKEYDOWN = 0x104, WM_SYSKEYUP = 0x105;
     const uint WM_MOUSEMOVE = 0x200;
@@ -124,10 +126,26 @@ public static class UiInput {
         if (modified) SetModifiers(hwnd, ctrl, shift, alt);
         PostKey(hwnd, vk, alt);
         if (modified) {
-            // The state must hold until the app has taken the messages.
+            // The state must hold until the app has taken the messages: a
+            // busy app (a build beside the test) may take longer than the
+            // pause, so its thread is waited for too.
             Thread.Sleep(120);
+            Sync(hwnd);
             ReleaseModifiers(hwnd);
         }
+    }
+
+    const uint WM_NULL = 0, SMTO_NORMAL = 0;
+
+    // Returns once the window's thread has handled the messages posted to it
+    // before: a sent message is handled when the thread next looks for
+    // messages, so the second one only after the posted ones the first call
+    // found are done (up to 10 s each).
+    static void Sync(IntPtr hwnd) {
+        IntPtr result;
+        SendMessageTimeout(hwnd, WM_NULL, IntPtr.Zero, IntPtr.Zero, SMTO_NORMAL, 10000, out result);
+        Thread.Sleep(30);
+        SendMessageTimeout(hwnd, WM_NULL, IntPtr.Zero, IntPtr.Zero, SMTO_NORMAL, 10000, out result);
     }
 
     const uint WM_CHAR = 0x102;
@@ -363,7 +381,7 @@ function Ui-LastMatch([string]$Pattern) {
 $script:UiKeys = @{
   'Return' = 0x0D; 'Escape' = 0x1B; 'Tab' = 0x09; 'BackSpace' = 0x08; 'Delete' = 0x2E; 'space' = 0x20
   'Up' = 0x26; 'Down' = 0x28; 'Left' = 0x25; 'Right' = 0x27; 'Home' = 0x24; 'End' = 0x23
-  'F2' = 0x71; 'F4' = 0x73; 'F6' = 0x75; 'F7' = 0x76; 'F8' = 0x77; 'F9' = 0x78; 'F11' = 0x7A; 'F12' = 0x7B
+  'F2' = 0x71; 'F3' = 0x72; 'F4' = 0x73; 'F5' = 0x74; 'F6' = 0x75; 'F7' = 0x76; 'F8' = 0x77; 'F9' = 0x78; 'F11' = 0x7A; 'F12' = 0x7B
 }
 
 # Ui-Key "ctrl+z" ["Return" ...]: key presses with modifiers, to the window

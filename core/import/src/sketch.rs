@@ -17,7 +17,7 @@
 //!   entities (construction circles and lines, points on circles) come
 //!   after all others.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use mitcad_f3d::design::ir::{
     Geometry, RefValue, Reference, SketchConstraint, SketchCurve, SketchDetail, SketchDimension,
@@ -28,6 +28,7 @@ use serde_json::{Value, json};
 use crate::geom::{add, cross, mm, scale, unit};
 use crate::params::ParamMap;
 
+pub(crate) mod edges;
 mod groups;
 
 /// What a sketch translates to, without its plane.
@@ -54,6 +55,10 @@ pub struct SketchParts {
     pub positions: Vec<(u32, [f64; 2])>,
     /// What was left out.
     pub dropped: Vec<String>,
+    /// Curves the file links to geometry outside the sketch (projected or
+    /// included). They come in as fixed reference entities; the source
+    /// they follow is not stored in the curve (no linked projection).
+    pub linked: usize,
 }
 
 /// Point or curve.
@@ -145,6 +150,9 @@ pub fn translate(detail: &SketchDetail, params: &ParamMap) -> SketchParts {
                 if c.is_fixed == Some(true) || c.is_reference == Some(true) {
                     e["fixed"] = json!(true);
                 }
+                if c.is_linked == Some(true) {
+                    parts.linked += 1;
+                }
                 if c.is_reference == Some(true) {
                     e["reference"] = json!(true);
                 }
@@ -168,6 +176,12 @@ pub fn translate(detail: &SketchDetail, params: &ParamMap) -> SketchParts {
     parts.positions = point_at.iter().map(|(n, at)| (*n, *at)).collect();
     parts.positions.sort_by_key(|(n, _)| *n);
 
+    let fit_points: HashSet<String> = curves
+        .iter()
+        .filter_map(|c| c.fit_points.as_ref())
+        .flatten()
+        .cloned()
+        .collect();
     let mut added = groups::Group::default();
     let mut dropped = Vec::new();
     let mut constraints = Vec::new();
@@ -191,6 +205,9 @@ pub fn translate(detail: &SketchDetail, params: &ParamMap) -> SketchParts {
             Some("PolygonConstraint") => Some(groups::polygon(c, &mut sk)),
             Some("CircularPatternConstraint") => Some(groups::circular_pattern(c, &mut sk)),
             Some("RectangularPatternConstraint") => Some(groups::rectangular_pattern(c, &mut sk)),
+            Some("MidPointConstraint") if groups::is_curve_pair(c, &ids) => {
+                Some(groups::midpoint_on_curve(c, &mut sk))
+            }
             Some("OffsetConstraint") => Some(groups::offset(c, &mut sk, dims).map(|(g, d)| {
                 offset_dimensions.extend(d);
                 g
@@ -201,7 +218,14 @@ pub fn translate(detail: &SketchDetail, params: &ParamMap) -> SketchParts {
             Some(g) => g
                 .map(|g| added.append(g))
                 .map_err(|e| format!("{}: {e}", c.constraint_type.as_deref().unwrap_or_default())),
-            None => constraint(c, &ids).map(|k| constraints.extend(k)),
+            // A fitted spline's tangent handles are no curves of the sketch,
+            // and its curve is kept as it is: what only places the fit
+            // points at their middles binds nothing.
+            None if handle_constraint(c, &fit_points) => Ok(()),
+            None => match fixed_smooth(c, &ids, &sk.entities) {
+                Some(reason) => Err(reason),
+                None => constraint(c, &ids, &sk.entities).map(|k| constraints.extend(k)),
+            },
         };
         if let Err(reason) = result {
             dropped.push(format!("{}: {reason}", c.id.as_deref().unwrap_or("?")));
@@ -223,7 +247,7 @@ pub fn translate(detail: &SketchDetail, params: &ParamMap) -> SketchParts {
                 .and_then(|v| groups::concentric_dimension(d, &mut sk, v))
                 .map(|g| added.append(g))
                 .map_err(|e| format!("{kind}: {e}")),
-            _ => dimension(d, &ids, params).map(|pair| dimensions.push(pair)),
+            _ => dimension(d, &ids, params, &sk.entities).map(|pair| dimensions.push(pair)),
         };
         if let Err(reason) = result {
             dropped.push(format!("{}: {reason}", d.id.as_deref().unwrap_or("?")));
@@ -339,7 +363,14 @@ fn curve(
                 extra,
             )?;
             let radius = g.radius.or(c.radius).ok_or("no radius")?;
-            Ok(json!({"id": id, "type": "circle", "center": p(center), "radius": mm(radius)}))
+            let mut circle =
+                json!({"id": id, "type": "circle", "center": p(center), "radius": mm(radius)});
+            // Where the file's circle starts (its seam, read from the stored
+            // bodies): the cylinder it makes has its seam edge there.
+            if let Some(start) = c.f3d_seam.filter(|a| a.abs() > 1e-9) {
+                circle["start_angle"] = json!(start);
+            }
+            Ok(circle)
         }
         "SketchArc" => {
             let center_at = g.center.map(xy);
@@ -491,9 +522,6 @@ fn spline(
     point_at: &mut HashMap<u32, [f64; 2]>,
     extra: &mut Vec<Value>,
 ) -> Result<Value, String> {
-    if nurbs["isPeriodic"] == true {
-        return Err("periodic splines are not supported".to_owned());
-    }
     let degree = nurbs["degree"].as_u64().ok_or("no degree")? as u32;
     let poles: Vec<[f64; 2]> = nurbs["controlPoints"]
         .as_array()
@@ -509,6 +537,19 @@ fn spline(
             Ok(xy(v))
         })
         .collect::<Result<_, String>>()?;
+    // The decoder calls a spline "periodic" where its knot vector is not
+    // clamped; such a curve is a periodic one only where its control polygon
+    // wraps (the first control points are the last ones). Without it the
+    // curve is open and a B-spline like any other.
+    let wraps = degree > 0
+        && poles.len() > 2 * degree as usize
+        && poles[..degree as usize]
+            .iter()
+            .zip(&poles[poles.len() - degree as usize..])
+            .all(|(a, b)| (a[0] - b[0]).abs() < 1e-9 && (a[1] - b[1]).abs() < 1e-9);
+    if nurbs["isPeriodic"] == true && wraps {
+        return Err("periodic splines are not supported".to_owned());
+    }
     let knots: Vec<f64> = serde_json::from_value(nurbs["knots"].clone()).unwrap_or_default();
     let weights: Vec<f64> = if nurbs["isRational"] == true {
         serde_json::from_value(nurbs["weights"].clone()).unwrap_or_default()
@@ -604,10 +645,64 @@ fn resolve(refs: &[RefOf], ids: &Ids) -> Result<Vec<(String, Kind)>, String> {
         .collect()
 }
 
-fn constraint(c: &SketchConstraint, ids: &Ids) -> Result<Option<Value>, String> {
+/// Why a smooth constraint (mitcad#186) cannot be kept: one of its curves
+/// is a fixed spline (a fitted spline gets control points of its own here,
+/// which the other curve's end does not share), and the sketch would not
+/// take it, losing its other constraints with it.
+fn fixed_smooth(
+    c: &SketchConstraint,
+    ids: &Ids,
+    entities: &HashMap<String, &Value>,
+) -> Option<String> {
+    if c.constraint_type.as_deref() != Some("SmoothConstraint") {
+        return None;
+    }
+    let curves = resolve(&refs(c.refs.as_ref(), &["curveOne", "curveTwo"]), ids).ok()?;
+    curves
+        .iter()
+        .any(|(name, _)| {
+            entities
+                .get(name)
+                .is_some_and(|e| e["type"] == "spline" && e["fixed"] == true)
+        })
+        .then(|| {
+            "SmoothConstraint: a smooth join with a fixed spline is not supported (a fitted \
+             spline's control points are fixed)"
+                .to_owned()
+        })
+}
+
+/// A midpoint constraint between a fit point of a fitted spline and a curve
+/// the sketch does not list: the point at the middle of the spline's
+/// tangent handle there.
+fn handle_constraint(c: &SketchConstraint, fit_points: &HashSet<String>) -> bool {
+    if c.constraint_type.as_deref() != Some("MidPointConstraint") {
+        return false;
+    }
+    matches!(
+        &refs(c.refs.as_ref(), &["point", "midPointCurve"])[..],
+        [RefOf::Outside, RefOf::Local(p)] | [RefOf::Local(p), RefOf::Outside] if fit_points.contains(p)
+    )
+}
+
+fn constraint(
+    c: &SketchConstraint,
+    ids: &Ids,
+    entities: &HashMap<String, &Value>,
+) -> Result<Option<Value>, String> {
     let Some(kind) = c.constraint_type.as_deref() else {
         return Err("constraint type not decoded".to_owned());
     };
+    // What ties the construction lines of a control point spline's polygon
+    // or of a text's box to their spline or text constrains none of the
+    // geometry: the lines share the control points' places and the text
+    // keeps its own frame (mitcad#186).
+    if matches!(
+        kind,
+        "ControlPolygonConstraint" | "TextBoxConstraint" | "TextPathConstraint"
+    ) {
+        return Ok(None);
+    }
     let keys: &[&str] = match kind {
         "CoincidentConstraint" => &["point", "entity"],
         "HorizontalConstraint" | "VerticalConstraint" => &["line"],
@@ -669,6 +764,45 @@ fn constraint(c: &SketchConstraint, ids: &Ids) -> Result<Option<Value>, String> 
         }
         "ParallelConstraint" => two_curves("parallel")?,
         "PerpendicularConstraint" => two_curves("perpendicular")?,
+        // Three points on a line (a centre line's ends and a point it
+        // passes, such as the origin): the stored constraint names the
+        // points, not a line. The sketch's line between two of them takes
+        // the third.
+        "CollinearConstraint" if curves.is_empty() && points.len() == 3 => {
+            let ends = |line: &Value| -> Option<(String, String)> {
+                Some((
+                    line["start"].as_str()?.to_owned(),
+                    line["end"].as_str()?.to_owned(),
+                ))
+            };
+            let mut found = None;
+            for (name, line) in entities {
+                if line["type"] != "line" {
+                    continue;
+                }
+                let Some((a, b)) = ends(line) else { continue };
+                let others: Vec<&&String> = points
+                    .iter()
+                    .filter(|p| p.as_str() != a && p.as_str() != b)
+                    .collect();
+                if others.len() == 1
+                    && points.iter().any(|p| **p == a)
+                    && points.iter().any(|p| **p == b)
+                {
+                    // The smallest line name first, so the choice does not
+                    // depend on the map's order.
+                    if found
+                        .as_ref()
+                        .is_none_or(|(n, _): &(String, String)| name < n)
+                    {
+                        found = Some((name.clone(), others[0].to_string()));
+                    }
+                }
+            }
+            let (line, point) =
+                found.ok_or("collinear points without a line through two of them")?;
+            json!({"type": "coincident", "point": point, "entity": line})
+        }
         "CollinearConstraint" => two_curves("collinear")?,
         "TangentConstraint" => two_curves("tangent")?,
         "SmoothConstraint" => two_curves("smooth")?,
@@ -695,7 +829,12 @@ fn constraint(c: &SketchConstraint, ids: &Ids) -> Result<Option<Value>, String> 
 }
 
 /// The driving and the driven form of a dimension.
-fn dimension(d: &SketchDimension, ids: &Ids, params: &ParamMap) -> Result<(Value, Value), String> {
+fn dimension(
+    d: &SketchDimension,
+    ids: &Ids,
+    params: &ParamMap,
+    entities: &HashMap<String, &Value>,
+) -> Result<(Value, Value), String> {
     let Some(kind) = d.dimension_type.as_deref() else {
         return Err("dimension type not decoded".to_owned());
     };
@@ -707,6 +846,7 @@ fn dimension(d: &SketchDimension, ids: &Ids, params: &ParamMap) -> Result<(Value
         "SketchEllipseMajorRadiusDimension" | "SketchEllipseMinorRadiusDimension" => &["ellipse"],
         "SketchLinearDiameterDimension" => &["line", "entityTwo"],
         "SketchArcLengthDimension" => &["arc"],
+        "SketchTangentDistanceDimension" => &["circleOrArc", "entityOne"],
         other => return Err(format!("{other} is not supported")),
     };
     let r = resolve(&refs(d.refs.as_ref(), keys), ids)?;
@@ -784,6 +924,29 @@ fn dimension(d: &SketchDimension, ids: &Ids, params: &ParamMap) -> Result<(Value
             [c] => json!({"type": "arc_length", "arc": c}),
             _ => return Err("an arc length needs an arc".to_owned()),
         },
+        // The gap between a circle or arc and a line (the entities come in
+        // either order).
+        "SketchTangentDistanceDimension" => {
+            let round = |c: &&String| {
+                entities
+                    .get(c.as_str())
+                    .is_some_and(|e| matches!(e["type"].as_str(), Some("circle" | "arc")))
+            };
+            let line = |c: &&String| {
+                entities
+                    .get(c.as_str())
+                    .is_some_and(|e| e["type"] == "line")
+            };
+            match (&points[..], &curves[..]) {
+                ([], [a, b]) if round(a) && line(b) => {
+                    json!({"type": "tangent_distance", "circle": a, "line": b})
+                }
+                ([], [a, b]) if line(a) && round(b) => {
+                    json!({"type": "tangent_distance", "circle": b, "line": a})
+                }
+                _ => return Err("a tangent distance needs a circle or arc and a line".to_owned()),
+            }
+        }
         _ => unreachable!("checked above"),
     };
     if let Some(t) = d.text_position {
@@ -792,7 +955,16 @@ fn dimension(d: &SketchDimension, ids: &Ids, params: &ParamMap) -> Result<(Value
     let mut driven = value.clone();
     driven["driven"] = json!(true);
     match driving_value(d, kind, params)? {
-        Some(v) => value["value"] = v,
+        Some(v) => {
+            // An ellipse's dimension that holds the whole axis: its radius
+            // is half.
+            let axis = d.f3d.as_ref().and_then(|f| f.axis_length).unwrap_or(false);
+            value["value"] = match (axis, v) {
+                (true, Value::String(s)) => json!(format!("({s}) / 2")),
+                (true, v) => json!(v.as_f64().unwrap_or(0.0) / 2.0),
+                (false, v) => v,
+            }
+        }
         None => value = driven.clone(),
     }
     Ok((value, driven))
@@ -842,11 +1014,34 @@ fn text(
 ) -> Option<Value> {
     let text = t["text"].as_str()?;
     let height = t["height"].as_f64()?;
-    let at: Vec3 = serde_json::from_value(t["position"].clone()).ok()?;
-    let mut v = json!({"id": format!("t{n}"), "text": text, "at": xy(at), "height": mm(height)});
-    let angle = t["angle"].as_f64().unwrap_or(0.0);
-    if let Some(a) = t["angle"].as_f64() {
-        v["angle"] = json!(a);
+    // A text in a box or on a path needs no position of its own (the API
+    // gives none: the box or the path places it).
+    let placed_by = matches!(
+        t["definition"]["_type"].as_str(),
+        Some("AlongPathTextDefinition" | "FitOnPathTextDefinition")
+    ) || t["definition"]["rectangleLines"].is_array();
+    let at: Option<Vec3> = serde_json::from_value(t["position"].clone()).ok();
+    if at.is_none() && !placed_by {
+        return None;
+    }
+    let mut v = json!({
+        "id": format!("t{n}"), "text": text,
+        "at": at.map_or([0.0, 0.0], xy), "height": mm(height),
+    });
+    // Without a stored angle, a box's first line runs along the text's
+    // baseline: the file's box starts at the text's corner.
+    let angle = t["angle"]
+        .as_f64()
+        .or_else(|| first_line_angle(&t["definition"]["rectangleLines"], ids, entities, positions))
+        .unwrap_or(0.0);
+    if angle != 0.0 {
+        v["angle"] = json!(angle);
+    }
+    // The file's height is that of the capital letters, and a text in a
+    // box wraps its lines at its width.
+    v["cap_height"] = json!(true);
+    if t["definition"]["rectangleLines"].is_array() {
+        v["wrap"] = json!(true);
     }
     if let Some(f) = t["fontName"].as_str() {
         v["font"] = json!(f);
@@ -929,6 +1124,25 @@ fn text(
         _ => {}
     }
     Some(v)
+}
+
+/// The direction of the first of a text box's lines, start to end, as the
+/// text's angle.
+fn first_line_angle(
+    lines: &Value,
+    ids: &Ids,
+    entities: &[Value],
+    positions: &HashMap<u32, [f64; 2]>,
+) -> Option<f64> {
+    let name = ids.name(lines.as_array()?.first()?["id"].as_str()?)?;
+    let e = entities.iter().find(|e| e["id"] == name.as_str())?;
+    let at = |key: &str| -> Option<[f64; 2]> {
+        positions
+            .get(&e[key].as_str()?.strip_prefix('p')?.parse::<u32>().ok()?)
+            .copied()
+    };
+    let (a, b) = (at("start")?, at("end")?);
+    Some((b[1] - a[1]).atan2(b[0] - a[0]))
 }
 
 /// The corners of a multi-line text's rectangle as Mitcad points: the one

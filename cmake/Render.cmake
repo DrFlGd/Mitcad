@@ -17,12 +17,91 @@ if(MSVC AND CMAKE_BUILD_TYPE STREQUAL "Debug")
 endif()
 # MITCAD_CYCLES_ROOT, MITCAD_OIDN_ROOT, MITCAD_CYCLES_DEFINITIONS,
 # MITCAD_CYCLES_LIBRARIES; since mitcad#50 MITCAD_CYCLES_DEVICES (CPU, CUDA,
-# OPTIX, HIP, ONEAPI) and MITCAD_CYCLES_KERNELS (the GPU devices' kernels,
-# which go next to mitcad-render: app/CMakeLists.txt, cmake/AppImage.cmake).
+# OPTIX, HIP, ONEAPI, METAL) and MITCAD_CYCLES_KERNELS (the compiled GPU
+# kernels). Metal compiles its sources at run time from MITCAD_CYCLES_RUNTIME.
 include("${mitcad_cycles_cmake}")
 set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${mitcad_cycles_cmake}")
+if(APPLE)
+  # Reject an old CPU-only prefix, including when configuring an existing
+  # build directory. The builder's hash includes its device configuration;
+  # the explicit pins also catch dependency changes without running it first.
+  set(mitcad_render_rebuild "Run tools/dev-env/build-cycles-macos.sh to rebuild the CPU and Metal dependencies")
+  if(NOT MITCAD_CYCLES_EXPORT_VERSION STREQUAL "3"
+     OR NOT "CPU" IN_LIST MITCAD_CYCLES_DEVICES
+     OR NOT "METAL" IN_LIST MITCAD_CYCLES_DEVICES
+     OR NOT "WITH_METAL" IN_LIST MITCAD_CYCLES_DEFINITIONS
+     OR NOT "MITCAD_CYCLES_DENOISER_DIAGNOSTICS" IN_LIST MITCAD_CYCLES_DEFINITIONS
+     OR NOT "CPU" IN_LIST MITCAD_OIDN_DEVICES
+     OR NOT "BNNS" IN_LIST MITCAD_OIDN_DEVICES
+     OR NOT "METAL" IN_LIST MITCAD_OIDN_DEVICES
+     OR NOT MITCAD_OIDN_METAL_RESOURCES STREQUAL "EMBEDDED"
+     OR NOT MITCAD_CYCLES_ARCHITECTURES STREQUAL "arm64"
+     OR NOT MITCAD_CYCLES_DEPLOYMENT_TARGET STREQUAL "14.4")
+    message(FATAL_ERROR "The macOS renderer prefix has an incompatible device configuration. ${mitcad_render_rebuild}")
+  endif()
+  set(mitcad_render_builder "${PROJECT_SOURCE_DIR}/tools/dev-env/build-cycles-macos.sh")
+  set(mitcad_render_versions "${PROJECT_SOURCE_DIR}/tools/dev-env/versions.sh")
+  set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
+               "${mitcad_render_builder}" "${mitcad_render_versions}")
+  file(SHA256 "${mitcad_render_builder}" mitcad_render_builder_sha256)
+  if(NOT MITCAD_CYCLES_BUILDER_SHA256 STREQUAL mitcad_render_builder_sha256)
+    message(FATAL_ERROR "The macOS renderer prefix was made by an older dependency builder. ${mitcad_render_rebuild}")
+  endif()
+  set(mitcad_render_input_hashes "")
+  foreach(input vcpkg.json triplets/arm64-osx-dynamic.cmake
+                third_party/oidn/respect-macos-deployment-target.patch
+                third_party/cycles/metal-resource-usage.patch
+                third_party/cycles/denoiser-diagnostics.patch
+                third_party/cycles/metal-pipeline-failure.patch)
+    set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${PROJECT_SOURCE_DIR}/${input}")
+    file(SHA256 "${PROJECT_SOURCE_DIR}/${input}" mitcad_render_input_sha256)
+    string(APPEND mitcad_render_input_hashes "${mitcad_render_input_sha256}\n")
+  endforeach()
+  string(SHA256 mitcad_render_input_sha256 "${mitcad_render_input_hashes}")
+  if(NOT MITCAD_CYCLES_INPUT_SHA256 STREQUAL mitcad_render_input_sha256)
+    message(FATAL_ERROR "The macOS renderer prefix has outdated build inputs. ${mitcad_render_rebuild}")
+  endif()
+  foreach(pin CYCLES_VERSION CYCLES_COMMIT OIDN_VERSION OIDN_SRC_SHA256
+              ISPC_VERSION ISPC_MACOS_ARM64_SHA256 VCPKG_COMMIT)
+    file(STRINGS "${mitcad_render_versions}" mitcad_render_pin REGEX "^${pin}=")
+    string(REGEX REPLACE "^[^=]+=" "" mitcad_render_pin "${mitcad_render_pin}")
+    if(NOT "${MITCAD_RENDER_${pin}}" STREQUAL "${mitcad_render_pin}")
+      message(FATAL_ERROR "The macOS renderer prefix has an outdated ${pin}. ${mitcad_render_rebuild}")
+    endif()
+  endforeach()
+  foreach(resource source/kernel/device/metal/kernel.metal source/util/types.h source.sha256)
+    if(NOT EXISTS "${MITCAD_CYCLES_RUNTIME}/${resource}")
+      message(FATAL_ERROR "The macOS renderer prefix lacks its Metal runtime resource ${resource}. ${mitcad_render_rebuild}")
+    endif()
+  endforeach()
+endif()
 if(NOT MITCAD_CYCLES_DEVICES)
   set(MITCAD_CYCLES_DEVICES CPU) # a prefix of an older build-cycles.sh
+endif()
+# The devices a build must have (mitcad#202): the release builds ask for
+# CPU;CUDA on Linux and Windows, so that a prefix built without CUDA (or
+# whose kernels are missing) stops the configure instead of shipping a
+# CPU-only renderer. Empty (the default) takes any prefix.
+set(MITCAD_RENDER_REQUIRED_DEVICES "$ENV{MITCAD_RENDER_REQUIRED_DEVICES}" CACHE STRING
+    "Render devices the prefix must have, e.g. CPU;CUDA (a release build); empty takes any")
+foreach(device IN LISTS MITCAD_RENDER_REQUIRED_DEVICES)
+  if(NOT device IN_LIST MITCAD_CYCLES_DEVICES)
+    message(FATAL_ERROR "The render prefix ${MITCAD_RENDER_DEPS} has the devices ${MITCAD_CYCLES_DEVICES}, "
+                        "without ${device} (MITCAD_RENDER_REQUIRED_DEVICES=${MITCAD_RENDER_REQUIRED_DEVICES}): build "
+                        "it with tools/dev-env/build-cycles.sh --cuda or build-cycles.ps1 -Cuda")
+  endif()
+endforeach()
+if("CUDA" IN_LIST MITCAD_RENDER_REQUIRED_DEVICES)
+  set(mitcad_cuda_kernels ${MITCAD_CYCLES_KERNELS})
+  list(FILTER mitcad_cuda_kernels INCLUDE REGEX "kernel_sm_[0-9]+\\.cubin\\.zst$")
+  foreach(kernel IN LISTS MITCAD_CYCLES_KERNELS)
+    if(NOT EXISTS "${kernel}")
+      message(FATAL_ERROR "The render prefix lacks its GPU kernel ${kernel}")
+    endif()
+  endforeach()
+  if(NOT mitcad_cuda_kernels)
+    message(FATAL_ERROR "The render prefix ${MITCAD_RENDER_DEPS} has no CUDA kernels (kernel_sm_*.cubin.zst)")
+  endif()
 endif()
 # For cmake/AppImage.cmake, which the top-level CMakeLists.txt includes.
 set_property(GLOBAL PROPERTY MITCAD_CYCLES_KERNELS "${MITCAD_CYCLES_KERNELS}")
@@ -45,12 +124,38 @@ if(WIN32)
   file(GLOB MITCAD_OIDN_DLLS "${MITCAD_OIDN_ROOT}/bin/OpenImageDenoise*.dll")
   set_property(GLOBAL PROPERTY MITCAD_OIDN_DLLS "${MITCAD_OIDN_DLLS}")
 elseif(APPLE)
-  # The CPU module is opened at run time, so linked-library discovery alone
-  # would miss it and the dependencies it loads (macOS bundle deployment).
-  file(GLOB MITCAD_OIDN_MODULES "${MITCAD_OIDN_ROOT}/lib/libOpenImageDenoise_device_cpu*.dylib")
-  if(NOT MITCAD_OIDN_MODULES)
-    message(FATAL_ERROR "No Open Image Denoise CPU module in ${MITCAD_OIDN_ROOT}/lib; "
-                        "run tools/dev-env/build-cycles-macos.sh")
+  # Both modules are opened at run time. OIDN's module loader uses exact
+  # versioned names, so unrelated/stale dylibs must not satisfy this check.
+  foreach(device cpu metal)
+    set(module "${MITCAD_OIDN_ROOT}/lib/libOpenImageDenoise_device_${device}.${MITCAD_RENDER_OIDN_VERSION}.dylib")
+    if(NOT module IN_LIST MITCAD_OIDN_MODULES OR NOT EXISTS "${module}")
+      message(FATAL_ERROR "The macOS renderer prefix lacks its OIDN ${device} module. ${mitcad_render_rebuild}")
+    endif()
+  endforeach()
+  foreach(module IN LISTS MITCAD_OIDN_MODULES)
+    if(NOT EXISTS "${module}")
+      message(FATAL_ERROR "An exported OIDN runtime module is missing: ${module}. ${mitcad_render_rebuild}")
+    endif()
+  endforeach()
+  message(STATUS "Open Image Denoise devices: ${MITCAD_OIDN_DEVICES} (Metal kernels embedded in the module)")
+endif()
+# Cycles compiles its GPU denoiser only for the Open Image Denoise devices
+# whose headers it was built with: in a prefix whose Open Image Denoise got
+# its CUDA device after Cycles was built, Cycles never creates it ("Failed to
+# create OIDN device" on every GPU, mitcad#202).
+if("CUDA" IN_LIST MITCAD_CYCLES_DEVICES)
+  file(GLOB mitcad_oidn_cuda "${MITCAD_OIDN_ROOT}/bin/OpenImageDenoise_device_cuda*.dll"
+                             "${MITCAD_OIDN_ROOT}/lib/libOpenImageDenoise_device_cuda*")
+  set(mitcad_cycles_integrator ${MITCAD_CYCLES_LIBRARIES})
+  list(FILTER mitcad_cycles_integrator INCLUDE REGEX "cycles_integrator\\.(lib|a)$")
+  if(mitcad_oidn_cuda AND mitcad_cycles_integrator)
+    list(GET mitcad_cycles_integrator 0 mitcad_cycles_integrator)
+    file(STRINGS "${mitcad_cycles_integrator}" mitcad_oidn_cuda_call REGEX "oidnNewCUDADevice" LIMIT_COUNT 1)
+    if(NOT mitcad_oidn_cuda_call)
+      message(FATAL_ERROR "The render prefix ${MITCAD_RENDER_DEPS} has Open Image Denoise's CUDA device, but its "
+                          "Cycles was built without it: rerun tools/dev-env/build-cycles.sh or build-cycles.ps1 "
+                          "with the same options, which rebuilds Cycles")
+    endif()
   endif()
 endif()
 # Cycles is a release build against vcpkg's release libraries: a Debug
@@ -69,7 +174,7 @@ endif()
 # Cycles' headers need C++20; Mitcad's other code stays C++17, and only this
 # file includes them.
 add_library(mitcad_cycles_renderer STATIC "${PROJECT_SOURCE_DIR}/app/render/CyclesRenderer.cpp"
-            "${PROJECT_SOURCE_DIR}/app/render/Renderer.hpp")
+            "${PROJECT_SOURCE_DIR}/app/render/Renderer.hpp" "${PROJECT_SOURCE_DIR}/app/render/RenderCamera.hpp")
 set_target_properties(mitcad_cycles_renderer PROPERTIES CXX_STANDARD 20 CXX_STANDARD_REQUIRED ON
                       CXX_EXTENSIONS OFF)
 # The definitions Cycles was compiled with: its headers depend on them.
@@ -102,3 +207,10 @@ target_link_libraries(mitcad_cycles_renderer
          OpenImageIO::OpenImageIO OpenColorIO::OpenColorIO embree TBB::tbb ${mitcad_zstd}
          pugixml::pugixml OpenImageDenoise Threads::Threads ${CMAKE_DL_LIBS}
   PRIVATE mitcad_warnings)
+if(APPLE)
+  # Cycles' static archives do not propagate their upstream framework links.
+  foreach(framework IN LISTS MITCAD_CYCLES_APPLE_FRAMEWORKS)
+    find_library(MITCAD_CYCLES_FRAMEWORK_${framework} NAMES ${framework} REQUIRED)
+    target_link_libraries(mitcad_cycles_renderer PUBLIC "${MITCAD_CYCLES_FRAMEWORK_${framework}}")
+  endforeach()
+endif()

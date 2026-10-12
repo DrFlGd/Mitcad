@@ -31,6 +31,7 @@ use crate::asm::token::Token;
 use crate::brep::{self, Curve, P3, Surface};
 use crate::convert::{self, Options};
 use crate::design::ir::EntityName;
+use crate::design::recipe::EdgeTail;
 
 mod topology;
 // Points inside faces of any surface type (mitcad#161).
@@ -238,6 +239,11 @@ pub struct CylinderGeometry {
     /// A point inside the face, and the face's normal there.
     pub point: P3,
     pub normal: P3,
+    /// The unit direction of the surface's parameter origin (where the
+    /// cylinder's seam lies, round its axis).
+    pub ref_dir: P3,
+    /// The face goes all the way round its axis (not a part of a cylinder).
+    pub full: bool,
 }
 
 /// A planar face's plane (mm, in its component's coordinates): a point
@@ -406,8 +412,8 @@ impl<'a> NamedState<'a> {
     /// follows partner and loop links, without a geometric angle sort.
     /// Boundaries, seams, nonmanifold or incomplete vertex fans fail.
     ///
-    /// This proves a topological order only. Its relationship to opaque
-    /// recipe tails is unverified and must not decide an edge match.
+    /// The recipe's tail lists the faces round an edge's ends in this order
+    /// (EDGE_ORDER.md): the start's cycle reversed, the end's as it is.
     pub fn edge_endpoint_face_cycles(
         &self,
         edge: usize,
@@ -439,6 +445,21 @@ impl<'a> NamedState<'a> {
     /// the edge with that name when the blob names its edges, else by the
     /// faces after it.
     pub fn edges_fitting(&self, entities: &[Vec<EntityName>]) -> Result<Vec<usize>, String> {
+        self.edges_fitting_ordered(entities, None)
+    }
+
+    /// [`Self::edges_fitting`], and where edges still fit equally, the
+    /// order in which the recipe's tail lists the faces around the edge's
+    /// ends tells them apart (mitcad#106: mirror-image edges between the
+    /// same two faces have the same faces at their ends, in opposite
+    /// cyclic order). The tail decides only among edges that fit equally
+    /// otherwise, and only where its order can be compared with the
+    /// topology ([`Self::order_agrees`]).
+    pub fn edges_fitting_ordered(
+        &self,
+        entities: &[Vec<EntityName>],
+        tail: Option<&EdgeTail>,
+    ) -> Result<Vec<usize>, String> {
         if let Some((own, faces)) = entities.split_first()
             && own.iter().any(|n| n.tag.starts_with('-'))
         {
@@ -448,11 +469,69 @@ impl<'a> NamedState<'a> {
                     own.iter().any(|n| e.names.iter().any(|m| m.is(n)))
                 })
                 .collect();
+            // The tail's indices count the edge's own entity too.
+            let tail = tail.map(|t| (t, 1));
             return self
-                .edges_between(faces, (!named.is_empty()).then_some(&named))
-                .or_else(|e| self.edges_between(faces, None).map_err(|_| e));
+                .edges_between(faces, (!named.is_empty()).then_some(&named), tail)
+                .or_else(|e| self.edges_between(faces, None, tail).map_err(|_| e));
         }
-        self.edges_between(entities, None)
+        self.edges_between(entities, None, tail.map(|t| (t, 0)))
+    }
+
+    /// Whether the faces around an edge's ends, in the order its recipe's
+    /// tail lists them, are those of the topology: `Some(true)` when both
+    /// ends' faces, in cyclic order, are the entities' (`base` entities
+    /// precede `entities`; an entity no face of the state has stands for
+    /// any), `Some(false)` when they are not, `None` when the topology or
+    /// the tail cannot say (a closed edge, a vertex fan that does not
+    /// close, an entity the tail names that the list lacks).
+    ///
+    /// The tail's first fan runs the way against the walk
+    /// [`Self::edge_endpoint_face_cycles`] makes at the edge's start, the
+    /// second the way with it at the end *(the walks turn opposite ways at
+    /// the two ends; 12961 of the 13600 edges of the corpora with names
+    /// that all resolve agree, the rest name faces as an earlier state had
+    /// them)*.
+    fn order_agrees(
+        &self,
+        edge: usize,
+        entities: &[Vec<EntityName>],
+        tail: &EdgeTail,
+        base: usize,
+    ) -> Option<bool> {
+        let e = &self.edges[edge];
+        // The coedge that runs along the edge: its end vertex is the end.
+        let anchor = e.faces[e.reversed.iter().position(|&r| !r)?];
+        let cycles = self.edge_endpoint_face_cycles(edge, anchor).ok()?;
+        if tail.fans.len() != 2 {
+            return None;
+        }
+        let mut all = true;
+        for (v, fan) in tail.fans.iter().enumerate() {
+            let mut fan: Vec<&Vec<EntityName>> = fan
+                .iter()
+                .map(|&i| i.checked_sub(base).and_then(|i| entities.get(i)))
+                .collect::<Option<_>>()?;
+            if v == 0 {
+                fan.reverse();
+            }
+            let cycle = &cycles[v];
+            if fan.len() != cycle.len() {
+                return Some(false);
+            }
+            let k = cycle.len();
+            let wild: Vec<bool> = fan.iter().map(|e| self.faces_named(e).is_empty()).collect();
+            let fits = |face: usize, entity: &[EntityName]| {
+                self.faces[face]
+                    .names
+                    .iter()
+                    .any(|m| entity.iter().any(|n| m.is(n)))
+            };
+            let turned =
+                (0..k).any(|r| (0..k).all(|j| wild[j] || fits(cycle[(j + r) % k], fan[j])));
+            all &= turned;
+        }
+        Some(all)
     }
 
     /// The edge an edge recipe names, as [`Self::edges_fitting`] when one
@@ -470,6 +549,7 @@ impl<'a> NamedState<'a> {
         &self,
         entities: &[Vec<EntityName>],
         among: Option<&HashSet<usize>>,
+        tail: Option<(&EdgeTail, usize)>,
     ) -> Result<Vec<usize>, String> {
         if entities.len() < 2 {
             return Err("the recipe names fewer than two faces".to_owned());
@@ -515,7 +595,27 @@ impl<'a> NamedState<'a> {
             )
         };
         let best = along.iter().map(|&i| score(i)).max().unwrap_or((0, 0));
-        Ok(along.into_iter().filter(|&i| score(i) == best).collect())
+        let top: Vec<usize> = along.into_iter().filter(|&i| score(i) == best).collect();
+        let Some((tail, base)) = tail.filter(|_| top.len() > 1) else {
+            return Ok(top);
+        };
+        // Equally good: those whose faces around the ends are in the
+        // tail's order, else those it cannot be compared for.
+        let order: Vec<Option<bool>> = top
+            .iter()
+            .map(|&i| self.order_agrees(i, entities, tail, base))
+            .collect();
+        let keep = |want: Option<bool>| -> Vec<usize> {
+            top.iter()
+                .zip(&order)
+                .filter(|(_, o)| **o == want)
+                .map(|(&i, _)| i)
+                .collect()
+        };
+        Ok([keep(Some(true)), keep(None)]
+            .into_iter()
+            .find(|kept| !kept.is_empty())
+            .unwrap_or(top))
     }
 
     /// The edges of a face (indices into [`Self::edges`]) between it and
@@ -562,6 +662,101 @@ impl<'a> NamedState<'a> {
             [f] => Ok(f),
             _ => Err(format!("{} faces fit the names", top.len())),
         }
+    }
+
+    /// [`Self::find_face`], and where several faces fit the names, the
+    /// first of them when all lie on one surface (the same cylinder or the
+    /// same plane: a face the history split in pieces that keep its
+    /// names), for what needs the surface alone.
+    pub fn find_face_surface(&self, entities: &[Vec<EntityName>]) -> Result<usize, String> {
+        let error = match self.find_face(entities) {
+            Ok(i) => return Ok(i),
+            Err(e) => e,
+        };
+        let named = self.faces_named(entities.first().ok_or("the recipe names no face")?);
+        let Some((&first, rest)) = named.split_first() else {
+            return Err(error);
+        };
+        let close = |a: f64, b: f64| (a - b).abs() <= 1e-6 * (1.0 + a.abs().max(b.abs()));
+        let parallel = |a: P3, b: P3| brep::norm(brep::cross(a, b)) <= 1e-9;
+        let on_line = |p: P3, o: P3, d: P3| brep::norm(brep::cross(brep::sub(p, o), d)) <= 1e-6;
+        let same = if let Ok(a) = self.cylinder(first) {
+            rest.iter().all(|&i| {
+                self.cylinder(i).is_ok_and(|b| {
+                    close(a.radius, b.radius)
+                        && parallel(a.axis, b.axis)
+                        && on_line(b.origin, a.origin, a.axis)
+                })
+            })
+        } else if let Ok(a) = self.plane(first) {
+            rest.iter().all(|&i| {
+                self.plane(i).is_ok_and(|b| {
+                    parallel(a.normal, b.normal)
+                        && brep::dot(brep::sub(b.point, a.point), a.normal).abs() <= 1e-6
+                })
+            })
+        } else {
+            false
+        };
+        if same { Ok(first) } else { Err(error) }
+    }
+
+    /// The vertex a vertex recipe names (a vertex entity of the history
+    /// state, with the index of the body it lies on): the one at which
+    /// faces meet that the recipe's entities name, one face of each
+    /// entity *(verified on the reference models: a corner of a block
+    /// names its three faces, the vertex of a cylinder's top edge its two)*.
+    /// With several equally good, the one with the fewest other faces;
+    /// `Err` says why there is none.
+    pub fn find_vertex(&self, entities: &[Vec<EntityName>]) -> Result<(usize, usize), String> {
+        let named: Vec<HashSet<usize>> = entities
+            .iter()
+            .map(|e| self.faces_named(e).into_iter().collect::<HashSet<_>>())
+            .filter(|s| !s.is_empty())
+            .collect();
+        if named.is_empty() {
+            return Err("the faces at the vertex are not in the history state".to_owned());
+        }
+        let mut at: HashMap<usize, (usize, HashSet<usize>)> = HashMap::new();
+        for e in &self.edges {
+            for v in e.vertices.iter().flatten() {
+                let entry = at.entry(*v).or_insert_with(|| (e.body, HashSet::new()));
+                entry.1.extend(e.faces.iter().copied());
+            }
+        }
+        let score = |faces: &HashSet<usize>| {
+            (
+                named.iter().filter(|s| !s.is_disjoint(faces)).count(),
+                std::cmp::Reverse(faces.len()),
+            )
+        };
+        let best = at.values().map(|(_, f)| score(f)).max();
+        let Some(best) = best.filter(|b| b.0 == named.len()) else {
+            return Err("no vertex lies at all the faces named".to_owned());
+        };
+        let mut top: Vec<(usize, usize)> = at
+            .iter()
+            .filter(|(_, (_, f))| score(f) == best)
+            .map(|(v, (b, _))| (*v, *b))
+            .collect();
+        top.sort_unstable();
+        match top[..] {
+            [v] => Ok(v),
+            _ => Err(format!("{} vertices fit the names", top.len())),
+        }
+    }
+
+    /// A vertex's position (mm, in its component's coordinates), as found
+    /// by [`Self::find_vertex`].
+    pub fn vertex(&self, vertex: usize, body: usize) -> Result<P3, String> {
+        convert::vertex_position(
+            self.file,
+            self.bodies[body].record,
+            vertex,
+            &Options::default(),
+            self.view,
+        )
+        .map_err(|e| e.0)
     }
 
     /// A cylindrical face's geometry (mm, in its component's coordinates):
@@ -642,6 +837,8 @@ impl<'a> NamedState<'a> {
             internal: face.reversed,
             point: local,
             normal,
+            ref_dir: x,
+            full: gap <= std::f64::consts::FRAC_PI_6,
         };
         if let Some(tr) = &face.transform {
             let rotate = |p: P3| {
@@ -654,6 +851,7 @@ impl<'a> NamedState<'a> {
             out.origin = brep::add(rotate(origin), tr.t);
             out.point = brep::add(rotate(local), tr.t);
             out.axis = brep::normalize(rotate(axis));
+            out.ref_dir = brep::normalize(rotate(x));
             out.normal = brep::normalize(rotate(normal));
             out.radius = radius * brep::norm(tr.m[0]);
         }
@@ -1217,5 +1415,159 @@ mod tests {
         assert!(!names[0].is(&n("5", &[304])));
         assert_eq!(names[1].kind, 7);
         assert_eq!(attribute_names(&toks[..10]), None);
+    }
+
+    /// The cube's edge along x at the bottom front (faces "1" and "3"),
+    /// the edge along x at the top front (faces "2" and "3"), and the
+    /// names the recipe's entities use: bottom or top (`0`), front (`1`),
+    /// left (`2`, at the start) and right (`3`, at the end).
+    fn cube_pair(state: &NamedState) -> (usize, usize, Vec<Vec<EntityName>>) {
+        let face = |tag: &str| {
+            state
+                .faces
+                .iter()
+                .position(|f| f.names.iter().any(|m| m.is(&n(tag, &[301]))))
+                .unwrap()
+        };
+        let (bottom, top, front) = (face("1"), face("2"), face("3"));
+        let along = |a: usize, b: usize| {
+            state
+                .edges
+                .iter()
+                .position(|e| e.faces.contains(&a) && e.faces.contains(&b))
+                .unwrap()
+        };
+        let entities = vec![
+            vec![n("1", &[301]), n("2", &[301])],
+            vec![n("3", &[301])],
+            vec![n("6", &[301])],
+            vec![n("4", &[301])],
+        ];
+        (along(bottom, front), along(top, front), entities)
+    }
+
+    /// Both edges along x at the front fit the names of the two faces
+    /// (one named for either the bottom or the top) and of the ends:
+    /// the faces round the ends in the recipe's order tell them apart
+    /// (mitcad#106). Seen from outside the body they run counter-
+    /// clockwise: at the bottom front edge's start the bottom, the front
+    /// and the left face, at its end the front, the bottom and the right
+    /// face; at the top front edge's start the front, the top and the
+    /// left face, at its end the top, the front and the right face.
+    #[test]
+    fn the_order_of_the_faces_round_the_ends_tells_equal_edges_apart() {
+        let data = testdata::named_cube_blob();
+        let file = AsmFile::parse(&data).unwrap();
+        let state = NamedState::new(&file, None);
+        let (bottom, top, entities) = cube_pair(&state);
+        assert_ne!(bottom, top);
+        let tail = |fans: [[usize; 3]; 2]| EdgeTail {
+            faces: [0, 1],
+            fans: fans.iter().map(|f| f.to_vec()).collect(),
+        };
+        let bottom_front = tail([[0, 1, 2], [1, 0, 3]]);
+        let top_front = tail([[1, 0, 2], [0, 1, 3]]);
+        // Without the tail both fit, with the names of the ends as well.
+        let both = state.edges_fitting(&entities).unwrap();
+        assert_eq!(both.len(), 2);
+        assert!(both.contains(&bottom) && both.contains(&top));
+        // Each tail picks its edge.
+        assert_eq!(
+            state.edges_fitting_ordered(&entities, Some(&bottom_front)),
+            Ok(vec![bottom])
+        );
+        assert_eq!(
+            state.edges_fitting_ordered(&entities, Some(&top_front)),
+            Ok(vec![top])
+        );
+        // Rotating a fan keeps the cyclic order; reversing both the other
+        // edge's; ends in the wrong places fit neither (all stay).
+        assert_eq!(
+            state.edges_fitting_ordered(&entities, Some(&tail([[2, 0, 1], [3, 1, 0]]))),
+            Ok(vec![bottom])
+        );
+        assert_eq!(
+            state.edges_fitting_ordered(&entities, Some(&tail([[2, 1, 0], [0, 1, 3]]))),
+            Ok(vec![top])
+        );
+        let wrong = tail([[0, 1, 3], [1, 0, 2]]);
+        assert_eq!(
+            state
+                .edges_fitting_ordered(&entities, Some(&wrong))
+                .map(|v| v.len()),
+            Ok(2)
+        );
+        // A tail that is not two fans, or names an entity the list does
+        // not have, says nothing.
+        let one = EdgeTail {
+            faces: [0, 1],
+            fans: vec![vec![0, 1, 2]],
+        };
+        assert_eq!(
+            state
+                .edges_fitting_ordered(&entities, Some(&one))
+                .map(|v| v.len()),
+            Ok(2)
+        );
+        assert_eq!(
+            state
+                .edges_fitting_ordered(&entities, Some(&tail([[0, 1, 9], [1, 0, 3]])))
+                .map(|v| v.len()),
+            Ok(2)
+        );
+    }
+
+    /// An entity that no face of the state has (a face named as an earlier
+    /// state had it) stands for any face; one that fits another face does
+    /// not.
+    #[test]
+    fn an_entity_no_face_has_stands_for_any_face() {
+        let data = testdata::named_cube_blob();
+        let file = AsmFile::parse(&data).unwrap();
+        let state = NamedState::new(&file, None);
+        let (bottom, top, mut entities) = cube_pair(&state);
+        let tail = EdgeTail {
+            faces: [0, 1],
+            fans: vec![vec![0, 1, 2], vec![1, 0, 3]],
+        };
+        assert_eq!(state.order_agrees(bottom, &entities, &tail, 0), Some(true));
+        assert_eq!(state.order_agrees(top, &entities, &tail, 0), Some(false));
+        entities[2] = vec![n("7", &[999])];
+        assert_eq!(state.order_agrees(bottom, &entities, &tail, 0), Some(true));
+        // The left face's place taken by another face: the order fails.
+        entities[2] = vec![n("5", &[301])];
+        assert_eq!(state.order_agrees(bottom, &entities, &tail, 0), Some(false));
+        // The same tail for the entities after an edge's own: indices
+        // count from the entity before the faces.
+        let shifted = EdgeTail {
+            faces: [1, 2],
+            fans: vec![vec![1, 2, 3], vec![2, 1, 4]],
+        };
+        entities[2] = vec![n("6", &[301])];
+        assert_eq!(
+            state.order_agrees(bottom, &entities, &shifted, 1),
+            Some(true)
+        );
+        assert_eq!(state.order_agrees(bottom, &entities, &shifted, 5), None);
+    }
+
+    /// A whole cylinder's seam direction is its surface's parameter origin.
+    /// is; a face that is a part of a cylinder (the cylinder cut by a
+    /// plane along its axis is not in the test data: the cube's planes
+    /// are not cylinders) has none to read.
+    #[test]
+    fn a_whole_cylinder_has_its_seam_direction() {
+        let data = testdata::cylinder_blob();
+        let file = AsmFile::parse(&data).unwrap();
+        let state = NamedState::new(&file, None);
+        let i = (0..state.faces.len())
+            .find(|&i| state.cylinder(i).is_ok())
+            .expect("a cylindrical face");
+        let g = state.cylinder(i).unwrap();
+        assert!(g.full);
+        let dot = brep::dot(g.ref_dir, g.axis);
+        assert!(dot.abs() < 1e-9, "{dot}");
+        assert!((brep::norm(g.ref_dir) - 1.0).abs() < 1e-9);
+        assert!((g.ref_dir[0] - 1.0).abs() < 1e-9, "{:?}", g.ref_dir);
     }
 }

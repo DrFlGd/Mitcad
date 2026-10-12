@@ -1,0 +1,5 @@
+[
+  {"comment":"SPDX-License-Identifier: MIT. The reopened shared component keeps one Flat Pattern item and two instances (mitcad#208)."},
+  {"expect":{"bodies":1,"instances":2,"world_volume":4102.654824574367}},
+  {"expect":{"query":{"query":"flat_pattern","body":"F3.b0"},"result":{"status":"valid","area":1013.0973355292326,"volume":2026.1946710584651}}}
+]

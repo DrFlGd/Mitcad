@@ -1,0 +1,85 @@
+# SPDX-License-Identifier: MIT
+# Native checklist edits must agree with actual OCCT preview geometry.
+wait-idle 30
+native-resize 1280 900
+native-action view.right
+native-action view.fit
+expect-model-bodies 3 12000
+mark
+native-action solid.extrude
+expect-log 'Command Extrude started'
+native-type input_distance '50 mm'
+native-choice input_operation 'Cut'
+expect-log 'Cut target C1@O1: eligible, checked, intersects'
+expect-log 'Cut target C2@O2: eligible, checked, intersects'
+expect-log 'Cut target C4@O3/O4: eligible, checked, intersects'
+expect-shown-body F1.b0 O1 3840
+expect-shown-body F2.b0 O2 3840
+expect-shown-body F3.b0 O3/O4 3840
+expect-native-text cut_target_C2@O2 'Part B'
+# An unchanged scope/value still restores the preview-fed controls.
+native-click cut_targets_all
+expect-native-enabled cut_target_C2@O2 true
+native-type input_distance '50 mm'
+expect-native-enabled cut_targets_none true
+mark
+native-hover cut_target_C2@O2 enter
+expect-log 'Cut target highlight: 1 item\(s\)'
+screenshot '${MITCAD_TEST_WORK}/cut-components-hover.png'
+native-hover cut_target_C2@O2 leave
+expect-log 'Cut target highlight: 0 item\(s\)'
+native-click cut_target_C2@O2
+expect-log 'Cut target C2@O2: eligible, unchecked, intersects'
+expect-shown-body F1.b0 O1 3840
+expect-shown-body F2.b0 O2 4000
+expect-shown-body F3.b0 O3/O4 3840
+mark
+native-type input_distance '15 mm'
+expect-log 'Cut target C2@O2: eligible, unchecked, outside'
+expect-shown-body F2.b0 O2 4000
+expect-shown-body F3.b0 O3/O4 4000
+native-type input_distance '50 mm'
+expect-log 'Cut target C2@O2: eligible, unchecked, intersects'
+expect-shown-body F2.b0 O2 4000
+expect-shown-body F3.b0 O3/O4 3840
+screenshot '${MITCAD_TEST_WORK}/cut-components-preview.png'
+native-click commandOk
+expect-log 'Added extrude \(Cut\), distance 50' 30
+expect-model-bodies 3 11680
+expect-shown-body F1.b0 O1 3840
+expect-shown-body F2.b0 O2 4000
+expect-shown-body F3.b0 O3/O4 3840
+native-action edit.undo
+expect-model-bodies 3 12000
+native-action edit.redo
+expect-model-bodies 3 11680
+
+# Edit the one stored feature; explicit none is a recoverable empty state.
+menu 'View/Show History'
+mark
+native-activate native.history.F5
+expect-log 'Editing F5 with Extrude'
+expect-log 'Cut target C2@O2: eligible, unchecked, intersects'
+native-click cut_targets_none
+expect-native-enabled commandOk false
+expect-log 'No components selected'
+expect-shown-body F1.b0 O1 4000
+expect-shown-body F2.b0 O2 4000
+expect-shown-body F3.b0 O3/O4 4000
+native-click cut_targets_all
+expect-native-enabled commandOk true
+native-click cut_target_C2@O2
+native-type input_distance '45 mm'
+expect-shown-body F1.b0 O1 3840
+expect-shown-body F2.b0 O2 4000
+expect-shown-body F3.b0 O3/O4 3920
+native-click commandOk
+expect-log 'Edited F5' 30
+expect-model-bodies 3 11760
+native-action edit.undo
+expect-model-bodies 3 11680
+native-action edit.redo
+expect-model-bodies 3 11760
+menu 'File/Save'
+expect-log 'Saved .*cut-components\.mitcad'
+expect-never 'The document was read while a job computes it|Native Mac canvas:|OCCT view event failed|TestDriver: FAIL'

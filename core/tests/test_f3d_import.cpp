@@ -436,6 +436,10 @@ struct Coverage {
   int construction_bulbs_unknown = 0;
   int bulbs_set = 0;
   double seconds = 0.0;
+  // Modelling items suppressed in the file (mitcad#180): as suppressed
+  // features, as placeholders.
+  int suppressed_features = 0;
+  int suppressed_placeholders = 0;
 };
 
 // How many times `part` occurs in `text`.
@@ -547,6 +551,8 @@ void import_corpus_design(const std::string& id, const std::string& path, const 
   c.construction_bulbs += sum("construction_bulbs");
   c.construction_bulbs_unknown += sum("construction_bulbs_unknown");
   c.bulbs_set += sum("bulbs_set");
+  c.suppressed_features += sum("suppressed_as_features");
+  c.suppressed_placeholders += sum("suppressed_as_placeholders");
   const std::string instances(document->query(R"({"query": "instances", "hidden": true})"));
   c.placed += count_of(instances, "\"occurrence\":\"") - count_of(instances, "\"occurrence\":\"\"");
   std::printf("%s%s: %zu items: %d parametric, %d partial, %d fallback, %d skipped; %zu bodies, %zu "
@@ -606,6 +612,8 @@ std::map<std::string, double> totals_of(const Coverage& c) {
       {"construction_bulbs", c.construction_bulbs},
       {"construction_bulbs_unknown", c.construction_bulbs_unknown},
       {"bulbs_set", c.bulbs_set},
+      {"suppressed_features", c.suppressed_features},
+      {"suppressed_placeholders", c.suppressed_placeholders},
       {"seconds", c.seconds},
   };
   for (const auto& [type, outcomes] : c.items) {
@@ -640,6 +648,8 @@ void add_totals(const std::map<std::string, double>& t, Coverage& c) {
   c.construction_bulbs += get("construction_bulbs");
   c.construction_bulbs_unknown += get("construction_bulbs_unknown");
   c.bulbs_set += get("bulbs_set");
+  c.suppressed_features += get("suppressed_features");
+  c.suppressed_placeholders += get("suppressed_placeholders");
   const auto seconds = t.find("seconds");
   c.seconds += seconds == t.end() ? 0.0 : seconds->second;
   for (const auto& [key, n] : t) {
@@ -740,6 +750,8 @@ int corpus(const fs::path& dir, const CorpusOptions& o) {
               c.sketch_bulbs, c.sketch_bulbs_unknown, c.construction_bulbs, c.construction_bulbs_unknown,
               c.bulbs_set);
   std::printf("designs the geometry kernel hung on (imported again without the item): %d\n", c.hung);
+  std::printf("modelling items suppressed in the file: %d as suppressed features, %d as placeholders\n",
+              c.suppressed_features, c.suppressed_placeholders);
   const int code = c.failed == 0 ? 0 : 1;
   if (mitcad::abandoned_imports() > 0) {
     // Threads the kernel hung in still run (also after an import that

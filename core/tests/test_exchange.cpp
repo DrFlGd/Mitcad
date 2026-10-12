@@ -9,6 +9,12 @@
 //                                       3MF meshes for slicers and USDZ
 //                                       packages
 //   test_exchange --write-f3d <file>    writes that .f3d file (CLI tests)
+//   test_exchange --write-f3d-references <dir> [<folder>]
+//                                       writes an assembly of components of
+//                                       other documents with its reference
+//                                       folder (mitcad#196; CLI and UI tests);
+//                                       with <folder>, the documents there
+//                                       without references.json
 //   test_exchange --write-ipt <file>    writes a small .ipt part file
 //                                       (mitcad_ipt::testdata; CLI and UI
 //                                       tests)
@@ -738,6 +744,10 @@ int main(int argc, char** argv) {
   try {
     if (args.size() == 2 && args[0] == "--write-f3d") {
       mitcad::bridge::f3d_write_test_file(args[1]);
+      return 0;
+    }
+    if ((args.size() == 2 || args.size() == 3) && args[0] == "--write-f3d-references") {
+      mitcad::bridge::f3d_write_test_references(args[1], args.size() == 3 ? args[2] : std::string());
       return 0;
     }
     if (args.size() == 2 && args[0] == "--write-ipt") {

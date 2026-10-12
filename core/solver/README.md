@@ -85,6 +85,7 @@ they do not change the DOF count.
 | `EqualSize` (circle and ellipse copies) | equal radius / equal minor radius |
 | `Distance`, `Length`, `MajorRadius` | `|q - p| - d` |
 | `PointLineDistance`, `LineDistance` | signed distance `- side * d` |
+| `TangentDistance(circle, line)` | signed distance of the centre `- side * (r + d)` |
 | `HorizontalDistance`, `VerticalDistance` | `dx - side * d`, `dy - side * d` |
 | `Angle(a, b)` | oriented angle from `a` to `flip * b` minus `sigma * value` (wrapped) |
 | `Radius`, `Diameter`, `MinorRadius`, `ArcLength` | `r - d`, `2r - d`, `b - d`, `r * sweep - d` |

@@ -293,7 +293,7 @@ ShapePtr ring_dressup(const std::string& feature, const char* role, const Shape&
       }
     }
   }
-  if (!BRepCheck_Analyzer(result->occt()).IsValid()) {
+  if (!BRepCheck_Analyzer(result->occt(), true, true).IsValid()) {
     return nullptr;
   }
   return result;

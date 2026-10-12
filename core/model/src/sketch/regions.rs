@@ -147,7 +147,9 @@ pub fn regions(curves: &[RegionCurve]) -> Vec<Region> {
         }
     }
     let size = dist(min, max).max(1.0);
-    let tol = 1e-9 * size;
+    // (Not below 1e-6 mm: the solved positions of imported designs differ
+    // by that much where lines were meant to coincide.)
+    let tol = (1e-9 * size).max(1e-6);
     let mut arrangement = Arrangement::new(curves, &bounds, tol);
     arrangement.clean();
     arrangement.regions()
@@ -407,14 +409,22 @@ impl<'a> Arrangement<'a> {
                 let Some(mf) = *mid else { continue };
                 if self.edges[f].alive
                     && ends(&self.edges[e]) == ends(&self.edges[f])
-                    && dist(me, mf) <= 100.0 * self.tol
+                    && (dist(me, mf) <= 100.0 * self.tol || self.run_along(e, f))
                 {
-                    // Keep the lower curve id.
+                    // Keep the lower curve id; of a spline and another curve that
+                    // run along each other the spline (a projected edge, which the
+                    // faces next to it follow exactly).
                     let (ue, uf) = (
                         self.curves[self.edges[e].curve].uid,
                         self.curves[self.edges[f].curve].uid,
                     );
-                    if uf < ue {
+                    let spline = |x: usize| matches!(self.curve(x), Curve2::Nurbs(_));
+                    let drop_e = if spline(e) != spline(f) {
+                        spline(f)
+                    } else {
+                        uf < ue
+                    };
+                    if drop_e {
                         self.edges[e].alive = false;
                         break;
                     }
@@ -449,6 +459,40 @@ impl<'a> Arrangement<'a> {
                 }
             }
         }
+    }
+
+    /// Whether two pieces with the same ends run along each other: points
+    /// along the one lie within a micron (1000 tolerances: a spline that
+    /// stands for an edge deviates that much from it) of the other, on its own
+    /// stretch (a spline that follows a circle has other parameters at the
+    /// same place, so their middles differ), and the other way round.
+    fn run_along(&self, e: usize, f: usize) -> bool {
+        self.lies_along(e, f) && self.lies_along(f, e)
+    }
+
+    /// Whether the points along the piece `e` lie on the stretch of the piece
+    /// `f` of its curve.
+    fn lies_along(&self, e: usize, f: usize) -> bool {
+        let reach = 1000.0 * self.tol;
+        let target = self.curve(f);
+        let (lo, hi) = target.domain();
+        let span = hi - lo;
+        let (f0, f1) = (self.edges[f].t0, self.edges[f].t1);
+        let extent = f1 - f0;
+        let slack = 0.05 * extent;
+        let (e0, e1) = (self.edges[e].t0, self.edges[e].t1);
+        (1..8).all(|k| {
+            let p = self.eval(e, e0 + (e1 - e0) * f64::from(k) / 8.0)[0];
+            let (s, d) = target.closest(p);
+            let mut off = s - f0;
+            if target.is_closed() {
+                off = off.rem_euclid(span);
+                if off > span - slack {
+                    off -= span;
+                }
+            }
+            d <= reach && off >= -slack && off <= extent + slack
+        })
     }
 
     /// Whether the whole curves of two edges lie on each other within the

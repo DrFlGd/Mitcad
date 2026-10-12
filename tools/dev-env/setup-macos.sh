@@ -13,7 +13,8 @@
 # versions.sh; while a pin is empty the script stops, unless MITCAD_SKIP_HASH=1
 # accepts the unverified download.
 #
-# Needs the Xcode Command Line Tools (xcode-select --install); no full Xcode.
+# Needs Xcode Command Line Tools (xcode-select --install) plus Apple's Metal
+# compiler/linker (standalone Metal toolchain or Xcode) for OIDN denoising.
 set -euo pipefail
 
 SCRIPT_DIR=$(cd "$(dirname "$0")" && pwd)

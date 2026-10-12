@@ -93,6 +93,28 @@ design in a project.
   not stored. The memory cache has a byte budget (the app gives a quarter
   of RAM) and evicts least recently used results not held by the current
   document. The `cache` query reports both caches.
+- **Sheet material state:** `sheet_rules` publishes resolved versioned fabrication
+  rules; `sheet_face` constructs exact named planar material domains through
+  `Kernel::sheet_shape`. A body shape and its sheet delta are applied atomically,
+  with final component ownership and matching shape generation. Rule and sheet
+  reads participate in cache keys, including missing inputs and failed-operation
+  blockers. Arbitrary body replacements invalidate existing material semantics;
+  rigid moves transform them. The result store persists paired shape/domain
+  outputs under a sheet protocol version. Native files store definitions and
+  settled panel provenance; Paste New copies external rule dependencies and
+  their parameter closure. `sheet_unfold`/`sheet_refold` (and `sheet_cut` and
+  `sheet_corner_relief`, which cut the developed material) develop and refold
+  chosen bends by traversing the labelled panel/bend graph from a fixed panel
+  in the model (`core/model/src/sheet/folded/develop.rs`); charts keep their
+  material coordinates and only their embeddings change, so the kernel only
+  reconstructs. A cut that disconnects the material publishes every piece as
+  a body with its own sheet state (the first in geometric order keeps the id,
+  the others are the cutting feature's bodies). A Flat Pattern is a document
+  item (`flat_patterns`, saved in the design file), evaluated on demand at
+  the marker from the body's sheet state with its own cache; it is never a
+  body. Copies of components copy the items of their bodies, and design
+  diffs list them. See
+  [sheet-metal.md](sheet-metal.md).
 - **Cancellation:** a recompute reports progress to a `RecomputeMonitor`
   and stops between features when cancelled. Commands, undo, redo and
   previews compute the new state before committing it, so a cancelled one
@@ -367,6 +389,24 @@ the `Shape` type.
   copies are joined whole.
 - Joins with several bodies near the tool first find the bodies it
   touches (`touches` in `geometry/src/boolean.cpp`) and fuse only those.
+- Large bodies (mitcad#181): OCCT's checker runs on OCCT's thread pool
+  (its jobs count their failed allocations as the calling thread's,
+  mitcad#132), where it checks whole bodies (operation results, the
+  bodies built from files); on one thread checking a stored body of
+  23 000 faces took 37 s. A cut whose tool passes a body by (no face of
+  it modified or removed) is not checked: its result is the body as it
+  was, which the caller leaves alone (before, such a body that the
+  checker rejected, a stored body invalid already, failed the whole cut).
+  Booleans do not check their solids for being inverted
+  (`SetCheckInverted(false)`: the check built a point classifier of all
+  of a solid's faces on one thread, every operation). The `.f3d` import
+  heals a stored body of 256 faces or more only where it differs from
+  another history state of it built before (`brep::Healed`,
+  `core/import/README.md`). A shape of 64 faces or more finds
+  its faces by a reference through an index of its face names, made the
+  first time it is asked (`Shape::find_faces`); before, each lookup read
+  every face's names, and finding the faces of a large body one by one
+  was quadratic in its faces.
   Measuring the distance of a tool face to a face with thousands of holes
   classifies points against all of its edges for every pair, so when the
   target's faces near a tool solid have 1,000 edges or more, up to 32 of
@@ -379,6 +419,14 @@ the `Shape` type.
   united: they change no body, and a large pattern of holes over a round
   plate had most of its copies off the plate. Copies whose boxes come
   that near each other are kept or left out together.
+- A pattern's optimized compute option with fillets or chamfers among the
+  features copies the faces they made instead of rounding at each copy:
+  `Kernel::feature_changes` gives the material the features added and
+  removed (`geometry/src/face_copy.cpp`, on `removed_material`), the
+  copies are moved and joined or cut in one operation each, and
+  `Kernel::supported_copies` cuts off the material of a copy over a part
+  of its seam that no face of the body lies under (a rounding that fails
+  on the 146th of 1,078 copies is never worked out again there).
 - Transforms check their input once (`Shape::checked_valid`) instead of
   every copy: a rigid motion, mirror or uniform scale keeps a valid shape
   valid, and checking each of a pattern's copies was four fifths of their
@@ -502,6 +550,26 @@ curves (half-edge structure, leftmost turn; islands are separate regions;
 overlapping pieces and curves on each other, such as a circle drawn twice,
 count once).
 
+A profile feature's `profiles` are a set of these regions: the area they
+select is the odd/even composition of the selected regions, which never
+overlap, so each region once whatever the order or repetition of the list
+(`extrude::selected_regions`, shared by preview and evaluation; references
+that find the same region count once). Toggling a region is the
+application's: a click on a selected region takes its entry out
+(mitcad#199; [commands.md, Profile
+selections](../core/model/src/api/commands.md#profile-selections)).
+
+Solid mode's Autoselect groups come from the model's `autoselect_profiles`
+query (`document/autoselect.rs`, mitcad#193). Only the final unused sketch
+at the end of the timeline qualifies. Projected, drawn and hybrid groups
+classify every boundary segment, including holes, by stored provenance:
+`Entity::reference` covers unlinked projections too, independently of the
+solver's `fixed` flag. A projected rectangle around drawn circles has a
+hybrid surrounding region and separate drawn circle interiors. Region
+keys come from the current evaluation, so edits and undo cannot leave
+cached candidates. The application owns per-item toggles and hover
+previews, and passes normal profile preselection to commands.
+
 A linked projection that moved is solved in steps from where the stored
 definition has it, so geometry constrained to it keeps its side (as the
 solver's continuation does for a dimension change). The stored definition
@@ -620,8 +688,9 @@ not recompute.
   which multiply the background behind it (shadows, coloured reflections;
   mitcad#54). Only `CyclesRenderer.cpp` includes Cycles (C++20); the rest is
   C++17 ([rendering.md](rendering.md)). The worker renders on the CPU or
-  a GPU (mitcad#50: Cycles' CUDA device, and HIP, Metal or oneAPI
-  in builds with their SDKs): the device is a per-machine setting
+  a GPU (mitcad#50: Cycles' CUDA device, which the Linux and Windows
+  releases ship, mitcad#202; Metal on macOS; HIP or oneAPI in builds
+  with their SDKs): the device is a per-machine setting
   (Preferences > Display, the user's settings), sent as the worker's
   first command; a device that is not there or fails hands over to the
   CPU, which renders the same scene and says why (`RenderDevices.cpp`).
@@ -631,6 +700,15 @@ not recompute.
   JPEG with the view's exposure and view transform, OpenEXR as linear
   light) and reports progress and previews on stdout; the application
   stays usable and can cancel it.
+- **Sheet metal** (mitcad#210, `app/commands/SheetCommands.cpp`): the SHEET
+  METAL group's commands keep no sheet model of their own. A pick on a sheet
+  body is a face or edge named by its material domain; the model's
+  `sheet_reference` and `sheet_seam` queries turn it into the semantic
+  panel, bend, boundary or corner the definition stores. The browser lists a
+  sheet body's rules and Flat Pattern from `sheet_bodies`; a Flat Pattern
+  shown flat replaces the body's display with its developed solid
+  (`analysis_shape` `flat_pattern`), and its DXF is written by the model from
+  the evaluated outline (`export_flat_pattern_dxf`, [sheet-metal.md](sheet-metal.md)).
 - **Updates** (`app/update/`): see [updates.md](updates.md).
 - **Feedback and error reports** (`app/report/`, mitcad#61, mitcad#62):
   Help › Send Feedback and the reports offered after a crash or an
@@ -695,6 +773,16 @@ indicator, Services, text editing and window actions are AppKit's. System
 controls, semantic colours, fonts and sidebar material follow the running
 macOS version and accessibility settings. The toolbar changes in sketch
 mode; command definitions and saved shortcuts remain shared.
+
+The shared command registry validates shortcut proposals against commands
+which can be available together, fixed application/menu keys and effective
+alternate bindings. Profile-accepting model features also run in sketch
+mode; other Model/Sketch pairs can share keys. Alternates apply only while
+the proposed primary remains its default. Conflicting legacy custom
+bindings remain saved for repair in Keyboard Shortcuts, but are disabled
+at runtime with a diagnostic; their menu actions remain available. The
+registry exposes the same effective keys for Qt actions, native dispatch,
+NativeText hints and the shortcut overview.
 
 `CommandPresenter` separates command-session actions and displayed state
 from controls. `NativeForms` builds real AppKit inputs from `InputDef`;
@@ -1325,7 +1413,9 @@ continues on it. What the report says stays on the timeline as import
 notes in the definition state (mitcad#170, `core/model/src/document/import_notes.rs`):
 the fallbacks' base features and partial items show as warnings, and an
 item the file had suppressed or failed becomes a suppressed `placeholder`
-feature at its place. The `.f3d` history is matched by its solids; its surface
+feature at its place. An `.f3d` item suppressed in the file comes in as
+its own feature, suppressed, where its definition translates
+(mitcad#180, `core/import/src/suppressed.rs`). The `.f3d` history is matched by its solids; its surface
 bodies come in with the fallbacks as stored bodies, which joins and cuts
 without participants then leave alone. Both run over the `Kernel` trait,
 so they are testable on the mock kernel; the app runs them in the import
@@ -1347,7 +1437,17 @@ process.
   else the stored transforms), and the file's captured positions come in
   as `capture_position` features at their points of the timeline;
   occurrences of components of other documents (inserted parts,
-  fasteners) are occurrences of empty components. The file's joints come
+  fasteners) are occurrences of empty components during the replay, which
+  the import then fills (mitcad#196, `core/ffi/src/f3d_references.rs`,
+  `core/import/src/references.rs`): each document the design refers to
+  is imported from its own file (the reference folder next to the design,
+  folders and files given, the GUID the file's manifest lists; the
+  application asks for each one not found, the command line never) with
+  its history and its own references, and copied into its component
+  (`Document::fill_component_copy`), the captured positions inside it
+  coming in as `capture_position` features of it; one undo step with the
+  import. A document not found leaves its components empty, the report
+  naming it. The file's joints come
   in as joint features only where they hold where the file places the
   occurrences (nothing the import adds moves an occurrence elsewhere),
   else as as-built joints of the placements; whether a joint holds is

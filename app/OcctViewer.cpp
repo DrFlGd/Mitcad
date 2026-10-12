@@ -148,6 +148,9 @@ constexpr double kPinchZoomSteps = 100.0;
 constexpr double kRollDirection = 1.0;
 // How long the camera must keep still before it is logged (ms).
 constexpr int kRestMilliseconds = 250;
+// After a release, when the navigation ends at the latest if no frame is
+// drawn (ms).
+constexpr int kReleaseFrameMilliseconds = 100;
 
 // The cube's place in the upper right corner: its centre's distance from the
 // corner in device pixels (the overlay insets move the corner).
@@ -873,6 +876,11 @@ OcctViewer::OcctViewer(QWidget* parent) : QOpenGLWidget(parent) {
   m_scrollTimer->setSingleShot(true);
   m_scrollTimer->setInterval(kScrollEndMilliseconds);
   connect(m_scrollTimer, &QTimer::timeout, this, &OcctViewer::endScrollDrag);
+  m_navigationClock.start();
+  m_navigationTimer = new QTimer(this);
+  m_navigationTimer->setSingleShot(true);
+  connect(m_navigationTimer, &QTimer::timeout, this, &OcctViewer::updateNavigation);
+  TestSync::watch(m_navigationTimer);
   const bool glass = chromeStyle() == ChromeStyle::Floating;
   m_homeButton = makeOverlayButton(this);
   m_homeButton->setObjectName(QStringLiteral("viewHome"));
@@ -1272,7 +1280,12 @@ void OcctViewer::setRenderedImage(const QImage& image) {
     m_context->Erase(m_renderedQuad, false);
     m_renderedTexture.Nullify();
     m_renderedPixels.Nullify();
+    m_renderedCamera.Nullify();
   } else {
+    // What the image shows: the camera and size of now.
+    m_renderedCamera = new Graphic3d_Camera();
+    m_renderedCamera->Copy(m_view->Camera());
+    m_view->Window()->Size(m_renderedWidth, m_renderedHeight);
     // OCCT reads the pixels when it draws: the image stays here meanwhile.
     m_renderedImage = image.convertToFormat(QImage::Format_RGB32);
     m_renderedPixels = new Image_PixMap();
@@ -1308,6 +1321,21 @@ void OcctViewer::setRenderedImage(const QImage& image) {
   }
   m_view->Invalidate();
   requestFrame();
+}
+
+bool OcctViewer::renderedImageStale() const {
+  if (m_renderedCamera.IsNull() || m_view->Window().IsNull()) {
+    return false;
+  }
+  int width = 0;
+  int height = 0;
+  m_view->Window()->Size(width, height);
+  const occ::handle<Graphic3d_Camera>& now = m_view->Camera();
+  return width != m_renderedWidth || height != m_renderedHeight ||
+         now->ProjectionType() != m_renderedCamera->ProjectionType() ||
+         !now->Eye().XYZ().IsEqual(m_renderedCamera->Eye().XYZ(), 0.0) ||
+         !now->Center().XYZ().IsEqual(m_renderedCamera->Center().XYZ(), 0.0) ||
+         !now->Up().XYZ().IsEqual(m_renderedCamera->Up().XYZ(), 0.0) || now->Scale() != m_renderedCamera->Scale();
 }
 
 void OcctViewer::backgroundColors(QColor& top, QColor& bottom) const {
@@ -2708,6 +2736,8 @@ void OcctViewer::resizeGL(int width, int height) {
   placeCubeArrows();
   m_loggedCamera.clear(); // the cube's places moved
   m_restTimer->start();
+  // A window resized by dragging is resized in steps: one navigation.
+  navigationStep();
 }
 
 #ifdef Q_OS_MACOS
@@ -2812,8 +2842,32 @@ void OcctViewer::paintGL() {
   if (key != m_restingCamera) {
     m_restingCamera = key;
     m_restTimer->start();
+    // A wheel burst or a gesture lasts until the camera keeps still.
+    m_navigationState.cameraMoved(m_navigationClock.elapsed());
   }
+  // Whether this frame is part of a navigation, before what follows the
+  // camera asks: the last frame after a release, an animation's end or the
+  // quiet time ends it (navigationFinished).
+  updateNavigation();
   emit viewChanged();
+}
+
+void OcctViewer::updateNavigation() {
+  const qint64 now = m_navigationClock.elapsed();
+  const ViewNavigation::Change change = m_navigationState.update(now, !ViewAnimation()->IsStopped());
+  const int left = m_navigationState.quietLeft(now);
+  if (left > 0) {
+    m_navigationTimer->start(left);
+  }
+  if (change == ViewNavigation::Change::Ended) {
+    emit navigationFinished();
+  }
+}
+
+void OcctViewer::navigationStep() {
+  const qint64 now = m_navigationClock.elapsed();
+  m_navigationState.stepped(now);
+  m_navigationTimer->start(m_navigationState.quietLeft(now));
 }
 
 // ---------------------------------------------------------------------------
@@ -2922,10 +2976,21 @@ void OcctViewer::cancelPointerInteraction() {
   m_cubeClick = false;
   m_windowPick = false;
   m_orbitKey = false;
+  m_navigationState.setButtons(false);
   if (m_dragItem) {
     endOccurrenceDrag(QPointF(), true);
   }
   requestFrame();
+}
+
+void OcctViewer::buttonsReleased() {
+  // The navigation ends with the next frame, which applies the last move
+  // (or, when no frame comes, shortly after).
+  m_navigationState.setButtons(false);
+  requestFrame();
+  if (!m_navigationTimer->isActive()) {
+    m_navigationTimer->start(kReleaseFrameMilliseconds);
+  }
 }
 
 bool OcctViewer::event(QEvent* event) {
@@ -2960,6 +3025,10 @@ bool OcctViewer::event(QEvent* event) {
 void OcctViewer::mousePressEvent(QMouseEvent* event) {
   QOpenGLWidget::mousePressEvent(event);
   endScrollDrag();
+  // Any button held may orbit, pan or drag: a navigation until it goes up
+  // (a click without a move leaves the camera as it was).
+  m_navigationState.setButtons(event->buttons() != Qt::NoButton);
+  updateNavigation();
   if (event->button() == Qt::RightButton) {
     m_rightPressPosition = event->position();
   }
@@ -3052,6 +3121,9 @@ void OcctViewer::endOccurrenceDrag(const QPointF& position, bool cancelled) {
 
 void OcctViewer::mouseReleaseEvent(QMouseEvent* event) {
   QOpenGLWidget::mouseReleaseEvent(event);
+  if (event->buttons() == Qt::NoButton && m_navigationState.buttons()) {
+    buttonsReleased();
+  }
   const bool rightClick = event->button() == Qt::RightButton &&
                           (PressedMouseButtons() & Aspect_VKeyMouse_RightButton) != 0;
   const bool cube = m_cubePress && event->button() == Qt::LeftButton;
@@ -3123,6 +3195,9 @@ void OcctViewer::mouseMoveEvent(QMouseEvent* event) {
       (PressedMouseButtons() != Aspect_VKeyMouse_NONE || m_cubePress || m_dragItem)) {
     cancelPointerInteraction();
   }
+  if (event->buttons() == Qt::NoButton && m_navigationState.buttons()) {
+    buttonsReleased(); // a release this widget did not get
+  }
   if (m_dragItem) {
     // A component dragged (mitcad#55): the owner moves it, the view only
     // follows; a refused one stays, and the owner says why (mitcad#150).
@@ -3164,6 +3239,7 @@ void OcctViewer::wheelEvent(QWheelEvent* event) {
                           ? UpdateZoom(Aspect_ScrollDelta(toDevicePixels(event->position()), steps))
                           : UpdateZoom(Aspect_ScrollDelta(steps));
   if (zoomed) {
+    navigationStep();
     requestFrame();
   }
 }
@@ -3196,6 +3272,7 @@ void OcctViewer::trackpadScroll(QWheelEvent* event) {
   }
   m_scrollMode = mode;
   m_scrollTimer->start();
+  navigationStep();
   if (mode == ScrollMode::Zoom) {
     // Shift turns a vertical scroll into a horizontal one on some systems.
     const double along = std::abs(delta.y()) >= std::abs(delta.x()) ? delta.y() : delta.x();
@@ -3212,6 +3289,7 @@ void OcctViewer::trackpadScroll(QWheelEvent* event) {
   const qreal ratio = devicePixelRatioF();
   if (!m_scrollDragging) {
     m_scrollDragging = true;
+    m_navigationState.setScrollDrag(true);
     m_scrollPoint = event->position() * ratio;
     UpdateMouseButtons(devicePixel(m_scrollPoint), Aspect_VKeyMouse_LeftButton, flags, false);
   }
@@ -3229,6 +3307,7 @@ void OcctViewer::endScrollDrag() {
     return;
   }
   m_scrollDragging = false;
+  m_navigationState.setScrollDrag(false); // ends with the next frame or the quiet time
   UpdateMouseButtons(devicePixel(m_scrollPoint), Aspect_VKeyMouse_NONE,
                      mode == ScrollMode::Orbit ? kScrollOrbit : kScrollPan, false);
   requestFrame();
@@ -3248,6 +3327,7 @@ void OcctViewer::nativeGesture(QNativeGestureEvent* event) {
                             : UpdateZoom(Aspect_ScrollDelta(steps));
     if (zoomed) {
       cameraMoved();
+      navigationStep();
       requestFrame();
     }
     break;
@@ -3275,6 +3355,7 @@ void OcctViewer::rollView(double degrees) {
   camera->OrthogonalizeUp();
   m_view->Invalidate();
   cameraMoved();
+  navigationStep();
   requestFrame();
 }
 
@@ -3301,6 +3382,12 @@ void OcctViewer::contextLazyMoveTo(const occ::handle<AIS_InteractiveContext>& co
 
 void OcctViewer::handleViewRedraw(const occ::handle<AIS_InteractiveContext>& context,
                                   const occ::handle<V3d_View>& view) {
+  // A rendered image of another camera or size, or one that a camera
+  // animation is about to move, would show the bodies where they no longer
+  // are: this frame draws them shaded (mitcad#214).
+  if (!m_renderedImage.isNull() && (!ViewAnimation()->IsStopped() || renderedImageStale())) {
+    setRenderedImage(QImage());
+  }
   // The camera has moved for this frame: the grid follows the zoom at once.
   updateGrid();
   AIS_ViewController::handleViewRedraw(context, view);

@@ -155,6 +155,34 @@ pub mod ffi {
         /// (`mitcad/geometry/guard.hpp`).
         fn catch_occt_crashes();
 
+        // .f3d import: healed faces reused between history states
+        // (mitcad#181).
+        /// A body built by `f3d_build_body_from`, with what the builds of
+        /// its other states can take from it.
+        type F3dBuilt;
+        /// The builds a body's build takes healed faces from.
+        type F3dBases;
+        fn f3d_bases() -> UniquePtr<F3dBases>;
+        /// Adds a build to the bases (one that kept nothing adds nothing).
+        fn f3d_bases_add(bases: Pin<&mut F3dBases>, built: &SharedPtr<F3dBuilt>);
+        /// `f3d_build_body`, taking the faces whose data is the same as
+        /// one of the bases' as they were healed there (the base that
+        /// shares the most), and healing only the others; the body as a
+        /// whole when less than half are shared or that is not valid.
+        fn f3d_build_body_from(
+            data: &BrepBodyData,
+            bases: &F3dBases,
+        ) -> Result<SharedPtr<F3dBuilt>>;
+        /// The body built (null when it does not build).
+        fn f3d_built_shape(built: &F3dBuilt) -> SharedPtr<Shape>;
+        /// How many of its faces were taken from a base.
+        fn f3d_built_reused(built: &F3dBuilt) -> u32;
+        /// Whether it keeps healed faces for the builds of other states.
+        fn f3d_built_kept(built: &F3dBuilt) -> bool;
+        /// Why it was healed as a whole although it had bases (empty when
+        /// it was not).
+        fn f3d_built_note(built: &F3dBuilt) -> String;
+
         // .ipt import (mitcad#60).
         /// Builds one body from its neutral B-rep data with OCCT and
         /// reports how it went, as `f3d_bodies` does for each body; its
@@ -171,6 +199,12 @@ pub mod ffi {
         /// (a 10 mm cube and a cylinder of radius 10 mm and height 20 mm)
         /// in a `.smb` blob each, without the rest of an .f3d design.
         fn f3d_write_test_file(path: &str) -> Result<()>;
+        /// Writes a test assembly of components of other documents with its
+        /// reference folder (`mitcad_f3d::testreferences`, mitcad#196) into
+        /// `dir`: `Assembly v1.f3d` and `Assembly v1.refs/` with
+        /// `Holder v1.f3d`, `Part v2.f3d` and `references.json`; or the
+        /// two files in `<folder>/` without `references.json`.
+        fn f3d_write_test_references(dir: &str, folder: &str) -> Result<()>;
 
         // .ipt import (mitcad#60).
         /// Writes a small .ipt part file for tests (`mitcad_ipt::testdata`):
@@ -202,6 +236,12 @@ pub mod ffi {
     }
 }
 
+// A build is not changed once made; the builds of other states read its
+// shapes (copying the faces they take) as the replay reads its body (see
+// `ffi::Shape`'s).
+unsafe impl Send for ffi::F3dBuilt {}
+unsafe impl Sync for ffi::F3dBuilt {}
+
 /// See [`ffi::f3d_build_progress`].
 fn f3d_build_progress() {
     crate::f3d_import::build_progress();
@@ -224,6 +264,26 @@ fn f3d_write_test_file(path: &str) -> Result<(), String> {
     }
     let out = writer.finish().map_err(|e| e.to_string())?;
     std::fs::write(path, out).map_err(|e| format!("{path}: {e}"))
+}
+
+/// The files of [`ffi::f3d_write_test_references`].
+fn f3d_write_test_references(dir: &str, folder: &str) -> Result<(), String> {
+    let dir = std::path::Path::new(dir);
+    for (path, data) in mitcad_f3d::testreferences::files() {
+        if !folder.is_empty() && path.ends_with("references.json") {
+            continue;
+        }
+        let path = match path.split_once('/') {
+            Some((_, file)) if !folder.is_empty() => format!("{folder}/{file}"),
+            _ => path,
+        };
+        let path = dir.join(path);
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).map_err(|e| format!("{}: {e}", parent.display()))?;
+        }
+        std::fs::write(&path, data).map_err(|e| format!("{}: {e}", path.display()))?;
+    }
+    Ok(())
 }
 
 /// The part of [`ffi::ipt_write_test_file`].

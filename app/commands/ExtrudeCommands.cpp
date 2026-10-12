@@ -213,8 +213,35 @@ CommandDef extrudeCommand(const CommandContext& context) {
   def.inputs.append(valueInput(QStringLiteral("thickness2"), QObject::tr("Wall Thickness 2"),
                                ValueKind::Length, QStringLiteral("1 mm"))
                         .withVisible(thinTwo));
-  def.inputs += operationInputs();
-  def.init = newestProfile;
+  auto operations = operationInputs();
+  operations[1].label = QObject::tr("Local bodies");
+  operations[1].tooltip = QObject::tr("Bodies in the feature's component. Older cuts retain this local scope.");
+  const auto originalVisible = operations[1].visible;
+  operations[1].visible = [originalVisible](const CommandState& state) {
+    return originalVisible(state) && (state.choice(QStringLiteral("operation")) != QStringLiteral("cut") ||
+                                      state.object(QStringLiteral("cut_scope")).isEmpty());
+  };
+  def.inputs += operations;
+  InputDef targets;
+  targets.type = InputDef::Type::CutTargets;
+  targets.id = QStringLiteral("cut_scope");
+  targets.label = QObject::tr("Affected components");
+  targets.visible = [](const CommandState& state) {
+    return state.choice(QStringLiteral("operation")) == QStringLiteral("cut") &&
+           !state.object(QStringLiteral("cut_scope")).isEmpty();
+  };
+  def.inputs.append(targets);
+  def.init = [](CommandState& state, const CommandContext& model) {
+    newestProfile(state, model);
+    const QJsonObject components = model.queryObject({{QStringLiteral("query"), QStringLiteral("components")}});
+    state.setObject(QStringLiteral("cut_scope"),
+                    {{QStringLiteral("context"), QJsonObject{{QStringLiteral("component"), components.value(QStringLiteral("active"))},
+                                                              {QStringLiteral("occurrence"), QString()}}},
+                     {QStringLiteral("targets"), QJsonObject{{QStringLiteral("type"), QStringLiteral("automatic")},
+                                                              {QStringLiteral("excluded"), QJsonArray()},
+                                                              {QStringLiteral("excluded_bodies"), QJsonArray()}}}});
+    state.setChecked(QStringLiteral("cut_context_from_profile"), true);
+  };
   def.enabled = [&context] { return hasProfiles(context); };
 
   def.build = [](const CommandState& state, const CommandContext&) {
@@ -294,6 +321,17 @@ CommandDef extrudeCommand(const CommandContext& context) {
       result.def.insert(QStringLiteral("flip"), true);
     }
     addOperation(result.def, state);
+    if (state.choice(QStringLiteral("operation")) == QStringLiteral("cut") &&
+        !state.object(QStringLiteral("cut_scope")).isEmpty()) {
+      QJsonObject scope = state.object(QStringLiteral("cut_scope"));
+      if (state.checked(QStringLiteral("cut_context_from_profile"))) {
+        QJsonObject context = scope.value(QStringLiteral("context")).toObject();
+        context.insert(QStringLiteral("occurrence"), profiles.first().occurrence);
+        scope.insert(QStringLiteral("context"), context);
+      }
+      result.def.remove(QStringLiteral("participants"));
+      result.def.insert(QStringLiteral("cut_scope"), scope);
+    }
     return result;
   };
 
@@ -344,6 +382,7 @@ CommandDef extrudeCommand(const CommandContext& context) {
     }
     state.setChecked(QStringLiteral("flip"), feature.value(QStringLiteral("flip")).toBool());
     loadOperation(feature, state);
+    state.setObject(QStringLiteral("cut_scope"), feature.value(QStringLiteral("cut_scope")).toObject());
   };
 
   // Everything the model's extrusions have can be shown, but for fixed

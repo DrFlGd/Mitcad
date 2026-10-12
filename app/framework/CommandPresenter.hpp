@@ -17,6 +17,8 @@ public:
     std::function<void(const QString&)> valueCommitted;
     std::function<void(const QString&, const QString&)> choiceChanged;
     std::function<void(const QString&, bool)> checkChanged;
+    std::function<void(const QString&, const QJsonObject&)> objectChanged;
+    std::function<void(const Selection&)> highlightRequested;
     std::function<void(const QString&)> selectionActivated;
     std::function<void(const QString&)> selectionCleared;
     std::function<void(const QString&, int, int)> itemMoved;
@@ -37,6 +39,9 @@ public:
   const Actions& actions() const { return m_actions; }
 
   virtual void refresh(const CommandState& state) = 0;
+  // Latest accepted feature preview, including recoverable error metadata;
+  // empty means previous candidates are stale while inputs change.
+  virtual void setPreviewReport(const QJsonObject&) {}
   // A structural input action has applied, including a rejected no-op.
   // Frontends may hold the affected controls until this acknowledgement.
   virtual void inputActionApplied(const QString&) {}

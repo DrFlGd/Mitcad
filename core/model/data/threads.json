@@ -1,5 +1,5 @@
 {
-  "about": "Screw thread sizes for Mitcad's hole and thread features. Mitcad's own data (MIT licence): the nominal diameters and pitches of the ISO metric general purpose series (ISO 261) and of the Unified series (ASME B1.1), of the Whitworth series (BSW, BSF; BS 84) and the parallel pipe threads G (ISO 228-1, their major diameters), of the taper pipe threads NPT (ASME B1.20.1, the pipes' outside diameters), which are size designations only, and of the tyre valve threads (ISO 4570, their major diameters). Every other dimension is computed from the basic profile: ISO 68-1's 60-degree one for ISO metric and Unified threads, H = 0.866025 P, D1 = D - 1.082532 P, D2 = D - 0.649519 P; the 55-degree Whitworth one, h = 0.640327 P, D1 = D - 2 h, D2 = D - h; the taper pipe one, h = 0.8 P, D1 = D - 2 h, D2 = D - h (its 1:16 taper is not kept); tyre valve threads take ISO 68-1's. Tolerance classes are labels; no tolerance values are listed.",
+  "about": "Screw thread sizes for Mitcad's hole and thread features. Mitcad's own data (MIT licence): the nominal diameters and pitches of the ISO metric general purpose series (ISO 261) and of the Unified series (ASME B1.1), of the Whitworth series (BSW, BSF; BS 84) and the parallel pipe threads G (ISO 228-1, their major diameters), of the taper pipe threads NPT (ASME B1.20.1, the pipes' outside diameters), which are size designations only, of the tyre valve threads (ISO 4570, their major diameters) and of the metric forming (tapping) screw threads (ISO 1478: the nominal diameters ST1.5 to ST9.5 with their pitches, the second pitch of ST2.9 as the screw libraries list it). Every other dimension is computed from the basic profile: ISO 68-1's 60-degree one for ISO metric and Unified threads, H = 0.866025 P, D1 = D - 1.082532 P, D2 = D - 0.649519 P; the 55-degree Whitworth one, h = 0.640327 P, D1 = D - 2 h, D2 = D - h; the taper pipe one, h = 0.8 P, D1 = D - 2 h, D2 = D - h (its 1:16 taper is not kept); tyre valve and forming screw threads take ISO 68-1's; a design that stores a modelled thread brings its own diameters. Tolerance classes are labels; no tolerance values are listed.",
   "iso_metric": {
     "classes_external": ["3h4h", "4g", "4h", "5g6g", "5h6h", "6e", "6f", "6g", "6h", "7e6e", "7g6g", "7h6h", "8g"],
     "classes_internal": ["4H", "5G", "5H", "6G", "6H", "7G", "7H"],
@@ -18,6 +18,7 @@
       {"d": 4, "pitches": [0.7, 0.5]},
       {"d": 4.5, "pitches": [0.75, 0.5]},
       {"d": 5, "pitches": [0.8, 0.5]},
+      {"d": 5.5, "pitches": [0.9, 0.5]},
       {"d": 6, "pitches": [1, 0.75]},
       {"d": 7, "pitches": [1, 0.75]},
       {"d": 8, "pitches": [1.25, 1, 0.75]},
@@ -34,18 +35,53 @@
       {"d": 22, "pitches": [2.5, 2, 1.5, 1]},
       {"d": 24, "pitches": [3, 2, 1.5, 1]},
       {"d": 25, "pitches": [2, 1.5, 1]},
+      {"d": 26, "pitches": [1.5]},
       {"d": 27, "pitches": [3, 2, 1.5, 1]},
+      {"d": 28, "pitches": [2, 1.5, 1]},
       {"d": 30, "pitches": [3.5, 3, 2, 1.5, 1]},
+      {"d": 32, "pitches": [2, 1.5]},
       {"d": 33, "pitches": [3.5, 3, 2, 1.5]},
+      {"d": 35, "pitches": [1.5]},
       {"d": 36, "pitches": [4, 3, 2, 1.5]},
+      {"d": 38, "pitches": [1.5]},
       {"d": 39, "pitches": [4, 3, 2, 1.5]},
+      {"d": 40, "pitches": [3, 2, 1.5]},
       {"d": 42, "pitches": [4.5, 4, 3, 2, 1.5]},
       {"d": 45, "pitches": [4.5, 4, 3, 2, 1.5]},
       {"d": 48, "pitches": [5, 4, 3, 2, 1.5]},
+      {"d": 50, "pitches": [3, 2, 1.5]},
       {"d": 52, "pitches": [5, 4, 3, 2, 1.5]},
+      {"d": 55, "pitches": [4, 3, 2, 1.5]},
       {"d": 56, "pitches": [5.5, 4, 3, 2, 1.5]},
       {"d": 60, "pitches": [5.5, 4, 3, 2, 1.5]},
-      {"d": 64, "pitches": [6, 4, 3, 2, 1.5]}
+      {"d": 64, "pitches": [6, 4, 3, 2, 1.5]},
+      {"d": 68, "pitches": [6, 4, 3, 2, 1.5]},
+      {"d": 72, "pitches": [6, 4, 3, 2, 1.5]},
+      {"d": 76, "pitches": [6, 4, 3, 2, 1.5]},
+      {"d": 80, "pitches": [6, 4, 3, 2, 1.5, 1]},
+      {"d": 85, "pitches": [6, 4, 3, 2]},
+      {"d": 90, "pitches": [6, 4, 3, 2]},
+      {"d": 95, "pitches": [6, 4, 3, 2]},
+      {"d": 100, "pitches": [6, 4, 3, 2]},
+      {"d": 105, "pitches": [6, 4, 3, 2]},
+      {"d": 110, "pitches": [6, 4, 3, 2]},
+      {"d": 115, "pitches": [6, 4, 3, 2]},
+      {"d": 120, "pitches": [6, 4, 3, 2]},
+      {"d": 125, "pitches": [6, 4, 3, 2]},
+      {"d": 130, "pitches": [6, 4, 3, 2]},
+      {"d": 140, "pitches": [6, 4, 3, 2]},
+      {"d": 150, "pitches": [6, 4, 3, 2]},
+      {"d": 160, "pitches": [6, 4, 3]},
+      {"d": 170, "pitches": [6, 4, 3]},
+      {"d": 180, "pitches": [6, 4, 3]},
+      {"d": 190, "pitches": [6, 4, 3]},
+      {"d": 200, "pitches": [6, 4, 3]},
+      {"d": 220, "pitches": [6, 4, 3]},
+      {"d": 240, "pitches": [6, 4, 3]},
+      {"d": 250, "pitches": [6, 4, 3]},
+      {"d": 260, "pitches": [6, 4, 3]},
+      {"d": 280, "pitches": [6, 4, 3]},
+      {"d": 300, "pitches": [6, 4, 3]}
     ]
   },
   "unified": {
@@ -82,7 +118,7 @@
   },
   "whitworth": {
     "classes_external": ["Close", "Medium", "Free", "A", "B"],
-    "classes_internal": ["Medium", "Normal"],
+    "classes_internal": ["Medium", "Normal", "A"],
     "sizes": [
       {"size": "1/8", "d_in": 0.125, "BSW": 40},
       {"size": "3/16", "d_in": 0.1875, "BSW": 24, "BSF": 32},
@@ -195,6 +231,26 @@
       {"size": "17V3", "d": 17.463, "pitch": 1.588},
       {"size": "19V1", "d": 19.050, "pitch": 1.588},
       {"size": "20V1", "d": 20.642, "pitch": 1.000}
+    ]
+  },
+  "forming_screw": {
+    "classes_external": ["6g"],
+    "classes_internal": ["6H"],
+    "sizes": [
+      {"d": 1.5, "pitches": [0.5]},
+      {"d": 1.9, "pitches": [0.6]},
+      {"d": 2.2, "pitches": [0.8]},
+      {"d": 2.6, "pitches": [0.9]},
+      {"d": 2.9, "pitches": [1.1, 1.4]},
+      {"d": 3.3, "pitches": [1.3]},
+      {"d": 3.5, "pitches": [1.3]},
+      {"d": 3.9, "pitches": [1.3]},
+      {"d": 4.2, "pitches": [1.4]},
+      {"d": 4.8, "pitches": [1.6]},
+      {"d": 5.5, "pitches": [1.8]},
+      {"d": 6.3, "pitches": [1.8]},
+      {"d": 8, "pitches": [2.1]},
+      {"d": 9.5, "pitches": [2.1]}
     ]
   }
 }

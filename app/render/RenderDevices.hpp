@@ -15,6 +15,13 @@
 
 namespace mitcad::render {
 
+// Cycles enumerates MetalRT capability separately from its automatic
+// policy: M1/M2 support Metal compute without opting into MetalRT. Other
+// backends retain their existing hardware ray-tracing setting.
+inline bool automaticRayTracing(const std::string& backend, bool available, bool metalDefault) {
+  return available && (backend != "METAL" || metalDefault);
+}
+
 // The choices besides a device's id.
 constexpr const char* kDeviceAutomatic = "auto"; // the best GPU, else the CPU
 constexpr const char* kDeviceCpu = "cpu";
@@ -27,9 +34,11 @@ constexpr const char* kDeviceCpu = "cpu";
 // matches no device gives the CPU and says why in `message`.
 DeviceInfo chooseDevice(const std::string& choice, const std::vector<DeviceInfo>& devices, std::string& message);
 
-// Makes a renderer on a device (makeCyclesRenderer, or a test's).
+// Makes a renderer on a device (makeCyclesRenderer, or a test's). Retries
+// force CPU denoising too, even if a test independently requested a GPU.
 using RendererFactory =
-    std::function<std::unique_ptr<Renderer>(FrameSink& sink, const DeviceInfo& device, std::string& error)>;
+    std::function<std::unique_ptr<Renderer>(FrameSink& sink, const DeviceInfo& device, bool cpuDenoising,
+                                           std::string& error)>;
 // Told the device rendering now and, when the renderer fell back to the
 // CPU, why. May be called from the renderer's threads.
 using DeviceReport = std::function<void(const DeviceInfo& device, const std::string& fallback)>;
@@ -37,10 +46,14 @@ using DeviceReport = std::function<void(const DeviceInfo& device, const std::str
 // A renderer on the chosen device that falls back to the CPU: when the
 // device cannot start, or it fails while rendering (its kernels cannot be
 // loaded, its memory runs out), a renderer on the CPU takes over with the
-// same scene, environment, view and samples, and `report` says why. A
-// `testFailure` (the worker's MITCAD_RENDER_TEST_DEVICE_FAILURE) makes the
-// first renderer fail with that message after its first frame, also on the
-// CPU. Null with `error` when not even the CPU starts.
+// same scene, environment, view and samples, and `report` says why. A GPU
+// that fails while it also denoises on a GPU is first replaced by the same
+// GPU with CPU denoising ("Denoising on the CPU: ..."), once; only when that
+// one cannot start or fails too does the CPU take over. A `testFailure`
+// (the worker's MITCAD_RENDER_TEST_DEVICE_FAILURE) makes the first renderer
+// fail with that message after its first frame, also on the CPU; it counts
+// as the path tracer's failure (straight to the CPU). Null with `error`
+// when not even the CPU starts.
 std::unique_ptr<Renderer> makeDeviceRenderer(FrameSink& sink, const DeviceInfo& device, RendererFactory factory,
                                              DeviceReport report, std::string testFailure, std::string& error);
 

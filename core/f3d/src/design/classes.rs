@@ -30,6 +30,11 @@ pub const SKETCH_LINE_3: &str = "AE42BAB6-643F-4169-A33C-529C8E0A4D84";
 pub const SKETCH_ARC: &str = "F0130424-8B7E-4092-93C9-1CA807482534";
 /// A sketch spline (fitted or control-point): a NURBS curve (mitcad#154).
 pub const SKETCH_SPLINE: &str = "D82E012F-6DDD-4AED-BDE1-C0F7F9100B9B";
+/// The fit-point list a sketch spline refers to: the sketch points between
+/// its end points, then a back reference to the spline.
+pub const SPLINE_FIT_POINTS: &str = "F81C561A-B091-40F8-A875-BA72FD2FBFE8";
+/// The handle list of a sketch spline: its tangent handle lines.
+pub const SPLINE_HANDLES: &str = "4224E565-F64F-4532-93F4-ABE3AB9CA574";
 /// A sketch ellipse or elliptical arc (mitcad#154).
 pub const SKETCH_ELLIPSE: &str = "FF23079A-D99C-47AB-940E-2F4E18F022AB";
 /// Base class of all sketch curves.
@@ -40,6 +45,8 @@ pub const SKETCH_CONSTRAINT: &str = "60403D47-0C49-49B0-BDE8-1679608164A2";
 pub const SKETCH_DIMENSION: &str = "855F0A64-6286-4FFC-B918-BC394F600107";
 pub const LINEAR_DIMENSION: &str = "8C780195-72C0-4A56-A911-E43AB14357F2";
 pub const ANGULAR_DIMENSION: &str = "6EEAFDE5-59C4-424D-8EBE-77CDBC562017";
+/// The distance between a line and a circle or arc (mitcad#186).
+pub const TANGENT_DISTANCE_DIMENSION: &str = "A9E23439-6F4F-4ED3-A610-319F0AFABEED";
 pub const RADIAL_DIMENSION: &str = "8EDAC24D-35D4-4591-B8E7-B3EA081C9DF0";
 pub const DIAMETER_DIMENSION: &str = "664AD49F-207F-4CD5-8555-DD269E9F09EA";
 pub const ORIGIN_PLANE: &str = "8D424E29-DE23-4B1F-A3AD-84C52A497D1A";
@@ -47,6 +54,10 @@ pub const ORIGIN_AXIS: &str = "19031004-3AB6-4D13-ABBF-C51EE214688D";
 pub const ORIGIN_POINT: &str = "0E18EEF2-0D6F-480C-997E-5EBC7369AE5F";
 /// Target of an entity reference (`u64` object id after its root part).
 pub const REF_TARGET: &str = "90055C05-546C-4EE7-B3C9-3DD922AD0C9C";
+/// The plane an entity reference kept when its target went away: `f64
+/// origin[3] | u[3] | v[3]` (cm), `u` and `v` unit and orthogonal. The API
+/// calls such a plane "reconstructed".
+pub const PLANE_FRAME: &str = "CC54ECAD-6DE8-4DE1-803D-BBE0E751975B";
 /// Feature input: reference to a plane or axis.
 pub const ENTITY_REF: &str = "5A1BF548-241F-46FD-9FB5-E4B05126EB9D";
 /// Feature input: reference to faces or edges.
@@ -61,9 +72,18 @@ pub const PROFILE_ID: &str = "C46D3EEB-40E1-43FA-83DC-9CB204335417";
 pub const EXTRUDE: &str = "DD405BC2-D673-44F0-8833-5CB2A1C186C7";
 pub const CONSTRUCTION_PLANE: &str = "D869265F-F339-4751-A066-91D30F81FF08";
 pub const CONSTRUCTION_AXIS: &str = "803DEC43-AEA6-42CC-B8D0-F593B5124BDD";
+pub const CONSTRUCTION_POINT: &str = "5F40832C-61AA-4A05-95B1-EFA0BA483138";
+/// A construction plane's input wrapper (mitcad#186): after its root part
+/// the wrapped input (a [`FACE_REF`] or [`ENTITY_REF`], listed after it in
+/// the item's inputs) and, behind the slot key object, the input's role.
+pub const INPUT_SLOT: &str = "2CA5A1CD-C99B-4C9B-91AF-57989148E841";
 /// An integer input of a feature (pattern quantities): root list
 /// `[feature]`, then `u32 slot, u8 0, u8 1, u32 value` (T1b).
 pub const INT_HOLDER: &str = "A085449A-5144-4B2B-B455-7F7035A40559";
+/// The holder of a text parameter (a sketch text's text): same layout as
+/// the parameter holder, its default expression `1 mm` before the owner.
+/// Not in [`KNOWN`].
+pub const TEXT_HOLDER: &str = "E5460B7B-000B-4A70-AB52-4C2FCC470EB2";
 /// A `Geometry` object, one per design, that a sketch refers to right
 /// before its name and entity list (its own meaning is open); the sketch's
 /// light bulb comes before that reference (mitcad#6). Not in [`KNOWN`].
@@ -304,6 +324,12 @@ pub const BODY_INPUT: &str = "2CA5A1CD-C99B-4C9B-91AF-57989148E841";
 /// A fillet's edge set options, one per set in the fillet's leading list
 /// (mitcad#154, [`super::build`]'s `fillet_set_options`).
 pub const FILLET_SET: &str = "4A557CE2-375C-4F69-AA76-2403109F1493";
+/// A move's transform object (`u32 5 | 4x4 matrix`, or without the matrix
+/// for the identity; [`super::build`]'s `identity_move_data`).
+pub const MOVE_DATA: &str = "84E6245F-1CDC-4FB8-8048-163A85FAD3F0";
+/// A chamfer's edge set record, one per set in the chamfer's input list
+/// ([`super::build`]'s `chamfer_set_tangent_chain`).
+pub const CHAMFER_SET: &str = "0D383DB2-A6E5-48C7-82D5-ED3DD0C275C5";
 /// A thread: a timeline item, or a tapped hole's sub-item (mitcad#35).
 pub const THREAD: &str = "584D9526-EF22-4F6F-9FE1-5FCF1F3CE575";
 

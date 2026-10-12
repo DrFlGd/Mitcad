@@ -33,11 +33,18 @@ if(BUILD_TESTING)
   foreach(script f1_extrude f1_revolve f1_hole f1_thread f1_failures)
     add_test(NAME cli.${script} COMMAND mitcad-cli run "${scripts}/${script}.json")
   endforeach()
+  # Assembly cut scope preserves component-local geometry and split ownership.
+  set(cut_scope "${CMAKE_CURRENT_BINARY_DIR}/extrude-cut-scope.mitcad")
+  add_test(NAME cli.extrude_cut_scope COMMAND mitcad-cli run "${scripts}/extrude_cut_scope.json" --save "${cut_scope}")
+  set_tests_properties(cli.extrude_cut_scope PROPERTIES FIXTURES_SETUP cli_cut_scope)
+  add_test(NAME cli.extrude_cut_scope_reopened COMMAND mitcad-cli run "${scripts}/extrude_cut_scope_reopened.json" --open "${cut_scope}")
+  set_tests_properties(cli.extrude_cut_scope_reopened PROPERTIES FIXTURES_REQUIRED cli_cut_scope)
 
   # Transforms, patterns, mirrors, combine and primitives (F4): the volumes
   # of the T0 reference models (MITCAD_F3D_MODELS) and analytic ones.
   foreach(script f4_combine f4_mirror f4_mirror_feature f4_move f4_align_scale
-                 f4_pattern_bodies f4_pattern_features f4_pattern_circular f4_primitives)
+                 f4_pattern_bodies f4_pattern_features f4_pattern_circular f4_primitives
+                 pattern_at_points f4_pattern_face_copy)
     add_test(NAME cli.${script} COMMAND mitcad-cli run "${scripts}/${script}.json")
   endforeach()
 
@@ -67,6 +74,15 @@ if(BUILD_TESTING)
   # assembly saved, inserted linked and as a copy, edited, and the link
   # following the edit when the design opens again.
   add_test(NAME cli.f6_components COMMAND mitcad-cli run "${scripts}/f6_components.json")
+  # Explicit move destinations keep real OCCT geometry and external support
+  # links in place across nested rotations, undo/redo and save/reopen (#201).
+  set(move_destination "${CMAKE_CURRENT_BINARY_DIR}/move-destination.mitcad")
+  add_test(NAME cli.move_destination COMMAND mitcad-cli run "${scripts}/move_destination.json"
+           --save "${move_destination}")
+  set_tests_properties(cli.move_destination PROPERTIES FIXTURES_SETUP cli_move_destination)
+  add_test(NAME cli.move_destination_reopened
+           COMMAND mitcad-cli run "${scripts}/move_destination_reopened.json" --open "${move_destination}")
+  set_tests_properties(cli.move_destination_reopened PROPERTIES FIXTURES_REQUIRED cli_move_destination)
   set(f6 "${CMAKE_CURRENT_BINARY_DIR}/f6")
   file(MAKE_DIRECTORY "${f6}")
   add_test(NAME cli.f6_assembly COMMAND mitcad-cli run "${scripts}/f6_assembly.json" --save "${f6}/plate.mitcad")
@@ -250,6 +266,34 @@ if(BUILD_TESTING)
     COMMAND "${CMAKE_COMMAND}" "-DCLI=$<TARGET_FILE:mitcad-cli>" "-DFILE=${exchange}/bodies.f3d"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/hang-exit-test.cmake")
   set_tests_properties(cli.import_f3d_hang_exit PROPERTIES FIXTURES_REQUIRED cli_f3d)
+  # Components of other documents (mitcad#196): a synthetic assembly that
+  # places a part once and a sub-assembly (which places the part) twice,
+  # with its reference folder next to it; then the same with the folder
+  # named otherwise and without references.json: the documents are
+  # missing (their components stay empty, the report names them) until the
+  # folder is given with --references, where the files' GUIDs tell them.
+  add_test(NAME cli.f3d_references_files
+    COMMAND test_exchange --write-f3d-references "${exchange}/references")
+  add_test(NAME cli.f3d_references_moved_files
+    COMMAND test_exchange --write-f3d-references "${exchange}/references-moved" parts)
+  set_tests_properties(cli.f3d_references_files cli.f3d_references_moved_files PROPERTIES
+    FIXTURES_SETUP cli_f3d_references)
+  add_test(NAME cli.import_f3d_references
+    COMMAND mitcad-cli import-f3d "${exchange}/references/Assembly v1.f3d")
+  set_tests_properties(cli.import_f3d_references PROPERTIES FIXTURES_REQUIRED cli_f3d_references
+    PASS_REGULAR_EXPRESSION
+    "3 of other documents \\(3 filled from their files\\).*documents referred to: 2 linked from their files, 0 not.*Part \\(version 2\\): linked, occurrences: 1, from [^\n]*Part v2\\.f3d \\(reference folder\\).*Holder \\(version 1\\): linked, occurrences: 2.*Placed bodies: 3.*center of mass \\[55\\.000, 5\\.000, 5\\.000\\].*center of mass \\[5\\.000, 55\\.000, 25\\.000\\].*center of mass \\[5\\.000, 105\\.000, 25\\.000\\]")
+  add_test(NAME cli.import_f3d_references_missing
+    COMMAND mitcad-cli import-f3d "${exchange}/references-moved/Assembly v1.f3d")
+  set_tests_properties(cli.import_f3d_references_missing PROPERTIES FIXTURES_REQUIRED cli_f3d_references
+    PASS_REGULAR_EXPRESSION
+    "documents referred to: 0 linked from their files, 2 not.*the document of Inserted component \\(version 2\\): missing.*warning: components of other documents stay empty.*Placed bodies: 0")
+  add_test(NAME cli.import_f3d_references_folder
+    COMMAND mitcad-cli import-f3d "${exchange}/references-moved/Assembly v1.f3d"
+            --references "${exchange}/references-moved/parts")
+  set_tests_properties(cli.import_f3d_references_folder PROPERTIES FIXTURES_REQUIRED cli_f3d_references
+    PASS_REGULAR_EXPRESSION
+    "documents referred to: 2 linked from their files, 0 not.*\\(by its GUID\\).*Placed bodies: 3")
 
   # The .ipt import (mitcad#60): Mitcad's own test part (a cube and a
   # cylinder, inches, aluminium), saved and opened, and compared with a
@@ -479,6 +523,119 @@ if(BUILD_TESTING)
   add_test(NAME cli.live_unreachable COMMAND mitcad-cli live test mqtt://127.0.0.1:9 --timeout 3)
   set_tests_properties(cli.live_unreachable PROPERTIES PASS_REGULAR_EXPRESSION
     "connect: failed \\([0-9]+ ms\\).*Warning: mqtt://127.0.0.1:9 is plain text.*Failed: ")
+endif()
+
+# Pattern at Points (mitcad#197): actual shared-component geometry in
+# rotated nested occurrences, and the same definition opened in a fresh process.
+if(BUILD_TESTING)
+  set(point_components "${CMAKE_CURRENT_BINARY_DIR}/pattern_at_points_components.mitcad")
+  add_test(NAME cli.pattern_at_points_components
+    COMMAND mitcad-cli run "${scripts}/pattern_at_points_components.json" --save "${point_components}")
+  set_tests_properties(cli.pattern_at_points_components PROPERTIES FIXTURES_SETUP cli_point_components)
+  add_test(NAME cli.pattern_at_points_components_reopen
+    COMMAND mitcad-cli run "${scripts}/pattern_at_points_components_reopen.json" --open "${point_components}")
+  set_tests_properties(cli.pattern_at_points_components_reopen PROPERTIES FIXTURES_REQUIRED cli_point_components)
+endif()
+
+# Sheet Face (mitcad#206): analytic curved-hole/island geometry and rule
+# lifecycle, including shared nested occurrences and independent copies.
+if(BUILD_TESTING)
+  foreach(sheet_case sheet_face_geometry sheet_face_components)
+    set(sheet_file "${CMAKE_CURRENT_BINARY_DIR}/${sheet_case}.mitcad")
+    add_test(NAME cli.${sheet_case}
+      COMMAND mitcad-cli run "${scripts}/${sheet_case}.json" --save "${sheet_file}")
+    set_tests_properties(cli.${sheet_case} PROPERTIES FIXTURES_SETUP cli_${sheet_case})
+    add_test(NAME cli.${sheet_case}_reopen
+      COMMAND mitcad-cli run "${scripts}/${sheet_case}_reopen.json" --open "${sheet_file}")
+    set_tests_properties(cli.${sheet_case}_reopen PROPERTIES FIXTURES_REQUIRED cli_${sheet_case})
+  endforeach()
+endif()
+
+# Folded sheet features (mitcad#207): independently calculated dimensions and
+# volumes, both native Bend inputs, contour corners and persistence.
+if(BUILD_TESTING)
+  foreach(sheet_case sheet_flange_geometry sheet_fold_geometry sheet_fold_reliefs sheet_bend_coplanar
+                     sheet_bend_positioned sheet_corner_round sheet_corner_chamfer
+                     sheet_flange_components)
+    set(sheet_file "${CMAKE_CURRENT_BINARY_DIR}/${sheet_case}.mitcad")
+    add_test(NAME cli.${sheet_case}
+      COMMAND mitcad-cli run "${scripts}/${sheet_case}.json" --save "${sheet_file}")
+    set_tests_properties(cli.${sheet_case} PROPERTIES FIXTURES_SETUP cli_${sheet_case})
+    add_test(NAME cli.${sheet_case}_reopen
+      COMMAND mitcad-cli run "${scripts}/${sheet_case}_reopen.json" --open "${sheet_file}")
+    set_tests_properties(cli.${sheet_case}_reopen PROPERTIES FIXTURES_REQUIRED cli_${sheet_case})
+  endforeach()
+endif()
+
+# Sheet Unfold, Refold and Flat Pattern (mitcad#208): actual L, U and Z
+# developments, partial opening, flat outlines, overlap refusal and persistence.
+if(BUILD_TESTING)
+  foreach(sheet_case sheet_unfold_l sheet_unfold_u sheet_unfold_z sheet_flat_overlap sheet_flat_components
+                     sheet_cut_proof sheet_cut_partial)
+    set(sheet_file "${CMAKE_CURRENT_BINARY_DIR}/${sheet_case}.mitcad")
+    add_test(NAME cli.${sheet_case}
+      COMMAND mitcad-cli run "${scripts}/${sheet_case}.json" --save "${sheet_file}")
+    set_tests_properties(cli.${sheet_case} PROPERTIES FIXTURES_SETUP cli_${sheet_case})
+    add_test(NAME cli.${sheet_case}_reopen
+      COMMAND mitcad-cli run "${scripts}/${sheet_case}_reopen.json" --open "${sheet_file}")
+    set_tests_properties(cli.${sheet_case}_reopen PROPERTIES FIXTURES_REQUIRED cli_${sheet_case})
+  endforeach()
+endif()
+
+# Production sheet Cut and corner reliefs (mitcad#209): several sketches and
+# contours across one and two bends, adjacency and rule edits, split bodies,
+# removed domains, relief shapes and their refusals, each with a reopen pass.
+if(BUILD_TESTING)
+  foreach(sheet_case sheet_cut_multi sheet_cut_split sheet_corner_relief)
+    set(sheet_file "${CMAKE_CURRENT_BINARY_DIR}/${sheet_case}.mitcad")
+    add_test(NAME cli.${sheet_case}
+      COMMAND mitcad-cli run "${scripts}/${sheet_case}.json" --save "${sheet_file}")
+    set_tests_properties(cli.${sheet_case} PROPERTIES FIXTURES_SETUP cli_${sheet_case})
+    add_test(NAME cli.${sheet_case}_reopen
+      COMMAND mitcad-cli run "${scripts}/${sheet_case}_reopen.json" --open "${sheet_file}")
+    set_tests_properties(cli.${sheet_case}_reopen PROPERTIES FIXTURES_REQUIRED cli_${sheet_case})
+  endforeach()
+endif()
+
+# Flat Pattern DXF export (mitcad#210): contours, bend lines, layers and units
+# read back from the files, rule edits, reopening, and the export-flat command
+# (refused for an invalid pattern).
+if(BUILD_TESTING)
+  set(sheet_dxf "${CMAKE_CURRENT_BINARY_DIR}/sheet_flat_dxf")
+  file(MAKE_DIRECTORY "${sheet_dxf}")
+  add_test(NAME cli.sheet_flat_dxf
+    COMMAND mitcad-cli run "${scripts}/sheet_flat_dxf.json" --save "${sheet_dxf}/sheet_flat_dxf.mitcad")
+  set_tests_properties(cli.sheet_flat_dxf PROPERTIES WORKING_DIRECTORY "${sheet_dxf}"
+    FIXTURES_SETUP cli_sheet_flat_dxf)
+  add_test(NAME cli.sheet_flat_dxf_reopen
+    COMMAND mitcad-cli run "${scripts}/sheet_flat_dxf_reopen.json" --open "${sheet_dxf}/sheet_flat_dxf.mitcad")
+  set_tests_properties(cli.sheet_flat_dxf_reopen PROPERTIES WORKING_DIRECTORY "${sheet_dxf}"
+    FIXTURES_REQUIRED cli_sheet_flat_dxf)
+  add_test(NAME cli.export_flat
+    COMMAND mitcad-cli export-flat "${sheet_dxf}/sheet_flat_dxf.mitcad" F3.b0 "${sheet_dxf}/flat-in.dxf"
+            --unit in --tangents --json)
+  set_tests_properties(cli.export_flat PROPERTIES FIXTURES_REQUIRED cli_sheet_flat_dxf
+    PASS_REGULAR_EXPRESSION "\"entities\":8.*\"unit\":\"in\"")
+  add_test(NAME cli.export_flat_invalid
+    COMMAND mitcad-cli export-flat "${CMAKE_CURRENT_BINARY_DIR}/sheet_flat_overlap.mitcad" F3.b0
+            "${sheet_dxf}/overlap.dxf")
+  set_tests_properties(cli.export_flat_invalid PROPERTIES FIXTURES_REQUIRED cli_sheet_flat_overlap
+    WILL_FAIL TRUE)
+endif()
+
+# Sheet-metal leftovers of mitcad#125: corner reliefs of bends without a common
+# panel and of non-perpendicular bends, and Paste New of split pieces with their
+# Flat Patterns, each with a reopen pass.
+if(BUILD_TESTING)
+  foreach(sheet_case sheet_corner_relief_paths sheet_corner_relief_angled sheet_copy_pieces)
+    set(sheet_file "${CMAKE_CURRENT_BINARY_DIR}/${sheet_case}.mitcad")
+    add_test(NAME cli.${sheet_case}
+      COMMAND mitcad-cli run "${scripts}/${sheet_case}.json" --save "${sheet_file}")
+    set_tests_properties(cli.${sheet_case} PROPERTIES FIXTURES_SETUP cli_${sheet_case})
+    add_test(NAME cli.${sheet_case}_reopen
+      COMMAND mitcad-cli run "${scripts}/${sheet_case}_reopen.json" --open "${sheet_file}")
+    set_tests_properties(cli.${sheet_case}_reopen PROPERTIES FIXTURES_REQUIRED cli_${sheet_case})
+  endforeach()
 endif()
 
 # mitcad-cli loads Qt's DLLs (mitcad-cli render): on Windows its tests find

@@ -31,7 +31,7 @@
     "bbox": {"min": [0, 0, 0], "max": [30, 20, 15]}}},
   {"cmd": "add_feature", "def": {"type": "rectangular_pattern",
     "objects": {"type": "features", "features": ["F5"]},
-    "direction1": {"axis": {"type": "origin", "axis": "x"}, "quantity": 3, "distance": 6, "symmetric": true},
+    "direction1": {"axis": {"type": "origin", "axis": "x"}, "quantity": 5, "distance": 6, "symmetric": true},
     "distance_type": "spacing"}},
   {"expect": {"feature": "RectangularPattern1", "status": "ok", "body": "Body1",
     "volume": 6314.159265358979, "has_face": "F6:inst4(F5:top)"}},

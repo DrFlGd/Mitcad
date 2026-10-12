@@ -4,32 +4,49 @@
 # (docs/rendering.md), Cycles itself (Apache-2.0) and Open Image Denoise
 # (Apache-2.0, built with Intel's ISPC compiler, BSD-3-Clause, which is only
 # a build tool). Everything else comes from vcpkg through the manifest's
-# dependencies. Cycles has its CPU device only so far (mitcad#51). Every
-# Mitcad build has the render worker and needs this prefix:
-# setup-windows.ps1 runs this once.
+# dependencies. Every Mitcad build has the render worker and needs this
+# prefix: setup-windows.ps1 runs this once (with -Cuda unless
+# MITCAD_RENDER_CUDA=0).
 #
 # Usage, in the Visual Studio x64 environment (cl, Ninja):
-#   tools\dev-env\msvc.cmd powershell -ExecutionPolicy Bypass -File tools\dev-env\build-cycles.ps1 [-Prefix dir]
+#   tools\dev-env\msvc.cmd powershell -ExecutionPolicy Bypass -File tools\dev-env\build-cycles.ps1
+#     [-Prefix dir] [-Cuda [-CudaArch list]]
+#
+# Without -Cuda Cycles has its CPU device only. -Cuda (mitcad#202,
+# docs/rendering.md "Devices") adds Cycles' NVIDIA CUDA device and its
+# kernels (cubins and PTX for -CudaArch, default CUDA_ARCHITECTURES of
+# versions.sh). The CUDA compiler is a build tool only: MITCAD_CUDA_TOOLKIT
+# (a folder with bin\nvcc.exe), else the pinned compiler components from
+# NVIDIA's redistributable archives (versions.sh) unpacked into the prefix;
+# its host compiler is the environment's cl. The driver (nvcuda.dll) is
+# loaded at run time (Cycles' cuew), so a CUDA build renders on the CPU on
+# a machine without an NVIDIA GPU. -Cuda also builds Open Image Denoise's
+# CUDA device (GPU denoising on Turing and newer). OptiX stays off (its
+# licence, README FAQ).
 #
 # The prefix (default: MITCAD_RENDER_DEPS, else C:\dev\mitcad-render-deps)
 # gets the same layout as on Linux:
 #   downloads\  src\  build\       the pinned sources and their builds
 #   vcpkg_installed\               the manifest's vcpkg libraries
 #   install\oidn\                  Open Image Denoise (DLLs in bin\)
-#   install\cycles\                Cycles' headers, static libraries and
+#   install\cycles\                Cycles' headers, static libraries, GPU
+#                                  kernels (kernels\lib) and
 #                                  mitcad-cycles.cmake for Mitcad's build
+#   cuda-<version>\                with -Cuda, when fetched
 # Mitcad's configure finds the default prefix itself (another one with
 # -DMITCAD_RENDER_DEPS=<prefix> or the environment variable), in a release
 # configuration (RelWithDebInfo or Release): the libraries are release
 # builds, which a Debug build's runtime library does not match.
 #
 # Pins: tools/dev-env/versions.sh, read from there. Re-running it is cheap:
-# finished steps are skipped (delete the prefix's build\ and install\
-# folders, by their literal paths, to build again).
+# finished steps are skipped, and Cycles is built again when the devices
+# change (delete the prefix's build\ and install\ folders, by their literal
+# paths, to build again).
 #
 # Environment: MITCAD_RENDER_JOBS (parallel compile jobs, default 12),
-# VCPKG_ROOT (default C:\dev\vcpkg).
-param([string]$Prefix = '')
+# MITCAD_CUDA_JOBS (parallel CUDA kernel compiles, default 3: each nvcc
+# needs about 2 GB), VCPKG_ROOT (default C:\dev\vcpkg).
+param([string]$Prefix = '', [switch]$Cuda, [string]$CudaArch = '')
 
 $ErrorActionPreference = 'Stop'
 $Repo = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path
@@ -96,6 +113,47 @@ Invoke-Native (Join-Path $VcpkgRoot 'vcpkg.exe') @('install', "--x-manifest-root
 $Deps = Join-Path $VcpkgInstalled $Triplet
 $DepsCMake = $Deps -replace '\\', '/'
 
+# The CUDA toolkit (-Cuda): MITCAD_CUDA_TOOLKIT, else the pinned compiler
+# components (nvcc, the CUDA runtime's headers, CCCL) from NVIDIA's
+# redistributable archives, unpacked into the prefix (no installer).
+$CudaToolkit = ''
+if (-not $CudaArch) { $CudaArch = $Pins.CUDA_ARCHITECTURES }
+if ($Cuda) {
+  Write-Host '== CUDA toolkit (build tool)'
+  if ($env:MITCAD_CUDA_TOOLKIT) {
+    $CudaToolkit = $env:MITCAD_CUDA_TOOLKIT
+  } else {
+    $CudaToolkit = Join-Path $Prefix "cuda-$($Pins.CUDA_VERSION)"
+    if (-not (Test-Path (Join-Path $CudaToolkit '.done'))) {
+      $redist = 'https://developer.download.nvidia.com/compute/cuda/redist'
+      New-Item -ItemType Directory -Force $CudaToolkit | Out-Null
+      foreach ($part in @(@('nvcc', $Pins.CUDA_NVCC_VERSION, $Pins.CUDA_NVCC_WINDOWS_SHA256),
+                          @('cudart', $Pins.CUDA_CUDART_VERSION, $Pins.CUDA_CUDART_WINDOWS_SHA256),
+                          @('cccl', $Pins.CUDA_CCCL_VERSION, $Pins.CUDA_CCCL_WINDOWS_SHA256))) {
+        $file = "cuda_$($part[0])-windows-x86_64-$($part[1])-archive.zip"
+        $zip = Get-Pinned "$redist/cuda_$($part[0])/windows-x86_64/$file" $file $part[2]
+        # Windows' own tar (bsdtar) reads zip archives too.
+        Invoke-Native "$env:SystemRoot\System32\tar.exe" @('-xf', $zip, '-C', $CudaToolkit, '--strip-components=1')
+      }
+      New-Item -ItemType File -Force (Join-Path $CudaToolkit '.done') | Out-Null
+    }
+  }
+  $nvcc = Join-Path $CudaToolkit 'bin\nvcc.exe'
+  if (-not (Test-Path $nvcc)) { throw "No CUDA compiler $nvcc" }
+  $nvccVersion = ((& $nvcc --version) -join "`n") -replace '(?s).*release ([0-9.]+).*', '$1'
+  # cl prints its version to stderr, which must not stop the script.
+  $clBanner = & { $ErrorActionPreference = 'Continue'; (& cl.exe 2>&1) | Out-String }
+  $clVersion = $clBanner -replace '(?s).*Version ([0-9.]+).*', '$1'
+  Write-Host "   CUDA $nvccVersion in $CudaToolkit, host compiler cl $clVersion"
+}
+# What the devices are built with; a change builds Cycles again.
+$Devices = 'cpu'
+if ($Cuda) { $Devices = "$Devices cuda($CudaArch)" }
+$sha = [Security.Cryptography.SHA256]::Create()
+$DevicesStamp = (-join ($sha.ComputeHash([Text.Encoding]::UTF8.GetBytes($Devices)) |
+  ForEach-Object { $_.ToString('x2') })).Substring(0, 12)
+Write-Host "== Devices: $Devices"
+
 Write-Host "== ISPC $($Pins.ISPC_VERSION) (build tool)"
 $ispcName = "ispc-v$($Pins.ISPC_VERSION)-windows"
 $ispcZip = Get-Pinned "https://github.com/ispc/ispc/releases/download/v$($Pins.ISPC_VERSION)/$ispcName.zip" `
@@ -113,19 +171,36 @@ if (-not (Test-Path (Join-Path $oidnSrc 'CMakeLists.txt'))) {
   Invoke-Native "$env:SystemRoot\System32\tar.exe" @('-xzf', $oidnArchive, '-C', $Src)
 }
 $oidnInstall = Join-Path $Install 'oidn'
-$oidnDone = Join-Path $oidnInstall ".done-$($Pins.OIDN_VERSION)"
+# With -Cuda also Open Image Denoise's CUDA device (Turing, sm_75, and
+# newer), so that Cycles denoises on the GPU: it calls the driver API
+# (nvcuda.dll) through its own small runtime, links nothing of the CUDA
+# toolkit but the driver's import library, and its core loads it at run
+# time only when it can (a machine without the driver keeps the CPU).
+$oidnStamp = $Pins.OIDN_VERSION
+$oidnCudaArgs = @('-DOIDN_DEVICE_CUDA=OFF')
+if ($Cuda) {
+  $oidnStamp = "$oidnStamp-cuda"
+  $oidnCudaArgs = @('-DOIDN_DEVICE_CUDA=ON', "-DCUDAToolkit_ROOT=$($CudaToolkit -replace '\\', '/')")
+}
+$oidnDone = Join-Path $oidnInstall ".done-$oidnStamp"
 if (-not (Test-Path $oidnDone)) {
-  # The CPU device, the ray tracing filter's weights only (the lightmap
-  # filter is for baking); no example or test programs.
-  Remove-Item -Force (Join-Path $oidnInstall '.done-*') -ErrorAction SilentlyContinue
+  # The CPU device (and CUDA's), the ray tracing filter's weights only (the
+  # lightmap filter is for baking); no example or test programs. A device
+  # built before and not now must not stay in the installation.
+  if (Test-Path $oidnInstall) { Remove-Item -Recurse -Force $oidnInstall }
   $oidnBuild = Join-Path $Build 'oidn'
-  Invoke-Native cmake.exe @('-S', $oidnSrc, '-B', $oidnBuild, '-G', 'Ninja', '-DCMAKE_BUILD_TYPE=Release',
+  Invoke-Native cmake.exe (@('-S', $oidnSrc, '-B', $oidnBuild, '-G', 'Ninja', '-DCMAKE_BUILD_TYPE=Release',
     "-DCMAKE_INSTALL_PREFIX=$oidnInstall", "-DCMAKE_PREFIX_PATH=$DepsCMake", "-DISPC_EXECUTABLE=$ispc",
-    '-DOIDN_DEVICE_CPU=ON', '-DOIDN_DEVICE_CUDA=OFF', '-DOIDN_DEVICE_HIP=OFF', '-DOIDN_DEVICE_SYCL=OFF',
+    '-DOIDN_DEVICE_CPU=ON', '-DOIDN_DEVICE_HIP=OFF', '-DOIDN_DEVICE_SYCL=OFF',
     '-DOIDN_DEVICE_METAL=OFF', '-DOIDN_FILTER_RT=ON', '-DOIDN_FILTER_RTLIGHTMAP=OFF', '-DOIDN_APPS=OFF',
-    '-DOIDN_INSTALL_DEPENDENCIES=OFF') (Join-Path $Prefix 'oidn-configure.log')
-  Invoke-Native cmake.exe @('--build', $oidnBuild, '--parallel', $Jobs)
+    '-DOIDN_INSTALL_DEPENDENCIES=OFF') + $oidnCudaArgs) (Join-Path $Prefix 'oidn-configure.log')
+  # The CUDA device's kernels need memory as Cycles' do.
+  $oidnJobs = if ($Cuda -and $env:MITCAD_CUDA_JOBS) { $env:MITCAD_CUDA_JOBS } elseif ($Cuda) { '3' } else { $Jobs }
+  Invoke-Native cmake.exe @('--build', $oidnBuild, '--parallel', $oidnJobs)
   Invoke-Native cmake.exe @('--install', $oidnBuild) (Join-Path $Prefix 'oidn-install.log')
+  if ($Cuda -and -not (Test-Path (Join-Path $oidnInstall 'bin\OpenImageDenoise_device_cuda.dll'))) {
+    throw "Open Image Denoise's CUDA device was not built"
+  }
   New-Item -ItemType File -Force $oidnDone | Out-Null
 }
 
@@ -140,13 +215,25 @@ if ($head -ne $Pins.CYCLES_COMMIT) { throw "Cycles v$($Pins.CYCLES_VERSION) is n
 $cyclesInstall = Join-Path $Install 'cycles'
 $cyclesBuild = Join-Path $Build 'cycles'
 $cyclesDone = Join-Path $cyclesInstall ".done-$($Pins.CYCLES_VERSION)"
+if ($Devices -ne 'cpu') { $cyclesDone = "$cyclesDone-$DevicesStamp" }
+# Cycles compiles its GPU denoiser only for the Open Image Denoise devices
+# whose headers it was built with (OIDN_DEVICE_CUDA in OIDN's config.h): a
+# rebuilt Open Image Denoise rebuilds Cycles too (mitcad#202).
+if ($Cuda) { $cyclesDone = "$cyclesDone-oidn-$oidnStamp" }
+# The GPU devices asked for (never OptiX, HIP, Metal or oneAPI here).
+$cyclesGpuArgs = @('-DWITH_CYCLES_DEVICE_CUDA=OFF')
+if ($Cuda) {
+  $cyclesGpuArgs = @('-DWITH_CYCLES_DEVICE_CUDA=ON', '-DWITH_CYCLES_CUDA_BINARIES=ON', '-DWITH_CUDA_DYNLOAD=ON',
+    "-DCYCLES_CUDA_BINARIES_ARCH=$CudaArch", "-DCUDA_TOOLKIT_ROOT_DIR=$($CudaToolkit -replace '\\', '/')")
+}
 if (-not (Test-Path $cyclesDone)) {
-  # The CPU device with Embree and Open Image Denoise; no OSL, USD,
-  # Alembic, OpenVDB or OpenSubdiv, no GPU devices, no precompiled
+  Remove-Item -Force (Join-Path $cyclesInstall '.done-*') -ErrorAction SilentlyContinue
+  # The CPU device with Embree and Open Image Denoise, and CUDA when asked
+  # for; no OSL, USD, Alembic, OpenVDB or OpenSubdiv, no precompiled
   # libraries (vcpkg's instead). The standalone program is built too: it
   # renders Cycles' XML scenes, a check of the build without Mitcad.
   $oidnCMake = $oidnInstall -replace '\\', '/'
-  Invoke-Native cmake.exe @('-S', $cyclesSrc, '-B', $cyclesBuild, '-G', 'Ninja', '-DCMAKE_BUILD_TYPE=Release',
+  $cyclesArgs = @('-S', $cyclesSrc, '-B', $cyclesBuild, '-G', 'Ninja', '-DCMAKE_BUILD_TYPE=Release',
     "-DCMAKE_PREFIX_PATH=$DepsCMake;$oidnCMake", "-DCMAKE_INSTALL_PREFIX=$cyclesBuild/install",
     '-DCMAKE_EXPORT_COMPILE_COMMANDS=ON', '-DWITH_LIBS_PRECOMPILED=OFF',
     '-DWITH_CYCLES_EMBREE=ON', '-DWITH_CYCLES_OPENIMAGEDENOISE=ON',
@@ -154,14 +241,25 @@ if (-not (Test-Path $cyclesDone)) {
     '-DWITH_CYCLES_NANOVDB=OFF', '-DWITH_CYCLES_OSL=OFF', '-DWITH_CYCLES_USD=OFF',
     '-DWITH_CYCLES_HYDRA_RENDER_DELEGATE=OFF', '-DWITH_CYCLES_LOGGING=OFF',
     '-DWITH_CYCLES_PATH_GUIDING=OFF', '-DWITH_CYCLES_STANDALONE_GUI=OFF',
-    '-DWITH_CYCLES_DEVICE_CUDA=OFF', '-DWITH_CYCLES_DEVICE_OPTIX=OFF', '-DWITH_CYCLES_DEVICE_HIP=OFF',
-    '-DWITH_CYCLES_DEVICE_HIPRT=OFF', '-DWITH_CYCLES_DEVICE_METAL=OFF', '-DWITH_CYCLES_DEVICE_ONEAPI=OFF',
+    '-DWITH_CYCLES_DEVICE_OPTIX=OFF', '-DWITH_CYCLES_DEVICE_HIP=OFF',
+    '-DWITH_CYCLES_DEVICE_HIPRT=OFF', '-DWITH_CYCLES_DEVICE_METAL=OFF', '-DWITH_CYCLES_DEVICE_ONEAPI=OFF') +
+    $cyclesGpuArgs + @(
     "-DEMBREE_ROOT_DIR=$DepsCMake", "-DTBB_ROOT_DIR=$DepsCMake", "-DOPENIMAGEDENOISE_ROOT_DIR=$oidnCMake",
     # Cycles looks for tbb.lib; oneTBB's Windows library carries its
     # interface version.
     "-DTBB_LIBRARY=$DepsCMake/lib/tbb12.lib",
-    "-DZSTD_ROOT_DIR=$DepsCMake", "-DPUGIXML_ROOT_DIR=$DepsCMake") (Join-Path $Prefix 'cycles-configure.log')
+    "-DZSTD_ROOT_DIR=$DepsCMake", "-DPUGIXML_ROOT_DIR=$DepsCMake")
+  Invoke-Native cmake.exe $cyclesArgs (Join-Path $Prefix 'cycles-configure.log')
   $started = Get-Date
+  # Programs built and run during the build (the CUDA kernels' compressor
+  # zstd_compress) load vcpkg's DLLs.
+  $env:Path = (Join-Path $Deps 'bin') + ';' + $env:Path
+  if ($Cuda) {
+    # The kernels first, fewer at a time: each nvcc takes about 2 GB.
+    $cudaJobs = if ($env:MITCAD_CUDA_JOBS) { $env:MITCAD_CUDA_JOBS } else { '3' }
+    Invoke-Native cmake.exe @('--build', $cyclesBuild, '--target', 'cycles_kernel_cuda', '--parallel', $cudaJobs)
+    Write-Host ("   CUDA kernels built in {0:0} s" -f ((Get-Date) - $started).TotalSeconds)
+  }
   Invoke-Native cmake.exe @('--build', $cyclesBuild, '--parallel', $Jobs)
   Write-Host ("   built in {0:0} s" -f ((Get-Date) - $started).TotalSeconds)
 
@@ -182,8 +280,20 @@ if (-not (Test-Path $cyclesDone)) {
   New-Item -ItemType Directory -Force $lib | Out-Null
   Get-ChildItem -Path $cyclesBuild -Recurse -File -Include 'cycles_*.lib', 'extern_*.lib' |
     ForEach-Object { Copy-Item $_.FullName $lib }
+  # Without OIDN_DEVICE_CUDA Cycles' GPU denoiser never creates Open Image
+  # Denoise's CUDA device ("Failed to create OIDN device" on every GPU).
+  if ($Cuda -and -not (Select-String -Path (Join-Path $lib 'cycles_integrator.lib') -SimpleMatch -Quiet `
+      -Pattern 'oidnNewCUDADevice')) {
+    throw 'Cycles was built without Open Image Denoise''s CUDA device (no oidnNewCUDADevice in cycles_integrator.lib)'
+  }
   Copy-Item (Join-Path $cyclesSrc 'LICENSE') (Join-Path $cyclesInstall 'LICENSE')
-  Set-Content -Encoding ascii (Join-Path $cyclesInstall 'devices.txt') 'cpu'
+  # The GPU kernels, in the layout Cycles looks for them at run time
+  # (<path>\lib\kernel_sm_61.cubin.zst, ...).
+  $kernelsLib = Join-Path $cyclesInstall 'kernels\lib'
+  New-Item -ItemType Directory -Force $kernelsLib | Out-Null
+  Get-ChildItem -Path (Join-Path $cyclesBuild 'src\kernel') -Recurse -File -Include '*.cubin.zst', '*.ptx.zst' |
+    ForEach-Object { Copy-Item $_.FullName $kernelsLib }
+  Set-Content -Encoding ascii (Join-Path $cyclesInstall 'devices.txt') $Devices
   New-Item -ItemType File -Force $cyclesDone | Out-Null
 }
 # The licence texts of the code Cycles bundles (its SPDX lines name them),
@@ -191,6 +301,9 @@ if (-not (Test-Path $cyclesDone)) {
 $licenses = Join-Path $cyclesInstall 'licenses'
 New-Item -ItemType Directory -Force $licenses | Out-Null
 Copy-Item (Join-Path $cyclesSrc 'src\doc\license\*license*.txt') $licenses
+# The driver's loader linked with the CUDA device (Apache-2.0 with a
+# stricter trademark clause).
+if ($Cuda) { Copy-Item (Join-Path $cyclesSrc 'third_party\cuew\LICENSE') (Join-Path $licenses 'cuew-license.txt') }
 
 # What Mitcad's build needs to know of the Cycles build (cmake/Render.cmake):
 # the definitions and the instruction set and floating point options that
@@ -218,8 +331,18 @@ $out.Add(')')
 $out.Add('set(MITCAD_CYCLES_OPTIONS')
 foreach ($o in $options) { $out.Add("  $(Quote $o)") }
 $out.Add(')')
-$out.Add('set(MITCAD_CYCLES_DEVICES CPU)')
-$out.Add('set(MITCAD_CYCLES_KERNELS)')
+# The devices built (CPU, CUDA) and their kernels, which go next to
+# mitcad-render.
+if ($Cuda -and -not (Get-ChildItem (Join-Path $cyclesInstall 'kernels\lib') -Filter 'kernel_*.cubin.zst' -ErrorAction SilentlyContinue)) {
+  throw "The CUDA build has no kernels in $cyclesInstall\kernels\lib"
+}
+$deviceNames = ($Devices -split ' ' | ForEach-Object { ($_ -replace '[(].*$', '').ToUpperInvariant() }) -join ' '
+$out.Add('set(MITCAD_CYCLES_DEVICES ' + $deviceNames + ')')
+$out.Add('set(MITCAD_CYCLES_KERNELS')
+foreach ($k in Get-ChildItem (Join-Path $cyclesInstall 'kernels\lib') -File -ErrorAction SilentlyContinue | Sort-Object Name) {
+  $out.Add("  `"`${MITCAD_CYCLES_ROOT}/kernels/lib/$($k.Name)`"")
+}
+$out.Add(')')
 $out.Add('set(MITCAD_CYCLES_LIBRARIES')
 foreach ($l in Get-ChildItem (Join-Path $cyclesInstall 'lib') -Filter '*.lib' | Sort-Object Name) {
   $out.Add("  `"`${MITCAD_CYCLES_ROOT}/lib/$($l.Name)`"")

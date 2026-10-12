@@ -114,6 +114,9 @@ impl Flag {
 /// What a feature evaluation produced, as stored in the cache.
 #[derive(Debug)]
 pub(crate) struct Output<S> {
+    pub sheet_rules: Option<Versioned<crate::features::SheetRulesDef<f64>>>,
+    pub sheets: BTreeMap<BodyUid, crate::sheet::SheetChange>,
+    pub sheet_footprint: Vec<BodyUid>,
     /// Identity of this result, for features that read another's output.
     pub version: Version,
     /// The fingerprint of the definition the version was made with.
@@ -130,8 +133,11 @@ pub(crate) struct Output<S> {
     pub warnings: Vec<String>,
     /// A pattern's elements by number, suppressed ones too (P9).
     pub elements: Vec<Transform>,
+    pub pattern_anchor: Option<crate::features::point_pattern::PatternAnchor>,
     pub sketch: Option<Versioned<Arc<SketchOutput>>>,
     pub changes: Vec<Change<S>>,
+    pub owners: BTreeMap<BodyUid, ComponentUid>,
+    pub cut_targets: Option<crate::features::extrude_scope::CutTargets>,
     pub tool: Option<S>,
     pub datum: Option<Versioned<Datum>>,
     /// Occurrences the feature moves (F6).
@@ -170,6 +176,8 @@ impl<S> FeatureResult<S> {
 /// A recorded input of an evaluation.
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) enum Read {
+    SheetRules(FeatureUid, Option<Version>),
+    Sheet(BodyUid, Option<Version>),
     /// A parameter value (as bits), None when missing.
     Param(ParamId, Option<u64>),
     Sketch(FeatureUid, Option<Version>),
@@ -184,6 +192,8 @@ pub(crate) enum Read {
     BodiesIn(ComponentUid, Vec<(BodyUid, Version)>),
     /// An occurrence's placement at this point (its matrix as bits).
     Placement(OccurrenceUid, Option<[u64; 12]>),
+    /// Assembly identities, availability, multiplicity and read-only state.
+    Assembly(u128),
 }
 
 /// A placement's matrix as bits, for [`Read::Placement`].
@@ -201,6 +211,10 @@ pub(crate) fn placement_bits(t: &Transform) -> [u64; 12] {
 impl Read {
     pub(crate) fn matches<S>(&self, env: &Env<'_, S>) -> bool {
         match self {
+            Self::SheetRules(uid, version) => {
+                env.sheet_rules.get(uid).map(|s| s.version) == *version
+            }
+            Self::Sheet(uid, version) => env.sheets.get(uid).map(|s| s.version) == *version,
             Self::Param(id, bits) => env.params.value(*id).map(f64::to_bits) == *bits,
             Self::Sketch(uid, version) => env.sketches.get(uid).map(|s| s.version) == *version,
             Self::Body(uid, version) => env.bodies.get(uid).map(|b| b.version) == *version,
@@ -233,6 +247,7 @@ impl Read {
                 .map(|(uid, b)| (*uid, b.version))
                 .eq(bodies.iter().copied()),
             Self::Placement(uid, bits) => env.placements.get(uid).map(placement_bits) == *bits,
+            Self::Assembly(key) => crate::features::extrude_scope::assembly_key(env) == *key,
         }
     }
 
@@ -249,6 +264,11 @@ impl Read {
             fingerprint.u64(uid.feature.0).u32(uid.index);
         }
         match self {
+            Self::SheetRules(uid, v) => version(fingerprint.u8(10).u64(uid.0), *v),
+            Self::Sheet(uid, v) => {
+                body(fingerprint.u8(11), *uid);
+                version(fingerprint, *v);
+            }
             Self::Param(id, bits) => {
                 fingerprint
                     .u8(0)
@@ -289,6 +309,9 @@ impl Read {
                     }
                 });
             }
+            Self::Assembly(key) => {
+                fingerprint.u8(9).u128(*key);
+            }
         }
     }
 }
@@ -298,6 +321,8 @@ impl Read {
 /// fingerprint, which the data keeps, so it is not compressed for this.
 pub(crate) fn def_fingerprint(def: &FeatureDef, params: &Parameters) -> u128 {
     let mut fingerprint = Fingerprint::new("def");
+    fingerprint.u32(crate::sheet::ALGORITHM_VERSION);
+    fingerprint.u64(crate::sheet::TOLERANCE.to_bits());
     fingerprint.str(def.type_name());
     if let FeatureDef::Base(base) = def {
         base.fingerprint(&mut fingerprint);
@@ -328,6 +353,7 @@ pub(crate) fn output_version(
 /// The parts of a result with versions of their own.
 #[derive(Clone, Copy)]
 pub(crate) enum Part {
+    SheetRules,
     Sketch,
     /// The body of the i-th change.
     Body(usize),
@@ -337,6 +363,7 @@ pub(crate) enum Part {
 /// The version of a part of the result `output`.
 pub(crate) fn part_version(output: Version, part: Part) -> Version {
     let (block, index) = match part {
+        Part::SheetRules => (4, 0),
         Part::Sketch => (1, 0),
         Part::Body(i) => (2, i as u64),
         Part::Datum => (3, 0),
@@ -416,6 +443,8 @@ impl<S> Default for Cache<S> {
 /// results are counted with each), a sketch's regions and what it read.
 fn output_bytes<K: Kernel>(kernel: &K, output: &Output<K::Shape>) -> u64 {
     let mut bytes = 256 + 48 * output.reads.len() as u64;
+    bytes += serde_json::to_vec(&output.sheets).map_or(0, |v| v.len() as u64);
+    bytes += 24 * output.sheet_footprint.len() as u64;
     for change in &output.changes {
         if let Change::Set(_, shape) = change {
             bytes += kernel.shape_memory(&shape.value);
@@ -514,6 +543,8 @@ impl<S: Clone> Recomputed<S> {
     /// results are shared.
     pub(crate) fn fork(&self) -> Self {
         Self {
+            sheets: self.sheets.clone(),
+            sheet_rules: self.sheet_rules.clone(),
             results: self
                 .results
                 .iter()
@@ -545,6 +576,14 @@ impl<S> Cache<S> {
 
     fn lookup(&mut self, entry: &FeatureEntry, env: &Env<'_, S>) -> Option<Arc<Output<S>>> {
         self.stats.lookups += 1;
+        // These cheap evaluations bind definition-state occurrence IDs. An
+        // edit can allocate new IDs for an earlier definition, so geometry/
+        // placement reads alone are not a sufficient cache key.
+        if matches!(&entry.def, crate::features::FeatureDef::PatternAtPoints(p)
+            if matches!(p.objects, crate::features::PatternObjects::Components { .. }))
+        {
+            return None;
+        }
         let now = self.tick();
         let entries = self.entries.get_mut(&entry.uid)?;
         let index = entries
@@ -676,6 +715,8 @@ impl<S> Cache<S> {
 
 /// The evaluated timeline.
 pub(crate) struct Recomputed<S> {
+    pub sheets: crate::sheet::SheetStates,
+    pub sheet_rules: crate::sheet::SheetRules,
     /// One per timeline feature, in timeline order.
     pub results: Vec<FeatureResult<S>>,
     /// The bodies at the marker, of every component, each in its
@@ -705,6 +746,8 @@ pub(crate) struct Recomputed<S> {
 impl<S> Default for Recomputed<S> {
     fn default() -> Self {
         Self {
+            sheets: BTreeMap::new(),
+            sheet_rules: BTreeMap::new(),
             results: Vec::new(),
             bodies: Arc::new(BTreeMap::new()),
             owners: BTreeMap::new(),
@@ -745,6 +788,7 @@ pub(crate) fn recompute<K: Kernel>(
     done.placements = assembly
         .occurrences
         .iter()
+        .filter(|o| o.pattern.is_none())
         .map(|o| (o.uid, o.transform))
         .collect();
     for (position, entry) in state.features.iter().enumerate() {
@@ -771,6 +815,8 @@ pub(crate) fn recompute<K: Kernel>(
 
         let own = components.get(&entry.component).unwrap_or(&none).clone();
         let env = Env {
+            sheets: &done.sheets,
+            sheet_rules: &done.sheet_rules,
             params: &state.parameters,
             bodies: &own,
             owners: &done.owners,
@@ -847,6 +893,11 @@ pub(crate) fn recompute<K: Kernel>(
             status = FeatureStatus::Failed(message);
         }
         if status.is_ok() || output.placements.is_empty() {
+            if status.is_ok()
+                && let Some(rules) = &output.sheet_rules
+            {
+                done.sheet_rules.insert(entry.uid, rules.clone());
+            }
             if let Some(sketch) = &output.sketch {
                 done.sketches.insert(entry.uid, sketch.clone());
             }
@@ -858,6 +909,15 @@ pub(crate) fn recompute<K: Kernel>(
             for change in &output.changes {
                 match change {
                     Change::Set(uid, shape) => {
+                        let target = output.owners.get(uid).copied().unwrap_or(target);
+                        crate::sheet::publish(
+                            &mut done.sheets,
+                            *uid,
+                            target,
+                            shape.version,
+                            entry.uid,
+                            output.sheets.get(uid),
+                        );
                         if let Some(old) = done.owners.insert(*uid, target)
                             && old != target
                             && let Some(bodies) = components.get_mut(&old)
@@ -868,6 +928,7 @@ pub(crate) fn recompute<K: Kernel>(
                             .insert(*uid, shape.clone());
                     }
                     Change::Remove(uid) => {
+                        done.sheets.remove(uid);
                         if let Some(old) = done.owners.remove(uid)
                             && let Some(bodies) = components.get_mut(&old)
                         {
@@ -876,6 +937,14 @@ pub(crate) fn recompute<K: Kernel>(
                     }
                 }
             }
+        }
+        if let FeatureStatus::Failed(message) = &status {
+            crate::sheet::block(
+                &mut done.sheets,
+                &output.sheet_footprint,
+                entry.uid,
+                message,
+            );
         }
         done.results.push(FeatureResult {
             uid: entry.uid,
@@ -913,6 +982,14 @@ pub(crate) fn place(
             return Err(format!("occurrence {uid} does not exist"));
         };
         let name = assembly.occurrence_name(*uid);
+        if let Some(pattern) = &occurrence.pattern
+            && pattern.feature != entry.uid
+            && !next.contains_key(uid)
+        {
+            return Err(format!(
+                "{name} is unavailable: its Pattern at Points feature has no active result"
+            ));
+        }
         if occurrence.parent != entry.component {
             return Err(format!(
                 "{name} is placed in {}, not in {}, the component of this feature",
@@ -943,7 +1020,11 @@ fn evaluate<K: Kernel>(
     let params = env.params;
     let start = Instant::now();
     let mut ctx = EvalContext::new(kernel, entry.uid, env);
-    let result = entry.def.evaluator::<K>().evaluate(&mut ctx);
+    crate::sheet::footprint(&entry.def, &mut ctx);
+    let mut result = entry.def.evaluator::<K>().evaluate(&mut ctx);
+    if let Ok(produced) = &mut result {
+        crate::sheet::complete_changes(&ctx, produced);
+    }
     let time = start.elapsed();
     let reads = std::mem::take(&mut ctx.reads);
     let warnings = std::mem::take(&mut ctx.warnings);
@@ -951,6 +1032,12 @@ fn evaluate<K: Kernel>(
     let version = output_version(entry.uid, def_fp, &reads, params);
     let output = match result {
         Ok(produced) => Output {
+            sheet_rules: produced.sheet_rules.map(|value| Versioned {
+                version: part_version(version, Part::SheetRules),
+                value,
+            }),
+            sheets: produced.sheets,
+            sheet_footprint: ctx.sheet_footprint.into_iter().collect(),
             version,
             def_fp,
             reads,
@@ -959,6 +1046,9 @@ fn evaluate<K: Kernel>(
             result: Ok(()),
             warnings,
             elements,
+            pattern_anchor: ctx.pattern_anchor,
+            owners: produced.owners,
+            cut_targets: ctx.cut_targets,
             sketch: produced.sketch.map(|sketch| Versioned {
                 version: part_version(version, Part::Sketch),
                 value: Arc::new(sketch),
@@ -986,6 +1076,9 @@ fn evaluate<K: Kernel>(
             placements: produced.placements,
         },
         Err(message) => Output {
+            sheet_rules: None,
+            sheets: BTreeMap::new(),
+            sheet_footprint: ctx.sheet_footprint.into_iter().collect(),
             version,
             def_fp,
             reads,
@@ -994,6 +1087,9 @@ fn evaluate<K: Kernel>(
             result: Err(message),
             warnings: Vec::new(),
             elements: Vec::new(),
+            pattern_anchor: None,
+            owners: BTreeMap::new(),
+            cut_targets: ctx.cut_targets,
             sketch: None,
             changes: Vec::new(),
             tool: None,

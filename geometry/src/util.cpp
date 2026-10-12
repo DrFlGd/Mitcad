@@ -134,11 +134,13 @@ std::string first_problem(const BRepCheck_Analyzer& analyzer, const TopoDS_Shape
 } // namespace
 
 // (The checker catches an allocation that fails and calls the sub-shape
-// invalid, mitcad#132: that is no answer.)
+// invalid, mitcad#132: that is no answer. It runs on OCCT's thread pool,
+// whose jobs count their failed allocations as the launching thread's:
+// on a large body the check took as long as the operation, mitcad#181.)
 bool is_valid(const TopoDS_Shape& shape) {
   throw_if_cancelled();
   const std::size_t failed = failed_allocations_in_thread();
-  const bool valid = BRepCheck_Analyzer(shape).IsValid();
+  const bool valid = BRepCheck_Analyzer(shape, true, true).IsValid();
   throw_if_allocation_failed(failed);
   return valid;
 }
@@ -146,7 +148,7 @@ bool is_valid(const TopoDS_Shape& shape) {
 void require_valid(const TopoDS_Shape& shape, const char* operation) {
   throw_if_cancelled();
   const std::size_t failed = failed_allocations_in_thread();
-  const BRepCheck_Analyzer analyzer(shape);
+  const BRepCheck_Analyzer analyzer(shape, true, true);
   throw_if_allocation_failed(failed);
   if (!analyzer.IsValid()) {
     throw std::runtime_error(std::string(operation) + " produced an invalid shape" + first_problem(analyzer, shape));

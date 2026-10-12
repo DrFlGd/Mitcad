@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: MIT
 # AppKit workflow test, driven in process without Accessibility permission.
-# Usage: tools/ui-macos-native-test.sh <app> [out directory] [workflow|cancel|secondary|sketch|panels|gestures|history|context-menus|replacement]
+# Usage: tools/ui-macos-native-test.sh <app> [out directory] [workflow|cancel|secondary|sketch|panels|gestures|history|context-menus|replacement|autoselect|point-pattern]
 # Requires MITCAD_MACOS_NATIVE_UI=ON and a logged-in macOS window server.
 set -u
 here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
@@ -9,7 +9,7 @@ here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 . "$here/ui-macos-lib.sh"
 
 if [ $# -lt 1 ] || [ $# -gt 3 ]; then
-  echo "usage: $0 <app> [out directory] [workflow|cancel|secondary|sketch|panels|gestures|history|context-menus|replacement]" >&2
+  echo "usage: $0 <app> [out directory] [workflow|cancel|secondary|sketch|panels|gestures|history|context-menus|replacement|autoselect|point-pattern]" >&2
   exit 2
 fi
 ui_init "$1" "${2:-ui-macos-native}"
@@ -24,9 +24,13 @@ case "$scenario" in
     script=native-macos-secondary.mitcad-ui
     # A failed smoke may already have created its Local project. Remove
     # only this scenario's fixture so the Create action is rerunnable.
-    rm -rf "$UI_OUT/files/NativeProject"
+    rm -rf "$UI_OUT/files/NativeProject" "$UI_OUT/files/NativeCloudProject" \
+      "$UI_OUT/files/CancelledProject" "$UI_OUT/files/native-cloud.git"
+    git init -q --bare "$UI_OUT/files/native-cloud.git" || exit 1
     ;;
   sketch) script=native-macos-sketch.mitcad-ui ;;
+  autoselect) script=native-macos-autoselect.mitcad-ui ;;
+  point-pattern) script=native-macos-point-pattern.mitcad-ui ;;
   panels) script=native-macos-panels.mitcad-ui ;;
   gestures) script=native-macos-gestures.mitcad-ui ;;
   context-menus)
@@ -88,6 +92,12 @@ elif [ "$scenario" = cancel ]; then
 elif [ "$scenario" = sketch ]; then
   ui_expect_log 'volume 20250\.000 mm3' 'native precision fields created the expected extrusion'
 elif [ "$scenario" = secondary ]; then
+  if [ -e "$MITCAD_TEST_WORK/CancelledProject" ]; then
+    ui_fail 'cancelling New Project created files or settings'
+  fi
+  if [ -n "$(git -C "$MITCAD_TEST_WORK/NativeCloudProject" ls-files .mitcad/local)" ]; then
+    ui_fail 'per-computer creation settings were added to version history'
+  fi
   ui_expect_log 'Added parameter nativeWidth = 30 mm' 'native parameter sheet changed the document'
   if grep -Eq '^Report sent:|^Report on the clipboard:' "$UI_LOG_FILE"; then
     ui_fail 'report preview did not stay local'

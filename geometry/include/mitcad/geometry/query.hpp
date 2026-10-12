@@ -39,6 +39,12 @@ struct BoundingBox {
 
 BoundingBox bounding_box(const Shape& shape);
 
+// A box that holds the shape, found from the faces' control points and the
+// shape's tolerances: looser than bounding_box's, but without its cost on
+// bodies of many curved faces. The tight box where bounding_box has
+// computed it already.
+BoundingBox enclosing_box(const Shape& shape);
+
 struct FaceInfo {
   NameList names;
   std::string surface; // plane, cylinder, cone, sphere, torus, bspline, ...

@@ -27,6 +27,10 @@ pub struct StoredBody<S> {
     /// The same for the same body in different states, so its
     /// measurements are taken once; None when unknown.
     pub id: Option<u64>,
+    /// The same for one body of the file in every state, also where an
+    /// operation changed it (its ASM record in the history blob); None when
+    /// unknown. A body split in two continues as one of the pieces.
+    pub lineage: Option<u64>,
 }
 
 /// The bodies of an .f3d file for the importer. The OCCT implementation
@@ -392,6 +396,31 @@ pub fn own_difference(own: Option<Change>, target: &[Sig], after: &[Sig]) -> Opt
         return None;
     }
     Some(own.difference(after))
+}
+
+/// The state `after` of an item without the bodies a join of it merged into
+/// another: the ASM history keeps those as they were, though the design
+/// does not have them any more. They are the bodies of `after` that are the
+/// state before's own and unchanged (the same stored id and solid), and
+/// that no body of the candidate's result `current` is (the candidate
+/// merged them). The signatures that are left, and the merged bodies' ids;
+/// None when there are none.
+pub(crate) fn without_merged(
+    before: &[(u64, Sig)],
+    after: &[(Option<u64>, Sig)],
+    current: &[Sig],
+) -> Option<(Vec<Sig>, Vec<u64>)> {
+    let mut kept = Vec::new();
+    let mut ids = Vec::new();
+    for (id, sig) in after {
+        let unchanged = id.is_some_and(|id| before.iter().any(|(b, s)| *b == id && s.same(sig)));
+        if unchanged && !current.iter().any(|c| c.distance(sig) <= RELATIVE) {
+            ids.extend(*id);
+        } else {
+            kept.push(*sig);
+        }
+    }
+    (!ids.is_empty()).then_some((kept, ids))
 }
 
 /// The solid volume of a set of bodies.
@@ -793,6 +822,30 @@ mod tests {
         moved.center[0] += 1.0;
         assert!(!same_bodies(&[sig(10.0)], &[moved]));
         assert!(same_bodies(&[], &[]));
+    }
+
+    #[test]
+    fn bodies_a_join_merged_stay_in_the_state_but_not_in_the_result() {
+        // Before: bodies 1 and 2 (volumes 10 and 20). The join merges 2
+        // into 1 (30 + 5 for the new material); the state keeps body 2.
+        let (a, b, merged) = (sig(10.0), sig(20.0), sig(35.0));
+        let before = [(1, a), (2, b)];
+        let after = [(Some(3), merged), (Some(2), b)];
+        let (kept, ids) = without_merged(&before, &after, &[merged]).expect("body 2 was merged");
+        assert_eq!((kept.len(), ids), (1, vec![2]));
+        assert!(same_bodies(&kept, &[merged]));
+        // A result that still has the body (the join did not merge it):
+        // nothing is left out.
+        assert!(without_merged(&before, &after, &[sig(15.0), b]).is_none());
+        // A body that changed (another id, or another solid) is not the
+        // state before's own.
+        let after = [(Some(3), merged), (Some(4), b)];
+        assert!(without_merged(&before, &after, &[merged]).is_none());
+        let after = [(Some(3), merged), (Some(2), sig(21.0))];
+        assert!(without_merged(&before, &after, &[merged]).is_none());
+        // Bodies without an id are never left out.
+        let after = [(Some(3), merged), (None, b)];
+        assert!(without_merged(&before, &after, &[merged]).is_none());
     }
 
     #[test]

@@ -2,6 +2,7 @@
 #pragma once
 
 #include <array>
+#include <functional>
 #include <optional>
 
 #include <QFlags>
@@ -84,6 +85,31 @@ using Selection = QVector<SelectionItem>;
 
 // Order in which a window selection prefers kinds: it keeps one kind.
 SelectKind preferredKind(const Selection& items);
+
+// Selection inputs keep each model item once (mitcad#199). A profile is a
+// region of a sketch: the occurrence that places the sketch in the view is
+// not part of the region, and a region keeps the key a definition stored
+// for it after the sketch changed while the view names it by its current
+// key. A resolver names the region an item means now (the model's
+// `profile` query), empty when it cannot tell.
+using ItemResolver = std::function<QString(const SelectionItem&)>;
+
+// Whether two items are one entry of a selection input: equal, or profiles
+// of the same sketch with the same key or keys the resolver resolves to
+// the same region.
+bool sameEntry(const SelectionItem& a, const SelectionItem& b, const ItemResolver& resolve = {});
+bool containsEntry(const Selection& items, const SelectionItem& item,
+                   const ItemResolver& resolve = {});
+// Takes out every entry that is `item`; how many went.
+int removeEntry(Selection& items, const SelectionItem& item, const ItemResolver& resolve = {});
+// A click on `item`: takes out the entries that are it, else appends it.
+// True when it was appended. Clicking the same region twice gives back the
+// selection before, whatever the order of the clicks.
+bool toggleEntry(Selection& items, const SelectionItem& item, const ItemResolver& resolve = {});
+// A list given as a whole (a definition loaded for editing, the selection
+// made before a command): each profile once, the first entry kept in its
+// place; other items as they are.
+Selection uniqueProfiles(const Selection& items, const ItemResolver& resolve = {});
 
 // Text such as "2 edges, 1 face".
 QString summarize(const Selection& items);

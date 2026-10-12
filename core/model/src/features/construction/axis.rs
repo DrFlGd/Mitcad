@@ -79,8 +79,11 @@ impl<P> ConstructionAxisDef<P> {
         use AxisDefinition as D;
         match &self.definition {
             D::CircularFace { face } => vec![(face, Want::Face)],
-            D::PerpendicularAtPoint { face, point } | D::NormalToFaceAtPoint { face, point } => {
+            D::PerpendicularAtPoint { face, point } => {
                 vec![(face, Want::Face), (point, Want::Point)]
+            }
+            D::NormalToFaceAtPoint { face, point } => {
+                vec![(face, Want::FaceOrPlane), (point, Want::Point)]
             }
             D::TwoPlanes { plane1, plane2 } => vec![(plane1, Want::Plane), (plane2, Want::Plane)],
             D::TwoPoints { point1, point2 } => vec![(point1, Want::Point), (point2, Want::Point)],

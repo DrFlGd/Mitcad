@@ -529,6 +529,13 @@ bool visible(const QString& identifier, bool expected) {
   return view && viewVisible(view) == expected;
 }
 
+bool present(const QString& identifier, bool expected) {
+  NSWindow* window = documentWindow();
+  if (!window) return false;
+  NSView* root = window.contentView.superview != nil ? window.contentView.superview : window.contentView;
+  return (identifiedView(root, identifier) != nil) == expected;
+}
+
 bool resizeDocument(int width, int height, QString& error) {
   NSWindow* window = documentWindow();
   if (!window || width < 820 || height < 520) {
@@ -920,6 +927,27 @@ bool click(const QString& identifier, QString& error) {
     return true;
   }
   error = QStringLiteral("native view '%1' is not an actionable control").arg(identifier);
+  return false;
+}
+
+bool hover(const QString& identifier, bool enter, QString& error) {
+  NSView* view = findControl(identifier);
+  if (!view) { error = QStringLiteral("no native control '%1'").arg(identifier); return false; }
+  [view.window makeKeyAndOrderFront:nil];
+  [view updateTrackingAreas];
+  for (NSTrackingArea* area in view.trackingAreas) {
+    if ((area.options & NSTrackingMouseEnteredAndExited) == 0 || area.owner != view) { continue; }
+    const NSPoint location = [view convertPoint:NSMakePoint(NSMidX(view.bounds), NSMidY(view.bounds)) toView:nil];
+    NSEvent* event = [NSEvent enterExitEventWithType:enter ? NSEventTypeMouseEntered : NSEventTypeMouseExited
+                                        location:location modifierFlags:0 timestamp:NSProcessInfo.processInfo.systemUptime
+                                    windowNumber:view.window.windowNumber context:nil eventNumber:0 trackingNumber:0 userData:nullptr];
+    // Exercise the real AppKit tracking owner; it is responsible for
+    // forwarding the event to the hidden Qt presenter.
+    if (enter) { [view mouseEntered:event]; }
+    else { [view mouseExited:event]; }
+    return true;
+  }
+  error = QStringLiteral("native control '%1' has no hover tracking area").arg(identifier);
   return false;
 }
 

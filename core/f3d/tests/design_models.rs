@@ -18,6 +18,8 @@
 //!   and rigid groups' members (mitcad#81).
 //! - Extrusions' objects of extents up to an object and symmetric lengths
 //!   (mitcad#96).
+//! - The settings of patterns and mirrors: symmetry, compute option,
+//!   distance type, suppressed elements and the join flag (mitcad#186).
 
 use std::path::PathBuf;
 
@@ -663,6 +665,169 @@ fn thread_info(info: Option<&serde_json::Value>) -> Option<(Vec<String>, Vec<f64
     Some((text, numbers))
 }
 
+/// Suppressed items (mitcad#180): the decoder suppresses the
+/// dump's suppressed items and no others; the item the user suppressed has
+/// the direct state bytes, one suppressed only through the item it depends
+/// on the indirect ones, and an indirect one never comes first.
+#[test]
+fn suppressed_items_match_the_reference_dumps() {
+    use design::decode::Suppression;
+    let Some(dir) = models_dir() else {
+        eprintln!("reference models not found; skipped");
+        return;
+    };
+    // The dump's item an item of the decoder is: by timeline index, else
+    // (items of a timeline group have none in the dump) by name.
+    let same = |a: &ir::TimelineItem, b: &ir::TimelineItem| match (a.index, b.index) {
+        (Some(x), Some(y)) => x == y,
+        _ => a.name().is_some() && a.name() == b.name(),
+    };
+    let (mut agree, mut indirect, mut differ) = (0usize, 0usize, Vec::new());
+    for (id, f3d, json) in models(&dir) {
+        let text = std::fs::read_to_string(&json).unwrap();
+        let reference = ir::Dump::from_json(&text).unwrap_or_else(|e| panic!("{id}: {e}"));
+        let designs = design::decode_path(&f3d).unwrap_or_else(|e| panic!("{id}: {e}"));
+        let Some(decoded) = designs.into_iter().find_map(|d| d.dump) else {
+            panic!("{id}: no design decoded");
+        };
+        let mut first = None;
+        for mine in decoded.timeline_items() {
+            let Some(how) = mine.suppression() else {
+                continue;
+            };
+            first.get_or_insert(how);
+            let what = format!("{id}: item {:?} {:?}", mine.index, mine.name());
+            let suppressed_in_dump = reference
+                .timeline_items()
+                .iter()
+                .any(|t| same(mine, t) && t.is_suppressed == Some(true));
+            if suppressed_in_dump {
+                agree += 1;
+            } else {
+                differ.push(format!("{what} decoded suppressed, dump not"));
+            }
+            if how == Suppression::Indirect {
+                indirect += 1;
+            }
+        }
+        if first == Some(Suppression::Indirect) {
+            differ.push(format!("{id}: the first suppressed item is indirect"));
+        }
+        for theirs in reference.timeline_items() {
+            if theirs.is_suppressed == Some(true)
+                && !decoded
+                    .timeline_items()
+                    .iter()
+                    .any(|d| same(d, theirs) && d.suppression().is_some())
+            {
+                differ.push(format!(
+                    "{id}: {} suppressed in the dump, not decoded",
+                    theirs.name().unwrap_or("?")
+                ));
+            }
+        }
+        // The controlled variants (timeline indexes): the item suppressed
+        // itself and the one suppressed through it.
+        let how = |index: i64| {
+            decoded
+                .timeline_items()
+                .iter()
+                .find(|d| d.index == Some(index))
+                .and_then(ir::TimelineItem::suppression)
+        };
+        let expected: &[(&str, i64, Suppression)] = &[
+            ("diff_suppress_dependent_parent", 2, Suppression::Direct),
+            ("diff_suppress_dependent_parent", 3, Suppression::Indirect),
+            ("diff_suppress_dependent_child", 3, Suppression::Direct),
+            ("diff_suppress_target_sketch", 2, Suppression::Direct),
+            ("diff_suppress_target_sketch", 3, Suppression::Indirect),
+            ("diff_suppress_target_cut", 3, Suppression::Direct),
+            ("diff_suppress_two_features", 2, Suppression::Direct),
+            ("diff_suppress_two_features", 3, Suppression::Direct),
+        ];
+        for (model, index, want) in expected {
+            if id == *model && how(*index) != Some(*want) {
+                differ.push(format!(
+                    "{id}: item {index} is {:?}, expected {want:?}",
+                    how(*index)
+                ));
+            }
+        }
+    }
+    println!(
+        "suppressed items: {agree} agree ({indirect} indirect), {} differ",
+        differ.len()
+    );
+    for d in &differ {
+        println!("  {d}");
+    }
+    assert!(differ.is_empty(), "{differ:#?}");
+}
+
+/// Items after the timeline marker: the decoder rolls back the
+/// dump's rolled-back items and no others, and puts the marker before the
+/// first.
+#[test]
+fn rolled_back_items_match_the_reference_dumps() {
+    let Some(dir) = models_dir() else {
+        eprintln!("reference models not found; skipped");
+        return;
+    };
+    let (mut agree, mut rolled, mut differ) = (0usize, 0usize, Vec::new());
+    for (id, f3d, json) in models(&dir) {
+        let text = std::fs::read_to_string(&json).unwrap();
+        let reference = ir::Dump::from_json(&text).unwrap_or_else(|e| panic!("{id}: {e}"));
+        let designs = design::decode_path(&f3d).unwrap_or_else(|e| panic!("{id}: {e}"));
+        let Some(decoded) = designs.into_iter().find_map(|d| d.dump) else {
+            panic!("{id}: no design decoded");
+        };
+        // By timeline index; the items of a timeline group have none in
+        // the dump, so by name.
+        let same = |a: &ir::TimelineItem, b: &ir::TimelineItem| match (a.index, b.index) {
+            (Some(x), Some(y)) => x == y,
+            _ => a.name().is_some() && a.name() == b.name(),
+        };
+        for theirs in reference.timeline_items() {
+            let Some(mine) = decoded.timeline_items().iter().find(|d| same(d, theirs)) else {
+                continue;
+            };
+            let (want, got) = (
+                theirs.is_rolled_back == Some(true),
+                mine.is_rolled_back == Some(true),
+            );
+            if want == got {
+                agree += 1;
+                rolled += usize::from(want);
+            } else {
+                differ.push(format!(
+                    "{id}: item {:?} rolled back {got}, dump {want}",
+                    theirs.index
+                ));
+            }
+        }
+        let marker = |d: &ir::Dump| d.timeline.as_ref().and_then(|t| t.original_marker_position);
+        let rolled_back = reference
+            .timeline_items()
+            .iter()
+            .any(|t| t.is_rolled_back == Some(true));
+        if rolled_back && marker(&decoded).flatten() != marker(&reference).flatten() {
+            differ.push(format!(
+                "{id}: marker {:?}, dump {:?}",
+                marker(&decoded),
+                marker(&reference)
+            ));
+        }
+    }
+    println!(
+        "rolled back items: {agree} agree ({rolled} rolled back), {} differ",
+        differ.len()
+    );
+    for d in &differ {
+        println!("  {d}");
+    }
+    assert!(differ.is_empty(), "{differ:#?}");
+}
+
 /// Threads (mitcad#35): every thread decodes with the dump's size, class,
 /// type, side, flags and location, and its faces are found in the history
 /// with the dump's cylinder (axis direction included, which tells the ends
@@ -703,6 +868,15 @@ fn threads_match_the_reference_dumps() {
                 |t: &ir::ThreadDetail| (t.is_modeled, t.is_full_length, t.thread_location.clone());
             if !same_info(theirs.thread_info.as_ref(), mine.thread_info.as_ref()) {
                 differ.push(format!("{what}: {:?}", mine.thread_info));
+                continue;
+            }
+            // Handedness: read from the thread's bytes; the
+            // dumps of older exports have none.
+            if theirs.is_right_handed.is_some() && theirs.is_right_handed != mine.is_right_handed {
+                differ.push(format!(
+                    "{what}: right-handed {:?}, dump {:?}",
+                    mine.is_right_handed, theirs.is_right_handed
+                ));
                 continue;
             }
             if flags(theirs) != flags(mine) {
@@ -1348,6 +1522,91 @@ fn extrusion_solids_match_the_reference_dumps() {
     assert!(differ.is_empty(), "{differ:#?}");
 }
 
+/// Operations, thin walls and per-side extent kinds (mitcad#186): every
+/// decoded operation (intersect included), thin-wall flag, wall location,
+/// wall thickness and side kind is the dump's.
+#[test]
+fn extrusion_options_match_the_reference_dumps() {
+    let Some(dir) = models_dir() else {
+        eprintln!("reference models not found; skipped");
+        return;
+    };
+    let (mut agree, mut thin, mut differ) = (0usize, 0usize, Vec::new());
+    for (id, f3d, json) in models(&dir) {
+        let text = std::fs::read_to_string(&json).unwrap();
+        let reference = ir::Dump::from_json(&text).unwrap_or_else(|e| panic!("{id}: {e}"));
+        let designs = design::decode_path(&f3d).unwrap_or_else(|e| panic!("{id}: {e}"));
+        let Some(decoded) = designs.into_iter().find_map(|d| d.dump) else {
+            panic!("{id}: no design decoded");
+        };
+        let twins = of_kind(&decoded, "ExtrudeFeature");
+        for item in of_kind(&reference, "ExtrudeFeature") {
+            let Some(twin) = twins
+                .iter()
+                .find(|d| d.index == item.index && d.index.is_some())
+            else {
+                continue;
+            };
+            let theirs = serde_json::to_value(item.detail.as_ref()).unwrap_or_default();
+            let mine = serde_json::to_value(twin.detail.as_ref()).unwrap_or_default();
+            let raw = twin.f3d.as_ref().and_then(|f| f.extrude.as_ref());
+            let mut problems = Vec::new();
+            if mine["operation"] != theirs["operation"] {
+                problems.push(format!(
+                    "operation {} / {}",
+                    mine["operation"], theirs["operation"]
+                ));
+            }
+            if let Some(decoded_thin) = mine["isThinExtrude"].as_bool() {
+                let reference_thin = theirs["isThinExtrude"].as_bool().unwrap_or(false);
+                if decoded_thin != reference_thin {
+                    problems.push(format!("thin {decoded_thin} / {reference_thin}"));
+                } else if decoded_thin {
+                    thin += 1;
+                    let key = "thinExtrudeWallLocationOne";
+                    if mine[key] != theirs[key] {
+                        problems.push(format!("{key} {} / {}", mine[key], theirs[key]));
+                    }
+                    let name = |v: &serde_json::Value| {
+                        v["thinExtrudeWallThicknessOne"]["expression"].clone()
+                    };
+                    if name(&mine) != name(&theirs) {
+                        problems.push(format!("thickness {} / {}", name(&mine), name(&theirs)));
+                    }
+                }
+            }
+            // The side kinds: 1 a distance, 2 up to an object, 4 through all.
+            if let Some(sides) = raw.and_then(|r| r.sides.as_deref()) {
+                let kind = |extent: &serde_json::Value| match extent["_type"].as_str() {
+                    Some("DistanceExtentDefinition" | "SymmetricExtentDefinition") => 1,
+                    Some("ToEntityExtentDefinition") => 2,
+                    Some("ThroughAllExtentDefinition") => 4,
+                    _ => 0,
+                };
+                if kind(&theirs["extentOne"]) != 0 && kind(&theirs["extentOne"]) != sides[0] {
+                    problems.push(format!("side one {} / {}", sides[0], theirs["extentOne"]));
+                }
+                if kind(&theirs["extentTwo"]) != 0 && kind(&theirs["extentTwo"]) != sides[1] {
+                    problems.push(format!("side two {} / {}", sides[1], theirs["extentTwo"]));
+                }
+            }
+            if problems.is_empty() {
+                agree += 1;
+            } else {
+                differ.push(format!(
+                    "{id}: {}: {problems:?}",
+                    item.name().unwrap_or("?")
+                ));
+            }
+        }
+    }
+    println!(
+        "extrusion options: {agree} agree ({thin} thin), {} differ",
+        differ.len()
+    );
+    assert!(differ.is_empty(), "{differ:#?}");
+}
+
 /// Construction axes (mitcad#154): every decoded axis line is the dump's
 /// (the same line; its direction either way).
 #[test]
@@ -1405,4 +1664,304 @@ fn construction_axes_match_the_reference_dumps() {
     }
     println!("construction axes: {agree} agree, {} differ", differ.len());
     assert!(differ.is_empty(), "{differ:#?}");
+}
+
+/// The settings of patterns and mirrors (mitcad#186): every decoded
+/// symmetry flag, compute option, distance type, suppressed list and join
+/// flag is the dump's (the one-option variants of each among the models).
+#[test]
+fn pattern_settings_match_the_reference_dumps() {
+    let Some(dir) = models_dir() else {
+        eprintln!("reference models not found; skipped");
+        return;
+    };
+    let kinds = [
+        "CircularPatternFeature",
+        "RectangularPatternFeature",
+        "MirrorFeature",
+    ];
+    let keys = [
+        "isSymmetric",
+        "isSymmetricInDirectionOne",
+        "isSymmetricInDirectionTwo",
+        "patternComputeOption",
+        "patternDistanceType",
+        "suppressedElementsIds",
+        "isCombine",
+    ];
+    let (mut agree, mut differ) = (0usize, Vec::new());
+    for (id, f3d, json) in models(&dir) {
+        let text = std::fs::read_to_string(&json).unwrap();
+        let reference = ir::Dump::from_json(&text).unwrap_or_else(|e| panic!("{id}: {e}"));
+        let designs = design::decode_path(&f3d).unwrap_or_else(|e| panic!("{id}: {e}"));
+        let Some(decoded) = designs.into_iter().find_map(|d| d.dump) else {
+            panic!("{id}: no design decoded");
+        };
+        for kind in kinds {
+            let twins = of_kind(&decoded, kind);
+            for item in of_kind(&reference, kind) {
+                let Some(twin) = twins
+                    .iter()
+                    .find(|t| t.index == item.index && t.index.is_some())
+                else {
+                    differ.push(format!("{id}: {}: not decoded", item.name().unwrap_or("?")));
+                    continue;
+                };
+                let theirs = serde_json::to_value(item.detail.as_ref()).unwrap_or_default();
+                let mine = serde_json::to_value(twin.detail.as_ref()).unwrap_or_default();
+                for key in keys {
+                    let Some(value) = mine.get(key) else {
+                        continue;
+                    };
+                    if theirs.get(key) == Some(value) {
+                        agree += 1;
+                    } else {
+                        differ.push(format!(
+                            "{id}: {}: {key} decoded {value}, dump {}",
+                            item.name().unwrap_or("?"),
+                            theirs.get(key).unwrap_or(&serde_json::Value::Null)
+                        ));
+                    }
+                }
+            }
+        }
+    }
+    println!("pattern settings: {agree} agree, {} differ", differ.len());
+    for d in &differ {
+        println!("  {d}");
+    }
+    assert!(differ.is_empty(), "{differ:#?}");
+}
+
+/// Construction planes', points' and axes' definitions (mitcad#186): where
+/// the decoder gives one, it is the dump's type, and each entity it names
+/// is the dump's (a vertex at the same point, a construction point of the
+/// same timeline item, an edge or face of the same kind).
+#[test]
+fn construction_definitions_match_the_reference_dumps() {
+    let Some(dir) = models_dir() else {
+        eprintln!("reference models not found; skipped");
+        return;
+    };
+    let definition = |item: &ir::TimelineItem| -> Option<serde_json::Value> {
+        let v = serde_json::to_value(item.detail.as_ref()?).ok()?;
+        v.get("definition")
+            .cloned()
+            .filter(|d| d["_type"].is_string())
+    };
+    let entity_keys = [
+        "pointEntity",
+        "pointEntityOne",
+        "pointEntityTwo",
+        "pointEntityThree",
+        "point",
+        "linearEntityOne",
+        "linearEntityTwo",
+        "edgeEntity",
+        "circularEntity",
+        "circularFace",
+        "tangentFace",
+        "planarEntity",
+        "planarEntityOne",
+        "planarEntityTwo",
+        "planeOne",
+        "planeTwo",
+        "planeThree",
+    ];
+    // An entity: its kind, and where it is or which item it is.
+    let key = |v: &serde_json::Value| -> String {
+        match v["kind"].as_str() {
+            Some("vertex") => format!(
+                "vertex {:?}",
+                v["point"].as_array().map(|p| p
+                    .iter()
+                    .map(|x| (x.as_f64().unwrap_or(f64::NAN) * 1e6).round() as i64)
+                    .collect::<Vec<_>>())
+            ),
+            Some("construction_point" | "construction_plane" | "construction_axis") => {
+                format!("{} {} {}", v["kind"], v["origin"], v["timeline_index"])
+            }
+            Some(k) => k.to_owned(),
+            None => "?".to_owned(),
+        }
+    };
+    let (mut agree, mut undecoded, mut differ) = (0usize, 0usize, Vec::new());
+    for (id, f3d, json) in models(&dir) {
+        let text = std::fs::read_to_string(&json).unwrap();
+        let reference = ir::Dump::from_json(&text).unwrap_or_else(|e| panic!("{id}: {e}"));
+        let designs = design::decode_path(&f3d).unwrap_or_else(|e| panic!("{id}: {e}"));
+        let Some(decoded) = designs.into_iter().find_map(|d| d.dump) else {
+            panic!("{id}: no design decoded");
+        };
+        for kind in ["ConstructionPlane", "ConstructionAxis", "ConstructionPoint"] {
+            let twins = of_kind(&decoded, kind);
+            for item in of_kind(&reference, kind) {
+                let Some(theirs) = definition(item) else {
+                    continue;
+                };
+                let what = format!("{id}: {}", item.name().unwrap_or("?"));
+                let Some(mine) = twins
+                    .iter()
+                    .find(|t| t.index == item.index && t.index.is_some())
+                    .and_then(|t| definition(t))
+                else {
+                    undecoded += 1;
+                    continue;
+                };
+                if mine["_type"] != theirs["_type"] {
+                    differ.push(format!("{what}: {} for {}", mine["_type"], theirs["_type"]));
+                    continue;
+                }
+                let bad: Vec<&str> = entity_keys
+                    .iter()
+                    .copied()
+                    .filter(|k| {
+                        // (The dump names the wrong vertices for an axis
+                        // through two vertices: its own axis line is
+                        // between others; only the kinds are compared.)
+                        let loose = kind == "ConstructionAxis" && k.starts_with("pointEntity");
+                        if loose {
+                            mine[k]["kind"] != theirs[k]["kind"]
+                        } else {
+                            !theirs[k].is_null() && key(&mine[k]) != key(&theirs[k])
+                        }
+                    })
+                    .collect();
+                if bad.is_empty() {
+                    agree += 1;
+                } else {
+                    differ.push(format!("{what}: {}", bad.join(", ")));
+                }
+            }
+        }
+    }
+    println!(
+        "construction definitions: {agree} agree, {undecoded} not decoded, {} differ",
+        differ.len()
+    );
+    for d in &differ {
+        println!("  {d}");
+    }
+    assert!(differ.is_empty(), "{differ:#?}");
+}
+
+/// Sketch dimensions' and constraints' types (mitcad#186): for every sketch
+/// of the reference models, the decoded types are the dump's, as sets of
+/// types per sketch (the types the API does not list, a text box's lines
+/// and a control point spline's polygon, are left out).
+#[test]
+fn sketch_dimension_and_constraint_types_match_the_reference_dumps() {
+    let Some(dir) = models_dir() else {
+        eprintln!("reference models not found; skipped");
+        return;
+    };
+    let types = |v: Option<&Vec<serde_json::Value>>, key: &str| -> Vec<String> {
+        let mut t: Vec<String> = v
+            .into_iter()
+            .flatten()
+            .filter_map(|x| x[key].as_str().map(str::to_owned))
+            .filter(|t| t != "TextBoxConstraint" && t != "ControlPolygonConstraint")
+            .collect();
+        t.sort();
+        t
+    };
+    let (mut agree, mut differ) = (0usize, Vec::new());
+    for (id, f3d, json) in models(&dir) {
+        let text = std::fs::read_to_string(&json).unwrap();
+        let reference: serde_json::Value = serde_json::from_str(&text).unwrap();
+        let designs = design::decode_path(&f3d).unwrap_or_else(|e| panic!("{id}: {e}"));
+        let Some(decoded) = designs.into_iter().find_map(|d| d.dump) else {
+            panic!("{id}: no design decoded");
+        };
+        let mine = serde_json::to_value(&decoded).unwrap();
+        let sketches = |v: &serde_json::Value| -> Vec<(i64, serde_json::Value)> {
+            v["timeline"]["items"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter(|i| i["objectType"] == "Sketch")
+                .map(|i| (i["index"].as_i64().unwrap_or(-1), i["detail"].clone()))
+                .collect()
+        };
+        let ours = sketches(&mine);
+        for (index, theirs) in sketches(&reference) {
+            let Some((_, m)) = ours.iter().find(|(i, _)| *i == index) else {
+                continue;
+            };
+            for key in ["constraints", "dimensions"] {
+                let (a, b) = (
+                    types(theirs[key].as_array(), "type"),
+                    types(m[key].as_array(), "type"),
+                );
+                if a == b {
+                    agree += 1;
+                } else {
+                    differ.push(format!("{id}: sketch {index} {key}: {a:?} for {b:?}"));
+                }
+            }
+        }
+    }
+    println!("sketch types: {agree} agree, {} differ", differ.len());
+    assert!(differ.is_empty(), "{differ:#?}");
+}
+
+/// Sketch texts (mitcad#186): for every sketch of the reference models, the
+/// decoded texts have the dump's string, height, font, style and
+/// alignments, and a text in a box has the box's four lines.
+#[test]
+fn sketch_texts_match_the_reference_dumps() {
+    let Some(dir) = models_dir() else {
+        eprintln!("reference models not found; skipped");
+        return;
+    };
+    let texts = |v: &serde_json::Value| -> Vec<(i64, Vec<serde_json::Value>)> {
+        v["timeline"]["items"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|item| {
+                let t = item["detail"]["texts"]
+                    .as_array()
+                    .filter(|t| !t.is_empty())?;
+                Some((item["index"].as_i64()?, t.clone()))
+            })
+            .collect()
+    };
+    let mut seen = 0;
+    for (id, f3d, json) in models(&dir) {
+        let reference: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&json).unwrap()).unwrap();
+        let designs = design::decode_path(&f3d).unwrap_or_else(|e| panic!("{id}: {e}"));
+        let Some(decoded) = designs.into_iter().find_map(|d| d.dump) else {
+            panic!("{id}: no design decoded");
+        };
+        let mine = texts(&serde_json::to_value(&decoded).unwrap());
+        let theirs = texts(&reference);
+        assert_eq!(
+            mine.iter().map(|(i, t)| (*i, t.len())).collect::<Vec<_>>(),
+            theirs
+                .iter()
+                .map(|(i, t)| (*i, t.len()))
+                .collect::<Vec<_>>(),
+            "{id}: sketches with texts"
+        );
+        for ((_, mine), (_, theirs)) in mine.iter().zip(&theirs) {
+            for (m, t) in mine.iter().zip(theirs) {
+                seen += 1;
+                for key in ["text", "height", "fontName", "textStyle"] {
+                    assert_eq!(m[key], t[key], "{id}: {key}");
+                }
+                for key in ["horizontalAlignment", "verticalAlignment"] {
+                    assert_eq!(m["definition"][key], t["definition"][key], "{id}: {key}");
+                }
+                assert_eq!(m["definition"]["_type"], t["definition"]["_type"], "{id}");
+                assert_eq!(
+                    m["definition"]["rectangleLines"].as_array().map(Vec::len),
+                    Some(4),
+                    "{id}: the box's lines"
+                );
+            }
+        }
+    }
+    println!("sketch texts: {seen} checked");
 }

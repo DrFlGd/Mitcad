@@ -1,0 +1,9 @@
+[
+  {"comment":"SPDX-License-Identifier: MIT. Reopened shared and independent folded sheet occurrences retain body-local material graphs."},
+  {"expect":{"feature":"F4","status":"ok","bodies":2,"instances":3,"world_volume":8179.557428756428}},
+  {"expect":{"feature":"F8","status":"ok"}},
+  {"expect":{"occurrence":"O1/O2","body":"F3.b0","volume":3064.115008234622,"bbox":{"min":[97,0,35],"max":[118,35,55]}}},
+  {"expect":{"occurrence":"O1/O4","body":"F7.b0","volume":2051.3274122871835,"bbox":{"min":[98,40,35],"max":[118,75,55]}}},
+  {"expect":{"query":{"query":"sheet_state","body":"F3.b0"},"result":{"body":"F3.b0","owner":"C2","rules":"F1","status":"valid","bends":[{"id":{"feature":"F4","slot":0}}]}}},
+  {"expect":{"query":{"query":"sheet_state","body":"F7.b0"},"result":{"body":"F7.b0","owner":"C3","rules":"F5","status":"valid","bends":[{"id":{"feature":"F8","slot":0}}]}}}
+]

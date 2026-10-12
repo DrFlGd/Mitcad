@@ -254,6 +254,14 @@ impl CurvePath {
                 };
                 curves.curves(ctx)?.1
             }
+            Self::Path(PathRef::SketchCurves { sketch, curves }) => {
+                let curves = SketchCurves {
+                    sketch: *sketch,
+                    curves: curves.clone(),
+                    chain: false,
+                };
+                curves.curves(ctx)?.1
+            }
             Self::Path(PathRef::Line { start, end }) => vec![PathCurve {
                 name: "line".to_owned(),
                 curve: Curve3::Line {
@@ -340,9 +348,19 @@ pub(crate) fn curve3(frame: &SketchFrame, curve: &Curve2) -> Curve3 {
             start: frame.point(*a),
             end: frame.point(*b),
         },
-        Curve2::Circle { center, radius } => {
-            conic(*center, frame.x_axis, *radius, *radius, 0.0, TAU, true)
-        }
+        Curve2::Circle {
+            center,
+            radius,
+            start,
+        } => conic(
+            *center,
+            frame.x_axis,
+            *radius,
+            *radius,
+            *start,
+            start + TAU,
+            true,
+        ),
         Curve2::Arc {
             center,
             radius,

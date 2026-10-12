@@ -4,7 +4,7 @@
 # install(SCRIPT) after the bundle is installed and before Qt's deploy script.
 #
 # Copies the non-Qt shared libraries of mitcad (OCCT, FreeType and what they
-# link) and the render worker and denoiser module's libraries
+# link) and the render worker and denoiser modules' libraries
 # into Contents/Frameworks. Qt's macdeployqt handles Qt
 # alone: the installed binary's rpath is only @executable_path/../Frameworks,
 # so it could not find vcpkg's libraries by itself. Doing the copy here works
@@ -33,6 +33,11 @@ endif()
 
 set(mitcad_executables "${MITCAD_BUILD_EXECUTABLE}")
 set(mitcad_render_modules "@MITCAD_OIDN_MODULES@")
+foreach(mitcad_module IN LISTS mitcad_render_modules)
+  if(NOT EXISTS "${mitcad_module}")
+    message(FATAL_ERROR "OIDN's runtime-loaded module is missing: ${mitcad_module}; rebuild the renderer dependencies")
+  endif()
+endforeach()
 if(NOT EXISTS "${MITCAD_BUILD_RENDER_EXECUTABLE}")
   message(FATAL_ERROR "The render worker is missing; build mitcad-render first")
 endif()
@@ -115,7 +120,7 @@ foreach(mitcad_dep IN LISTS mitcad_resolved)
 endforeach()
 
 # Give every copied dylib a path valid for both the app and its worker.
-# The loader-relative rpath also lets OIDN's dynamically opened CPU module
+# The loader-relative rpath also lets OIDN's dynamically opened CPU/Metal modules
 # resolve its dependencies without inheriting the main app's rpaths.
 find_program(mitcad_install_name_tool install_name_tool REQUIRED)
 find_program(mitcad_otool otool REQUIRED)

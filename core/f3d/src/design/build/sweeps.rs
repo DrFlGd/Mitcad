@@ -284,6 +284,10 @@ impl Builder<'_> {
             x.operation = operation(code);
         }
         x.profile = self.input_profiles(it);
+        // The selected profiles' loops, as an extrusion's (mitcad#96).
+        if let Some(loops) = self.profile_loops(it.id) {
+            x.other.insert("_f3d_profile_loops".to_owned(), loops);
+        }
         let Some((slots, _)) = self.slots(it, 10) else {
             return;
         };
@@ -295,7 +299,26 @@ impl Builder<'_> {
         };
         x.path = self.path(path);
         if let Some(rail) = slots[6] {
-            x.guide_rail = Some(self.path_or_error(rail));
+            let rail = self.path_or_error(rail);
+            // Curves of the profile's own sketch are no rail: the API
+            // reference dumps list none for the three sweeps whose rail
+            // slot holds such curves (edges of one of the profiles), while
+            // the controlled model with a rail has it in the path's sketch.
+            let profile_sketch = x.profile.iter().flatten().find_map(|r| match r {
+                Reference::Profile(p) => p.sketch.clone().flatten(),
+                _ => None,
+            });
+            let own = profile_sketch.as_deref().is_some_and(|sketch| {
+                rail.as_array().is_some_and(|items| {
+                    !items.is_empty()
+                        && items
+                            .iter()
+                            .all(|i| i["entity"]["sketch"].as_str() == Some(sketch))
+                })
+            });
+            if !own {
+                x.guide_rail = Some(rail);
+            }
         }
         if let Some(surfaces) = slots[4] {
             let faces: Vec<Value> = self

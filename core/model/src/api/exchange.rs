@@ -223,3 +223,89 @@ impl<K: Kernel> Document<K> {
             .ok_or_else(|| ApiError(format!("no body at the timeline marker is named '{body}'")))
     }
 }
+
+/// `export_flat_pattern_dxf` (mitcad#210): a body's Flat Pattern as a DXF
+/// drawing.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct ExportFlatPatternCommand {
+    /// Uid or name of the sheet-metal body.
+    body: String,
+    path: String,
+    /// The drawing unit (`mm` by default).
+    #[serde(default)]
+    unit: LengthUnit,
+    /// `r2000` (default) or `r12`.
+    #[serde(default)]
+    version: Option<String>,
+    /// Also the bends' tangent lines, on `BEND_TANGENT`.
+    #[serde(default)]
+    tangents: bool,
+    /// The side the drawing looks at; the Flat Pattern's when left out.
+    #[serde(default)]
+    reference_side: Option<crate::sheet::SheetReferenceSide>,
+}
+
+impl<K: Kernel> Document<K> {
+    pub(super) fn export_flat_pattern_command(
+        &self,
+        command: ExportFlatPatternCommand,
+    ) -> Result<Value, ApiError> {
+        use crate::sheet::flat_dxf::{self, FlatDxfOptions};
+        let extension = std::path::Path::new(&command.path)
+            .extension()
+            .and_then(|e| e.to_str())
+            .map(str::to_ascii_lowercase);
+        if extension.as_deref() != Some("dxf") {
+            return Err(ApiError(format!(
+                "{}: Flat Patterns are exported to .dxf files",
+                command.path
+            )));
+        }
+        let version = match command.version.as_deref() {
+            None | Some("r2000") => mitcad_dxf::DxfVersion::R2000,
+            Some("r12") => mitcad_dxf::DxfVersion::R12,
+            Some(other) => {
+                return Err(ApiError(format!(
+                    "unknown DXF version '{other}' (expected r2000 or r12)"
+                )));
+            }
+        };
+        let write = mitcad_dxf::WriteOptions {
+            version,
+            ..mitcad_dxf::WriteOptions::default()
+        };
+        let body = self.body_by_uid_or_name(&command.body)?;
+        let options = FlatDxfOptions {
+            unit: command.unit,
+            tangents: command.tangents,
+        };
+        let (def, drawing) = self.export_flat_pattern_dxf(
+            body,
+            &command.path,
+            command.reference_side,
+            &options,
+            &write,
+        )?;
+        let count = |layer: &str| drawing.entities.iter().filter(|e| e.layer == layer).count();
+        let layers: Vec<Value> = drawing
+            .layers
+            .iter()
+            .map(|l| json!({"name": l.name, "entities": count(&l.name)}))
+            .collect();
+        let bounds = drawing
+            .bounds()
+            .map(|(min, max)| json!({"min": [min.x, min.y], "max": [max.x, max.y]}));
+        Ok(json!({
+            "path": command.path,
+            "body": body,
+            "unit": command.unit,
+            "stationary": def.stationary,
+            "reference_side": def.reference_side,
+            "entities": drawing.entities.len(),
+            "layers": layers,
+            "bends": {"up": count(flat_dxf::BEND_UP), "down": count(flat_dxf::BEND_DOWN)},
+            "bounds": bounds,
+        }))
+    }
+}

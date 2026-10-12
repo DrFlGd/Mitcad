@@ -4,7 +4,8 @@
 //! plane use. Mitcad's rules (experiment K67 tests them on .f3d designs):
 //!
 //! - offset: the reference frame moved along its normal (a face's normal is
-//!   outward); a negative distance goes the other way;
+//!   outward); a negative distance goes the other way; offset through a
+//!   point: the same, by the point's distance from the reference;
 //! - angle: the plane through the line, the reference plane turned about
 //!   the line's direction by the angle (right-handed); at 0 it is parallel
 //!   to the reference plane, or as close to it as a plane through the line
@@ -98,6 +99,9 @@ pub enum PlaneDefinition<P = ParamId> {
         x_axis: Vec3,
         y_axis: Vec3,
     },
+    /// Offset through a point: parallel to a plane or planar face, through
+    /// a point (a vertex or another point).
+    OffsetThroughPoint { plane: GeomRef, point: GeomRef },
 }
 
 impl<P> ConstructionPlaneDef<P> {
@@ -178,6 +182,10 @@ impl<P> ConstructionPlaneDef<P> {
                 x_axis: *x_axis,
                 y_axis: *y_axis,
             },
+            D::OffsetThroughPoint { plane, point } => D::OffsetThroughPoint {
+                plane: plane.clone(),
+                point: point.clone(),
+            },
         };
         Ok(ConstructionPlaneDef {
             definition,
@@ -207,6 +215,9 @@ impl<P> ConstructionPlaneDef<P> {
             D::TangentAtPoint { face, point } => vec![(face, Want::Face), (point, Want::Point)],
             D::AlongPath { .. } | D::Fixed { .. } => Vec::new(),
             D::NormalAtPoint { point, .. } => vec![(point, Want::Point)],
+            D::OffsetThroughPoint { plane, point } => {
+                vec![(plane, Want::Plane), (point, Want::Point)]
+            }
         }
     }
 
@@ -310,6 +321,11 @@ impl<K: Kernel> Evaluate<K> for ConstructionPlaneDef {
                 x_axis,
                 y_axis,
             } => fixed(*origin, *x_axis, *y_axis)?,
+            D::OffsetThroughPoint { plane, point } => {
+                let base = ctx.plane(plane)?;
+                let distance = base.distance_to(ctx.point(point)?);
+                base.translated(scale(base.normal(), distance))
+            }
         };
         let plane = if self.flip {
             DatumPlane {

@@ -197,6 +197,20 @@ int import_f3d_timeline(const Arguments& a) {
   if (const std::string* dir = a.option("--learn")) {
     add(R"("learn": )" + json_string(*dir));
   }
+  // Folders of the documents the design refers to (mitcad#196), beside
+  // the one next to it; the command line never asks for missing ones.
+  std::string folders;
+  for (const auto& [key, value] : a.options) {
+    if (key == "--references") {
+      folders += (folders.empty() ? "" : ", ") + json_string(value);
+    }
+  }
+  if (!folders.empty()) {
+    add(R"("references": [)" + folders + "]");
+  }
+  if (a.flag("--no-references")) {
+    add(R"("no_references": true)");
+  }
   const bool json = a.flag("--json");
   if (!json) {
     add(R"("text": true)");
@@ -223,9 +237,9 @@ int import_f3d(const std::vector<std::string>& args) {
   std::string problem;
   if (!parse_arguments(args,
                        {"--save", "--report", "--dump", "--design", "--time-limit", "--hang-limit", "--threads",
-                        "--learn"},
+                        "--learn", "--references"},
                        {"--bodies-only", "--history", "--owners", "--json", "--no-verify", "--no-fallback",
-                        "--no-compare"},
+                        "--no-compare", "--no-references"},
                        a, problem)) {
     return usage(problem);
   }

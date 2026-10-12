@@ -1,0 +1,99 @@
+# SPDX-License-Identifier: Apache-2.0
+# Cycles 5.2.0: report actual denoising and forward its errors through Progress.
+# Original: https://projects.blender.org/blender/cycles/src/tag/v5.2.0/src/
+# Copyright 2011-2022 Blender Foundation. Modification by Mitcad contributors.
+--- a/src/integrator/path_trace.h
++++ b/src/integrator/path_trace.h
+@@ -173,6 +173,12 @@
+   /* Check whether denoiser was run and denoised passes are available. */
+   bool has_denoised_result() const;
+ 
++  /* Read on the render thread, after a successful denoise. */
++  const Denoiser *get_denoiser() const
++  {
++    return denoiser_.get();
++  }
++
+   /* Get size and offset (relative to the buffer's full x/y) of the currently rendering tile.
+    * In the case of tiled rendering this will return full-frame after all tiles has been rendered.
+    *
+--- a/src/session/session.h
++++ b/src/session/session.h
+@@ -24,6 +24,7 @@
+ class BufferParams;
+ class Device;
+ class DeviceScene;
++class Denoiser;
+ class DisplayDriver;
+ class OutputDriver;
+ class PathTrace;
+@@ -149,6 +150,10 @@
+   void set_output_driver(unique_ptr<OutputDriver> driver);
+   void set_display_driver(unique_ptr<DisplayDriver> driver);
+ 
++  /* Read denoising diagnostics on the render thread, after a frame. */
++  bool has_denoised_result() const;
++  const Denoiser *get_denoiser() const;
++
+   double get_estimated_remaining_time() const;
+ 
+   void device_free();
+--- a/src/session/session.cpp
++++ b/src/session/session.cpp
+@@ -205,6 +205,13 @@
+       progress.set_error(device->error_message());
+       break;
+     }
++    if (denoise_device_ && denoise_device_->have_error()) {
++      progress.set_error("Denoising failed: " + denoise_device_->error_message());
++      break;
++    }
++    if (progress.get_error()) {
++      break;
++    }
+ 
+     {
+       /* buffers mutex is locked entirely while rendering each
+@@ -227,6 +234,13 @@
+         progress.set_error(device->error_message());
+         break;
+       }
++      if (denoise_device_ && denoise_device_->have_error()) {
++        progress.set_error("Denoising failed: " + denoise_device_->error_message());
++        break;
++      }
++      if (progress.get_error()) {
++        break;
++      }
+     }
+ 
+     progress.set_update();
+@@ -670,6 +684,16 @@
+   path_trace_->set_display_driver(std::move(driver));
+ }
+ 
++bool Session::has_denoised_result() const
++{
++  return path_trace_->has_denoised_result();
++}
++
++const Denoiser *Session::get_denoiser() const
++{
++  return path_trace_->get_denoiser();
++}
++
+ double Session::get_estimated_remaining_time() const
+ {
+   const double completed = progress.get_progress();
+--- a/src/integrator/path_trace.cpp
++++ b/src/integrator/path_trace.cpp
+@@ -673,6 +673,9 @@
+   {
+     render_state_.has_denoised_result = true;
+   }
++  else if (progress_ && denoiser_device && denoiser_device->have_error()) {
++    progress_->set_error("Denoising failed: " + denoiser_device->error_message());
++  }
+ 
+   render_scheduler_.report_denoise_time(render_work, time_dt() - start_time);
+ }

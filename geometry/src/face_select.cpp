@@ -116,21 +116,26 @@ bool is_smooth(const TopoDS_Edge& edge, const TopoDS_Face& a, const TopoDS_Face&
   return true;
 }
 
-std::vector<int> faces_at_edge(const Shape& body, int edge) {
-  NCollection_IndexedDataMap<TopoDS_Shape, NCollection_List<TopoDS_Shape>, TopTools_ShapeMapHasher>
-      ancestors;
-  TopExp::MapShapesAndUniqueAncestors(body.occt(), TopAbs_EDGE, TopAbs_FACE, ancestors);
+EdgeFaces::EdgeFaces(const Shape& body) : m_body(body) {
+  TopExp::MapShapesAndUniqueAncestors(body.occt(), TopAbs_EDGE, TopAbs_FACE, m_ancestors);
+}
+
+std::vector<int> EdgeFaces::at(int edge) const {
   std::vector<int> faces;
-  const TopoDS_Edge& e = body.edge(edge);
-  if (ancestors.Contains(e)) {
-    for (const TopoDS_Shape& face : ancestors.FindFromKey(e)) {
-      const int f = body.face_index(face);
+  const TopoDS_Edge& e = m_body.edge(edge);
+  if (m_ancestors.Contains(e)) {
+    for (const TopoDS_Shape& face : m_ancestors.FindFromKey(e)) {
+      const int f = m_body.face_index(face);
       if (f >= 0) {
         add_once(faces, f);
       }
     }
   }
   return faces;
+}
+
+std::vector<int> faces_at_edge(const Shape& body, int edge) {
+  return EdgeFaces(body).at(edge);
 }
 
 std::vector<int> tangent_closure(const Shape& body, std::vector<int> faces) {

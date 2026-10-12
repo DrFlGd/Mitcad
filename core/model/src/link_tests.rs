@@ -362,6 +362,66 @@ fn a_combine_takes_tools_of_another_component_by_their_link() {
     assert!(error.contains("linked but not a tool"), "{error}");
 }
 
+#[test]
+fn a_split_takes_a_tool_body_of_another_component_by_its_link() {
+    // A:1 (O1) holds a block; B:1 (O2) holds one of its own, split by A's.
+    let (mut doc, tool, face, b) = siblings();
+    let (_, target, _) = block(&mut doc);
+    let split = |tool_def: Value, link: Value| {
+        json!({"cmd": "add_feature", "def": {"type": "split_body", "bodies": [target],
+               "tool": tool_def, "tool_links": link}})
+    };
+    // Without the link the tool is A's, which B's split cannot see.
+    let unlinked = command(&mut doc, split(json!({"body": tool}), json!({})))["uid"].clone();
+    let status = doc
+        .status(unlinked.as_str().unwrap().parse().unwrap())
+        .unwrap()
+        .clone();
+    assert!(
+        status.error().is_some_and(|e| e.contains("belongs to A")),
+        "{status:?}"
+    );
+    doc.undo();
+
+    // Linked: the tool stays in A, the pieces are B's.
+    let link = json!({tool.to_string(): {"source": "O1"}});
+    let uid: FeatureUid = command(&mut doc, split(json!({"body": tool}), link.clone()))["uid"]
+        .as_str()
+        .unwrap()
+        .parse()
+        .unwrap();
+    assert!(doc.status(uid).unwrap().is_ok(), "{:?}", doc.status(uid));
+    assert_eq!(doc.feature(uid).unwrap().component, b);
+    assert_eq!(doc.body_component(tool), Some(ComponentUid(1)));
+    assert_eq!(doc.body_component(target), Some(b));
+    assert!(doc.body_shape(tool).is_some());
+    let def = query(&doc, json!({"query": "feature", "uid": uid.to_string()}));
+    assert_eq!(def["def"]["tool_links"], link, "{def}");
+    doc.undo();
+
+    // The body of a tool face is linked the same way.
+    let uid: FeatureUid = command(
+        &mut doc,
+        split(json!({"body": tool, "face": face}), link.clone()),
+    )["uid"]
+        .as_str()
+        .unwrap()
+        .parse()
+        .unwrap();
+    assert!(doc.status(uid).unwrap().is_ok(), "{:?}", doc.status(uid));
+    doc.undo();
+
+    // A link for a body that is not a tool is refused.
+    let error = rejected(
+        &mut doc,
+        split(
+            json!({"body": tool}),
+            json!({target.to_string(): {"source": "O1"}}),
+        ),
+    );
+    assert!(error.contains("linked but not a tool"), "{error}");
+}
+
 struct LinkedAssembly {
     doc: Document<MockKernel>,
     sub: ComponentUid,
@@ -731,4 +791,72 @@ fn links_picked_in_another_instance_of_the_subassembly_stay_external() {
     }
     assert_eq!(external_sketches, 1);
     linked_copy_round_trip(&doc);
+}
+
+/// An extrusion of B up to A's body or a face of it (mitcad#104): the
+/// object is read in its component and moved by its link; without the
+/// link the extrusion fails, and a link for a body that is no object is
+/// refused.
+#[test]
+fn an_extrusion_goes_up_to_objects_of_another_component_by_their_link() {
+    let (mut doc, body, face, b) = siblings();
+    let sketch = doc.add_sketch(SketchPlane::Xy).unwrap().uid;
+    let region = doc
+        .add_rectangle(sketch, [0.0, 0.0], &num(2.0), &num(2.0))
+        .unwrap()
+        .region;
+    let extrusion = |object: Value, links: Value| {
+        json!({"cmd": "add_feature", "def": {"type": "extrude",
+               "profiles": [{"sketch": sketch, "region": region}],
+               "extent": {"type": "to_object", "object": object},
+               "object_links": links, "operation": "new_body"}})
+    };
+    let to_body = json!({"type": "body", "body": body, "through": true});
+    let unlinked = command(&mut doc, extrusion(to_body.clone(), json!({})))["uid"].clone();
+    let status = doc
+        .status(unlinked.as_str().unwrap().parse().unwrap())
+        .unwrap()
+        .clone();
+    assert!(
+        status.error().is_some_and(|e| e.contains("belongs to A")),
+        "{status:?}"
+    );
+    doc.undo();
+
+    let link = json!({body.to_string(): {"source": "O1"}});
+    let uid: FeatureUid = command(&mut doc, extrusion(to_body, link.clone()))["uid"]
+        .as_str()
+        .unwrap()
+        .parse()
+        .unwrap();
+    assert!(doc.status(uid).unwrap().is_ok(), "{:?}", doc.status(uid));
+    assert_eq!(doc.feature(uid).unwrap().component, b);
+    let spec = doc
+        .kernel()
+        .specs
+        .borrow()
+        .last()
+        .cloned()
+        .unwrap_or_default();
+    assert!(spec.contains("to body"), "{spec}");
+    let def = query(&doc, json!({"query": "feature", "uid": uid.to_string()}));
+    assert_eq!(def["def"]["object_links"], link, "{def}");
+
+    // A face of the body, through the same kind of link.
+    let to_face = json!({"type": "face", "body": body, "face": face});
+    let uid: FeatureUid = command(&mut doc, extrusion(to_face, link))["uid"]
+        .as_str()
+        .unwrap()
+        .parse()
+        .unwrap();
+    assert!(doc.status(uid).unwrap().is_ok(), "{:?}", doc.status(uid));
+
+    let error = rejected(
+        &mut doc,
+        extrusion(
+            json!({"type": "plane", "plane": "xy"}),
+            json!({body.to_string(): {"source": "O1"}}),
+        ),
+    );
+    assert!(error.contains("linked but not an object's"), "{error}");
 }

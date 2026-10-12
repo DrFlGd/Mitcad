@@ -202,6 +202,7 @@ void CommandSession::setDefaults(const InputDef& input, const QString& key) {
     }
     break;
   case InputDef::Type::Selection:
+  case InputDef::Type::CutTargets:
     break;
   }
 }
@@ -287,6 +288,7 @@ bool CommandSession::start(const Selection& preselection, QString& error) {
     // What was selected before the command goes to the first input that
     // takes it.
     const QVector<Slot> all = slotsOf(false);
+    const ItemResolver resolve = resolver();
     for (const SelectionItem& picked : preselection) {
       for (const Slot& slot : all) {
         const InputDef& input = *slot.def;
@@ -296,7 +298,7 @@ bool CommandSession::start(const Selection& preselection, QString& error) {
         }
         const SelectionItem item = input.convert ? input.convert(picked) : picked;
         Selection& items = m_state.items(slot.key);
-        if (!items.contains(item) && (input.max == 0 || items.size() < input.max)) {
+        if (!containsEntry(items, item, resolve) && (input.max == 0 || items.size() < input.max)) {
           items.append(item);
           break;
         }
@@ -307,7 +309,54 @@ bool CommandSession::start(const Selection& preselection, QString& error) {
     }
     setRowDefaults();
   }
+  canonicalizeSelections();
   return true;
+}
+
+ItemResolver CommandSession::resolver() const {
+  // Asked once per item while the resolver lives (a pick, a start): the
+  // model does not change in between.
+  auto known = std::make_shared<QHash<QString, QString>>();
+  const CommandHost* host = &m_host;
+  return [host, known](const SelectionItem& item) -> QString {
+    if (item.kind != SelectKind::Profile) {
+      return QString();
+    }
+    const QString key = item.owner + QLatin1Char('|') + item.name;
+    const auto found = known->constFind(key);
+    if (found != known->cend()) {
+      return found.value();
+    }
+    QString region;
+    try {
+      region = host->query({{QStringLiteral("query"), QStringLiteral("profile")},
+                            {QStringLiteral("sketch"), item.owner},
+                            {QStringLiteral("region"), item.name}})
+                   .toObject()
+                   .value(QStringLiteral("region"))
+                   .toString();
+    } catch (const std::exception&) {
+      // A sketch or key the model does not know: only equal keys are one.
+    }
+    known->insert(key, region);
+    return region;
+  };
+}
+
+void CommandSession::canonicalizeSelections() {
+  const ItemResolver resolve = resolver();
+  for (const Slot& slot : slotsOf(false)) {
+    if (slot.def->type != InputDef::Type::Selection) {
+      continue;
+    }
+    Selection& items = m_state.items(slot.key);
+    for (SelectionItem& item : items) {
+      if (item.kind == SelectKind::Profile) {
+        item.occurrence = m_host.profileOccurrence(item.owner);
+      }
+    }
+    items = uniqueProfiles(items, resolve);
+  }
 }
 
 void CommandSession::startAsync(const Selection& preselection,
@@ -448,6 +497,14 @@ void CommandSession::setPresenter(CommandPresenter& presenter) {
     }
     inputsChanged();
   };
+  actions.objectChanged = [this](const QString& key, const QJsonObject& value) {
+    m_state.setObject(key, value);
+    inputsChanged();
+  };
+  actions.highlightRequested = [this](const Selection& items) {
+    m_previewHighlights = items;
+    updateHighlights();
+  };
   actions.selectionActivated = [this](const QString& key) { activate(key); };
   actions.selectionCleared = [this](const QString& key) {
     m_state.items(key).clear();
@@ -539,6 +596,12 @@ void CommandSession::setPresenter(CommandPresenter& presenter) {
     };
   }
   {
+    auto action = actions.objectChanged;
+    actions.objectChanged = [this, action](const QString& key, const QJsonObject& value) {
+      inputAction([action, key, value] { action(key, value); });
+    };
+  }
+  {
     auto action = actions.selectionActivated;
     actions.selectionActivated = [this, action](const QString& key) {
       inputAction([action, key] { action(key); });
@@ -598,7 +661,7 @@ void CommandSession::setPresenter(CommandPresenter& presenter) {
   if (m_def.inspect) {
     m_sectionBefore = m_host.section();
   }
-  bool handles = false;
+  bool handles = static_cast<bool>(m_def.previewMarkers);
   for (const Slot& slot : slotsOf(false)) {
     handles = handles || static_cast<bool>(slot.def->manipulator) || static_cast<bool>(slot.def->toggles);
   }
@@ -743,11 +806,15 @@ void CommandSession::picked(const Selection& items, Qt::KeyboardModifiers modifi
     }
   }
   Selection& selection = m_state.items(key);
+  // One entry per model item: a profile clicked where the view shows it is
+  // the entry the newest profile or the edited definition put there, under
+  // whatever key or occurrence (mitcad#199).
+  const ItemResolver resolve = resolver();
   if (window) {
     // A window keeps one kind, and adds to what is there.
     const SelectKind kind = preferredKind(accepted);
     for (const SelectionItem& item : accepted) {
-      if (item.kind == kind && !selection.contains(item) &&
+      if (item.kind == kind && !containsEntry(selection, item, resolve) &&
           (input->max == 0 || selection.size() < input->max)) {
         selection.append(item);
       }
@@ -755,16 +822,16 @@ void CommandSession::picked(const Selection& items, Qt::KeyboardModifiers modifi
   } else if (!accepted.isEmpty()) {
     // A click toggles; an input of one item takes the new one instead.
     const SelectionItem& item = accepted.first();
-    if (selection.contains(item)) {
+    if (containsEntry(selection, item, resolve)) {
       if (!input->keepOnRepick) {
-        selection.removeAll(item);
+        removeEntry(selection, item, resolve);
       }
     } else if (input->max == 1) {
       selection = {item};
     } else if (input->max == 0 || selection.size() < input->max) {
       selection.append(item);
     }
-    if (input->onPick && selection.contains(item)) {
+    if (input->onPick && containsEntry(selection, item, resolve)) {
       input->onPick(raw.first(), m_state, m_host);
       if (m_presenter) {
         m_presenter->refresh(m_state);
@@ -842,6 +909,19 @@ void CommandSession::updateHighlights() {
     for (const SelectionItem& item : m_state.items(slot.key)) {
       highlights.push_back({item, m_host.itemShape(item), color});
     }
+  }
+  for (const SelectionItem& item : m_previewHighlights) {
+    if (item.kind == SelectKind::Component) {
+      // A retained exclusion outside the current tool has no intersected
+      // body list. Identify this exact owner, without its child components.
+      for (const BodyDisplay& body : m_host.modelBodies()) {
+        if (QString::fromStdString(body.occurrence) != item.occurrence) { continue; }
+        const SelectionItem owned{SelectKind::Body, QString::fromStdString(body.uid), QString(), QString(), item.occurrence};
+        highlights.push_back({owned, m_host.itemShape(owned), QColor(0xff, 0x8c, 0x00)});
+      }
+      continue;
+    }
+    highlights.push_back({item, m_host.itemShape(item), QColor(0xff, 0x8c, 0x00)});
   }
   m_host.viewer().setHighlights(highlights);
   updateGhosts();
@@ -923,6 +1003,8 @@ void CommandSession::evaluate(const QString& key) {
 }
 
 void CommandSession::inputsChanged() {
+  m_previewHighlights.clear();
+  if (m_presenter) { m_presenter->setPreviewReport({}); }
   if (!m_active.isEmpty()) {
     // An input that a choice hid takes no more picks.
     const auto slot = slotOf(m_active);
@@ -964,6 +1046,14 @@ void CommandSession::updateManipulators() {
     return;
   }
   std::vector<ManipulatorOverlay::Handle> handles;
+  if (m_def.previewMarkers && !m_shownReport.isEmpty()) {
+    for (const PreviewMarker& marker : m_def.previewMarkers(m_shownReport)) {
+      Manipulator point;
+      point.kind = Manipulator::Kind::Marker;
+      point.origin = marker.point;
+      handles.push_back({QStringLiteral("preview_anchor"), marker.label, point, 0.0});
+    }
+  }
   for (const Slot& slot : slotsOf(true)) {
     if (slot.def->toggles && !m_shownReport.isEmpty()) {
       try {
@@ -1211,6 +1301,8 @@ void CommandSession::runPreview() {
     if (!built.error.isEmpty()) {
       message = built.error;
       error = true;
+      // What the inputs make no definition of, for UI tests.
+      qDebug().noquote() << QStringLiteral("Preview %1: not built: %2").arg(m_def.name, built.error);
     }
   }
   if (!message.isEmpty()) {
@@ -1246,11 +1338,15 @@ void CommandSession::runPreview() {
   const QJsonObject command{{QStringLiteral("cmd"), QStringLiteral("add_feature")},
                             {QStringLiteral("def"), built.def}};
   const QByteArray key = compactJson(command);
-  if (key == m_shownKey && !m_previewCancelled) {
+  const auto cached = m_cache.constFind(key);
+  if (key == m_shownKey && !m_previewCancelled && cached != m_cache.cend()) {
+    // No-op input actions still marked the checklist stale. Restore its
+    // metadata from the accepted result on this delayed preview turn.
+    m_presenter->setPreviewReport(cached.value().report);
+    m_presenter->setOkEnabled(m_previewOk);
     return; // already shown
   }
   m_previewCancelled = false;
-  const auto cached = m_cache.constFind(key);
   if (cached != m_cache.cend()) {
     acceptFeaturePreview(key, built, cached.value(), false);
     resumePendingCommit();
@@ -1314,10 +1410,26 @@ CommandSession::Preview CommandSession::previewFromReport(const QJsonObject& rep
       after.insert(body.value(QStringLiteral("uid")).toString(),
                    body.value(QStringLiteral("changed")).toBool());
     }
+    const QJsonArray instances = preview.report.value(QStringLiteral("instances")).toArray();
+    const QJsonArray removed = preview.report.value(QStringLiteral("removed_instances")).toArray();
+    QSet<QString> placedBodies;
+    for (const QJsonValue& value : instances) {
+      placedBodies.insert(value.toObject().value(QStringLiteral("body")).toString());
+    }
+    QSet<QString> removedBodies;
+    for (const QJsonValue& value : removed) {
+      removedBodies.insert(value.toObject().value(QStringLiteral("body")).toString());
+    }
     QSet<QString> shown;
     for (BodyDisplay display : m_host.modelBodies()) {
       const QString uid = QString::fromStdString(display.uid);
-      if (!after.contains(uid)) {
+      const QString occurrence = QString::fromStdString(display.occurrence);
+      const bool gone = std::any_of(removed.begin(), removed.end(), [&uid, &occurrence](const QJsonValue& value) {
+        const QJsonObject instance = value.toObject();
+        return instance.value(QStringLiteral("body")).toString() == uid &&
+               instance.value(QStringLiteral("occurrence")).toString() == occurrence;
+      });
+      if (!after.contains(uid) || gone) {
         continue;
       }
       if (after.value(uid)) {
@@ -1327,7 +1439,9 @@ CommandSession::Preview CommandSession::previewFromReport(const QJsonObject& rep
       preview.bodies.push_back(display);
     }
     for (auto it = after.cbegin(); it != after.cend(); ++it) {
-      if (!shown.contains(it.key())) {
+      // New placed bodies are supplied by the instance report below. Adding
+      // an identity fallback too would leave an extra copy at the root origin.
+      if (!shown.contains(it.key()) && !placedBodies.contains(it.key()) && !removedBodies.contains(it.key())) {
         BodyDisplay display;
         display.uid = it.key().toStdString();
         display.shape = m_host.previewBodyShape(display.uid);
@@ -1348,6 +1462,31 @@ CommandSession::Preview CommandSession::previewFromReport(const QJsonObject& rep
       if (moved != placed.cend()) {
         display.placement = isIdentity(moved.value()) ? TopLoc_Location() : TopLoc_Location(trsfOf(moved.value()));
       }
+    }
+    // New body placements and component occurrences have exact (path, body)
+    // identities. Component occurrences reuse the source body definition.
+    for (const QJsonValue& value : instances) {
+      const QJsonObject instance = value.toObject();
+      if (!instance.value(QStringLiteral("visible")).toBool(true)) {
+        continue;
+      }
+      const std::string body = instance.value(QStringLiteral("body")).toString().toStdString();
+      const std::string occurrence = instance.value(QStringLiteral("occurrence")).toString().toStdString();
+      if (std::any_of(preview.bodies.begin(), preview.bodies.end(), [&body, &occurrence](const BodyDisplay& display) {
+            return display.uid == body && display.occurrence == occurrence;
+          })) {
+        continue;
+      }
+      const auto source = std::find_if(preview.bodies.begin(), preview.bodies.end(), [&body](const BodyDisplay& display) {
+        return display.uid == body;
+      });
+      BodyDisplay display = source == preview.bodies.end() ? BodyDisplay() : *source;
+      display.uid = body;
+      display.occurrence = occurrence;
+      display.shape = m_host.previewBodyShape(body);
+      display.placement = TopLoc_Location(trsfOf(instance.value(QStringLiteral("transform")).toArray()));
+      display.style = BodyDisplay::Style::New;
+      preview.bodies.push_back(std::move(display));
     }
     if (const auto tool = m_host.previewToolShape()) {
       preview.tool = tool->occt();
@@ -1372,6 +1511,8 @@ void CommandSession::acceptFeaturePreview(const QByteArray& key, const Built& bu
   m_shownKey = key;
   const QString status = preview.report.value(QStringLiteral("status")).toString();
   m_previewOk = status == QStringLiteral("ok");
+  const QJsonObject targets = preview.report.value(QStringLiteral("cut_targets")).toObject();
+  if (!targets.isEmpty()) { m_previewOk = m_previewOk && targets.value(QStringLiteral("can_commit")).toBool(); }
   m_failed = !m_previewOk;
   if (m_previewOk) {
     showPreview(preview, built.def.value(QStringLiteral("operation")).toString());
@@ -1397,6 +1538,9 @@ void CommandSession::acceptFeaturePreview(const QByteArray& key, const Built& bu
     m_presenter->setMessage(problem, true);
     qDebug().noquote() << QStringLiteral("Preview %1: failed: %2").arg(m_def.name, problem);
   }
+  // Failed cuts still expose their candidates so a cleared or unavailable
+  // target list can be corrected without restarting the command.
+  m_presenter->setPreviewReport(preview.report);
   m_presenter->setOkEnabled(m_previewOk);
   updateHighlights();
   // Toggles follow the shown preview (a pattern's instances, P9).
@@ -1552,6 +1696,10 @@ void CommandSession::clearPreview() {
   m_host.clearModelPreview();
   m_host.viewer().setBodies(m_host.modelBodies());
   m_host.viewer().setPreview(TopoDS_Shape());
+  if (!m_shownReport.isEmpty()) {
+    m_shownReport = {};
+    updateManipulators();
+  }
 }
 
 // ---------------------------------------------------------------------------

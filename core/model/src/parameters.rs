@@ -344,7 +344,11 @@ pub fn slot_unit(slot: &str) -> Unit {
     let field = slot.rsplit('.').next().unwrap_or(slot);
     if field.contains("angle") || field.ends_with("taper") {
         Unit::DEG
-    } else if field == "revolutions" || field.starts_with("fraction") || field.ends_with("weight") {
+    } else if field == "revolutions"
+        || field.starts_with("fraction")
+        || field.ends_with("weight")
+        || slot == "allowance.k"
+    {
         Unit::NONE
     } else {
         Unit::MM

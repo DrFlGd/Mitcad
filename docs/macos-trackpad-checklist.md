@@ -16,7 +16,7 @@ off.
       the fingers and does not stutter or lag behind.
 - [ ] Lifting the fingers at speed: the pan coasts (momentum) and stops
       without a jump; touching the trackpad stops it.
-- [ ] Alt (Option) + two-finger scroll orbits about the same centre a mouse
+- [ ] Option + two-finger scroll orbits about the same centre a mouse
       orbit uses. Check that Option does not swap the horizontal and the
       vertical direction (if it does, the orbit goes sideways for a vertical
       scroll); horizontal scroll turns about the vertical axis.
@@ -37,7 +37,7 @@ off.
 - [ ] In the native frontend, a pinch starting on the canvas keeps zooming
       when the pointer crosses a floating card. A pinch starting on a card
       leaves the canvas unchanged, even if the pointer crosses onto it.
-- [ ] Alt + left drag orbits; Shift + Alt + left drag pans; a middle drag (if
+- [ ] Option + left drag orbits; Shift + Option + left drag pans; a middle drag (if
       there is a mouse) pans; a right drag orbits.
 - [ ] Left click selects; left drag selects with a window; Shift and
       Command + click add to the selection as in the other schemes.
@@ -60,7 +60,7 @@ off.
 - [ ] Choose "Middle pans, Shift + middle orbits": pinch zooms, rotation
       rolls, a double tap fits; a two-finger scroll zooms as it did before
       (it is not a pan); nothing else changed.
-- [ ] Same with Alt + left orbits, and with right orbits.
+- [ ] Same with Option + left orbits, and with right orbits.
 
 ## Magic Mouse
 
@@ -92,9 +92,24 @@ bodies.
 - [ ] Clicking a card (its header, a tree row, a field) keeps the main
       window active: the traffic lights stay coloured, the title row does not
       grey out, the menu bar stays Mitcad's.
-- [ ] Keyboard shortcuts work while a field in a card has the focus (E, S, L
-      to start a command, Cmd+Z, Ctrl+Enter to accept), and while no field
-      has it.
+- [ ] With viewport focus, the configured command shortcuts work (defaults:
+      E, S and L to start commands, Command+Z to undo, Command+Return to
+      Finish Sketch). In a text editor, ordinary typing and text editing
+      retain focus; command keys never delete or replace model items.
+- [ ] Reassign Finish Sketch and clear its binding: sketch hints show the
+      current native key name, or just the command name when cleared.
+      Restore defaults and accept without a conflict warning.
+- [ ] Model and sketch Move/Copy share M in their separate contexts.
+      Assigning M to Extrude or Revolve is rejected because they also run
+      from a sketch. Command+S/W, F6 while Fit keeps its default, and
+      Command+M/H cannot be assigned to unrelated commands.
+- [ ] Native Browser and history: F2 starts rename, Return retains its
+      activation/edit action, Backspace and forward Delete delete the
+      selection only while the view has focus. In the rename editor those
+      keys edit text. Command+F opens search; Escape restores the preceding
+      selection and scroll position.
+- [ ] Save with Description: Command+Return saves; plain Return inserts a
+      newline. Its Save tooltip uses the native key sequence.
 - [ ] In the Command card: Tab moves between the fields, Return accepts (OK),
       Escape cancels; the typed value is not lost when the focus leaves.
 - [ ] A click on the view just outside a card's rounded corner and on its

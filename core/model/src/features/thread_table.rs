@@ -28,6 +28,10 @@ pub enum ThreadStandard {
     Npt,
     /// Tyre valve threads (ISO 4570): `5V1`, `8V1`, … (mitcad#59).
     TyreValve,
+    /// Metric forming (tapping) screw threads (ISO 1478): `ST3.5x1.3`. The
+    /// 60-degree profile; a modelled one takes its diameters from the
+    /// design that stores them.
+    FormingScrew,
 }
 
 /// Basic dimensions of a thread size.
@@ -55,7 +59,10 @@ impl ThreadData {
         // ISO 68-1: D1 = D - 5H/4, D2 = D - 3H/4, the depth 5H/8; the
         // other profiles are as deep as the pitch diameter is below D.
         let (below_minor, below_pitch, depth) = match standard {
-            ThreadStandard::IsoMetric | ThreadStandard::Unified | ThreadStandard::TyreValve => {
+            ThreadStandard::IsoMetric
+            | ThreadStandard::Unified
+            | ThreadStandard::TyreValve
+            | ThreadStandard::FormingScrew => {
                 let h = 3f64.sqrt() / 2.0 * pitch;
                 (1.25 * h, 0.75 * h, 0.625 * h)
             }
@@ -87,6 +94,7 @@ struct Table {
     whitworth: WhitworthTable,
     npt: NptTable,
     tyre_valve: TyreValveTable,
+    forming_screw: IsoTable,
 }
 
 #[derive(Deserialize)]
@@ -227,6 +235,38 @@ pub fn lookup(standard: ThreadStandard, designation: &str) -> Result<ThreadData,
             };
             Ok(ThreadData::new(standard, format!("M{d}x{p}"), d, p))
         }
+        ThreadStandard::FormingScrew => {
+            // `ST3.5x1.3`; designs also store it without the `ST`
+            // (`2.9x1.4`) and a size alone (`ST3.5`) takes its first pitch.
+            let text = designation.trim();
+            let rest = match text.get(..2) {
+                Some(prefix) if prefix.eq_ignore_ascii_case("ST") => &text[2..],
+                _ => text,
+            };
+            let (size, pitch) = match rest.split_once(['x', 'X', '×']) {
+                Some((size, pitch)) => (size.trim(), Some(pitch.trim())),
+                None => (rest.trim(), None),
+            };
+            let d: f64 = size.parse().map_err(|_| unknown())?;
+            let entry = table()
+                .forming_screw
+                .sizes
+                .iter()
+                .find(|s| same(s.d, d))
+                .ok_or_else(unknown)?;
+            let p = match pitch {
+                None => entry.pitches[0],
+                Some(pitch) => {
+                    let p: f64 = pitch.parse().map_err(|_| unknown())?;
+                    *entry
+                        .pitches
+                        .iter()
+                        .find(|q| same(**q, p))
+                        .ok_or_else(unknown)?
+                }
+            };
+            Ok(ThreadData::new(standard, format!("ST{d}x{p}"), d, p))
+        }
         ThreadStandard::Unified => {
             let text = designation.trim();
             let (thread, series) = text.rsplit_once(' ').ok_or_else(unknown)?;
@@ -360,6 +400,7 @@ fn standard_name(standard: ThreadStandard) -> &'static str {
         ThreadStandard::Whitworth => "Whitworth",
         ThreadStandard::Npt => "NPT",
         ThreadStandard::TyreValve => "tyre valve",
+        ThreadStandard::FormingScrew => "forming screw",
     }
 }
 
@@ -367,12 +408,13 @@ impl ThreadStandard {
     /// The standards in the order a size table lists them: ISO metric
     /// first, the default (metric defaults, `docs/architecture.md`; inch
     /// sizes only by choice).
-    pub const ALL: [Self; 5] = [
+    pub const ALL: [Self; 6] = [
         Self::IsoMetric,
         Self::Unified,
         Self::Whitworth,
         Self::Npt,
         Self::TyreValve,
+        Self::FormingScrew,
     ];
 
     /// The name of the thread type (as .f3d designs store it for ISO metric
@@ -384,14 +426,15 @@ impl ThreadStandard {
             Self::Whitworth => "British Standard Whitworth",
             Self::Npt => "ANSI Taper Pipe Threads (NPT)",
             Self::TyreValve => "ISO Tyre Valve Threads",
+            Self::FormingScrew => "Metric Forming Screw Threads",
         }
     }
 
     /// The tolerance class a new thread gets: 6H/6g, 2B/2A, Medium.
     pub fn default_class(self, internal: bool) -> &'static str {
         match (self, internal) {
-            (Self::IsoMetric, true) => "6H",
-            (Self::IsoMetric, false) => "6g",
+            (Self::IsoMetric | Self::FormingScrew, true) => "6H",
+            (Self::IsoMetric | Self::FormingScrew, false) => "6g",
             (Self::Unified, true) => "2B",
             (Self::Unified, false) => "2A",
             (Self::Whitworth, _) => "Medium",
@@ -404,7 +447,7 @@ impl ThreadStandard {
     /// pipe threads are not.
     pub fn check_modeled(self) -> Result<(), String> {
         match self {
-            Self::IsoMetric | Self::Unified | Self::TyreValve => Ok(()),
+            Self::IsoMetric | Self::Unified | Self::TyreValve | Self::FormingScrew => Ok(()),
             Self::Whitworth => Err(
                 "a Whitworth thread cannot be modelled: Mitcad cuts the 60-degree profile; make \
                  it cosmetic"
@@ -506,6 +549,16 @@ pub fn sizes(standard: ThreadStandard) -> Vec<SizeEntry> {
             sizes.sort_by(|a, b| a.major.total_cmp(&b.major));
             sizes
         }
+        ThreadStandard::FormingScrew => table()
+            .forming_screw
+            .sizes
+            .iter()
+            .map(|s| SizeEntry {
+                size: format!("ST{}", s.d),
+                major: s.d,
+                designations: s.pitches.iter().map(|p| format!("ST{}x{p}", s.d)).collect(),
+            })
+            .collect(),
     }
 }
 
@@ -523,6 +576,10 @@ pub fn classes(standard: ThreadStandard) -> (&'static [String], &'static [String
         ThreadStandard::TyreValve => (
             &t.tyre_valve.classes_external,
             &t.tyre_valve.classes_internal,
+        ),
+        ThreadStandard::FormingScrew => (
+            &t.forming_screw.classes_external,
+            &t.forming_screw.classes_internal,
         ),
     }
 }
@@ -553,10 +610,63 @@ mod tests {
                 .designation,
             "M10x1.25"
         );
-        for bad in ["M10x2", "M13", "10x1.5", "Mx1", ""] {
+        for bad in ["M10x2", "M13", "10x1.5", "Mx1", "M100x5", ""] {
             let error = lookup(ThreadStandard::IsoMetric, bad).unwrap_err();
             assert!(error.contains("no ISO metric thread"), "{error}");
         }
+    }
+
+    #[test]
+    fn iso_metric_sizes_reach_the_large_fine_threads() {
+        // Above M64 only fine pitches exist: the largest comes first.
+        let m100 = lookup(ThreadStandard::IsoMetric, "M100x4").unwrap();
+        assert_eq!(m100.designation, "M100x4");
+        assert!(close(m100.major, 100.0) && close(m100.pitch, 4.0));
+        assert_eq!(
+            lookup(ThreadStandard::IsoMetric, "M100")
+                .unwrap()
+                .designation,
+            "M100x6"
+        );
+        for ok in ["M5.5x0.9", "M28x1.5", "M40x3", "M72x2", "M150x6", "M300x3"] {
+            assert!(lookup(ThreadStandard::IsoMetric, ok).is_ok(), "{ok}");
+        }
+        assert!(lookup(ThreadStandard::IsoMetric, "M160x2").is_err());
+        let sizes = sizes(ThreadStandard::IsoMetric);
+        assert!(sizes.windows(2).all(|w| w[0].major < w[1].major));
+    }
+
+    #[test]
+    fn forming_screw_threads_take_the_st_sizes() {
+        let st = lookup(ThreadStandard::FormingScrew, "ST3.5x1.3").unwrap();
+        assert_eq!(st.designation, "ST3.5x1.3");
+        assert!(close(st.major, 3.5) && close(st.pitch, 1.3));
+        // Designs also store it without the `ST`, or a size alone.
+        for same in ["3.5x1.3", "st3.5 X 1.3", "ST3.5"] {
+            assert_eq!(
+                lookup(ThreadStandard::FormingScrew, same)
+                    .unwrap()
+                    .designation,
+                "ST3.5x1.3",
+                "{same}"
+            );
+        }
+        assert_eq!(
+            lookup(ThreadStandard::FormingScrew, "2.9x1.4")
+                .unwrap()
+                .designation,
+            "ST2.9x1.4"
+        );
+        for bad in ["ST3.5x1.4", "ST3", "M3.5x1.3", "ST", ""] {
+            let error = lookup(ThreadStandard::FormingScrew, bad).unwrap_err();
+            assert!(error.contains("no forming screw thread"), "{error}");
+        }
+        assert_eq!(
+            ThreadStandard::FormingScrew.title(),
+            "Metric Forming Screw Threads"
+        );
+        assert!(check_class(ThreadStandard::FormingScrew, "6g", Some(false)).is_ok());
+        assert!(ThreadStandard::FormingScrew.check_modeled().is_ok());
     }
 
     #[test]
@@ -575,7 +685,7 @@ mod tests {
     fn every_listed_designation_is_found() {
         for standard in ThreadStandard::ALL {
             let sizes = sizes(standard);
-            assert!(sizes.len() > 15, "{standard:?}");
+            assert!(sizes.len() > 10, "{standard:?}");
             for size in &sizes {
                 assert!(!size.designations.is_empty(), "{}", size.size);
                 for designation in &size.designations {
@@ -607,6 +717,9 @@ mod tests {
         assert!(check_class(ThreadStandard::Unified, "2B", Some(true)).is_ok());
         assert!(check_class(ThreadStandard::Whitworth, "Normal", Some(true)).is_ok());
         assert!(check_class(ThreadStandard::Whitworth, "Close", Some(true)).is_err());
+        // A pipe thread's class A is on internal threads in the stored designs.
+        assert!(check_class(ThreadStandard::Whitworth, "A", Some(true)).is_ok());
+        assert!(check_class(ThreadStandard::Whitworth, "A", Some(false)).is_ok());
     }
 
     #[test]

@@ -22,6 +22,15 @@ RenderDevice RenderDevice::fromJson(const QJsonObject& device) {
   entry.type = device.value(QStringLiteral("type")).toString();
   entry.name = device.value(QStringLiteral("name")).toString();
   entry.denoisesOnDevice = device.value(QStringLiteral("denoiser")).toString() == QLatin1String("device");
+  entry.metalRTAvailable = device.value(QStringLiteral("metalrt_available")).toBool();
+  entry.metalRTDefault = device.value(QStringLiteral("metalrt_default")).toBool();
+  entry.metalRT = device.value(QStringLiteral("metalrt")).toBool();
+  entry.denoiserAvailable = device.value(QStringLiteral("denoiser_available")).toBool();
+  const QJsonObject denoiser = device.value(QStringLiteral("denoiser_device")).toObject();
+  entry.denoiserType = denoiser.value(QStringLiteral("type")).toString();
+  entry.denoiserName = denoiser.value(QStringLiteral("name")).toString();
+  entry.denoiserMessage = denoiser.value(QStringLiteral("message")).toString();
+  entry.denoiserExecuted = denoiser.value(QStringLiteral("executed")).toBool();
   return entry;
 }
 
@@ -30,6 +39,19 @@ QString RenderDevice::label() const {
     return name.isEmpty() ? QStringLiteral("CPU") : name;
   }
   return QStringLiteral("%1 (%2)").arg(name, type);
+}
+
+QString RenderDevice::diagnostics() const {
+  QString text = QStringLiteral("backend %1, MetalRT %2 (available %3, default %4); OIDN %5 %6 (%7)")
+      .arg(type, metalRT ? QStringLiteral("on") : QStringLiteral("off"),
+           metalRTAvailable ? QStringLiteral("yes") : QStringLiteral("no"),
+           metalRTDefault ? QStringLiteral("on") : QStringLiteral("off"),
+           denoiserType.isEmpty() ? QStringLiteral("unselected") : denoiserType, denoiserName,
+           denoiserExecuted ? QStringLiteral("execution confirmed") : QStringLiteral("execution not confirmed"));
+  if (!denoiserMessage.isEmpty()) {
+    text += QStringLiteral("; ") + denoiserMessage;
+  }
+  return text;
 }
 
 QString renderDeviceChoice() {

@@ -315,16 +315,26 @@ impl Backend for CadBackend {
                 ) {
                     return Err(format!("unknown export format '{format}'"));
                 }
-                let sketch = if format == "dxf" {
+                // DXF: a sketch, or a sheet body's Flat Pattern (mitcad#210).
+                let (sketch, flat) = if format == "dxf" {
                     if arguments.get("bodies").is_some() {
-                        return Err("DXF export uses sketch, not bodies".to_owned());
+                        return Err("DXF export uses sketch or flat_pattern, not bodies".to_owned());
                     }
-                    Some(string(arguments, "sketch")?)
+                    match (arguments.get("sketch"), arguments.get("flat_pattern")) {
+                        (Some(_), None) => (Some(string(arguments, "sketch")?), None),
+                        (None, Some(_)) => (None, Some(string(arguments, "flat_pattern")?)),
+                        _ => {
+                            return Err("DXF export needs either sketch or flat_pattern".to_owned());
+                        }
+                    }
                 } else {
-                    if arguments.get("sketch").is_some() {
-                        return Err("sketch is only accepted for DXF export".to_owned());
+                    if arguments.get("sketch").is_some() || arguments.get("flat_pattern").is_some()
+                    {
+                        return Err(
+                            "sketch and flat_pattern are only accepted for DXF export".to_owned()
+                        );
                     }
-                    None
+                    (None, None)
                 };
                 let bodies = arguments.get("bodies");
                 if let Some(bodies) = bodies
@@ -340,6 +350,9 @@ impl Backend for CadBackend {
                 let mut command = if let Some(sketch) = sketch {
                     require_extension(&path, "dxf")?;
                     json!({"cmd": "export_sketch", "path": path, "sketch": sketch})
+                } else if let Some(body) = flat {
+                    require_extension(&path, "dxf")?;
+                    json!({"cmd": "export_flat_pattern_dxf", "path": path, "body": body})
                 } else {
                     if format == "obj" {
                         // OCCT also writes <name>.mtl beside an OBJ.
@@ -533,6 +546,9 @@ fn safe_command(command: &str) -> bool {
             | "move_to_component"
             | "move_history_into_component"
             | "set_hybrid_assembly"
+            // Sheet-metal Flat Pattern items (mitcad#208, mitcad#210).
+            | "set_flat_pattern"
+            | "remove_flat_pattern"
     )
 }
 
@@ -563,6 +579,7 @@ fn safe_feature(feature: &str) -> bool {
             | "rectangular_pattern"
             | "circular_pattern"
             | "path_pattern"
+            | "pattern_at_points"
             | "mirror"
             | "combine"
             | "move"
@@ -586,6 +603,19 @@ fn safe_feature(feature: &str) -> bool {
             | "as_built_joint"
             | "joint_origin"
             | "rigid_group"
+            | "remove_body"
+            // Sheet metal (mitcad#206-mitcad#210).
+            | "sheet_rules"
+            | "sheet_face"
+            | "sheet_flange"
+            | "sheet_bend"
+            | "sheet_fold"
+            | "sheet_corner_round"
+            | "sheet_corner_chamfer"
+            | "sheet_unfold"
+            | "sheet_refold"
+            | "sheet_cut"
+            | "sheet_corner_relief"
     )
 }
 
@@ -598,6 +628,8 @@ fn safe_query(query: &str) -> bool {
             | "parameters"
             | "bodies"
             | "profiles"
+            | "sheet_state"
+            | "sheet_rules"
             | "feature"
             | "faces"
             | "edges"
@@ -608,6 +640,7 @@ fn safe_query(query: &str) -> bool {
             | "measure"
             | "interference"
             | "section"
+            | "section_plane"
             | "threads"
             | "sketch"
             | "components"
@@ -633,6 +666,17 @@ fn safe_query(query: &str) -> bool {
             // Move Features into a Component (mitcad#171).
             | "move_to_component"
             | "feature_references"
+            // The region a profile reference means (mitcad#199).
+            | "profile"
+            // Current origin groups of the final unused sketch (mitcad#193).
+            | "autoselect_profiles"
+            // Sheet-metal Flat Patterns (mitcad#208).
+            | "flat_pattern"
+            | "flat_point"
+            // The sheet-metal command UI's picks and browser (mitcad#210).
+            | "sheet_reference"
+            | "sheet_seam"
+            | "sheet_bodies"
     )
 }
 

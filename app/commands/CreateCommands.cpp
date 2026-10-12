@@ -30,6 +30,7 @@ void registerCreateCommands(CommandRegistry& registry, const CommandContext& con
   registry.add(rectangularPatternCommand(context));
   registry.add(circularPatternCommand(context));
   registry.add(pathPatternCommand(context));
+  registry.add(pointPatternCommand(context));
   registry.add(mirrorCommand(context));
 }
 

@@ -176,6 +176,28 @@ QString dialogSaveFileName(QWidget* parent, const QString& title, const QString&
   return fileNameDialog(parent, title, directory, filter, selectedFilter, QFileDialog::AcceptSave);
 }
 
+QString dialogChooseFile(QWidget* parent, const QString& title, const QString& directory, const QString& filter,
+                         const QString& acceptLabel, const QString& rejectLabel) {
+  QFileDialog dialog(parent, title, directory, filter);
+  dialog.setAcceptMode(QFileDialog::AcceptOpen);
+  dialog.setFileMode(QFileDialog::ExistingFile);
+  dialog.setLabelText(QFileDialog::Accept, acceptLabel);
+  dialog.setLabelText(QFileDialog::Reject, rejectLabel);
+  if (execDialog(&dialog) != QDialog::Accepted) {
+    return {};
+  }
+  QList<QUrl> files;
+#ifdef MITCAD_MACOS_NATIVE_UI
+  if (nativeDialogsActive()) {
+    files = nativeFileDialogUrls(&dialog);
+  } else
+#endif
+  {
+    files = dialog.selectedUrls();
+  }
+  return files.isEmpty() ? QString() : files.first().toLocalFile();
+}
+
 QString dialogDirectory(QWidget* parent, const QString& title, const QString& directory) {
   QFileDialog dialog(parent, title, directory);
   dialog.setFileMode(QFileDialog::Directory);

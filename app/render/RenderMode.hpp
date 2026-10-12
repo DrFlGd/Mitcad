@@ -79,13 +79,17 @@ private:
   // Forgets the meshes of shapes and in the worker that the last scenes
   // did not use, beyond kKept* (oldest first); returns the worker's.
   std::vector<std::string> forgetMeshes();
-  // Sends the view when the camera or the size changed (at most every
-  // kViewInterval ms while it keeps changing).
+  // Sends the view when the camera or the size changed, once a navigation
+  // of the view has ended (OcctViewer::isNavigating, mitcad#214).
   void viewChanged();
   void sendView();
+  // The "view" command for the camera and size of now, and its key.
+  QJsonObject viewCommand() const;
+  static QString viewKey(const QJsonObject& view);
   void showFrame();
-  // Shows m_frame with the settings' look over the background they ask for.
-  void displayFrame();
+  // Shows m_frame with the settings' look over the background they ask for,
+  // when it is of the view and the camera has not moved since; says whether.
+  bool displayFrame();
   // The worker's "environment" command for the settings.
   QJsonObject environmentCommand() const;
   void sendEnvironment();
@@ -97,7 +101,6 @@ private:
   QTemporaryDir m_dir;
   QPointer<QLabel> m_message;
   QTimer* m_messageTimer;
-  QTimer* m_viewTimer;
   bool m_enabled = false;
   bool m_ready = false;
   bool m_scenePending = false;
@@ -123,7 +126,6 @@ private:
   QString m_lastView;      // the camera and size last sent
   std::uint64_t m_view = 0; // its sequence number
   QElapsedTimer m_sinceView; // since it was sent
-  QElapsedTimer m_sinceSent; // for the interval
   bool m_firstFrameLogged = false;
   bool m_firstDenoisedLogged = false;
   QJsonObject m_settings;   // the document's render settings

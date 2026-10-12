@@ -170,6 +170,10 @@ pub mod ffi {
         /// faces: pairs of the fraction along it and -1 entering the
         /// material, +1 leaving it, in order along it.
         fn analysis_segment_crossings(shape: &Shape, segment: &[f64]) -> Result<Vec<f64>>;
+        /// `analysis_segment_crossings` of several segments (six values
+        /// each), each face set up once: per segment the number of its
+        /// crossings, then their pairs.
+        fn analysis_segments_crossings(shape: &Shape, segments: &[f64]) -> Result<Vec<f64>>;
         fn analysis_face_count(shape: &Shape) -> Result<usize>;
         /// Every named edge's middle, in the shape's edge order.
         fn analysis_edge_middles(shape: &Shape) -> Result<Vec<AnalysisEdgeMiddle>>;

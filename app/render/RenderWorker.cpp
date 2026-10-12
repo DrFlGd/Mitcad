@@ -70,12 +70,13 @@ void emitError(const QString& message) {
 // ---------------------------------------------------------------------------
 // Devices (mitcad#50, docs/rendering.md "Devices")
 
-// Where Cycles finds its GPU kernels (<folder>/lib/kernel_*.cubin.zst):
-// lib/mitcad/cycles beside the executable's bin folder in a package, else
-// cycles next to the executable (a build folder).
+// Cycles' runtime resource root: Resources/cycles inside a macOS bundle,
+// lib/mitcad/cycles beside bin in other packages, or cycles beside the
+// worker in a build tree. Metal reads source/{kernel,util} below the root.
 std::string kernelFolder() {
   const QDir executable(QCoreApplication::applicationDirPath());
-  for (const QString& candidate : {QStringLiteral("../lib/mitcad/cycles"), QStringLiteral("cycles")}) {
+  for (const QString& candidate : {QStringLiteral("../Resources/cycles"), QStringLiteral("../lib/mitcad/cycles"),
+                                    QStringLiteral("cycles")}) {
     if (QDir(executable.filePath(candidate)).exists()) {
       return QDir::cleanPath(executable.filePath(candidate)).toStdString();
     }
@@ -87,7 +88,19 @@ QJsonObject deviceJson(const render::DeviceInfo& device) {
   return {{QStringLiteral("id"), QString::fromStdString(device.id)},
           {QStringLiteral("type"), QString::fromStdString(device.type)},
           {QStringLiteral("name"), QString::fromStdString(device.name)},
-          {QStringLiteral("denoiser"), device.denoisesOnDevice ? QStringLiteral("device") : QStringLiteral("cpu")}};
+          {QStringLiteral("denoiser"), !device.denoiser.executed ? QStringLiteral("pending")
+                                      : device.denoisesOnDevice ? QStringLiteral("device")
+                                      : device.denoiser.type == "CPU" ? QStringLiteral("cpu") : QStringLiteral("gpu")},
+          {QStringLiteral("denoiser_available"), device.denoiserAvailable},
+          {QStringLiteral("denoiser_device"),
+           QJsonObject{{QStringLiteral("id"), QString::fromStdString(device.denoiser.id)},
+                       {QStringLiteral("type"), QString::fromStdString(device.denoiser.type)},
+                       {QStringLiteral("name"), QString::fromStdString(device.denoiser.name)},
+                       {QStringLiteral("executed"), device.denoiser.executed},
+                       {QStringLiteral("message"), QString::fromStdString(device.denoiser.message)}}},
+          {QStringLiteral("metalrt_available"), device.metalRTAvailable},
+          {QStringLiteral("metalrt_default"), device.metalRTDefault},
+          {QStringLiteral("metalrt"), device.metalRT}};
 }
 
 QJsonArray devicesJson(const std::vector<render::DeviceInfo>& devices) {
@@ -111,12 +124,18 @@ std::unique_ptr<render::Renderer> makeRenderer(render::FrameSink& sink, bool int
     fellBack(device, message);
   }
   const std::string folder = kernelFolder();
-  const auto factory = [interactive, folder](render::FrameSink& target, const render::DeviceInfo& on,
+  const std::string denoising = qEnvironmentVariable("MITCAD_RENDER_TEST_DENOISER").toLower().toStdString();
+  const std::string denoisingFailure = qEnvironmentVariable("MITCAD_RENDER_TEST_DENOISER_FAILURE").toStdString();
+  const auto factory = [interactive, folder, denoising, denoisingFailure](render::FrameSink& target,
+                                             const render::DeviceInfo& on, bool cpuDenoising,
                                              std::string& why) {
     render::RendererOptions options;
     options.interactive = interactive;
     options.device = on;
     options.kernelFolder = folder;
+    options.denoisingDevice = denoising;
+    options.testDenoisingFailure = denoisingFailure;
+    options.cpuDenoisingFallback = cpuDenoising;
     return render::makeCyclesRenderer(target, options, why);
   };
   return render::makeDeviceRenderer(sink, device, factory, fellBack,
@@ -126,6 +145,10 @@ std::unique_ptr<render::Renderer> makeRenderer(render::FrameSink& sink, bool int
 // Frames into the application's shared memory (RenderProtocol.hpp).
 class SharedFrames : public render::FrameSink {
 public:
+  void denoisingDevice(const render::DeviceInfo& device) override {
+    emitEvent({{QStringLiteral("event"), QStringLiteral("denoiser")},
+               {QStringLiteral("device"), deviceJson(device)}});
+  }
 #ifndef _WIN32
   // The socket the application's memory comes through.
   void setChannel(int descriptor) { m_channel.adopt(descriptor); }
@@ -224,6 +247,11 @@ private:
 // came and its samples were done.
 class KeptFrame : public render::FrameSink {
 public:
+  void denoisingDevice(const render::DeviceInfo& device) override {
+    std::printf("render-denoiser %s %s, executed %s\n", device.denoiser.type.c_str(),
+                device.denoiser.name.c_str(), device.denoiser.executed ? "yes" : "no");
+    std::fflush(stdout);
+  }
   using Clock = std::chrono::steady_clock;
 
   render::FrameBuffers beginFrame(int width, int height, int, int, bool withCatcher) override {
@@ -255,6 +283,13 @@ public:
       firstDenoised[view] = Clock::now();
       firstDenoisedSize[view] = {width_, height_, frameSamples};
     }
+    if (captureDenoised && denoised && view <= 2) {
+      const QString key = QStringLiteral("view-%1-%2x%3-samples-%4")
+                              .arg(view).arg(width_).arg(height_).arg(frameSamples);
+      denoisedFrames[key] = render::displayImage(
+          pixels.data(), width_, height_, QColor(247, 248, 250), QColor(223, 227, 234),
+          render::Look(), catcher.empty() ? nullptr : catcher.data()).convertToFormat(QImage::Format_RGB32);
+    }
     m_mutex.unlock();
     m_changed.notify_all();
   }
@@ -284,6 +319,8 @@ public:
   std::map<std::uint64_t, Clock::time_point> firstDenoised;
   std::map<std::uint64_t, std::array<int, 3>> firstDenoisedSize; // width, height, samples
   std::map<std::uint64_t, Clock::time_point> done;
+  bool captureDenoised = false; // Only compare benchmarks retain stable-view previews.
+  std::map<QString, QImage> denoisedFrames;
 
 private:
   std::mutex m_mutex;
@@ -546,6 +583,51 @@ int runUpdateTest() {
     std::fprintf(stderr, "render-failed the last scene did not render\n");
     return 3;
   }
+  // An orthographic view whose eye stands inside the block renders it as
+  // one from far outside does (mitcad#215): the camera stands behind the
+  // scene, nothing behind the eye is cut off.
+  renderer->updateScene(render::testScene()); // the block alone again
+  render::ViewData ortho;
+  ortho.width = 160;
+  ortho.height = 120;
+  ortho.perspective = false;
+  ortho.target = {0, 0, 10};
+  ortho.up = {0, 0, 1};
+  ortho.halfHeight = 30;
+  const auto orthographicImage = [&](std::uint64_t sequence, const std::array<double, 3>& eye, QImage& image) {
+    ortho.sequence = sequence;
+    ortho.eye = eye;
+    renderer->setView(ortho);
+    if (!frame.waitDone(sequence) || frame.pixels.empty() ||
+        render::coverage(frame.pixels.data(), frame.width_, frame.height_).isEmpty()) {
+      return false;
+    }
+    image = render::displayImage(frame.pixels.data(), frame.width_, frame.height_, QColor(247, 248, 250),
+                                 QColor(223, 227, 234), render::Look(), frame.catcher.empty() ? nullptr : frame.catcher.data())
+                .convertToFormat(QImage::Format_RGB32);
+    return true;
+  };
+  QImage inside;
+  QImage outside;
+  if (!orthographicImage(3, {0, -5, 10}, inside) || !orthographicImage(4, {0, -500, 10}, outside) ||
+      inside.size() != outside.size()) {
+    std::fprintf(stderr, "render-failed the orthographic views did not render\n");
+    return 3;
+  }
+  double difference = 0.0;
+  for (int y = 0; y < inside.height(); ++y) {
+    const auto* a = reinterpret_cast<const QRgb*>(inside.constScanLine(y));
+    const auto* b = reinterpret_cast<const QRgb*>(outside.constScanLine(y));
+    for (int x = 0; x < inside.width(); ++x) {
+      difference += std::abs(qRed(a[x]) - qRed(b[x])) + std::abs(qGreen(a[x]) - qGreen(b[x])) +
+                    std::abs(qBlue(a[x]) - qBlue(b[x]));
+    }
+  }
+  difference /= 3.0 * inside.width() * inside.height();
+  const bool unchanged = difference < 2.0;
+  failures += unchanged ? 0 : 1;
+  std::printf("render-update orthographic eye inside the block: mean difference %.2f from outside%s\n", difference,
+              unchanged ? "" : " (wanted below 2: the block is cut off)");
   std::printf("render-update %s\n", failures == 0 ? "ok" : "FAILED");
   return failures == 0 ? 0 : 1;
 }
@@ -577,6 +659,7 @@ struct BenchRun {
   int samples = 0;
   double seconds = 0.0;
   render::DeviceInfo device;
+  std::map<QString, QImage> denoisedFrames;
 };
 
 // The test scene at the bench's size on the chosen device, all samples,
@@ -594,9 +677,11 @@ int benchOnce(const Bench& bench, const QString& choice, const std::vector<rende
   KeptFrame frame;
   frame.trace = bench.trace || !bench.frames.isEmpty();
   frame.frameFolder = bench.frames;
+  frame.captureDenoised = interactive && !bench.compare.isEmpty();
   std::string error;
-  const auto fellBack = [](const render::DeviceInfo&, const std::string& message) {
+  const auto fellBack = [](const render::DeviceInfo& device, const std::string& message) {
     std::printf("render-fallback %s\n", message.c_str());
+    std::printf("render-backend %s, MetalRT %s\n", device.type.c_str(), device.metalRT ? "on" : "off");
     std::fflush(stdout);
   };
   const std::unique_ptr<render::Renderer> renderer =
@@ -712,8 +797,15 @@ int benchOnce(const Bench& bench, const QString& choice, const std::vector<rende
                 qPrintable(firstDenoised(frame, last, stopped)), millisecondsBetween(stopped, frame.done[last]) / 1000.0);
   }
   run.device = renderer->device();
-  std::printf("render-device %s %s, denoising on the %s\n", run.device.type.c_str(), run.device.name.c_str(),
-              run.device.denoisesOnDevice ? "device" : "CPU");
+  std::printf("render-device %s %s\n", run.device.type.c_str(), run.device.name.c_str());
+  std::printf("render-denoiser %s %s, executed %s\n", run.device.denoiser.type.c_str(),
+              run.device.denoiser.name.c_str(), run.device.denoiser.executed ? "yes" : "no");
+  if (!run.device.denoiser.message.empty()) {
+    std::printf("render-denoiser-note %s\n", run.device.denoiser.message.c_str());
+  }
+  std::printf("render-backend %s, MetalRT %s (available %s, default %s)\n", run.device.type.c_str(),
+              run.device.metalRT ? "on" : "off", run.device.metalRTAvailable ? "yes" : "no",
+              run.device.metalRTDefault ? "on" : "off");
   const std::string failure = renderer->deviceError();
   if (!failure.empty()) {
     std::fprintf(stderr, "render-failed %s\n", failure.c_str());
@@ -724,12 +816,34 @@ int benchOnce(const Bench& bench, const QString& choice, const std::vector<rende
   run.width = frame.width_;
   run.height = frame.height_;
   run.samples = renderer->currentSample();
+  run.denoisedFrames = std::move(frame.denoisedFrames);
   return run.pixels.empty() ? 3 : 0;
 }
 
 QImage benchImage(const BenchRun& run) {
   return render::displayImage(run.pixels.data(), run.width, run.height, QColor(247, 248, 250), QColor(223, 227, 234),
                               render::Look(), run.catcher.empty() ? nullptr : run.catcher.data());
+}
+
+// Equal-size RGB32 images: mean and 99th-percentile absolute sRGB channel error.
+std::pair<double, int> imageDifference(const QImage& a, const QImage& b) {
+  std::vector<int> differences;
+  differences.reserve(static_cast<std::size_t>(a.width()) * a.height() * 3);
+  double sum = 0.0;
+  for (int y = 0; y < a.height(); ++y) {
+    const auto* rowA = reinterpret_cast<const QRgb*>(a.constScanLine(y));
+    const auto* rowB = reinterpret_cast<const QRgb*>(b.constScanLine(y));
+    for (int x = 0; x < a.width(); ++x) {
+      for (const int d : {qRed(rowA[x]) - qRed(rowB[x]), qGreen(rowA[x]) - qGreen(rowB[x]),
+                          qBlue(rowA[x]) - qBlue(rowB[x])}) {
+        differences.push_back(std::abs(d));
+        sum += std::abs(d);
+      }
+    }
+  }
+  const auto percentile = differences.begin() + static_cast<std::ptrdiff_t>(differences.size() * 99 / 100);
+  std::nth_element(differences.begin(), percentile, differences.end());
+  return {sum / static_cast<double>(differences.size()), *percentile};
 }
 
 // --bench WxH [--device D] [--compare E]: the test scene's time on a device;
@@ -760,8 +874,21 @@ int runBenchmark(const Bench& bench) {
     return 0;
   }
   BenchRun other;
-  if (const int status = benchOnce(bench, bench.compare, devices, other); status != 0) {
-    return status;
+  const QByteArray firstDenoiser = qgetenv("MITCAD_RENDER_TEST_DENOISER");
+  const QByteArray comparisonDenoiser = qgetenv("MITCAD_RENDER_TEST_COMPARE_DENOISER");
+  if (!comparisonDenoiser.isEmpty()) {
+    qputenv("MITCAD_RENDER_TEST_DENOISER", comparisonDenoiser);
+  }
+  const int comparisonStatus = benchOnce(bench, bench.compare, devices, other);
+  if (!comparisonDenoiser.isEmpty()) {
+    if (firstDenoiser.isNull()) {
+      qunsetenv("MITCAD_RENDER_TEST_DENOISER");
+    } else {
+      qputenv("MITCAD_RENDER_TEST_DENOISER", firstDenoiser);
+    }
+  }
+  if (comparisonStatus != 0) {
+    return comparisonStatus;
   }
   const QImage a = benchImage(run).convertToFormat(QImage::Format_RGB32);
   const QImage b = benchImage(other).convertToFormat(QImage::Format_RGB32);
@@ -769,30 +896,38 @@ int runBenchmark(const Bench& bench) {
     std::fprintf(stderr, "render-failed the images differ in size\n");
     return 3;
   }
-  std::vector<int> differences;
-  differences.reserve(static_cast<std::size_t>(a.width()) * a.height() * 3);
-  double sum = 0.0;
-  for (int y = 0; y < a.height(); ++y) {
-    const auto* rowA = reinterpret_cast<const QRgb*>(a.constScanLine(y));
-    const auto* rowB = reinterpret_cast<const QRgb*>(b.constScanLine(y));
-    for (int x = 0; x < a.width(); ++x) {
-      for (const int d : {qRed(rowA[x]) - qRed(rowB[x]), qGreen(rowA[x]) - qGreen(rowB[x]),
-                          qBlue(rowA[x]) - qBlue(rowB[x])}) {
-        differences.push_back(std::abs(d));
-        sum += std::abs(d);
-      }
-    }
-  }
-  const auto percentile = differences.begin() + static_cast<std::ptrdiff_t>(differences.size() * 99 / 100);
-  std::nth_element(differences.begin(), percentile, differences.end());
-  const double mean = sum / static_cast<double>(differences.size());
+  const auto [mean, percentile] = imageDifference(a, b);
   std::printf("render-compare %s %.3f s, %s %.3f s (%.2f times), image difference mean %.2f, 99%% %d\n",
               run.device.type.c_str(), run.seconds, other.device.type.c_str(), other.seconds,
-              other.seconds / std::max(run.seconds, 1e-6), mean, *percentile);
+              other.seconds / std::max(run.seconds, 1e-6), mean, percentile);
   if (!bench.tolerance.isEmpty()) {
     const QStringList limits = bench.tolerance.split(QLatin1Char(':'));
-    if (mean > limits.value(0).toDouble() || *percentile > limits.value(1).toInt()) {
+    if (mean > limits.value(0).toDouble() || percentile > limits.value(1).toInt()) {
       std::fprintf(stderr, "render-failed the images differ more than %s\n", qPrintable(bench.tolerance));
+      return 4;
+    }
+  }
+  if (bench.interactive) {
+    const QStringList limits = bench.tolerance.split(QLatin1Char(':'));
+    int compared = 0;
+    for (const auto& [key, preview] : run.denoisedFrames) {
+      const auto found = other.denoisedFrames.find(key);
+      if (found == other.denoisedFrames.end()) {
+        continue; // Adaptive batches can reach different sample counts.
+      }
+      const auto [previewMean, previewPercentile] = imageDifference(preview, found->second);
+      std::printf("render-compare-denoised %s image difference mean %.2f, 99%% %d\n",
+                  qPrintable(key), previewMean, previewPercentile);
+      if (!bench.tolerance.isEmpty() &&
+          (previewMean > limits.value(0).toDouble() || previewPercentile > limits.value(1).toInt())) {
+        std::fprintf(stderr, "render-failed the denoised preview images differ more than %s\n",
+                     qPrintable(bench.tolerance));
+        return 4;
+      }
+      ++compared;
+    }
+    if (compared == 0) {
+      std::fprintf(stderr, "render-failed no matching denoised previews to compare\n");
       return 4;
     }
   }
@@ -804,6 +939,10 @@ int runBenchmark(const Bench& bench) {
 // samples are done.
 class BatchFrames : public render::FrameSink {
 public:
+  void denoisingDevice(const render::DeviceInfo& device) override {
+    emitEvent({{QStringLiteral("event"), QStringLiteral("denoiser")},
+               {QStringLiteral("device"), deviceJson(device)}});
+  }
   render::FrameBuffers beginFrame(int width, int height, int, int, bool withCatcher) override {
     m_mutex.lock();
     m_width = width;
@@ -1153,9 +1292,19 @@ int main(int argc, char* argv[]) {
       QStringLiteral("limits"));
   const QCommandLineOption listDevices(QStringLiteral("list-devices"),
                                        QStringLiteral("Print the render devices as JSON and end"));
+  const QCommandLineOption probeDenoiser(
+      QStringLiteral("probe-denoiser"),
+      QStringLiteral("Print whether Open Image Denoise creates its device on each GPU, or its error, and end"));
   parser.addOptions({channel, bench, samples, output, interactive, orthographic, environment, texture, trace, frameFiles, previews,
-                     updateTest, batch, control, device, compare, tolerance, listDevices});
+                     updateTest, batch, control, device, compare, tolerance, listDevices, probeDenoiser});
   parser.process(app);
+  if (parser.isSet(probeDenoiser)) {
+    // Diagnostics of GPU denoising (mitcad#202, docs/rendering.md "Devices").
+    for (const std::string& line : render::probeDenoisers(kernelFolder())) {
+      std::printf("render-denoiser-probe %s\n", line.c_str());
+    }
+    return 0;
+  }
   if (parser.isSet(listDevices)) {
     // For Preferences and mitcad-cli render --list-devices (mitcad#50).
     const QJsonObject list{{QStringLiteral("protocol"), static_cast<int>(render::kProtocolVersion)},

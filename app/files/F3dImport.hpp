@@ -44,6 +44,12 @@ signals:
   void finished(bool ok, const QByteArray& design, const QJsonObject& result, const QString& error);
 
 private:
+  // The documents the design refers to (its components of other
+  // documents, mitcad#196) whose files are not found next to it: a file
+  // dialog for each, naming the document, whose Cancel skips it; a chosen
+  // file's folder is searched for the other missing ones. Returns the
+  // import's options: the chosen files and the skipped documents.
+  QJsonObject askReferences();
   void readProgress();
   void processFinished(int exitCode);
   void stop();
@@ -52,6 +58,7 @@ private:
   void done(bool ok, const QString& error);
 
   QString m_path;
+  QJsonObject m_options; // more options of the import (askReferences)
   QPointer<QWidget> m_window;
   QTemporaryDir m_dir;
   QProcess* m_process = nullptr;

@@ -255,6 +255,31 @@ class McpTest(unittest.TestCase):
         self.assertFalse((self.workspace / "forbidden.mitcad").exists())
         self.assertFalse((self.workspace / "forbidden.step").exists())
 
+    def test_autoselect_profiles_are_available_in_read_only_documents(self):
+        with Session(self.workspace) as client:
+            client.initialize()
+            document = client.tool("document_create", {})["document"]
+            client.tool("model_command", {"document": document, "command": {
+                "cmd": "sketch.create"}})
+            client.tool("model_command", {"document": document, "command": {
+                "cmd": "sketch.add_circle", "sketch": "F1",
+                "center": [0, 0], "diameter": 10}})
+            before = client.tool("model_query", {"document": document,
+                "query": {"query": "autoselect_profiles"}})["result"]
+            self.assertTrue(before["eligible"])
+            self.assertEqual(before["sketch"], "F1")
+            self.assertEqual(len(before["drawn"]), 1)
+            self.assertEqual(before["all"], before["drawn"])
+            client.tool("document_save", {"document": document, "path": "sketch.mitcad"})
+            client.finish()
+        with Session(self.workspace, read_only=True) as client:
+            client.initialize()
+            document = client.tool("document_open", {"path": "sketch.mitcad"})["document"]
+            after = client.tool("model_query", {"document": document,
+                "query": {"query": "autoselect_profiles"}})["result"]
+            self.assertEqual(after, before)
+            client.finish()
+
     def test_geometry_failure_is_applied_and_can_be_undone(self):
         with Session(self.workspace) as client:
             client.initialize()
@@ -281,6 +306,36 @@ class McpTest(unittest.TestCase):
                 "document": document, "query": {"query": "timeline"}})["result"]
             self.assertEqual(len(timeline["features"]), 1)
             self.assertEqual(timeline["features"][0]["status"], "ok")
+            client.tool("document_close", {"document": document, "discard": True})
+            client.finish()
+
+    def test_sheet_metal_and_flat_pattern_dxf(self):
+        # Sheet-metal features, picks and the Flat Pattern DXF (mitcad#210).
+        with Session(self.workspace) as client:
+            client.initialize()
+            document = client.tool("document_create", {})["document"]
+            for command in (
+                    {"cmd": "sketch.create"},
+                    {"cmd": "sketch.add_rectangle", "sketch": "F1", "corner": [0, 0], "width": 40, "height": 20},
+                    {"cmd": "add_feature", "def": {
+                        "type": "sheet_face", "profiles": [
+                            {"sketch": "F1", "region": "r{c1[c4,c2],c2[c1,c3],c3[c2,c4],c4[c3,c1]}"}],
+                        "rules": {"thickness": 1, "bend_radius": 1, "allowance": {"type": "k_factor", "k": 0.44},
+                                  "reference_side": "front", "bend_relief": {"type": "round", "width": 1, "depth": 3},
+                                  "corner_relief": {"type": "round", "width": 1, "depth": 3}}}},
+                    {"cmd": "set_flat_pattern", "body": "F3.b0"}):
+                client.tool("model_command", {"document": document, "command": command})
+            bodies = client.tool("model_query", {
+                "document": document, "query": {"query": "sheet_bodies"}})["result"]
+            self.assertEqual(bodies[0]["flat_pattern"]["status"], "valid")
+            picked = client.tool("model_query", {"document": document, "query": {
+                "query": "sheet_reference", "body": "F3.b0", "face": "F3:sheet_front(0)"}})["result"]
+            self.assertEqual(picked["domain"]["kind"], "panel")
+            client.tool("model_export", {"document": document, "path": "flat.dxf", "format": "dxf",
+                                         "flat_pattern": "F3.b0"})
+            self.assertIn("CUT_OUTER", (self.workspace / "flat.dxf").read_text(encoding="ascii"))
+            client.tool("model_export", {"document": document, "path": "both.dxf", "format": "dxf",
+                                         "flat_pattern": "F3.b0", "sketch": "F1"}, error=True)
             client.tool("document_close", {"document": document, "discard": True})
             client.finish()
 

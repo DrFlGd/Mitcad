@@ -271,6 +271,11 @@ void SketchPalette::refresh() {
   } else {
     status = tr("%n degree(s) of freedom", nullptr, model.dof);
   }
+  // What the evaluation warns about (mitcad#232: projections that could
+  // not follow their sources).
+  for (const QString& warning : model.warnings) {
+    status += QStringLiteral("<br><span style='color:%1'>%2</span>").arg(warningColor().name(), warning.toHtmlEscaped());
+  }
   m_status->setText(status);
   const auto set = [](QCheckBox* box, bool on) {
     const QSignalBlocker block(box);

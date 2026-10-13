@@ -22,13 +22,15 @@
 
 use std::collections::{BTreeMap, HashMap};
 
-use mitcad_model::assembly::{inverse, matrix_rows};
+use mitcad_model::assembly::{Assembly, Occurrence, inverse, matrix_rows};
 use mitcad_model::{
-    ComponentUid, Document, FeatureDef, FeatureUid, Kernel, OccurrenceUid, Transform, ValueInput,
+    BodyUid, ComponentCopy, ComponentUid, Document, FeatureDef, FeatureUid, Kernel, OccurrenceUid,
+    Transform, ValueInput,
 };
 use serde_json::json;
 
 use crate::captures::INSIDE;
+use crate::components::InsertedComponent;
 use crate::report::{DesignReport, ItemReport, Outcome};
 use crate::timeline_notes::partly;
 
@@ -39,9 +41,14 @@ pub struct Referenced<'a, K: Kernel> {
     /// Its occurrences by the GUIDs the file gives them (its import's
     /// [`crate::components::ComponentReport::occurrence_guids`], which this function also
     /// extends with those of the documents it filled in it).
-    pub occurrence_guids: &'a HashMap<String, OccurrenceUid>,
+    pub occurrence_guids: &'a HashMap<String, Vec<OccurrenceUid>>,
     /// The name its component takes (made unique).
     pub name: String,
+    /// Its bodies by the names its import gave the stored bodies they
+    /// match (`BREP.<guid>.smbh#<record>`, [`crate::report::BodyReport::file`]),
+    /// which the other design names bodies of it by
+    /// (`_f3d.stored`).
+    pub stored_bodies: &'a HashMap<String, BodyUid>,
 }
 
 /// A component filled from another document.
@@ -79,6 +86,7 @@ pub fn link_references<K: Kernel>(
     sources: &HashMap<String, Referenced<'_, K>>,
 ) -> LinkOutcome {
     let mut linker = Linker::default();
+    split_variants(doc, report, sources);
     let mut documents: Vec<String> = Vec::new();
     for i in &report.components.inserted {
         if !documents.contains(&i.document) {
@@ -90,16 +98,22 @@ pub fn link_references<K: Kernel>(
             linker.fill(doc, report, &document, source);
         }
     }
+    linker.separate(doc, report);
     linker.finish(doc, report)
 }
+
+/// Most components `Linker::separate` makes for one design.
+const MAX_SEPARATIONS: usize = 200;
 
 /// [`link_references`] one document at a time, so that the caller can drop
 /// each document once it is copied.
 #[derive(Debug, Default)]
 pub struct Linker {
     /// The occurrences inside each filled component, by their GUIDs.
-    inside: HashMap<ComponentUid, HashMap<String, OccurrenceUid>>,
+    inside: HashMap<ComponentUid, HashMap<String, Vec<OccurrenceUid>>>,
     out: LinkOutcome,
+    /// Where the captured positions inside put occurrences ([`Linker::plan`]).
+    plan: Option<Plan>,
 }
 
 impl Linker {
@@ -119,15 +133,39 @@ impl Linker {
             }
             match doc.fill_component_copy(source.document, inserted.component, Some(&source.name)) {
                 Ok(copies) => {
-                    let guids: HashMap<String, OccurrenceUid> = source
+                    let guids: HashMap<String, Vec<OccurrenceUid>> = source
                         .occurrence_guids
                         .iter()
-                        .filter_map(|(g, o)| Some((g.clone(), *copies.get(o)?)))
+                        .filter_map(|(g, list)| {
+                            let copied: Vec<OccurrenceUid> = list
+                                .iter()
+                                .filter_map(|o| copies.occurrences.get(o).copied())
+                                .collect();
+                            (!copied.is_empty()).then(|| (g.clone(), copied))
+                        })
                         .collect();
-                    for (g, o) in &guids {
-                        components.occurrence_guids.entry(g.clone()).or_insert(*o);
+                    // Its stored bodies, as the copies' bodies.
+                    if let Some(guid) = inserted.document_guid.as_deref() {
+                        for (stored, body) in source.stored_bodies {
+                            if let Some(feature) = copies.features.get(&body.feature) {
+                                components
+                                    .external_bodies
+                                    .entry(format!("{}|{stored}", guid.to_lowercase()))
+                                    .or_default()
+                                    .push(BodyUid::new(*feature, body.index));
+                            }
+                        }
+                    }
+                    for (g, copied) in &guids {
+                        let list = components.occurrence_guids.entry(g.clone()).or_default();
+                        for o in copied {
+                            if !list.contains(o) {
+                                list.push(*o);
+                            }
+                        }
                     }
                     self.inside.insert(inserted.component, guids);
+                    components.filled.push(inserted.component);
                     components.linked += inserted.occurrences;
                     self.out.linked.push(Linked {
                         component: inserted.component,
@@ -144,6 +182,119 @@ impl Linker {
         }
     }
 
+    /// Makes the occurrences of a copy of a component inside a filled
+    /// component ([`Document::make_unique`]) known by the GUIDs of the
+    /// occurrences they copy.
+    pub(crate) fn register_copy(&mut self, copy: &ComponentCopy, report: &mut DesignReport) {
+        let name = |lists: &mut HashMap<String, Vec<OccurrenceUid>>| {
+            for list in lists.values_mut() {
+                let more: Vec<OccurrenceUid> = list
+                    .iter()
+                    .filter_map(|o| copy.occurrences.get(o).copied())
+                    .collect();
+                for o in more {
+                    if !list.contains(&o) {
+                        list.push(o);
+                    }
+                }
+            }
+        };
+        for lists in self.inside.values_mut() {
+            name(lists);
+        }
+        name(&mut report.components.occurrence_guids);
+        // Its bodies matched to stored bodies of the document: the copy's.
+        for bodies in report.components.external_bodies.values_mut() {
+            let more: Vec<BodyUid> = bodies
+                .iter()
+                .filter_map(|b| Some(BodyUid::new(*copy.features.get(&b.feature)?, b.index)))
+                .collect();
+            bodies.extend(more);
+        }
+        report.components.copies += 1;
+    }
+
+    /// Gives the occurrences inside the filled components that the design's
+    /// captured positions place differently on different paths a copy of
+    /// their component each. A component placed several times inside a
+    /// copy (a bearing in an assembly) has one set of occurrences, so a
+    /// design that arranges what is inside each occurrence of it
+    /// differently needs a component of its own for each arrangement
+    /// ([`Document::make_unique`]); the positions then name the
+    /// occurrences of the copy. Returns how many it made.
+    pub fn separate<K: Kernel>(
+        &mut self,
+        doc: &mut Document<K>,
+        report: &mut DesignReport,
+    ) -> usize {
+        let mut made = 0;
+        for _ in 0..MAX_SEPARATIONS {
+            let Some(conflict) = plan_inside(doc, report, &self.inside, true).conflict else {
+                break;
+            };
+            // The first level where the two paths part inside the copy:
+            // the occurrence of the later one gets a copy of its component.
+            let parting = (conflict.outer..conflict.first.len().min(conflict.second.len()))
+                .find(|k| conflict.first[*k] != conflict.second[*k]);
+            let Some(occurrence) = parting.map(|k| conflict.second[k]) else {
+                break;
+            };
+            match doc.make_unique(occurrence) {
+                Ok((_, copy)) => {
+                    self.register_copy(&copy, report);
+                    made += 1;
+                }
+                Err(e) => {
+                    if crate::tracing() {
+                        eprintln!(
+                            "import: {} could not get a component of its own: {e}",
+                            doc.assembly().occurrence_name(occurrence)
+                        );
+                    }
+                    break;
+                }
+            }
+        }
+        made
+    }
+
+    /// Works out where the design's captured positions put the occurrences
+    /// inside the filled components (once the filled components' placements
+    /// are where the file has them): the occurrences, each with its last
+    /// placement in its parent and the timeline index of the position that
+    /// gave it. The positions that cannot be placed are counted for
+    /// [`Linker::finish`].
+    pub fn plan<K: Kernel>(
+        &mut self,
+        doc: &Document<K>,
+        report: &DesignReport,
+    ) -> Vec<(i64, OccurrenceUid, Transform)> {
+        let plan = plan_inside(doc, report, &self.inside, false);
+        let placed = plan
+            .items
+            .iter()
+            .flat_map(|(index, item)| {
+                item.placed
+                    .values()
+                    .flatten()
+                    .map(move |(o, t)| (*index, *o, *t))
+            })
+            .collect();
+        self.plan = Some(plan);
+        placed
+    }
+
+    /// Every placement the captured positions gave the occurrences inside
+    /// the filled components ([`Linker::plan`] gives the last of each), in
+    /// timeline order: the occurrence, its placement in its parent from
+    /// the position on.
+    pub fn trail(&self) -> Vec<(i64, OccurrenceUid, Transform)> {
+        self.plan
+            .as_ref()
+            .map(|p| p.trail.clone())
+            .unwrap_or_default()
+    }
+
     /// Places the occurrences inside the filled components where the
     /// design's captured positions put them: a `capture_position` feature
     /// in each component per captured position, at the end of the
@@ -154,7 +305,12 @@ impl Linker {
         doc: &mut Document<K>,
         report: &mut DesignReport,
     ) -> LinkOutcome {
-        place_inside(doc, report, &self.inside, &mut self.out);
+        if self.plan.is_none() {
+            self.plan(doc, report);
+        }
+        if let Some(plan) = self.plan.take() {
+            add_inside(doc, report, plan, &mut self.out);
+        }
         report.components.placed_inside += self.out.positions;
         self.out
     }
@@ -162,7 +318,7 @@ impl Linker {
 
 /// What became of the positions inside components of other documents of
 /// one captured position.
-#[derive(Default)]
+#[derive(Debug, Default)]
 struct ItemPositions {
     /// Their occurrences, by the component they are placed in, with their
     /// placements there.
@@ -171,23 +327,57 @@ struct ItemPositions {
     left_out: Vec<String>,
 }
 
+/// Two paths to one occurrence of a copy that the same captured position
+/// places differently: the occurrences they lead through differ where a
+/// component is placed more than once inside the copy.
+#[derive(Debug, Clone, PartialEq)]
+struct Conflict {
+    first: Vec<OccurrenceUid>,
+    second: Vec<OccurrenceUid>,
+    /// How many of their first occurrences are the design's own (outside
+    /// the copy).
+    outer: usize,
+}
+
+/// Where the captured positions inside filled components put the
+/// occurrences ([`Linker::plan`]), by captured position.
+#[derive(Debug, Default)]
+struct Plan {
+    items: BTreeMap<i64, ItemPositions>,
+    /// The first conflict, when the plan stopped at it.
+    conflict: Option<Conflict>,
+    /// Every placement the positions gave an occurrence, in timeline order
+    /// (the occurrence's placement then, for the items between).
+    trail: Vec<(i64, OccurrenceUid, Transform)>,
+}
+
 /// The captured positions inside filled components (see the module
-/// documentation).
-fn place_inside<K: Kernel>(
-    doc: &mut Document<K>,
-    report: &mut DesignReport,
-    inside: &HashMap<ComponentUid, HashMap<String, OccurrenceUid>>,
-    out: &mut LinkOutcome,
-) {
+/// documentation): where they put the occurrences. With `stop`, at the
+/// first conflict (two paths to one occurrence place it differently at the
+/// same point of the timeline), which [`Plan::conflict`] gives; else the
+/// occurrences with a conflict are left where they are.
+fn plan_inside<K: Kernel>(
+    doc: &Document<K>,
+    report: &DesignReport,
+    inside: &HashMap<ComponentUid, HashMap<String, Vec<OccurrenceUid>>>,
+    stop: bool,
+) -> Plan {
     if report.components.positions_inside.is_empty() {
-        return;
+        return Plan::default();
     }
     let mut items: BTreeMap<i64, ItemPositions> = BTreeMap::new();
     // Each occurrence's placement in its parent, by the positions in
-    // timeline order: the last one, unless two paths disagree.
-    let mut placed: BTreeMap<OccurrenceUid, (i64, Option<Transform>)> = BTreeMap::new();
+    // timeline order: the last one, unless two paths disagree; the path
+    // that gave it.
+    type Placed = (i64, Option<Transform>, Vec<OccurrenceUid>);
+    let mut placed: BTreeMap<OccurrenceUid, Placed> = BTreeMap::new();
+    // The same placements for the levels above, as the positions put them
+    // so far (a position names the levels it moves and the levels it does
+    // not, whose placements it leaves).
+    let mut planned: HashMap<OccurrenceUid, Transform> = HashMap::new();
+    let mut trail: Vec<(i64, OccurrenceUid, Transform)> = Vec::new();
     let mut positions: Vec<_> = report.components.positions_inside.iter().collect();
-    positions.sort_by_key(|p| p.index);
+    positions.sort_by_key(|p| (p.index, p.inner.len()));
     for p in positions {
         let a = doc.assembly();
         let item = items.entry(p.index).or_default();
@@ -208,16 +398,23 @@ fn place_inside<K: Kernel>(
         let mut path = p.outer.clone();
         let mut component = start;
         for g in &p.inner {
-            match guids
-                .get(&g.to_lowercase())
-                .and_then(|o| a.occurrence(*o))
-                .filter(|o| o.parent == component)
-            {
+            match inside_occurrence(a, guids, g, component) {
                 Some(o) => {
                     path.push(o.uid);
                     component = o.component;
                 }
                 None => {
+                    if crate::tracing() {
+                        let known = guids.get(&g.to_lowercase()).map(Vec::len);
+                        eprintln!(
+                            "import: a position inside {}: {g} is not an occurrence placed in {} ({} known with that GUID); at level {} of {:?}",
+                            a.name(start),
+                            a.name(component),
+                            known.unwrap_or(0),
+                            path.len() - p.outer.len(),
+                            p.inner
+                        );
+                    }
                     path.clear();
                     break;
                 }
@@ -232,26 +429,65 @@ fn place_inside<K: Kernel>(
             skip("a position of a grounded occurrence");
             continue;
         }
-        // Where the occurrences above it are at the end of the timeline.
+        // Where the occurrences above it are: as the positions before put
+        // them, else at the end of the timeline.
         let parent = parents.iter().fold(Transform::IDENTITY, |t, o| {
-            t.after(&doc.placement(*o).unwrap_or(Transform::IDENTITY))
+            t.after(
+                &planned
+                    .get(o)
+                    .copied()
+                    .or_else(|| doc.placement(*o))
+                    .unwrap_or(Transform::IDENTITY),
+            )
         });
         let local = inverse(&parent).after(&p.placement);
         // A shared component: another path that puts the occurrence
         // elsewhere at the same point of the timeline leaves it where it is.
         match placed.get_mut(&last) {
-            Some((index, at)) if *index == p.index => {
+            Some((index, at, first)) if *index == p.index => {
                 if at.is_some_and(|t| !same(&t, &local)) {
+                    if crate::tracing() {
+                        eprintln!(
+                            "import: positions of {} put it in different places: {:?} and {:?}; path {:?} and {:?}",
+                            a.occurrence_name(last),
+                            at.map(|t| t.translation),
+                            local.translation,
+                            first
+                                .iter()
+                                .map(|o| a.occurrence_name(*o))
+                                .collect::<Vec<_>>(),
+                            path.iter()
+                                .map(|o| a.occurrence_name(*o))
+                                .collect::<Vec<_>>(),
+                        );
+                    }
+                    if stop {
+                        return Plan {
+                            items,
+                            trail,
+                            conflict: Some(Conflict {
+                                first: first.clone(),
+                                second: path,
+                                outer: p.outer.len(),
+                            }),
+                        };
+                    }
                     *at = None;
                 }
             }
-            Some(entry) => *entry = (p.index, Some(local)),
+            Some(entry) => {
+                *entry = (p.index, Some(local), path.clone());
+                planned.insert(last, local);
+                trail.push((p.index, last, local));
+            }
             None => {
-                placed.insert(last, (p.index, Some(local)));
+                placed.insert(last, (p.index, Some(local), path.clone()));
+                planned.insert(last, local);
+                trail.push((p.index, last, local));
             }
         }
     }
-    for (occurrence, (index, at)) in placed {
+    for (occurrence, (index, at, _)) in placed {
         let item = items.entry(index).or_default();
         let Some(at) = at else {
             item.left_out.push(
@@ -268,7 +504,22 @@ fn place_inside<K: Kernel>(
             .or_default()
             .push((occurrence, at));
     }
-    for (index, positions) in items {
+    Plan {
+        items,
+        conflict: None,
+        trail,
+    }
+}
+
+/// The `capture_position` features of the positions [`plan_inside`] placed,
+/// and the captured positions' report entries.
+fn add_inside<K: Kernel>(
+    doc: &mut Document<K>,
+    report: &mut DesignReport,
+    plan: Plan,
+    out: &mut LinkOutcome,
+) {
+    for (index, positions) in plan.items {
         let at = report.items.iter().position(|i| i.index == index);
         let name = at.map(|i| report.items[i].name.clone());
         let mut left_out = positions.left_out;
@@ -345,6 +596,162 @@ fn renote<K: Kernel>(
         .map(|uid| (uid, timeline.clone()))
         .collect();
     let _ = doc.set_import_notes(&notes);
+}
+
+/// The occurrence of a copy that a GUID of the other document names in
+/// `parent` (a GUID names one per copy of the occurrence's component).
+fn inside_occurrence<'a>(
+    a: &'a Assembly,
+    guids: &HashMap<String, Vec<OccurrenceUid>>,
+    guid: &str,
+    parent: ComponentUid,
+) -> Option<&'a Occurrence> {
+    guids
+        .get(&guid.to_lowercase())?
+        .iter()
+        .filter_map(|o| a.occurrence(*o))
+        .find(|o| o.parent == parent)
+}
+
+/// Where the captured positions put the occurrences inside one occurrence
+/// of a component of another document: by the GUIDs of the levels, each
+/// level's placement in that occurrence's coordinates (the last captured
+/// position's).
+type Arrangement = BTreeMap<Vec<String>, Transform>;
+
+/// The arrangement the captured positions give the inside of `occurrence`.
+fn arrangement<K: Kernel>(
+    doc: &Document<K>,
+    report: &DesignReport,
+    occurrence: OccurrenceUid,
+) -> Arrangement {
+    let mut positions: Vec<_> = report
+        .components
+        .positions_inside
+        .iter()
+        .filter(|p| p.outer.last() == Some(&occurrence))
+        .collect();
+    positions.sort_by_key(|p| p.index);
+    let mut out = Arrangement::new();
+    for p in positions {
+        // The occurrence's coordinates in the position's component.
+        let frame = p.outer.iter().fold(Transform::IDENTITY, |t, o| {
+            t.after(&doc.placement(*o).unwrap_or(Transform::IDENTITY))
+        });
+        let key: Vec<String> = p.inner.iter().map(|g| g.to_lowercase()).collect();
+        out.insert(key, inverse(&frame).after(&p.placement));
+    }
+    out
+}
+
+/// Where a level of the other document is in the coordinates of the
+/// occurrence of its root component, as that document places it itself;
+/// None for a path it does not have.
+fn default_placement<K: Kernel>(source: &Referenced<'_, K>, path: &[String]) -> Option<Transform> {
+    let a = source.document.assembly();
+    let mut at = ComponentUid::ROOT;
+    let mut t = Transform::IDENTITY;
+    for guid in path {
+        let o = inside_occurrence(a, source.occurrence_guids, guid, at)?;
+        t = t.after(&source.document.placement(o.uid)?);
+        at = o.component;
+    }
+    Some(t)
+}
+
+/// Whether two occurrences of a component of another document have the
+/// same arrangement inside: each level either is placed the same by their
+/// positions or, where only one is placed, is where the other document
+/// leaves it.
+fn same_arrangement<K: Kernel>(
+    source: &Referenced<'_, K>,
+    a: &Arrangement,
+    b: &Arrangement,
+) -> bool {
+    a.keys().chain(b.keys()).all(|path| {
+        let Some(default) = default_placement(source, path) else {
+            // A level the other document does not have (left out anyway).
+            return true;
+        };
+        let of = |x: &Arrangement| x.get(path).copied().unwrap_or(default);
+        same(&of(a), &of(b))
+    })
+}
+
+/// Gives the occurrences of a component of another document that the
+/// design's captured positions arrange differently inside each a component
+/// of their own, so that each can be filled with its own copy
+/// ([`Linker::fill`]): the occurrences with the same arrangement share one
+/// (as the file's occurrences of one document do), and those that are
+/// arranged alike by every position or by none keep the first component.
+/// Components of documents not in `sources` stay as they are. Returns each
+/// component made with the component it was made from.
+pub(crate) fn split_variants<K: Kernel>(
+    doc: &mut Document<K>,
+    report: &mut DesignReport,
+    sources: &HashMap<String, Referenced<'_, K>>,
+) -> Vec<(ComponentUid, ComponentUid)> {
+    let mut made = Vec::new();
+    if report.components.positions_inside.is_empty() {
+        return made;
+    }
+    for inserted in report.components.inserted.clone() {
+        let Some(source) = sources.get(&inserted.document) else {
+            continue;
+        };
+        let occurrences: Vec<OccurrenceUid> = doc
+            .assembly()
+            .occurrences_of(inserted.component)
+            .map(|o| o.uid)
+            .collect();
+        if occurrences.len() < 2 {
+            continue;
+        }
+        let arrangements: Vec<Arrangement> = occurrences
+            .iter()
+            .map(|o| arrangement(doc, report, *o))
+            .collect();
+        let mut groups: Vec<Vec<usize>> = Vec::new();
+        for i in 0..occurrences.len() {
+            match groups
+                .iter_mut()
+                .find(|g| same_arrangement(source, &arrangements[g[0]], &arrangements[i]))
+            {
+                Some(group) => group.push(i),
+                None => groups.push(vec![i]),
+            }
+        }
+        for group in groups.iter().skip(1) {
+            let name = doc.assembly().name(inserted.component);
+            let Ok(component) =
+                doc.give_occurrence_own_component(occurrences[group[0]], Some(&name))
+            else {
+                continue;
+            };
+            let mut moved = 1;
+            for &i in &group[1..] {
+                if doc.place_other_component(occurrences[i], component).is_ok() {
+                    moved += 1;
+                }
+            }
+            report.components.inserted.push(InsertedComponent {
+                component,
+                occurrences: moved,
+                ..inserted.clone()
+            });
+            if let Some(first) = report
+                .components
+                .inserted
+                .iter_mut()
+                .find(|i| i.component == inserted.component)
+            {
+                first.occurrences -= moved;
+            }
+            report.components.copies += 1;
+            made.push((inserted.component, component));
+        }
+    }
+    made
 }
 
 /// Whether two placements are the same within rounding.

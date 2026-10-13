@@ -61,6 +61,7 @@ pub mod ffi {
         centerline: Vec<SweepCurve>,
         ruled: bool,
         closed: bool,
+        solid: bool,
         rail_curves: Vec<SweepCurve>,
         rails: Vec<usize>,
         start_kind: u8,
@@ -333,6 +334,7 @@ pub fn loft(spec: &LoftSpec<'_, SharedPtr<Shape>>) -> Result<SharedPtr<Shape>, K
         centerline: spec.centerline.map(curves).unwrap_or_default(),
         ruled: spec.ruled,
         closed: spec.closed,
+        solid: spec.solid,
         rail_curves: spec
             .rails
             .iter()

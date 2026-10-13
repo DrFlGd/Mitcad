@@ -48,6 +48,19 @@ impl<K: crate::ImportKernel> crate::Importer<'_, K> {
             Err(e) => return not(&e),
         };
         let removed = candidate.defs[0]["bodies"][0].as_str().unwrap_or_default();
+        if crate::tracing() {
+            eprintln!(
+                "import: {name}: state {q} has {:?}; the replay has {:?}; removes {removed}",
+                stored_sigs
+                    .iter()
+                    .map(|s| (s.volume, s.faces))
+                    .collect::<Vec<_>>(),
+                current_sigs
+                    .iter()
+                    .map(|s| (s.volume, s.faces))
+                    .collect::<Vec<_>>()
+            );
+        }
         let Some(sig) = current
             .iter()
             .find(|(uid, _)| uid.to_string() == removed)

@@ -319,6 +319,9 @@ std::vector<Shape::NamedFace> FaceNamer::named_faces() const {
 ShapePtr FaceNamer::shape() const {
   auto shape = std::make_shared<Shape>(m_result, named_faces());
   shape->set_unified(m_unified);
+  if (m_valid) {
+    shape->set_checked_valid(true);
+  }
   return shape;
 }
 
@@ -349,6 +352,9 @@ std::vector<FaceNamer::Piece> FaceNamer::pieces() const {
     }
     auto shape = std::make_shared<Shape>(it.Current(), own);
     shape->set_unified(m_unified);
+    if (m_valid) {
+      shape->set_checked_valid(true);
+    }
     piece.shape = std::move(shape);
     // One solid needs no order: its key (a volume integral) is the
     // expensive part on large bodies.

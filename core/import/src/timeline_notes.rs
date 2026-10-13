@@ -170,6 +170,12 @@ impl<K: crate::ImportKernel> Importer<'_, K> {
         }
     }
 
+    /// How many base features the call of [`Importer::replace_bodies`]
+    /// that made `base` (its first) made: one per component it changed.
+    pub(crate) fn bases_made_with(&self, base: FeatureUid) -> usize {
+        self.notes.groups.get(&base).map_or(1, Vec::len)
+    }
+
     /// Base feature `base` (the first a fallback made) stands in for the
     /// item of report entry `at`.
     pub(crate) fn stands_in(&mut self, base: FeatureUid, at: usize) {

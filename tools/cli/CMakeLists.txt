@@ -83,6 +83,16 @@ if(BUILD_TESTING)
   add_test(NAME cli.move_destination_reopened
            COMMAND mitcad-cli run "${scripts}/move_destination_reopened.json" --open "${move_destination}")
   set_tests_properties(cli.move_destination_reopened PROPERTIES FIXTURES_REQUIRED cli_move_destination)
+  # Moving an occurrence to another parent keeps real OCCT geometry and the
+  # links through it in place across turned parents, undo/redo and
+  # save/reopen (mitcad#219).
+  set(reparent_occurrence "${CMAKE_CURRENT_BINARY_DIR}/reparent-occurrence.mitcad")
+  add_test(NAME cli.reparent_occurrence COMMAND mitcad-cli run "${scripts}/reparent_occurrence.json"
+           --save "${reparent_occurrence}")
+  set_tests_properties(cli.reparent_occurrence PROPERTIES FIXTURES_SETUP cli_reparent_occurrence)
+  add_test(NAME cli.reparent_occurrence_reopened
+           COMMAND mitcad-cli run "${scripts}/reparent_occurrence_reopened.json" --open "${reparent_occurrence}")
+  set_tests_properties(cli.reparent_occurrence_reopened PROPERTIES FIXTURES_REQUIRED cli_reparent_occurrence)
   set(f6 "${CMAKE_CURRENT_BINARY_DIR}/f6")
   file(MAKE_DIRECTORY "${f6}")
   add_test(NAME cli.f6_assembly COMMAND mitcad-cli run "${scripts}/f6_assembly.json" --save "${f6}/plate.mitcad")
@@ -294,6 +304,32 @@ if(BUILD_TESTING)
   set_tests_properties(cli.import_f3d_references_folder PROPERTIES FIXTURES_REQUIRED cli_f3d_references
     PASS_REGULAR_EXPRESSION
     "documents referred to: 2 linked from their files, 0 not.*\\(by its GUID\\).*Placed bodies: 3")
+  # The same assembly in an .f3z package with the documents it refers to
+  # (mitcad#229), whose manifests list the GUIDs of the documents they refer
+  # to as well as their own, and whose root sorts first: each reference
+  # comes from its own design of the package (by DesignDescription.json,
+  # named from it; without it by the GUIDs, never the root or a design
+  # being imported), the root is never imported for a reference, and the
+  # part (referred to by the assembly and the holder) is imported once.
+  add_test(NAME cli.f3d_references_package_files
+    COMMAND test_exchange --write-f3d-package "${exchange}/package")
+  set_tests_properties(cli.f3d_references_package_files PROPERTIES FIXTURES_SETUP cli_f3d_package)
+  add_test(NAME cli.import_f3d_references_package
+    COMMAND mitcad-cli import-f3d "${exchange}/package/Package.f3z")
+  set_tests_properties(cli.import_f3d_references_package PROPERTIES FIXTURES_REQUIRED cli_f3d_package
+    ENVIRONMENT "MITCAD_IMPORT_TRACE=1"
+    PASS_REGULAR_EXPRESSION
+    "import: the document urn:mitcad\\.test:fs\\.file:vf\\.part\\?version=2 again, imported before.*3 of other documents \\(3 filled from their files\\).*documents referred to: 2 linked from their files, 0 not.*Packaged part \\(version 2\\): linked, occurrences: 1, from [^\n]*Package\\.f3z \\(package\\).*Packaged holder \\(version 1\\): linked, occurrences: 2, from [^\n]*Package\\.f3z \\(package\\).*Placed bodies: 3.*center of mass \\[55\\.000, 5\\.000, 5\\.000\\].*center of mass \\[5\\.000, 55\\.000, 25\\.000\\].*center of mass \\[5\\.000, 105\\.000, 25\\.000\\]"
+    FAIL_REGULAR_EXPRESSION
+    "from [^\n]*!0a5e3b10\\);vf\\.part\\?version=2 from.*vf\\.part\\?version=2 from;refers back")
+  add_test(NAME cli.import_f3d_references_package_plain
+    COMMAND mitcad-cli import-f3d "${exchange}/package/Package-plain.f3z" --design 0a5e3b10)
+  set_tests_properties(cli.import_f3d_references_package_plain PROPERTIES FIXTURES_REQUIRED cli_f3d_package
+    ENVIRONMENT "MITCAD_IMPORT_TRACE=1"
+    PASS_REGULAR_EXPRESSION
+    "documents referred to: 2 linked from their files, 0 not.*occurrences: 1, from [^\n]*Package-plain\\.f3z \\(package\\).*Placed bodies: 3"
+    FAIL_REGULAR_EXPRESSION
+    "from [^\n]*!0a5e3b10\\);vf\\.part\\?version=2 from.*vf\\.part\\?version=2 from;refers back")
 
   # The .ipt import (mitcad#60): Mitcad's own test part (a cube and a
   # cylinder, inches, aluminium), saved and opened, and compared with a

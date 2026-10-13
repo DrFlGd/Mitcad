@@ -1,0 +1,130 @@
+# SPDX-License-Identifier: MIT
+# check-all sources: app/sketch app/view geometry/analysis tools/cli
+# check-all sources: core/cpp/bridge/analysis.cpp core/cpp/bridge/analysis.hpp
+# check-all sources: app/MainWindow.cpp app/OcctViewer.cpp
+# Input-driven Windows UI test of picks on clipped bodies (mitcad#233), on
+# a design mitcad-cli makes: Body1 (F2.b0) 30 x 20 x 10 on XY and Body2
+# (F5.b0) 10 x 10 x 10 on a plane 5 above XY, beside Body1, and an empty
+# Sketch3 on Body1's top face.
+#   1. Sketch3 edited with Hide Above Sketch on: Body2 is cut
+#      at the sketch plane (its cap), Body1's top face lies on it and stays
+#      whole. Project picks that face (well inside it) and a bottom edge of
+#      Body2, which the cut kept, both by the bodies' own names, and the
+#      sketch gets both projections.
+#   2. Section Analysis at x = 15: Fillet picks the top face of what is
+#      left of Body1 by its own name.
+# Mitcad runs with Mesa's software OpenGL (MITCAD_MESA_DIR) in session 0
+# over SSH, as tools/ui-windows-workflow-test.ps1 does.
+#
+# Usage: powershell -ExecutionPolicy Bypass -File tools\ui-windows-section-pick-test.ps1 [-App build\dev\mitcad.exe] [-Out dir] [-QtBin dir]
+param(
+  [string]$App = (Join-Path $PSScriptRoot '..\build\dev\mitcad.exe'),
+  [string]$Out = (Join-Path $env:TEMP 'mitcad-ui-windows-section-pick'),
+  [string]$QtBin = '')
+
+. (Join-Path $PSScriptRoot 'ui-windows-lib.ps1')
+
+Ui-Init $App $Out $QtBin @{ 'view.iso' = 'Shift+F3'; 'inspect.section' = 'Shift+F4' }
+$work = Join-Path $script:UiOut 'files'
+Remove-Item -Recurse -Force $work -ErrorAction SilentlyContinue
+New-Item -ItemType Directory -Force $work | Out-Null
+$workLogged = $work -replace '\\', '/'
+
+$cli = @('mitcad-cli.exe', '..\tools\cli\mitcad-cli.exe', 'tools\cli\mitcad-cli.exe') |
+  ForEach-Object { Join-Path (Split-Path $script:UiApp) $_ } | Where-Object { Test-Path $_ } | Select-Object -First 1
+if (-not $cli) { Ui-Fail "no mitcad-cli.exe beside $($script:UiApp)" }
+$modelScript = Join-Path $work 'blocks.json'
+$design = Join-Path $work 'blocks.mitcad'
+Set-Content -Encoding ascii $modelScript @'
+[
+  {"cmd": "sketch.create"},
+  {"cmd": "sketch.add_rectangle", "sketch": "F1", "corner": [0, 0], "width": 30, "height": 20},
+  {"cmd": "add_feature", "def": {"type": "extrude",
+    "profiles": [{"sketch": "F1", "region": "r{c1[c4,c2],c2[c1,c3],c3[c2,c4],c4[c3,c1]}"}],
+    "extent": {"type": "distance", "distance": 10}, "operation": "new_body"}},
+  {"cmd": "add_feature", "def": {"type": "construction_plane",
+    "definition": {"type": "offset", "plane": "xy", "distance": 5}}},
+  {"cmd": "sketch.create", "plane": "F3"},
+  {"cmd": "sketch.add_rectangle", "sketch": "F4", "corner": [40, 0], "width": 10, "height": 10},
+  {"cmd": "add_feature", "def": {"type": "extrude",
+    "profiles": [{"sketch": "F4", "region": "r{c1[c4,c2],c2[c1,c3],c3[c2,c4],c4[c3,c1]}"}],
+    "extent": {"type": "distance", "distance": 10}, "operation": "new_body"}},
+  {"cmd": "sketch.create", "plane": {"body": "F2.b0",
+    "face": "F2:end(r{c1[c4,c2],c2[c1,c3],c3[c2,c4],c4[c3,c1]})"}}
+]
+'@
+$made = & $cli run $modelScript --save $design
+if ($LASTEXITCODE -ne 0 -or -not (Test-Path $design)) { Ui-Fail "mitcad-cli: $($made -join ' / ')" }
+
+# Pick-PlaceOf "start" "part": where a click picks the item whose "Pick ..."
+# line (after the last "Pick places:") starts with the text and has the
+# part too (Ui-PickAt matches one text only).
+function Pick-PlaceOf([string]$Start, [string]$Part) {
+  $lines = Ui-LogLines
+  $first = 0
+  for ($i = $lines.Count - 1; $i -ge 0; $i--) { if ($lines[$i].Contains('Pick places:')) { $first = $i; break } }
+  $line = $lines[$first..($lines.Count - 1)] |
+    Where-Object { $_.Contains("Pick $Start") -and $_.Contains($Part) } | Select-Object -Last 1
+  if ($line -notmatch ' at (\d+),(\d+)$') { Ui-Fail "no pick place logged for '$Start' with '$Part'" }
+  return @([int]$Matches[1], [int]$Matches[2])
+}
+
+Ui-StartApp 'section-pick' @('--open', $design)
+Ui-ExpectLog "Opened $workLogged/blocks.mitcad" 'the design opened'
+Ui-Step 'isometric view (Shift+F3)'         { Ui-Key 'shift+F3' }
+Ui-Step 'fit (F6)'                          { Ui-Key 'F6' }
+Ui-ExpectLog 'Bodies shown: F2.b0, F5.b0' 'both bodies shown'
+
+Write-Host "--- Hide Above Sketch on Body1's top face"
+Ui-Mark
+Ui-Step 'edit Sketch3 (double-click)'       { Ui-DoubleClickLogged 'Timeline Sketch3' }
+Ui-ExpectNew 'Editing sketch F6 (Sketch3)' "the sketch on Body1's top face"
+Ui-ExpectNew 'Palette paletteHideAbove at' 'the option is in the palette'
+Ui-Mark
+Ui-Step 'check Hide Above Sketch'           { Ui-ClickLogged 'Palette paletteHideAbove' }
+Ui-ExpectNew 'Hide Above Sketch on' 'on'
+Ui-ExpectNew 'Section caps: 1 face(s)' "Body2's cut face as a cap, not Body1's top face"
+# The sketch looks at its plane: back to the isometric view, so that
+# Body2's sides show.
+Ui-Step 'isometric view (Shift+F3)'         { Ui-Key 'shift+F3' }
+Ui-Step 'fit (F6)'                          { Ui-Key 'F6' }
+Ui-Mark
+Ui-Step 'project (P)'                       { Ui-Key 'p' }
+Ui-ExpectNew 'Pick places:' 'Project logs where its picks are'
+Ui-ExpectNew 'Pick face F2.b0/F2:end(' "Body1's top face can be picked by its name"
+Ui-Step "pick Body1's top face"             { Ui-ClickPick 'face F2.b0/F2:end(' }
+Ui-ExpectNew 'Project Geometry: 1 face' 'the face went to the projection'
+Ui-Step "pick a bottom edge of the cut Body2" {
+  $at = Pick-PlaceOf 'edge F5.b0/E{' '|F5:start('
+  Ui-Click $at[0] $at[1]
+}
+Ui-ExpectNew 'Project Geometry: 1 face, 1 edge' 'the edge went to the projection'
+Ui-ExpectNew 'Preview Project: ok' 'projection previewed'
+Ui-Step 'OK (Enter)'                        { Ui-Key 'Return' }
+Ui-ExpectNew 'Projected 2 item(s)' 'the sketch got both projections'
+Ui-Step 'finish sketch (Ctrl+Enter)'        { Ui-Key 'ctrl+Return' }
+Ui-ExpectNew 'Sketch finished' 'sketch finished'
+Ui-ExpectNew 'Section caps: none' 'the bodies whole again'
+
+Write-Host '--- Section Analysis'
+Ui-Step 'isometric view (Shift+F3)'         { Ui-Key 'shift+F3' }
+Ui-Step 'fit (F6)'                          { Ui-Key 'F6' }
+Ui-Mark
+Ui-Step 'section analysis (Shift+F4)'       { Ui-Key 'shift+F4' }
+Ui-ExpectNew 'Datum yz at' 'the origin planes shown'
+Ui-Step 'pick YZ'                           { Ui-ClickLogged 'Datum yz' }
+Ui-ExpectNew 'Section analysis at' 'the bodies shown cut'
+Ui-Mark
+Ui-Step '15 along X'                        { Ui-TypeIn 'Panel Section Analysis input offset' '15' }
+Ui-ExpectNew 'Section caps: 1 face(s)' "Body1's cut face as a cap, Body2 cut away"
+Ui-Step 'OK (Enter)'                        { Ui-Key 'Return' }
+Ui-ExpectNew 'Closed Section Analysis' 'closed, the section kept'
+Ui-Mark
+Ui-Step 'fillet (F)'                        { Ui-Key 'f' }
+Ui-ExpectNew 'Pick places:' 'Fillet logs where its picks are'
+Ui-ExpectNew 'Pick face F2.b0/F2:end(' "the cut Body1's top face can be picked by its name"
+Ui-Step "pick the cut Body1's top face"     { Ui-ClickPick 'face F2.b0/F2:end(' }
+Ui-ExpectNew 'Fillet Edges: 1 face' 'the face picked by its own name'
+Ui-Step 'cancel (Esc)'                      { Ui-Key 'Escape' }
+
+Ui-Finish 'UI Windows section pick test'

@@ -84,6 +84,17 @@ impl CurvTerm {
     }
 }
 
+/// How an equal spacing measures the offset between two anchors.
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum Interval {
+    /// Along a sketch axis (signed).
+    Axis(usize),
+    /// Along the direction of the line `a b` (signed).
+    Along(P, P),
+    /// The distance.
+    Distance,
+}
+
 #[derive(Clone, Debug)]
 pub(crate) enum EqKind {
     /// `x[a] - x[b] - side * value`
@@ -211,10 +222,50 @@ pub(crate) enum EqKind {
         cos: f64,
         sin: f64,
     },
+    // Equal spacing (mitcad#221). An anchor is the middle of its two points
+    // (the same point twice for a point).
+    /// `interval(b - a) - interval(c - b)`: successive intervals equal.
+    EqualSpacing {
+        a: [P; 2],
+        b: [P; 2],
+        c: [P; 2],
+        how: Interval,
+    },
+    /// `interval(b - a) - side * value`: the common spacing.
+    Spacing {
+        a: [P; 2],
+        b: [P; 2],
+        how: Interval,
+        side: f64,
+    },
 }
 
 fn pt<T: Scalar>(x: &[T], p: P) -> V2<T> {
     V2::new(x[p[0]], x[p[1]])
+}
+
+/// The middle of an anchor's two points.
+fn anchor<T: Scalar>(x: &[T], a: [P; 2]) -> V2<T> {
+    pt(x, a[0]).add(pt(x, a[1])).mulf(0.5)
+}
+
+/// The offset from anchor `a` to `b` as an equal spacing measures it.
+fn interval<T: Scalar>(x: &[T], a: [P; 2], b: [P; 2], how: Interval) -> T {
+    let d = anchor(x, b).sub(anchor(x, a));
+    match how {
+        Interval::Axis(axis) => d.get(axis),
+        Interval::Along(p, q) => {
+            // The line is a reference: its direction is a constant for the
+            // derivatives, so a spacing moves its anchors along it and never
+            // turns it (it follows when other constraints turn the line).
+            // With the line's own derivatives a step would rather turn it
+            // (far anchors give it a long lever) than move the anchors,
+            // and fixed lines would drag the anchors across on the way.
+            let dir = pt(x, q).sub(pt(x, p));
+            d.dot(V2::new(T::cst(dir.x.val()), T::cst(dir.y.val())).unit())
+        }
+        Interval::Distance => d.norm(),
+    }
 }
 
 fn rad<T: Scalar>(x: &[T], r: &Rad) -> T {
@@ -442,6 +493,8 @@ impl EqKind {
                 );
                 pt(x, *b).sub(pt(x, *cb)).unit().cross(turned)
             }
+            EqualSpacing { a, b, c, how } => interval(x, *a, *b, *how) - interval(x, *b, *c, *how),
+            Spacing { a, b, how, side } => interval(x, *a, *b, *how) - T::cst(side * value),
         }
     }
 }
@@ -665,6 +718,36 @@ mod tests {
                 cos: 0.6,
                 sin: -0.8,
             },
+            EqKind::EqualSpacing {
+                a: [[0, 1], [0, 1]],
+                b: [[2, 3], [4, 5]],
+                c: [[6, 7], [6, 7]],
+                how: Interval::Along([8, 9], [10, 11]),
+            },
+            EqKind::EqualSpacing {
+                a: [[0, 1], [2, 3]],
+                b: [[4, 5], [4, 5]],
+                c: [[6, 7], [8, 9]],
+                how: Interval::Distance,
+            },
+            EqKind::EqualSpacing {
+                a: [[0, 1], [0, 1]],
+                b: [[2, 3], [2, 3]],
+                c: [[4, 5], [6, 7]],
+                how: Interval::Axis(1),
+            },
+            EqKind::Spacing {
+                a: [[0, 1], [2, 3]],
+                b: [[4, 5], [4, 5]],
+                how: Interval::Along([6, 7], [12, 13]),
+                side: -1.0,
+            },
+            EqKind::Spacing {
+                a: [[0, 1], [0, 1]],
+                b: [[2, 3], [10, 11]],
+                how: Interval::Distance,
+                side: 1.0,
+            },
         ];
         let n = x0.len();
         for kind in &kinds {
@@ -680,7 +763,27 @@ mod tests {
                 let end = (start + LANES).min(n);
                 grad[start..end].copy_from_slice(&r.d[..end - start]);
             }
+            // An equal spacing's reference line is a constant for the
+            // derivatives (see `interval`).
+            let reference: Vec<usize> = match kind {
+                EqKind::EqualSpacing {
+                    how: Interval::Along(p, q),
+                    ..
+                }
+                | EqKind::Spacing {
+                    how: Interval::Along(p, q),
+                    ..
+                } => vec![p[0], p[1], q[0], q[1]],
+                _ => Vec::new(),
+            };
             for i in 0..n {
+                if reference.contains(&i) {
+                    assert!(
+                        grad[i].abs() <= 0.0,
+                        "{kind:?}: d/dx{i} of the reference line"
+                    );
+                    continue;
+                }
                 let h = 1e-6;
                 let mut xp = x0.clone();
                 let mut xm = x0.clone();

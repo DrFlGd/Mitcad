@@ -69,6 +69,31 @@ if(MITCAD_MESA_DIR)
               -App "$<TARGET_FILE:mitcad>" -Out "${CMAKE_BINARY_DIR}/ui-windows-sheet-ops"
               -QtBin "$<TARGET_FILE_DIR:Qt6::Core>")
     set_tests_properties(app.ui-windows-sheet-ops PROPERTIES TIMEOUT 600)
+    # Design policy (mitcad#220): the new design's Part1, a root that
+    # refuses sketches, the policy dialog and its presets, undo, and
+    # sketch planes of other components left out of picking.
+    add_test(NAME app.ui-windows-policy
+      COMMAND powershell -NoProfile -ExecutionPolicy Bypass
+              -File "${CMAKE_SOURCE_DIR}/tools/ui-windows-policy-test.ps1"
+              -App "$<TARGET_FILE:mitcad>" -Out "${CMAKE_BINARY_DIR}/ui-windows-policy"
+              -QtBin "$<TARGET_FILE_DIR:Qt6::Core>")
+    set_tests_properties(app.ui-windows-policy PROPERTIES TIMEOUT 300)
+    # Clean Up Projections (mitcad#232): a face projected twice into a
+    # sketch on it, the repeats listed by the preview and removed.
+    add_test(NAME app.ui-windows-projections
+      COMMAND powershell -NoProfile -ExecutionPolicy Bypass
+              -File "${CMAKE_SOURCE_DIR}/tools/ui-windows-projections-test.ps1"
+              -App "$<TARGET_FILE:mitcad>" -Out "${CMAKE_BINARY_DIR}/ui-windows-projections"
+              -QtBin "$<TARGET_FILE_DIR:Qt6::Core>")
+    set_tests_properties(app.ui-windows-projections PROPERTIES TIMEOUT 300)
+    # Picks on clipped bodies (mitcad#233): Project with Hide Above Sketch
+    # on, Fillet under Section Analysis, by the bodies' own names.
+    add_test(NAME app.ui-windows-section-pick
+      COMMAND powershell -NoProfile -ExecutionPolicy Bypass
+              -File "${CMAKE_SOURCE_DIR}/tools/ui-windows-section-pick-test.ps1"
+              -App "$<TARGET_FILE:mitcad>" -Out "${CMAKE_BINARY_DIR}/ui-windows-section-pick"
+              -QtBin "$<TARGET_FILE_DIR:Qt6::Core>")
+    set_tests_properties(app.ui-windows-section-pick PROPERTIES TIMEOUT 300)
   endif()
 elseif(WIN32 AND CMAKE_RUNTIME_OUTPUT_DIRECTORY)
   # Turned off again: remove earlier copies, or they would stay in use.

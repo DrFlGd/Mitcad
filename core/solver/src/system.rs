@@ -758,6 +758,7 @@ fn check_value(c: &Constraint) -> Result<(), Error> {
         | HorizontalDistance { value, .. }
         | VerticalDistance { value, .. } => value == 0.0 || positive(value),
         Angle { value, .. } => (0.0..=PI).contains(&value),
+        Spacing { value, .. } => positive(value),
         _ => true,
     };
     if ok {
@@ -806,6 +807,14 @@ pub(crate) fn constraint_entities(c: &Constraint) -> Vec<EntityId> {
         | Angle { a, b, .. }
         | EqualSize(a, b) => vec![a, b],
         SymmetricEntities { a, b, axis } => vec![a, b, axis],
+        EqualSpacing {
+            mode: SpacingMode::Along(e),
+            ..
+        }
+        | Spacing {
+            mode: SpacingMode::Along(e),
+            ..
+        } => vec![e],
         _ => Vec::new(),
     }
 }
@@ -833,6 +842,8 @@ pub(crate) fn constraint_points(c: &Constraint) -> Vec<PointId> {
             b,
             ..
         } => vec![a_center, a, b_center, b],
+        EqualSpacing { ref anchors, .. } => anchors.iter().flat_map(|a| a.points()).collect(),
+        Spacing { a, b, .. } => a.points().into_iter().chain(b.points()).collect(),
         _ => Vec::new(),
     }
 }
@@ -1055,8 +1066,49 @@ impl System {
                     });
                 }
             }
+            EqualSpacing { anchors, mode } => {
+                if anchors.len() < 3 {
+                    return Err(Error::InvalidValue(
+                        "an equal spacing needs at least three anchors",
+                    ));
+                }
+                if let SpacingMode::Along(e) = mode {
+                    self.line(e)?;
+                }
+            }
+            Spacing { a, b, mode, .. } => {
+                if let SpacingMode::Along(e) = mode {
+                    self.line(e)?;
+                }
+                if mode != SpacingMode::PointToPoint {
+                    rec.side = sign(self.interval(a, b, mode).unwrap_or(0.0));
+                }
+            }
         }
         Ok(())
+    }
+
+    /// Where an anchor is.
+    pub(crate) fn anchor_xy(&self, a: Anchor) -> V2<f64> {
+        match a {
+            Anchor::Point(p) => self.xy(p.index()),
+            Anchor::Mid(p, q) => self.xy(p.index()).add(self.xy(q.index())).mulf(0.5),
+        }
+    }
+
+    /// The interval from anchor `a` to `b` as an equal spacing measures it
+    /// (signed for the directional modes).
+    pub(crate) fn interval(&self, a: Anchor, b: Anchor, mode: SpacingMode) -> Option<f64> {
+        let d = self.anchor_xy(b).sub(self.anchor_xy(a));
+        Some(match mode {
+            SpacingMode::Horizontal => d.x,
+            SpacingMode::Vertical => d.y,
+            SpacingMode::Along(e) => {
+                let (p, q) = self.line(e).ok()?;
+                d.dot(self.xy(q).sub(self.xy(p)).unit())
+            }
+            SpacingMode::PointToPoint => d.norm(),
+        })
     }
 
     pub(crate) fn mirror(&self, p: V2<f64>, a: usize, b: usize) -> V2<f64> {
@@ -1283,6 +1335,7 @@ impl System {
                 }
                 _ => return None,
             },
+            Spacing { a, b, mode, .. } => rec.side * self.interval(a, b, mode)?,
             _ => return None,
         })
     }

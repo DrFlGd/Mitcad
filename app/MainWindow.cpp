@@ -249,6 +249,8 @@ MainWindow::MainWindow(bool demo, QWidget* parent, bool nativeUi)
   connect(m_viewer, &OcctViewer::viewChanged, this, &MainWindow::logBodyPlaces);
   // Components the joints move are dragged in the view (mitcad#55).
   setUpOccurrenceDrag();
+  // Sketch selection filters and Shift's wider clicks (mitcad#217).
+  setUpSelectionScope();
 
   m_registry = new CommandRegistry(this);
   m_sketch = new sketch::SketchController(*this, *m_viewer, *m_registry, this);
@@ -534,6 +536,15 @@ void MainWindow::registerCommands() {
   parameters.keywords = {QStringLiteral("parameters"), QStringLiteral("user parameter"),
                          QStringLiteral("expression"), QStringLiteral("fx")};
   m_registry->add(parameters);
+  // The active component's design policy (mitcad#220); the browser's
+  // Design Policy... opens it for any component.
+  CommandDef policy = action("assembly.policy", tr("Design Policy..."), "component", CommandDef::Mode::Model,
+                             [this] { m_controller->openPolicy(m_snapshot.activeComponent); });
+  policy.tooltip = tr("What the active component may hold, and which links to and from other components "
+                      "it allows: Assembly and Part presets and seven settings");
+  policy.keywords = {QStringLiteral("policy"), QStringLiteral("permissions"), QStringLiteral("assembly"),
+                     QStringLiteral("part"), QStringLiteral("attach")};
+  m_registry->add(policy);
   // Appearances with their physically based parameters (mitcad#46).
   CommandDef appearances = action("solid.appearances", tr("Edit Appearances..."), "appearance",
                                   CommandDef::Mode::Model, [this] { m_controller->openAppearances(appearanceTargets()); });
@@ -717,10 +728,12 @@ void MainWindow::createRibbon() {
   windowAction->setEnabled(false);
   auto* clearAction = new QAction(tr("Clear Selection"), this);
   connect(clearAction, &QAction::triggered, this, [this] { setSelection({}); });
-  for (const QString& tab : {QStringLiteral("SOLID"), QStringLiteral("SKETCH")}) {
-    m_ribbon->addGroupExtras(tab, QStringLiteral("SELECT"),
-                             {windowAction, filterAction, clearAction}, {filterAction});
-  }
+  m_ribbon->addGroupExtras(QStringLiteral("SOLID"), QStringLiteral("SELECT"),
+                           {windowAction, filterAction, clearAction}, {filterAction});
+  // Sketch mode has its own three-state filter (mitcad#217).
+  QAction* sketchFilter = createSketchFilterAction();
+  m_ribbon->addGroupExtras(QStringLiteral("SKETCH"), QStringLiteral("SELECT"),
+                           {windowAction, sketchFilter, clearAction}, {sketchFilter});
   m_ribbon->build();
   if (m_nativeUi) {
     // AppKit presents the commands; retain only the shared filter state.
@@ -1067,6 +1080,8 @@ void MainWindow::startFeatureCommand(const CommandDef& def, const QString& editU
     m_sketch->stopTool();
     m_sketch->setPaused(true);
   }
+  // Project's own selection filter context while it runs (mitcad#217).
+  beginCommandScope(def);
   const Selection preselection = editUid.isEmpty() && analysis.isEmpty() ? m_selection : Selection();
   setSelection({});
   m_mode = Mode::Command;
@@ -1090,6 +1105,7 @@ void MainWindow::startFeatureCommand(const CommandDef& def, const QString& editU
         m_sketch->setPaused(false);
         m_mode = m_commandInSketch ? Mode::Sketch : Mode::Idle;
         m_commandInSketch = false;
+        endCommandScope();
         showError(error);
         refreshScene();
         return;
@@ -1112,6 +1128,7 @@ void MainWindow::startFeatureCommand(const CommandDef& def, const QString& editU
     delete session;
     m_sketch->setPaused(false);
     m_mode = m_commandInSketch ? Mode::Sketch : Mode::Idle;
+    endCommandScope();
     showError(error);
     refreshScene();
     return;
@@ -1261,6 +1278,8 @@ void MainWindow::onCommandFinished(bool committed) {
   m_mode = m_commandInSketch && m_sketch->isActive() ? Mode::Sketch : Mode::Idle;
   m_commandInSketch = false;
   m_sketch->setPaused(false);
+  // The sketch's selection filter as it was before (mitcad#217).
+  endCommandScope();
   m_commandPages->setCurrentWidget(m_mode == Mode::Sketch ? static_cast<QWidget*>(m_palette)
                                                           : m_idlePage);
   if (session != nullptr) {
@@ -1441,8 +1460,14 @@ void MainWindow::followAnalyses() {
   setSection(plane.isObject() ? plane : QJsonValue());
 }
 
+bool MainWindow::sketchShown() const {
+  // A sketch command's panel puts the window in Mode::Command; the sketch
+  // stays on screen (paused), and so do its display options.
+  return m_sketch->isActive() && (m_mode == Mode::Sketch || (m_mode == Mode::Command && m_commandInSketch));
+}
+
 QJsonValue MainWindow::cutPlane() const {
-  if (m_mode != Mode::Sketch || !m_sketch->hideAbove()) {
+  if (!sketchShown() || !m_sketch->hideAbove()) {
     return m_section;
   }
   const geometry::Frame& frame = m_sketch->model().frame;
@@ -1455,6 +1480,10 @@ void MainWindow::showSectionCaps(const std::vector<BodyDisplay>& bodies) {
   const QJsonValue cut = cutPlane();
   if (cut.isNull()) {
     m_viewer->setSectionCaps(TopoDS_Shape(), gp_Ax3());
+    // For UI tests: the caps gone (the bodies whole again).
+    if (!m_loggedCaps.isEmpty()) {
+      qDebug().noquote() << QStringLiteral("Section caps: none");
+    }
     m_loggedCaps.clear();
     return;
   }
@@ -1532,7 +1561,7 @@ void MainWindow::showSectionCaps(const std::vector<BodyDisplay>& bodies) {
 }
 
 void MainWindow::logSketchReach(const std::vector<BodyDisplay>& bodies) {
-  if (m_mode != Mode::Sketch) {
+  if (!sketchShown()) {
     m_loggedReach.clear();
     return;
   }
@@ -2600,6 +2629,17 @@ void MainWindow::showStatus(const QString& message, bool error) {
 
 void MainWindow::createSketchOn(const SelectionItem& plane) {
   if (m_mode == Mode::Idle && isSketchPlane(plane)) {
+    // The design policy (mitcad#220): of the active component, and of the
+    // plane's owner.
+    QString refused = refreshSketchSupports();
+    if (refused.isEmpty()) {
+      refused = sketchSupportRefusal(plane);
+    }
+    if (!refused.isEmpty()) {
+      showError(tr("Create Sketch: %1").arg(refused));
+      qInfo().noquote() << QStringLiteral("Create Sketch refused: %1").arg(refused);
+      return;
+    }
     createSketch(sketchPlaneFields(plane));
   }
 }
@@ -2618,6 +2658,12 @@ void MainWindow::pickItems(const Selection& items) {
     for (const SelectionItem& item : items) {
       if (isSketchPlane(item)) {
         qDebug().noquote() << QStringLiteral("Create Sketch picked %1").arg(summarize({item}));
+        // A browser row of geometry the design policy leaves out.
+        if (const QString refused = sketchSupportRefusal(item); !refused.isEmpty()) {
+          showError(tr("Create Sketch: %1").arg(refused));
+          qInfo().noquote() << QStringLiteral("Create Sketch refused: %1").arg(refused);
+          return;
+        }
         createSketch(sketchPlaneFields(item));
         return;
       }
@@ -2813,7 +2859,9 @@ void MainWindow::onPicked(const Selection& items, Qt::KeyboardModifiers modifier
   if (m_mode == Mode::PickPlane) {
     qDebug().noquote() << QStringLiteral("Create Sketch picked %1").arg(summarize(items));
     for (const SelectionItem& item : items) {
-      if (isSketchPlane(item)) {
+      // The view's filter already leaves out what the design policy
+      // refuses; a pick queued before it changed is checked again.
+      if (isSketchPlane(item) && sketchSupportRefusal(item).isEmpty()) {
         createSketch(sketchPlaneFields(item));
         return;
       }
@@ -2824,13 +2872,19 @@ void MainWindow::onPicked(const Selection& items, Qt::KeyboardModifiers modifier
     return;
   }
   // A click selects, Ctrl or Shift adds or removes; a window
-  // selects what it holds of one kind.
-  const bool add = modifiers & (Qt::ControlModifier | Qt::ShiftModifier);
+  // selects what it holds of one kind. In sketch mode (mitcad#217) Shift
+  // widens a click to the filter's empty rows instead: only Ctrl adds or
+  // removes there, and a window (Shift adds it as before) keeps every kind
+  // the filter let it take.
+  const bool sketching = m_mode == Mode::Sketch;
+  const bool add = sketching && !window ? modifiers.testFlag(Qt::ControlModifier)
+                                        : bool(modifiers & (Qt::ControlModifier | Qt::ShiftModifier));
   Selection next = add ? m_selection : Selection();
   if (window) {
-    const SelectKind kind = preferredKind(items);
-    for (const SelectionItem& item : items) {
-      if (item.kind == kind && !next.contains(item)) {
+    const Selection taken = sketching ? sketchWindowItems(items) : items;
+    const SelectKind kind = sketching ? SelectKind::None : preferredKind(items);
+    for (const SelectionItem& item : taken) {
+      if ((sketching || item.kind == kind) && !next.contains(item)) {
         next.append(item);
       }
     }
@@ -2870,19 +2924,23 @@ void MainWindow::updateIdleView() {
   }
   m_viewer->setHoverColor(QColor(0x2f, 0x9b, 0xff));
   if (m_mode == Mode::PickPlane) {
-    m_viewer->setPickFilter(SelectKind::Plane | SelectKind::Face, isSketchPlane);
+    // Faces and planes the design policy leaves out (mitcad#220) are not
+    // picked or highlighted, whatever else the pick would allow.
+    m_viewer->setPickFilter(SelectKind::Plane | SelectKind::Face, [this](const SelectionItem& item) {
+      return isSketchPlane(item) && sketchSupportRefusal(item).isEmpty();
+    });
     m_viewer->setHighlights({});
     return;
   }
   // A sketch tool takes the clicks; nothing is picked or highlighted. In
-  // sketch mode, only the edited sketch's geometry can be picked.
+  // sketch mode, the sketch's selection filter decides (mitcad#217): only
+  // the edited sketch's geometry, never another sketch's.
   const bool drawing = m_mode == Mode::Sketch && m_sketch->tool() != nullptr;
-  std::function<bool(const SelectionItem&)> test;
   if (m_mode == Mode::Sketch) {
-    const QString uid = m_sketch->uid();
-    test = [uid](const SelectionItem& item) { return !isSketchKind(item.kind) || item.owner == uid; };
+    applySketchScope(drawing);
+  } else {
+    m_viewer->setPickFilter(idleFilter());
   }
-  m_viewer->setPickFilter(drawing ? SelectFilter() : idleFilter(), test);
   std::vector<HighlightDisplay> highlights;
   QStringList featureFaces; // "F4 1": a selected feature's faces (mitcad#28)
   for (const SelectionItem& item : m_selection) {
@@ -2938,6 +2996,9 @@ void MainWindow::showContextMenu(const QPoint& globalPosition, const SelectionIt
   QMenu menu(this);
   QStringList entries;
   const auto add = [&menu, &entries](QAction* action) {
+    if (menu.actions().contains(action)) {
+      return; // offered already (an edit panel also fitting the selection)
+    }
     menu.addAction(action);
     entries << action->text().remove(QLatin1Char('&'));
   };
@@ -2971,7 +3032,11 @@ void MainWindow::showContextMenu(const QPoint& globalPosition, const SelectionIt
       addCall(QStringLiteral("ok"), tr("OK"), [this] { confirm(); });
       addCall(QStringLiteral("cancel"), tr("Cancel"), [this] { cancel(); });
     } else {
-      if (item.isValid() && !m_selection.contains(item)) {
+      // A dimension or a constraint's symbol right-clicked was selected
+      // by the sketch (SketchController::viewerEvent): not the geometry
+      // under it.
+      if (item.isValid() && !m_selection.contains(item) &&
+          !m_sketch->annotationAt(m_viewer->mapFromGlobal(globalPosition))) {
         setSelection({item});
       }
       const bool sketchItems = std::any_of(m_selection.begin(), m_selection.end(),
@@ -2984,10 +3049,16 @@ void MainWindow::showContextMenu(const QPoint& globalPosition, const SelectionIt
           const QString id = m_selection.first().name;
           addCall(QStringLiteral("dimension"), tr("Edit Dimension"), [this, id] { m_sketch->editDimension(id); });
         }
-        // Texts, patterns and offsets have edit panels (P3, P4).
+        // Texts, patterns, offsets and equal spacings have edit panels (P3,
+        // P4, mitcad#221).
         if (m_selection.size() == 1) {
           const QString id = m_selection.first().name;
           const sketch::SketchModel& model = m_sketch->model();
+          if (const sketch::ConstraintData* k =
+                  m_selection.first().kind == SelectKind::SketchConstraint ? model.constraint(id) : nullptr;
+              k != nullptr && k->type == QStringLiteral("equal_spacing")) {
+            add(m_registry->action(QStringLiteral("sketch.edit_equal_spacing")));
+          }
           if (model.text(id) != nullptr) {
             add(m_registry->action(QStringLiteral("sketch.edit_text")));
           }
@@ -3088,8 +3159,20 @@ void MainWindow::startSketch() {
   if (m_mode != Mode::Idle || refuseReadOnly(QStringLiteral("sketch.create"))) {
     return;
   }
+  // The active component's design policy (mitcad#220): one that takes no
+  // sketches says so; nothing is redirected into another component.
+  if (const QString refused = refreshSketchSupports(); !refused.isEmpty()) {
+    showError(tr("Create Sketch: %1").arg(refused));
+    qInfo().noquote() << QStringLiteral("Create Sketch refused: %1").arg(refused);
+    return;
+  }
   // On the selected plane or planar face; else the user is asked for one.
   if (m_selection.size() == 1 && isSketchPlane(m_selection.first())) {
+    if (const QString refused = sketchSupportRefusal(m_selection.first()); !refused.isEmpty()) {
+      showError(tr("Create Sketch: %1").arg(refused));
+      qInfo().noquote() << QStringLiteral("Create Sketch refused: %1").arg(refused);
+      return;
+    }
     createSketch(sketchPlaneFields(m_selection.first()));
     return;
   }
@@ -3098,8 +3181,60 @@ void MainWindow::startSketch() {
   inputActivated(kConstructionGeometry); // shows the origin planes
   updateIdleView();
   updateActions();
-  showHint(tr("Create Sketch: select a plane or a planar face (Esc cancels)."));
+  // Faces and planes the policy leaves out are neither picked nor
+  // highlighted: say whose they are.
+  const QStringList& denied = m_sketchDeniedOwners;
+  showHint(denied.isEmpty()
+               ? tr("Create Sketch: select a plane or a planar face (Esc cancels).")
+               : tr("Create Sketch: select a plane or a planar face (Esc cancels). The design policy "
+                    "leaves out the faces and planes of %1.")
+                     .arg(denied.join(QStringLiteral(", "))));
   qDebug() << "Create Sketch: select a plane";
+  if (!denied.isEmpty()) {
+    qDebug().noquote() << QStringLiteral("Create Sketch: policy leaves out %1").arg(denied.join(QStringLiteral(", ")));
+  }
+  if (qEnvironmentVariableIsSet("MITCAD_LOG_PICKS")) {
+    // Where a click picks each face the policy lets the sketch lie on.
+    qDebug().noquote() << "Pick places:";
+    for (const auto& [item, at] : m_viewer->pickPoints(SelectKind::Face)) {
+      const QPoint point = m_viewer->mapTo(this, at);
+      qDebug().noquote() << QStringLiteral("Pick %1 %2/%3%4 at %5,%6")
+                                .arg(SelectionItem::kindName(item.kind), item.owner, item.name,
+                                     item.occurrence.isEmpty() ? QString() : QStringLiteral(" in ") + item.occurrence)
+                                .arg(point.x())
+                                .arg(point.y());
+    }
+  }
+}
+
+QString MainWindow::refreshSketchSupports() {
+  m_sketchDenied.clear();
+  m_sketchDeniedOwners.clear();
+  const QJsonObject supports = queryObject({{QStringLiteral("query"), QStringLiteral("sketch_supports")}});
+  const QJsonObject paths = supports.value(QStringLiteral("denied_paths")).toObject();
+  for (auto it = paths.begin(); it != paths.end(); ++it) {
+    m_sketchDenied.insert(it.key(), it.value().toString());
+  }
+  // The owners left out, for the hint: the root only when it has bodies of
+  // its own (an assembly's root usually has none).
+  for (const QJsonValue& value : supports.value(QStringLiteral("denied")).toArray()) {
+    const QJsonObject owner = value.toObject();
+    const DocumentSnapshot::Component* component =
+        m_snapshot.component(owner.value(QStringLiteral("component")).toString());
+    if (component != nullptr && (component->uid != QStringLiteral("C0") || !component->bodies.isEmpty())) {
+      m_sketchDeniedOwners << owner.value(QStringLiteral("name")).toString();
+    }
+  }
+  return supports.value(QStringLiteral("sketches")).toString();
+}
+
+QString MainWindow::sketchSupportRefusal(const SelectionItem& item) const {
+  // The origin planes are the active component's own.
+  if (item.kind == SelectKind::Plane && kOriginDatums.contains(item.owner)) {
+    return QString();
+  }
+  const auto denied = m_sketchDenied.constFind(item.occurrence);
+  return denied == m_sketchDenied.cend() ? QString() : denied.value();
 }
 
 void MainWindow::createSketch(const QJsonObject& fields) {
@@ -3139,6 +3274,15 @@ void MainWindow::createSketch(const QJsonObject& fields) {
                             .arg(origin.X())
                             .arg(origin.Y())
                             .arg(origin.Z());
+  // The component it went into: the active one (mitcad#220).
+  const QJsonObject components = queryObject({{QStringLiteral("query"), QStringLiteral("components")}});
+  const QString active = components.value(QStringLiteral("active")).toString();
+  for (const QJsonValue& value : components.value(QStringLiteral("components")).toArray()) {
+    if (value.toObject().value(QStringLiteral("uid")).toString() == active) {
+      qDebug().noquote() << QStringLiteral("Sketch %1 is in %2")
+                                .arg(m_sketch->model().name, value.toObject().value(QStringLiteral("name")).toString());
+    }
+  }
 }
 
 QString MainWindow::featureError(const QString& uid) const {
@@ -3159,6 +3303,9 @@ void MainWindow::enterSketch(const QString& uid, bool existing) {
   m_selection.clear();
   inputActivated(SelectFilter()); // hides the origin planes
   m_sketch->enter(uid);
+  // Every sketch edit starts with the filter's defaults (mitcad#217).
+  m_sketchScope.reset();
+  selectionScopeChanged(QStringLiteral("defaults"));
   m_sketchEnterDepth = undoDepth();
   m_viewer->lookAtSketchPlane();
   m_viewer->setGridPlane(toAx3(m_sketch->model().frame)); // the grid on the sketch plane
@@ -3898,7 +4045,7 @@ void MainWindow::persistResults(const QString& label) {
 bool MainWindow::installEmptyDocument(const QString& name, QString* error) {
   QString reason;
   if (!installDocument(name.isEmpty() ? tr("Untitled") : name, QString(),
-                       [](ModelJob&) { return new_document(); }, reason)) {
+                       [](ModelJob&) { return new_design_document(); }, reason)) {
     if (error != nullptr) {
       *error = reason;
     } else if (!reason.isEmpty()) {

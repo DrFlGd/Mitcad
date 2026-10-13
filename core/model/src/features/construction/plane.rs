@@ -24,6 +24,8 @@
 //! - tangent at a point, along a path, normal at a point: the outward face
 //!   normal or the path's tangent, with the default x axis.
 
+use std::collections::BTreeMap;
+
 use serde::{Deserialize, Serialize};
 
 use super::{GeomRef, PathRef, Want, distinct, finite};
@@ -34,7 +36,9 @@ use crate::datum::{
 use crate::features::{
     CheckContext, EvalContext, Evaluate, FeatureInfo, FeatureOutput, References, is_false,
 };
+use crate::ids::BodyUid;
 use crate::kernel::Kernel;
+use crate::links::OccurrenceLink;
 use crate::parameters::ParamId;
 use crate::profile::{cross, dot};
 
@@ -46,6 +50,13 @@ pub struct ConstructionPlaneDef<P = ParamId> {
     /// stored plane faces the other way (K67).
     #[serde(default, skip_serializing_if = "is_false")]
     pub flip: bool,
+    /// Bodies of other components that the definition's faces, edges and
+    /// vertices are on (mitcad#196, as an extrusion's `object_links`): each
+    /// is read in its component and moved into the plane's coordinates by
+    /// the placements at its point of the timeline, so that a plane between
+    /// faces of two components is made where the design places them.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub links: BTreeMap<BodyUid, OccurrenceLink>,
 }
 
 /// How the plane is defined; lengths in millimetres, angles in radians.
@@ -112,6 +123,7 @@ impl<P> ConstructionPlaneDef<P> {
         Self {
             definition,
             flip: false,
+            links: BTreeMap::new(),
         }
     }
 
@@ -190,6 +202,7 @@ impl<P> ConstructionPlaneDef<P> {
         Ok(ConstructionPlaneDef {
             definition,
             flip: self.flip,
+            links: self.links.clone(),
         })
     }
 
@@ -266,6 +279,7 @@ impl FeatureInfo for ConstructionPlaneDef {
 impl<K: Kernel> Evaluate<K> for ConstructionPlaneDef {
     fn evaluate(&self, ctx: &mut EvalContext<'_, K>) -> Result<FeatureOutput<K::Shape>, String> {
         use PlaneDefinition as D;
+        ctx.geom_links.clone_from(&self.links);
         let plane = match &self.definition {
             D::Offset { plane, distance } => {
                 let base = ctx.plane(plane)?;

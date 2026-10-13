@@ -122,7 +122,8 @@ gp_Pnt center_of(const TopoDS_Shape& shape) {
 // Along a centre line: the sections swept along the part of it between the
 // first and the last section, at right angles to it.
 ShapePtr along_centerline(const std::vector<Prepared>& sections, const Path& centerline,
-                          const detail::NamedWire& named, const NameList& first, const NameList& last) {
+                          const detail::NamedWire& named, const NameList& first, const NameList& last,
+                          bool solid) {
   const detail::Spine spine(detail::path_wire(centerline));
   double a = spine.nearest(center_of(sections.front().shape));
   double b = spine.nearest(center_of(sections.back().shape));
@@ -147,10 +148,10 @@ ShapePtr along_centerline(const std::vector<Prepared>& sections, const Path& cen
   if (!pipe.IsDone()) {
     throw std::runtime_error("the sections could not be lofted along the centre line");
   }
-  if (!pipe.MakeSolid()) {
+  if (solid && !pipe.MakeSolid()) {
     throw std::runtime_error("the loft along the centre line does not close into a solid");
   }
-  detail::FaceNamer namer(detail::oriented_solid(pipe.Shape(), "the loft"));
+  detail::FaceNamer namer(solid ? detail::oriented_solid(pipe.Shape(), "the loft") : pipe.Shape());
   for (const auto& [edge, name] : named.edges) {
     namer.generated(pipe, edge, name);
   }
@@ -159,139 +160,6 @@ ShapePtr along_centerline(const std::vector<Prepared>& sections, const Path& cen
   }
   if (!sections.back().point) {
     detail::name_caps(namer, pipe.LastShape(), last);
-  }
-  return namer.shape();
-}
-
-// The B-spline curves of a wire's edges in wire order, each running along
-// the wire, and the edges.
-std::vector<occ::handle<Geom_BSplineCurve>> wire_curves(const TopoDS_Wire& wire,
-                                                        std::vector<TopoDS_Edge>& edges) {
-  std::vector<occ::handle<Geom_BSplineCurve>> curves;
-  for (BRepTools_WireExplorer it(wire); it.More(); it.Next()) {
-    double first = 0.0;
-    double last = 0.0;
-    const occ::handle<Geom_Curve> curve = BRep_Tool::Curve(it.Current(), first, last);
-    if (curve.IsNull()) {
-      throw std::invalid_argument("a loft section has an edge without a curve");
-    }
-    occ::handle<Geom_BSplineCurve> spline =
-        GeomConvert::CurveToBSplineCurve(new Geom_TrimmedCurve(curve, first, last));
-    if (spline->IsPeriodic()) {
-      spline->SetNotPeriodic();
-    }
-    if (it.Current().Orientation() == TopAbs_REVERSED) {
-      spline->Reverse();
-    }
-    curves.push_back(spline);
-    edges.push_back(it.Current());
-  }
-  return curves;
-}
-
-// A smooth closed loft: through-sections in OCCT is not tangent where it
-// closes, so each side face is a surface interpolating the sections' curves
-// periodically (C1 at the first section, C2 elsewhere), the curves made
-// compatible first. The sections' wires must have as many edges each,
-// starting at corresponding points.
-ShapePtr smooth_closed(const std::vector<Prepared>& sections, const detail::NamedWire& named) {
-  const std::size_t count = sections.size();
-  std::vector<std::vector<occ::handle<Geom_BSplineCurve>>> curves;
-  std::vector<TopoDS_Edge> first_edges;
-  for (std::size_t i = 0; i < count; ++i) {
-    std::vector<TopoDS_Edge> edges;
-    curves.push_back(wire_curves(TopoDS::Wire(sections[i].shape), edges));
-    if (i == 0) {
-      first_edges = edges;
-    } else if (curves[i].size() != curves[0].size()) {
-      throw std::invalid_argument(
-          "unsupported: a smooth closed loft through sections with different numbers of edges");
-    }
-  }
-  // Chord-length parameters of the sections' centres, round to the first.
-  std::vector<gp_Pnt> centres;
-  for (const Prepared& section : sections) {
-    centres.push_back(center_of(section.shape));
-  }
-  const occ::handle<NCollection_HArray1<double>> parameters =
-      new NCollection_HArray1<double>(1, static_cast<int>(count) + 1);
-  double at = 0.0;
-  for (std::size_t i = 0; i <= count; ++i) {
-    parameters->SetValue(static_cast<int>(i) + 1, at);
-    const double step = centres[i % count].Distance(centres[(i + 1) % count]);
-    at += std::max(step, 1.0e-3);
-  }
-  BRepBuilderAPI_Sewing sewing(1.0e-6);
-  std::vector<std::pair<TopoDS_Face, std::string>> faces;
-  for (std::size_t j = 0; j < curves[0].size(); ++j) {
-    GeomFill_SectionGenerator generator;
-    for (std::size_t i = 0; i < count; ++i) {
-      generator.AddCurve(curves[i][j]);
-    }
-    generator.Perform(Precision::PConfusion());
-    const int poles = generator.NbPoles();
-    NCollection_Array1<double> u_knots(1, generator.NbKnots());
-    NCollection_Array1<int> u_mults(1, generator.NbKnots());
-    generator.KnotsAndMults(u_knots, u_mults);
-    // Row k of the surface interpolates pole k of every section.
-    std::vector<NCollection_Array1<gp_Pnt>> section_poles;
-    std::vector<NCollection_Array1<double>> section_weights;
-    for (std::size_t i = 0; i < count; ++i) {
-      section_poles.emplace_back(1, poles);
-      section_weights.emplace_back(1, poles);
-      generator.Poles(static_cast<int>(i) + 1, section_poles.back());
-      generator.Weights(static_cast<int>(i) + 1, section_weights.back());
-    }
-    std::vector<occ::handle<Geom_BSplineCurve>> rows;
-    for (int k = 1; k <= poles; ++k) {
-      for (std::size_t i = 1; i < count; ++i) {
-        if (std::abs(section_weights[i](k) - section_weights[0](k)) > 1e-9) {
-          throw std::invalid_argument(
-              "unsupported: a smooth closed loft through sections of different kinds of curves");
-        }
-      }
-      const occ::handle<NCollection_HArray1<gp_Pnt>> points =
-          new NCollection_HArray1<gp_Pnt>(1, static_cast<int>(count));
-      for (std::size_t i = 0; i < count; ++i) {
-        points->SetValue(static_cast<int>(i) + 1, section_poles[i](k));
-      }
-      GeomAPI_Interpolate interpolate(points, parameters, true, Precision::Confusion());
-      interpolate.Perform();
-      if (!interpolate.IsDone()) {
-        throw std::runtime_error("the closed loft could not be interpolated");
-      }
-      rows.push_back(interpolate.Curve());
-    }
-    const occ::handle<Geom_BSplineCurve>& model = rows.front();
-    const int v_poles = model->NbPoles();
-    NCollection_Array2<gp_Pnt> net(1, poles, 1, v_poles);
-    NCollection_Array2<double> weights(1, poles, 1, v_poles);
-    for (int k = 1; k <= poles; ++k) {
-      for (int l = 1; l <= v_poles; ++l) {
-        net(k, l) = rows[static_cast<std::size_t>(k - 1)]->Pole(l);
-        weights(k, l) = section_weights[0](k);
-      }
-    }
-    const occ::handle<Geom_BSplineSurface> surface =
-        new Geom_BSplineSurface(net, weights, u_knots, model->Knots(), u_mults, model->Multiplicities(),
-                                generator.Degree(), model->Degree(), false, true);
-    const TopoDS_Face face = BRepBuilderAPI_MakeFace(surface, Precision::Confusion()).Face();
-    std::string name;
-    for (const auto& [edge, edge_name] : named.edges) {
-      if (edge.IsSame(first_edges[j])) {
-        name = edge_name;
-      }
-    }
-    faces.emplace_back(face, name);
-    sewing.Add(face);
-  }
-  detail::interruptible([&](const Message_ProgressRange& range) { sewing.Perform(range); });
-  const TopoDS_Shape sewn = sewing.SewedShape();
-  detail::FaceNamer namer(detail::oriented_solid(sewn, "the closed loft"));
-  for (const auto& [face, name] : faces) {
-    if (!name.empty()) {
-      namer.add(sewing.IsModified(face) ? sewing.Modified(face) : face, name);
-    }
   }
   return namer.shape();
 }
@@ -315,11 +183,14 @@ ShapePtr loft(const LoftSpec& spec) {
   if (spec.closed && !spec.centerline.empty()) {
     throw std::invalid_argument("a closed loft has no centre line");
   }
+  if (spec.closed && !spec.ruled && count < 3) {
+    throw std::invalid_argument("a smooth closed loft needs three or more sections");
+  }
   const auto imposes = [](const LoftEnd& end) {
     return end.kind != LoftEnd::Kind::Free && end.kind != LoftEnd::Kind::PointSharp;
   };
-  const bool skinned = imposes(spec.start) || imposes(spec.end) || !spec.rails.empty();
-  if (skinned) {
+  const bool imposed = imposes(spec.start) || imposes(spec.end) || !spec.rails.empty();
+  if (imposed) {
     if (spec.closed) {
       throw std::invalid_argument("a closed loft has no end conditions or rails");
     }
@@ -333,6 +204,12 @@ ShapePtr loft(const LoftSpec& spec) {
       throw std::invalid_argument("unsupported: end conditions of a loft along a centre line");
     }
   }
+  // Smooth lofts through three or more sections, and closed ones, are the
+  // stored ones' piecewise cubic Hermite surfaces (skin.hpp), which OCCT's
+  // through-sections do not give; two sections it makes the same ruled
+  // surface.
+  const bool hermite = !imposed && spec.centerline.empty() && !spec.ruled && count >= 3;
+  const bool skinned = imposed || hermite;
   return detail::run("loft", [&] {
     std::vector<Prepared> sections;
     for (std::size_t i = 0; i < count; ++i) {
@@ -356,11 +233,10 @@ ShapePtr loft(const LoftSpec& spec) {
       for (const Prepared& section : sections) {
         skin.push_back({section.shape, section.point, section.normal, section.body, section.face});
       }
-      result = detail::skinned_loft(skin, spec.start, spec.end, spec.rails, named->named, first, last);
+      result = detail::skinned_loft(skin, spec.start, spec.end, spec.rails, named->named, first, last, spec.closed,
+                                    spec.solid);
     } else if (!spec.centerline.empty()) {
-      result = along_centerline(sections, spec.centerline, named->named, first, last);
-    } else if (spec.closed && !spec.ruled) {
-      result = smooth_closed(sections, named->named);
+      result = along_centerline(sections, spec.centerline, named->named, first, last, spec.solid);
     } else {
       std::vector<TopoDS_Shape> shapes;
       for (const Prepared& section : sections) {
@@ -371,7 +247,7 @@ ShapePtr loft(const LoftSpec& spec) {
       }
       // Matching the wires' starts would turn the repeated first section of
       // a closed loft on its own, twisting the last piece.
-      result = detail::through_sections(shapes, named->named, first, last, spec.ruled, !spec.closed);
+      result = detail::through_sections(shapes, named->named, first, last, spec.ruled, !spec.closed, spec.solid);
     }
     return detail::finished(*result, "the loft");
   });

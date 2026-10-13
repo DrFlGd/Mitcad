@@ -40,7 +40,7 @@ struct DocumentSession::AsyncJob {
   Completion completion;
 };
 
-DocumentSession::State::State(bool demo) : document(demo ? new_demo_document() : new_document()) {}
+DocumentSession::State::State(bool demo) : document(demo ? new_demo_document() : new_design_document()) {}
 
 DocumentSession::DocumentSession(bool demo, QObject* parent)
     : QObject(parent), m_state(demo), m_worker(std::make_unique<ModelWorker>()) {

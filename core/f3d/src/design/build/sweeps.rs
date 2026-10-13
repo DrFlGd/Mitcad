@@ -288,8 +288,16 @@ impl Builder<'_> {
         if let Some(loops) = self.profile_loops(it.id) {
             x.other.insert("_f3d_profile_loops".to_owned(), loops);
         }
-        let Some((slots, _)) = self.slots(it, 10) else {
+        let Some((slots, end)) = self.slots(it, 10) else {
             return;
+        };
+        // `u32 orientation` follows the ten slots (1 parallel, 2
+        // perpendicular, 3 along a guide rail, which the API reports as an
+        // error; mitcad#25, against the API dumps of 9 sweeps).
+        x.orientation = match u32_at(d, end) {
+            Some(1) => Some("ParallelOrientationType".to_owned()),
+            Some(2) => Some("PerpendicularOrientationType".to_owned()),
+            _ => None,
         };
         let holders = slots[..4]
             .iter()
@@ -347,11 +355,27 @@ impl Builder<'_> {
         let seg = self.seg;
         let Some(o) = seg.object(it.id) else { return };
         let d = seg.data(o);
+        // `u8 isHollow | u32 operation` after the root part, and `u32 section
+        // type` (0 circular, 1 square, 2 triangular) after the input slot
+        // of the path (mitcad#25).
         if let Some(root) = seg.root_part(d)
-            && d.get(root.end) == Some(&0)
+            && let Some(hollow @ (0 | 1)) = d.get(root.end).copied()
             && let Some(code) = u32_at(d, root.end + 1)
         {
             x.operation = operation(code);
+            x.is_hollow = Some(hollow == 1);
+            if let Some((_, slot)) = seg
+                .refs_in(d, root.end + 5, d.len())
+                .into_iter()
+                .find(|(_, r)| seg.guid_of(r.id) == Some(INPUT_SLOT))
+            {
+                x.section_type = match u32_at(d, slot.end) {
+                    Some(0) => Some("CircularPipeSectionType".to_owned()),
+                    Some(1) => Some("SquarePipeSectionType".to_owned()),
+                    Some(2) => Some("TriangularPipeSectionType".to_owned()),
+                    _ => None,
+                };
+            }
         }
         let Some((slots, _)) = self.slots(it, 7) else {
             return;
@@ -398,6 +422,13 @@ impl Builder<'_> {
             return None;
         }
         let (rails, q) = ref_slots(seg, d, q + 4, n)?;
+        // `u8 isClosed | u32 isSolid | u8` follow the rails (mitcad#25:
+        // closed and open lofts, solids and surfaces of the variant models,
+        // against the API dumps).
+        if let (Some(&closed @ (0 | 1)), Some(solid @ (0 | 1))) = (d.get(q), u32_at(d, q + 1)) {
+            map.insert("isClosed".to_owned(), json!(closed == 1));
+            map.insert("isSolid".to_owned(), json!(solid == 1));
+        }
         // The sections: the first list of section references after them.
         let (at, _) = seg
             .refs_in(d, q, seg.main_end(o))

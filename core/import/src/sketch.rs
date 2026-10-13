@@ -1199,6 +1199,103 @@ fn frame_corners(
     Some(vec![origin.0, x.0.clone(), y.0.clone()])
 }
 
+/// The entity ids (`p3`, `c7`) a JSON value names, outside its own `id`.
+fn named_entities(v: &Value, out: &mut Vec<String>) {
+    match v {
+        Value::String(s) => {
+            let mut chars = s.chars();
+            if matches!(chars.next(), Some('p' | 'c'))
+                && s.len() > 1
+                && chars.all(|c| c.is_ascii_digit())
+            {
+                out.push(s.clone());
+            }
+        }
+        Value::Array(a) => a.iter().for_each(|x| named_entities(x, out)),
+        Value::Object(m) => m
+            .iter()
+            .filter(|(k, _)| k.as_str() != "id")
+            .for_each(|(_, x)| named_entities(x, out)),
+        _ => {}
+    }
+}
+
+/// The points of a sketch whose stored position may differ a little from
+/// where the solver puts them: those of the reference (linked) entities,
+/// and of the entities the constraints tie to them (a stub whose end lies
+/// on a linked line).
+pub fn reference_points(
+    entities: &[Value],
+    constraints: &[Value],
+    dimensions: &[Value],
+) -> HashSet<u32> {
+    let points_of = |e: &Value| {
+        let mut ids = Vec::new();
+        if e["type"] == "point" {
+            if let Some(id) = e["id"].as_str() {
+                ids.push(id.to_owned());
+            }
+        } else {
+            named_entities(e, &mut ids);
+        }
+        ids
+    };
+    let mut near: HashSet<String> = HashSet::new();
+    for e in entities.iter().filter(|e| e["reference"] == true) {
+        near.extend(points_of(e));
+        if let Some(id) = e["id"].as_str() {
+            near.insert(id.to_owned());
+        }
+    }
+    let mut tied: Vec<String> = Vec::new();
+    for v in constraints.iter().chain(dimensions) {
+        let mut ids = Vec::new();
+        named_entities(v, &mut ids);
+        if ids.iter().any(|i| near.contains(i)) {
+            tied.extend(ids);
+        }
+    }
+    near.extend(tied);
+    // The points of the curves named, and the points themselves.
+    let mut out = HashSet::new();
+    for e in entities {
+        let Some(id) = e["id"].as_str() else { continue };
+        if !near.contains(id) {
+            continue;
+        }
+        for p in points_of(e) {
+            if let Some(n) = p.strip_prefix('p').and_then(|n| n.parse::<u32>().ok()) {
+                out.insert(n);
+            }
+        }
+    }
+    out
+}
+
+/// How far the solved points are from where the file had them, mm,
+/// where the points of the reference entities may be off by `slack`
+/// (the file's linked curves can be a few hundredths of a millimetre
+/// inconsistent among themselves: an arc whose end lies off its circle).
+pub fn position_error_slack(
+    expected: &[(u32, [f64; 2])],
+    solved: &std::collections::BTreeMap<mitcad_model::EntityUid, [f64; 2]>,
+    reference: &HashSet<u32>,
+    slack: f64,
+) -> f64 {
+    expected
+        .iter()
+        .filter_map(|(n, at)| {
+            let s = solved.get(&mitcad_model::EntityUid(*n))?;
+            let d = (s[0] - at[0]).hypot(s[1] - at[1]);
+            Some(if reference.contains(n) && d <= slack {
+                0.0
+            } else {
+                d
+            })
+        })
+        .fold(0.0, f64::max)
+}
+
 /// How far the solved points are from where the file had them, mm.
 pub fn position_error(
     expected: &[(u32, [f64; 2])],
@@ -1211,4 +1308,46 @@ pub fn position_error(
             Some((s[0] - at[0]).hypot(s[1] - at[1]))
         })
         .fold(0.0, f64::max)
+}
+
+#[cfg(test)]
+mod reference_slack_tests {
+    use super::*;
+    use serde_json::json;
+    use std::collections::BTreeMap;
+
+    #[test]
+    fn points_tied_to_reference_curves_may_move_a_little() {
+        let entities = vec![
+            json!({"id": "p1", "type": "point", "at": [0.0, 0.0]}),
+            json!({"id": "p2", "type": "point", "at": [1.0, 0.0]}),
+            json!({"id": "p3", "type": "point", "at": [0.5, 0.0]}),
+            json!({"id": "p4", "type": "point", "at": [5.0, 5.0]}),
+            json!({"id": "p5", "type": "point", "at": [6.0, 5.0]}),
+            json!({"id": "c6", "type": "line", "start": "p1", "end": "p2",
+                   "reference": true, "fixed": true}),
+            json!({"id": "c7", "type": "line", "start": "p3", "end": "p4"}),
+            json!({"id": "c8", "type": "line", "start": "p4", "end": "p5"}),
+        ];
+        // p3 lies on the reference line c6; nothing ties c8 to it.
+        let constraints =
+            vec![json!({"id": "k0", "type": "coincident", "point": "p3", "entity": "c6"})];
+        let near = reference_points(&entities, &constraints, &[]);
+        let expected = |n: u32| near.contains(&n);
+        assert!(expected(1) && expected(2) && expected(3));
+        assert!(!expected(4) && !expected(5), "{near:?}");
+        // The solver moved p3 by 0.01 mm and p5 by the same: only the
+        // point tied to the reference curve is forgiven.
+        let positions = vec![(3, [0.5, 0.0]), (5, [6.0, 5.0])];
+        let solved = BTreeMap::from([
+            (mitcad_model::EntityUid(3), [0.5, 0.01]),
+            (mitcad_model::EntityUid(5), [6.0, 5.01]),
+        ]);
+        let error = position_error_slack(&positions, &solved, &near, 0.05);
+        assert!((error - 0.01).abs() < 1e-12, "{error}");
+        // Beyond the slack nothing is forgiven.
+        let far = BTreeMap::from([(mitcad_model::EntityUid(3), [0.5, 0.2])]);
+        let error = position_error_slack(&positions[..1], &far, &near, 0.05);
+        assert!((error - 0.2).abs() < 1e-12, "{error}");
+    }
 }

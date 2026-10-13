@@ -892,3 +892,29 @@ pub(super) fn inside(pieces: &[(Curve, f64, f64)], p: P) -> bool {
     }
     count % 2 == 1
 }
+
+/// Whether the pieces close up into loops: every end of a piece lies
+/// within a few tolerances of the end of exactly one other piece. A piece
+/// that is a whole closed curve (a circle) closes on its own. No pieces do
+/// not close.
+pub(super) fn closes(pieces: &[(Curve, f64, f64)]) -> bool {
+    let mut ends: Vec<P> = Vec::new();
+    for (c, t0, t1) in pieces {
+        if c.is_closed() && t1 - t0 >= 1.0 - 1e-9 {
+            continue;
+        }
+        ends.push(c.point(*t0));
+        ends.push(c.point(*t1));
+    }
+    if pieces.is_empty() {
+        return false;
+    }
+    let tol = 5.0 * TOL;
+    ends.iter().enumerate().all(|(i, p)| {
+        ends.iter()
+            .enumerate()
+            .filter(|(j, q)| *j != i && dist(*p, **q) <= tol)
+            .count()
+            == 1
+    })
+}

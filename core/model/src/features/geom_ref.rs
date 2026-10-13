@@ -1069,7 +1069,16 @@ impl<K: Kernel> Resolver for EvalContext<'_, K> {
     }
 
     fn shape(&mut self, body: BodyUid) -> Result<K::Shape, String> {
-        self.body(body)
+        let Some(link) = self.geom_links.get(&body).cloned() else {
+            return self.body(body);
+        };
+        let (component, transform) = self
+            .linked(&link)
+            .map_err(|e| format!("body {body}: {e}"))?;
+        let shape = self.body_in(component, body)?;
+        self.kernel
+            .transform_shape(&shape, &transform, None)
+            .map_err(|e| format!("body {body}: {e}"))
     }
 
     fn sketch(&mut self, uid: FeatureUid) -> Result<Arc<SketchOutput>, String> {

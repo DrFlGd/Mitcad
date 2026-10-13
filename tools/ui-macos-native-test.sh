@@ -14,6 +14,10 @@ if [ $# -lt 1 ] || [ $# -gt 3 ]; then
 fi
 ui_init "$1" "${2:-ui-macos-native}"
 scenario=${3:-workflow}
+# A scenario that models in the root starts from an empty design without a
+# stored policy (written below), not from a new design, whose root is an
+# assembly with an active Part1 (mitcad#220).
+plain_design=0
 case "$scenario" in
   workflow) script=native-macos.mitcad-ui ;;
   cancel)
@@ -40,6 +44,8 @@ case "$scenario" in
   history)
     script=native-macos-history.mitcad-ui
     export MITCAD_TEST_RECOMPUTE_DELAY_MS=0,set_marker=800
+    # The root's boxes, its timeline search and the hybrid-assembly question.
+    plain_design=1
     ;;
   replacement) script=native-macos-replacement.mitcad-ui ;;
   *) echo "unknown native scenario: $scenario" >&2; exit 2 ;;
@@ -75,6 +81,11 @@ if [ "$scenario" = replacement ]; then
     ui_fail 'replacement fixture or retained recovery state verification failed'
   fi
   UI_REPLACEMENT_PID=""
+elif [ "$plain_design" = 1 ]; then
+  printf '{"format": "mitcad", "version": 2, "parameters": [], "features": []}\n' \
+    > "$MITCAD_TEST_WORK/root-design.mitcad"
+  MITCAD_TEST_INPUT=$here/ui-scripts/$script \
+    ui_run_app native --ui=native --no-recovery --open "$MITCAD_TEST_WORK/root-design.mitcad"
 else
   MITCAD_TEST_INPUT=$here/ui-scripts/$script \
     ui_run_app native --ui=native --no-recovery

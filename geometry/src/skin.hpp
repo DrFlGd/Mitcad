@@ -69,6 +69,41 @@ private:
   std::unique_ptr<math_Gauss> m_solver;
 };
 
+// The interpolation of values at increasing parameters by a piecewise cubic
+// Hermite curve (continuous in its tangent, not its curvature), as the
+// stored lofts through three or more sections are made: the tangent at an
+// inner value is the derivative of the parabola through it and its two
+// neighbours, and at an end the one for which the first piece is the parabola
+// that leaves the end and arrives with the inner tangent. Periodic: the last
+// value joins the first (`parameters` has one more entry, where the curve
+// closes) and every tangent is a neighbours' one. Cubic B-spline form with
+// triple inner knots; the rows of a surface share the basis, like
+// EndInterpolation.
+class HermiteInterpolation {
+public:
+  HermiteInterpolation(std::vector<double> parameters, bool periodic);
+
+  // 3, or 2 for three points open: the parabola through them, one quadratic
+  // piece (what the two cubic pieces of Hermite tangents come to).
+  int degree() const { return m_degree; }
+  bool periodic() const { return m_periodic; }
+  int pole_count() const { return m_poles; }
+  const NCollection_Array1<double>& knots() const { return m_knots; }
+  const NCollection_Array1<int>& multiplicities() const { return m_mults; }
+
+  // The poles of one coordinate (of the homogeneous ones, for a rational
+  // curve) from the values.
+  std::vector<double> solve(const std::vector<double>& values) const;
+
+private:
+  std::vector<double> m_parameters;
+  bool m_periodic = false;
+  int m_degree = 3;
+  int m_poles = 0;
+  NCollection_Array1<double> m_knots;
+  NCollection_Array1<int> m_mults;
+};
+
 // The polynomial B-spline curve through the points at the parameters with
 // the end derivatives (see EndInterpolation).
 occ::handle<Geom_BSplineCurve> interpolate_with_ends(const std::vector<gp_Pnt>& points,

@@ -233,7 +233,10 @@ design in a project.
   the occurrence paths from the root to both components, resolved at the
   sketch's point of the timeline (`placement(target)⁻¹ ·
   placement(source)`; the cache keys on those placements and the other
-  component's bodies, `Read::Placement`, `Read::BodyIn`). A linked
+  component's bodies, `Read::Placement`, `Read::BodyIn`). The `.f3d` import
+  makes them for sketches on other components' faces and for linked
+  sketch curves that follow one edge of the replay (mitcad#225,
+  `core/import/src/linked.rs`). A linked
   external component is read-only; its bodies are stored in a base
   feature refreshed on open. Since a feature's component is only its
   `FeatureEntry::component`, features made in the root can later move
@@ -286,6 +289,22 @@ design in a project.
   edits the rows in one panel, the type inferred from the picks by the
   `constraint_row` query ([commands.md](../core/model/src/api/commands.md),
   "Assembly constraints").
+- **Design policy** (mitcad#220, `core/model/src/policy.rs`,
+  `document/policy.rs`): the root and each component have seven local
+  settings (sketches, features, components; sketch attachment to and from
+  other components; references to and from them), in the definition state
+  and the design file. A new design (`Document::new_design`) has an
+  Assembly root and an empty, active Part1; `Document::new` and designs
+  without a stored policy have the general defaults. Every change a JSON
+  command or preview makes goes through one check before it is computed
+  (`apply_with`, `apply_move`, previews): the next state's violations are
+  compared with the current ones, counted per owner, setting, object and
+  other owner, and a change that adds one is refused with the reason.
+  Existing violations stay and are reported (the `policy` query); a policy
+  change modifies no content. Importers that call the model directly are
+  not checked. Later move and reparent operations get the check by building
+  their next state through `apply`/`apply_move`
+  ([commands.md](../core/model/src/api/commands.md), "Design policy").
 
 ### Units
 
@@ -432,6 +451,26 @@ the `Shape` type.
   valid, and checking each of a pattern's copies was four fifths of their
   time. A copy that only renames faces (a tool a pattern rebuilt in
   place) shares the input's B-rep.
+- Checks where a boolean changed the body (mitcad#121, `geometry/src/
+  util.hpp`, `is_valid_where_changed`): a shape the checker found valid
+  says so (`Shape::checked_valid`: boolean results, roundings and
+  chamfers, the bodies built from files). A boolean whose targets are all
+  such gives the checker only the result's faces it does not share with
+  them and the faces that meet those at a vertex, and counts over the
+  whole result that each shell is connected, holds no face twice and has
+  one face on each side of each edge running along it in opposite
+  directions. A face the result shares, and whatever only such faces use,
+  is as it was checked (the non-destructive boolean leaves its inputs'
+  sub-shapes alone, and the face merge changes only what the faces it
+  merges use), so the answer is the checker's on the whole shape. Where
+  the result is not solids of one shell each, any of that does not hold,
+  or most faces changed, the whole shape is checked. On bodies of 5 000
+  faces the whole check took seconds after every join and cut.
+- A shape keeps its faces' kinds and areas once measured
+  (`Shape::face_measures`, `face_infos` measures them on all cores), and
+  its optimal bounding box is its faces' boxes found on all cores (the
+  same box as OCCT's `BRepBndLib::AddOptimal`): the `.f3d` import asked
+  for the faces of the same large body dozens of times an extrusion.
 - **Operations must not modify their inputs.** Several OCCT algorithms
   write into input sub-shapes (p-curves, tolerances), which made a feature
   give a different B-rep depending on what ran before. Merged booleans,
@@ -576,6 +615,15 @@ solver's continuation does for a dimension change). The stored definition
 keeps the positions of the last edit; the evaluation's moved entities
 (`SketchOutput::moved`) are what the `sketch` query shows and what the
 next edit starts from (and then stores).
+Each entity of a linked projection follows the fresh curve of its kind most
+like it (by points and sizes; in the kernel's order when that is as
+good), so a projection of some of a face's edges, or of edges listed in
+another order, follows; one that finds none, and a projection whose
+source is gone, keeps its last geometry and is a warning on the sketch
+(`SketchOutput::follow`, mitcad#232). Projecting leaves out curves the
+same as another of the source; Clean Up Projections
+(`sketch/cleanup.rs`) removes repeats across projections and lines on
+another on request.
 
 Editing operations (trim, extend, offset, mirror, patterns, project,
 move/copy, fillet, chamfer, slots, polygons) are model commands producing
@@ -591,6 +639,12 @@ entities and constraints, shared by the UI and the imports.
   exactly with constraints. Chains with ellipses or splines are derived
   after each solve as a C1 cubic B-spline within 1e-4 mm; they are not
   solver unknowns, and dragging them moves the source chain.
+- **Equal spacing** (`sketch/spacing.rs`, mitcad#221): one constraint on
+  independent objects' anchors (points, circle and arc centres, line
+  midpoints) in a stored order; the solver's `EqualSpacing` makes each
+  successive interval (x, y, along a line, or a distance) equal to the
+  next, and an optional `spacing` dimension (`Spacing`, on the first
+  interval) drives them all. No copies, no alignment, no sizes bound.
 
 The solver works on its own ids; the sketch model maps entity ids to them.
 
@@ -753,7 +807,13 @@ not recompute.
   from the application palette (`isDarkPalette`), and the error, warning
   and accent colours and the `set*StyleSheet` helpers follow palette
   changes. The SVG icons are rendered on demand at the asked size and
-  device pixel ratio, with a light outline on a dark palette.
+  device pixel ratio. Their colours are roles (`IconRole`): each source
+  `#rrggbb` stands for one role (outline, lit top, side and far faces, pale
+  surface, hollow, construction, action, sketch, pencil, muted, status), and
+  each role has one colour and opacity per theme, written as
+  `fill-opacity`/`stroke-opacity`/`stop-opacity`; the same on every
+  platform. Amber is for construction and inspection only. A disabled icon
+  draws every role in the outline colour and the whole icon at 34 %.
 
 ## Window layouts and the macOS layer
 
@@ -1420,6 +1480,17 @@ bodies come in with the fallbacks as stored bodies, which joins and cuts
 without participants then leave alone. Both run over the `Kernel` trait,
 so they are testable on the mock kernel; the app runs them in the import
 process.
+
+The replay's geometry differs from the file's by the kernels' noise (an
+earlier feature built a micrometre otherwise). The `.f3d` import's
+geometric tolerance (`import_f3d`'s `geometric_tolerance`, 0.01 mm by
+default; Preferences, General) is the distance within which the replay's
+geometry is taken as the file's where no exact match is: the lookups of
+decoded edges, faces and vertices look within 1e-3 mm first and then
+within it, and an item's new faces must lie on the file's within it
+(mitcad#224, `core/import/README.md`). Fillets and chamfers with a tangent
+chain follow Mitcad's own chain (edges that meet end to end in the same
+direction), not only the kernel's (`commands.md`, fillet).
 
 - `.f3d`: the design streams are decoded into the dump IR
   ([SCHEMA.md](../core/import/SCHEMA.md)), which external dumps (route A)

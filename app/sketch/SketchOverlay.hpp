@@ -68,6 +68,10 @@ public:
   SketchOverlay(SketchController& controller, QWidget* view);
 
   Hit hitTest(const QPointF& position) const;
+  // The dimensions' values and constraint glyphs a window holds (view
+  // pixels): wholly inside it, or with `crossing` also those it touches
+  // (mitcad#217). Only those shown.
+  std::vector<Hit> hitsIn(const QRectF& area, bool crossing) const;
   // Where a dimension's value is drawn.
   QRectF dimensionTextRect(const QString& id) const;
   // The text a dimension shows: its value, "fx:" for an expression,
@@ -96,11 +100,15 @@ private:
   std::vector<DimensionLayout> dimensions() const;
   QRectF textRect(const QPointF& at, const QString& text) const;
   void paintGlyph(QPainter& painter, const Glyph& glyph, bool selected, bool hovered) const;
+  // `color`: the value's text; `lines`: the dimension and extension lines
+  // and arrows, light on a dark background.
   void paintDimension(QPainter& painter, const DimensionShape& shape, const QRectF& textRect,
-                      const QColor& color, bool driven) const;
+                      const QColor& color, const QColor& lines, bool driven) const;
   void paintPreview(QPainter& painter, const ToolPreview& preview) const;
   void paintSnap(QPainter& painter) const;
   void paintEntityHighlight(QPainter& painter, const QString& entity, const QColor& color) const;
+  // An equal spacing's anchors joined in order and numbered (mitcad#221).
+  void paintChain(QPainter& painter, const QStringList& anchors, const QColor& color) const;
   bool isSelected(const QString& kind, const QString& id) const;
 
   SketchController& m_c;

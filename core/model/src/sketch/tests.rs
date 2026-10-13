@@ -610,6 +610,7 @@ fn changed_sketches_find_the_closest_region() {
         solved: std::sync::Arc::new(solved),
         texts: Default::default(),
         moved: Default::default(),
+        follow: Default::default(),
     };
     // Both pieces share three curves with the old key; the bigger one wins.
     // It carries the old key, so the faces made from it keep their names.

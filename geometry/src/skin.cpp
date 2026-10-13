@@ -163,6 +163,103 @@ std::vector<double> EndInterpolation::solve(const std::vector<double>& values,
   return poles;
 }
 
+HermiteInterpolation::HermiteInterpolation(std::vector<double> parameters, bool periodic)
+    : m_parameters(std::move(parameters)), m_periodic(periodic) {
+  const std::size_t n = m_parameters.size() - (periodic ? 1 : 0);
+  if (m_parameters.size() < 2 || n < (periodic ? 3U : 2U)) {
+    throw std::invalid_argument("an interpolation needs two or more points, a closed one three");
+  }
+  for (std::size_t i = 1; i < m_parameters.size(); ++i) {
+    if (!(m_parameters[i] > m_parameters[i - 1])) {
+      throw std::invalid_argument("the parameters of an interpolation must increase");
+    }
+  }
+  const int count = static_cast<int>(m_parameters.size());
+  if (!periodic && count == 3) {
+    m_degree = 2;
+    m_knots.Resize(1, 2, false);
+    m_mults.Resize(1, 2, false);
+    m_knots(1) = m_parameters.front();
+    m_knots(2) = m_parameters.back();
+    m_mults(1) = m_mults(2) = 3;
+    m_poles = 3;
+    return;
+  }
+  m_knots.Resize(1, count, false);
+  m_mults.Resize(1, count, false);
+  for (int i = 0; i < count; ++i) {
+    m_knots(i + 1) = m_parameters[static_cast<std::size_t>(i)];
+    m_mults(i + 1) = periodic || (i > 0 && i + 1 < count) ? 3 : 4;
+  }
+  m_poles = periodic ? 3 * static_cast<int>(n) : 3 * (count - 1) + 1;
+}
+
+std::vector<double> HermiteInterpolation::solve(const std::vector<double>& values) const {
+  const std::size_t n = m_parameters.size() - (m_periodic ? 1 : 0);
+  if (values.size() != n) {
+    throw std::invalid_argument("the interpolation conditions do not match its basis");
+  }
+  if (m_degree == 2) {
+    // The parabola through three values: a quadratic Bezier piece whose
+    // middle pole puts the middle value at its parameter.
+    const double s = (m_parameters[1] - m_parameters[0]) / (m_parameters[2] - m_parameters[0]);
+    const double control =
+        (values[1] - (1 - s) * (1 - s) * values[0] - s * s * values[2]) / (2.0 * s * (1.0 - s));
+    return {values[0], control, values[2]};
+  }
+  // The span after value i, and the tangents (derivatives by the parameter).
+  const auto span = [&](std::size_t i) { return m_parameters[i + 1] - m_parameters[i]; };
+  const auto next = [&](std::size_t i) { return values[(i + 1) % n]; };
+  const auto before = [&](std::size_t i) { return values[(i + n - 1) % n]; };
+  const auto step = [&](std::size_t i) { return (next(i) - values[i]) / span(i); };
+  std::vector<double> tangent(n, 0.0);
+  const auto parabola = [&](std::size_t i, std::size_t back, std::size_t ahead) {
+    // The derivative at i of the parabola through its neighbours, from the
+    // slopes of the spans `back` (before it) and `ahead`.
+    const double a = span(back);
+    const double b = span(ahead);
+    const double left = (values[i] - before(i)) / a;
+    const double right = (next(i) - values[i]) / b;
+    return (b * left + a * right) / (a + b);
+  };
+  if (m_periodic) {
+    for (std::size_t i = 0; i < n; ++i) {
+      tangent[i] = parabola(i, (i + n - 1) % n, i);
+    }
+  } else if (n == 2) {
+    tangent[0] = tangent[1] = step(0);
+  } else {
+    for (std::size_t i = 1; i + 1 < n; ++i) {
+      tangent[i] = parabola(i, i - 1, i);
+    }
+    tangent[0] = 2.0 * step(0) - tangent[1];
+    tangent[n - 1] = 2.0 * step(n - 2) - tangent[n - 2];
+  }
+  // The Bezier points of the pieces: the value, and a third of the tangent
+  // times the span to either side of it.
+  std::vector<double> poles(static_cast<std::size_t>(m_poles));
+  if (m_periodic) {
+    // Value i has the (0-based) pole 3 i, with the Bezier points of the two
+    // pieces meeting there to either side of it (OCCT evaluates a periodic
+    // curve with the value at a triple knot at that pole).
+    for (std::size_t i = 0; i < n; ++i) {
+      const double behind = tangent[i] * span((i + n - 1) % n) / 3.0;
+      const double ahead = tangent[i] * span(i) / 3.0;
+      poles[3 * i] = values[i];
+      poles[(3 * i + poles.size() - 1) % poles.size()] = values[i] - behind;
+      poles[3 * i + 1] = values[i] + ahead;
+    }
+  } else {
+    poles[0] = values[0];
+    for (std::size_t i = 0; i + 1 < n; ++i) {
+      poles[3 * i + 1] = values[i] + tangent[i] * span(i) / 3.0;
+      poles[3 * i + 2] = values[i + 1] - tangent[i + 1] * span(i) / 3.0;
+      poles[3 * i + 3] = values[i + 1];
+    }
+  }
+  return poles;
+}
+
 occ::handle<Geom_BSplineCurve> interpolate_with_ends(const std::vector<gp_Pnt>& points,
                                                      const std::vector<double>& parameters,
                                                      const EndDerivatives& start,

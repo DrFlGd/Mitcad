@@ -205,6 +205,11 @@ pub mod ffi {
         /// `Holder v1.f3d`, `Part v2.f3d` and `references.json`; or the
         /// two files in `<folder>/` without `references.json`.
         fn f3d_write_test_references(dir: &str, folder: &str) -> Result<()>;
+        /// Writes the test assembly as `.f3z` packages into `dir`
+        /// (`mitcad_f3d::testreferences::package_file`, mitcad#229):
+        /// `Package.f3z` with its `Manifest.json` and
+        /// `DesignDescription.json`, and `Package-plain.f3z` without them.
+        fn f3d_write_test_package(dir: &str) -> Result<()>;
 
         // .ipt import (mitcad#60).
         /// Writes a small .ipt part file for tests (`mitcad_ipt::testdata`):
@@ -282,6 +287,18 @@ fn f3d_write_test_references(dir: &str, folder: &str) -> Result<(), String> {
             std::fs::create_dir_all(parent).map_err(|e| format!("{}: {e}", parent.display()))?;
         }
         std::fs::write(&path, data).map_err(|e| format!("{}: {e}", path.display()))?;
+    }
+    Ok(())
+}
+
+/// The packages of [`ffi::f3d_write_test_package`].
+fn f3d_write_test_package(dir: &str) -> Result<(), String> {
+    let dir = std::path::Path::new(dir);
+    std::fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+    for (name, described) in [("Package.f3z", true), ("Package-plain.f3z", false)] {
+        let path = dir.join(name);
+        std::fs::write(&path, mitcad_f3d::testreferences::package_file(described))
+            .map_err(|e| format!("{}: {e}", path.display()))?;
     }
     Ok(())
 }

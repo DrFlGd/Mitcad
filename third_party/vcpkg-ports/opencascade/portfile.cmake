@@ -61,6 +61,7 @@ vcpkg_from_github(
         0090-chfi3d-double-interference-at-vertex-kind.patch
         0091-topopebrepbuild-point-uses-within-array.patch
         0100-brepoffset-faces-vanishing-within-the-offset.patch
+        0110-shapeupgrade-unifysamedomain-chain-not-concatenated.patch
 )
 
 if (VCPKG_LIBRARY_LINKAGE STREQUAL "dynamic")

@@ -971,6 +971,18 @@ void ViewController::showPreferences(const QString& page) {
   folderRow->addWidget(folderPath, 1);
   folderRow->addWidget(openFolder);
   generalForm->addRow(tr("Recovery folder:"), folderRow);
+  // The .f3d import's geometric tolerance (mitcad#224).
+  auto* importTolerance = new QDoubleSpinBox;
+  importTolerance->setObjectName(QStringLiteral("importTolerance"));
+  importTolerance->setDecimals(3);
+  importTolerance->setRange(GeneralSettings::kMinImportTolerance, GeneralSettings::kMaxImportTolerance);
+  importTolerance->setSingleStep(0.001);
+  importTolerance->setSuffix(tr(" mm"));
+  importTolerance->setValue(general->importTolerance);
+  importTolerance->setToolTip(tr("How far an imported design's replayed geometry may be from the file's where it "
+                                 "is not exact: edges and faces the file names are found within it, and a "
+                                 "feature's new faces must lie on the file's within it"));
+  generalForm->addRow(tr("Import tolerance:"), importTolerance);
   groups.insert(QStringLiteral("general"), generalBox);
   // Automatic updates (mitcad#9).
   auto* updatesBox = new UpdatePreferencesBox;
@@ -1099,7 +1111,7 @@ void ViewController::showPreferences(const QString& page) {
   groups.insert(QStringLiteral("display"), displayBox);
 
   *commit = [this, general, top, bottom, scheme, zoomToCursor, reverseZoom, constrained, animate, camera, background,
-             autosave, minutes, cacheBox, updatesBox, slicerBox, remoteBox, renderDevice] {
+             autosave, minutes, importTolerance, cacheBox, updatesBox, slicerBox, remoteBox, renderDevice] {
     m_settings.navigation.scheme = static_cast<NavigationScheme>(scheme->currentData().toInt());
     m_settings.navigation.zoomToCursor = zoomToCursor->isChecked();
     m_settings.navigation.reverseZoom = reverseZoom->isChecked();
@@ -1113,6 +1125,7 @@ void ViewController::showPreferences(const QString& page) {
     GeneralSettings chosen = *general;
     chosen.autosave = autosave->isChecked();
     chosen.autosaveMinutes = minutes->value();
+    chosen.importTolerance = importTolerance->value();
     chosen.save();
     const VersionSettings author = remoteBox->chosenAuthor();
     author.save();
@@ -1222,6 +1235,7 @@ void ViewController::showPreferences(const QString& page) {
       connect(box, &QCheckBox::toggled, host, changed);
     }
     connect(minutes, &QSpinBox::valueChanged, host, changed);
+    connect(importTolerance, &QDoubleSpinBox::valueChanged, host, changed);
     connect(cacheBox, &CachePreferencesBox::changed, host, changed);
     // The boxes of the other pages tell no change of their own: their
     // controls do.

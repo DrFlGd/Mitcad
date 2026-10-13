@@ -54,6 +54,8 @@ native-action view.orthographic
 
 # A body supplies real native browser and history menu targets and makes
 # action dispatch observable in the actual document, independently of input.
+# A new design models in its active Part1 (mitcad#220): the body's row is
+# Part1:1's (O1), shown once the outline is expanded.
 mark
 native-action solid.box
 expect-log 'Command Box started'
@@ -77,21 +79,23 @@ sleep 350
 capture-view-orientation before_browser_menu
 view-pointer press 50 50 right
 expect-view-buttons right
-native-context-menu native.model.body:F1.b0@ cancel
+native-context-menu native.model.body:F1.b0@O1 cancel
 expect-view-buttons none
 view-pointer move 65 55 none
 sleep 250
 expect-view-orientation ${before_browser_menu} unchanged
 mark
+native-expand native.modelTree
 view-pointer press 50 50 right
-native-context-menu native.model.body:F1.b0@ Hide
+native-context-menu native.model.body:F1.b0@O1 Hide
 expect-view-buttons none
 expect-log 'Visibility .*Body1: hidden' 30
 view-pointer move 65 50 none
 sleep 250
 expect-view-orientation ${before_browser_menu} unchanged
 mark
-native-context-menu native.model.body:F1.b0@ Show
+native-expand native.modelTree
+native-context-menu native.model.body:F1.b0@O1 Show
 expect-log 'Visibility .*Body1: shown' 30
 
 capture-view-orientation before_history_menu

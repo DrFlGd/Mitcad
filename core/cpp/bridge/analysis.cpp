@@ -580,7 +580,22 @@ std::unique_ptr<AnalysisSection> analysis_section(const geometry::Shape& shape,
 std::shared_ptr<geometry::Shape> analysis_clip(const geometry::Shape& shape,
                                                const AnalysisPlane& plane) {
   const geometry::CheckedOperation check("clip");
-  return std::make_shared<geometry::Shape>(analysis::clip(shape.occt(), plane_of(plane)));
+  std::vector<analysis::ClippedFace> faces;
+  TopoDS_Shape clipped = analysis::clip(shape.occt(), plane_of(plane), &faces);
+  // What is left of each face keeps the body's names, and so do the edges
+  // and vertices between them: picks on the clipped view refer to the
+  // body (mitcad#233). The caps have none and cannot be picked.
+  std::vector<geometry::Shape::NamedFace> named;
+  for (const analysis::ClippedFace& face : faces) {
+    const int i = shape.face_index(face.face);
+    if (i < 0 || shape.face_names(i).empty()) {
+      continue;
+    }
+    for (const TopoDS_Shape& piece : face.pieces) {
+      named.push_back({piece, shape.face_names(i)});
+    }
+  }
+  return std::make_shared<geometry::Shape>(std::move(clipped), named);
 }
 
 AnalysisComparison analysis_compare_step(const ShapeList& bodies, rust::Str path,

@@ -232,6 +232,11 @@ pub struct ExtrudeFields {
     /// The parameter holder of the wall thickness (the slot after the
     /// location); `None` for a solid extrusion.
     pub thin_holder: Option<u64>,
+    /// The second side's wall of a two-sided thin extrusion (mitcad#25): its
+    /// location (as [`Self::thin_location`]) and the thickness' holder; the
+    /// block is `u8 1 | u32 location | holder | u32 location two | holder
+    /// two | u32 1 | ref BODY_INPUT`.
+    pub thin_two: Option<(u8, u64)>,
 }
 
 impl ExtrudeFields {
@@ -665,12 +670,12 @@ pub fn extrude_fields(seg: &Segment, o: &Object) -> Option<ExtrudeFields> {
         .flatten()
         .map(|v| [v[0], v[1], v[2]])
         .filter(|v| ((v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt() - 1.0).abs() < 1e-6);
-    let (thin, thin_location, thin_holder) = match vector
+    let (thin, thin_location, thin_holder, thin_two) = match vector
         .filter(|_| seg.version(o).is_some_and(|v| v >= 8))
         .and_then(|_| thin_block(seg, d, p + 42))
     {
-        Some((thin, location, holder)) => (Some(thin), Some(location), holder),
-        None => (None, None, None),
+        Some((thin, location, holder, two)) => (Some(thin), Some(location), holder, two),
+        None => (None, None, None, None),
     };
     Some(ExtrudeFields {
         operation_code,
@@ -689,6 +694,7 @@ pub fn extrude_fields(seg: &Segment, o: &Object) -> Option<ExtrudeFields> {
         thin,
         thin_location,
         thin_holder,
+        thin_two,
     })
 }
 
@@ -760,6 +766,10 @@ fn slots_end(seg: &Segment, d: &[u8], from: usize) -> Option<usize> {
     Some(q)
 }
 
+/// A thin block: the flag, the first wall's location and holder, the
+/// second's (two-sided extrusions).
+type ThinBlock = (bool, u8, Option<u64>, Option<(u8, u64)>);
+
 /// [`ExtrudeFields::thin`], [`ExtrudeFields::thin_location`] and
 /// [`ExtrudeFields::thin_holder`]: `from` is the end of the direction
 /// vector. The block is found back from the first input slot after the
@@ -768,13 +778,33 @@ fn slots_end(seg: &Segment, d: &[u8], from: usize) -> Option<usize> {
 /// location and the `u8` flag before them. Only the two consistent forms
 /// are taken: a solid extrusion (flag 0, location 0, no holder) and a thin
 /// one (flag 1, location 0 to 2, a holder).
-fn thin_block(seg: &Segment, d: &[u8], from: usize) -> Option<(bool, u8, Option<u64>)> {
+fn thin_block(seg: &Segment, d: &[u8], from: usize) -> Option<ThinBlock> {
     let after = slots_end(seg, d, from)?;
     let refs = seg.refs_in(d, after, d.len());
     let (slot, _) = refs.iter().find(|(s, r)| {
         seg.guid_of(r.id) == Some(BODY_INPUT) && *s >= after + 4 && u32_at(d, *s - 4) == Some(1)
     })?;
     let anchor = slot - 4;
+    // Two sides: the second wall's holder ends at the anchor, the location
+    // before it, the first wall's holder, its location and the flag.
+    let holder = |end: usize| {
+        refs.iter()
+            .find(|(_, r)| r.end == end && seg.guid_of(r.id) == Some(PARAMETER_HOLDER))
+    };
+    if let Some((s2, r2)) = holder(anchor)
+        && let Some(loc2) = s2
+            .checked_sub(4)
+            .and_then(|a| u32_at(d, a))
+            .filter(|&l| l <= 2)
+        && let Some((s1, r1)) = holder(s2 - 4)
+        && let Some(loc1) = s1
+            .checked_sub(4)
+            .and_then(|a| u32_at(d, a))
+            .filter(|&l| l <= 2)
+        && d.get(s1.checked_sub(5)?) == Some(&1)
+    {
+        return Some((true, loc1 as u8, Some(r1.id), Some((loc2 as u8, r2.id))));
+    }
     let end = anchor.checked_sub(5)?;
     if slice(d, end, anchor) != [0u8; 5] {
         return None;
@@ -791,8 +821,8 @@ fn thin_block(seg: &Segment, d: &[u8], from: usize) -> Option<(bool, u8, Option<
     let flag = *d.get(block)?;
     let location = u32_at(d, block + 1)?;
     match (flag, holder, location) {
-        (0, None, 0) => Some((false, 0, None)),
-        (1, Some(h), 0..=2) => Some((true, location as u8, Some(h))),
+        (0, None, 0) => Some((false, 0, None, None)),
+        (1, Some(h), 0..=2) => Some((true, location as u8, Some(h), None)),
         _ => None,
     }
 }
@@ -985,8 +1015,9 @@ pub fn parse_parameter(seg: &Segment, o: &Object) -> Option<ParameterEntry> {
     // is `u8 | u32 | u8 | str16 comment`, so the comment comes before the
     // number (the string after the role stays empty), and the flags after
     // the expression take 10 bytes.
+    // Version 9 (writer 2705): one more `u32 0` in front of the `u32 6`.
     let v8_comment = if version >= 8 {
-        let (c, q) = str16_at(d, p + 6)?;
+        let (c, q) = str16_at(d, p + if version >= 9 { 10 } else { 6 })?;
         Some((c, q - p))
     } else {
         None
@@ -1223,6 +1254,77 @@ pub fn target_id(seg: &Segment, entity_ref: u64) -> Option<u64> {
         .1;
     let t = seg.data_of(r.id);
     u64_at(t, super::stream::header_end(t)? + 2)
+}
+
+/// The matrix an input slot's role key object holds (the key object
+/// after the slot's inputs, [`SLOT_KEY`]): 16 doubles, a 4 x 4 row-major
+/// transform in cm with the translation in the last column and the row
+/// `0 0 0 1` at the bottom *(read from the entities of other components
+/// that a design's planes and extrusions name: the key objects of the
+/// slots that hold them carry it; the transform that places the entity's
+/// component in the design where the selection was made)*. A byte or two
+/// of flags come before the numbers.
+fn slot_matrix(seg: &Segment, key: u64) -> Option<[[f64; 4]; 4]> {
+    let d = seg.data_of(key);
+    let root = seg.root_part(d)?;
+    (0..4).find_map(|skip| {
+        let v = f64s_at(d, root.end + skip, 16)?;
+        let bottom = v[12..16] == [0.0, 0.0, 0.0, 1.0];
+        let finite = v.iter().all(|x| x.is_finite() && x.abs() < 1e9);
+        let rows = |r: usize| [v[4 * r], v[4 * r + 1], v[4 * r + 2]];
+        let unit = (0..3).all(|r| {
+            let n = rows(r).iter().map(|x| x * x).sum::<f64>();
+            (n - 1.0).abs() < 1e-6
+        });
+        (bottom && finite && unit).then(|| {
+            [
+                [v[0], v[1], v[2], v[3]],
+                [v[4], v[5], v[6], v[7]],
+                [v[8], v[9], v[10], v[11]],
+                [0.0, 0.0, 0.0, 1.0],
+            ]
+        })
+    })
+}
+
+/// The transform each entity input carries in the slot that holds it
+/// ([`slot_matrix`]), by the id of the entity's reference object: where the
+/// entity's component is placed in the design at the selection. Computed
+/// once per segment.
+pub fn slot_contexts(seg: &Segment) -> &HashMap<u64, [[f64; 4]; 4]> {
+    seg.contexts.get_or_init(|| {
+        let mut out = HashMap::new();
+        for o in seg.objects_of(BODY_INPUT) {
+            let d = seg.data(o);
+            let Some(root) = seg.root_part(d) else {
+                continue;
+            };
+            let Some(n) = u32_at(d, root.end).filter(|n| (1..=10_000).contains(n)) else {
+                continue;
+            };
+            let mut q = root.end + 4;
+            let mut inputs = Vec::new();
+            for _ in 0..n {
+                let Some(r) = seg.ref_at(d, q) else { break };
+                inputs.push(r.id);
+                q = r.end;
+            }
+            if inputs.len() != n as usize {
+                continue;
+            }
+            let key = seg
+                .refs_in(d, q, d.len())
+                .into_iter()
+                .find(|(_, r)| seg.guid_of(r.id) == Some(SLOT_KEY));
+            let Some(matrix) = key.and_then(|(_, r)| slot_matrix(seg, r.id)) else {
+                continue;
+            };
+            for input in inputs {
+                out.entry(input).or_insert(matrix);
+            }
+        }
+        out
+    })
 }
 
 #[cfg(test)]

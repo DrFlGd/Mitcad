@@ -5,10 +5,12 @@
 //! normal onto the plane and become fixed reference entities. Lines stay
 //! lines, circles in parallel planes stay circles, other circles and
 //! ellipses become ellipses (or lines seen edge on), B-splines keep their
-//! knots with projected poles. Ends that meet share a point. A linked
+//! knots with projected poles. Ends that meet share a point; a curve or
+//! point the same as another of the source is projected once. A linked
 //! projection is recorded ([`Projection`]) and its entities follow the
-//! source at every evaluation; when the source changes kind or count, the
-//! entities keep their last geometry (lost projections are kept).
+//! source at every evaluation, each the fresh curve of its kind most like
+//! it (mitcad#232); an entity that finds none, and the entities of a lost
+//! source, keep their last geometry, and the sketch warns about them.
 
 use std::collections::BTreeMap;
 
@@ -398,50 +400,463 @@ pub fn transform_curve(t: &Transform, curve: &Curve3) -> Curve3 {
     }
 }
 
+/// How a linked projection followed its source at an evaluation, when
+/// anything of it did not (mitcad#232).
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct ProjectionFollow {
+    /// The projection's index in the definition's `projections`.
+    pub projection: usize,
+    /// Its curves and loose points that found nothing like them in the
+    /// source: they keep their last geometry.
+    pub unfollowed: Vec<EntityUid>,
+    /// The source's curves and points no entity of the projection follows
+    /// (a projection of some of a face's edges, an edge the face gained).
+    pub unmatched: usize,
+    /// The source has no curves (it is gone): everything kept.
+    pub lost: bool,
+}
+
+impl ProjectionFollow {
+    /// The evaluation's warning about it; None when its entities all
+    /// followed (source curves nothing follows are no warning: a
+    /// projection may hold only some of its source's curves).
+    pub fn warning(&self, projection: &Projection) -> Option<String> {
+        if self.lost {
+            return Some(format!(
+                "the projection of {} does not follow it: it is gone, and its entities keep \
+                 their last geometry",
+                projection.source
+            ));
+        }
+        if self.unfollowed.is_empty() {
+            return None;
+        }
+        let names: Vec<String> = self
+            .unfollowed
+            .iter()
+            .map(|id| entity_name(projection, *id))
+            .collect();
+        let one = names.len() == 1;
+        Some(format!(
+            "the projection of {} does not follow it with {}: nothing like {} is in it now, \
+             so {} {} last geometry",
+            projection.source,
+            names.join(", "),
+            if one { "it" } else { "them" },
+            if one { "it keeps" } else { "they keep" },
+            if one { "its" } else { "their" },
+        ))
+    }
+}
+
+/// `p7` or `c9`, as the projection lists it.
+fn entity_name(projection: &Projection, id: EntityUid) -> String {
+    projection
+        .entities
+        .iter()
+        .find(|r| r.uid() == id)
+        .map_or_else(|| format!("c{}", id.0), ToString::to_string)
+}
+
+/// What [`follow_links`] did.
+#[derive(Debug, Clone, Default)]
+pub struct Followed {
+    /// The definition with linked projections moved to their sources'
+    /// current geometry, or None when nothing moved.
+    pub def: Option<SketchDef>,
+    /// The projections that did not follow all the way.
+    pub reports: Vec<ProjectionFollow>,
+}
+
 /// The definition with linked projections moved to their sources' current
-/// geometry, or None when there are none or nothing moved.
+/// geometry (None when there are none or nothing moved), and what of them
+/// could not follow. Each entity follows the fresh curve of its kind most
+/// like it ([`pair`]); one that finds none keeps its last geometry.
 pub fn follow_links<K: Kernel>(
     def: &SketchDef,
     frame: &SketchFrame,
     ctx: &mut EvalContext<'_, K>,
-) -> Result<Option<SketchDef>, String> {
+) -> Result<Followed, String> {
+    let mut out = Followed::default();
     if def.projections.is_empty() {
-        return Ok(None);
+        return Ok(out);
     }
     let mut updated = def.clone();
     let mut changed = false;
-    for projection in &def.projections {
+    let index = super::EntityIndex::new(&def.entities);
+    let old_at = |id: EntityUid| index.point(id);
+    for (k, projection) in def.projections.iter().enumerate() {
         let curves = source_curves(projection, ctx)?;
         if curves.is_empty() {
             // A lost projection keeps its last geometry.
+            out.reports.push(ProjectionFollow {
+                projection: k,
+                lost: true,
+                ..ProjectionFollow::default()
+            });
             continue;
         }
         // Fresh ids above the sketch's: the old ids replace them one at a
         // time, so no old id may also be a fresh one still to replace.
         let mut counter = def.entities.iter().map(|e| e.id.0).max().unwrap_or(0);
-        let fresh = entities(&project(&curves, frame), &mut || {
+        let fresh = entities(&distinct(project(&curves, frame)), &mut || {
             counter += 1;
             EntityUid(counter)
         });
         let old: Vec<Entity> = linked_entities(def, projection);
-        if shape_of(&fresh) != shape_of(&old) {
-            continue;
+        let pairing = pair(&old, &old_at, &fresh);
+        for (id, kind) in pairing.kinds {
+            if let Some(target) = updated.entity_mut(id)
+                && target.kind != kind
+            {
+                target.kind = kind;
+                changed = true;
+            }
         }
-        for (new, old) in fresh.iter().zip(&old) {
-            if let Some(target) = updated.entity_mut(old.id) {
-                let mut kind = new.kind.clone();
-                // Keep the old point ids.
-                for (from, to) in new.kind.points().iter().zip(old.kind.points()) {
-                    kind.replace_point(*from, to);
-                }
-                if target.kind != kind {
-                    target.kind = kind;
-                    changed = true;
-                }
+        if !pairing.unfollowed.is_empty() || pairing.unmatched > 0 {
+            out.reports.push(ProjectionFollow {
+                projection: k,
+                unfollowed: pairing.unfollowed,
+                unmatched: pairing.unmatched,
+                lost: false,
+            });
+        }
+    }
+    out.def = changed.then_some(updated);
+    Ok(out)
+}
+
+/// How far apart, relative to the size of the geometry, two curves or
+/// points may be and still be the same.
+pub(crate) const SAME: f64 = 1e-7;
+
+/// The projected primitives without repeats: a curve or point the same as
+/// an earlier one (a seam edge a face lists twice, edges seen edge on that
+/// project onto one line) is left out (mitcad#232).
+pub fn distinct(projected: Vec<Projected>) -> Vec<Projected> {
+    let mut size = 1.0_f64;
+    for p in &projected {
+        if let Projected::Curve(c) = p {
+            let (lo, hi) = c.bounds();
+            size = size.max(norm(lo)).max(norm(hi));
+        }
+    }
+    let tol = SAME * size;
+    let mut out: Vec<Projected> = Vec::new();
+    for p in projected {
+        if !out.iter().any(|o| same_projected(o, &p, tol)) {
+            out.push(p);
+        }
+    }
+    out
+}
+
+fn same_projected(a: &Projected, b: &Projected, tol: f64) -> bool {
+    let near = |p: P2, q: P2| dist(p, q) <= tol;
+    let close = |x: f64, y: f64| (x - y).abs() <= tol;
+    let ends = |a: &Curve2, b: &Curve2| {
+        a.ends()
+            .zip(b.ends())
+            .is_some_and(|(x, y)| near(x.0, y.0) && near(x.1, y.1))
+    };
+    let middle = |c: &Curve2| {
+        let (t0, t1) = c.domain();
+        c.point((t0 + t1) / 2.0)
+    };
+    let (a, b) = match (a, b) {
+        (Projected::Point(p), Projected::Point(q)) => return near(*p, *q),
+        (Projected::Curve(a), Projected::Curve(b)) => (a, b),
+        _ => return false,
+    };
+    match (a, b) {
+        (Curve2::Line { a: a0, b: a1 }, Curve2::Line { a: b0, b: b1 }) => {
+            (near(*a0, *b0) && near(*a1, *b1)) || (near(*a0, *b1) && near(*a1, *b0))
+        }
+        (
+            Curve2::Circle {
+                center: c0,
+                radius: r0,
+                ..
+            },
+            Curve2::Circle {
+                center: c1,
+                radius: r1,
+                ..
+            },
+        ) => near(*c0, *c1) && close(*r0, *r1),
+        (Curve2::Arc { .. }, Curve2::Arc { .. })
+        | (Curve2::EllipticalArc { .. }, Curve2::EllipticalArc { .. }) => {
+            ends(a, b) && near(middle(a), middle(b))
+        }
+        (
+            Curve2::Ellipse {
+                center: c0,
+                major: m0,
+                minor: n0,
+                rotation: t0,
+            },
+            Curve2::Ellipse {
+                center: c1,
+                major: m1,
+                minor: n1,
+                rotation: t1,
+            },
+        ) => {
+            // The major axis either way round.
+            let turn = (t0 - t1).rem_euclid(std::f64::consts::PI);
+            let turn = turn.min(std::f64::consts::PI - turn);
+            near(*c0, *c1) && close(*m0, *m1) && close(*n0, *n1) && turn * m0.max(1.0) <= tol
+        }
+        (Curve2::Nurbs(x), Curve2::Nurbs(y)) => {
+            x.degree == y.degree
+                && x.control.len() == y.control.len()
+                && x.weights.len() == y.weights.len()
+                && x.knots.len() == y.knots.len()
+                && (x.control.iter().zip(&y.control).all(|(p, q)| near(*p, *q))
+                    || x.control
+                        .iter()
+                        .zip(y.control.iter().rev())
+                        .all(|(p, q)| near(*p, *q)))
+        }
+        _ => false,
+    }
+}
+
+/// An entity's geometry to compare with another of its kind: its points'
+/// positions and its sizes; None for a kind projections do not make or a
+/// point that is missing.
+fn anchors(kind: &EntityKind, at: &dyn Fn(EntityUid) -> Option<P2>) -> Option<(Vec<P2>, Vec<f64>)> {
+    let points = |ids: &[EntityUid]| ids.iter().map(|id| at(*id)).collect::<Option<Vec<P2>>>();
+    Some(match kind {
+        EntityKind::Point { at } => (vec![*at], Vec::new()),
+        EntityKind::Circle { center, radius, .. } => (points(&[*center])?, vec![*radius]),
+        EntityKind::Ellipse { minor_radius, .. }
+        | EntityKind::EllipticalArc { minor_radius, .. } => {
+            (points(&kind.points())?, vec![*minor_radius])
+        }
+        EntityKind::Line { .. } | EntityKind::Arc { .. } => (points(&kind.points())?, Vec::new()),
+        EntityKind::Spline {
+            degree,
+            control,
+            weights,
+            knots,
+        } => {
+            let mut sizes = vec![f64::from(*degree), knots.len() as f64];
+            sizes.extend(weights);
+            (points(control)?, sizes)
+        }
+        EntityKind::FittedSpline { .. } => return None,
+    })
+}
+
+/// How unlike two entities' geometry is (the distances of their points
+/// plus the differences of their sizes), and whether the second runs the
+/// other way round (lines and splines); None when they are not of one kind
+/// and form.
+pub(crate) fn unlikeness(
+    a: &EntityKind,
+    a_at: &dyn Fn(EntityUid) -> Option<P2>,
+    b: &EntityKind,
+    b_at: &dyn Fn(EntityUid) -> Option<P2>,
+) -> Option<(f64, bool)> {
+    if a.type_name() != b.type_name() {
+        return None;
+    }
+    let (pa, sa) = anchors(a, a_at)?;
+    let (pb, sb) = anchors(b, b_at)?;
+    if pa.len() != pb.len() || sa.len() != sb.len() {
+        return None;
+    }
+    let sizes: f64 = sa.iter().zip(&sb).map(|(x, y)| (x - y).abs()).sum();
+    let ahead: f64 = pa.iter().zip(&pb).map(|(p, q)| dist(*p, *q)).sum();
+    if matches!(a, EntityKind::Line { .. } | EntityKind::Spline { .. }) {
+        let back: f64 = pa
+            .iter()
+            .zip(pb.iter().rev())
+            .map(|(p, q)| dist(*p, *q))
+            .sum();
+        if back < ahead {
+            return Some((back + sizes, true));
+        }
+    }
+    Some((ahead + sizes, false))
+}
+
+/// How a projection's entities follow fresh ones made from its source.
+#[derive(Debug, Default)]
+struct Pairing {
+    /// The new kinds of the old entities that follow, points included.
+    kinds: Vec<(EntityUid, EntityKind)>,
+    unfollowed: Vec<EntityUid>,
+    unmatched: usize,
+}
+
+/// A pair of an old and a fresh entity (indices), how unlike they are and
+/// whether the fresh one runs the other way round.
+type Pair = (usize, usize, f64, bool);
+
+/// Pairs a projection's entities (`old`, their points' positions from
+/// `old_at`) with `fresh` ones made from its source's current curves: each
+/// with the fresh one of its kind most like it, in the order of the lists
+/// when that is as good (the kernel lists a source's curves the same way
+/// each time) and nearest first otherwise, so that a projection of some of
+/// a source's curves, or of curves listed in another order or from another
+/// start, follows. An entity the same as another of the projection (a
+/// curve projected twice) follows the same fresh one.
+fn pair(old: &[Entity], old_at: &dyn Fn(EntityUid) -> Option<P2>, fresh: &[Entity]) -> Pairing {
+    let fresh_points: BTreeMap<EntityUid, P2> = fresh
+        .iter()
+        .filter_map(|e| match e.kind {
+            EntityKind::Point { at } => Some((e.id, at)),
+            _ => None,
+        })
+        .collect();
+    let fresh_at = |id: EntityUid| fresh_points.get(&id).copied();
+    // Curves, then the points no curve of the list uses.
+    let items = |list: &[Entity]| -> Vec<Entity> {
+        let used: std::collections::BTreeSet<EntityUid> =
+            list.iter().flat_map(|e| e.kind.points()).collect();
+        let curves = list.iter().filter(|e| !e.is_point());
+        let loose = list
+            .iter()
+            .filter(|e| e.is_point() && !used.contains(&e.id));
+        curves.chain(loose).cloned().collect()
+    };
+    let (olds, news) = (items(old), items(fresh));
+    let cost = |i: usize, j: usize| unlikeness(&olds[i].kind, old_at, &news[j].kind, &fresh_at);
+    // In the order of the lists.
+    let in_order: Option<Vec<Pair>> = (olds.len() == news.len()
+        && shape_of(old) == shape_of(fresh))
+    .then(|| {
+        (0..olds.len())
+            .map(|i| cost(i, i).map(|(c, back)| (i, i, c, back)))
+            .collect::<Option<Vec<_>>>()
+    })
+    .flatten();
+    // Nearest first.
+    let mut candidates: Vec<Pair> = Vec::new();
+    for i in 0..olds.len() {
+        for j in 0..news.len() {
+            if let Some((c, back)) = cost(i, j) {
+                candidates.push((i, j, c, back));
             }
         }
     }
-    Ok(changed.then_some(updated))
+    candidates.sort_by(|a, b| a.2.total_cmp(&b.2));
+    let (mut old_taken, mut new_taken) = (vec![false; olds.len()], vec![false; news.len()]);
+    let mut nearest: Vec<Pair> = Vec::new();
+    for (i, j, c, back) in candidates {
+        if !old_taken[i] && !new_taken[j] {
+            old_taken[i] = true;
+            new_taken[j] = true;
+            nearest.push((i, j, c, back));
+        }
+    }
+    let total = |pairs: &[Pair]| pairs.iter().map(|p| p.2).sum::<f64>();
+    let mut pairs = match in_order {
+        Some(in_order)
+            if in_order.len() > nearest.len()
+                || total(&in_order) <= total(&nearest) * (1.0 + 1e-9) + 1e-12 =>
+        {
+            in_order
+        }
+        _ => nearest,
+    };
+    // What counts as the same, by the size of the projection's geometry.
+    let mut size = 1.0_f64;
+    for e in &olds {
+        for p in anchors(&e.kind, old_at).map(|a| a.0).unwrap_or_default() {
+            size = size.max(norm(p));
+        }
+    }
+    // Repeats of a paired entity follow its fresh one.
+    let paired: Vec<(usize, usize)> = pairs.iter().map(|p| (p.0, p.1)).collect();
+    for i in 0..olds.len() {
+        if paired.iter().any(|p| p.0 == i) {
+            continue;
+        }
+        let twin = paired.iter().find(|(k, _)| {
+            unlikeness(&olds[i].kind, old_at, &olds[*k].kind, old_at)
+                .is_some_and(|(c, _)| c <= SAME * size)
+        });
+        if let Some(&(_, j)) = twin
+            && let Some((c, back)) = cost(i, j)
+        {
+            pairs.push((i, j, c, back));
+        }
+    }
+    let mut out = Pairing::default();
+    let mut moved: BTreeMap<EntityUid, P2> = BTreeMap::new();
+    for &(i, j, _, back) in &pairs {
+        let (o, f) = (&olds[i], &news[j]);
+        if let (EntityKind::Point { .. }, EntityKind::Point { at }) = (&o.kind, &f.kind) {
+            moved.entry(o.id).or_insert(*at);
+            continue;
+        }
+        let (op, fp) = (o.kind.points(), f.kind.points());
+        let n = op.len();
+        for (k, id) in op.iter().enumerate() {
+            let from = if back { fp[n - 1 - k] } else { fp[k] };
+            if let Some(at) = fresh_at(from) {
+                moved.entry(*id).or_insert(at);
+            }
+        }
+        let kind = match (&o.kind, &f.kind) {
+            // A line is its points (and the user's centre line flag).
+            (EntityKind::Line { .. }, _) => o.kind.clone(),
+            (
+                EntityKind::Spline { .. },
+                EntityKind::Spline {
+                    degree,
+                    weights,
+                    knots,
+                    ..
+                },
+            ) if back => {
+                let (lo, hi) = (
+                    knots.first().copied().unwrap_or(0.0),
+                    knots.last().copied().unwrap_or(1.0),
+                );
+                EntityKind::Spline {
+                    degree: *degree,
+                    control: op.clone(),
+                    weights: weights.iter().rev().copied().collect(),
+                    knots: knots.iter().rev().map(|k| lo + hi - k).collect(),
+                }
+            }
+            _ => {
+                let mut kind = f.kind.clone();
+                // Keep the old point ids.
+                for (from, to) in fp.iter().zip(&op) {
+                    kind.replace_point(*from, *to);
+                }
+                // Where a circle starts (its seam, an import's) is no
+                // geometry of its source: kept.
+                if let (
+                    EntityKind::Circle { start, .. },
+                    EntityKind::Circle {
+                        start: old_start, ..
+                    },
+                ) = (&mut kind, &o.kind)
+                {
+                    *start = *old_start;
+                }
+                kind
+            }
+        };
+        out.kinds.push((o.id, kind));
+    }
+    for (id, at) in moved {
+        out.kinds.push((id, EntityKind::Point { at }));
+    }
+    out.unfollowed = (0..olds.len())
+        .filter(|i| !pairs.iter().any(|p| p.0 == *i))
+        .map(|i| olds[i].id)
+        .collect();
+    out.unmatched = (0..news.len())
+        .filter(|j| !pairs.iter().any(|p| p.1 == *j))
+        .count();
+    out
 }
 
 /// Solves a definition whose linked projections [`follow_links`] moved

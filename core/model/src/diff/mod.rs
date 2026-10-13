@@ -1337,7 +1337,7 @@ fn component_changes(a: &Assembly, b: &Assembly) -> Vec<ItemChange> {
         let root = (
             ComponentUid::ROOT,
             assembly.root_name.clone(),
-            json!({"name": assembly.root_name}),
+            json!({"name": assembly.root_name, "policy": assembly.root_policy}),
         );
         std::iter::once(root)
             .chain(assembly.components.iter().map(|c| {
@@ -1345,7 +1345,7 @@ fn component_changes(a: &Assembly, b: &Assembly) -> Vec<ItemChange> {
                     c.uid,
                     c.name.clone(),
                     json!({"name": c.name, "created_by": c.created_by, "link": c.link,
-                           "library": c.library}),
+                           "library": c.library, "policy": c.policy}),
                 )
             }))
             .collect()

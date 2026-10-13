@@ -11,6 +11,7 @@
 class QAction;
 class QEvent;
 class QMenu;
+class QMouseEvent;
 class QPaintEvent;
 class QResizeEvent;
 class QShowEvent;
@@ -23,7 +24,8 @@ class CommandRegistry;
 
 // The toolbar: workspace tabs (SOLID, and SKETCH while sketching),
 // each with groups (CREATE, MODIFY, ...) of command buttons; the group's
-// name opens a menu of all its commands.
+// name opens a menu of all its commands, a subgroup's (CommandDef::subgroup)
+// as a submenu whose pinned command is a split button (mitcad#222).
 //
 // Presentation::Mac is the Floating chrome's: the tabs are a segmented control
 // that the title bar hosts (tabBar()), the groups are rounded capsules and the
@@ -94,12 +96,16 @@ private:
   QWidget* m_sketchPage = nullptr;
   QHash<QString, Extras> m_extras;   // by "tab/group"
   QHash<QString, QWidget*> m_groupButtons; // by "tab/group", for logLayout
+  // The subgroups' split buttons (mitcad#222), by "tab/group/subgroup".
+  QHash<QString, QToolButton*> m_splitButtons;
   QHash<QWidget*, QList<GroupInfo>> m_groupsOfPage;
 };
 
 // A command button of the Mac presentation (also the title bar's Undo and
 // Redo): no bevel, a rounded highlight on hover, a darker one pressed, the
 // accent tint when checked. The default action gives icon, tooltip and state.
+// With QToolButton::MenuButtonPopup it is a split button (mitcad#222): a
+// chevron part at the right opens its menu.
 class RibbonButton : public QToolButton {
   Q_OBJECT
 
@@ -111,6 +117,7 @@ public:
 protected:
   void paintEvent(QPaintEvent* event) override;
   void changeEvent(QEvent* event) override;
+  void mousePressEvent(QMouseEvent* event) override;
 
 private:
   int m_iconSize;

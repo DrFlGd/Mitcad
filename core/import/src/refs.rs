@@ -7,12 +7,39 @@
 use mitcad_f3d::design::ir::{Fingerprint, Vec3};
 use mitcad_model::analysis::CompareOptions;
 use mitcad_model::datum::SurfaceGeometry;
-use mitcad_model::{BodyUid, Document, EdgeName, FaceName, Kernel, Plane, VertexName};
+use mitcad_model::{
+    BodyUid, ComponentUid, Document, EdgeName, FaceName, Kernel, Plane, VertexName,
+};
 
 use crate::geom::{self, mm, mm3};
 use crate::history::{Sig, StoredBody};
 use crate::report::BodyReport;
 use std::sync::Arc;
+
+/// The bodies a fingerprint's entity is looked for among: those of the
+/// other document the file names it in (`_f3d.document`) where the import
+/// has that document's components filled (mitcad#196), else the bodies at
+/// the marker (outside those components).
+pub fn bodies_for<'d, K: Kernel>(
+    doc: &'d Document<K>,
+    fp: &Fingerprint,
+) -> Vec<mitcad_model::BodyView<'d, K::Shape>> {
+    // The components of the occurrences the file's reference is in, where
+    // the import knows them (a document placed more than once has a copy
+    // per arrangement, and the reference is in one of them).
+    if let Some(components) = fp
+        .f3d
+        .as_ref()
+        .and_then(|f| f.object_id)
+        .and_then(|o| doc.import_focus(o))
+    {
+        return doc.bodies_of_components(components);
+    }
+    match fp.f3d.as_ref().and_then(|f| f.document.as_deref()) {
+        Some(guid) if !doc.import_scope(guid).is_empty() => doc.scope_bodies(guid),
+        _ => doc.bodies(),
+    }
+}
 
 /// Every planar face of the bodies at the marker with its plane (outward
 /// normal). Each body's are kept by its version ([`planes_of`]).
@@ -118,6 +145,77 @@ pub(crate) fn planes_of(version: u128, find: impl FnOnce() -> Vec<(FaceName, Pla
     planes
 }
 
+// The geometric tolerance of the replay's lookups (mitcad#224).
+
+/// How far (mm) the replay's geometry may be from the file's for a match
+/// the matchers take as exact: their first pass.
+pub const EXACT: f64 = 1e-3;
+
+/// The default of [`crate::Options::geometric_tolerance`] (mm).
+pub const DEFAULT_GEOMETRIC_TOLERANCE: f64 = 0.01;
+
+std::thread_local! {
+    /// The import's geometric tolerance on this thread
+    /// ([`GeometricTolerance`]).
+    static GEOMETRIC: std::cell::Cell<f64> =
+        const { std::cell::Cell::new(DEFAULT_GEOMETRIC_TOLERANCE) };
+    /// The largest deviation beyond [`EXACT`] a match took since it was last
+    /// taken ([`take_deviation`]).
+    static DEVIATION: std::cell::Cell<Option<f64>> = const { std::cell::Cell::new(None) };
+}
+
+/// The distance (mm) within which the replay's geometry is taken as the
+/// file's where no exact match is (`Options::geometric_tolerance`, set for
+/// the import's thread by [`GeometricTolerance`]): the second pass of the
+/// lookups of decoded edges, faces and vertices ([`dressup_edge_match`],
+/// [`resolve_edge_where`], [`resolve_face_where`], [`resolve_vertex`]) and
+/// the face distance of the geometric check (`geometric.rs`). The replay
+/// differs from the file by the kernels' noise: an earlier feature built
+/// 1 µm otherwise moves every later edge on it as far.
+pub fn geometric_tolerance() -> f64 {
+    GEOMETRIC.with(std::cell::Cell::get)
+}
+
+/// The wider tolerance of the matchers' second pass; None when it is not
+/// wider than [`EXACT`].
+fn widened() -> Option<f64> {
+    let tolerance = geometric_tolerance();
+    (tolerance > EXACT).then_some(tolerance)
+}
+
+/// Notes the deviation of a match that needed more than [`EXACT`].
+fn note_deviation(distance: f64) {
+    DEVIATION.with(|d| d.set(Some(d.get().map_or(distance, |o| o.max(distance)))));
+}
+
+/// The largest deviation beyond [`EXACT`] the matches on this thread took
+/// since the last call (mm), for the item's report; None when none did.
+pub fn take_deviation() -> Option<f64> {
+    DEVIATION.with(|d| d.take())
+}
+
+/// Sets the geometric tolerance for this thread until dropped (the import
+/// and its workers; an import inside an import keeps the outer one's once
+/// it ends).
+pub struct GeometricTolerance(f64);
+
+impl GeometricTolerance {
+    pub fn set(tolerance: f64) -> Self {
+        let tolerance = if tolerance.is_finite() && tolerance > 0.0 {
+            tolerance
+        } else {
+            DEFAULT_GEOMETRIC_TOLERANCE
+        };
+        GeometricTolerance(GEOMETRIC.with(|g| g.replace(tolerance)))
+    }
+}
+
+impl Drop for GeometricTolerance {
+    fn drop(&mut self) {
+        GEOMETRIC.with(|g| g.set(self.0));
+    }
+}
+
 /// A body by its fingerprint: volume, area and box (the replay should hold
 /// the same body before the feature that refers to it).
 pub fn resolve_body<K: Kernel>(doc: &Document<K>, fp: &Fingerprint) -> Option<BodyUid> {
@@ -127,7 +225,7 @@ pub fn resolve_body<K: Kernel>(doc: &Document<K>, fp: &Fingerprint) -> Option<Bo
     let kernel = doc.kernel();
     // Among bodies of the same volume, the one of the same name.
     let mut best: Option<((bool, f64), BodyUid)> = None;
-    for body in doc.bodies() {
+    for body in bodies_for(doc, fp) {
         let Some(sig) = Sig::of(kernel, body.shape) else {
             continue;
         };
@@ -157,8 +255,7 @@ fn resolve_body_by_points<K: Kernel>(doc: &Document<K>, fp: &Fingerprint) -> Opt
         return None;
     }
     let kernel = doc.kernel();
-    let fits: Vec<BodyUid> = doc
-        .bodies()
+    let fits: Vec<BodyUid> = bodies_for(doc, fp)
         .iter()
         .filter(|body| {
             crate::tick();
@@ -174,12 +271,12 @@ fn resolve_body_by_points<K: Kernel>(doc: &Document<K>, fp: &Fingerprint) -> Opt
     match fits[..] {
         [uid] => Some(uid),
         [] => {
-            let found = resolve_body_by_boundary(doc, &points);
+            let found = resolve_body_by_boundary(doc, fp, &points);
             if found.is_none() && crate::tracing() {
                 eprintln!(
                     "import: a body input ({} edge points) has no body with those edges or surfaces among {} bodies",
                     points.len(),
-                    doc.bodies().len()
+                    bodies_for(doc, fp).len()
                 );
             }
             found
@@ -200,10 +297,13 @@ fn resolve_body_by_points<K: Kernel>(doc: &Document<K>, fp: &Fingerprint) -> Opt
 /// The only body whose faces pass through each of the points: a body a
 /// replayed feature made (a sweep, a pipe) has the file's surfaces but not
 /// necessarily its edges (seams and splits elsewhere).
-fn resolve_body_by_boundary<K: Kernel>(doc: &Document<K>, points: &[Vec3]) -> Option<BodyUid> {
+fn resolve_body_by_boundary<K: Kernel>(
+    doc: &Document<K>,
+    fp: &Fingerprint,
+    points: &[Vec3],
+) -> Option<BodyUid> {
     let kernel = doc.kernel();
-    let fits: Vec<BodyUid> = doc
-        .bodies()
+    let fits: Vec<BodyUid> = bodies_for(doc, fp)
         .iter()
         .filter(|body| {
             crate::tick();
@@ -231,7 +331,7 @@ pub fn resolve_cylinder_through<K: Kernel>(
     let kernel = doc.kernel();
     const TOLERANCE: f64 = 1e-3;
     let mut best: Option<((bool, f64), BodyUid, FaceName)> = None;
-    for body in doc.bodies() {
+    for body in bodies_for(doc, fp) {
         crate::tick();
         let Ok(faces) = kernel.faces(body.shape) else {
             continue;
@@ -284,7 +384,7 @@ pub fn resolve_cylinder_surface<K: Kernel>(
     let kernel = doc.kernel();
     const TOLERANCE: f64 = 1e-3;
     let mut best: Option<(f64, BodyUid, FaceName)> = None;
-    for body in doc.bodies() {
+    for body in bodies_for(doc, fp) {
         crate::tick();
         let Ok(faces) = kernel.faces(body.shape) else {
             continue;
@@ -352,7 +452,8 @@ pub fn resolve_face_by_plane<K: Kernel>(
 }
 
 /// [`resolve_face`] among the bodies `keep` keeps (mitcad#161: those of
-/// the component the decoder found the face in).
+/// the component the decoder found the face in): through the point within
+/// [`EXACT`], else within the [`geometric_tolerance`].
 pub fn resolve_face_where<K: Kernel>(
     doc: &Document<K>,
     fp: &Fingerprint,
@@ -365,9 +466,12 @@ pub fn resolve_face_where<K: Kernel>(
         .as_ref()
         .and_then(|g| g.geometry_type.as_deref())
         .map(surface_kind);
+    let wide = widened().unwrap_or(EXACT);
     let kernel = doc.kernel();
-    let mut best: Option<(f64, BodyUid, FaceName)> = None;
-    for body in doc.bodies() {
+    // The best within EXACT and the best within the wider tolerance:
+    // (score, distance, body, face).
+    let mut best: [Option<(f64, f64, BodyUid, FaceName)>; 2] = [None, None];
+    for body in bodies_for(doc, fp) {
         if !keep(body.uid) {
             continue;
         }
@@ -387,17 +491,25 @@ pub fn resolve_face_where<K: Kernel>(
                 continue;
             };
             let d = geom::distance(near.point, point);
-            if d > 1e-3 {
+            if d > wide {
                 continue;
             }
             let da = area.map_or(0.0, |a| (face.area - a).abs() / a.max(1e-9));
             let score = d + da;
-            if best.as_ref().is_none_or(|(s, _, _)| score < *s) {
-                best = Some((score, body.uid, name));
+            for (pass, within) in [EXACT, wide].into_iter().enumerate() {
+                if d <= within && best[pass].as_ref().is_none_or(|(s, ..)| score < *s) {
+                    best[pass] = Some((score, d, body.uid, name.clone()));
+                }
             }
         }
     }
-    best.map(|(_, b, f)| (b, f))
+    let [exact, wider] = best;
+    if let Some((_, _, b, f)) = exact {
+        return Some((b, f));
+    }
+    let (_, d, b, f) = wider?;
+    note_deviation(d);
+    Some((b, f))
 }
 
 /// Whether the face [`resolve_face`] gives for a fingerprint decoded from
@@ -424,9 +536,12 @@ pub fn face_resolved_uniquely<K: Kernel>(
         .as_ref()
         .and_then(|g| g.geometry_type.as_deref())
         .map(surface_kind);
+    let wide = widened().unwrap_or(EXACT);
     let kernel = doc.kernel();
-    let mut fits: Vec<(BodyUid, FaceName)> = Vec::new();
-    for body in doc.bodies() {
+    // The faces within EXACT, and within the wider tolerance (where none is
+    // within EXACT, the face was found by the wider one).
+    let mut fits: [Vec<(BodyUid, FaceName)>; 2] = [Vec::new(), Vec::new()];
+    for body in bodies_for(doc, fp) {
         crate::tick();
         let Ok(faces) = kernel.faces(body.shape) else {
             return false;
@@ -442,17 +557,25 @@ pub fn face_resolved_uniquely<K: Kernel>(
             let Ok(near) = kernel.face_point_normal(body.shape, &name, point) else {
                 continue;
             };
-            if geom::distance(near.point, point) > 1e-3 {
+            let d = geom::distance(near.point, point);
+            if d > wide {
                 continue;
             }
             if facing.is_some_and(|n| geom::dot(n, near.normal) < 0.0) {
                 continue;
             }
-            if !fits.contains(&(body.uid, name.clone())) {
-                fits.push((body.uid, name));
+            for (pass, within) in [EXACT, wide].into_iter().enumerate() {
+                if d <= within && !fits[pass].contains(&(body.uid, name.clone())) {
+                    fits[pass].push((body.uid, name.clone()));
+                }
             }
         }
     }
+    let fits = if fits[0].is_empty() {
+        &fits[1]
+    } else {
+        &fits[0]
+    };
     matches!(fits.as_slice(), [(b, f)] if *b == found.0 && f == found.1)
 }
 
@@ -582,7 +705,7 @@ pub fn resolve_edge_chain<K: Kernel>(
     let near = |a: Vec3, b: Vec3| geom::distance(a, b) <= 1e-3;
     let kernel = doc.kernel();
     let mut found: Vec<(BodyUid, Vec<EdgeName>)> = Vec::new();
-    for body in doc.bodies() {
+    for body in bodies_for(doc, fp) {
         if !keep(body.uid) {
             continue;
         }
@@ -756,7 +879,9 @@ pub fn resolve_edge<K: Kernel>(doc: &Document<K>, fp: &Fingerprint) -> Option<(B
     resolve_edge_where(doc, fp, &|_| true)
 }
 
-/// [`resolve_edge`] among the bodies `keep` keeps (mitcad#161).
+/// [`resolve_edge`] among the bodies `keep` keeps (mitcad#161): the middle
+/// within [`EXACT`] (the length within 1e-3 of it), else within the
+/// [`geometric_tolerance`] (the length within it or 1e-3 of it).
 pub fn resolve_edge_where<K: Kernel>(
     doc: &Document<K>,
     fp: &Fingerprint,
@@ -764,9 +889,12 @@ pub fn resolve_edge_where<K: Kernel>(
 ) -> Option<(BodyUid, EdgeName)> {
     let mid = mm3(fp.mid_point?);
     let length = fp.length.map(mm);
+    let wide = widened().unwrap_or(EXACT);
     let kernel = doc.kernel();
-    let mut best: Option<(f64, BodyUid, EdgeName)> = None;
-    for body in doc.bodies() {
+    // The best within EXACT and within the wider tolerance: (score,
+    // deviation, body, edge).
+    let mut best: [Option<(f64, f64, BodyUid, EdgeName)>; 2] = [None, None];
+    for body in bodies_for(doc, fp) {
         if !keep(body.uid) {
             continue;
         }
@@ -774,21 +902,28 @@ pub fn resolve_edge_where<K: Kernel>(
         for (name, at, len) in edge_midpoints(kernel, body.shape) {
             let d = geom::distance(at, mid);
             let dl = length.map_or(0.0, |l| (len - l).abs());
-            if d > 1e-3 || dl > 1e-3 * len.max(1.0) {
-                continue;
-            }
-            if best.as_ref().is_none_or(|(s, _, _)| d + dl < *s) {
-                best = Some((d + dl, body.uid, name));
+            for (pass, within) in [EXACT, wide].into_iter().enumerate() {
+                if d > within || dl > (1e-3 * len).max(within) {
+                    continue;
+                }
+                if best[pass].as_ref().is_none_or(|(s, ..)| d + dl < *s) {
+                    best[pass] = Some((d + dl, d.max(dl), body.uid, name.clone()));
+                }
             }
         }
     }
-    best.map(|(_, b, e)| (b, e))
+    let [exact, wider] = best;
+    if let Some((_, _, b, e)) = exact {
+        return Some((b, e));
+    }
+    let (_, d, b, e) = wider?;
+    note_deviation(d);
+    Some((b, e))
 }
 
 /// Whether a point lies on an analytic surface (mm); `None` for another
 /// surface type.
-fn on_surface(surface: &SurfaceGeometry, p: Vec3) -> Option<bool> {
-    const TOL: f64 = 1e-3;
+fn on_surface(surface: &SurfaceGeometry, p: Vec3, tolerance: f64) -> Option<bool> {
     let radial = |origin: Vec3, axis: Vec3| {
         let d = geom::sub(p, origin);
         let along = geom::dot(d, axis);
@@ -796,13 +931,13 @@ fn on_surface(surface: &SurfaceGeometry, p: Vec3) -> Option<bool> {
     };
     Some(match surface {
         SurfaceGeometry::Plane { origin, normal } => {
-            geom::dot(geom::sub(p, *origin), *normal).abs() < TOL
+            geom::dot(geom::sub(p, *origin), *normal).abs() < tolerance
         }
         SurfaceGeometry::Cylinder {
             origin,
             axis,
             radius,
-        } => (radial(*origin, *axis).0 - radius).abs() < TOL,
+        } => (radial(*origin, *axis).0 - radius).abs() < tolerance,
         SurfaceGeometry::Cone {
             origin,
             axis,
@@ -810,10 +945,10 @@ fn on_surface(surface: &SurfaceGeometry, p: Vec3) -> Option<bool> {
             half_angle,
         } => {
             let (rho, along) = radial(*origin, *axis);
-            ((rho - (radius + along * half_angle.tan())) * half_angle.cos()).abs() < TOL
+            ((rho - (radius + along * half_angle.tan())) * half_angle.cos()).abs() < tolerance
         }
         SurfaceGeometry::Sphere { center, radius } => {
-            (geom::norm(geom::sub(p, *center)) - radius).abs() < TOL
+            (geom::norm(geom::sub(p, *center)) - radius).abs() < tolerance
         }
         SurfaceGeometry::Torus {
             center,
@@ -822,7 +957,7 @@ fn on_surface(surface: &SurfaceGeometry, p: Vec3) -> Option<bool> {
             minor_radius,
         } => {
             let (rho, along) = radial(*center, *axis);
-            ((rho - major_radius).hypot(along) - minor_radius).abs() < TOL
+            ((rho - major_radius).hypot(along) - minor_radius).abs() < tolerance
         }
         SurfaceGeometry::Other { .. } => return None,
     })
@@ -832,19 +967,33 @@ fn on_surface(surface: &SurfaceGeometry, p: Vec3) -> Option<bool> {
 /// body, named by the faces that meet there. The faces through the point
 /// are found by their surfaces, then the largest group of them that names
 /// a vertex where the point is (a plane through the point may belong to a
-/// face elsewhere on the body).
+/// face elsewhere on the body). Within [`EXACT`], else within the [`geometric_tolerance`].
 pub fn resolve_vertex<K: Kernel>(
     doc: &Document<K>,
     fp: &Fingerprint,
 ) -> Option<(BodyUid, VertexName)> {
+    if let Some((found, _)) = resolve_vertex_within(doc, fp, EXACT) {
+        return Some(found);
+    }
+    let (found, d) = resolve_vertex_within(doc, fp, widened()?)?;
+    note_deviation(d);
+    Some(found)
+}
+
+/// [`resolve_vertex`] within `tolerance`, with the vertex's distance.
+fn resolve_vertex_within<K: Kernel>(
+    doc: &Document<K>,
+    fp: &Fingerprint,
+    tolerance: f64,
+) -> Option<((BodyUid, VertexName), f64)> {
     /// The most vertex names tried per body.
     const TRIES: usize = 400;
     let target = mm3(fp.point?);
     let kernel = doc.kernel();
-    for body in doc.bodies() {
+    for body in bodies_for(doc, fp) {
         crate::tick();
         if let Ok(Some(b)) = kernel.enclosing_box(body.shape)
-            && (0..3).any(|i| target[i] < b.min[i] - 1e-3 || target[i] > b.max[i] + 1e-3)
+            && (0..3).any(|i| target[i] < b.min[i] - tolerance || target[i] > b.max[i] + tolerance)
         {
             continue;
         }
@@ -856,7 +1005,7 @@ pub fn resolve_vertex<K: Kernel>(
             .filter_map(|f| {
                 let name: FaceName = f.names.first()?.parse().ok()?;
                 let surface = kernel.face_geometry(body.shape, &name).ok()?;
-                on_surface(&surface, target)?.then_some(name)
+                on_surface(&surface, target, tolerance)?.then_some(name)
             })
             .collect();
         // All of them first, then the groups of three, then of two.
@@ -870,11 +1019,10 @@ pub fn resolve_vertex<K: Kernel>(
             let Some(name) = VertexName::new(group) else {
                 continue;
             };
-            if kernel
-                .vertex_point(body.shape, &name)
-                .is_ok_and(|q| geom::distance(q, target) < 1e-3)
+            if let Ok(q) = kernel.vertex_point(body.shape, &name)
+                && geom::distance(q, target) < tolerance
             {
-                return Some((body.uid, name));
+                return Some(((body.uid, name), geom::distance(q, target)));
             }
         }
     }
@@ -911,12 +1059,14 @@ pub fn resolve_datum_edge<K: Kernel>(
     doc: &Document<K>,
     fp: &Fingerprint,
 ) -> Option<(BodyUid, EdgeName)> {
-    resolve_edge(doc, fp).or_else(
-        || match dressup_edge_match(&ReplayEdges::of(doc), fp).ok()?[..] {
-            [ref found] => Some((found.body, found.name.clone())),
+    resolve_edge(doc, fp).or_else(|| {
+        let found = dressup_edge_match(&ReplayEdges::of(doc), fp).ok()?;
+        // (A sliver's other edge is no datum's.)
+        match found.iter().filter(|e| !e.sliver_twin).collect::<Vec<_>>()[..] {
+            [found] => Some((found.body, found.name.clone())),
             _ => None,
-        },
-    )
+        }
+    })
 }
 
 /// An edge gone after a fillet or chamfer.
@@ -1134,7 +1284,7 @@ pub fn resolve_sheet<K: Kernel>(doc: &Document<K>, fp: &Fingerprint) -> Option<B
         return Some(uid);
     }
     let kernel = doc.kernel();
-    let bodies = doc.bodies();
+    let bodies = bodies_for(doc, fp);
     if let Some(name) = fp.name.as_deref()
         && let Some(b) = bodies.iter().find(|b| b.name == name)
     {
@@ -1326,12 +1476,14 @@ const BODY_COMPARE_SECONDS: f64 = 10.0;
 const BOOLEANS_ABOVE: f64 = 0.01;
 
 /// The file's stored bodies against the replay: each matched to the Mitcad
-/// body with the same signature, else the nearest one of similar volume.
-/// `tick` is called between its kernel calls (the import's progress, for
-/// its watchdog).
+/// body with the same signature (in its component, `components[k]` for
+/// `finals[k]`, first: two components may hold bodies alike), else the
+/// nearest one of similar volume. `tick` is called between its kernel calls
+/// (the import's progress, for its watchdog).
 pub fn compare_bodies<K: Kernel>(
     doc: &Document<K>,
     finals: &[(StoredBody<K::Shape>, Sig)],
+    components: &[ComponentUid],
     compare: bool,
     tick: &dyn Fn(),
 ) -> Vec<BodyReport> {
@@ -1348,17 +1500,31 @@ pub fn compare_bodies<K: Kernel>(
             ))
         })
         .collect();
+    let body_components: Vec<Option<ComponentUid>> = bodies
+        .iter()
+        .map(|(uid, ..)| doc.body_component(*uid))
+        .collect();
     let mut used = vec![false; bodies.len()];
     let mut out = Vec::new();
-    // Exact matches first, so a near one does not take another's body.
-    let mut pairs: Vec<Option<usize>> = finals
-        .iter()
-        .map(|(_, sig)| {
-            let i = (0..bodies.len()).find(|&i| !used[i] && bodies[i].3.matches(sig))?;
-            used[i] = true;
-            Some(i)
-        })
-        .collect();
+    // Exact matches first, so a near one does not take another's body;
+    // those in the same component before those in another.
+    let mut pairs: Vec<Option<usize>> = vec![None; finals.len()];
+    for same_component in [true, false] {
+        for (k, (_, sig)) in finals.iter().enumerate() {
+            if pairs[k].is_some() {
+                continue;
+            }
+            let found = (0..bodies.len()).find(|&i| {
+                !used[i]
+                    && (!same_component || body_components[i] == components.get(k).copied())
+                    && bodies[i].3.matches(sig)
+            });
+            if let Some(i) = found {
+                used[i] = true;
+                pairs[k] = Some(i);
+            }
+        }
+    }
     for (k, (_, sig)) in finals.iter().enumerate() {
         if pairs[k].is_some() {
             continue;
@@ -1524,6 +1690,10 @@ pub struct FoundEdge {
     /// the matching tolerance. False alone does not establish that all
     /// other inputs of the consuming feature were read.
     pub chosen_from_multiple: bool,
+    /// The other edge of a sliver face beside the edge found
+    /// ([`with_sliver_twin`], mitcad#224): the import tries the edges
+    /// without it first.
+    pub sliver_twin: bool,
 }
 
 /// Why a decoded dressup edge cannot be used by name (mitcad#106).
@@ -1571,14 +1741,10 @@ const MAX_REPORTED_EDGE_MATCHES: usize = 16;
 /// (mm): the file gives B-spline and ellipse edges' middles at the middle
 /// of their parameter range, 0.001 to 0.05 mm from the replay's.
 const MID_OFF: f64 = 0.05;
-/// How far a point may be from the file's circle (mm).
-const ON_CURVE: f64 = 1e-3;
 /// Midpoint-plus-length scores within this many mm are tied. This is
 /// much smaller than the matching tolerances; ties cannot establish
 /// which of two equally fitting edges of one body the input names.
 const SCORE_TIE: f64 = 1e-9;
-/// How far a replay edge's ends may be from the file's (mm).
-const END_OFF: f64 = 1e-3;
 /// How much longer or shorter than the file's an edge with the file's ends
 /// may be (of its length): blends and splines are approximations.
 const LENGTH_OFF: f64 = 0.02;
@@ -1706,14 +1872,18 @@ impl FileCurve {
         }
     }
 
-    /// Whether a replay edge's middle lies on the curve.
-    fn holds(&self, p: Vec3, tangent: Vec3) -> bool {
+    /// How far a replay edge's middle (with its tangent there) lies from
+    /// the curve, mm; None where it does not run along it (off the
+    /// segment's ends, across the circle or ellipse) or the curve is not
+    /// known.
+    fn offset(&self, p: Vec3, tangent: Vec3) -> Option<f64> {
         match *self {
             FileCurve::Segment(a, b) => {
                 let ab = geom::sub(b, a);
                 let t = geom::dot(geom::sub(p, a), ab) / geom::dot(ab, ab).max(1e-18);
-                (0.0..=1.0).contains(&t)
-                    && geom::distance(p, geom::add(a, geom::scale(ab, t))) <= ON_CURVE
+                (0.0..=1.0)
+                    .contains(&t)
+                    .then(|| geom::distance(p, geom::add(a, geom::scale(ab, t))))
             }
             FileCurve::Circle {
                 center,
@@ -1722,10 +1892,9 @@ impl FileCurve {
             } => {
                 let r = geom::sub(p, center);
                 // The replay edge's own plane when the file's is not known.
-                let n = normal.or_else(|| geom::unit(geom::cross(r, tangent)));
-                (geom::norm(r) - radius).abs() <= ON_CURVE
-                    && n.is_some_and(|n| geom::dot(r, n).abs() <= ON_CURVE)
-                    && geom::dot(r, tangent).abs() <= 1e-3 * radius.max(1.0)
+                let n = normal.or_else(|| geom::unit(geom::cross(r, tangent)))?;
+                (geom::dot(r, tangent).abs() <= 1e-3 * radius.max(1.0))
+                    .then(|| (geom::norm(r) - radius).abs().max(geom::dot(r, n).abs()))
             }
             FileCurve::Ellipse {
                 center,
@@ -1747,12 +1916,48 @@ impl FileCurve {
                 let off = (k - 1.0).abs() * a.min(b);
                 // The tangent is across the gradient there.
                 let gradient = geom::add(geom::scale(u, x / (a * a)), geom::scale(v, y / (b * b)));
-                z.abs() <= ON_CURVE
-                    && off <= ON_CURVE
-                    && geom::unit(gradient).is_some_and(|g| geom::dot(g, tangent).abs() <= 1e-3)
+                geom::unit(gradient)
+                    .is_some_and(|g| geom::dot(g, tangent).abs() <= 1e-3)
+                    .then(|| z.abs().max(off))
             }
-            FileCurve::Other => false,
+            FileCurve::Other => None,
         }
+    }
+
+    /// Where a point lies across a closed curve: its signed offsets from a
+    /// circle (radially, along the normal) or an ellipse (outward, out of
+    /// its plane); None for another curve. Two edges of a sliver face lie
+    /// apart by it; two coincident edges do not.
+    fn across(&self, p: Vec3) -> Option<[f64; 2]> {
+        match *self {
+            FileCurve::Circle {
+                center,
+                radius,
+                normal: Some(n),
+            } => {
+                let r = geom::sub(p, center);
+                let along = geom::dot(r, n);
+                let flat = geom::sub(r, geom::scale(n, along));
+                Some([geom::norm(flat) - radius, along])
+            }
+            FileCurve::Ellipse {
+                center,
+                u,
+                v,
+                p: a,
+                q: b,
+            } => {
+                let r = geom::sub(p, center);
+                let k = (geom::dot(r, u) / a).hypot(geom::dot(r, v) / b);
+                Some([(k - 1.0) * a.min(b), geom::dot(r, geom::cross(u, v))])
+            }
+            _ => None,
+        }
+    }
+
+    /// Whether a replay edge's middle lies on the curve within `tolerance`.
+    fn holds(&self, p: Vec3, tangent: Vec3, tolerance: f64) -> bool {
+        self.offset(p, tangent).is_some_and(|d| d <= tolerance)
     }
 
     /// How far along the file's open edge (a to b through m) a point on
@@ -1857,10 +2062,145 @@ pub fn dressup_edge_match(
 /// as [`resolve_edge`], coincident copies in different bodies keep the
 /// first body of the best match. A recipe's tail is used by the decoder
 /// (`_f3d.end_faces`), not here: it tells mirror-image edges apart there.
+///
+/// Where nothing is within [`EXACT`] (the middle, the points on the file's
+/// curve, the ends), the same is looked for within the
+/// [`geometric_tolerance`] (mitcad#224); the match keeps its uniqueness
+/// rules, and its deviation is noted for the item's report.
 fn dressup_edge_match_in(
     edges: &ReplayEdges,
     fp: &Fingerprint,
 ) -> Result<Vec<FoundEdge>, DressupEdgeFailure> {
+    let found = match dressup_edge_match_within(edges, fp, EXACT) {
+        Err(DressupEdgeFailure::MissingInReplay) => {
+            // (mitcad#224) The replay's edge may be a few micrometres off
+            // the file's: an earlier feature built that much otherwise.
+            let Some(tolerance) = widened() else {
+                return Err(DressupEdgeFailure::MissingInReplay);
+            };
+            let (found, deviation) = dressup_edge_match_within(edges, fp, tolerance)?;
+            note_deviation(deviation);
+            found
+        }
+        other => other.map(|(found, _)| found)?,
+    };
+    Ok(with_sliver_twin(edges, fp, found))
+}
+
+/// How far apart (mm) across the file's curve two edges of a sliver face
+/// lie at least; closer, they are coincident copies.
+const APART: f64 = 1e-7;
+
+/// Whether two points on a closed curve lie apart across it ([`APART`]).
+fn apart(curve: &FileCurve, p: Vec3, q: Vec3) -> bool {
+    match (curve.across(p), curve.across(q)) {
+        (Some(a), Some(b)) => (a[0] - b[0]).hypot(a[1] - b[1]) >= APART,
+        _ => false,
+    }
+}
+
+/// The edges found, with the other edge of a sliver face beside a single
+/// edge found (mitcad#224): a dressup that takes a face away exactly is
+/// built 1e-3 smaller (`geometry/src/dressup.cpp`), which leaves a strip
+/// that narrow where the file's two faces meet in one edge. The strip's
+/// two edges both lie on the file's curve within the
+/// [`geometric_tolerance`], have its length and share the strip: the file's
+/// edge is both of them. One such twin at most; none where the curve is
+/// not known (a spline).
+fn with_sliver_twin(
+    edges: &ReplayEdges,
+    fp: &Fingerprint,
+    found: Vec<FoundEdge>,
+) -> Vec<FoundEdge> {
+    let ([one], Some(tolerance)) = (&found[..], widened()) else {
+        return found;
+    };
+    let (Some(m), Some(length), Some(a), Some(b)) = (
+        fp.mid_point.map(mm3),
+        fp.length.map(mm),
+        fp.start_point.flatten().map(mm3),
+        fp.end_point.flatten().map(mm3),
+    ) else {
+        return found;
+    };
+    let closed = geom::distance(a, b) <= 1e-6 * length.max(1.0);
+    let direction = fp
+        .f3d
+        .as_ref()
+        .and_then(|f| f.direction)
+        .and_then(geom::unit);
+    let curve = FileCurve::of(a, m, b, length, closed, direction);
+    let shares_a_face = |name: &EdgeName| {
+        let [p, q] = name.faces();
+        one.name.faces().iter().any(|f| f == p || f == q)
+    };
+    let twins: Vec<(usize, f64)> = (0..edges.0.len())
+        .filter_map(|k| {
+            let (body, name, p, t, len) = &edges.0[k];
+            if *body != one.body || *name == one.name || !shares_a_face(name) {
+                return None;
+            }
+            if (len - length).abs() > (1e-3 * len).max(tolerance) {
+                return None;
+            }
+            let off = curve.offset(*p, *t).filter(|d| *d <= tolerance)?;
+            // Beside the one found, not on it (a coincident copy); an open
+            // edge runs along it.
+            let beside = if closed {
+                apart(&curve, *p, one.mid)
+            } else {
+                (APART..=2.0 * tolerance).contains(&geom::distance(*p, one.mid))
+            };
+            beside.then_some((k, off))
+        })
+        .collect();
+    let mut names: Vec<&EdgeName> = twins.iter().map(|&(k, _)| &edges.0[k].1).collect();
+    names.dedup();
+    let [_] = names[..] else {
+        return found;
+    };
+    let (k, off) = twins[0];
+    if off > EXACT {
+        note_deviation(off);
+    }
+    // The edge was chosen from several where others than the two fit the
+    // file's: with both taken, the twin says whether that is still a
+    // choice (the import's definition with the twins takes its flag).
+    let mut fitting: Vec<(BodyUid, &EdgeName)> = (0..edges.0.len())
+        .filter(|&k| {
+            let (_, _, p, t, len) = &edges.0[k];
+            (len - length).abs() <= (1e-3 * len).max(tolerance)
+                && (geom::distance(*p, m) <= tolerance
+                    || curve.offset(*p, *t).is_some_and(|d| d <= tolerance))
+        })
+        .map(|k| (edges.0[k].0, &edges.0[k].1))
+        .collect();
+    fitting.sort_by_key(|(b, n)| (b.to_string(), n.to_string()));
+    fitting.dedup();
+    let chosen = one.chosen_from_multiple && fitting.len() > 2;
+    let (body, name, mid, _, _) = &edges.0[k];
+    let twin = FoundEdge {
+        body: *body,
+        name: name.clone(),
+        mid: *mid,
+        direction: direction.map(|d| curve.direction_at(m, d, *mid)),
+        chosen_from_multiple: chosen,
+        sliver_twin: true,
+    };
+    let mut found = found;
+    found.push(twin);
+    found
+}
+
+/// [`dressup_edge_match_in`] with the distances that are tolerances (the
+/// middle of an edge found by its middle and length, a point on the file's
+/// curve, the ends) within `tolerance`; with the largest such distance of
+/// the edges found.
+fn dressup_edge_match_within(
+    edges: &ReplayEdges,
+    fp: &Fingerprint,
+    tolerance: f64,
+) -> Result<(Vec<FoundEdge>, f64), DressupEdgeFailure> {
     let (Some(m), Some(length)) = (fp.mid_point, fp.length) else {
         return Err(if fp.f3d.is_some() {
             DressupEdgeFailure::DecoderUnresolved
@@ -1876,7 +2216,9 @@ fn dressup_edge_match_in(
         .as_ref()
         .and_then(|f| f.direction)
         .and_then(geom::unit);
-    let same_length = |len: f64| (len - length).abs() <= 1e-3 * len.max(1.0);
+    // (Within 1e-3 of the length, or the tolerance on a short edge.)
+    let length_off = |len: f64| (1e-3 * len).max(tolerance);
+    let same_length = |len: f64| (len - length).abs() <= length_off(len);
     let found = |k: usize, direction: Option<Vec3>, chosen_from_multiple: bool| {
         let (body, name, mid, _, _) = &edges.0[k];
         FoundEdge {
@@ -1885,7 +2227,13 @@ fn dressup_edge_match_in(
             mid: *mid,
             direction,
             chosen_from_multiple,
+            sliver_twin: false,
         }
+    };
+    // How far an edge found by its middle is off the file's.
+    let middle_off = |k: usize| {
+        let (_, _, p, _, len) = &edges.0[k];
+        geom::distance(*p, m).max((len - length).abs())
     };
     let ambiguous = |indices: Vec<usize>| {
         DressupEdgeFailure::AmbiguousInReplay(
@@ -1904,11 +2252,14 @@ fn dressup_edge_match_in(
             .filter(|&k| seen.insert((edges.0[k].0, edges.0[k].1.clone())))
             .collect::<Vec<_>>()
     };
+    // `longer`: the length's tolerance relative to it (at least the
+    // tolerance).
     let nearest = |within: f64, longer: f64| -> Result<Option<(usize, bool)>, DressupEdgeFailure> {
         let candidates: Vec<usize> = (0..edges.0.len())
             .filter(|&k| {
                 let (_, _, p, _, len) = &edges.0[k];
-                (len - length).abs() <= longer * len.max(1.0) && geom::distance(*p, m) <= within
+                (len - length).abs() <= (longer * len.max(1.0)).max(tolerance)
+                    && geom::distance(*p, m) <= within
             })
             .collect();
         let score = |k: usize| {
@@ -1942,8 +2293,8 @@ fn dressup_edge_match_in(
             Ok(Some((best, chosen_from_multiple)))
         }
     };
-    if let Some((k, chosen)) = nearest(1e-3, 1e-3)? {
-        return Ok(vec![found(k, direction, chosen)]);
+    if let Some((k, chosen)) = nearest(tolerance, 1e-3)? {
+        return Ok((vec![found(k, direction, chosen)], middle_off(k)));
     }
     let (Some(a), Some(b)) = (a, b) else {
         return Err(DressupEdgeFailure::MissingInReplay);
@@ -1952,7 +2303,12 @@ fn dressup_edge_match_in(
     let curve = FileCurve::of(a, m, b, length, closed, direction);
     let on = |k: usize| {
         let (_, _, p, t, _) = &edges.0[k];
-        curve.holds(*p, *t)
+        curve.holds(*p, *t, tolerance)
+    };
+    let curve_off = |set: &[usize]| {
+        set.iter()
+            .filter_map(|&k| curve.offset(edges.0[k].2, edges.0[k].3))
+            .fold(0.0, f64::max)
     };
     let along = |k: usize| direction.map(|d| curve.direction_at(m, d, edges.0[k].2));
     if closed {
@@ -1962,12 +2318,27 @@ fn dressup_edge_match_in(
                 .collect(),
         );
         if let [k] = fits[..] {
-            return Ok(vec![found(k, along(k), false)]);
+            return Ok((vec![found(k, along(k), false)], curve_off(&fits)));
+        } else if let [i, j] = fits[..]
+            && edges.0[i].0 == edges.0[j].0
+            && apart(&curve, edges.0[i].2, edges.0[j].2)
+            && edges.0[i]
+                .1
+                .faces()
+                .iter()
+                .any(|f| edges.0[j].1.faces().contains(f))
+        {
+            // The two edges of a sliver face where the file has one edge
+            // ([`with_sliver_twin`]).
+            return Ok((
+                vec![found(i, along(i), false), found(j, along(j), false)],
+                curve_off(&fits),
+            ));
         } else if fits.len() > 1 {
             return Err(ambiguous(fits));
         }
     } else if let Some((k, chosen)) = nearest(MID_OFF, 1e-3)? {
-        return Ok(vec![found(k, direction, chosen)]);
+        return Ok((vec![found(k, direction, chosen)], middle_off(k)));
     }
     // The edge's ends and length: a blend's or spline's middle is where its
     // parameter range is half, which is elsewhere on the replay's curve
@@ -1975,10 +2346,10 @@ fn dressup_edge_match_in(
     // (up to LENGTH_OFF).
     if !closed {
         // (The middle right to 0.01 mm, the length a little off.)
-        if let Some((k, chosen)) = nearest(1e-2, LENGTH_OFF)? {
-            return Ok(vec![found(k, direction, chosen)]);
+        if let Some((k, chosen)) = nearest(1e-2_f64.max(tolerance), LENGTH_OFF)? {
+            return Ok((vec![found(k, direction, chosen)], middle_off(k)));
         }
-        let near = |p: Vec3, q: Vec3| geom::distance(p, q) <= END_OFF;
+        let near = |p: Vec3, q: Vec3| geom::distance(p, q) <= tolerance;
         let by_ends = unique(
             (0..edges.0.len())
                 .filter(|&k| {
@@ -1988,14 +2359,24 @@ fn dressup_edge_match_in(
                 })
                 .collect(),
         );
+        let ends_off = |k: usize| {
+            edges.ends(k).map_or(0.0, |[s, e]| {
+                let (ab, ba) = (
+                    geom::distance(s, a).max(geom::distance(e, b)),
+                    geom::distance(s, b).max(geom::distance(e, a)),
+                );
+                ab.min(ba)
+            })
+        };
         match by_ends[..] {
             [] => {}
-            [k] => return Ok(vec![found(k, direction, false)]),
+            [k] => return Ok((vec![found(k, direction, false)], ends_off(k))),
             _ if by_ends
                 .iter()
                 .all(|&k| geom::distance(edges.0[k].2, edges.0[by_ends[0]].2) <= 1e-3) =>
             {
-                return Ok(vec![found(by_ends[0], direction, true)]);
+                let k = by_ends[0];
+                return Ok((vec![found(k, direction, true)], ends_off(k)));
             }
             _ => return Err(ambiguous(by_ends)),
         }
@@ -2023,19 +2404,36 @@ fn dressup_edge_match_in(
                 at: curve.param(a, m, edges.0[k].2),
             })
             .collect();
-        sets.extend(piece_sets(&group, length, closed));
+        sets.extend(piece_sets(&group, length, closed, tolerance));
     }
     match &sets[..] {
-        [set] => Ok(set.iter().map(|&k| found(k, along(k), false)).collect()),
+        [set] => Ok((
+            set.iter().map(|&k| found(k, along(k), false)).collect(),
+            curve_off(set),
+        )),
         [] if !closed && !matches!(curve, FileCurve::Segment(..)) => {
             // An open edge that is not a line (an elliptical arc, a
             // spline; a circle through three of an ellipse's points fits
             // its length but not its pieces): pieces that follow each
             // other by their ends from its start to its end.
-            let chains = chains_by_ends(edges, a, b, m, length);
+            let chains = chains_by_ends(edges, a, b, m, length, tolerance);
             match &chains[..] {
                 [] => Err(DressupEdgeFailure::MissingInReplay),
-                [chain] => Ok(chain.iter().map(|&k| found(k, direction, false)).collect()),
+                [chain] => {
+                    // How far its ends are from the file's.
+                    let end_off = |p: Vec3| {
+                        chain
+                            .iter()
+                            .filter_map(|&k| edges.ends(k))
+                            .flatten()
+                            .map(|q| geom::distance(p, q))
+                            .fold(f64::INFINITY, f64::min)
+                    };
+                    Ok((
+                        chain.iter().map(|&k| found(k, direction, false)).collect(),
+                        end_off(a).max(end_off(b)),
+                    ))
+                }
                 _ => {
                     let mut indices: Vec<usize> = chains.iter().flatten().copied().collect();
                     indices.sort_unstable();
@@ -2122,10 +2520,17 @@ type Link = (usize, Vec3, Vec3);
 /// each other by their ends from `a` to `b` and whose lengths add up to
 /// `length` (the pieces of one curve the replay splits where the file has
 /// one edge), as far as their ends and middles lie near the file's middle
-/// `m`. At most two are returned (a second one makes the first
-/// ambiguous).
-fn chains_by_ends(edges: &ReplayEdges, a: Vec3, b: Vec3, m: Vec3, length: f64) -> Vec<Vec<usize>> {
-    let tol = 1e-3 * length.max(1.0);
+/// `m`; ends within `end_off` of each other. At most two are returned (a
+/// second one makes the first ambiguous).
+fn chains_by_ends(
+    edges: &ReplayEdges,
+    a: Vec3,
+    b: Vec3,
+    m: Vec3,
+    length: f64,
+    end_off: f64,
+) -> Vec<Vec<usize>> {
+    let tol = (1e-3 * length.max(1.0)).max(end_off);
     let short: Vec<usize> = (0..edges.0.len())
         .filter(|&k| edges.ends(k).is_some() && edges.0[k].4 < length - tol)
         .collect();
@@ -2135,6 +2540,7 @@ fn chains_by_ends(edges: &ReplayEdges, a: Vec3, b: Vec3, m: Vec3, length: f64) -
         b: Vec3,
         length: f64,
         tol: f64,
+        end_off: f64,
         steps: usize,
         chain: Vec<Link>,
         out: Vec<Vec<Link>>,
@@ -2145,7 +2551,8 @@ fn chains_by_ends(edges: &ReplayEdges, a: Vec3, b: Vec3, m: Vec3, length: f64) -
                 return;
             }
             self.steps -= 1;
-            let near = |p: Vec3, q: Vec3| geom::distance(p, q) <= END_OFF;
+            let end_off = self.end_off;
+            let near = |p: Vec3, q: Vec3| geom::distance(p, q) <= end_off;
             for &k in self.short {
                 if self.chain.iter().any(|c| c.0 == k) {
                     continue;
@@ -2187,6 +2594,7 @@ fn chains_by_ends(edges: &ReplayEdges, a: Vec3, b: Vec3, m: Vec3, length: f64) -
         b,
         length,
         tol,
+        end_off,
         steps: ENDS_CHAIN_STEPS,
         chain: Vec::new(),
         out: Vec::new(),
@@ -2256,9 +2664,10 @@ const PIECE_STEPS: usize = 20_000;
 /// The sets of two or more pieces (of one body) that make up an edge of
 /// `length`: on an open edge those that follow each other from its start
 /// to its end, on a closed one those whose lengths add up to its. At most
-/// two are returned (a second one makes the first ambiguous).
-fn piece_sets(pieces: &[Piece], length: f64, closed: bool) -> Vec<Vec<usize>> {
-    let tol = 1e-3 * length.max(1.0);
+/// two are returned (a second one makes the first ambiguous). Lengths add up
+/// within 1e-3 of the length or `tolerance`.
+fn piece_sets(pieces: &[Piece], length: f64, closed: bool, tolerance: f64) -> Vec<Vec<usize>> {
+    let tol = (1e-3 * length.max(1.0)).max(tolerance);
     let mut sets: Vec<Vec<usize>> = Vec::new();
     if pieces.len() < 2 {
         return sets;
@@ -3070,5 +3479,190 @@ mod dressup_tests {
         assert!(!matched[0].chosen_from_multiple);
         let third: BodyUid = "F3.b0".parse().unwrap();
         assert!(dressup_edge_match(&replay.only(&[third]), &f).is_err());
+    }
+
+    // The geometric tolerance (mitcad#224).
+
+    #[test]
+    fn a_circle_a_micrometre_off_is_found_within_the_geometric_tolerance() {
+        use std::f64::consts::TAU;
+        // The file's closed circle r = 23.5 at z = 33.100; the replay's at
+        // z = 33.0989 (an earlier chamfer built 1.1 µm otherwise).
+        let r = 23.5;
+        let circle = TAU * r;
+        let replay = edges(&[(
+            "F1.b0",
+            "E{F1:side|F1:top}",
+            [0.0, r, 33.0989],
+            [-1.0, 0.0, 0.0],
+            circle,
+        )]);
+        let f = fp(
+            [-r, 0.0, 33.1],
+            circle,
+            [r, 0.0, 33.1],
+            [r, 0.0, 33.1],
+            Some([0.0, -1.0, 0.0]),
+        );
+        // Only exact matches: the edge is not in the replay.
+        {
+            let _exact = GeometricTolerance::set(EXACT);
+            assert_eq!(
+                dressup_edge_match(&replay, &f).unwrap_err(),
+                DressupEdgeFailure::MissingInReplay
+            );
+            assert_eq!(take_deviation(), None);
+        }
+        // The default 0.01 mm: found, unique (read), its deviation noted.
+        assert_eq!(geometric_tolerance(), DEFAULT_GEOMETRIC_TOLERANCE);
+        take_deviation();
+        let matched = dressup_edge_match(&replay, &f).unwrap();
+        assert_eq!(matched.len(), 1);
+        assert!(!matched[0].chosen_from_multiple);
+        let deviation = take_deviation().unwrap();
+        assert!((deviation - 0.0011).abs() < 1e-6, "{deviation}");
+        // An exact match notes nothing.
+        let exact = edges(&[(
+            "F1.b0",
+            "E{F1:side|F1:top}",
+            [0.0, r, 33.1],
+            [-1.0, 0.0, 0.0],
+            circle,
+        )]);
+        assert!(dressup_edge_match(&exact, &f).is_ok());
+        assert_eq!(take_deviation(), None);
+        // Beyond the tolerance it stays missing.
+        let far = edges(&[(
+            "F1.b0",
+            "E{F1:side|F1:top}",
+            [0.0, r, 33.08],
+            [-1.0, 0.0, 0.0],
+            circle,
+        )]);
+        assert_eq!(
+            dressup_edge_match(&far, &f).unwrap_err(),
+            DressupEdgeFailure::MissingInReplay
+        );
+    }
+
+    #[test]
+    fn open_edges_found_by_their_ends_within_the_geometric_tolerance() {
+        // A curved edge whose middle the replay has elsewhere (a blend's
+        // parameter middle) and whose length is 1 % off: found by its ends,
+        // which are 4 µm off the file's.
+        let f = fp(
+            [0.0, 1.0, 0.0],
+            10.5,
+            [-5.0, 0.0, 0.0],
+            [5.0, 0.0, 0.0],
+            None,
+        );
+        let replay = |ends: &[([f64; 3], [f64; 3])]| {
+            ReplayEdges(
+                ends.iter()
+                    .enumerate()
+                    .map(|(k, _)| {
+                        (
+                            "F1.b0".parse().unwrap(),
+                            format!("E{{F1:a|F1:e{k}}}").parse().unwrap(),
+                            [0.0, 0.9 - 0.5 * k as f64, 0.0],
+                            [1.0, 0.0, 0.0],
+                            10.6,
+                        )
+                    })
+                    .collect(),
+                ends.iter().map(|&(s, e)| Some([s, e])).collect(),
+            )
+        };
+        let one = replay(&[([-5.0, 0.004, 0.0], [5.0, 0.004, 0.0])]);
+        {
+            let _exact = GeometricTolerance::set(EXACT);
+            assert_eq!(
+                dressup_edge_match(&one, &f).unwrap_err(),
+                DressupEdgeFailure::MissingInReplay
+            );
+        }
+        take_deviation();
+        let matched = dressup_edge_match(&one, &f).unwrap();
+        assert_eq!(matched.len(), 1);
+        assert!(!matched[0].chosen_from_multiple);
+        assert!((take_deviation().unwrap() - 0.004).abs() < 1e-9);
+        // Two edges with such ends in different places: ambiguous, as
+        // within the exact tolerance.
+        let two = replay(&[
+            ([-5.0, 0.004, 0.0], [5.0, 0.004, 0.0]),
+            ([-5.0, -0.004, 0.0], [5.0, -0.004, 0.0]),
+        ]);
+        assert!(matches!(
+            dressup_edge_match(&two, &f),
+            Err(DressupEdgeFailure::AmbiguousInReplay(e)) if e.len() == 2
+        ));
+    }
+
+    #[test]
+    fn the_geometric_tolerance_is_set_per_thread_and_restored() {
+        assert_eq!(geometric_tolerance(), DEFAULT_GEOMETRIC_TOLERANCE);
+        {
+            let _outer = GeometricTolerance::set(0.05);
+            assert_eq!(geometric_tolerance(), 0.05);
+            {
+                // Not a tolerance: the default.
+                let _bad = GeometricTolerance::set(-1.0);
+                assert_eq!(geometric_tolerance(), DEFAULT_GEOMETRIC_TOLERANCE);
+            }
+            assert_eq!(geometric_tolerance(), 0.05);
+            // Another thread has its own.
+            let other = std::thread::spawn(geometric_tolerance).join().unwrap();
+            assert_eq!(other, DEFAULT_GEOMETRIC_TOLERANCE);
+        }
+        assert_eq!(geometric_tolerance(), DEFAULT_GEOMETRIC_TOLERANCE);
+    }
+
+    #[test]
+    fn both_edges_of_a_sliver_face_are_the_files_one_edge() {
+        use std::f64::consts::TAU;
+        // Two chamfers that meet in the file's circle r = 28 at z = 14.6:
+        // the replay builds one 1e-3 smaller, which leaves a strip of the
+        // cylinder 2 µm high between them.
+        let r = 28.0;
+        let circle = TAU * r;
+        let f = fp(
+            [r, 0.0, 14.6],
+            circle,
+            [-r, 0.0, 14.6],
+            [-r, 0.0, 14.6],
+            Some([0.0, 1.0, 0.0]),
+        );
+        let replay = |z: [f64; 2], faces: [&str; 2]| {
+            edges(&[
+                ("F1.b0", faces[0], [0.0, r, z[0]], [-1.0, 0.0, 0.0], circle),
+                ("F1.b0", faces[1], [0.0, r, z[1]], [-1.0, 0.0, 0.0], circle),
+            ])
+        };
+        let strip = ["E{F1:side|F2:chamfer}", "E{F1:side|F3:chamfer}"];
+        // One edge within 1e-3, its twin 1.2 µm off: both.
+        let found = dressup_edge_match(&replay([14.5995, 14.6012], strip), &f).unwrap();
+        assert_eq!(found.len(), 2);
+        assert!(found.iter().all(|e| !e.chosen_from_multiple));
+        // (The import tries the edge alone first.)
+        assert!(!found[0].sliver_twin && found[1].sliver_twin);
+        // Both within 1e-3: both, not ambiguous.
+        let found = dressup_edge_match(&replay([14.5995, 14.6005], strip), &f).unwrap();
+        assert_eq!(found.len(), 2);
+        assert!(found.iter().all(|e| !e.sliver_twin));
+        // Only the exact tolerance: the one edge.
+        {
+            let _exact = GeometricTolerance::set(EXACT);
+            let found = dressup_edge_match(&replay([14.5995, 14.6012], strip), &f).unwrap();
+            assert_eq!(found.len(), 1);
+        }
+        // Edges that share no face are no strip: one edge, or ambiguous.
+        let apart = ["E{F1:side|F2:chamfer}", "E{F4:side|F3:chamfer}"];
+        let found = dressup_edge_match(&replay([14.5995, 14.6012], apart), &f).unwrap();
+        assert_eq!(found.len(), 1);
+        assert!(matches!(
+            dressup_edge_match(&replay([14.5995, 14.6005], apart), &f),
+            Err(DressupEdgeFailure::AmbiguousInReplay(_))
+        ));
     }
 }

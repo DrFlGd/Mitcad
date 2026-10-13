@@ -282,6 +282,8 @@ pub const ITEM_CLASSES: &[(&str, &str)] = &[
     ("F4163A07-9E71-4C46-BD92-ACE5B5B40BED", "DraftFeature"),
     (CYLINDER, "CylinderFeature"),
     (SPHERE, "SphereFeature"),
+    (BOX, "BoxFeature"),
+    (TORUS, "TorusFeature"),
     ("C3A9ECCE-7D25-4432-A645-3A0D9687F22A", "EmbossFeature"),
     // Sheet metal flanges (the base names are those of the flange types).
     ("7AFA0A65-B53C-472C-ACA4-5C7C0A65001C", "FlangeFeature"),
@@ -289,15 +291,24 @@ pub const ITEM_CLASSES: &[(&str, &str)] = &[
     ("99F6967E-ED35-4222-B906-5CCF0AC70B53", "MeshFeature"),
 ];
 
-/// A cylinder primitive (mitcad#154): after its root part `u8 1 | u32
-/// operation | u8 1 | refs`, then a rigid 4x4 matrix that the cadmpeg
-/// format description takes for its frame but that does not place the
-/// corpus' cylinders; `Height` (signed) and `Diameter` parameters.
+/// A cylinder primitive (mitcad#154, mitcad#25): `u32 operation | u8 1 |
+/// refs`, a frame input among them, then `u8 flag | [f64[16]]`: the
+/// placement in the frame of the plane or face it stands on (see
+/// [`super::build`]'s primitives); `Height` (signed) and `Diameter`
+/// parameters.
 pub const CYLINDER: &str = "6AA4C36C-52A2-48D2-A062-69FE123B84D1";
 /// A sphere primitive (mitcad#154): `u32 operation | u8 1 | refs` after its
 /// root part, a rigid matrix (as for [`CYLINDER`]) and a `Diameter`
 /// parameter.
 pub const SPHERE: &str = "04A353F2-AA37-4163-9D4D-A07A7AA9AFA5";
+/// A box primitive (mitcad#25): the cylinder's layout; `DistanceX`,
+/// `DistanceY`, `DistanceZ`, `OffsetDistanceX` and `OffsetDistanceY`
+/// parameters.
+pub const BOX: &str = "F193B033-8CB7-4CC9-B18E-D1E06A07D72E";
+/// A torus primitive (mitcad#25): the cylinder's layout, then `u32
+/// position` (0 on the centre, 1 outside, 2 inside); `MajorDiameter` and
+/// `MinorDiameter` parameters.
+pub const TORUS: &str = "13BE0EF0-467B-4F5A-BFFB-E0976171B678";
 
 /// The timeline item of a new or placed occurrence: the base class of
 /// component inserts, fasteners, pasted and derived occurrences.
@@ -477,3 +488,12 @@ pub const TANGENT: &str = "A8AE5003-9BA3-42C1-8765-32314E3D4BDA";
 /// bodies lists its occurrence item and base feature). Read by
 /// [`super::build`]'s `item_parts`.
 pub const ITEM_PARTS: &str = "12D00AC0-B828-48C8-9740-80C4D992DB65";
+
+// Occurrence light bulbs.
+
+/// A hidden occurrence: one object per occurrence path whose light bulb is
+/// off, none for those shown. Its last list of references is the path,
+/// `u32 n | n × ref occurrence` from the root component down (a path
+/// inside a component of another document names its levels there by
+/// context references). Read by [`super::build`]'s `hidden_paths`.
+pub const HIDDEN_OCCURRENCE: &str = "2BB3BB69-B0FD-4D56-B4CD-DEBD30847BE3";

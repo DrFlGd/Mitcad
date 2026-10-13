@@ -105,6 +105,13 @@
 //! A design that may be a hybrid assembly without asking (mitcad#171:
 //! "don't ask again for this design") has `"hybrid_assembly": true`.
 //!
+//! Design policy (mitcad#220, `crate::policy`): `root_policy` and a
+//! component's `policy`, objects of the seven settings (`sketches`,
+//! `features`, `components`, `attach_to_others`,
+//! `attachments_from_others`, `reference_others`,
+//! `references_from_others`), left out while they are the general
+//! defaults; a missing setting is its general default.
+//!
 //! Named views (U5), when there are any: `views` (`name`, `eye`, `target`,
 //! `up`, `height`, `"perspective": true`).
 //!
@@ -549,10 +556,12 @@ pub(crate) fn has_references(state: &DocState) -> bool {
     })
 }
 
-/// The design file of a new, empty design (what `Document::new(..).to_json()`
-/// writes), without a geometry kernel: the projects' `new_design` (mitcad#144).
+/// The design file of a new, empty design (what
+/// `Document::new_design(..).to_json()` writes: the root with the Assembly
+/// policy and an empty active Part1, mitcad#220), without a geometry kernel:
+/// the projects' `new_design` (mitcad#144).
 pub fn empty_design() -> String {
-    v2::save(&DocState::default())
+    v2::save(&DocState::new_design())
 }
 
 /// Gives the base features' B-rep references their data from `store`.

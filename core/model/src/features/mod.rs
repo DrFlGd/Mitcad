@@ -590,6 +590,10 @@ pub struct EvalContext<'a, K: Kernel> {
     /// object that is no longer in its body is found in the body as it was
     /// before this feature, as the original found it.
     pub(crate) objects_before: Option<FeatureUid>,
+    /// The bodies of other components that the geometry the feature refers
+    /// to is on, by their links (a construction plane's, mitcad#196): read
+    /// in their components and moved into the feature's coordinates.
+    pub(crate) geom_links: std::collections::BTreeMap<BodyUid, crate::links::OccurrenceLink>,
     next_body: u32,
 }
 
@@ -606,6 +610,7 @@ impl<'a, K: Kernel> EvalContext<'a, K> {
             pattern_anchor: None,
             cut_targets: None,
             objects_before: None,
+            geom_links: std::collections::BTreeMap::new(),
             next_body: 0,
         }
     }

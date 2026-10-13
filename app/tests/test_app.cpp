@@ -40,6 +40,7 @@
 #include "render/RenderImage.hpp"
 #include "report/ReportText.hpp"
 #include "sketch/AutoConstraint.hpp"
+#include "view/ViewMatch.hpp"
 #include "view/ViewNavigation.hpp"
 
 namespace {
@@ -370,6 +371,58 @@ void printTests() {
   CHECK(files == QStringList({QStringLiteral("F1.b0  Plate"), QStringLiteral("F2.b0 O1 Pin (Arm:1)"),
                                   QStringLiteral("F2.b0 O2/O4 Pin (Base:1/Arm:2)"),
                                   QStringLiteral("F3.b0 O5 Lid (Lid:1)"), QStringLiteral("F3.b0 O6 Lid (Lid:2)")}));
+  // The placements picked in the panel (mitcad#234): of a body shown twice
+  // only the one picked; a body none of whose placements is picked keeps
+  // them all.
+  const auto body = [](const char* uid, const char* occurrence) {
+    return mitcad::SelectionItem{mitcad::SelectKind::Body, QString::fromLatin1(uid), QString(), QString(),
+                                 QString::fromLatin1(occurrence)};
+  };
+  files.clear();
+  for (const mitcad::PrintPiece& piece :
+       mitcad::printPieces({QStringLiteral("F1.b0"), QStringLiteral("F2.b0"), QStringLiteral("F3.b0")},
+                           {QStringLiteral("Plate"), QStringLiteral("Pin"), QStringLiteral("Lid")}, instances,
+                           {body("F1.b0", ""), body("F2.b0", "O2/O4"), body("F3.b0", "O9")})) {
+    files << QStringLiteral("%1 %2 %3").arg(piece.body, piece.occurrence, piece.name);
+  }
+  CHECK(files == QStringList({QStringLiteral("F1.b0  Plate"), QStringLiteral("F2.b0 O2/O4 Pin (Base:1/Arm:2)"),
+                              QStringLiteral("F3.b0 O5 Lid (Lid:1)"), QStringLiteral("F3.b0 O6 Lid (Lid:2)")}));
+
+  // The bodies the panel starts with: what the selection stands for, each
+  // placement once, else every shown one.
+  bool selected = true;
+  CHECK(mitcad::printStartBodies({}, instances, &selected) ==
+        mitcad::Selection({body("F1.b0", ""), body("F2.b0", "O1"), body("F2.b0", "O2/O4")}));
+  CHECK(!selected);
+  const mitcad::SelectionItem face{mitcad::SelectKind::Face, QStringLiteral("F2.b0"), QStringLiteral("F2:end"),
+                                   QStringLiteral("plane"), QStringLiteral("O1")};
+  const mitcad::SelectionItem base{mitcad::SelectKind::Component, QStringLiteral("C2"), QString(), QString(),
+                                   QStringLiteral("O2")};
+  const mitcad::SelectionItem sketch{mitcad::SelectKind::Sketch, QStringLiteral("F7"), QString(), QString()};
+  CHECK(mitcad::printStartBodies({face, body("F2.b0", "O1"), base, sketch}, instances, &selected) ==
+        mitcad::Selection({body("F2.b0", "O1"), body("F2.b0", "O2/O4")}));
+  CHECK(selected);
+  CHECK(mitcad::printStartBodies({sketch}, instances, &selected).size() == 3);
+  CHECK(!selected);
+
+  // The Slicer row: none, the settings' slicer and one chosen by hand
+  // unless found, the found ones, another program; a choice is its slicer.
+  const Slicer saved{QStringLiteral("Saved"), QStringLiteral("/opt/saved"), {QStringLiteral("--a")}, {}};
+  const Slicer other{QStringLiteral("Other"), QStringLiteral("/opt/other"), {}, {QStringLiteral("@@")}};
+  CHECK(mitcad::slicerOfChoice(mitcad::slicerChoice(other)) == other);
+  CHECK(mitcad::slicerOfChoice(mitcad::slicerChoice(other)).name == QStringLiteral("Other"));
+  CHECK(!mitcad::slicerOfChoice(mitcad::slicerChoice(Slicer{})).isValid());
+  CHECK(!mitcad::slicerOfChoice(mitcad::otherSlicerChoice()).isValid());
+  const QVector<QPair<QString, QString>> choices = mitcad::slicerChoices(found, saved, other);
+  CHECK(choices.size() == found.size() + 4);
+  if (choices.size() == found.size() + 4) {
+    CHECK(choices.first().first == mitcad::slicerChoice(Slicer{}));
+    CHECK(choices[1].first == mitcad::slicerChoice(saved));
+    CHECK(choices[2].first == mitcad::slicerChoice(other));
+    CHECK(found.isEmpty() || choices[3].first == mitcad::slicerChoice(found.first()));
+    CHECK(choices.last().first == mitcad::otherSlicerChoice());
+  }
+  CHECK(found.isEmpty() || mitcad::slicerChoices(found, found.first(), Slicer{}).size() == found.size() + 2);
 
   // The folder of a design, emptied for each send.
   QString error;
@@ -1580,6 +1633,46 @@ void selectionEntryTests() {
   CHECK(mitcad::removeEntry(backward, placed) == 1);
 }
 
+// Whether a rendered image still fits the view (mitcad#216): the same
+// camera and size match, rounding noise too; a move, a zoom, a turn, another
+// size or projection do not.
+void viewMatchTests() {
+  using mitcad::ViewPose;
+  ViewPose view;
+  view.eye = {70.0, -19.999999999999993, 49.999999999999993};
+  view.center = {30.000000000000007, 20.0, 10.0};
+  view.up = {-0.40824829046386296, 0.40824829046386307, 0.81649658092772603};
+  view.scale = 81.317279836452968;
+  view.orthographic = true;
+  view.width = 480;
+  view.height = 539;
+  CHECK(mitcad::sameView(view, view));
+  ViewPose copy = view;
+  CHECK(mitcad::sameView(view, copy));
+  ViewPose noise = view;
+  noise.eye[0] += 1e-12;
+  noise.center[2] -= 1e-12;
+  noise.up[1] += 1e-15;
+  noise.scale *= 1.0 + 1e-13;
+  CHECK(mitcad::sameView(view, noise));
+  ViewPose moved = view;
+  moved.eye[0] += 0.01;
+  moved.center[0] += 0.01;
+  CHECK(!mitcad::sameView(view, moved));
+  ViewPose zoomed = view;
+  zoomed.scale *= 0.999;
+  CHECK(!mitcad::sameView(view, zoomed));
+  ViewPose turned = view;
+  turned.up = {0.0, 0.0, 1.0};
+  CHECK(!mitcad::sameView(view, turned));
+  ViewPose wider = view;
+  wider.width += 1;
+  CHECK(!mitcad::sameView(view, wider));
+  ViewPose perspective = view;
+  perspective.orthographic = false;
+  CHECK(!mitcad::sameView(view, perspective));
+}
+
 // When a navigation of the view ends, for the rendered view (mitcad#214).
 void viewNavigationTests() {
   using mitcad::ViewNavigation;
@@ -1698,6 +1791,10 @@ int commandMessageTests();
 int moveToComponentTests();
 int autoselectTests();
 int cutTargetsTests();
+int eventFilterGuardTests();
+int moveOccurrenceTests();
+int selectionScopeTests();
+int iconColourTests();
 
 int main(int argc, char* argv[]) {
   QApplication app(argc, argv);
@@ -1725,11 +1822,16 @@ int main(int argc, char* argv[]) {
     selectionEntryTests();
     viewNavigationTests();
     renderCameraTests();
+    viewMatchTests();
     failures += autosaveTests();
     failures += commandMessageTests();
     failures += moveToComponentTests();
     failures += autoselectTests();
     failures += cutTargetsTests();
+    failures += eventFilterGuardTests();
+    failures += moveOccurrenceTests();
+    failures += selectionScopeTests();
+    failures += iconColourTests();
   }
   if (failures != 0) {
     std::fprintf(stderr, "%d check(s) failed\n", failures);

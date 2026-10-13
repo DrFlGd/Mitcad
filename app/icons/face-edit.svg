@@ -4,5 +4,5 @@
   <path d="M3 10 L9 7 L21 9 L15 12 Z" fill="#c9ddf6"/>
   <path d="M3 10 V17 L15 20 V12" fill="#9cc0ec"/>
   <path d="M15 20 L21 17 V9 L15 12" fill="#7aa6dc"/>
-  <path d="M15 12 L21 9 V17 L15 20 Z" fill="#f3c48a" stroke="#e07b1a"/>
+  <path d="M15 12 L21 9 V17 L15 20 Z" fill="#c9ddf6" stroke="#e07b1a"/>
 </svg>

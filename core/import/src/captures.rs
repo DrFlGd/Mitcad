@@ -65,7 +65,7 @@ pub struct InsidePosition {
 }
 
 /// The file's captured positions in Mitcad's terms.
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 pub(crate) struct Captures {
     /// Each occurrence's last placement in its parent: where its
     /// placements put it last, else its last captured placement.
@@ -81,6 +81,12 @@ pub(crate) struct Captures {
     steps: HashMap<OccurrenceUid, Vec<(Option<i64>, Transform)>>,
     /// The same in the occurrence's parent, for the items with an index.
     local_steps: HashMap<OccurrenceUid, Vec<(i64, Transform)>>,
+    /// Each step in the occurrence's parent, made relative to the parent
+    /// along the path the step is of, in timeline order: an occurrence
+    /// inside a component placed several times has one placement in its
+    /// parent but a placement in the root per path, which tells no parent
+    /// placement apart ([`Captures::steps`] keeps the first path's).
+    path_steps: HashMap<OccurrenceUid, Vec<(Option<i64>, Transform)>>,
     /// The positions of occurrences inside components of other documents
     /// (left out of the replay: those components are empty until the
     /// import fills them from the documents' files, mitcad#196).
@@ -128,13 +134,25 @@ impl Captures {
     ) -> Option<Transform> {
         let index = self.timeline_at(index);
         let world = self.world_after(occurrence, index)?;
-        let parent = assembly
-            .occurrence(occurrence)
-            .and_then(|o| self.parent_world_after(assembly, o.parent, index));
+        let parent_component = assembly.occurrence(occurrence).map(|o| o.parent);
+        let parent = parent_component.and_then(|c| self.parent_world_after(assembly, c, index));
         Some(match parent {
             Some(p) => inverse(&p).after(&world),
-            None => world,
+            None if parent_component.is_none_or(|c| c.is_root()) => world,
+            // A parent placed several times: along the steps' own paths.
+            None => self.path_step_after(occurrence, index)?,
         })
+    }
+
+    /// The occurrence's placement in its parent after the item at `index`
+    /// along the paths its steps are of ([`Captures::path_steps`]).
+    fn path_step_after(&self, occurrence: OccurrenceUid, index: i64) -> Option<Transform> {
+        self.path_steps
+            .get(&occurrence)?
+            .iter()
+            .filter(|(i, _)| i.is_some_and(|i| i <= index))
+            .max_by_key(|(i, _)| *i)
+            .map(|(_, t)| *t)
     }
 
     /// The path's placement in the root component after the item at
@@ -167,6 +185,26 @@ impl Captures {
             let local = self.final_placement(o, assembly.occurrence(o)?.transform);
             Some(up.map_or(local, |u| u.after(&local)))
         })
+    }
+
+    /// An occurrence inside a copied component of another document that
+    /// the design's captured position at `index` placed (`references.rs`):
+    /// its placement in its parent from then on, `stored` before.
+    pub fn add_inside(
+        &mut self,
+        occurrence: OccurrenceUid,
+        stored: Transform,
+        index: i64,
+        local: Transform,
+    ) {
+        self.last.insert(occurrence, local);
+        let (_, by_index) = self
+            .placements
+            .entry(occurrence)
+            .or_insert_with(|| (stored, Vec::new()));
+        by_index.retain(|(at, _)| *at != index);
+        by_index.push((index, local));
+        by_index.sort_by_key(|(at, _)| *at);
     }
 
     /// The occurrences a captured position places, each at its last
@@ -355,7 +393,7 @@ pub(crate) fn read(dump: &Dump, components: &Components, assembly: &Assembly) ->
     // joints' values), else those its paths do not name (an empty path).
     for index in snapshots {
         let mut placed: Vec<OccurrenceUid> = out
-            .steps
+            .path_steps
             .iter()
             .filter(|(_, steps)| steps.iter().any(|(i, _)| *i == Some(index)))
             .map(|(o, _)| *o)
@@ -406,29 +444,78 @@ pub(crate) fn read(dump: &Dump, components: &Components, assembly: &Assembly) ->
 /// component, and the last one in the parent as the occurrence's last
 /// placement (it wins over the captured positions, which it includes).
 fn read_steps(dump: &Dump, components: &Components, assembly: &Assembly, out: &mut Captures) {
-    fn walk(nodes: &[OccurrenceNode], components: &Components, out: &mut Captures) {
+    fn walk(
+        nodes: &[OccurrenceNode],
+        parent: Option<&PathPlacements>,
+        components: &Components,
+        out: &mut Captures,
+    ) {
         for n in nodes {
             let f3d = n.f3d.as_ref();
-            if let (Some(steps), Some(o)) = (
-                f3d.and_then(|f| f.placements.as_ref()),
-                f3d.and_then(|f| f.object_id)
-                    .and_then(|id| components.occurrence(id)),
-            ) {
-                let read: Option<Vec<(Option<i64>, Transform)>> = steps
-                    .iter()
-                    .map(|s| Some((s.index, components::transform(s.transform.as_ref()?)?)))
-                    .collect();
-                if let Some(read) = read.filter(|r| !r.is_empty()) {
-                    out.steps.insert(o, read);
+            let matrix = match parent {
+                None => n.transform,
+                Some(_) => f3d.and_then(|f| f.local_transform),
+            };
+            let stored_local = matrix
+                .as_ref()
+                .and_then(components::transform)
+                .unwrap_or(Transform::IDENTITY);
+            let stored = match n.transform2.as_ref().and_then(components::transform) {
+                Some(world) => world,
+                None => parent.map_or(stored_local, |p| p.stored.after(&stored_local)),
+            };
+            let read: Option<Vec<(Option<i64>, Transform)>> = f3d
+                .and_then(|f| f.placements.as_ref())
+                .and_then(|steps| {
+                    steps
+                        .iter()
+                        .map(|s| Some((s.index, components::transform(s.transform.as_ref()?)?)))
+                        .collect()
+                })
+                .filter(|r: &Vec<_>| !r.is_empty());
+            let o = f3d
+                .and_then(|f| f.object_id)
+                .and_then(|id| components.occurrence(id));
+            if let (Some(read), Some(o)) = (&read, o) {
+                out.steps.entry(o).or_insert_with(|| read.clone());
+                let local = out.path_steps.entry(o).or_default();
+                for &(index, world) in read {
+                    if local.iter().any(|(at, _)| *at == index) {
+                        continue;
+                    }
+                    let placed = match parent {
+                        Some(p) => inverse(&p.after(index)).after(&world),
+                        None => world,
+                    };
+                    local.push((index, placed));
                 }
+                local.sort_by_key(|(at, _)| *at);
             }
             if n.is_referenced_component != Some(true) {
-                walk(n.children.as_deref().unwrap_or_default(), components, out);
+                // The children's parent path: this occurrence's steps, else
+                // its parent's moved by its stored placement.
+                let steps = match read {
+                    Some(read) => read,
+                    None => parent.map_or_else(Vec::new, |p| {
+                        p.steps
+                            .iter()
+                            .map(|&(i, t)| (i, t.after(&stored_local)))
+                            .collect()
+                    }),
+                };
+                let path = PathPlacements { steps, stored };
+                walk(
+                    n.children.as_deref().unwrap_or_default(),
+                    Some(&path),
+                    components,
+                    out,
+                );
             }
         }
     }
     walk(
         dump.occurrences.as_deref().unwrap_or_default(),
+        None,
         components,
         out,
     );
@@ -453,12 +540,17 @@ fn read_steps(dump: &Dump, components: &Components, assembly: &Assembly, out: &m
         let parent = parent_world(assembly, out, occurrence.parent);
         let local = match parent {
             Some(p) => inverse(&p).after(&world),
-            None => world,
+            None if occurrence.parent.is_root() => world,
+            // A parent placed several times: the last step along its path.
+            None => match out.path_steps.get(&o).and_then(|s| s.last()) {
+                Some(&(_, t)) => t,
+                None => continue,
+            },
         };
         out.last.insert(o, local);
     }
     let locals: HashMap<OccurrenceUid, Vec<(i64, Transform)>> = out
-        .steps
+        .path_steps
         .iter()
         .map(|(o, steps)| {
             let list = steps
@@ -474,6 +566,29 @@ fn read_steps(dump: &Dump, components: &Components, assembly: &Assembly, out: &m
         })
         .collect();
     out.local_steps = locals;
+}
+
+/// Where one occurrence path is in the root component: after each item
+/// that placed it (in timeline order) and as stored.
+struct PathPlacements {
+    steps: Vec<(Option<i64>, Transform)>,
+    stored: Transform,
+}
+
+impl PathPlacements {
+    /// The path's placement after the item at `index` (its last step where
+    /// the item has no index), else as stored.
+    fn after(&self, index: Option<i64>) -> Transform {
+        let step = match index {
+            Some(index) => self
+                .steps
+                .iter()
+                .filter(|(i, _)| i.is_some_and(|i| i <= index))
+                .max_by_key(|(i, _)| *i),
+            None => self.steps.last(),
+        };
+        step.map_or(self.stored, |(_, t)| *t)
+    }
 }
 
 /// How deep an occurrence is placed (0: in the root component).

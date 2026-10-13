@@ -12,7 +12,7 @@
 //! or changed are measured against the file's state after it, and the
 //! faces the file's operation made or changed against the result. The
 //! result agrees when every main face lies on the other side's faces
-//! (within [`TOLERANCE`]) and what does not is confined to corner patches
+//! (within [`tolerance`]) and what does not is confined to corner patches
 //! (small faces, each at most [`CORNER`] of its side's new area, together at
 //! most [`CORNERS`], none further off than [`CORNER_DISTANCE`]); a main
 //! face off is a different result.
@@ -23,11 +23,14 @@ use crate::history::{self, Sig};
 use crate::{trace_clock, tracing};
 
 /// How far (mm) a point of a new face may lie from the other side's faces:
-/// the file's approximations stay within 1e-4 mm, a rounding of another
-/// size or place lies 0.1 mm and more off.
-pub(crate) const TOLERANCE: f64 = 0.01;
+/// the import's geometric tolerance (`Options::geometric_tolerance`,
+/// mitcad#224; 0.01 mm by default). The file's approximations stay within
+/// 1e-4 mm, a rounding of another size or place lies 0.1 mm and more off.
+pub(crate) fn tolerance() -> f64 {
+    crate::refs::geometric_tolerance()
+}
 
-/// The part of a side's new area that a face off by more than [`TOLERANCE`]
+/// The part of a side's new area that a face off by more than [`tolerance`]
 /// may hold, a corner patch (where a rounding ends or meets another, a few
 /// tenths of a per cent each in the designs looked at); a face larger than
 /// that is a main face. A wall of an extrusion 0.1 mm off held 9 %.
@@ -79,7 +82,7 @@ pub(crate) struct Deviation {
 
 impl Deviation {
     fn off(&self) -> bool {
-        self.largest.is_some_and(|d| d > TOLERANCE || d.is_nan())
+        self.largest.is_some_and(|d| d > tolerance() || d.is_nan())
     }
 }
 
@@ -161,7 +164,7 @@ pub(crate) fn judge(ours: &[Deviation], theirs: &[Deviation], volume: f64) -> Op
     if a.area <= 0.0 && b.area <= 0.0 {
         return None;
     }
-    let tolerance = format!("{TOLERANCE} mm");
+    let tolerance = format!("{} mm", tolerance());
     let what = [a.describe("its"), b.describe("the file's")]
         .into_iter()
         .flatten()
@@ -837,5 +840,22 @@ mod tests {
         let a = [body(None, 10.0, "a"), body(None, 20.0, "b")];
         let b = [body(None, 20.0, "b")];
         assert_eq!(changed(&a, &b).len(), 1);
+    }
+
+    #[test]
+    fn the_face_distance_is_the_imports_geometric_tolerance() {
+        // A main face 5 µm off the file's: within the default 0.01 mm.
+        let ours = [face(100.0, 0.005), face(2.0, 0.0)];
+        let theirs = [face(100.0, 0.005)];
+        assert!(matches!(
+            judge(&ours, &theirs, 0.5),
+            Some(Verdict::Agrees(why)) if why.contains("0.01 mm")
+        ));
+        // With a tolerance of 1e-3 mm it is off.
+        let _tight = crate::refs::GeometricTolerance::set(1e-3);
+        assert!(matches!(
+            judge(&ours, &theirs, 0.5),
+            Some(Verdict::Differs(why)) if why.contains("0.001 mm")
+        ));
     }
 }

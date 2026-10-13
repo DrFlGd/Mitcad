@@ -26,7 +26,7 @@ use crate::names::{EdgeGeometry, NamedState};
 
 use serde_json::{Map, Value};
 
-use super::ir::{Detail, Dump, EntityName, Fingerprint, Geometry, Reference, TimelineItem};
+use super::ir::{Detail, Dump, EntityName, Fingerprint, Geometry, Mat4, Reference, TimelineItem};
 
 /// A history state as [`History::view`] gives it.
 type View = HashMap<usize, Option<usize>>;
@@ -249,6 +249,8 @@ fn named_entities(detail: &mut Detail) -> Vec<&mut Fingerprint> {
             | Detail::OffsetFaces(_)
             | Detail::Hole(_)
             | Detail::Revolve(_)
+            | Detail::Primitive(_)
+            | Detail::Coil(_)
     );
     let refs: Vec<&mut Reference> = match detail {
         Detail::Fillet(f) => f
@@ -277,6 +279,9 @@ fn named_entities(detail: &mut Detail) -> Vec<&mut Fingerprint> {
         Detail::OffsetFaces(o) => o.input_faces.iter_mut().flatten().collect(),
         // A revolution's axis face or edge.
         Detail::Revolve(r) => r.axis.iter_mut().collect(),
+        // The face a primitive or a coil stands on (mitcad#25).
+        Detail::Primitive(p) => p.plane.iter_mut().collect(),
+        Detail::Coil(c) => c.plane.iter_mut().collect(),
         // A hole's position: its face and the two edges it is measured
         // from.
         Detail::Hole(h) => h
@@ -296,6 +301,71 @@ fn named_entities(detail: &mut Detail) -> Vec<&mut Fingerprint> {
             _ => None,
         })
         .collect()
+}
+
+/// Writes the geometry of face `i` of a history state into a face
+/// fingerprint (cm).
+fn fill_face(state: &NamedState, i: usize, fp: &mut Fingerprint) -> Result<(), String> {
+    let cm = |p: [f64; 3]| p.map(|x| x / 10.0);
+    // A planar face (a mirror plane, a split tool; mitcad#67).
+    if let (Err(_), Ok(p)) = (state.cylinder(i), state.plane(i)) {
+        fp.geometry = Some(Geometry {
+            geometry_type: Some("Plane".to_owned()),
+            origin: Some(cm(p.point)),
+            normal: Some(p.normal),
+            ..Geometry::default()
+        });
+        fp.point_on_face = Some(cm(p.point));
+        fp.normal_at_point = Some(p.normal);
+        return Ok(());
+    }
+    let g = match state.cylinder(i) {
+        Ok(g) => g,
+        // Any other surface (mitcad#161: a thread's flank, a spline).
+        Err(_) => {
+            let s = state.surface_point(i)?;
+            fp.geometry = Some(Geometry {
+                geometry_type: Some(s.kind.to_owned()),
+                origin: s.origin.map(cm),
+                axis: s.axis,
+                radius: s.radius.map(|r| r / 10.0),
+                major_radius: s.minor.and(s.radius).map(|r| r / 10.0),
+                minor_radius: s.minor.map(|r| r / 10.0),
+                half_angle: s.half_angle,
+                ..Geometry::default()
+            });
+            if s.minor.is_some() {
+                // A torus has major and minor radii only.
+                if let Some(g) = fp.geometry.as_mut() {
+                    g.radius = None;
+                }
+            }
+            fp.point_on_face = Some(cm(s.point));
+            fp.normal_at_point = Some(s.normal);
+            if !s.spread.is_empty()
+                && let Some(f) = fp.f3d.as_mut()
+            {
+                f.face_points = Some(s.spread.into_iter().map(cm).collect());
+            }
+            return Ok(());
+        }
+    };
+    fp.geometry = Some(Geometry {
+        geometry_type: Some("Cylinder".to_owned()),
+        origin: Some(cm(g.origin)),
+        axis: Some(g.axis),
+        radius: Some(g.radius / 10.0),
+        ..Geometry::default()
+    });
+    fp.point_on_face = Some(cm(g.point));
+    fp.normal_at_point = Some(g.normal);
+    // Where a thread's helix starts round a whole cylinder.
+    if g.full
+        && let Some(f) = fp.f3d.as_mut()
+    {
+        f.seam = Some(g.ref_dir);
+    }
+    Ok(())
 }
 
 /// Finds a named edge or face in a history state and writes its geometry
@@ -320,64 +390,7 @@ fn locate(
         } else {
             state.find_face(entities)?
         };
-        // A planar face (a mirror plane, a split tool; mitcad#67).
-        if let (Err(_), Ok(p)) = (state.cylinder(i), state.plane(i)) {
-            fp.geometry = Some(Geometry {
-                geometry_type: Some("Plane".to_owned()),
-                origin: Some(cm(p.point)),
-                normal: Some(p.normal),
-                ..Geometry::default()
-            });
-            fp.point_on_face = Some(cm(p.point));
-            fp.normal_at_point = Some(p.normal);
-            return Ok(("", None));
-        }
-        let g = match state.cylinder(i) {
-            Ok(g) => g,
-            // Any other surface (mitcad#161: a thread's flank, a spline).
-            Err(_) => {
-                let s = state.surface_point(i)?;
-                fp.geometry = Some(Geometry {
-                    geometry_type: Some(s.kind.to_owned()),
-                    origin: s.origin.map(cm),
-                    axis: s.axis,
-                    radius: s.radius.map(|r| r / 10.0),
-                    major_radius: s.minor.and(s.radius).map(|r| r / 10.0),
-                    minor_radius: s.minor.map(|r| r / 10.0),
-                    half_angle: s.half_angle,
-                    ..Geometry::default()
-                });
-                if s.minor.is_some() {
-                    // A torus has major and minor radii only.
-                    if let Some(g) = fp.geometry.as_mut() {
-                        g.radius = None;
-                    }
-                }
-                fp.point_on_face = Some(cm(s.point));
-                fp.normal_at_point = Some(s.normal);
-                if !s.spread.is_empty()
-                    && let Some(f) = fp.f3d.as_mut()
-                {
-                    f.face_points = Some(s.spread.into_iter().map(cm).collect());
-                }
-                return Ok(("", None));
-            }
-        };
-        fp.geometry = Some(Geometry {
-            geometry_type: Some("Cylinder".to_owned()),
-            origin: Some(cm(g.origin)),
-            axis: Some(g.axis),
-            radius: Some(g.radius / 10.0),
-            ..Geometry::default()
-        });
-        fp.point_on_face = Some(cm(g.point));
-        fp.normal_at_point = Some(g.normal);
-        // Where a thread's helix starts round a whole cylinder.
-        if g.full
-            && let Some(f) = fp.f3d.as_mut()
-        {
-            f.seam = Some(g.ref_dir);
-        }
+        fill_face(state, i, fp)?;
         return Ok(("", None));
     }
     // A vertex (a plane or point through vertices): where the faces named
@@ -1402,6 +1415,296 @@ fn resolve_bodies(item: &mut TimelineItem, at: &At, result: Option<i32>, out: &m
     }
 }
 
+// Entities of other documents (mitcad#196).
+
+/// A document the design refers to, opened: the GUID its inputs name their
+/// entities with (lower case; several documents can share one), the
+/// design's key for it and its file.
+pub struct ExternalFile<'a> {
+    pub guid: String,
+    pub key: String,
+    pub file: &'a F3dFile,
+}
+
+/// Where the design's own occurrences of other documents' components are:
+/// each one's document key and its placement (cm).
+fn external_placements(dump: &Dump) -> Vec<(Mat4, String)> {
+    dump.occurrences
+        .iter()
+        .flatten()
+        .filter(|o| o.is_referenced_component == Some(true))
+        .filter_map(|o| Some((o.transform?, o.f3d.as_ref()?.external_key.clone()?)))
+        .collect()
+}
+
+/// Whether two placements (cm) are the same within the files' rounding.
+fn same_placement(a: &Mat4, b: &Mat4) -> bool {
+    (0..3).all(|r| {
+        (0..3).all(|c| (a[r][c] - b[r][c]).abs() <= 1e-5) && (a[r][3] - b[r][3]).abs() <= 5e-4
+    })
+}
+
+/// The document an entity is in, among those with its GUID: where several
+/// documents share one (copies of one document keep its GUID), the one whose
+/// occurrence is at the placement the entity's slot carries (`_f3d.context`);
+/// else the first.
+fn pick_document<'a, 'b>(
+    candidates: &'b [&'b ExternalFile<'a>],
+    context: Option<&Mat4>,
+    placements: &[(Mat4, String)],
+) -> Option<&'b ExternalFile<'a>> {
+    let keys: Vec<&str> = candidates.iter().map(|c| c.key.as_str()).collect();
+    pick_by_placement(&keys, context, placements).and_then(|i| candidates.get(i).copied())
+}
+
+/// The index of the key whose occurrence is at `context` (the first key
+/// without a placement that tells).
+fn pick_by_placement(
+    keys: &[&str],
+    context: Option<&Mat4>,
+    placements: &[(Mat4, String)],
+) -> Option<usize> {
+    if let (Some(context), [_, _, ..]) = (context, keys) {
+        let key = placements
+            .iter()
+            .find(|(placed, _)| same_placement(placed, context))
+            .map(|(_, key)| key);
+        if let Some(found) = key.and_then(|k| keys.iter().position(|c| c == k)) {
+            return Some(found);
+        }
+    }
+    (!keys.is_empty()).then_some(0)
+}
+
+/// The entities of other documents the design's items name (`_f3d.
+/// document`, [`super::recipe::owner_guid`]), found in those documents' own
+/// histories: their names are those of the other document's operations, so
+/// they are looked for in the last state of its history blobs (the version
+/// the design refers to), by the GUID of the document (`documents`, the
+/// files of the design's `_f3d.external_documents`). The geometry goes into
+/// their fingerprints as for the design's own entities (cm, in the other
+/// document's coordinates: the components that stand for it have them);
+/// `_f3d.found` says where, or why not. Documents that share a GUID (copies
+/// of one document) are told apart by the placement the entity's slot
+/// carries (`_f3d.context`): the document whose occurrence is there.
+pub fn resolve_external(dump: &mut Dump, documents: &[ExternalFile<'_>]) -> Resolved {
+    let mut out = Resolved::default();
+    if documents.is_empty() {
+        return out;
+    }
+    let placements = external_placements(dump);
+    let Some(items) = dump.timeline.as_mut().and_then(|t| t.items.as_mut()) else {
+        return out;
+    };
+    let mut by_guid: HashMap<&str, Vec<&ExternalFile<'_>>> = HashMap::new();
+    for d in documents {
+        by_guid.entry(d.guid.as_str()).or_default().push(d);
+    }
+    let blobs: HashMap<&str, Blobs> = documents
+        .iter()
+        .map(|d| (d.key.as_str(), Blobs::default()))
+        .collect();
+    for item in items.iter_mut() {
+        let Some(detail) = item.detail.as_ref() else {
+            continue;
+        };
+        let mut v = serde_json::to_value(detail).expect("serializes");
+        let mut changed = false;
+        external_entities(&mut v, &by_guid, &mut |guid, m| {
+            let context = m
+                .get("_f3d")
+                .and_then(|x| x.get("context"))
+                .and_then(|c| serde_json::from_value::<Mat4>(c.clone()).ok());
+            let Some(doc) = by_guid
+                .get(guid)
+                .and_then(|c| pick_document(c, context.as_ref(), &placements))
+            else {
+                return;
+            };
+            let Some(blobs) = blobs.get(doc.key.as_str()) else {
+                return;
+            };
+            if find_external(m, doc.file, blobs, &mut out) {
+                changed = true;
+            }
+        });
+        if changed && let Value::Object(map) = v {
+            let object_type = item.object_type().map(str::to_owned);
+            item.detail = Some(Detail::typed(object_type.as_deref(), map));
+        }
+    }
+    out
+}
+
+/// The references of a value that name an entity of one of `documents` and
+/// are not found yet.
+fn external_entities(
+    v: &mut Value,
+    documents: &HashMap<&str, Vec<&ExternalFile<'_>>>,
+    f: &mut dyn FnMut(&str, &mut Map<String, Value>),
+) {
+    match v {
+        Value::Object(m) => {
+            let named = m.get("_f3d").and_then(|x| {
+                let guid = x.get("document")?.as_str()?;
+                (documents.contains_key(guid) && x.get("entities").is_some())
+                    .then(|| guid.to_owned())
+            });
+            match named {
+                Some(guid) => f(&guid, m),
+                None => {
+                    for x in m.values_mut() {
+                        external_entities(x, documents, f);
+                    }
+                }
+            }
+        }
+        Value::Array(a) => {
+            for x in a {
+                external_entities(x, documents, f);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Finds one entity in the last state of the document's history blobs and
+/// writes what is found into the reference; whether it was found.
+fn find_external(
+    m: &mut Map<String, Value>,
+    doc: &F3dFile,
+    blobs: &Blobs,
+    out: &mut Resolved,
+) -> bool {
+    let blobs = blobs.get(doc);
+    let is_body = m.get("kind").and_then(Value::as_str) == Some("body");
+    let mut reference = if is_body {
+        Reference::Body(Box::new(Fingerprint::from_map(std::mem::take(m))))
+    } else {
+        Reference::from_map(std::mem::take(m))
+    };
+    let (Reference::Edge(fp) | Reference::Face(fp) | Reference::Vertex(fp) | Reference::Body(fp)) =
+        &mut reference
+    else {
+        if let Ok(Value::Object(map)) = serde_json::to_value(&reference) {
+            *m = map;
+        }
+        return false;
+    };
+    // What the design's own history gave for the names (they are the other
+    // document's operations' numbers: a match there is a coincidence).
+    fp.geometry = None;
+    fp.point = None;
+    fp.point_on_face = None;
+    fp.normal_at_point = None;
+    fp.start_point = None;
+    fp.end_point = None;
+    fp.mid_point = None;
+    fp.length = None;
+    if let Some(f) = fp.f3d.as_mut() {
+        f.edge_points = None;
+        f.direction = None;
+        f.found = None;
+        f.component = None;
+        f.face_points = None;
+        f.seam = None;
+    }
+    let entities = fp
+        .f3d
+        .as_ref()
+        .and_then(|f| f.entities.clone())
+        .unwrap_or_default();
+    let mut why = String::new();
+    let mut hit = None;
+    'blobs: for blob in blobs {
+        // The last state first, then earlier ones: the entity may be one the
+        // document's later operations consumed.
+        for back in 0..=blob.history.states.len() {
+            let view = blob.history.view(blob.history.states.len() - back);
+            let state = NamedState::new(&blob.file, Some(&view));
+            let back_note = if back == 0 {
+                String::new()
+            } else {
+                format!(", {back} states before the last")
+            };
+            if is_body {
+                match state.find_body(&entities) {
+                    Ok(i) => {
+                        // The body as the document's last state has it: the
+                        // same entity (the later operations changed its
+                        // names, not which body it is).
+                        let record = state.bodies[i].record;
+                        let last_view = blob.history.view(blob.history.states.len());
+                        let last = NamedState::new(&blob.file, Some(&last_view));
+                        let points = match last.bodies.iter().position(|b| b.record == record) {
+                            Some(j) => last.body_points(j, 8),
+                            None => state.body_points(i, 8),
+                        };
+                        if points.is_empty() {
+                            why = "no edge of the body has a middle point".to_owned();
+                            continue;
+                        }
+                        if let Some(f) = fp.f3d.as_mut() {
+                            f.edge_points =
+                                Some(points.iter().map(|p| p.map(|x| x / 10.0)).collect());
+                            f.stored = Some(format!("{}#{record}", blob.entry));
+                        }
+                        hit = Some((blob.entry.as_str(), back_note));
+                        break 'blobs;
+                    }
+                    Err(e) if why.is_empty() => why = e,
+                    Err(_) => {}
+                }
+                continue;
+            }
+            match locate(&state, fp, &entities, (0, 1), false)
+                .or_else(|_| locate(&state, fp, &entities, (0, 1), true))
+            {
+                Ok((how, _)) => {
+                    // A face as the last state has it, when it is still
+                    // there (the same entity, its geometry changed).
+                    if back > 0
+                        && fp.object_type.as_deref() == Some("BRepFace")
+                        && let Ok(i) = state
+                            .find_face(&entities)
+                            .or_else(|_| state.find_face_surface(&entities))
+                    {
+                        let entity = state.faces[i].entity;
+                        let last_view = blob.history.view(blob.history.states.len());
+                        let last = NamedState::new(&blob.file, Some(&last_view));
+                        if let Some(j) = last.faces.iter().position(|f| f.entity == entity) {
+                            let mut later = fp.clone();
+                            if fill_face(&last, j, &mut later).is_ok() {
+                                *fp = later;
+                            }
+                        }
+                    }
+                    hit = Some((blob.entry.as_str(), format!("{how}{back_note}")));
+                    break 'blobs;
+                }
+                Err(e) if why.is_empty() => why = e,
+                Err(_) => {}
+            }
+        }
+    }
+    let found = hit.is_some();
+    if let Some(f) = fp.f3d.as_mut() {
+        f.found = Some(match hit {
+            Some((entry, how)) => format!("{entry} (another document's last state){how}"),
+            None if blobs.is_empty() => "the other document has no history".to_owned(),
+            None => why,
+        });
+    }
+    if found {
+        out.found += 1;
+    } else {
+        out.not_found += 1;
+    }
+    if let Ok(Value::Object(map)) = serde_json::to_value(&reference) {
+        *m = map;
+    }
+    found
+}
 // Where the file's circles start.
 
 /// A whole circle of a sketch, looked for among the stored bodies' closed
@@ -1853,5 +2156,40 @@ mod tests {
         assert_eq!(seam_angle([-5.0, 1e-12, 0.0], x, y), std::f64::consts::PI);
         assert!((seam_angle([0.0, 5.0, 0.0], x, y) - std::f64::consts::FRAC_PI_2).abs() < 1e-12);
         assert!((seam_angle([0.0, -5.0, 0.0], x, y) + std::f64::consts::FRAC_PI_2).abs() < 1e-12);
+    }
+
+    /// Documents that share a GUID are told apart by the placement the
+    /// entity's slot carries: the document whose occurrence is there.
+    #[test]
+    fn documents_sharing_a_guid_are_told_apart_by_their_placement() {
+        let at = |x: f64| -> Mat4 {
+            [
+                [1.0, 0.0, 0.0, x],
+                [0.0, 1.0, 0.0, 0.0],
+                [0.0, 0.0, 1.0, 0.0],
+                [0.0, 0.0, 0.0, 1.0],
+            ]
+        };
+        let placements = vec![(at(0.0), "aa".to_owned()), (at(10.0), "bb".to_owned())];
+        let keys = ["aa", "bb"];
+        // Within the files' rounding.
+        let near = at(10.0 + 1e-4);
+        assert_eq!(pick_by_placement(&keys, Some(&near), &placements), Some(1));
+        assert_eq!(
+            pick_by_placement(&keys, Some(&at(0.0)), &placements),
+            Some(0)
+        );
+        // Nothing is there, or no placement is given: the first.
+        assert_eq!(
+            pick_by_placement(&keys, Some(&at(5.0)), &placements),
+            Some(0)
+        );
+        assert_eq!(pick_by_placement(&keys, None, &placements), Some(0));
+        // A document alone, or none.
+        assert_eq!(
+            pick_by_placement(&["bb"], Some(&at(0.0)), &placements),
+            Some(0)
+        );
+        assert_eq!(pick_by_placement(&[], None, &placements), None);
     }
 }

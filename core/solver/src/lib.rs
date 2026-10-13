@@ -69,3 +69,5 @@ pub use types::{
     Analysis, Constraint, ConstraintId, Dependency, DragGoal, EntityId, EntityKind, Error, PointId,
     SolveOptions, SolveResult, SolveStatus, SplineEnd,
 };
+// Equal spacing (mitcad#221).
+pub use types::{Anchor, SpacingMode};

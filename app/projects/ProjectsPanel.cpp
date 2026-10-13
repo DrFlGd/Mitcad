@@ -447,7 +447,7 @@ ProjectsPanel::ProjectsPanel(Host host, QWidget* parent) : QWidget(parent), m_ho
       startNewFolder(root, sameRoot(root, selectedRoot()) ? selectedFolder() : QString());
     }
   });
-  m_rename = action("edit", tr("Rename"), tr("Renames the selected design or folder (F2)"), [this] { renameCurrent(); });
+  // Rename has no button (a crowded toolbar): F2 and the rows' context menu.
   m_delete = action("delete", tr("Delete"),
                     tr("Deletes the selected design or folder as a new version: the history keeps it (Del)"),
                     [this] { deleteCurrent(); });
@@ -972,7 +972,6 @@ void ProjectsPanel::updateActions() {
   const bool anyProject = healthy || (m_host.currentRoot && !m_host.currentRoot().isEmpty());
   m_newDesign->setEnabled(anyProject && (healthy || row == nullptr));
   m_newFolder->setEnabled(anyProject && (healthy || row == nullptr));
-  m_rename->setEnabled(healthy && (type == RowType::Design || type == RowType::Folder));
   m_delete->setEnabled(healthy && (type == RowType::Design || type == RowType::Folder));
   m_history->setEnabled(healthy && type == RowType::Design);
   m_sync->setEnabled(healthy && row->kind == ProjectRow::Kind::Cloud);

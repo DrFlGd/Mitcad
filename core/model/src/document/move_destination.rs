@@ -278,8 +278,35 @@ impl<K: Kernel> Document<K> {
         source_occurrence: Option<&OccurrencePath>,
         destination: &MoveDestination,
     ) -> Result<(), ModelError> {
-        self.destination_context(plan, source_occurrence, destination)
-            .map(|_| ())
+        self.destination_context(plan, source_occurrence, destination)?;
+        // The design policy's containment (mitcad#220), so that the picker
+        // explains it; the command checks every setting again, links too.
+        let owner = match destination {
+            MoveDestination::Existing { component, .. } => *component,
+            MoveDestination::New { parent, .. } => {
+                if let Some(refused) =
+                    self.creation_refusal(*parent, crate::policy::Setting::Components)
+                {
+                    return Err(invalid(refused));
+                }
+                return Ok(());
+            }
+        };
+        for f in plan.groups.iter().flat_map(|g| &g.features) {
+            let setting = self
+                .state
+                .entry(*f)
+                .and_then(|e| crate::policy::containment(&e.def));
+            if let Some(refused) = setting.and_then(|s| self.creation_refusal(owner, s)) {
+                return Err(invalid(format!(
+                    "{}: {refused}",
+                    self.state
+                        .entry(*f)
+                        .map_or_else(|| f.to_string(), |e| e.name.clone())
+                )));
+            }
+        }
+        Ok(())
     }
 
     pub(crate) fn move_to_destination(
@@ -324,6 +351,9 @@ impl<K: Kernel> Document<K> {
                 let name = name.as_ref().unwrap_or(&default_name);
                 state.check_component_name(name, ComponentUid(u32::MAX))?;
                 let component = state.assembly.create(Some(name), None);
+                // The link settings of where the features were (mitcad#220).
+                let policy = state.assembly.policy(source).for_moved_content();
+                state.assembly.set_policy(component, policy);
                 let occurrence =
                     state
                         .assembly
@@ -443,6 +473,11 @@ fn relocate_links(
             }
             FeatureDef::Extrude(extrude) => {
                 for (body, link) in &mut extrude.object_links {
+                    follow(link, &BTreeSet::from([body.feature]), own);
+                }
+            }
+            FeatureDef::ConstructionPlane(plane) => {
+                for (body, link) in &mut plane.links {
                     follow(link, &BTreeSet::from([body.feature]), own);
                 }
             }

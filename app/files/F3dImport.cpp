@@ -39,6 +39,7 @@
 #include <QVBoxLayout>
 #include <QtLogging>
 
+#include "../framework/AppSettings.hpp"
 #include "../framework/Diagnostics.hpp"
 #include "../framework/Json.hpp"
 #include "../framework/ResultCache.hpp"
@@ -371,6 +372,8 @@ void F3dImport::start() {
   const QString name = QFileInfo(m_path).fileName();
   if (!isFreeCadFile(m_path) && !isIptFile(m_path)) {
     m_options = askReferences();
+    // The geometric tolerance of the Preferences (mitcad#224).
+    m_options.insert(QStringLiteral("geometric_tolerance"), GeneralSettings::load().importTolerance);
   }
   m_dialog = new ImportProgress(
       m_window, [this] { stop(); }, [this] { cancel(); });

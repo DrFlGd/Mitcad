@@ -1015,6 +1015,7 @@ mod tests {
             mid: [x, 0.0, 0.0],
             direction: Some([1.0, 0.0, 0.0]),
             chosen_from_multiple: false,
+            sliver_twin: false,
         };
         let value = edge_match_json(
             Ok(vec![edge("E{F3:a|F3:b}", 2.0), edge("E{F3:a|F3:c}", 7.0)]),

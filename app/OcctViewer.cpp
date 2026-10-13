@@ -26,6 +26,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdlib>
 #include <initializer_list>
 #include <limits>
 #include <map>
@@ -70,6 +71,9 @@
 #include <Graphic3d_TextureParams.hxx>
 #include <Graphic3d_TransformPers.hxx>
 #include <Image_PixMap.hxx>
+#include <IntCurvesFace_ShapeIntersector.hxx>
+#include <ShapeAnalysis_Curve.hxx>
+#include <gp_Lin.hxx>
 #include <Graphic3d_ZLayerSettings.hxx>
 #include <NCollection_IndexedMap.hxx>
 #include <Poly_Triangulation.hxx>
@@ -123,6 +127,12 @@ const Quantity_Color kThreadColor(0.30, 0.33, 0.40, Quantity_TOC_RGB);
 
 // A left press that moves further than this is a window selection.
 constexpr double kDragPixels = 4.0;
+// Whether a body edge is in sight (mitcad#217): a face nearer the eye than
+// this (mm, the geometric tolerance of the imports) hides the point of the
+// edge; the faces that meet at the edge pass through it.
+constexpr double kOcclusionTolerance = 0.01;
+// Points along an edge that a window classifies, its ends left out.
+constexpr int kSightSamples = 32;
 // The orientation cube's corner of the view and its centre's distance from the
 // corner are OcctViewer::kCubeArea and kCubeOffset (widget pixels; the cube
 // itself is drawn in device pixels and scaled by the device pixel ratio, see
@@ -131,6 +141,8 @@ constexpr int kCubeOffset = OcctViewer::kCubeOffset;
 // A press on the cube orbits the view (Aspect_VKeyFlags of its own, which
 // no key gives).
 constexpr Aspect_VKeyFlags kCubeDrag = Aspect_VKeyFlags_META;
+// Ctrl+Shift with a click or a window (mitcad#217: add and widen at once).
+constexpr Aspect_VKeyFlags kCtrlShift = Aspect_VKeyFlags_CTRL | Aspect_VKeyFlags_SHIFT;
 // A trackpad's scroll goes to the view as a drag of the left button with keys
 // of their own, as for the cube, so that it pans and orbits the way a mouse
 // drag does.
@@ -779,6 +791,13 @@ private:
   const OcctViewer* m_owner;
 };
 
+struct OcctViewer::Occluder {
+  TopoDS_Shape placed; // the body where its occurrence puts it
+  Bnd_Box box;
+  // Made the first time a line passes the box (it classifies every face).
+  std::unique_ptr<IntCurvesFace_ShapeIntersector> intersector;
+};
+
 OcctViewer::OcctViewer(QWidget* parent) : QOpenGLWidget(parent) {
   // The presentations' triangulations (BRepMesh through AIS) mesh the faces
   // of a shape on all cores instead of one after another (W1: a design of
@@ -931,11 +950,12 @@ OcctViewer::OcctViewer(QWidget* parent) : QOpenGLWidget(parent) {
   bindGestures();
   // The view reports picks and keeps no selection of its own, so every pick
   // replaces OCCT's selection; the owner of the view decides what a pick
-  // with Ctrl or Shift does. A click on the orientation cube is a pick of it.
+  // with Ctrl or Shift does (in sketch mode Ctrl+Shift too, mitcad#217). A
+  // click on the orientation cube is a pick of it.
   auto& schemes = ChangeMouseSelectionSchemes();
   schemes.Clear();
   for (const Aspect_VKeyFlags keys : std::initializer_list<Aspect_VKeyFlags>{
-           Aspect_VKeyFlags_NONE, Aspect_VKeyFlags_CTRL, Aspect_VKeyFlags_SHIFT, kCubeDrag}) {
+           Aspect_VKeyFlags_NONE, Aspect_VKeyFlags_CTRL, Aspect_VKeyFlags_SHIFT, kCtrlShift, kCubeDrag}) {
     schemes.Bind(Aspect_VKeyMouse_LeftButton | keys, AIS_SelectionScheme_Replace);
   }
   // Object dragging is meant for manipulators, which the view does not have
@@ -946,6 +966,11 @@ OcctViewer::OcctViewer(QWidget* parent) : QOpenGLWidget(parent) {
   setMouseTracking(true);
   setFocusPolicy(Qt::StrongFocus);
   setUpdateBehavior(QOpenGLWidget::NoPartialUpdate);
+  // Shift widens a selection scope's clicks wherever the keyboard is
+  // (eventFilter, mitcad#217).
+  if (QCoreApplication::instance() != nullptr) {
+    QCoreApplication::instance()->installEventFilter(this);
+  }
 
 #ifdef Q_OS_MACOS
   // macOS offers only a legacy 2.1 or a forward-compatible core 3.2-4.1
@@ -974,6 +999,9 @@ OcctViewer::~OcctViewer() {
   // again; releasing it earlier can crash in ~QOpenGLWidget().
   occ::handle<Aspect_DisplayConnection> display = m_viewer->Driver()->GetDisplayConnection();
 
+  if (QCoreApplication::instance() != nullptr) {
+    QCoreApplication::instance()->removeEventFilter(this);
+  }
   m_context->RemoveFilters();
   m_context->RemoveAll(false);
   m_context.Nullify();
@@ -1032,20 +1060,21 @@ void OcctViewer::activatePicking(const occ::handle<AIS_Shape>& object) {
       m_context->SetSelectionSensitivity(object, mode, pixels);
     }
   };
+  const SelectFilter kinds = activeKinds();
   if (info->second.body) {
-    if (m_filter.testFlag(SelectKind::Body)) {
+    if (kinds.testFlag(SelectKind::Body)) {
       activate(0, kFaceSensitivity);
     }
-    if (m_filter.testFlag(SelectKind::Face)) {
+    if (kinds.testFlag(SelectKind::Face)) {
       activate(AIS_Shape::SelectionMode(TopAbs_FACE), kFaceSensitivity);
     }
-    if (m_filter.testFlag(SelectKind::Edge)) {
+    if (kinds.testFlag(SelectKind::Edge)) {
       activate(AIS_Shape::SelectionMode(TopAbs_EDGE), kEdgeSensitivity);
     }
-    if (m_filter.testFlag(SelectKind::Vertex)) {
+    if (kinds.testFlag(SelectKind::Vertex)) {
       activate(AIS_Shape::SelectionMode(TopAbs_VERTEX), kVertexSensitivity);
     }
-  } else if (info->second.highlight || m_filter.testFlag(info->second.item.kind)) {
+  } else if (info->second.highlight || kinds.testFlag(info->second.item.kind)) {
     // Highlights stay pickable, so a click on a selected item deselects it;
     // the filter decides whether the active input takes it. Curves and
     // points (sketch geometry, axes) are as wide as a body's edges and
@@ -1280,12 +1309,9 @@ void OcctViewer::setRenderedImage(const QImage& image) {
     m_context->Erase(m_renderedQuad, false);
     m_renderedTexture.Nullify();
     m_renderedPixels.Nullify();
-    m_renderedCamera.Nullify();
   } else {
     // What the image shows: the camera and size of now.
-    m_renderedCamera = new Graphic3d_Camera();
-    m_renderedCamera->Copy(m_view->Camera());
-    m_view->Window()->Size(m_renderedWidth, m_renderedHeight);
+    m_renderedPose = viewPose();
     // OCCT reads the pixels when it draws: the image stays here meanwhile.
     m_renderedImage = image.convertToFormat(QImage::Format_RGB32);
     m_renderedPixels = new Image_PixMap();
@@ -1323,19 +1349,36 @@ void OcctViewer::setRenderedImage(const QImage& image) {
   requestFrame();
 }
 
-bool OcctViewer::renderedImageStale() const {
-  if (m_renderedCamera.IsNull() || m_view->Window().IsNull()) {
-    return false;
+ViewPose OcctViewer::viewPose() const {
+  ViewPose pose;
+  if (!m_view->Window().IsNull()) {
+    m_view->Window()->Size(pose.width, pose.height);
   }
-  int width = 0;
-  int height = 0;
-  m_view->Window()->Size(width, height);
-  const occ::handle<Graphic3d_Camera>& now = m_view->Camera();
-  return width != m_renderedWidth || height != m_renderedHeight ||
-         now->ProjectionType() != m_renderedCamera->ProjectionType() ||
-         !now->Eye().XYZ().IsEqual(m_renderedCamera->Eye().XYZ(), 0.0) ||
-         !now->Center().XYZ().IsEqual(m_renderedCamera->Center().XYZ(), 0.0) ||
-         !now->Up().XYZ().IsEqual(m_renderedCamera->Up().XYZ(), 0.0) || now->Scale() != m_renderedCamera->Scale();
+  const occ::handle<Graphic3d_Camera>& camera = m_view->Camera();
+  const gp_XYZ eye = camera->Eye().XYZ();
+  const gp_XYZ center = camera->Center().XYZ();
+  const gp_XYZ up = camera->Up().XYZ();
+  for (int i = 0; i < 3; ++i) {
+    pose.eye[static_cast<std::size_t>(i)] = eye.Coord(i + 1);
+    pose.center[static_cast<std::size_t>(i)] = center.Coord(i + 1);
+    pose.up[static_cast<std::size_t>(i)] = up.Coord(i + 1);
+  }
+  pose.scale = camera->Scale();
+  pose.orthographic = camera->IsOrthographic();
+  return pose;
+}
+
+QString OcctViewer::renderedImageStale() const {
+  if (m_renderedImage.isNull() || m_view->Window().IsNull()) {
+    return QString();
+  }
+  // A tolerant comparison (mitcad#216): OCCT's IsEqual with a tolerance of
+  // 0 found every camera moved, and the image was dropped on every frame.
+  const ViewPose now = viewPose();
+  if (now.width != m_renderedPose.width || now.height != m_renderedPose.height) {
+    return QStringLiteral("size changed");
+  }
+  return sameView(now, m_renderedPose) ? QString() : QStringLiteral("camera moved");
 }
 
 void OcctViewer::backgroundColors(QColor& top, QColor& bottom) const {
@@ -1554,9 +1597,15 @@ void OcctViewer::setHighlights(const std::vector<HighlightDisplay>& highlights) 
     remove(highlight);
   }
   m_highlights.clear();
+  QStringList bodies; // highlighted whole, for the log
   for (const HighlightDisplay& highlight : highlights) {
     if (highlight.shape.IsNull()) {
       continue;
+    }
+    if (highlight.item.kind == SelectKind::Body) {
+      bodies << (highlight.item.occurrence.isEmpty()
+                     ? highlight.item.owner
+                     : QStringLiteral("%1 in %2").arg(highlight.item.owner, highlight.item.occurrence));
     }
     occ::handle<AIS_Shape> object = new AIS_Shape(highlight.shape);
     const Quantity_Color color = occtColor(highlight.color);
@@ -1599,6 +1648,11 @@ void OcctViewer::setHighlights(const std::vector<HighlightDisplay>& highlights) 
     display(object, mode, std::move(info), true);
     m_context->SetZLayer(object, Graphic3d_ZLayerId_Top);
     m_highlights.push_back(object);
+  }
+  const QString logged = bodies.isEmpty() ? QStringLiteral("none") : bodies.join(QStringLiteral(", "));
+  if (logged != m_loggedBodyHighlights) {
+    m_loggedBodyHighlights = logged;
+    qDebug().noquote() << QStringLiteral("View body highlights: %1").arg(logged);
   }
   sceneChanged();
 }
@@ -1646,11 +1700,72 @@ void OcctViewer::setSketchPreview(const TopoDS_Shape& shape) {
 
 void OcctViewer::setPickFilter(SelectFilter filter, std::function<bool(const SelectionItem&)> test) {
   m_filter = filter;
-  m_filterTest = std::move(test);
+  m_expandedFilter = filter;
+  m_scoped = false;
+  m_pickTest = nullptr;
+  if (test) {
+    m_pickTest = [test = std::move(test)](const SelectionItem& item, const PickCase&) { return test(item); };
+  }
   m_context->ClearSelected(false);
   m_context->ClearDetected(false);
   activateAllPicking();
   sceneChanged();
+}
+
+void OcctViewer::setPickScope(SelectFilter kinds, SelectFilter expanded, PickTest test) {
+  m_filter = kinds;
+  m_expandedFilter = kinds | expanded;
+  m_scoped = true;
+  m_pickTest = std::move(test);
+  // A scope set while Shift is down (a key that came before) picks as Shift
+  // says now.
+  m_shiftHeld = QGuiApplication::keyboardModifiers().testFlag(Qt::ShiftModifier);
+  m_context->ClearSelected(false);
+  m_context->ClearDetected(false);
+  ResetPreviousMoveTo();
+  activateAllPicking();
+  sceneChanged();
+}
+
+SelectFilter OcctViewer::activeKinds() const {
+  return m_scoped && (m_shiftHeld || m_contextPick) ? m_expandedFilter : m_filter;
+}
+
+void OcctViewer::setShiftHeld(bool held, bool hover) {
+  if (held == m_shiftHeld) {
+    return;
+  }
+  m_shiftHeld = held;
+  if (!m_scoped) {
+    return;
+  }
+  if (m_expandedFilter != m_filter) {
+    activateAllPicking();
+  }
+  // What lies under the pointer is found again with the scope as Shift
+  // makes it, also for a click at the same place.
+  m_context->ClearDetected(false);
+  ResetPreviousMoveTo();
+  emit shiftChanged(held);
+  if (hover && underMouse() && PressedMouseButtons() == Aspect_VKeyMouse_NONE && !m_view->Window().IsNull()) {
+    UpdateMousePosition(LastMousePosition(), Aspect_VKeyMouse_NONE,
+                        viewFlags(QGuiApplication::keyboardModifiers()), false);
+  }
+  requestFrame();
+}
+
+bool OcctViewer::eventFilter(QObject* watched, QEvent* event) {
+  const QEvent::Type type = event->type();
+  if (m_scoped && (type == QEvent::KeyPress || type == QEvent::KeyRelease)) {
+    const auto* key = static_cast<const QKeyEvent*>(event);
+    if (key->key() == Qt::Key_Shift && !key->isAutoRepeat() && window() != nullptr &&
+        window()->isActiveWindow()) {
+      setShiftHeld(type == QEvent::KeyPress, true);
+    }
+  } else if (m_scoped && type == QEvent::ApplicationDeactivate) {
+    setShiftHeld(false, false); // the release goes to another application
+  }
+  return QOpenGLWidget::eventFilter(watched, event);
 }
 
 void OcctViewer::setHoverColor(const QColor& color) {
@@ -1875,10 +1990,237 @@ bool OcctViewer::accepts(const occ::handle<SelectMgr_EntityOwner>& owner) const 
     return true;
   }
   const auto item = itemFor(owner);
-  if (!item || !m_filter.testFlag(item->kind)) {
+  if (!item || !activeKinds().testFlag(item->kind)) {
     return false;
   }
-  return !m_filterTest || m_filterTest(*item);
+  if (!m_pickTest) {
+    return true;
+  }
+  PickCase how;
+  how.window = m_windowSelecting;
+  how.expanded = m_scoped && (m_shiftHeld || m_contextPick) && !m_windowSelecting;
+  if (item->kind == SelectKind::Edge) {
+    how.sight = [this, owner] { return edgeSight(owner); };
+  }
+  if (!m_pickTest(*item, how)) {
+    return false;
+  }
+  const bool area = item->kind == SelectKind::Face || item->kind == SelectKind::Plane ||
+                    item->kind == SelectKind::Body;
+  if (m_scoped && !m_windowSelecting && area) {
+    // A click within an edge's reach that the scope lets it take picks the
+    // edge, also one behind the face or the plane (mitcad#217: occluded
+    // edges offered, or reached with Shift, which also offers the sketch's
+    // own plane in front of them); faces, planes and bodies are areas, an
+    // edge a precise target.
+    const occ::handle<StdSelect_ViewerSelector3d>& selector = m_context->MainSelector();
+    for (int rank = 1; rank <= selector->NbPicked(); ++rank) {
+      const occ::handle<SelectMgr_EntityOwner> other = selector->Picked(rank);
+      const occ::handle<StdSelect_BRepOwner> brep = occ::handle<StdSelect_BRepOwner>::DownCast(other);
+      if (brep.IsNull() || !brep->HasShape() || brep->Shape().ShapeType() != TopAbs_EDGE) {
+        continue;
+      }
+      const std::optional<SelectionItem> edge = itemFor(other);
+      if (edge && edge->kind == SelectKind::Edge && accepts(other)) {
+        return false;
+      }
+    }
+  }
+  return true;
+}
+
+bool OcctViewer::occluded(const gp_Pnt& point) const {
+  const occ::handle<Graphic3d_Camera>& camera = m_view->Camera();
+  // From the point towards the eye: along the view in an orthographic
+  // view, to the eye in a perspective one.
+  gp_Dir toEye = camera->Direction().Reversed();
+  double reach = 1.0e9;
+  if (!camera->IsOrthographic()) {
+    const gp_Vec towards(point, camera->Eye());
+    reach = towards.Magnitude();
+    if (reach <= kOcclusionTolerance) {
+      return false;
+    }
+    toEye = gp_Dir(towards);
+  }
+  const gp_Lin ray(point, toEye);
+  for (const auto& [key, entry] : m_bodies) {
+    // Bodies drawn see-through (previews, ghosts) hide nothing; hidden
+    // bodies are not shown at all.
+    if (entry.style != BodyDisplay::Style::Normal || !entry.shape) {
+      continue;
+    }
+    if (!entry.occluder) {
+      entry.occluder = std::make_shared<Occluder>();
+      entry.occluder->placed = entry.shape->occt().Moved(entry.placement);
+      // From the shown body's mesh, with room for the faces between its
+      // nodes.
+      Bnd_Box& box = entry.occluder->box;
+      BRepBndLib::Add(entry.occluder->placed, box, true);
+      if (!box.IsVoid()) {
+        box.Enlarge(kOcclusionTolerance + 0.01 * std::sqrt(box.SquareExtent()));
+      }
+    }
+    Occluder& occluder = *entry.occluder;
+    if (occluder.box.IsVoid() || occluder.box.IsOut(ray)) {
+      continue;
+    }
+    if (!occluder.intersector) {
+      occluder.intersector = std::make_unique<IntCurvesFace_ShapeIntersector>();
+      occluder.intersector->Load(occluder.placed, Precision::Confusion());
+    }
+    occluder.intersector->PerformNearest(ray, kOcclusionTolerance, reach);
+    if (occluder.intersector->IsDone() && occluder.intersector->NbPnt() > 0) {
+      return true;
+    }
+  }
+  return false;
+}
+
+EdgeSight OcctViewer::edgeSight(const occ::handle<SelectMgr_EntityOwner>& owner) const {
+  const occ::handle<StdSelect_BRepOwner> brep = occ::handle<StdSelect_BRepOwner>::DownCast(owner);
+  if (brep.IsNull() || !brep->HasShape()) {
+    return EdgeSight::Visible;
+  }
+  // A body's edge, or a selection's highlight: a compound of the edges.
+  std::vector<TopoDS_Edge> edges;
+  for (TopExp_Explorer explorer(brep->Shape(), TopAbs_EDGE); explorer.More(); explorer.Next()) {
+    edges.push_back(TopoDS::Edge(explorer.Current()));
+  }
+  if (edges.empty()) {
+    return EdgeSight::Visible;
+  }
+  // A placed body's edges are in its component's coordinates.
+  gp_Trsf toWorld;
+  if (owner->HasSelectable() && owner->Selectable()->HasTransformation()) {
+    toWorld = owner->Selectable()->Transformation();
+  }
+  if (m_windowSelecting) {
+    bool visible = false;
+    bool hidden = false;
+    for (const TopoDS_Edge& edge : edges) {
+      const EdgeSight sight = windowSight(edge, toWorld);
+      visible = visible || sight != EdgeSight::Occluded;
+      hidden = hidden || sight != EdgeSight::Visible;
+    }
+    return visible && hidden ? EdgeSight::Both : hidden ? EdgeSight::Occluded : EdgeSight::Visible;
+  }
+  // A click: the point of the edges nearest where it hit.
+  const std::optional<gp_Pnt> picked = pickedWorldPoint(owner);
+  std::optional<gp_Pnt> nearest;
+  double nearestDistance = 0.0;
+  for (const TopoDS_Edge& edge : edges) {
+    const BRepAdaptor_Curve curve(edge);
+    gp_Pnt onEdge = curve.Value((curve.FirstParameter() + curve.LastParameter()) / 2.0);
+    if (picked) {
+      const gp_Pnt local = picked->Transformed(toWorld.Inverted());
+      double parameter = 0.0;
+      ShapeAnalysis_Curve().Project(curve, local, Precision::Confusion(), onEdge, parameter);
+    }
+    const double distance = picked ? onEdge.Distance(picked->Transformed(toWorld.Inverted())) : 0.0;
+    if (!nearest || distance < nearestDistance) {
+      nearest = onEdge;
+      nearestDistance = distance;
+    }
+  }
+  return occluded(nearest->Transformed(toWorld)) ? EdgeSight::Occluded : EdgeSight::Visible;
+}
+
+EdgeSight OcctViewer::windowSight(const TopoDS_Edge& edge, const gp_Trsf& toWorld) const {
+  // The part of the edge inside the window: its samples there.
+  const BRepAdaptor_Curve curve(edge);
+  const double first = curve.FirstParameter();
+  const double last = curve.LastParameter();
+  bool visible = false;
+  bool hidden = false;
+  for (int i = 1; i < kSightSamples && !(visible && hidden); ++i) {
+    const gp_Pnt point =
+        curve.Value(first + (last - first) * double(i) / double(kSightSamples)).Transformed(toWorld);
+    if (!m_windowRect.contains(toWidgetF(point))) {
+      continue;
+    }
+    (occluded(point) ? hidden : visible) = true;
+  }
+  if (!visible && !hidden) {
+    // A short edge the window crosses between the samples: its middle.
+    return occluded(curve.Value((first + last) / 2.0).Transformed(toWorld)) ? EdgeSight::Occluded
+                                                                            : EdgeSight::Visible;
+  }
+  return visible && hidden ? EdgeSight::Both : hidden ? EdgeSight::Occluded : EdgeSight::Visible;
+}
+
+std::vector<OcctViewer::EdgePlace> OcctViewer::edgePlaces() {
+  std::vector<EdgePlace> found;
+  if (m_view->Window().IsNull()) {
+    return found;
+  }
+  const QRect inside = rect().adjusted(4, 4, -4, -4);
+  const occ::handle<StdSelect_ViewerSelector3d>& selector = m_context->MainSelector();
+  constexpr int kSamples = 16;
+  for (const auto& [key, entry] : m_bodies) {
+    if (entry.style != BodyDisplay::Style::Normal || !entry.shape) {
+      continue;
+    }
+    const geometry::Shape& body = *entry.shape;
+    const gp_Trsf placement = entry.placement.Transformation();
+    for (int i = 0; i < body.edge_count(); ++i) {
+      const TopoDS_Edge& edge = body.edge(i);
+      const BRepAdaptor_Curve curve(edge);
+      const double first = curve.FirstParameter();
+      const double last = curve.LastParameter();
+      // Per part (in sight, behind faces): the place nearest the edge's
+      // middle, and how far from it.
+      std::array<std::optional<std::pair<QPoint, int>>, 2> best;
+      for (int k = 1; k < kSamples; ++k) {
+        const double parameter = first + (last - first) * double(k) / double(kSamples);
+        const gp_Pnt world = curve.Value(parameter).Transformed(placement);
+        const QPointF at = toWidgetF(world);
+        if (!inside.contains(at.toPoint()) || isCovered(at)) {
+          continue;
+        }
+        const std::size_t side = occluded(world) ? std::size_t{1} : std::size_t{0};
+        const int distance = std::abs(k - kSamples / 2);
+        if (best[side] && best[side]->second <= distance) {
+          continue;
+        }
+        // The edge is what a click there hits first, filters aside, and no
+        // other edge is within reach there.
+        const NCollection_Vec2<int> pixel = toDevicePixels(at);
+        selector->Pick(pixel.x(), pixel.y(), m_view);
+        bool clean = selector->NbPicked() >= 1;
+        for (int rank = 1; clean && rank <= selector->NbPicked(); ++rank) {
+          const occ::handle<StdSelect_BRepOwner> hit =
+              occ::handle<StdSelect_BRepOwner>::DownCast(selector->Picked(rank));
+          const bool ours = !hit.IsNull() && hit->Selectable().get() == entry.object.get() && hit->HasShape() &&
+                            hit->Shape().IsSame(edge);
+          if (rank == 1) {
+            clean = ours;
+          } else if (!ours && !hit.IsNull() && hit->HasShape() && hit->Shape().ShapeType() == TopAbs_EDGE) {
+            clean = false;
+          }
+        }
+        if (!clean) {
+          continue;
+        }
+        best[side] = std::make_pair(at.toPoint(), distance);
+      }
+      for (std::size_t side = 0; side < best.size(); ++side) {
+        if (!best[side]) {
+          continue;
+        }
+        EdgePlace place;
+        place.item = {SelectKind::Edge, QString::fromStdString(entry.uid),
+                      QString::fromStdString(body.edge_name(i)), curveType(edge),
+                      QString::fromStdString(entry.occurrence)};
+        place.at = best[side]->first;
+        place.sight = side == 0 ? EdgeSight::Visible : EdgeSight::Occluded;
+        found.push_back(place);
+      }
+    }
+  }
+  m_context->ClearDetected(false);
+  sceneChanged();
+  return found;
 }
 
 void OcctViewer::OnSelectionChanged(const occ::handle<AIS_InteractiveContext>& context,
@@ -1902,6 +2244,7 @@ void OcctViewer::OnSelectionChanged(const occ::handle<AIS_InteractiveContext>& c
   }
   m_context->ClearSelected(false);
   m_context->MainSelector()->AllowOverlapDetection(false);
+  m_windowSelecting = false; // what follows is a hover or a click again
   emit picked(items, m_pressModifiers, m_windowPick);
 }
 
@@ -2372,6 +2715,7 @@ void OcctViewer::bindGestures() {
                 AIS_MouseGesture_SelectRectangle);
   gestures.Bind(Aspect_VKeyMouse_LeftButton | Aspect_VKeyFlags_SHIFT,
                 AIS_MouseGesture_SelectRectangle);
+  gestures.Bind(Aspect_VKeyMouse_LeftButton | kCtrlShift, AIS_MouseGesture_SelectRectangle);
   // Dragging the orientation cube orbits.
   gestures.Bind(Aspect_VKeyMouse_LeftButton | kCubeDrag, AIS_MouseGesture_RotateOrbit);
   const Aspect_VKeyMouse left = Aspect_VKeyMouse_LeftButton;
@@ -2975,6 +3319,7 @@ void OcctViewer::cancelPointerInteraction() {
   m_cubePress = false;
   m_cubeClick = false;
   m_windowPick = false;
+  m_windowSelecting = false;
   m_orbitKey = false;
   m_navigationState.setButtons(false);
   if (m_dragItem) {
@@ -3032,7 +3377,10 @@ void OcctViewer::mousePressEvent(QMouseEvent* event) {
   if (event->button() == Qt::RightButton) {
     m_rightPressPosition = event->position();
   }
+  // Shift with a click widens a selection scope (mitcad#217).
+  setShiftHeld(event->modifiers().testFlag(Qt::ShiftModifier), false);
   if (event->button() == Qt::LeftButton) {
+    m_windowSelecting = false;
     m_cubePress = isOnOrientationCube(event->position()) ||
                   (m_orbitKey && m_navigation.scheme == NavigationScheme::MiddlePanF4);
     if (m_sketchInput && !m_cubePress) {
@@ -3153,6 +3501,13 @@ void OcctViewer::mouseReleaseEvent(QMouseEvent* event) {
       m_cubeClick = false;
       // Dragged to the left, a window also takes what it crosses.
       m_context->MainSelector()->AllowOverlapDetection(moved.x() < 0 && !cube);
+      // The window's rectangle decides which part of a body edge it took
+      // (mitcad#217) until the selection is reported.
+      m_windowRect = QRectF(m_pressPosition, event->position()).normalized();
+      m_windowCrossing = moved.x() < 0;
+      m_windowSelecting = !cube;
+    } else {
+      setShiftHeld(event->modifiers().testFlag(Qt::ShiftModifier), false);
     }
   }
   const Aspect_VKeyFlags flags = viewFlags(event->modifiers());
@@ -3172,12 +3527,23 @@ void OcctViewer::mouseReleaseEvent(QMouseEvent* event) {
         m_context->ClearDetected(false);
         emit orientationCubeMenuRequested(event->globalPosition().toPoint());
       } else {
+        // The context menu is for what a Shift+click would take in a
+        // selection scope (mitcad#217): a face in sketch mode offers Project.
+        const bool widen = m_scoped && !m_shiftHeld && m_expandedFilter != m_filter;
+        m_contextPick = true;
+        if (widen) {
+          activateAllPicking();
+        }
         const NCollection_Vec2<int> pixel = toDevicePixels(event->position());
         m_context->MoveTo(pixel.x(), pixel.y(), m_view, false);
         const auto item = itemFor(m_context->DetectedOwner());
-        emit contextMenuRequested(event->globalPosition().toPoint(),
-                                  item && accepts(m_context->DetectedOwner()) ? *item
-                                                                              : SelectionItem());
+        const SelectionItem target = item && accepts(m_context->DetectedOwner()) ? *item : SelectionItem();
+        m_contextPick = false;
+        if (widen) {
+          m_context->ClearDetected(false);
+          activateAllPicking();
+        }
+        emit contextMenuRequested(event->globalPosition().toPoint(), target);
       }
     }
   }
@@ -3187,6 +3553,10 @@ void OcctViewer::mouseMoveEvent(QMouseEvent* event) {
   QOpenGLWidget::mouseMoveEvent(event);
   if (m_scrollDragging) {
     endScrollDrag();
+  }
+  if (event->buttons() == Qt::NoButton) {
+    // The hover with Shift shows what a widened click picks (mitcad#217).
+    setShiftHeld(event->modifiers().testFlag(Qt::ShiftModifier), false);
   }
   // AppKit menu tracking and other controls may receive a release that
   // never reaches this widget. OCCT does not reconcile buttons on motion;
@@ -3385,8 +3755,12 @@ void OcctViewer::handleViewRedraw(const occ::handle<AIS_InteractiveContext>& con
   // A rendered image of another camera or size, or one that a camera
   // animation is about to move, would show the bodies where they no longer
   // are: this frame draws them shaded (mitcad#214).
-  if (!m_renderedImage.isNull() && (!ViewAnimation()->IsStopped() || renderedImageStale())) {
-    setRenderedImage(QImage());
+  if (!m_renderedImage.isNull()) {
+    const QString why = !ViewAnimation()->IsStopped() ? QStringLiteral("animation") : renderedImageStale();
+    if (!why.isEmpty()) {
+      qDebug().noquote() << QStringLiteral("Render image dropped: %1").arg(why);
+      setRenderedImage(QImage());
+    }
   }
   // The camera has moved for this frame: the grid follows the zoom at once.
   updateGrid();

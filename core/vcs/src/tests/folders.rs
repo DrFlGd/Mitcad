@@ -126,7 +126,7 @@ fn clean(root: &Path) {
 fn an_empty_design_is_a_new_documents_file() {
     assert_eq!(
         mitcad_model::file::empty_design(),
-        Document::new(MockKernel::default()).to_json()
+        Document::new_design(MockKernel::default()).to_json()
     );
 }
 

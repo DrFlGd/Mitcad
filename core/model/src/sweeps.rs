@@ -169,6 +169,9 @@ pub struct LoftSpec<'a, S> {
     pub sections: Vec<LoftSection<'a, S>>,
     pub ruled: bool,
     pub closed: bool,
+    /// False: a surface through the sections, the side faces only (a sheet
+    /// body, no caps).
+    pub solid: bool,
     pub centerline: Option<&'a [PathCurve]>,
     pub rails: Vec<&'a [PathCurve]>,
     pub start: LoftEnd,

@@ -4,7 +4,14 @@
 // Fillets and chamfers on named edges, in edge sets.
 //
 // OCCT always extends a selected edge along its tangent chain (the edges
-// that continue it smoothly). A set with `tangent_chain` false whose chain
+// that continue it smoothly) where the faces at the vertex between them go
+// on tangentially; it stops where another sharp edge meets that vertex. A
+// set with `tangent_chain` (constant and chord length fillets, chamfers)
+// therefore also takes Mitcad's own chain first: every edge that meets one
+// of its edges end to end in the same direction (within 0.01 rad) and lies
+// between faces at an angle, and so on from those (mitcad#224); where OCCT
+// cannot build that, the set takes OCCT's chain alone, with a note. A set with
+// `tangent_chain` false whose chain
 // reaches an edge that no set selects therefore fails with an "unsupported:"
 // message, as do options OCCT lacks (see the model's fillet and
 // chamfer features); the importer then falls back to the stored body.

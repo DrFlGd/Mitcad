@@ -602,26 +602,85 @@ impl DesignWriter {
 /// an extrusion of it by `d2` = 10 mm, a new body: the 10 mm cube; the
 /// history state table names state 1 for the extrusion.
 pub fn cube_design(major: u8) -> Vec<([u8; 16], Vec<u8>)> {
-    cube_design_with(major, 0, 0, 1)
+    cube_design_with(major, 0, 0, 1, None)
 }
 
 /// The cube's design with another extent of the extrusion (5 through all,
 /// 4 up to the next face, ...).
 pub fn cube_design_extent(major: u8, extent: u16) -> Vec<([u8; 16], Vec<u8>)> {
-    cube_design_with(major, 0, 0, extent)
+    cube_design_with(major, 0, 0, extent, None)
 }
 
 /// The cube's design with the square's lines flagged 0x40, a diagonal
 /// flagged so too, and the extrusion's profile selected: the square sheet
 /// of [`square_sheet`] (as segment majors up to 24 keep it).
 pub fn flagged_cube_design(major: u8) -> Vec<([u8; 16], Vec<u8>)> {
-    cube_design_with(major, 0x40, 1, 1)
+    cube_design_with(major, 0x40, 1, 1, None)
 }
 
 /// The flagged cube's design whose extrusion selects the square twice
 /// (as it does the regions of coincident curves).
 pub fn twice_selected_cube_design(major: u8) -> Vec<([u8; 16], Vec<u8>)> {
-    cube_design_with(major, 0x40, 2, 1)
+    cube_design_with(major, 0x40, 2, 1, None)
+}
+
+/// A sketch on the XY plane whose only entity is a placed sketch block: a
+/// definition of a 1 cm square from its origin (four points, four lines),
+/// turned by 90 degrees and moved by (2, 1) cm, so the square spans x and
+/// y from 1 to 2 cm; and an extrusion of it by `d0` = 1 cm, a new body.
+pub fn block_design(major: u8) -> Vec<([u8; 16], Vec<u8>)> {
+    let mut w = DesignWriter::new(major);
+    let length = w.unit(LENGTH, 1.0);
+    let mm = w.unit(METRE, 1e-3);
+    let n = w.number(1.0, mm);
+    let d0 = w.parameter("d0", length, n, 1.0);
+    let angle = w.unit(ANGLE, 1.0);
+    let deg = w.unit(DEGREE, 1.0);
+    let n = w.number(0.0, deg);
+    let taper = w.parameter("d1", angle, n, 0.0);
+
+    let sketch = w.sketch();
+    let definition = w.push(crate::sketch::BLOCK_DEFINITION, Vec::new());
+    let corners = [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]];
+    let points: Vec<usize> = corners
+        .iter()
+        .map(|&c| w.sketch_point(definition, c))
+        .collect();
+    let mut members = points.clone();
+    members.extend((0..4).map(|i| w.sketch_line(definition, points[i], points[(i + 1) % 4], 0)));
+    let mut b = w.header(None);
+    b.extend_from_slice(&3i32.to_le_bytes());
+    b.extend_from_slice(&0u32.to_le_bytes());
+    b.extend_from_slice(&list(8, &members));
+    b.extend_from_slice(&[0; 4]);
+    w.records[definition].1 = b;
+    let mut rest = r(definition).to_vec();
+    for v in [0.0f64, -1.0, 2.0, 1.0, 0.0, 1.0] {
+        rest.extend_from_slice(&v.to_le_bytes());
+    }
+    rest.extend_from_slice(&1u32.to_le_bytes());
+    let instance = w.entity(crate::sketch::BLOCK_INSTANCE, sketch, 0, &rest);
+    let identity = [
+        [1.0, 0.0, 0.0, 0.0],
+        [0.0, 1.0, 0.0, 0.0],
+        [0.0, 0.0, 1.0, 0.0],
+        [0.0, 0.0, 0.0, 1.0],
+    ];
+    let transform = w.transform(identity);
+    let normal = w.direction([0.0, 0.0, 1.0]);
+    w.finish_sketch(sketch, &[instance], transform, normal);
+    w.label(sketch, "Sketch1", &[], [0; 16]);
+    let (extrusion, node) = w.extrusion(1, 1, d0, taper, [0.0, 0.0, 1.0], false, &[]);
+    w.label(extrusion, "Extrusion1", &[sketch], EXTRUSION);
+    w.top.push(extrusion);
+    w.states(&[(node, 2, 1)]);
+    w.finish()
+}
+
+/// The cube's design extruded on two sides: 10 mm along the direction and
+/// `d4` = `second` (cm) the other way (slots 27 to 29).
+pub fn two_sided_cube_design(major: u8, second: f64) -> Vec<([u8; 16], Vec<u8>)> {
+    cube_design_with(major, 0, 0, 1, Some(second))
 }
 
 fn cube_design_with(
@@ -629,6 +688,7 @@ fn cube_design_with(
     flags: u32,
     selected: usize,
     extent: u16,
+    second: Option<f64>,
 ) -> Vec<([u8; 16], Vec<u8>)> {
     let mut w = DesignWriter::new(major);
     let length = w.unit(LENGTH, 1.0);
@@ -685,7 +745,35 @@ fn cube_design_with(
     let selections: Vec<usize> = (0..selected)
         .map(|_| w.selection(&square_sheet(), 4))
         .collect();
-    let (extrusion, node) = w.extrusion(1, extent, d2, taper, [0.0, 0.0, 1.0], false, &selections);
+    let (extrusion, node) = match second {
+        None => w.extrusion(1, extent, d2, taper, [0.0, 0.0, 1.0], false, &selections),
+        Some(second) => {
+            let n = w.number(second, mm);
+            let d4 = w.parameter("d4", length, n, second);
+            let n = w.number(0.0, deg);
+            let taper_two = w.parameter("d5", angle, n, 0.0);
+            let op = w.enumeration(ENUM_OPERATION, 5, 1);
+            let patch = w.patch(&selections);
+            let dir = w.direction([0.0, 0.0, 1.0]);
+            let rev = w.boolean(false);
+            let ext = w.enumeration(ENUM_EXTENT, 12, extent);
+            let sym = w.boolean(false);
+            let ext_two = w.enumeration(ENUM_EXTENT, 12, 1);
+            let mut slots = vec![
+                Some(op),
+                Some(patch),
+                Some(dir),
+                Some(rev),
+                Some(d2),
+                Some(taper),
+                Some(ext),
+                Some(sym),
+            ];
+            slots.resize(27, None);
+            slots.extend([Some(d4), Some(taper_two), Some(ext_two)]);
+            w.feature(&slots)
+        }
+    };
     w.label(extrusion, "Extrusion1", &[sketch], EXTRUSION);
     w.top.push(extrusion);
     w.states(&[(node, 2, 1)]);

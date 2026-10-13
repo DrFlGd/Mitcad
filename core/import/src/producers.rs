@@ -174,6 +174,9 @@ impl<K: Kernel> Importer<'_, K> {
             .filter_map(|f| f.parse::<FeatureUid>().ok())
             .filter_map(|uid| match &self.doc.feature(uid)?.def {
                 FeatureDef::SplitBody(def) => Some(def.bodies.clone()),
+                // A combine's target keeps the record of the item that made
+                // it; the combine's own records are its new pieces only.
+                FeatureDef::Combine(def) => Some(vec![def.target]),
                 _ => None,
             })
             .flatten()
@@ -216,8 +219,37 @@ impl<K: Kernel> Importer<'_, K> {
     /// A body input among the replay's bodies: by the item that made it
     /// first, else by its names or measures.
     pub(crate) fn body_ref(&self, fp: &Fingerprint) -> Option<BodyUid> {
-        self.produced_body(fp)
-            .or_else(|| refs::resolve_body(self.doc, fp))
+        let found = self
+            .external_body(fp)
+            .or_else(|| self.produced_body(fp))
+            .or_else(|| refs::resolve_body(self.doc, fp));
+        if let Some(body) = found {
+            self.hint_path(fp, body);
+        }
+        found
+    }
+
+    /// A body of another document that the design names (`_f3d.document`,
+    /// `_f3d.stored`: where the decoder found it in that document's own
+    /// history): the body of the filled component that its import matched
+    /// to the same stored body (mitcad#196).
+    pub(crate) fn external_body(&self, fp: &Fingerprint) -> Option<BodyUid> {
+        let f3d = fp.f3d.as_ref()?;
+        let key = format!("{}|{}", f3d.document.as_ref()?, f3d.stored.as_ref()?);
+        // The one in the copy the reference is in, where the import knows it.
+        let focus = f3d.object_id.and_then(|o| self.doc.import_focus(o));
+        let found = self.report.components.external_bodies.get(&key)?;
+        let body = focus
+            .and_then(|components| {
+                found.iter().find(|b| {
+                    self.doc
+                        .body_component(**b)
+                        .is_some_and(|c| components.contains(&c))
+                })
+            })
+            .or(found.first())
+            .copied()?;
+        self.doc.body_shape(body).is_some().then_some(body)
     }
 
     /// The bodies of decoded references, every one found (once each), or

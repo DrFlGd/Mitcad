@@ -12,15 +12,28 @@
 //!
 //! [`snap_linked`] puts each linked line, circle, arc and ellipse that an
 //! edge of the replay's bodies projects onto, within [`SNAP`], on that
-//! projection. What is not found stays as it was.
+//! projection: the edge the projection rule picks for it (`linked.rs`,
+//! mitcad#225) where there is one, else the first found. What is not
+//! found stays as it was.
+//!
+//! A snap must not change the sketch's regions (mitcad#227): a curve is
+//! moved only when the curves it meets, and how (a crossing, an end on a
+//! curve), stay those of the file's numbers for it and for every curve
+//! that moves with it (one that shares a point, or whose point the file
+//! holds coincident). Corners two curves share and ends the file holds on
+//! a curve are the solver's: they are not counted. A curve whose contacts
+//! would change stays where the file stored it, and the sketch's note
+//! counts it.
 
+use std::borrow::Cow;
 use std::collections::HashMap;
 use std::f64::consts::TAU;
 
 use mitcad_model::Curve3;
 use mitcad_model::SketchFrame;
 use mitcad_model::datum::CurveGeometry;
-use mitcad_model::sketch::geometry::Curve2;
+use mitcad_model::sketch::geometry::{Curve2, angle_after};
+use mitcad_model::sketch::intersect::intersections;
 use mitcad_model::sketch::project::{Projected, project};
 use serde_json::{Value, json};
 
@@ -31,7 +44,21 @@ use crate::sketch::SketchParts;
 /// far below any distance a design means.
 pub(crate) const SNAP: f64 = 2e-3;
 
+/// How far (mm) two curves may lie apart to meet, in the file's numbers
+/// and after a snap: above the stored numbers' rounding, well below
+/// [`SNAP`].
+const CONTACT: f64 = 1e-4;
+
 type P = [f64; 2];
+
+/// What a snap did: curves put on the model's edges, and curves left where
+/// the file stored them because the snap would have changed the sketch's
+/// regions.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct Snapped {
+    pub moved: usize,
+    pub left: usize,
+}
 
 fn dist(a: P, b: P) -> f64 {
     (a[0] - b[0]).hypot(a[1] - b[1])
@@ -97,17 +124,18 @@ fn model_curve(g: &CurveGeometry) -> Option<Curve3> {
     }
 }
 
-/// The curves the edges project to in the sketch's frame (mm), only those
-/// that come within `margin` of the box (`low`, `high`).
+/// The curves the edges project to in the sketch's frame (mm), each with
+/// its edge's index, only those that come within `margin` of the box
+/// (`low`, `high`).
 fn projections(
     edges: &[CurveGeometry],
     frame: &SketchFrame,
     low: P,
     high: P,
     margin: f64,
-) -> Vec<Curve2> {
+) -> Vec<(usize, Curve2)> {
     let mut out = Vec::new();
-    for edge in edges {
+    for (i, edge) in edges.iter().enumerate() {
         let Some(curve) = model_curve(edge) else {
             continue;
         };
@@ -121,7 +149,7 @@ fn projections(
             {
                 continue;
             }
-            out.push(c);
+            out.push((i, c));
         }
     }
     out
@@ -133,6 +161,8 @@ fn projections(
 struct Change {
     points: Vec<(String, P)>,
     radius: Option<f64>,
+    /// The edge whose projection it is (an index into the edges).
+    edge: usize,
 }
 
 /// The entities of a sketch by id, with the positions of its points.
@@ -170,10 +200,12 @@ fn fit(entity: &Value, view: &View, projected: &[Curve2]) -> Option<Change> {
                 Curve2::Line { a: x, b: y } if near(a, *x) && near(b, *y) => Some(Change {
                     points: vec![(id("start")?, *x), (id("end")?, *y)],
                     radius: None,
+                    edge: 0,
                 }),
                 Curve2::Line { a: x, b: y } if near(a, *y) && near(b, *x) => Some(Change {
                     points: vec![(id("start")?, *y), (id("end")?, *x)],
                     radius: None,
+                    edge: 0,
                 }),
                 _ => None,
             })
@@ -189,6 +221,7 @@ fn fit(entity: &Value, view: &View, projected: &[Curve2]) -> Option<Change> {
                 } if near(center, *x) && (radius - r).abs() <= SNAP => Some(Change {
                     points: vec![(id("center")?, *x)],
                     radius: Some(*r),
+                    edge: 0,
                 }),
                 _ => None,
             })
@@ -213,6 +246,7 @@ fn fit(entity: &Value, view: &View, projected: &[Curve2]) -> Option<Change> {
                 Some(Change {
                     points: vec![(id("center")?, *x), (id("start")?, s), (id("end")?, e)],
                     radius: None,
+                    edge: 0,
                 })
             })
         }
@@ -267,11 +301,88 @@ fn fit(entity: &Value, view: &View, projected: &[Curve2]) -> Option<Change> {
                 Some(Change {
                     points,
                     radius: Some(small),
+                    edge: 0,
                 })
             })
         }
         _ => None,
     }
+}
+
+/// The box of a curve entity's points (its ends, centre and major point);
+/// None where it has none.
+fn entity_box(entity: &Value, view: &View) -> Option<(P, P)> {
+    let mut low = [f64::INFINITY; 2];
+    let mut high = [f64::NEG_INFINITY; 2];
+    for key in ["start", "end", "center", "major"] {
+        if let Some(p) = view.point(&entity[key]) {
+            for k in 0..2 {
+                low[k] = low[k].min(p[k]);
+                high[k] = high[k].max(p[k]);
+            }
+        }
+    }
+    // A circle reaches its radius from the centre.
+    if let Some(r) = entity["radius"]
+        .as_f64()
+        .filter(|_| entity["type"] == "circle")
+    {
+        low = [low[0] - r, low[1] - r];
+        high = [high[0] + r, high[1] + r];
+    }
+    (low[0].is_finite() && high[0].is_finite()).then_some((low, high))
+}
+
+/// The box of the points of `entities` in sketch coordinates; None when it
+/// has none.
+fn points_box(entities: &[Value], view: &View) -> Option<(P, P)> {
+    let mut low = [f64::INFINITY; 2];
+    let mut high = [f64::NEG_INFINITY; 2];
+    for e in entities {
+        if e["type"] == "point"
+            && let Some(p) = view.point(&e["id"])
+        {
+            for k in 0..2 {
+                low[k] = low[k].min(p[k]);
+                high[k] = high[k].max(p[k]);
+            }
+        }
+    }
+    (low[0].is_finite() && high[0].is_finite()).then_some((low, high))
+}
+
+/// For each linked curve of `parts` (its index in the entities), every
+/// edge (an index into `edges`, in the space of the sketch's `frame`)
+/// whose projection it lies on within [`SNAP`]: the geometry the curve may
+/// follow (mitcad#225). Curves no edge projects onto are left out.
+pub(crate) fn sources(
+    parts: &SketchParts,
+    frame: &SketchFrame,
+    edges: &[CurveGeometry],
+) -> Vec<(usize, Vec<usize>)> {
+    let view = View::new(&parts.entities);
+    let Some((low, high)) = points_box(&parts.entities, &view) else {
+        return Vec::new();
+    };
+    let margin = dist(low, high) + 1.0;
+    // Each edge's projection near the curves, with the edge's index.
+    let projected = projections(edges, frame, low, high, margin);
+    let mut out = Vec::new();
+    for (i, e) in parts.entities.iter().enumerate() {
+        if e["reference"] != json!(true) || e["type"].as_str().is_none_or(|t| t == "point") {
+            continue;
+        }
+        let mut found: Vec<usize> = projected
+            .iter()
+            .filter(|(_, c)| fit(e, &view, std::slice::from_ref(c)).is_some())
+            .map(|(edge, _)| *edge)
+            .collect();
+        found.dedup();
+        if !found.is_empty() {
+            out.push((i, found));
+        }
+    }
+    out
 }
 
 /// For the trace: how far the nearest projected curve of the entity's kind
@@ -341,18 +452,22 @@ pub(crate) fn snap_linked(
     frame: &SketchFrame,
     edges: &[CurveGeometry],
 ) -> usize {
-    snap_linked_keeping(parts, frame, edges, &HashMap::new())
+    snap_linked_keeping(parts, frame, edges, &HashMap::new(), &[]).moved
 }
 
 /// [`snap_linked`], with points already placed (`kept`, by entity id: the
 /// ends of curves put on the edges of the sketch's face, where two of them
 /// meet): a curve that would move one of them elsewhere stays as it was.
+/// `preferred` names, by entity index, the edge (an index into `edges`)
+/// the projection rule picks for a curve: its projection is tried first,
+/// so that the snap and the projection agree on the edge.
 pub(crate) fn snap_linked_keeping(
     parts: &mut SketchParts,
     frame: &SketchFrame,
     edges: &[CurveGeometry],
     kept: &HashMap<String, P>,
-) -> usize {
+    preferred: &[(usize, usize)],
+) -> Snapped {
     let linked: Vec<usize> = parts
         .entities
         .iter()
@@ -363,42 +478,64 @@ pub(crate) fn snap_linked_keeping(
         .map(|(i, _)| i)
         .collect();
     if linked.is_empty() || edges.is_empty() {
-        return 0;
+        return Snapped::default();
     }
     // The box of the linked curves' points, to leave out far edges.
     let view = View::new(&parts.entities);
-    let mut low = [f64::INFINITY; 2];
-    let mut high = [f64::NEG_INFINITY; 2];
-    for e in &parts.entities {
-        if e["type"] == "point"
-            && let Some(p) = view.point(&e["id"])
-        {
-            for k in 0..2 {
-                low[k] = low[k].min(p[k]);
-                high[k] = high[k].max(p[k]);
-            }
-        }
-    }
-    if !(low[0].is_finite() && high[0].is_finite()) {
-        return 0;
-    }
+    let Some((low, high)) = points_box(&parts.entities, &view) else {
+        return Snapped::default();
+    };
     let extent = dist(low, high);
-    let projected = projections(edges, frame, low, high, extent + 1.0);
+    let indexed = projections(edges, frame, low, high, extent + 1.0);
     if crate::tracing() {
         eprintln!(
             "import:   snap: {} linked curves, {} edges, {} projected near",
             linked.len(),
             edges.len(),
-            projected.len()
+            indexed.len()
         );
     }
-    if projected.is_empty() {
-        return 0;
+    if indexed.is_empty() {
+        return Snapped::default();
     }
-    let mut changes: Vec<(usize, Change)> = Vec::new();
+    let projected: Vec<Curve2> = indexed.iter().map(|(_, c)| c.clone()).collect();
+    let boxes: Vec<(P, P)> = indexed.iter().map(|(_, c)| c.bounds()).collect();
+    // Each linked curve's fits, the projection rule's edge first: the first
+    // one that keeps the points already placed and the regions is taken.
+    let mut changes: Vec<(usize, Option<usize>, Vec<Change>)> = Vec::new();
     for &i in &linked {
-        if let Some(change) = fit(&parts.entities[i], &view, &projected) {
-            changes.push((i, change));
+        let first = preferred
+            .iter()
+            .find(|(entity, _)| *entity == i)
+            .map(|(_, edge)| *edge);
+        // Only the projections that come near the curve's points.
+        let near_box = entity_box(&parts.entities[i], &view);
+        let near = |n: usize| {
+            near_box.is_none_or(|(lo, hi)| {
+                let (clo, chi) = boxes[n];
+                !(chi[0] < lo[0] - SNAP
+                    || clo[0] > hi[0] + SNAP
+                    || chi[1] < lo[1] - SNAP
+                    || clo[1] > hi[1] + SNAP)
+            })
+        };
+        let order = (0..indexed.len())
+            .filter(|n| Some(indexed[*n].0) == first)
+            .chain((0..indexed.len()).filter(|n| Some(indexed[*n].0) != first))
+            .filter(|n| near(*n));
+        // (Two edges' projections may differ by nanometres: each is an
+        // option of its own, since the points already placed are matched
+        // to that closeness.)
+        let mut options: Vec<Change> = Vec::new();
+        for n in order {
+            let (k, c) = &indexed[n];
+            if let Some(mut change) = fit(&parts.entities[i], &view, std::slice::from_ref(c)) {
+                change.edge = *k;
+                options.push(change);
+            }
+        }
+        if !options.is_empty() {
+            changes.push((i, first, options));
         } else if crate::tracing() {
             eprintln!(
                 "import:   snap: {} {} found no edge: {}",
@@ -410,23 +547,139 @@ pub(crate) fn snap_linked_keeping(
     }
     // A point two curves share goes where the first put it.
     let mut placed: HashMap<String, P> = kept.clone();
+    // Where the solver will take the points the file holds coincident
+    // with a moved one, or on a moved curve: for the check of the regions
+    // only (the solver moves them itself; a later snap may put them
+    // elsewhere).
+    let mut followed: HashMap<String, P> = HashMap::new();
     let mut moved = 0;
+    let mut left = 0;
     let mut radii: Vec<(usize, f64)> = Vec::new();
-    for (i, change) in changes {
-        if change
-            .points
-            .iter()
-            .any(|(id, at)| placed.get(id).is_some_and(|p| dist(*p, *at) > 1e-9))
-        {
-            continue;
+    let started = std::time::Instant::now();
+    let contacts = Contacts::new(parts, &view);
+    let mut checking = std::time::Duration::ZERO;
+    for (i, first, options) in changes {
+        let mut why_left: Option<String> = None;
+        for change in options {
+            if change
+                .points
+                .iter()
+                .any(|(id, at)| placed.get(id).is_some_and(|p| dist(*p, *at) > 1e-9))
+            {
+                continue;
+            }
+            // The move, with the points the file holds coincident with the
+            // moved ones (the solver takes them along).
+            let mut after = followed.clone();
+            after.extend(placed.iter().map(|(k, v)| (k.clone(), *v)));
+            let mut follows: Vec<(String, P)> = Vec::new();
+            for (id, at) in &change.points {
+                let delta = match view.point(&json!(id)) {
+                    Some(was) => [at[0] - was[0], at[1] - was[1]],
+                    None => [0.0, 0.0],
+                };
+                after.insert(id.clone(), *at);
+                for other in contacts.coincident_with(id) {
+                    if other != id
+                        && !after.contains_key(other)
+                        && let Some(was) = view.point(&json!(other))
+                    {
+                        let to = [was[0] + delta[0], was[1] + delta[1]];
+                        after.insert(other.clone(), to);
+                        follows.push((other.clone(), to));
+                    }
+                }
+            }
+            let radius = change.radius.map(|r| (i, r));
+            // The points the file holds on the curve go onto it where it
+            // is now (the solver puts them there); a point off the curve
+            // as stored (on a line's extension) is left to the solver.
+            let moved_curve = curve_of(
+                &parts.entities[i],
+                &|id| {
+                    id.as_str()
+                        .and_then(|s| after.get(s).copied())
+                        .or_else(|| view.point(id))
+                },
+                radius.map(|(_, r)| r),
+            );
+            if let Some(curve) = &moved_curve {
+                for point in
+                    contacts.held_on_curve(parts.entities[i]["id"].as_str().unwrap_or_default())
+                {
+                    if after.contains_key(&point) {
+                        continue;
+                    }
+                    if let Some(was) = view.point(&json!(point)) {
+                        let (t, _) = curve.closest(was);
+                        let to = curve.point(t);
+                        if dist(was, to) <= SNAP + CONTACT {
+                            after.insert(point.clone(), to);
+                            follows.push((point, to));
+                        }
+                    }
+                }
+            }
+            let check = std::time::Instant::now();
+            let touched: Vec<&str> = change
+                .points
+                .iter()
+                .map(|(id, _)| id.as_str())
+                .chain(follows.iter().map(|(id, _)| id.as_str()))
+                .collect();
+            let changed = contacts.changed_by(&after, &touched, &radii, radius);
+            checking += check.elapsed();
+            if let Some(why) = changed {
+                why_left.get_or_insert(why);
+                continue;
+            }
+            for (id, at) in follows {
+                followed.insert(id, at);
+            }
+            if crate::tracing() {
+                let far = change
+                    .points
+                    .iter()
+                    .filter_map(|(id, at)| Some(dist(*at, view.point(&json!(id))?)))
+                    .fold(0.0, f64::max);
+                eprintln!(
+                    "import:   snap: {} onto edge {}{} (moved {:.1e} mm)",
+                    parts.entities[i]["id"],
+                    change.edge,
+                    if Some(change.edge) == first {
+                        ", the projection rule's"
+                    } else {
+                        ""
+                    },
+                    far
+                );
+            }
+            for (id, at) in change.points {
+                placed.insert(id, at);
+            }
+            if let Some(r) = radius {
+                radii.push(r);
+            }
+            moved += 1;
+            why_left = None;
+            break;
         }
-        for (id, at) in change.points {
-            placed.insert(id, at);
+        if let Some(why) = why_left {
+            if crate::tracing() {
+                eprintln!(
+                    "import:   snap: {} {} left where the file stored it: a snap would change the sketch's regions ({why})",
+                    parts.entities[i]["type"], parts.entities[i]["id"]
+                );
+            }
+            left += 1;
         }
-        if let Some(r) = change.radius {
-            radii.push((i, r));
-        }
-        moved += 1;
+    }
+    if crate::tracing() {
+        eprintln!(
+            "import:   snap: {moved} moved, {left} left; the regions checked in {:.2} s of {:.2} s",
+            checking.as_secs_f64(),
+            started.elapsed().as_secs_f64()
+        );
     }
     for e in &mut parts.entities {
         let Some(id) = e["id"].as_str() else { continue };
@@ -448,7 +701,374 @@ pub(crate) fn snap_linked_keeping(
             *at = *p;
         }
     }
-    moved
+    Snapped { moved, left }
+}
+
+/// The curve an entity is, with its points at `at` (the moved positions
+/// first, then the stored ones) and its radius or minor radius `radius`
+/// where one replaces the stored; None for a kind no contact is counted
+/// for (splines, texts).
+fn curve_of(
+    entity: &Value,
+    at: &dyn Fn(&Value) -> Option<P>,
+    radius: Option<f64>,
+) -> Option<Curve2> {
+    let sub = |a: P, b: P| [a[0] - b[0], a[1] - b[1]];
+    Some(match entity["type"].as_str()? {
+        "line" => Curve2::Line {
+            a: at(&entity["start"])?,
+            b: at(&entity["end"])?,
+        },
+        "circle" => Curve2::Circle {
+            center: at(&entity["center"])?,
+            radius: radius.or_else(|| entity["radius"].as_f64())?,
+            start: entity["start_angle"].as_f64().unwrap_or(0.0),
+        },
+        "arc" => {
+            let (c, a, b) = (
+                at(&entity["center"])?,
+                at(&entity["start"])?,
+                at(&entity["end"])?,
+            );
+            let (va, vb) = (sub(a, c), sub(b, c));
+            let start = va[1].atan2(va[0]);
+            Curve2::Arc {
+                center: c,
+                radius: va[0].hypot(va[1]),
+                start,
+                end: angle_after(start, vb[1].atan2(vb[0])),
+            }
+        }
+        kind @ ("ellipse" | "elliptical_arc") => {
+            let (c, m) = (at(&entity["center"])?, at(&entity["major"])?);
+            let minor = radius.or_else(|| entity["minor_radius"].as_f64())?;
+            let axis = sub(m, c);
+            let major = axis[0].hypot(axis[1]);
+            let rotation = axis[1].atan2(axis[0]);
+            if kind == "ellipse" {
+                Curve2::Ellipse {
+                    center: c,
+                    major,
+                    minor,
+                    rotation,
+                }
+            } else {
+                let u = [axis[0] / major, axis[1] / major];
+                let param = |p: P| {
+                    let d = sub(p, c);
+                    ((-d[0] * u[1] + d[1] * u[0]) / minor)
+                        .atan2((d[0] * u[0] + d[1] * u[1]) / major)
+                };
+                let start = param(at(&entity["start"])?);
+                Curve2::EllipticalArc {
+                    center: c,
+                    major,
+                    minor,
+                    rotation,
+                    start,
+                    end: angle_after(start, param(at(&entity["end"])?)),
+                }
+            }
+        }
+        _ => return None,
+    })
+}
+
+/// How a curve meets another: a crossing inside both, or an end of one
+/// curve on the other (`end_of_first`), where the file does not hold that
+/// end on the curve. Corners two curves share (an end on an end) are not
+/// contacts: the solver keeps them.
+type Contact = (usize, u8);
+
+/// The sketch's curves as they meet, for the check that a snap keeps the
+/// regions.
+struct Contacts<'a> {
+    entities: &'a [Value],
+    /// The entities by id, with the stored positions.
+    view: View<'a>,
+    /// The indices of the curves contacts are counted for (not
+    /// construction, of a kind [`curve_of`] makes).
+    curves: Vec<usize>,
+    /// Each curve as stored, with its box, by entity index (None for the
+    /// rest).
+    stored: Vec<Option<(Curve2, (P, P))>>,
+    /// The point ids of each curve, by entity index.
+    points: Vec<Vec<String>>,
+    /// Groups of points the file holds coincident, by point id.
+    groups: HashMap<String, usize>,
+    /// The points of each group.
+    members: Vec<Vec<String>>,
+    /// Points the file holds on a curve: (point id, curve id).
+    on_curve: Vec<(String, String)>,
+}
+
+impl<'a> Contacts<'a> {
+    fn new(parts: &'a SketchParts, view: &View<'a>) -> Self {
+        let entities = &parts.entities[..];
+        let stored: Vec<Option<(Curve2, (P, P))>> = entities
+            .iter()
+            .map(|e| {
+                if e["construction"] == json!(true) {
+                    return None;
+                }
+                let c = curve_of(e, &|id| view.point(id), None)?;
+                let b = c.bounds();
+                Some((c, b))
+            })
+            .collect();
+        let curves = (0..entities.len())
+            .filter(|i| stored[*i].is_some())
+            .collect();
+        let points = entities
+            .iter()
+            .map(|e| {
+                ["start", "end", "center", "major"]
+                    .iter()
+                    .filter_map(|key| e[*key].as_str().map(str::to_owned))
+                    .collect()
+            })
+            .collect();
+        // Union-find over the coincident point pairs.
+        let mut parent: HashMap<String, String> = HashMap::new();
+        fn root(parent: &mut HashMap<String, String>, id: &str) -> String {
+            let p = parent.get(id).cloned().unwrap_or_else(|| id.to_owned());
+            if p == id {
+                return p;
+            }
+            let r = root(parent, &p);
+            parent.insert(id.to_owned(), r.clone());
+            r
+        }
+        let mut on_curve = Vec::new();
+        for c in &parts.constraints {
+            if c["type"] != "coincident" {
+                continue;
+            }
+            let (Some(point), Some(entity)) = (c["point"].as_str(), c["entity"].as_str()) else {
+                continue;
+            };
+            if entity.starts_with('p') {
+                let (a, b) = (root(&mut parent, point), root(&mut parent, entity));
+                if a != b {
+                    parent.insert(a, b);
+                }
+            } else {
+                on_curve.push((point.to_owned(), entity.to_owned()));
+            }
+        }
+        let ids: Vec<String> = entities
+            .iter()
+            .filter(|e| e["type"] == "point")
+            .filter_map(|e| e["id"].as_str().map(str::to_owned))
+            .collect();
+        let mut numbers: HashMap<String, usize> = HashMap::new();
+        let mut groups = HashMap::new();
+        let mut members: Vec<Vec<String>> = Vec::new();
+        for id in ids {
+            let r = root(&mut parent, &id);
+            let n = numbers.len();
+            let n = *numbers.entry(r).or_insert(n);
+            if n == members.len() {
+                members.push(Vec::new());
+            }
+            members[n].push(id.clone());
+            groups.insert(id, n);
+        }
+        Contacts {
+            entities,
+            view: View::new(entities),
+            curves,
+            stored,
+            points,
+            groups,
+            members,
+            on_curve,
+        }
+    }
+
+    /// Curve `j` with its box, its points at `at` where any of them moved
+    /// (`moved`) or its radius replaced, else as stored.
+    fn curve(
+        &self,
+        j: usize,
+        at: &dyn Fn(&Value) -> Option<P>,
+        radius: Option<f64>,
+        moved: &dyn Fn(&str) -> bool,
+    ) -> Option<(Cow<'_, Curve2>, (P, P))> {
+        if radius.is_none() && !self.points[j].iter().any(|p| moved(p)) {
+            let (c, b) = self.stored[j].as_ref()?;
+            return Some((Cow::Borrowed(c), *b));
+        }
+        let c = curve_of(&self.entities[j], at, radius)?;
+        let b = c.bounds();
+        Some((Cow::Owned(c), b))
+    }
+
+    /// The points the file holds coincident with `id` (itself included).
+    fn coincident_with(&self, id: &str) -> &[String] {
+        match self.groups.get(id) {
+            Some(group) => &self.members[*group],
+            None => &[],
+        }
+    }
+
+    /// The points the file holds on curve `curve_id`.
+    fn held_on_curve(&self, curve_id: &str) -> Vec<String> {
+        self.on_curve
+            .iter()
+            .filter(|(_, c)| c == curve_id)
+            .map(|(p, _)| p.clone())
+            .collect()
+    }
+
+    /// Whether the file holds point `point` on curve `curve`, or on one of
+    /// its points.
+    fn held_on(&self, point: &str, curve: &Value) -> bool {
+        let curve_id = curve["id"].as_str().unwrap_or_default();
+        if self
+            .on_curve
+            .iter()
+            .any(|(p, c)| p == point && c == curve_id)
+        {
+            return true;
+        }
+        let group = self.groups.get(point);
+        ["start", "end", "center", "major"]
+            .iter()
+            .filter_map(|key| curve[*key].as_str())
+            .any(|p| p == point || (group.is_some() && self.groups.get(p) == group))
+    }
+
+    /// The contacts of curve `i` with the other curves, its points and
+    /// radii at `at` (`moved` tells which points are not as stored); the
+    /// kind tells which curve's end is on the other.
+    fn of(
+        &self,
+        i: usize,
+        at: &dyn Fn(&Value) -> Option<P>,
+        radius: &dyn Fn(usize) -> Option<f64>,
+        moved: &dyn Fn(&str) -> bool,
+    ) -> Vec<Contact> {
+        let Some((a, (alo, ahi))) = self.curve(i, at, radius(i), moved) else {
+            return Vec::new();
+        };
+        let reach = CONTACT + SNAP;
+        let mut out = Vec::new();
+        for &j in &self.curves {
+            if j == i {
+                continue;
+            }
+            let Some((b, (blo, bhi))) = self.curve(j, at, radius(j), moved) else {
+                continue;
+            };
+            if bhi[0] < alo[0] - reach
+                || blo[0] > ahi[0] + reach
+                || bhi[1] < alo[1] - reach
+                || blo[1] > ahi[1] + reach
+            {
+                continue;
+            }
+            let ends = |c: &Curve2, p: P| -> Option<&'static str> {
+                let (s, t) = c.ends()?;
+                if dist(p, s) <= CONTACT {
+                    Some("start")
+                } else if dist(p, t) <= CONTACT {
+                    Some("end")
+                } else {
+                    None
+                }
+            };
+            for hit in intersections(a.as_ref(), b.as_ref(), CONTACT) {
+                let end_a = ends(a.as_ref(), hit.point);
+                let end_b = ends(b.as_ref(), hit.point);
+                let kind = match (end_a, end_b) {
+                    (None, None) => 0,
+                    (Some(key), None) => {
+                        let point = self.entities[i][key].as_str().unwrap_or_default();
+                        if self.held_on(point, &self.entities[j]) {
+                            continue;
+                        }
+                        1
+                    }
+                    (None, Some(key)) => {
+                        let point = self.entities[j][key].as_str().unwrap_or_default();
+                        if self.held_on(point, &self.entities[i]) {
+                            continue;
+                        }
+                        2
+                    }
+                    (Some(_), Some(_)) => continue,
+                };
+                out.push((j, kind));
+            }
+        }
+        out.sort_unstable();
+        out
+    }
+
+    /// Whether moving the points to `after` (with the radii `radii` of
+    /// earlier snaps and `radius` of this one) changes a contact of a
+    /// curve this move touches (one of the points `touched`, or the
+    /// radius); the first difference, for the trace.
+    fn changed_by(
+        &self,
+        after: &HashMap<String, P>,
+        touched: &[&str],
+        radii: &[(usize, f64)],
+        radius: Option<(usize, f64)>,
+    ) -> Option<String> {
+        let before_at = |id: &Value| self.view.point(id);
+        let after_at = |id: &Value| {
+            id.as_str()
+                .and_then(|s| after.get(s).copied())
+                .or_else(|| self.view.point(id))
+        };
+        let before_radius = |_: usize| None;
+        let after_radius = |i: usize| {
+            radius
+                .filter(|(k, _)| *k == i)
+                .or_else(|| radii.iter().find(|(k, _)| *k == i).copied())
+                .map(|(_, r)| r)
+        };
+        let unmoved = |_: &str| false;
+        let moved = |p: &str| after.contains_key(p);
+        for &i in &self.curves {
+            let moves = self.points[i].iter().any(|p| touched.contains(&p.as_str()))
+                || radius.is_some_and(|(k, _)| k == i);
+            if !moves {
+                continue;
+            }
+            let before = self.of(i, &before_at, &before_radius, &unmoved);
+            let now = self.of(i, &after_at, &after_radius, &moved);
+            if before != now {
+                let name = |j: usize| {
+                    self.entities[j]["id"]
+                        .as_str()
+                        .unwrap_or_default()
+                        .to_owned()
+                };
+                let describe = |c: &[Contact]| {
+                    c.iter()
+                        .map(|(j, k)| {
+                            format!(
+                                "{}{}",
+                                name(*j),
+                                ["", " (end on it)", " (its end)"][*k as usize]
+                            )
+                        })
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                };
+                return Some(format!(
+                    "{} meets [{}], moved [{}]",
+                    name(i),
+                    describe(&before),
+                    describe(&now)
+                ));
+            }
+        }
+        None
+    }
 }
 
 #[cfg(test)]
@@ -518,7 +1138,7 @@ mod tests {
         let edges = vec![circle_edge([0.0, 65.0, 0.0], 7.0)];
         let kept = HashMap::from([("p1".to_owned(), [0.0, 65.000_001_2])]);
         assert_eq!(
-            snap_linked_keeping(&mut p, &SketchFrame::XY, &edges, &kept),
+            snap_linked_keeping(&mut p, &SketchFrame::XY, &edges, &kept, &[]).moved,
             0
         );
         assert_eq!(p.entities[1]["radius"], json!(7.000_001_2));
@@ -564,5 +1184,100 @@ mod tests {
         assert_eq!(p.entities[1]["at"], json!([10.0, 0.0]));
         assert_eq!(p.entities[2]["at"], json!([10.0, 5.0]));
         assert_eq!(p.entities[3]["at"], json!([15.0, 5.0]));
+    }
+
+    fn line_edge(a: [f64; 3], b: [f64; 3]) -> CurveGeometry {
+        CurveGeometry::Line { start: a, end: b }
+    }
+
+    /// A drawn line ends on a linked line (a T the file does not hold with
+    /// a constraint). The edge projects 1.5e-3 mm aside: snapped, the
+    /// drawn line would cross the linked one instead of ending on it (a
+    /// sliver region), so the linked line stays where the file stored it.
+    #[test]
+    fn a_snap_that_would_cross_a_drawn_line_is_left() {
+        let sketch = || {
+            parts(vec![
+                json!({"id": "p1", "type": "point", "at": [0.0, 0.0], "reference": true}),
+                json!({"id": "p2", "type": "point", "at": [20.0, 0.0], "reference": true}),
+                json!({"id": "c3", "type": "line", "start": "p1", "end": "p2", "reference": true}),
+                json!({"id": "p4", "type": "point", "at": [10.0, 0.000_001]}),
+                json!({"id": "p5", "type": "point", "at": [10.0, 8.0]}),
+                json!({"id": "c6", "type": "line", "start": "p4", "end": "p5"}),
+            ])
+        };
+        let mut p = sketch();
+        let edges = vec![line_edge([0.0, 0.0015, 0.0], [20.0, 0.0015, 0.0])];
+        let done = snap_linked_keeping(&mut p, &SketchFrame::XY, &edges, &HashMap::new(), &[]);
+        assert_eq!((done.moved, done.left), (0, 1));
+        assert_eq!(p.entities[0]["at"], json!([0.0, 0.0]));
+        // The edge on the other side opens a gap under the drawn line's
+        // end: the region would no longer close, so the line stays too.
+        let mut p = sketch();
+        let edges = vec![line_edge([0.0, -0.0015, 0.0], [20.0, -0.0015, 0.0])];
+        let done = snap_linked_keeping(&mut p, &SketchFrame::XY, &edges, &HashMap::new(), &[]);
+        assert_eq!((done.moved, done.left), (0, 1));
+        // An edge along the line: the drawn line still ends on it, so the
+        // snap goes ahead.
+        let mut p = sketch();
+        let edges = vec![line_edge([0.001, 0.0, 0.0], [20.001, 0.0, 0.0])];
+        let done = snap_linked_keeping(&mut p, &SketchFrame::XY, &edges, &HashMap::new(), &[]);
+        assert_eq!((done.moved, done.left), (1, 0));
+        assert_eq!(p.entities[0]["at"], json!([0.001, 0.0]));
+        // With the file holding the drawn line's end on the linked one,
+        // the solver keeps it there: the snap goes ahead.
+        let mut p = sketch();
+        p.constraints
+            .push(json!({"type": "coincident", "point": "p4", "entity": "c3"}));
+        let edges = vec![line_edge([0.0, 0.0015, 0.0], [20.0, 0.0015, 0.0])];
+        let done = snap_linked_keeping(&mut p, &SketchFrame::XY, &edges, &HashMap::new(), &[]);
+        assert_eq!((done.moved, done.left), (1, 0));
+    }
+
+    /// A corner two linked lines share through coincident points: for the
+    /// check, the other line's point follows the snapped one (the corner
+    /// stays a corner, the other line's crossing with a drawn line stays a
+    /// crossing); the solver moves it, so it is not placed.
+    #[test]
+    fn coincident_points_move_along() {
+        let mut p = parts(vec![
+            json!({"id": "p1", "type": "point", "at": [0.0, 0.0], "reference": true}),
+            json!({"id": "p2", "type": "point", "at": [20.0, 0.0], "reference": true}),
+            json!({"id": "c3", "type": "line", "start": "p1", "end": "p2", "reference": true}),
+            json!({"id": "p4", "type": "point", "at": [20.0, 0.0], "reference": true}),
+            json!({"id": "p5", "type": "point", "at": [20.0, 10.0], "reference": true}),
+            json!({"id": "c6", "type": "line", "start": "p4", "end": "p5", "reference": true}),
+            json!({"id": "p7", "type": "point", "at": [15.0, 5.0]}),
+            json!({"id": "p8", "type": "point", "at": [25.0, 5.0]}),
+            json!({"id": "c9", "type": "line", "start": "p7", "end": "p8"}),
+        ]);
+        p.constraints
+            .push(json!({"type": "coincident", "point": "p4", "entity": "p2"}));
+        // Only the first line's edge is found; its end moves 1 µm, and p4
+        // with it.
+        let edges = vec![line_edge([0.0, 0.0, 0.0], [20.001, 0.0, 0.0])];
+        let done = snap_linked_keeping(&mut p, &SketchFrame::XY, &edges, &HashMap::new(), &[]);
+        assert_eq!((done.moved, done.left), (1, 0));
+        assert_eq!(p.entities[1]["at"], json!([20.001, 0.0]));
+        assert_eq!(p.entities[3]["at"], json!([20.0, 0.0]));
+    }
+
+    /// Two edges project within the snap's reach of a linked line; the
+    /// one the projection rule prefers is taken, not the first.
+    #[test]
+    fn the_preferred_edge_is_taken_first() {
+        let mut p = parts(vec![
+            json!({"id": "p1", "type": "point", "at": [0.0, 0.0], "reference": true}),
+            json!({"id": "p2", "type": "point", "at": [20.0, 0.0], "reference": true}),
+            json!({"id": "c3", "type": "line", "start": "p1", "end": "p2", "reference": true}),
+        ]);
+        let edges = vec![
+            line_edge([0.0, 0.001, 0.0], [20.0, 0.001, 0.0]),
+            line_edge([0.0, -0.001, 0.0], [20.0, -0.001, 0.0]),
+        ];
+        let done =
+            snap_linked_keeping(&mut p, &SketchFrame::XY, &edges, &HashMap::new(), &[(2, 1)]);
+        assert_eq!(done.moved, 1);
+        assert_eq!(p.entities[0]["at"], json!([0.0, -0.001]));
     }
 }

@@ -5,13 +5,13 @@
 //! occurrence of the same component, or Paste New: a new component), and
 //! external components linked from or copied out of other design files.
 
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
 
 use super::bodies::faces_named;
 use super::copy::CopySource;
-use super::{Added, BodyAttributes, DocState, Document, ModelError, invalid};
+use super::{Added, BodyAttributes, ComponentCopy, DocState, Document, ModelError, invalid};
 use crate::assembly::{ExternalLink, Occurrence, is_rigid};
 use crate::exchange::ImportBody;
 use crate::features::{
@@ -269,6 +269,18 @@ impl<K: Kernel> Document<K> {
         transform: Transform,
         activate: bool,
     ) -> Result<(ComponentUid, OccurrenceUid), ModelError> {
+        self.create_component_with(name, transform, activate, crate::policy::Policy::GENERAL)
+    }
+
+    /// [`Document::create_component`] with the new component's policy
+    /// (mitcad#220).
+    pub fn create_component_with(
+        &mut self,
+        name: Option<&str>,
+        transform: Transform,
+        activate: bool,
+        policy: crate::policy::Policy,
+    ) -> Result<(ComponentUid, OccurrenceUid), ModelError> {
         check_transform(&transform)?;
         let parent = self.state.assembly.active;
         self.state.editable(parent)?;
@@ -281,6 +293,7 @@ impl<K: Kernel> Document<K> {
                 None => None,
             };
             let made = state.assembly.create(name, None);
+            state.assembly.set_policy(made, policy);
             let occurrence = state.assembly.place(made, parent, transform);
             if activate {
                 state.assembly.active = made;
@@ -335,6 +348,162 @@ impl<K: Kernel> Document<K> {
             let occurrence = state.assembly.place(component, parent, transform);
             let label = format!("Place {}", state.assembly.occurrence_name(occurrence));
             Ok((label, occurrence, false))
+        })
+    }
+
+    /// Gives an occurrence a component of its own: a new empty component
+    /// (named `name`, made unique) that the occurrence places from now on,
+    /// so that it can be arranged differently from the other occurrences
+    /// of the component it placed (an importer's: the occurrences of one
+    /// other document whose insides are not the same, mitcad#196). The
+    /// occurrence keeps its uid and placement and becomes the new
+    /// component's first (`Name:1`). Nothing is copied into the new
+    /// component ([`Document::fill_component_copy`] does that). An
+    /// occurrence that a pattern owns shares its source's component.
+    pub fn give_occurrence_own_component(
+        &mut self,
+        occurrence: OccurrenceUid,
+        name: Option<&str>,
+    ) -> Result<ComponentUid, ModelError> {
+        let placed = self.state.require_occurrence(occurrence)?;
+        self.state.editable(placed.parent)?;
+        if placed.pattern.is_some() {
+            return Err(invalid(format!(
+                "{} is owned by a pattern",
+                self.state.assembly.occurrence_name(occurrence)
+            )));
+        }
+        self.apply(|state| {
+            let name = name
+                .filter(|n| !n.trim().is_empty())
+                .map(|n| state.free_component_name(n));
+            let made = state.assembly.create(name.as_deref(), None);
+            let label = format!(
+                "Own component {} for {}",
+                state.assembly.name(made),
+                state.assembly.occurrence_name(occurrence)
+            );
+            let o = state
+                .assembly
+                .occurrence_mut(occurrence)
+                .expect("the occurrence exists");
+            o.component = made;
+            o.number = 1;
+            Ok((label, made))
+        })
+    }
+
+    /// Makes an occurrence place another component than it placed (an
+    /// importer's: the occurrences of one other document that share the
+    /// arrangement inside, mitcad#196, join the component made for it by
+    /// [`Document::give_occurrence_own_component`]). The occurrence keeps
+    /// its uid and placement and takes the next number of the component.
+    pub fn place_other_component(
+        &mut self,
+        occurrence: OccurrenceUid,
+        component: ComponentUid,
+    ) -> Result<(), ModelError> {
+        let placed = self.state.require_occurrence(occurrence)?;
+        self.state.editable(placed.parent)?;
+        let a = &self.state.assembly;
+        if component.is_root() || !a.exists(component) {
+            return Err(invalid(format!("{component} cannot be placed")));
+        }
+        if a.contains(component, placed.parent) {
+            return Err(invalid(format!(
+                "{} cannot be placed in {}, which is in it",
+                a.name(component),
+                a.name(placed.parent)
+            )));
+        }
+        if placed.pattern.is_some() {
+            return Err(invalid(format!(
+                "{} is owned by a pattern",
+                a.occurrence_name(occurrence)
+            )));
+        }
+        self.apply(|state| {
+            let number = state
+                .assembly
+                .occurrences_of(component)
+                .map(|o| o.number)
+                .max()
+                .unwrap_or(0)
+                + 1;
+            let label = format!(
+                "Place {} instead of {}",
+                state.assembly.name(component),
+                state.assembly.occurrence_name(occurrence)
+            );
+            let o = state
+                .assembly
+                .occurrence_mut(occurrence)
+                .expect("the occurrence exists");
+            o.component = component;
+            o.number = number;
+            Ok((label, ()))
+        })
+    }
+
+    /// Make Unique: gives an occurrence a copy of its component, with the
+    /// features and the components placed in it (those are copied too),
+    /// which the occurrence places from now on, so that it can be changed
+    /// without changing the other occurrences of the component (an
+    /// importer's: occurrences of a component inside a copy of another
+    /// document that the design arranges differently, mitcad#196). The
+    /// occurrence keeps its uid and placement. Returns the new component
+    /// and what was copied, each occurrence and feature of the original
+    /// with its copy.
+    pub fn make_unique(
+        &mut self,
+        uid: OccurrenceUid,
+    ) -> Result<(ComponentUid, ComponentCopy), ModelError> {
+        let source = self.state.require_occurrence(uid)?;
+        self.state.editable(source.parent)?;
+        if source.pattern.is_some() {
+            return Err(invalid(format!(
+                "{} is owned by a pattern",
+                self.state.assembly.occurrence_name(uid)
+            )));
+        }
+        let def = self
+            .state
+            .assembly
+            .component(source.component)
+            .cloned()
+            .ok_or_else(|| invalid("the component does not exist"))?;
+        let made_from_bodies = def
+            .created_by
+            .and_then(|f| self.state.entry(f))
+            .is_some_and(|f| matches!(f.def, FeatureDef::ComponentFromBodies(_)));
+        if def.link.is_some() || made_from_bodies {
+            return Err(invalid(format!(
+                "{} has bodies from outside its own features",
+                def.name
+            )));
+        }
+        let source_state = self.state.clone();
+        let mut source_path = crate::links::first_path(&source_state.assembly, source.parent, None)
+            .map_err(invalid)?;
+        source_path.push(uid);
+        self.apply(|state| {
+            let name = state.free_component_name(&def.name);
+            let made = state.assembly.create(Some(&name), None);
+            let o = state
+                .assembly
+                .occurrence_mut(uid)
+                .expect("the occurrence exists");
+            o.component = made;
+            o.number = 1;
+            let (_, copy) = state.copy_component_mapped(
+                &source_state,
+                &source_path,
+                made,
+                None,
+                CopySource::SameDocument,
+            )?;
+            let label = format!("Make {name} unique");
+            Ok((label, (made, copy)))
         })
     }
 
@@ -643,6 +812,8 @@ impl<K: Kernel> Document<K> {
             let (made, occurrence) = match (snapshot, made_by) {
                 (Some(snapshot), _) => {
                     let made = state.assembly.create(Some(&name), None);
+                    // The copy keeps the policy (mitcad#220).
+                    state.assembly.set_policy(made, def.policy);
                     if !snapshot.bodies.is_empty() {
                         let base = BaseDef {
                             source: Some(format!("copy of {}", def.name)),
@@ -865,6 +1036,8 @@ impl<K: Kernel> Document<K> {
                 None => state.free_component_name(&wanted),
             };
             let made = state.assembly.create(Some(&name), None);
+            // The design's root policy comes with it (mitcad#220).
+            state.assembly.set_policy(made, source.assembly.root_policy);
             let occurrence = state.assembly.place(made, parent, options.transform);
             match bodies {
                 Some(bodies) => {
@@ -932,14 +1105,15 @@ impl<K: Kernel> Document<K> {
     /// component of this document that is already placed (an importer's:
     /// the `.f3d` import fills the components standing for components of
     /// other documents from those documents' files, mitcad#196), and names
-    /// it `name` (made unique). Returns the copied occurrences, each of the
-    /// source's with its copy. The active component stays.
+    /// it `name` (made unique). Returns the copied occurrences and
+    /// features, each of the source's with its copy (a body of the source
+    /// `F5.b0` is the copy's `F<copy of 5>.b0`). The active component stays.
     pub fn fill_component_copy(
         &mut self,
         source: &Document<K>,
         into: ComponentUid,
         name: Option<&str>,
-    ) -> Result<HashMap<OccurrenceUid, OccurrenceUid>, ModelError> {
+    ) -> Result<ComponentCopy, ModelError> {
         self.state.editable(into)?;
         if into.is_root() {
             return Err(invalid("the root component cannot be filled with a copy"));
@@ -961,7 +1135,7 @@ impl<K: Kernel> Document<K> {
                     c.name = name;
                 }
             }
-            let (_, occurrences) = state.copy_component_mapped(
+            let (_, copy) = state.copy_component_mapped(
                 source,
                 &[],
                 into,
@@ -969,7 +1143,7 @@ impl<K: Kernel> Document<K> {
                 CopySource::Document(directory.as_deref()),
             )?;
             let label = format!("Copy into {}", state.assembly.name(into));
-            Ok((label, occurrences))
+            Ok((label, copy))
         })
     }
 

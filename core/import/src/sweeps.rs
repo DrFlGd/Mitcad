@@ -283,13 +283,17 @@ impl<K: crate::ImportKernel> Importer<'_, K> {
         let keep = self.input_bodies(fp);
         let own = self.component;
         let given = fp.f3d.as_ref().is_some_and(|f| f.component.is_some());
-        given
+        let found = given
             .then(|| refs::resolve_face_where(self.doc, fp, &keep))
             .flatten()
             .or_else(|| {
                 refs::resolve_face_where(self.doc, fp, &|b| self.doc.body_component(b) == Some(own))
             })
-            .or_else(|| refs::resolve_face(self.doc, fp))
+            .or_else(|| refs::resolve_face(self.doc, fp));
+        if let Some((body, _)) = &found {
+            self.hint_path(fp, *body);
+        }
+        found
     }
 
     /// Traces how far the faces of the bodies `keep` keeps are from a face
@@ -335,9 +339,13 @@ impl<K: crate::ImportKernel> Importer<'_, K> {
     fn edge_input(&self, fp: &Fingerprint) -> Option<(BodyUid, Vec<EdgeName>)> {
         let keep = self.input_bodies(fp);
         if let Some((body, edge)) = refs::resolve_edge_where(self.doc, fp, &keep) {
+            self.hint_path(fp, body);
             return Some((body, vec![edge]));
         }
         let chain = refs::resolve_edge_chain(self.doc, fp, &keep);
+        if let Some((body, _)) = &chain {
+            self.hint_path(fp, *body);
+        }
         if chain.is_none() && crate::tracing() {
             self.trace_edges_near(fp, &keep);
         }
@@ -420,6 +428,33 @@ impl<K: crate::ImportKernel> Importer<'_, K> {
         self.links_of(own, bodies, "its objects are")
     }
 
+    /// The links of the bodies a construction plane's definition names faces,
+    /// edges and vertices of that belong to another component than `own`
+    /// (the plane's), as [`Importer::body_links`] (mitcad#196).
+    pub(crate) fn plane_links(
+        &self,
+        own: ComponentUid,
+        def: &Value,
+    ) -> Result<Map<String, Value>, String> {
+        fn bodies<'a>(v: &'a Value, out: &mut Vec<&'a str>) {
+            match v {
+                Value::Object(m) => {
+                    for (key, value) in m {
+                        match (key.as_str(), value) {
+                            ("body", Value::String(s)) => out.push(s),
+                            _ => bodies(value, out),
+                        }
+                    }
+                }
+                Value::Array(a) => a.iter().for_each(|x| bodies(x, out)),
+                _ => {}
+            }
+        }
+        let mut names = Vec::new();
+        bodies(&def["definition"], &mut names);
+        self.links_of(own, names.into_iter(), "its faces are")
+    }
+
     /// The links of `bodies` of other components than `own`: the occurrence
     /// paths to the body's component, placed once, and to `own`, placed once or
     /// else (an occurrence pattern) at its first occurrence, the original that
@@ -452,17 +487,27 @@ impl<K: crate::ImportKernel> Importer<'_, K> {
         };
         let mut links = Map::new();
         for body in bodies {
-            let Some(c) = body
+            let Some((uid, c)) = body
                 .parse::<BodyUid>()
                 .ok()
-                .and_then(|uid| self.doc.body_component(uid))
+                .and_then(|uid| Some((uid, self.doc.body_component(uid)?)))
             else {
                 continue;
             };
             if c != own && !links.contains_key(body) {
+                // The occurrence the file's reference to the body is in,
+                // where a component is placed more than once.
+                let source = match self.hinted_path(uid) {
+                    Some(path) => path
+                        .iter()
+                        .map(ToString::to_string)
+                        .collect::<Vec<_>>()
+                        .join("/"),
+                    None => only_path(c, false)?,
+                };
                 links.insert(
                     body.to_owned(),
-                    json!({"source": only_path(c, false)?, "target": only_path(own, true)?}),
+                    json!({"source": source, "target": only_path(own, true)?}),
                 );
             }
         }
@@ -663,6 +708,8 @@ impl<K: crate::ImportKernel> Importer<'_, K> {
                     .iter()
                     .map(|r| json!({"sketch": uid, "region": r}))
                     .collect();
+                let whole_path =
+                    d.orientation.is_some() && !rail && !surfaces && def.get("extent").is_none();
                 let candidate = Candidate {
                     defs: vec![def],
                     note: None,
@@ -670,6 +717,12 @@ impl<K: crate::ImportKernel> Importer<'_, K> {
                     predicted: None,
                     input_provenance: if set.guess || k > 0 {
                         crate::InputProvenance::Inferred
+                    } else if whole_path && set.exact {
+                        // Orientation (mitcad#25), twist, taper, regions
+                        // (the decoded loops select them exactly) and the
+                        // whole path are decoded; a partial extent's
+                        // direction is not.
+                        crate::InputProvenance::Read
                     } else {
                         crate::InputProvenance::Unknown
                     },
@@ -753,6 +806,10 @@ impl<K: crate::ImportKernel> Importer<'_, K> {
                 guess: k > 0 && d.section_type.is_none(),
                 input_provenance: if k > 0 && d.section_type.is_none() {
                     crate::InputProvenance::Inferred
+                } else if k == 0 && d.section_type.is_some() && d.is_hollow.is_some() {
+                    // The path, section, size, wall and extents are decoded
+                    // (mitcad#25).
+                    crate::InputProvenance::Read
                 } else {
                     crate::InputProvenance::Unknown
                 },
@@ -776,9 +833,7 @@ impl<K: crate::ImportKernel> Importer<'_, K> {
             .and_then(|d| serde_json::to_value(d).ok())
             .and_then(|v| v.as_object().cloned())
             .unwrap_or_default();
-        if d.get("isSolid").and_then(Value::as_bool) == Some(false) {
-            return Err("surface lofts are not supported".to_owned());
-        }
+        let surface = d.get("isSolid").and_then(Value::as_bool) == Some(false);
         let mut items: Vec<&Value> = d
             .get("loftSections")
             .and_then(Value::as_array)
@@ -900,6 +955,9 @@ impl<K: crate::ImportKernel> Importer<'_, K> {
         if d.get("isClosed").and_then(Value::as_bool) == Some(true) {
             def["closed"] = json!(true);
         }
+        if surface {
+            def["surface"] = json!(true);
+        }
         let bodies: Option<Vec<Reference>> = d
             .get("participantBodies")
             .and_then(Value::as_array)
@@ -908,6 +966,11 @@ impl<K: crate::ImportKernel> Importer<'_, K> {
         if !participants.is_empty() {
             def["participants"] = json!(participants);
         }
+        // The options (closed, solid, rails, centre line, conditions) are
+        // decoded (mitcad#25); the first choice of the sections is read where
+        // each has one region only.
+        let unique = sections.iter().all(|s| s.len() == 1);
+        let decoded = d.contains_key("isClosed") && unique;
         let candidates = choices(&sections, SECTION_CHOICES)
             .into_iter()
             .enumerate()
@@ -918,6 +981,8 @@ impl<K: crate::ImportKernel> Importer<'_, K> {
                     guess: k > 0,
                     input_provenance: if k > 0 {
                         crate::InputProvenance::Inferred
+                    } else if decoded {
+                        crate::InputProvenance::Read
                     } else {
                         crate::InputProvenance::Unknown
                     },

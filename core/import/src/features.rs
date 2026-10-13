@@ -30,7 +30,7 @@ use crate::refs::Section;
 use crate::report::{InputProvenance, Outcome};
 use crate::sketch::{self, position_error};
 use crate::snap;
-use crate::{Candidate, Guesses, Importer, SketchInfo, refs};
+use crate::{Candidate, Guesses, Importer, SketchInfo, linked, refs};
 
 /// Items whose candidates depend on the bodies before them (edges found
 /// against the replay, faces extruded), so a fallback before them may make
@@ -54,6 +54,9 @@ pub fn depends_on_bodies(item: &TimelineItem) -> bool {
 
 /// The largest error of solved sketch points accepted, mm.
 const SKETCH_TOLERANCE: f64 = 1e-4;
+/// How far (mm) the points of reference curves may move where the sketch
+/// is solved with them free (`sketch::position_error_slack`).
+const REFERENCE_SLACK: f64 = 0.05;
 
 fn param(r: &Option<Reference>) -> Option<&mitcad_f3d::design::ir::ParameterRef> {
     r.as_ref().and_then(Reference::parameter)
@@ -114,9 +117,6 @@ fn not_translated(object_type: &str) -> Option<&'static str> {
         "PCBFeature" => "an electronics board: not translated",
         "MoveFaceFeature" => "moved faces: not translated (its faces and motion are not decoded)",
         "DraftFeature" => "a draft: not translated (its faces and plane are not decoded)",
-        "CylinderFeature" | "SphereFeature" => {
-            "a primitive: not translated (the face or plane it is placed on is not decoded)"
-        }
         "MirrorComponent" => {
             "mirrors a component into a new one: not translated (the stored bodies stand in)"
         }
@@ -133,6 +133,10 @@ fn not_translated(object_type: &str) -> Option<&'static str> {
 /// An extrusion's extent to try: (extent, flip, guess, length swept in mm
 /// when known).
 type ExtentChoice = (Value, bool, bool, Option<f64>);
+
+/// A sketch's plane: the definition's `plane` and `plane_link` (a face of
+/// another component, mitcad#225), the plane's frame and import notes.
+type SketchPlaneChoice = (Value, Option<Value>, SketchFrame, Vec<String>);
 
 impl<K: crate::ImportKernel> Importer<'_, K> {
     /// A parameter reference as a value: the imported parameter's name, or
@@ -151,7 +155,7 @@ impl<K: crate::ImportKernel> Importer<'_, K> {
         Some(json!(if raw { v } else { mm(v) }))
     }
 
-    fn value_or(&self, r: &Option<Reference>, what: &str) -> Result<Value, String> {
+    pub(crate) fn value_or(&self, r: &Option<Reference>, what: &str) -> Result<Value, String> {
         self.value(r).ok_or_else(|| format!("no {what}"))
     }
 
@@ -180,8 +184,8 @@ impl<K: crate::ImportKernel> Importer<'_, K> {
         let name = item.name();
         let start = self.doc.undo_depth();
         let owned = self.components.is_owned(index);
-        let (plane, plane_frame, mut notes) =
-            self.sketch_plane(detail, &frame, name, copy, owned)?;
+        let (plane, plane_link, plane_frame, mut notes) =
+            self.sketch_plane(detail, &frame, name, copy, owned, &parts.positions)?;
         // The curves on the edges of the face the sketch lies on within the
         // file's tolerance, exactly on them (a point two of them share where
         // their curves meet); then the other linked curves on the geometry
@@ -204,14 +208,61 @@ impl<K: crate::ImportKernel> Importer<'_, K> {
                 sketch::edges::EDGE_TOLERANCE
             ));
         }
-        let snapped = if parts.linked > 0 {
-            let component = (copy.is_some() || owned).then_some(self.component);
-            let edges = self.replay_edges(component);
-            let kept = sketch::edges::points_of(&parts.entities, &on_edges);
-            snap::snap_linked_keeping(&mut parts, &frame, &edges, &kept)
+        // The edges the linked curves may follow (mitcad#225): the sketch's
+        // own component's and, through their occurrences, the other
+        // components'. A copy keeps its own component's, as fixed geometry.
+        let target = if parts.linked > 0 && copy.is_none() {
+            self.sketch_target()
         } else {
-            0
+            None
         };
+        let sources = match &target {
+            Some(t) => self.edge_sources(t, &frame, linked::points_box(&parts)),
+            None => Vec::new(),
+        };
+        // The projection rule's choice of edge per curve, made once: the
+        // snap puts the curve on that edge's projection and the projection
+        // follows the same edge (mitcad#227).
+        let choices = if target.is_some() {
+            linked::choices(&parts, &frame, &sources)
+        } else {
+            Vec::new()
+        };
+        let snapped = if parts.linked > 0 {
+            let own = owned && target.is_some();
+            let edges = if own {
+                sources.iter().map(|e| e.curve.clone()).collect()
+            } else {
+                let component = (copy.is_some() || owned).then_some(self.component);
+                self.replay_edges(component)
+            };
+            let preferred = if own {
+                linked::preferred(&choices)
+            } else {
+                Vec::new()
+            };
+            let kept = sketch::edges::points_of(&parts.entities, &on_edges);
+            snap::snap_linked_keeping(&mut parts, &frame, &edges, &kept, &preferred)
+        } else {
+            snap::Snapped::default()
+        };
+        // Those that follow one edge as projections.
+        let resolved = match &target {
+            Some(t) => linked::resolve(&mut parts, &frame, &sources, &choices, t, &mut |e| {
+                self.edge_curves(e, t)
+            }),
+            None => linked::Resolved::default(),
+        };
+        if crate::tracing() && parts.linked > 0 {
+            eprintln!(
+                "import: {name:?} in {} (owned {owned}, seen at {target:?}): {} linked curves, {} edges they may follow, {} projections ({} of other components)",
+                self.component,
+                parts.linked,
+                sources.len(),
+                resolved.projections.len(),
+                resolved.other
+            );
+        }
         let frame_def = geom::relative_frame(&plane_frame, &frame);
         let made_params = self.offset_params(&mut parts);
         let levels: [(&[Value], &[Value], &str); 3] = [
@@ -249,14 +300,25 @@ impl<K: crate::ImportKernel> Importer<'_, K> {
             .iter()
             .any(|e| e["reference"] == true && e["fixed"] == true);
         let has_derived = parts.offsets.iter().any(|o| o["derived"] == true);
+        let reference_points =
+            sketch::reference_points(&parts.entities, &parts.constraints, &parts.dimensions);
         let mut last = String::new();
         for (level, (constraints, dimensions, what)) in levels.iter().enumerate() {
-            // Reference curves locked, then free; offsets Mitcad derives from
-            // their chains (round corners), then without those.
-            for (unlocked, keep_derived) in
-                [(false, true), (true, true), (false, false), (true, false)]
-            {
-                if unlocked && !has_reference || !keep_derived && !has_derived {
+            // Reference curves locked (with the linked ones that follow an
+            // edge as projections, then without), then free; offsets Mitcad
+            // derives from their chains (round corners), then without those.
+            for (unlocked, keep_derived, project) in [
+                (false, true, true),
+                (false, true, false),
+                (true, true, false),
+                (false, false, true),
+                (false, false, false),
+                (true, false, false),
+            ] {
+                if unlocked && !has_reference
+                    || !keep_derived && !has_derived
+                    || project && resolved.projections.is_empty()
+                {
                     continue;
                 }
                 let entities = if unlocked {
@@ -293,6 +355,12 @@ impl<K: crate::ImportKernel> Importer<'_, K> {
                     let mut def = json!({"type": "sketch", "plane": plane, "entities": entities,
                                      "constraints": constraints, "dimensions": dimensions,
                                      "texts": parts.texts});
+                    if let Some(link) = &plane_link {
+                        def["plane_link"] = link.clone();
+                    }
+                    if project {
+                        def["projections"] = json!(resolved.projections);
+                    }
                     // Patterns and offsets go with the constraints.
                     if level < 2 {
                         def["patterns"] = parts
@@ -317,8 +385,21 @@ impl<K: crate::ImportKernel> Importer<'_, K> {
                     match self.add(&def, name) {
                         Ok(uid) => {
                             let output = self.doc.sketch_output(uid);
+                            // Linked curves the file keeps inconsistent among
+                            // themselves (an arc's end off its circle by a few
+                            // hundredths of a millimetre) can only be held
+                            // together by moving their points a little.
                             let error = output.map_or(f64::INFINITY, |o| {
-                                position_error(&parts.positions, &o.solved.points)
+                                if unlocked {
+                                    sketch::position_error_slack(
+                                        &parts.positions,
+                                        &o.solved.points,
+                                        &reference_points,
+                                        REFERENCE_SLACK,
+                                    )
+                                } else {
+                                    position_error(&parts.positions, &o.solved.points)
+                                }
                             });
                             if error > SKETCH_TOLERANCE {
                                 last = format!("the solved sketch moved by {error:.3e} mm");
@@ -327,6 +408,33 @@ impl<K: crate::ImportKernel> Importer<'_, K> {
                                         "import: [{:.2}] {name:?}: sketch level {level}: {last}",
                                         crate::trace_clock()
                                     );
+                                }
+                                if crate::tracing()
+                                    && let Some(o) = output
+                                {
+                                    // The point that moved most and what holds it.
+                                    let worst = parts
+                                        .positions
+                                        .iter()
+                                        .filter_map(|(n, at)| {
+                                            let s = o
+                                                .solved
+                                                .points
+                                                .get(&mitcad_model::EntityUid(*n))?;
+                                            Some((*n, *at, *s, (s[0] - at[0]).hypot(s[1] - at[1])))
+                                        })
+                                        .max_by(|a, b| a.3.total_cmp(&b.3));
+                                    if let Some((n, at, s, d)) = worst {
+                                        eprintln!(
+                                            "import:   moved most: p{n} {at:?} -> {s:?} ({d:.3e})"
+                                        );
+                                        let key = format!("\"p{n}\"");
+                                        for v in constraints.iter().chain(&dimensions) {
+                                            if v.to_string().contains(&key) {
+                                                eprintln!("import:     {v}");
+                                            }
+                                        }
+                                    }
                                 }
                                 // What the file's positions do not keep.
                                 let violated: Vec<String> = output
@@ -401,17 +509,14 @@ impl<K: crate::ImportKernel> Importer<'_, K> {
                                     skip.len()
                                 ));
                             }
-                            if parts.linked > 0 {
-                                notes.push(format!(
-                                    "{} linked curves kept as fixed reference geometry{}",
-                                    parts.linked,
-                                    if snapped > 0 {
-                                        format!(" ({snapped} on the model's edges)")
-                                    } else {
-                                        String::new()
-                                    }
-                                ));
-                            }
+                            notes.extend(linked::notes(
+                                parts.linked,
+                                &resolved,
+                                project,
+                                target.is_some(),
+                                snapped.moved,
+                                snapped.left,
+                            ));
                             if !parts.dropped.is_empty() {
                                 notes.push(format!("left out: {}", summarize(&parts.dropped)));
                             }
@@ -587,7 +692,8 @@ impl<K: crate::ImportKernel> Importer<'_, K> {
         name: Option<&str>,
         copy: Option<&Transform>,
         owned: bool,
-    ) -> Result<(Value, SketchFrame, Vec<String>), String> {
+        points: &[(u32, [f64; 2])],
+    ) -> Result<SketchPlaneChoice, String> {
         let moved = copy.is_some_and(|t| !t.is_identity());
         let component = (copy.is_some() || owned).then_some(self.component);
         if let Some(Reference::ConstructionPlane(c)) = &detail.reference_plane
@@ -602,7 +708,7 @@ impl<K: crate::ImportKernel> Importer<'_, K> {
             };
             if let Some((plane, text)) = plane {
                 let f = plane.origin_frame().expect("an origin plane");
-                return Ok((json!(text), f, Vec::new()));
+                return Ok((json!(text), None, f, Vec::new()));
             }
             if let Some(uid) = c
                 .timeline_index
@@ -612,7 +718,7 @@ impl<K: crate::ImportKernel> Importer<'_, K> {
                 && let Some(Datum::Plane(p)) = self.doc.datum(uid)
                 && component.is_none_or(|c| self.doc.feature(uid).map(|f| f.component) == Some(c))
             {
-                return Ok((json!(uid.to_string()), p.frame(), Vec::new()));
+                return Ok((json!(uid.to_string()), None, p.frame(), Vec::new()));
             }
         }
         // A planar face of the replay in the sketch's plane.
@@ -630,9 +736,18 @@ impl<K: crate::ImportKernel> Importer<'_, K> {
             let f = SketchPlane::face_frame(p.origin, p.normal);
             return Ok((
                 json!({"face": face.to_string(), "body": body.to_string()}),
+                None,
                 f,
                 Vec::new(),
             ));
+        }
+        // A planar face of another component, through its occurrence
+        // (mitcad#225).
+        if owned
+            && copy.is_none()
+            && let Some((plane, link, f, note)) = self.linked_face_plane(frame, points)
+        {
+            return Ok((plane, Some(link), f, vec![note]));
         }
         // A fixed construction plane in the sketch's place.
         let def = json!({"type": "construction_plane", "definition": {"type": "fixed",
@@ -645,6 +760,7 @@ impl<K: crate::ImportKernel> Importer<'_, K> {
         };
         Ok((
             json!(uid.to_string()),
+            None,
             f,
             vec![format!("on a fixed plane {uid} (its face was not found)")],
         ))
@@ -1027,7 +1143,7 @@ impl<K: crate::ImportKernel> Importer<'_, K> {
     /// A plane reference as the planes it may be: an origin plane, an
     /// imported construction plane, a face it names, or by its geometry
     /// the origin planes and planar faces in it, else that plane fixed.
-    fn plane_options(&self, r: Option<&Reference>) -> Vec<Value> {
+    pub(crate) fn plane_options(&self, r: Option<&Reference>) -> Vec<Value> {
         let mut out = Vec::new();
         let Some(r) = r else {
             return out;
@@ -1527,6 +1643,9 @@ impl<K: crate::ImportKernel> Importer<'_, K> {
             (Some(Detail::Coil(d)), _) if d.other.contains_key("profile") => {
                 self.coil_helix(index, d)
             }
+            // Primitives and coils placed on a plane (mitcad#25).
+            (Some(Detail::Primitive(d)), t) => self.primitive(index, t, d),
+            (Some(Detail::Coil(d)), _) => self.coil_primitive(index, d),
             (_, "BaseFeature") => Err("a base feature: the file's bodies as they are".to_owned()),
             (
                 _,
@@ -2177,13 +2296,23 @@ impl<K: crate::ImportKernel> Importer<'_, K> {
             .into_iter()
             .filter(|(b, _)| self.doc.body_component(*b) == component)
             .collect();
-        let mut used = vec![false; after.len()];
-        let mut changed = Vec::new();
-        for (uid, sig) in &current {
-            match (0..after.len()).find(|&j| !used[j] && after[j].same(sig)) {
-                Some(j) => used[j] = true,
-                None => changed.push(uid.to_string()),
+        let unchanged_by = |same: &dyn Fn(&Sig, &Sig) -> bool| {
+            let mut used = vec![false; after.len()];
+            let mut changed = Vec::new();
+            for (uid, sig) in &current {
+                match (0..after.len()).find(|&j| !used[j] && same(&after[j], sig)) {
+                    Some(j) => used[j] = true,
+                    None => changed.push(uid.to_string()),
+                }
             }
+            changed
+        };
+        let mut changed = unchanged_by(&|a, b| a.same(b));
+        if changed.len() == current.len() {
+            // The replay can give a body other faces than the file's (its
+            // faces split otherwise, mitcad#60): one the same within
+            // `EXACT` apart from its faces is taken as unchanged too.
+            changed = unchanged_by(&|a, b| a.distance(b) <= crate::history::EXACT);
         }
         (!changed.is_empty() && changed.len() < current.len()).then_some(changed)
     }
@@ -2520,7 +2649,7 @@ impl<K: crate::ImportKernel> Importer<'_, K> {
                 }
                 self.side(def, taper)
             };
-            let (s1, _) = match side(&one, &d.taper_angle_one)? {
+            let (s1, side_one_flip) = match side(&one, &d.taper_angle_one)? {
                 Some(s) => s,
                 None => through_all(&one, &d.taper_angle_one).ok_or("side one not decoded")?,
             };
@@ -2538,6 +2667,10 @@ impl<K: crate::ImportKernel> Importer<'_, K> {
                 self.to_object_flip(&one, raw, sketch).or(decoded_flip)
             } else if s1["type"] == "distance" && s2["type"] == "distance" {
                 Some(false)
+            } else if s1["type"] == "through_all" {
+                // Side one through all goes the way its flag says (as a
+                // one-sided extent does); side two the other way.
+                side_one_flip.or(decoded_flip)
             } else {
                 decoded_flip
             }
@@ -2776,6 +2909,12 @@ impl<K: crate::ImportKernel> Importer<'_, K> {
                     // to an object towards the object's side.
                     let direction = if extent["side1"]["type"] == "to_object" {
                         self.to_object_flip(&one, raw, sketch) == Some(flip)
+                    } else if extent["side1"]["type"] == "through_all" {
+                        // Side one through all: the flag byte decides the
+                        // direction, as for one side.
+                        raw.and_then(|r| r.flag)
+                            .filter(|f| *f <= 1)
+                            .is_some_and(|f| flip == (f == 1))
                     } else {
                         !flip
                     };
@@ -2799,8 +2938,13 @@ impl<K: crate::ImportKernel> Importer<'_, K> {
         };
         let thin_read = match raw.and_then(|r| r.thin) {
             Some(false) => d.is_thin_extrude != Some(true),
-            // A second wall of a two-sided thin extrusion is not decoded.
-            Some(true) => thin.is_some() && raw_sides.is_some_and(|s| s[1] == 0),
+            // A two-sided thin extrusion's second wall (mitcad#25).
+            Some(true) => {
+                thin.is_some()
+                    && (raw_sides.is_some_and(|s| s[1] == 0)
+                        || (d.thin_extrude_wall_location_two.is_some()
+                            && d.thin_extrude_wall_thickness_two.is_some()))
+            }
             None => false,
         };
         // (The sketch's regions on the faces make up the faces' area, which
@@ -4491,13 +4635,21 @@ impl<K: crate::ImportKernel> Importer<'_, K> {
                 g.done = true;
             }
             match result {
-                Ok(c) if !named => return Ok(vec![c]),
+                Ok((c, _)) if !named => return Ok(vec![c]),
                 Err(e) if !named => return Err(e),
-                Ok(mut c) => {
+                Ok((mut c, twins)) => {
                     c.note = Some(BY_NAME.to_owned());
                     let chains = self.by_chains(&c);
                     first.push(c);
                     first.extend(chains);
+                    // With the other edges of the sliver faces beside them
+                    // (mitcad#224), after the edges alone.
+                    if let Some(mut t) = twins {
+                        t.note = Some(format!(
+                            "{BY_NAME}, with the other edges of the slivers beside them"
+                        ));
+                        first.push(t);
+                    }
                 }
                 Err(e) => {
                     if crate::tracing() {
@@ -4506,6 +4658,21 @@ impl<K: crate::ImportKernel> Importer<'_, K> {
                     // (A suppressed item's placeholder says it, mitcad#180.)
                     self.suppressed.named_error = Some(e.clone());
                     named_error = Some(e);
+                    // Edges the file names that its history no longer has
+                    // are no input of the file's operation: the other edges
+                    // come first (the history checks them).
+                    if let Some((subset, dropped)) = without_stale_edges(&fingerprints)
+                        && let Ok((mut c, _)) =
+                            self.dressup_by_fingerprints(&subset, sections, make, false)
+                    {
+                        c.note = Some(format!(
+                            "{BY_NAME}; {dropped} the file no longer has left out"
+                        ));
+                        c.input_provenance = InputProvenance::Inferred;
+                        let chains = self.by_chains(&c);
+                        first.push(c);
+                        first.extend(chains);
+                    }
                 }
             }
         }
@@ -4793,20 +4960,23 @@ impl<K: crate::ImportKernel> Importer<'_, K> {
     /// The stream decoder's edges (`_f3d`) as [`refs::dressup_edge_match`]
     /// finds them (a two-distance chamfer's sides decoded, mitcad#96:
     /// [`Importer::decoded_sides`]); an external dump's by their middles.
+    /// With the other edges of sliver faces beside edges found
+    /// ([`refs::FoundEdge::sliver_twin`], mitcad#224), the same with them
+    /// too as a second definition.
     fn dressup_by_fingerprints(
         &self,
         fingerprints: &[Vec<&Fingerprint>],
         sections: &[Vec<Section>],
         make: &dyn Fn(&str, &[SetEdges]) -> Value,
         inputs_read: bool,
-    ) -> Result<Candidate, String> {
-        let mut by_body: Vec<(BodyUid, Vec<SetEdges>)> = Vec::new();
+    ) -> Result<(Candidate, Option<Candidate>), String> {
         let replay = fingerprints
             .iter()
             .flatten()
             .any(|fp| fp.f3d.is_some())
             .then(|| refs::ReplayEdges::of(self.doc));
-        let mut found_edges: Vec<refs::FoundEdge> = Vec::new();
+        // The edges found for each input, by set.
+        let mut found_by_set: Vec<(usize, Vec<refs::FoundEdge>)> = Vec::new();
         for (i, fps) in fingerprints.iter().enumerate() {
             for (j, fp) in fps.iter().enumerate() {
                 let edges = match &replay {
@@ -4829,25 +4999,75 @@ impl<K: crate::ImportKernel> Importer<'_, K> {
                                 mid: [0.0; 3],
                                 direction: None,
                                 chosen_from_multiple: false,
+                                sliver_twin: false,
                             }]
                         })
                         .ok_or("an edge was not found in the replay")?,
                 };
-                for e in edges {
-                    let entry = match by_body.iter_mut().position(|(b, _)| *b == e.body) {
-                        Some(k) => &mut by_body[k].1,
-                        None => {
-                            let sets = (0..fingerprints.len()).map(|i| (i, Vec::new())).collect();
-                            by_body.push((e.body, sets));
-                            &mut by_body.last_mut().expect("pushed").1
-                        }
-                    };
-                    let name = e.name.to_string();
-                    if !entry[i].1.contains(&name) {
-                        entry[i].1.push(name);
+                found_by_set.push((i, edges));
+            }
+        }
+        let alone = self.dressup_of_found(
+            fingerprints.len(),
+            &found_by_set,
+            false,
+            sections,
+            make,
+            inputs_read,
+        );
+        let twins = found_by_set
+            .iter()
+            .any(|(_, edges)| edges.iter().any(|e| e.sliver_twin))
+            .then(|| {
+                self.dressup_of_found(
+                    fingerprints.len(),
+                    &found_by_set,
+                    true,
+                    sections,
+                    make,
+                    inputs_read,
+                )
+            });
+        Ok((alone, twins))
+    }
+
+    /// [`Importer::dressup_by_fingerprints`]'s definition of the edges found
+    /// (for each input its set and edges), with the sliver faces' twins or
+    /// without them.
+    fn dressup_of_found(
+        &self,
+        sets: usize,
+        found_by_set: &[(usize, Vec<refs::FoundEdge>)],
+        twins: bool,
+        sections: &[Vec<Section>],
+        make: &dyn Fn(&str, &[SetEdges]) -> Value,
+        inputs_read: bool,
+    ) -> Candidate {
+        let mut by_body: Vec<(BodyUid, Vec<SetEdges>)> = Vec::new();
+        let mut found_edges: Vec<refs::FoundEdge> = Vec::new();
+        let mut chosen = false;
+        for (i, edges) in found_by_set {
+            // With a sliver's twin the pair is the choice (its flag).
+            chosen |= match edges.iter().find(|e| e.sliver_twin) {
+                Some(twin) if twins => twin.chosen_from_multiple,
+                _ => edges
+                    .iter()
+                    .any(|e| !e.sliver_twin && e.chosen_from_multiple),
+            };
+            for e in edges.iter().filter(|e| twins || !e.sliver_twin) {
+                let entry = match by_body.iter_mut().position(|(b, _)| *b == e.body) {
+                    Some(k) => &mut by_body[k].1,
+                    None => {
+                        let sets = (0..sets).map(|i| (i, Vec::new())).collect();
+                        by_body.push((e.body, sets));
+                        &mut by_body.last_mut().expect("pushed").1
                     }
-                    found_edges.push(e);
+                };
+                let name = e.name.to_string();
+                if !entry[*i].1.contains(&name) {
+                    entry[*i].1.push(name);
                 }
+                found_edges.push(e.clone());
             }
         }
         let defs: Vec<Value> = by_body
@@ -4866,21 +5086,21 @@ impl<K: crate::ImportKernel> Importer<'_, K> {
                 .flatten()
                 .any(|s| s["size"]["type"] == "two_distances")
         }) || found_edges.iter().all(|e| e.direction.is_some());
-        let input_provenance = if found_edges.iter().any(|e| e.chosen_from_multiple) {
+        let input_provenance = if chosen {
             InputProvenance::Inferred
         } else if inputs_read && sides_read && !found_edges.is_empty() {
             InputProvenance::Read
         } else {
             InputProvenance::Unknown
         };
-        Ok(Candidate {
+        Candidate {
             defs,
             note: None,
             guess: false,
             predicted: None,
             input_provenance,
             first: false,
-        })
+        }
     }
 
     // Edges found by their names (mitcad#96).
@@ -5083,8 +5303,43 @@ fn read_chamfer_inputs(d: &ChamferDetail) -> bool {
         })
 }
 
+/// The edges of a dressup's sets without those the file names but its
+/// history no longer has: both faces of the edge are there with no edge
+/// between them, or a face of it is gone. The file's own operation takes
+/// the other edges only (the API reference dumps list just the edges that
+/// resolve for most items whose edges the decoder left unresolved for
+/// these reasons; the history checks the rest, which a decoder's own
+/// failure to find a face does not hold), and how many were left out ("3
+/// edges"); None when there are none of that kind or none is left.
+fn without_stale_edges<'a>(
+    sets: &[Vec<&'a Fingerprint>],
+) -> Option<(Vec<Vec<&'a Fingerprint>>, String)> {
+    let stale = |fp: &Fingerprint| {
+        fp.mid_point.is_none()
+            && fp.f3d.as_ref().is_some_and(|f| {
+                f.found.as_deref().is_some_and(|t| {
+                    t.starts_with("no edge between the faces named")
+                        || t.starts_with("a face of the edge is not in the history")
+                })
+            })
+    };
+    let dropped = sets.iter().flatten().filter(|fp| stale(fp)).count();
+    let kept: Vec<Vec<&Fingerprint>> = sets
+        .iter()
+        .map(|s| s.iter().copied().filter(|fp| !stale(fp)).collect())
+        .collect();
+    (dropped > 0 && kept.iter().any(|s| !s.is_empty())).then(|| {
+        let plural = if dropped == 1 { "" } else { "s" };
+        (kept, format!("{dropped} edge{plural}"))
+    })
+}
+
 /// Whether every edge of a set is one the stream decoder named (its
-/// recipe and entities) with its middle and length.
+/// recipe and entities) with its middle and length. An edge of a face the
+/// set selects (a `bounded_face` recipe, which the decoder turned into
+/// the face's edges) is named by the face's recipe: the set input says it
+/// selects the face's edges (`edge_groups`, `set_selects` 16), so that
+/// every one of them is read.
 fn named_edges_read(edges: &Option<Vec<Reference>>) -> bool {
     edges.as_ref().is_some_and(|edges| {
         !edges.is_empty()
@@ -5095,7 +5350,11 @@ fn named_edges_read(edges: &Option<Vec<Reference>>) -> bool {
                         && fp.length.is_some_and(|v| v.is_finite() && v > 0.0)
                         && fp.f3d.as_ref().is_some_and(|f| {
                             f.object_id.is_some()
-                                && f.recipe.as_deref() == Some("edge")
+                                && (f.recipe.as_deref() == Some("edge")
+                                    || (f.recipe.as_deref() == Some("bounded_face")
+                                        && f.found
+                                            .as_deref()
+                                            .is_some_and(|t| t.ends_with("(an edge of a face)"))))
                                 && f.entities.as_ref().is_some_and(|e| !e.is_empty())
                         })
                 }
@@ -5124,7 +5383,7 @@ fn with_face_regions(c: &mut Candidate, sketch: &str, keys: &[String]) {
     }
 }
 
-fn with_participants(c: &Candidate, options: &[Vec<String>]) -> Vec<Candidate> {
+pub(crate) fn with_participants(c: &Candidate, options: &[Vec<String>]) -> Vec<Candidate> {
     options
         .iter()
         .enumerate()
@@ -5479,7 +5738,7 @@ pub(crate) struct RegionSet {
     /// The decoded profile loops selected these regions exactly
     /// ([`crate::profiles::mapped`], mitcad#186): a set of any other origin
     /// is not read.
-    exact: bool,
+    pub exact: bool,
 }
 
 impl RegionSet {

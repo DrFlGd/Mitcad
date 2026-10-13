@@ -214,7 +214,6 @@ private:
   QToolBar* m_toolbar = nullptr;
   QAction* m_newDesign = nullptr;
   QAction* m_newFolder = nullptr;
-  QAction* m_rename = nullptr;
   QAction* m_delete = nullptr;
   QAction* m_history = nullptr;
   QAction* m_sync = nullptr;

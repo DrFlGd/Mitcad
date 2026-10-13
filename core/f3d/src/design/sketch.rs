@@ -1317,8 +1317,9 @@ pub(crate) fn text_value(
         "fontName": raw.font,
         "isHorizontalFlip": false,
         "isVerticalFlip": false,
-        // Bit 1 bold: the weights the files store are 400 and up to 750.
-        "textStyle": i64::from(raw.weight >= 600),
+        // Bit 1 bold (the weights the files store are 400 and up to 750),
+        // bit 2 italic (the second flag byte, mitcad#25).
+        "textStyle": i64::from(raw.weight >= 600) | (i64::from(raw.flags[1] == 1) << 1),
         "definition": definition,
         "_f3d": {
             "flags": hex(&raw.flags),

@@ -167,6 +167,48 @@ std::vector<int> check_contours(const BRepFilletAPI_LocalOperation& maker, const
   return contour_sets;
 }
 
+// Whether a set's selection grows by Mitcad's own tangent chains
+// (detail::follow_tangent_chains, mitcad#224). A variable radius runs along
+// OCCT's chain, and asymmetric and G2 sets are built per chain (see
+// dressup.hpp): those keep OCCT's chain alone.
+bool follows_own_chain(const FilletSet& set) {
+  return set.tangent_chain && !set.curvature &&
+         (set.size == FilletSize::Constant || set.size == FilletSize::ChordLength);
+}
+
+bool follows_own_chain(const ChamferSet& set) { return set.tangent_chain; }
+
+// Builds the dressup (`build`, of the selection of each edge: its set, -1
+// for none) with Mitcad's own tangent chains of the sets added
+// (detail::follow_tangent_chains, mitcad#224); where that fails, as before
+// with the geometry kernel's chains alone, noting so (OCCT cannot round some
+// chains it does not follow itself: two contours that meet end to end at a
+// vertex where other sharp edges meet).
+template <class Set, class Build>
+ShapePtr with_own_chains(const char* what, const Shape& input, const std::vector<Set>& sets,
+                         const std::vector<int>& owner, Build&& build) {
+  std::vector<char> follows;
+  for (const Set& set : sets) {
+    follows.push_back(follows_own_chain(set) ? 1 : 0);
+  }
+  std::vector<int> grown = owner;
+  if (detail::follow_tangent_chains(input, grown, follows) == 0) {
+    return build(owner);
+  }
+  try {
+    OCC_CATCH_SIGNALS
+    return build(grown);
+  } catch (const Cancelled&) {
+    throw;
+  } catch (...) {
+  }
+  ShapePtr result = build(owner);
+  result->add_note(std::string("the ") + what +
+                   " follows the geometry kernel's tangent chains only: with the edges that continue them end to "
+                   "end it could not be built");
+  return result;
+}
+
 // Vertices where rounded edges of at least two contours meet, three or more
 // edges in all: the corners a corner type (rolling ball or setback) shapes.
 std::vector<TopoDS_Shape> corner_vertices(const BRepFilletAPI_LocalOperation& maker) {
@@ -225,6 +267,7 @@ ShapePtr healed(const Shape& result, const Shape& body) {
     detail::FaceNamer namer(fixed);
     namer.carry(*fix.Context()->History(), named);
     namer.finish();
+    namer.set_valid(true); // checked above
     return namer.shape();
   } catch (const Standard_Failure&) {
     return nullptr;
@@ -431,8 +474,11 @@ ShapePtr name_result(BRepFilletAPI_LocalOperation& maker, const std::string& fea
   namer.finish();
   // One check of a valid result: on a large body BRepCheck takes about as
   // long as the fillet itself (on OCCT's thread pool, mitcad#181).
-  if (!BRepCheck_Analyzer(namer.result(), true, true).IsValid() &&
-      !inherited_faults_only(namer.result(), body.occt(), touched)) {
+  if (BRepCheck_Analyzer(namer.result(), true, true).IsValid()) {
+    // Found valid: a boolean on it checks only what it changes
+    // (detail::is_valid_where_changed).
+    namer.set_valid(true);
+  } else if (!inherited_faults_only(namer.result(), body.occt(), touched)) {
     if (!t_retry) {
       if (ShapePtr repaired = healed(*namer.shape(), body)) {
         return repaired;
@@ -1208,13 +1254,16 @@ std::optional<MergedEdges> merge_edge_pieces(const Shape& body, const std::vecto
   // other edge, between the same two faces, meets it.
   NCollection_IndexedDataMap<TopoDS_Shape, NCollection_List<TopoDS_Shape>, TopTools_ShapeMapHasher> edges_of;
   TopExp::MapShapesAndUniqueAncestors(body.occt(), TopAbs_VERTEX, TopAbs_EDGE, edges_of);
+  // The faces of every edge mapped once (faces_at_edge maps the whole body
+  // for each edge: seconds per rounding of many edges on a large body).
+  const detail::EdgeFaces edge_faces(body);
   bool pieces_meet = false;
   for (int e = 0; e < body.edge_count() && !pieces_meet; ++e) {
     if (owner[static_cast<std::size_t>(e)] < 0) {
       continue;
     }
     const auto faces_of = [&](int edge) {
-      std::vector<int> faces = detail::faces_at_edge(body, edge);
+      std::vector<int> faces = edge_faces.at(edge);
       std::sort(faces.begin(), faces.end());
       return faces;
     };
@@ -1370,11 +1419,15 @@ ShapePtr dress(const Shape& input, const std::vector<Set>& sets, const std::vect
   // a selected edge (a knife edge): elsewhere they would only cost the time
   // of another try.
   bool knife = false;
+  std::optional<detail::EdgeFaces> edge_faces;
   for (int e = 0; tighten && e < input.edge_count() && !knife; ++e) {
     if (owner[static_cast<std::size_t>(e)] < 0) {
       continue;
     }
-    const std::vector<int> faces = detail::faces_at_edge(input, e);
+    if (!edge_faces) {
+      edge_faces.emplace(input);
+    }
+    const std::vector<int> faces = edge_faces->at(e);
     try {
       OCC_CATCH_SIGNALS
       knife = faces.size() == 2 &&
@@ -1428,19 +1481,21 @@ ShapePtr fillet(const std::string& feature, const Shape& input, const std::vecto
     blended[s] = sets[s].size == FilletSize::Asymmetric || sets[s].curvature ? 1 : 0;
     any_blended = any_blended || blended[s] != 0;
   }
-  const auto rings = [&](const Shape& body) { return ring_fillet(feature, body, sets, owner); };
-  return or_rings("fillet", input, [&] {
-    return with_shrink_retry("fillet", [&](double scale) {
-      return dress(input, sets, owner, scale, feature, "fillet", true,
-                   [&](const Shape& body, const std::vector<int>& own, double size_scale, bool tight) {
-                     if (any_blended) {
-                       return round_and_blend(feature, body, sets, own, blended, rolling_ball_corners, size_scale,
-                                              tight);
-                     }
-                     return round_edges(feature, body, sets, own, rolling_ball_corners, size_scale, tight);
-                   });
-    });
-  }, rings);
+  return with_own_chains("fillet", input, sets, owner, [&](const std::vector<int>& selected) {
+    const auto rings = [&](const Shape& body) { return ring_fillet(feature, body, sets, selected); };
+    return or_rings("fillet", input, [&] {
+      return with_shrink_retry("fillet", [&](double scale) {
+        return dress(input, sets, selected, scale, feature, "fillet", true,
+                     [&](const Shape& body, const std::vector<int>& own, double size_scale, bool tight) {
+                       if (any_blended) {
+                         return round_and_blend(feature, body, sets, own, blended, rolling_ball_corners,
+                                                size_scale, tight);
+                       }
+                       return round_edges(feature, body, sets, own, rolling_ball_corners, size_scale, tight);
+                     });
+      });
+    }, rings);
+  });
 }
 
 ShapePtr fillet(const std::string& feature, const Shape& body, const std::vector<std::string>& edges,
@@ -1464,15 +1519,17 @@ ShapePtr chamfer(const std::string& feature, const Shape& input, const std::vect
     }
   }
   const std::vector<int> owner = select_edges(input, sets);
-  const auto rings = [&](const Shape& body) { return ring_chamfer(feature, body, sets, owner); };
-  return or_rings("chamfer", input, [&] {
-    return with_shrink_retry("chamfer", [&](double scale) {
-      return dress(input, sets, owner, scale, feature, "chamfer", false,
-                   [&](const Shape& body, const std::vector<int>& own, double size_scale, bool) {
-                     return bevel(feature, body, sets, own, corner, size_scale);
-                   });
-    });
-  }, rings);
+  return with_own_chains("chamfer", input, sets, owner, [&](const std::vector<int>& selected) {
+    const auto rings = [&](const Shape& body) { return ring_chamfer(feature, body, sets, selected); };
+    return or_rings("chamfer", input, [&] {
+      return with_shrink_retry("chamfer", [&](double scale) {
+        return dress(input, sets, selected, scale, feature, "chamfer", false,
+                     [&](const Shape& body, const std::vector<int>& own, double size_scale, bool) {
+                       return bevel(feature, body, sets, own, corner, size_scale);
+                     });
+      });
+    }, rings);
+  });
 }
 
 ShapePtr chamfer(const std::string& feature, const Shape& body, const std::vector<std::string>& edges,

@@ -38,6 +38,8 @@ pub use parts::item_parts;
 // The compute option, symmetry, distance type and suppressed elements of
 // patterns and mirrors (mitcad#186).
 mod patterns;
+// Box, cylinder, sphere, torus and coil primitives (mitcad#25).
+mod primitives;
 
 /// Helpers for the decoder's tests.
 #[cfg(test)]
@@ -174,6 +176,8 @@ fn edge_input(seg: &Segment, input: u64) -> Option<Reference> {
             recipe: Some(recipe.kind),
             entities: Some(recipe.entities),
             end_faces,
+            document: recipe::owner_guid(seg, input),
+            context: decode::slot_contexts(seg).get(&input).copied(),
             ..FingerprintF3d::default()
         }),
         ..Fingerprint::default()
@@ -282,6 +286,8 @@ fn face_input(seg: &Segment, input: u64) -> Option<Reference> {
             object_id: Some(input),
             recipe: Some(recipe.kind),
             entities: Some(recipe.entities),
+            document: recipe::owner_guid(seg, input),
+            context: decode::slot_contexts(seg).get(&input).copied(),
             ..FingerprintF3d::default()
         }),
         ..Fingerprint::default()
@@ -485,6 +491,20 @@ pub(super) fn identity_move_data(seg: &Segment, id: u64) -> bool {
     let p = root.end + zeros;
     d.get(p..p + 12) == Some(&[5, 0, 0, 0, 1, 0, 0, 1, 0, 0, 0, 0][..])
         && seg.ref_at(d, p + 12).is_some()
+}
+
+/// Whether a hole goes against its default direction (mitcad#25): after
+/// the first null reference behind the header, `u32 type` (0 simple, 1
+/// counterbore, 2 countersink) at +9 and `u32 flipped` at +13; read against
+/// the API's `isDefaultDirection` on 39 holes.
+fn hole_flipped(seg: &Segment, id: u64) -> Option<bool> {
+    let d = seg.data_of(id);
+    let (_, null) = seg
+        .refs_in(d, header_end(d)?, d.len())
+        .into_iter()
+        .find(|(_, r)| r.id == 0)?;
+    let (kind, flipped) = (u32_at(d, null.end + 9)?, u32_at(d, null.end + 13)?);
+    (kind <= 2 && flipped <= 1).then_some(flipped == 1)
 }
 
 /// The first rigid 4x4 matrix (row-major, last row `0 0 0 1`, orthonormal
@@ -2127,6 +2147,23 @@ impl Builder<'_> {
                                         .or(v.first())
                                 })
                                 .map(|p| paramref(p));
+                            // The second side's wall (mitcad#25).
+                            if let Some((location, holder)) = ex.thin_two {
+                                x.thin_extrude_wall_location_two = Some(
+                                    match location {
+                                        1 => "Center",
+                                        2 => "Side2",
+                                        _ => "Side1",
+                                    }
+                                    .to_owned(),
+                                );
+                                x.thin_extrude_wall_thickness_two = rl
+                                    .get("Side2WallThickness")
+                                    .and_then(|v| {
+                                        v.iter().find(|p| p.holder == Some(holder)).or(v.first())
+                                    })
+                                    .map(|p| paramref(p));
+                            }
                         }
                     }
                     x.extent_type = match ex.extent_a {
@@ -2456,6 +2493,7 @@ impl Builder<'_> {
                     counterbore_depth: pr("CBDepth"),
                     extent_definition: pr("HoleDepth")
                         .map(|p| def("DistanceExtentDefinition", distance, p)),
+                    is_default_direction: hole_flipped(seg, fid).map(|f| !f),
                     ..HoleDetail::default()
                 };
                 // Type, points and extent (mitcad#67).
@@ -2508,9 +2546,9 @@ impl Builder<'_> {
                 // 33, in order) and the two distances (the reference
                 // dimensions). The stored direction vector is the face's
                 // outward normal on all ten holes of the API reference
-                // dumps, which go against it; a flipped hole would go with
-                // it, and no byte for that is known, so the direction is not
-                // taken.
+                // dumps, which go against it; a flipped hole goes with it
+                // (`is_default_direction`, [`hole_flipped`]), so the vector
+                // itself is not taken.
                 if let Some((face, _, _)) = self.directions(it).into_iter().next() {
                     let mut edges = slots
                         .iter()
@@ -2518,7 +2556,10 @@ impl Builder<'_> {
                         .filter_map(|s| s.inputs.first().and_then(|&i| edge_input(seg, i)));
                     x.hole_position_definition = Some(HolePositionDefinition {
                         definition_type: Some("PlaneAndOffsetsHolePositionDefinition".into()),
-                        planar_entity: face.filter(|f| matches!(f, Reference::Face(_))),
+                        // A face, or a construction or origin plane the holes start on.
+                        planar_entity: face.filter(|f| {
+                            matches!(f, Reference::Face(_) | Reference::ConstructionPlane(_))
+                        }),
                         edge_one: edges.next(),
                         edge_two: edges.next(),
                         offset_one: pr("RefDim1"),
@@ -2911,14 +2952,8 @@ impl Builder<'_> {
                 input_faces: self.face_inputs(it),
                 ..OffsetFacesDetail::default()
             })),
-            Some("CoilFeature") => Detail::Coil(Box::new(CoilDetail {
-                diameter: pr("Diameter"),
-                pitch: pr("Pitch"),
-                revolutions: pr("Revolutions"),
-                section_size: pr("SectionSize"),
-                angle: pr("TaperAngle"),
-                ..CoilDetail::default()
-            })),
+            // The choices, plane and placement (mitcad#25).
+            Some("CoilFeature") => self.coil(it),
             Some("PipeFeature") => {
                 let mut x = PipeDetail {
                     section_size: pr("SectionSize"),
@@ -2952,36 +2987,11 @@ impl Builder<'_> {
             // A construction point (mitcad#186): where it is, from its key
             // point input, and the vertex it was made at.
             None if it.class == CONSTRUCTION_POINT => self.construction_point(it),
-            // Cylinder and sphere primitives: operation and sizes (mitcad#154;
-            // as the cadmpeg format description gives them). The rigid
-            // matrix their records hold is not where the corpus' primitives
-            // are (the cylinders' and spheres' bodies in the history lie
-            // elsewhere, not by one transform), so it is not given: the
-            // primitives stay untranslated.
-            None if it.class == CYLINDER || it.class == SPHERE => {
-                let mut map = serde_json::Map::new();
-                let d = seg.data_of(fid);
-                if let Some(r) = seg.root_part(d) {
-                    let op = [r.end, r.end + 1].into_iter().find_map(|q| {
-                        u32_at(d, q).filter(|c| (1..=4).contains(c) && d.get(q + 4) == Some(&1))
-                    });
-                    let operation = match op {
-                        Some(1) => Some("JoinFeatureOperation"),
-                        Some(2) => Some("CutFeatureOperation"),
-                        Some(3) => Some("IntersectFeatureOperation"),
-                        Some(4) => Some("NewBodyFeatureOperation"),
-                        _ => None,
-                    };
-                    if let Some(o) = operation {
-                        map.insert("operation".to_owned(), serde_json::json!(o));
-                    }
-                }
-                for (key, role) in [("height", "Height"), ("diameter", "Diameter")] {
-                    if let Some(p) = pr(role) {
-                        map.insert(key.to_owned(), json_value(&p));
-                    }
-                }
-                Detail::Other(map)
+            // Box, cylinder, sphere and torus primitives: operation, the
+            // plane or face, the placement in its frame and the sizes
+            // (mitcad#154, mitcad#25).
+            None if matches!(it.class.as_str(), BOX | CYLINDER | SPHERE | TORUS) => {
+                self.primitive(it)
             }
             Some("ConstructionPlane") => {
                 let mut x = ConstructionPlaneDetail::default();
@@ -3410,6 +3420,9 @@ pub fn build(seg: &Segment, dec: &Decoded, file: &str, segment_dir: &str) -> Dum
     let grounded = joints::grounded(&tl_items);
     if let Some(nodes) = occurrences.as_mut() {
         ground(nodes, &grounded);
+        for path in hidden_paths(seg) {
+            hide(nodes, &path);
+        }
         placements::Histories::new(seg, root_id).attach(nodes, &b.pos_of);
     }
 
@@ -3626,6 +3639,86 @@ fn ground(nodes: &mut [OccurrenceNode], grounded: &[u64]) {
     }
 }
 
+/// The occurrence paths whose light bulbs are off: per
+/// [`HIDDEN_OCCURRENCE`] object its last `u32 n | n × ref` list whose
+/// references are all occurrences of this file (1 to 16 levels, from the
+/// root component down); without one, an object referring to one
+/// occurrence of this file only hides that one (a top-level occurrence of a
+/// component of another document, whose path list is empty). Paths inside
+/// components of other documents (context references) are left out: those
+/// documents' own files hold their light bulbs.
+fn hidden_paths(seg: &Segment) -> Vec<Vec<u64>> {
+    const MAX_LEVELS: u32 = 16;
+    let mut out = Vec::new();
+    for o in seg.objects_of(HIDDEN_OCCURRENCE) {
+        let d = seg.data(o);
+        let Some(start) = header_end(d) else {
+            continue;
+        };
+        let mut found = None;
+        for p in start..d.len().saturating_sub(4) {
+            let Some(n) = u32_at(d, p).filter(|n| (1..=MAX_LEVELS).contains(n)) else {
+                continue;
+            };
+            let mut q = p + 4;
+            let mut path = Vec::new();
+            while path.len() < n as usize {
+                match seg.ref_at(d, q) {
+                    Some(r) if r.context.is_none() && seg.guid_of(r.id) == Some(OCCURRENCE) => {
+                        path.push(r.id);
+                        q = r.end;
+                    }
+                    _ => break,
+                }
+            }
+            if path.len() == n as usize {
+                found = Some(path);
+            }
+        }
+        let inside_other_document = || {
+            seg.context_refs_in(d, start, d.len())
+                .iter()
+                .any(|(_, r)| r.guid == OCCURRENCE)
+        };
+        if found.is_none() && !inside_other_document() {
+            // An occurrence of a component of another document at the top
+            // level keeps its path list empty: the one occurrence of this
+            // file the object refers to.
+            let mut occurrences: Vec<u64> = seg
+                .refs_in(d, start, d.len())
+                .into_iter()
+                .filter(|(_, r)| r.context.is_none() && seg.guid_of(r.id) == Some(OCCURRENCE))
+                .map(|(_, r)| r.id)
+                .collect();
+            occurrences.dedup();
+            if let [o] = occurrences[..] {
+                found = Some(vec![o]);
+            }
+        }
+        out.extend(found);
+    }
+    out
+}
+
+/// Turns the light bulb of the occurrence at `path` (object ids from the
+/// top level down) off.
+fn hide(nodes: &mut [OccurrenceNode], path: &[u64]) {
+    let Some((first, rest)) = path.split_first() else {
+        return;
+    };
+    let Some(node) = nodes
+        .iter_mut()
+        .find(|n| n.f3d.as_ref().and_then(|f| f.object_id) == Some(*first))
+    else {
+        return;
+    };
+    if rest.is_empty() {
+        node.is_light_bulb_on = Some(false);
+    } else if let Some(children) = node.children.as_mut() {
+        hide(children, rest);
+    }
+}
+
 /// Occurrences by parent component, for [`occurrence_tree`].
 struct Tree<'a> {
     by_parent: HashMap<Option<u64>, Vec<&'a OccurrenceInfo>>,
@@ -3686,6 +3779,9 @@ impl Tree<'_> {
 mod tests {
     use super::*;
 
+    /// Any class stands for the hole here.
+    const HOLE_TEST: &str = "E8063467-0000-0000-0000-000000000001";
+
     fn entry(name: &str, expression: &str) -> ParameterEntry {
         ParameterEntry {
             id: 0,
@@ -3723,6 +3819,38 @@ mod tests {
         assert_eq!(names(2), ["d3", "d4"]);
         assert!(names(4).is_empty());
         assert_eq!(names(5), ["d7"]);
+    }
+
+    /// A hole record: root part, a null reference, nine bytes, `u32 type`,
+    /// `u32 flipped` (mitcad#25).
+    fn hole_object(kind: u32, flipped: u32) -> Vec<u8> {
+        let mut d = vec![0, 0, 0, 0, 0, 0];
+        d.push(1);
+        d.extend(0u64.to_le_bytes());
+        d.extend([0, 0]);
+        d.extend([0u8; 9]);
+        d.extend(kind.to_le_bytes());
+        d.extend(flipped.to_le_bytes());
+        d.extend([0; 8]);
+        d
+    }
+
+    #[test]
+    fn a_hole_reads_its_direction_flag_behind_the_first_null_reference() {
+        const ROOT: &str = "98542EB9-A4F2-4137-A808-DBB5B3CD6159";
+        const NULL: &str = "23FD63FB-0000-0000-0000-000000000000";
+        let mut flags = Vec::new();
+        for (kind, flipped) in [(0, 0), (1, 1), (2, 0), (3, 0), (0, 2)] {
+            let mut doc = crate::design::tests::Doc::default();
+            doc.class(ROOT, "", 0);
+            doc.class(NULL, ROOT, 0);
+            doc.class(HOLE_TEST, ROOT, 7);
+            doc.obj(0, NULL, vec![0, 0]);
+            doc.obj(60, HOLE_TEST, hole_object(kind, flipped));
+            flags.push(hole_flipped(&doc.segment(), 60));
+        }
+        // A type or a flag out of range is not a hole's.
+        assert_eq!(flags, [Some(false), Some(true), Some(false), None, None]);
     }
 
     /// A reference as the layout of a thread object has them: `01 id 00 00`.
@@ -3770,6 +3898,7 @@ mod tests {
             thin: None,
             thin_location: None,
             thin_holder: None,
+            thin_two: None,
         }
     }
 

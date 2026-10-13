@@ -14,7 +14,8 @@
 #   3. Save of an untitled design: the project picker starts in the
 #      panel's selected folder (mitcad#176).
 #   4. Rename (F2) of the open design and a drag into another folder: each
-#      a version; the open design follows its new path.
+#      a version; the open design follows its new path. Rename from the
+#      context menu (cancelled); the toolbar has no Rename button.
 #   5. Delete (Del, confirmed) of a design, and of the open design, which
 #      closes; the history keeps them. A double-click opens a design.
 #   6. A Cloud project added with Add Existing Project Folder is listed
@@ -110,6 +111,8 @@ ui_step "projects panel again (search)"  ui_command "Projects"
 ui_expect_new "Projects panel: hidden" "hidden"
 ui_mark
 ui_step "show the empty projects panel"  ui_command "Projects"
+# The plus is in the panel: it is shown before New Project, and stays.
+ui_expect_new "Projects panel: shown" "the panel shown again"
 ui_step "plain plus with no project"     ui_click_logged "Projects button New Project"
 ui_focus_dialog '^New Project$'
 ui_step "a cancelled project folder"     ui_key alt+f
@@ -127,11 +130,14 @@ ui_expect_new "New Project dialog: folder $SHOP: missing" "a new folder"
 ui_step "create (Enter)"                 ui_key Return
 ui_expect_new "New Project: created $SHOP: version " "made" 20
 ui_focus_main
-ui_expect_new "Projects panel: shown" "the panel shows the project"
 ui_expect_new "Open Project: no designs in $SHOP" "no design named after the folder"
 ui_expect_new "Projects tree: Shop (local, current): no designs" "an empty Local project" 20
 ui_expect_log "Projects top rows: Shop" "the project at the top, no row above it"
 ui_expect_log "Projects names: Shop = Shop" "a Local project shown by its folder's name"
+# The panel was shown before New Project (its plus) and stays shown.
+! tail -n +$((UI_MARK + 1)) "$UI_LOG" | grep -qF "Projects panel: hidden" ||
+  ui_fail "the panel was hidden while the project was made"
+echo "ok   the panel stays shown with the project"
 expect_git "$SHOP" "ls-files" ".gitattributes
 .gitignore
 .mitcad/project.json" "only the project's own files"
@@ -201,6 +207,19 @@ expect_git "$SHOP" "log -1 --format=%s" "Move parts/gear.mitcad to parts/cog.mit
 [ -f "$SHOP/parts/cog.mitcad" ] && [ ! -e "$SHOP/parts/gear.mitcad" ] || ui_fail "the file was not renamed"
 echo "ok   the file renamed"
 ui_expect_new "Projects row Shop/parts/cog.mitcad at " "the panel shows the new name" 20
+
+echo "--- Rename from the context menu; no Rename button on the toolbar"
+! grep -qF "Projects button Rename " "$UI_LOG" || ui_fail "the toolbar has a Rename button"
+echo "ok   no Rename button on the toolbar"
+row "Shop/parts/cog.mitcad"
+ui_mark
+ui_step "right-click it"                 ui_click_logged "Projects row Shop/parts/cog.mitcad" 3
+ui_step "rename"                         ui_menu_choose "Rename"
+ui_expect_new "Projects panel: renaming Shop/parts/cog.mitcad" "renamed in place from the context menu" 20
+ui_step "keep the name (Escape)"         ui_key Escape
+ui_expect_new "Projects panel: rename of parts/cog.mitcad cancelled" "cancelled: the name stays"
+[ -f "$SHOP/parts/cog.mitcad" ] || ui_fail "the cancelled rename changed the file"
+echo "ok   the file kept its name"
 
 echo "--- A drag moves a design within the project"
 ui_mark

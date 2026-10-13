@@ -21,6 +21,7 @@
 #include "mitcad/geometry/cancel.hpp"
 #include "mitcad/geometry/guard.hpp"
 #include "mitcad/geometry/input_check.hpp"
+#include "mitcad/geometry/shape.hpp"
 
 namespace mitcad::geometry::detail {
 
@@ -154,5 +155,30 @@ ShapeKey edge_key(const TopoDS_Shape& edge);
 void require_valid(const TopoDS_Shape& shape, const char* operation);
 // Whether OCCT's checker finds the shape valid (Cancelled as require_valid).
 bool is_valid(const TopoDS_Shape& shape);
+
+// is_valid and require_valid for the result of an operation whose inputs
+// OCCT's checker found valid, where `kept` holds the inputs' faces (as the
+// inputs hold them, with their orientations) that the result may share.
+// A face the result shares, and every edge and vertex that only such faces
+// use, is as it was checked; the checker sees the other faces and the faces
+// that meet them at a vertex, so every edge and vertex any of those use in
+// all its faces. That each shell is connected, holds no face twice and has
+// one face on each side of each edge running along it in opposite
+// directions is counted over the whole result. Where the result is not
+// solids of one shell each, or anything of that does not hold, or most
+// faces changed, the whole shape is checked as before. Mitcad's operations
+// do not modify their inputs (input_check.hpp), and OCCT's face merge
+// changes only what the faces it merges use, so the answer is the checker's
+// on the whole shape (mitcad#121: on bodies of 5 000 faces the whole check
+// took seconds after every join and cut near a few of them).
+bool is_valid_where_changed(const TopoDS_Shape& result, const ShapeMap& kept);
+void require_valid_where_changed(const TopoDS_Shape& result, const ShapeMap& kept, const char* operation);
+// How many checks so far (in the process) saw only the faces that changed,
+// and how many faces they gave the checker (for tests and traces).
+struct ChecksWhereChanged {
+  std::size_t checks = 0;
+  std::size_t faces = 0;
+};
+ChecksWhereChanged checks_where_changed();
 
 } // namespace mitcad::geometry::detail

@@ -17,6 +17,7 @@ namespace {
 // section [General], and would write that group as [%General].
 const QString kAutosave = QStringLiteral("autosave/enabled");
 const QString kAutosaveMinutes = QStringLiteral("autosave/minutes");
+const QString kImportTolerance = QStringLiteral("import/geometricTolerance");
 
 } // namespace
 
@@ -26,6 +27,8 @@ GeneralSettings GeneralSettings::load() {
   general.autosave = settings.value(kAutosave, general.autosave).toBool();
   general.autosaveMinutes = std::clamp(settings.value(kAutosaveMinutes, general.autosaveMinutes).toInt(),
                                        kMinAutosaveMinutes, kMaxAutosaveMinutes);
+  general.importTolerance = std::clamp(settings.value(kImportTolerance, general.importTolerance).toDouble(),
+                                       kMinImportTolerance, kMaxImportTolerance);
   return general;
 }
 
@@ -33,6 +36,7 @@ void GeneralSettings::save() const {
   QSettings settings;
   settings.setValue(kAutosave, autosave);
   settings.setValue(kAutosaveMinutes, autosaveMinutes);
+  settings.setValue(kImportTolerance, importTolerance);
 }
 
 bool VersionSettings::complete() const {

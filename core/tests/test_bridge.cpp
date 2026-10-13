@@ -509,6 +509,20 @@ void test_datums_and_analysis_shapes() {
   const auto clipped = document->analysis_shape(
       R"({"shape": "clip", "plane": {"origin": [0, 20, 0], "normal": [0, 1, 0]}, "body": "F2.b0"})");
   CHECK(clipped && near(mitcad::geometry::volume(*clipped), 24000.0));
+  // What is left keeps the body's names, so picks on the clipped view refer
+  // to the body; the cap has none (mitcad#233).
+  const auto unnamed = [](const mitcad::geometry::Shape& shape) {
+    int count = 0;
+    for (int i = 0; i < shape.face_count(); ++i) {
+      count += shape.face_names(i).empty() ? 1 : 0;
+    }
+    return count;
+  };
+  CHECK(clipped && clipped->find_faces(top).size() == 1 && unnamed(*clipped) == 1);
+  // On the top face's plane nothing is cut: every face keeps its name.
+  const auto touching = document->analysis_shape(
+      R"({"shape": "clip", "plane": {"origin": [0, 0, 20], "normal": [0, 0, 1]}, "body": "F2.b0"})");
+  CHECK(touching && touching->find_faces(top).size() == 1 && unnamed(*touching) == 0);
   const auto above = document->analysis_shape(R"({"shape": "section", "plane": "F3", "body": "F2.b0"})");
   CHECK(!above);
   CHECK(throws_with([&] { document->analysis_shape(R"({"shape": "datum", "uid": "F2"})"); },

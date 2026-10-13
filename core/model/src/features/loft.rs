@@ -4,7 +4,8 @@
 //! closed, optionally along a centre line or through rails, with end
 //! conditions at the first and the last section and the operations of an
 //! extrusion. End conditions and rails need an open, smooth loft; with a
-//! centre line, end conditions fail as unsupported.
+//! centre line, end conditions fail as unsupported. A surface loft is the
+//! side faces only, a sheet body of its own.
 
 use serde::{Deserialize, Serialize};
 
@@ -15,8 +16,8 @@ use super::extrude::{
 use super::geom_ref::{GeomRef, Want};
 use super::path::CurvePath;
 use super::{
-    CheckContext, EvalContext, Evaluate, FeatureInfo, FeatureOutput, References, ToolUse,
-    UNSUPPORTED, is_false,
+    BodyChange, CheckContext, EvalContext, Evaluate, FeatureInfo, FeatureOutput, References,
+    ToolUse, UNSUPPORTED, is_false,
 };
 use crate::ids::{BodyUid, FeatureUid};
 use crate::kernel::Kernel;
@@ -210,6 +211,11 @@ pub struct LoftDef<P = ParamId> {
     /// Straight between neighbouring sections.
     #[serde(default, skip_serializing_if = "is_false")]
     pub ruled: bool,
+    /// A surface through the sections instead of a solid: the side faces
+    /// only, no caps (`isSolid` false in .f3d designs). A new body or
+    /// component, never joined or cut.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub surface: bool,
     pub operation: Operation,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub participants: Vec<BodyUid>,
@@ -239,6 +245,7 @@ impl<P> LoftDef<P> {
             rails: self.rails.clone(),
             closed: self.closed,
             ruled: self.ruled,
+            surface: self.surface,
             operation: self.operation,
             participants: self.participants.clone(),
         })
@@ -274,6 +281,9 @@ impl FeatureInfo for LoftDef {
         let count = self.sections.len();
         if count < 2 {
             return Err("a loft needs two or more sections".to_owned());
+        }
+        if self.surface && !matches!(self.operation, Operation::NewBody | Operation::NewComponent) {
+            return Err("a surface loft is a new body or a new component".to_owned());
         }
         for (i, section) in self.sections.iter().enumerate() {
             let at = |e: String| format!("section {}: {e}", i + 1);
@@ -333,6 +343,9 @@ impl FeatureInfo for LoftDef {
         }
         if self.closed && imposed {
             return Err("a closed loft has no end conditions".to_owned());
+        }
+        if self.closed && !self.ruled && count < 3 {
+            return Err("a smooth closed loft needs three or more sections".to_owned());
         }
         if self.ruled && (imposed || !self.rails.is_empty()) {
             return Err("a ruled loft has no end conditions or rails".to_owned());
@@ -440,12 +453,22 @@ impl<K: Kernel> Evaluate<K> for LoftDef {
             sections,
             ruled: self.ruled,
             closed: self.closed,
+            solid: !self.surface,
             centerline: centerline.as_deref(),
             rails: rails.iter().map(Vec::as_slice).collect(),
             start: ends[0],
             end: ends[1],
         };
         let tool = ctx.kernel.loft(&spec).map_err(|e| e.to_string())?;
+        if self.surface {
+            // A sheet body: one body of the whole shell.
+            let mut output = FeatureOutput {
+                tool: Some(tool.clone()),
+                ..FeatureOutput::default()
+            };
+            output.changes.push(BodyChange::Set(ctx.new_body(), tool));
+            return Ok(output);
+        }
         apply_operation(ctx, self.operation, participants, tool, "loft")
     }
 }

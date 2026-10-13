@@ -305,6 +305,9 @@ pub struct SketchOutput {
     /// that differs from the definition (which keeps them where the last
     /// edit left them); see [`crate::sketch::project::with_moved`].
     pub moved: Arc<Vec<crate::sketch::Entity>>,
+    /// The linked projections that did not follow their sources all the
+    /// way at this evaluation (mitcad#232).
+    pub follow: Arc<Vec<crate::sketch::project::ProjectionFollow>>,
 }
 
 impl SketchOutput {
@@ -562,9 +565,11 @@ impl SketchDef {
                 Err(e) => return Err(format!("text t{}: {e}", t.id.0)),
             };
             if t.cap_height && glyphs.cap_height <= 0.0 {
-                // The font's capital height: the top of an H.
+                // The font's capital height: the top of an A (the glyph the file's own scale
+                // follows: its apex is flat in a sans-serif face, but reaches the
+                // serif overshoot of a roman one, 1387 against 1356 units for an H).
                 let request = FontRequest {
-                    text: "H",
+                    text: "A",
                     ..text::request(t)
                 };
                 glyphs.cap_height = kernel
@@ -802,11 +807,19 @@ impl<P> SketchDef<P> {
                         return Err(format!("{what}: two points or two curves"));
                     }
                 }
+                K::EqualSpacing {
+                    anchors,
+                    mode,
+                    direction,
+                } => {
+                    crate::sketch::spacing::check(&index, &what, anchors, *mode, *direction)?;
+                }
             }
             if c.kind.refs().windows(2).any(|w| w[0] == w[1]) {
                 return Err(format!("{what}: an entity is constrained to itself"));
             }
         }
+        let mut spaced_once = BTreeSet::new();
         for d in &self.dimensions {
             if d.id.0 == 0 || !constraint_ids.insert(d.id) {
                 return Err(format!(
@@ -846,6 +859,21 @@ impl<P> SketchDef<P> {
                 D::LinearDiameter { axis, entity } => {
                     let other: &[&str] = if entity.is_point() { ANY } else { LINE };
                     vec![(cv(*axis), LINE), (*entity, other)]
+                }
+                // The common spacing of an equal spacing, one per constraint.
+                D::Spacing { constraint } => {
+                    let spaced = self.constraints.iter().any(|c| {
+                        c.id == *constraint && matches!(c.kind, ConstraintKind::EqualSpacing { .. })
+                    });
+                    if !spaced {
+                        return Err(format!("{what}: {constraint} is not an equal spacing"));
+                    }
+                    if !spaced_once.insert(*constraint) {
+                        return Err(format!(
+                            "{what}: {constraint} has another spacing dimension already"
+                        ));
+                    }
+                    Vec::new()
                 }
             };
             check_kinds(&index, &what, &refs)?;
@@ -1019,7 +1047,20 @@ impl<K: Kernel> Evaluate<K> for SketchDef {
             (None, _, None) => face_frame(&self.plane, ctx)?,
         };
         let frame = self.place(&plane);
-        let followed = crate::sketch::project::follow_links(self, &frame, ctx)?;
+        let crate::sketch::project::Followed {
+            def: followed,
+            reports: follow,
+        } = crate::sketch::project::follow_links(self, &frame, ctx)?;
+        // Linked projections that could not follow say so (mitcad#232).
+        for report in &follow {
+            if let Some(warning) = self
+                .projections
+                .get(report.projection)
+                .and_then(|p| report.warning(p))
+            {
+                ctx.warn(warning);
+            }
+        }
         let def = followed.as_ref().unwrap_or(self);
         let names: BTreeMap<ParamId, String> = def
             .dimensions
@@ -1066,6 +1107,7 @@ impl<K: Kernel> Evaluate<K> for SketchDef {
                 solved: Arc::new(solved),
                 texts: Arc::new(texts),
                 moved: Arc::new(moved),
+                follow: Arc::new(follow),
             }),
             ..FeatureOutput::default()
         })

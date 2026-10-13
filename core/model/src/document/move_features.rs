@@ -673,6 +673,9 @@ impl<K: Kernel> Document<K> {
                     None => state.assembly.unused_name("Component"),
                 };
                 let made = state.assembly.create(Some(&name), None);
+                // The link settings of where the features were (mitcad#220).
+                let policy = state.assembly.policy(source).for_moved_content();
+                state.assembly.set_policy(made, policy);
                 let occurrence = state.assembly.place(made, source, Transform::IDENTITY);
                 // The root's modelled part stays put, as the root did.
                 state
@@ -842,6 +845,9 @@ impl<K: Kernel> Document<K> {
             .collect();
         let mut next = self.state.clone();
         let (label, value) = edit(&mut next)?;
+        // The destination's policy, and no new cross-component links it or
+        // the other side refuses (mitcad#220), before anything changes.
+        self.check_policy(&next)?;
         for (i, entry) in next.features.iter().enumerate() {
             if checked.contains(&entry.uid) {
                 next.check_feature(i, entry)
@@ -939,6 +945,7 @@ fn follow_references(
             FeatureDef::Sweep(s) => !s.body_links.is_empty(),
             FeatureDef::SplitBody(s) => !s.tool_links.is_empty(),
             FeatureDef::Extrude(x) => !x.object_links.is_empty(),
+            FeatureDef::ConstructionPlane(p) => !p.links.is_empty(),
             def => has_origins(def),
         };
         if !changes {
@@ -978,6 +985,11 @@ fn follow_references(
             }
             FeatureDef::Extrude(extrude) => {
                 for (body, link) in &mut extrude.object_links {
+                    follow(link, &BTreeSet::from([body.feature]), own);
+                }
+            }
+            FeatureDef::ConstructionPlane(plane) => {
+                for (body, link) in &mut plane.links {
                     follow(link, &BTreeSet::from([body.feature]), own);
                 }
             }

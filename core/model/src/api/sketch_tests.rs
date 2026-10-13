@@ -727,6 +727,62 @@ fn sketches_on_faces_and_projections_follow_the_model() {
     assert_eq!(s["frame"]["normal"], json!([1.0, 0.0, 0.0]));
 }
 
+/// A linked circle that an import set the start of (its seam) follows its
+/// source's centre and radius and keeps where it starts (mitcad#225).
+#[test]
+fn a_linked_circle_keeps_where_it_starts() {
+    let mut d = doc();
+    command(&mut d, json!({"cmd": "sketch.create"}));
+    command(
+        &mut d,
+        json!({"cmd": "sketch.add_rectangle", "sketch": "F1", "corner": [0, 0], "width": 60, "height": 40}),
+    );
+    command(
+        &mut d,
+        json!({"cmd": "add_feature", "def": {"type": "extrude",
+               "profiles": [{"sketch": "F1", "region": "r{c1[c4,c2],c2[c1,c3],c3[c2,c4],c4[c3,c1]}"}],
+               "extent": {"type": "distance", "distance": 20}, "operation": "new_body"}}),
+    );
+    let face = "F2:end(r{c1[c4,c2],c2[c1,c3],c3[c2,c4],c4[c3,c1]})";
+    let circle = |radius: f64| Curve3::Conic {
+        center: [30.0, 20.0, 20.0],
+        normal: [0.0, 0.0, 1.0],
+        x_axis: [1.0, 0.0, 0.0],
+        major: radius,
+        minor: radius,
+        start: 0.0,
+        end: 2.0 * PI,
+        closed: true,
+    };
+    *d.kernel().curves.borrow_mut() = vec![circle(5.0)];
+    command(
+        &mut d,
+        json!({"cmd": "add_feature", "def": {"type": "sketch", "plane": {"face": face},
+               "entities": [
+                   {"id": "p1", "type": "point", "at": [30.0, 20.0], "fixed": true, "reference": true},
+                   {"id": "c2", "type": "circle", "center": "p1", "radius": 5.0, "start_angle": 1.0,
+                    "fixed": true, "reference": true}],
+               "projections": [{"source": face, "body": "F2.b0", "entities": ["p1", "c2"]}]}}),
+    );
+    *d.kernel().curves.borrow_mut() = vec![circle(6.0)];
+    command(
+        &mut d,
+        json!({"cmd": "set_parameter", "name": "d1", "value": 80}),
+    );
+    let s = sketch(&d, "F3");
+    let c2 = s["entities"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|e| e["id"] == "c2")
+        .unwrap();
+    assert_eq!(
+        (&c2["radius"], &c2["start_angle"]),
+        (&json!(6.0), &json!(1.0)),
+        "{s}"
+    );
+}
+
 #[test]
 fn a_linked_projection_with_an_arc_follows_after_other_entities() {
     let mut d = doc();

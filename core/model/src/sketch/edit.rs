@@ -6,7 +6,7 @@
 //! and the solution is stored. A sketch that no longer solves rejects the
 //! edit, as an over-constraining constraint is refused.
 
-use super::solve::{SketchStatus, Solved, measure};
+use super::solve::{SketchStatus, Solved, measure_in};
 use super::{
     Constraint, ConstraintKind, ConstraintUid, Dimension, DimensionKind, Entity, EntityKind, Ref,
 };
@@ -207,7 +207,7 @@ impl<'a> SketchEdit<'a> {
                     // Measure on the geometry as it is now.
                     let solved = self.solved()?;
                     measured = ValueInput::Number(
-                        measure(&dimension.kind, &solved)
+                        measure_in(&dimension.kind, &solved, &self.def.constraints)
                             .ok_or("the dimension cannot be measured")?,
                     );
                     &measured

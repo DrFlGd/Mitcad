@@ -11,8 +11,10 @@ use std::f64::consts::TAU;
 use super::edit::{PointInput, SketchEdit};
 use super::geometry::{Curve2, P2, add, cross, dist, dot, norm, perp, scale, sub, unit};
 use super::intersect::intersections;
-use super::solve::{Goal, measure};
-use super::{Constraint, ConstraintKind, ConstraintUid, DimensionKind, Entity, EntityKind, Ref};
+use super::solve::{Goal, measure_in};
+use super::{
+    Constraint, ConstraintKind, ConstraintUid, DimensionKind, Entity, EntityKind, Ref, SpacingMode,
+};
 use crate::document::resolve_value;
 use crate::features::ValueInput;
 use crate::ids::EntityUid;
@@ -227,6 +229,9 @@ impl SketchEdit<'_> {
             }
         }
         self.def.entities.retain(|e| !entities.contains(&e.id));
+        // Equal spacings (mitcad#221) lose the removed anchors; one too
+        // short or without its direction goes.
+        let spacings = self.spacings_without(entities);
         let on_removed = |refs: Vec<Ref>| refs.iter().any(|r| entities.contains(&r.uid()));
         let constraints: BTreeSet<ConstraintUid> = self
             .def
@@ -234,6 +239,7 @@ impl SketchEdit<'_> {
             .iter()
             .filter(|c| on_removed(c.kind.refs()))
             .map(|c| c.id)
+            .chain(spacings)
             .chain(
                 self.def
                     .dimensions
@@ -285,6 +291,16 @@ impl SketchEdit<'_> {
     }
 
     pub(crate) fn drop_constraints(&mut self, ids: &BTreeSet<ConstraintUid>) {
+        // An equal spacing's dimension goes with it (mitcad#221).
+        let mut ids = ids.clone();
+        for d in &self.def.dimensions {
+            if let DimensionKind::Spacing { constraint } = d.kind
+                && ids.contains(&constraint)
+            {
+                ids.insert(d.id);
+            }
+        }
+        let ids = &ids;
         for c in &self.def.constraints {
             if ids.contains(&c.id) {
                 self.report.removed.push(c.id.to_string());
@@ -397,7 +413,7 @@ impl SketchEdit<'_> {
             return Ok(());
         }
         let solved = self.solved()?;
-        let value = measure(&self.def.dimensions[i].kind, &solved)
+        let value = measure_in(&self.def.dimensions[i].kind, &solved, &self.def.constraints)
             .ok_or("the dimension cannot be measured")?;
         self.set_dimension(id, &ValueInput::Number(value))
     }
@@ -566,6 +582,10 @@ impl SketchEdit<'_> {
                         | ConstraintKind::Vertical { .. }
                         | ConstraintKind::HorizontalPoints { .. }
                         | ConstraintKind::VerticalPoints { .. }
+                        | ConstraintKind::EqualSpacing {
+                            mode: SpacingMode::Horizontal | SpacingMode::Vertical,
+                            ..
+                        }
                 );
                 if refs.iter().all(|r| copies.contains_key(&r.uid())) && !(turned && directional) {
                     let mut kind = c.kind.clone();
@@ -1654,7 +1674,7 @@ fn sketch_size(curves: &BTreeMap<EntityUid, Curve2>) -> f64 {
 }
 
 /// Replaces entity references by their copies.
-fn remap(kind: &mut ConstraintKind, copies: &BTreeMap<EntityUid, EntityUid>) {
+pub(super) fn remap(kind: &mut ConstraintKind, copies: &BTreeMap<EntityUid, EntityUid>) {
     let m = |u: &mut EntityUid| {
         if let Some(c) = copies.get(u) {
             *u = *c;
@@ -1694,6 +1714,14 @@ fn remap(kind: &mut ConstraintKind, copies: &BTreeMap<EntityUid, EntityUid>) {
             mr(a);
             mr(b);
             m(axis);
+        }
+        K::EqualSpacing {
+            anchors, direction, ..
+        } => {
+            anchors.iter_mut().for_each(mr);
+            if let Some(d) = direction {
+                m(d);
+            }
         }
     }
 }

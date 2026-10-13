@@ -4,6 +4,7 @@
 // Planar sections of bodies and the clipped view of section analysis.
 
 #include <cstddef>
+#include <vector>
 
 #include "mitcad/analysis/common.hpp"
 
@@ -30,8 +31,20 @@ struct Section {
 // Intersects a shape with a plane.
 Section section(const TopoDS_Shape& shape, const Plane& plane);
 
+// A face of a clipped shape and what is left of it: its faces in the
+// clipped shape, none when it lies wholly on the removed side.
+struct ClippedFace {
+  TopoDS_Shape face;
+  std::vector<TopoDS_Shape> pieces;
+};
+
 // The shape with the half-space on the normal side of the plane removed,
 // as section analysis shows it (the normal points towards the viewer).
-TopoDS_Shape clip(const TopoDS_Shape& shape, const Plane& plane);
+// Faces lying on the plane stay whole: the removed half-space only touches
+// them. With `faces`, what became of each face of the shape, in TopExp
+// order (the caps on the plane come from none), so that the clipped
+// shape's faces can keep the shape's names (mitcad#233).
+TopoDS_Shape clip(const TopoDS_Shape& shape, const Plane& plane,
+                  std::vector<ClippedFace>* faces = nullptr);
 
 } // namespace mitcad::analysis

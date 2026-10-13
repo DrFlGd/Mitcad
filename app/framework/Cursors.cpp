@@ -110,8 +110,9 @@ QPixmap precisionCursorPixmap(const QString& toolIcon, qreal dpr, bool snapping,
   if (snapping) {
     fillFrame(painter, square, m.line, kArm);
   }
-  // The tool's icon on a light plate, below and right of the cross.
-  const QIcon icon = themeIcon(toolIcon);
+  // The tool's icon on a light plate, below and right of the cross: in the
+  // light theme's colours, also on a dark palette.
+  const QIcon icon = themeIcon(toolIcon, IconBackdrop::Light);
   if (!icon.isNull()) {
     const QRect badge(m.centre + m.badgeOffset, m.centre + m.badgeOffset, m.badgeSize, m.badgeSize);
     painter.setRenderHint(QPainter::Antialiasing);

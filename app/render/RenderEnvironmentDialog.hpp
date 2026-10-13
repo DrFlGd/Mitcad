@@ -12,6 +12,8 @@
 #include <QString>
 #include <QVector>
 
+#include "framework/EventFilterGuard.hpp"
+
 class QCheckBox;
 class QComboBox;
 class QDoubleSpinBox;
@@ -146,6 +148,7 @@ private:
   QPushButton* m_fromCamera = nullptr;
   QString m_lightId; // the chosen light
   bool m_aiming = false;
+  EventFilterGuard m_aimFilter{this}; // the view while aiming; it may go first (mitcad#226)
   QPointer<render::RenderLightsOverlay> m_overlay;
 };
 

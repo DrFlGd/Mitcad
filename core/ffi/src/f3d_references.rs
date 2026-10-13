@@ -1,167 +1,143 @@
 // SPDX-License-Identifier: MIT
 //! The documents an `.f3d` design refers to, imported from local files
-//! and filled into its components of other documents (mitcad#196): where
-//! the files are is `mitcad_import::reference_folder`.
+//! before the design is replayed, to fill its components of other
+//! documents (mitcad#196): where the files are is
+//! `mitcad_import::reference_folder`, the filling
+//! `mitcad_import::references`. Each document is imported once per import
+//! and shared by every occurrence and level that refers to it (mitcad#229).
 
+use std::collections::{BTreeMap, HashMap};
 use std::path::Path;
+use std::sync::{Arc, Mutex};
 
-use mitcad_import::components::InsertedComponent;
+use mitcad_f3d::design::ir::Dump;
+use mitcad_import::components::external_documents;
 use mitcad_import::reference_folder::{Found, MAX_DEPTH, Resolver, stem_name};
-use mitcad_import::references::{Linker, Referenced};
-use mitcad_import::{ImportReport, ReferenceReport};
+use mitcad_import::references::Referenced;
+use mitcad_import::{DesignReport, ReferenceReport};
+use mitcad_model::{BodyUid, OccurrenceUid};
 
 use crate::f3d_import::TimelineOptions;
 use crate::kernel::OcctKernel;
 
-impl crate::Document {
-    /// Imports the documents the design (just imported, `report`) refers
-    /// to, each from its file with its own references, and fills the
-    /// components standing for their components
-    /// ([`mitcad_import::references::link_references`]); the report says
-    /// where each document was found and how it came in. Returns whether
-    /// it changed the document.
-    pub(crate) fn import_references(
-        &mut self,
+/// A document imported from its file for the references to it.
+pub(crate) struct Imported {
+    document: crate::Document,
+    /// Its occurrences by their GUIDs.
+    guids: HashMap<String, Vec<OccurrenceUid>>,
+    /// Its bodies by the stored bodies they match
+    /// ([`Referenced::stored_bodies`]).
+    stored: HashMap<String, BodyUid>,
+    /// Its import's timeline items by outcome.
+    items: BTreeMap<String, usize>,
+    /// The documents it refers to in turn.
+    references: Vec<ReferenceReport>,
+}
+
+/// A document imported for references, or why it could not be.
+type ImportedOrWhy = Result<Arc<Imported>, String>;
+
+/// The documents one import has imported for references, by their files
+/// and designs (`<canonical file>!<design label>`): each once, or why it
+/// could not be.
+#[derive(Clone, Default)]
+pub(crate) struct ReferenceCache(Arc<Mutex<HashMap<String, ImportedOrWhy>>>);
+
+impl std::fmt::Debug for ReferenceCache {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let n = self.0.lock().map_or(0, |m| m.len());
+        write!(f, "ReferenceCache({n} documents)")
+    }
+}
+
+impl ReferenceCache {
+    fn get(&self, key: &str) -> Option<ImportedOrWhy> {
+        self.0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(key)
+            .cloned()
+    }
+
+    fn insert(&self, key: String, imported: ImportedOrWhy) {
+        self.0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(key, imported);
+    }
+}
+
+/// A document the design refers to, imported from its file.
+pub(crate) struct Loaded {
+    /// Its URN in the design.
+    urn: String,
+    /// The name its components take.
+    name: String,
+    imported: Arc<Imported>,
+}
+
+/// The documents a design refers to, imported before the design is
+/// replayed ([`crate::Document::load_references`]).
+#[derive(Default)]
+pub(crate) struct References {
+    loaded: Vec<Loaded>,
+    /// What became of each document; `linked` and the components once the
+    /// design's import has filled them ([`References::finish`]).
+    entries: Vec<ReferenceReport>,
+    /// What looking for the files said.
+    warnings: Vec<String>,
+}
+
+impl References {
+    /// The documents imported, by their URNs, for the design's import.
+    pub(crate) fn sources(&self) -> HashMap<String, Referenced<'_, OcctKernel>> {
+        self.loaded
+            .iter()
+            .map(|l| {
+                (
+                    l.urn.clone(),
+                    Referenced {
+                        document: &l.imported.document.0,
+                        occurrence_guids: &l.imported.guids,
+                        name: l.name.clone(),
+                        stored_bodies: &l.imported.stored,
+                    },
+                )
+            })
+            .collect()
+    }
+
+    /// Whether the design refers to documents (imported or not).
+    pub(crate) fn has_documents(&self) -> bool {
+        !self.entries.is_empty()
+    }
+
+    /// Puts what became of the documents into the design's report once its
+    /// import has filled the components from them (`document` is the
+    /// design's).
+    pub(crate) fn finish(
+        &self,
         path: &str,
-        options: &TimelineOptions,
-        report: &mut ImportReport,
-    ) -> bool {
-        let Some(design) = report.designs.first_mut() else {
-            return false;
-        };
-        if design.components.inserted.is_empty() {
-            return false;
-        }
-        let mut resolver = Resolver::new(
-            Path::new(path),
-            &options.references,
-            &options.reference_files,
-        );
-        design.warnings.extend(resolver.warnings().iter().cloned());
-        let here = std::fs::canonicalize(path)
-            .map(|p| p.to_string_lossy().into_owned())
-            .unwrap_or_else(|_| path.to_owned());
-        let key = |file: &str, label: Option<&str>| format!("{file}!{}", label.unwrap_or(""));
-        let mut stack = options.stack.clone();
-        stack.push(key(&here, options.design.as_deref()));
-        let mut urns: Vec<String> = Vec::new();
-        for i in &design.components.inserted {
-            if !urns.contains(&i.document) {
-                urns.push(i.document.clone());
-            }
-        }
-        let mut entries: Vec<ReferenceReport> = Vec::new();
-        let mut linker = Linker::default();
-        for urn in urns {
-            let inserted: Vec<&InsertedComponent> = design
+        document: &mitcad_model::Document<OcctKernel>,
+        design: &mut DesignReport,
+    ) {
+        design.warnings.extend(self.warnings.iter().cloned());
+        let mut entries = self.entries.clone();
+        for e in &mut entries {
+            let inserted: Vec<_> = design
                 .components
                 .inserted
                 .iter()
-                .filter(|i| i.document == urn)
+                .filter(|i| i.document == e.document)
                 .collect();
-            let guid = inserted.iter().find_map(|i| i.document_guid.clone());
-            let found = if urn.is_empty() {
-                Found::default()
-            } else {
-                resolver.resolve(&urn, guid.as_deref())
-            };
-            let mut entry = ReferenceReport {
-                document: urn.clone(),
-                name: found.name.clone(),
-                version: found.version,
-                file: found
-                    .file
-                    .as_ref()
-                    .map(|f| f.to_string_lossy().into_owned()),
-                found: found.how.map(str::to_owned),
-                status: "missing".to_owned(),
-                note: found.note.clone(),
-                components: inserted
-                    .iter()
-                    .map(|i| self.0.assembly().name(i.component))
-                    .collect(),
-                occurrences: inserted.iter().map(|i| i.occurrences).sum(),
-                ..ReferenceReport::default()
-            };
-            let Some(file) = found.file.clone() else {
-                if options.skipped_references.contains(&urn) {
-                    entry.status = "skipped".to_owned();
-                }
-                entries.push(entry);
-                continue;
-            };
-            let file = file.to_string_lossy().into_owned();
-            if entry.name.is_none() {
-                entry.name = Some(stem_name(&file));
-            }
-            let canonical = std::fs::canonicalize(&file)
-                .map(|p| p.to_string_lossy().into_owned())
-                .unwrap_or_else(|_| file.clone());
-            let this = key(&canonical, found.design.as_deref());
-            if stack.contains(&this) {
-                entry.status = "failed".to_owned();
-                entry.note = Some("it refers back to a design being imported".to_owned());
-                entries.push(entry);
-                continue;
-            }
-            if stack.len() >= MAX_DEPTH {
-                entry.status = "failed".to_owned();
-                entry.note = Some(format!(
-                    "references of references are followed {MAX_DEPTH} levels deep"
-                ));
-                entries.push(entry);
-                continue;
-            }
-            let sub_options = TimelineOptions {
-                design: found.design.clone(),
-                dump: None,
-                text: false,
-                report_path: None,
-                list: false,
-                list_references: false,
-                learn: None,
-                references: resolver.folders(),
-                reference_files: resolver.files(),
-                stack: [stack.clone(), vec![this]].concat(),
-                ..options.clone()
-            };
-            let mut document = crate::Document(mitcad_model::Document::new(OcctKernel));
-            // A stop of the import stops these too.
-            document.0.set_monitor(self.0.monitor().cloned());
-            if std::env::var_os("MITCAD_IMPORT_TRACE").is_some() {
-                eprintln!("import: the document {} from {file}", entry.document);
-            }
-            match document.import_timeline(&file, &sub_options) {
-                Ok(mut sub) if !sub.designs.is_empty() => {
-                    let d = sub.designs.remove(0);
-                    entry.items = d
-                        .counts()
-                        .into_iter()
-                        .map(|(o, n)| (o.as_str().to_owned(), n))
-                        .collect();
-                    entry.references = d.references.clone();
-                    let source = Referenced {
-                        document: &document.0,
-                        occurrence_guids: &d.components.occurrence_guids,
-                        name: entry.name.clone().unwrap_or_else(|| stem_name(&file)),
-                    };
-                    // Copied at once: the document goes before the next.
-                    linker.fill(&mut self.0, design, &urn, &source);
-                }
-                Ok(_) => {
-                    entry.status = "failed".to_owned();
-                    entry.note = Some("the file holds no design".to_owned());
-                }
-                Err(e) => {
-                    entry.status = "failed".to_owned();
-                    entry.note = Some(e.0);
-                }
-            }
-            entries.push(entry);
-        }
-        let outcome = linker.finish(&mut self.0, design);
-        for e in &mut entries {
-            let linked: Vec<String> = outcome
+            e.occurrences = inserted.iter().map(|i| i.occurrences).sum();
+            e.components = inserted
+                .iter()
+                .map(|i| document.assembly().name(i.component))
+                .collect();
+            let linked: Vec<String> = design
+                .components
+                .link
                 .linked
                 .iter()
                 .filter(|l| l.document == e.document)
@@ -171,7 +147,13 @@ impl crate::Document {
                 e.status = "linked".to_owned();
                 e.components = linked;
             }
-            if let Some((_, why)) = outcome.failed.iter().find(|(d, _)| *d == e.document) {
+            if let Some((_, why)) = design
+                .components
+                .link
+                .failed
+                .iter()
+                .find(|(d, _)| *d == e.document)
+            {
                 e.status = "failed".to_owned();
                 e.note = Some(why.clone());
             }
@@ -194,8 +176,10 @@ impl crate::Document {
                     .unwrap_or_default()
             ));
         }
-        if !outcome.positions_left_out.is_empty() {
-            let left: Vec<String> = outcome
+        if !design.components.link.positions_left_out.is_empty() {
+            let left: Vec<String> = design
+                .components
+                .link
                 .positions_left_out
                 .iter()
                 .map(|(why, n)| format!("{n} ({why})"))
@@ -206,6 +190,253 @@ impl crate::Document {
             ));
         }
         design.references = entries;
-        !outcome.linked.is_empty()
     }
+}
+
+impl crate::Document {
+    /// Imports the documents the design (decoded in `dump`, the design
+    /// `label` of the file) refers to, each from its file with its own
+    /// references, so that the design's components standing for their
+    /// components can be filled from them when it is replayed
+    /// ([`mitcad_import::import_design_with`]); the report says where each
+    /// document was found and how it came in. A document already imported
+    /// by this import (for another reference or level) is not imported
+    /// again (mitcad#229).
+    pub(crate) fn load_references(
+        &mut self,
+        path: &str,
+        label: &str,
+        options: &TimelineOptions,
+        dump: &Dump,
+    ) -> References {
+        let mut out = References::default();
+        let documents = external_documents(dump);
+        if documents.is_empty() {
+            return out;
+        }
+        let mut resolver = Resolver::new(
+            Path::new(path),
+            &options.references,
+            &options.reference_files,
+        );
+        out.warnings.extend(resolver.warnings().iter().cloned());
+        let here = std::fs::canonicalize(path)
+            .map(|p| p.to_string_lossy().into_owned())
+            .unwrap_or_else(|_| path.to_owned());
+        // A design is known by its file and, in an `.f3z` package, its
+        // label (the label `Found::design` names it by).
+        let key = |file: &str, label: Option<&str>| format!("{file}!{}", label.unwrap_or(""));
+        let is_package = Path::new(path)
+            .extension()
+            .is_some_and(|e| e.eq_ignore_ascii_case("f3z"));
+        let mut stack = options.stack.clone();
+        stack.push(key(&here, is_package.then_some(label)));
+        let avoid = avoided(path, label, &stack);
+        let cache = options.reference_cache.clone().unwrap_or_default();
+        let trace = std::env::var_os("MITCAD_IMPORT_TRACE").is_some();
+        for external in documents {
+            let urn = external.urn;
+            let found = if urn.is_empty() {
+                Found::default()
+            } else {
+                resolver.resolve_avoiding(&urn, external.guid.as_deref(), &avoid)
+            };
+            let mut entry = ReferenceReport {
+                document: urn.clone(),
+                name: found.name.clone(),
+                version: found.version,
+                file: found
+                    .file
+                    .as_ref()
+                    .map(|f| f.to_string_lossy().into_owned()),
+                found: found.how.map(str::to_owned),
+                status: "missing".to_owned(),
+                note: found.note.clone(),
+                ..ReferenceReport::default()
+            };
+            let Some(file) = found.file.clone() else {
+                if options.skipped_references.contains(&urn) {
+                    entry.status = "skipped".to_owned();
+                }
+                out.entries.push(entry);
+                continue;
+            };
+            let file = file.to_string_lossy().into_owned();
+            if entry.name.is_none() {
+                entry.name = Some(stem_name(&file));
+            }
+            let canonical = std::fs::canonicalize(&file)
+                .map(|p| p.to_string_lossy().into_owned())
+                .unwrap_or_else(|_| file.clone());
+            let this = key(&canonical, found.design.as_deref());
+            if stack.contains(&this) {
+                entry.status = "failed".to_owned();
+                entry.note = Some("it refers back to a design being imported".to_owned());
+                out.entries.push(entry);
+                continue;
+            }
+            if stack.len() >= MAX_DEPTH {
+                entry.status = "failed".to_owned();
+                entry.note = Some(format!(
+                    "references of references are followed {MAX_DEPTH} levels deep"
+                ));
+                out.entries.push(entry);
+                continue;
+            }
+            let imported = match cache.get(&this) {
+                Some(imported) => {
+                    if trace {
+                        eprintln!("import: the document {urn} again, imported before");
+                    }
+                    imported
+                }
+                None => {
+                    if trace {
+                        eprintln!(
+                            "import: the document {urn} from {file} ({})",
+                            found.design.as_deref().unwrap_or("its design")
+                        );
+                    }
+                    let sub_options = TimelineOptions {
+                        design: found.design.clone(),
+                        dump: None,
+                        text: false,
+                        report_path: None,
+                        list: false,
+                        list_references: false,
+                        learn: None,
+                        references: resolver.folders(),
+                        reference_files: resolver.files(),
+                        stack: [stack.clone(), vec![this.clone()]].concat(),
+                        reference_cache: Some(cache.clone()),
+                        ..options.clone()
+                    };
+                    let imported = self.import_reference(&file, &sub_options);
+                    cache.insert(this, imported.clone());
+                    imported
+                }
+            };
+            match imported {
+                Ok(imported) => {
+                    entry.items = imported.items.clone();
+                    entry.references = imported.references.clone();
+                    out.loaded.push(Loaded {
+                        urn,
+                        name: entry.name.clone().unwrap_or_else(|| stem_name(&file)),
+                        imported,
+                    });
+                    // ("linked" once the design's import has filled them.)
+                    entry.status = "found".to_owned();
+                }
+                Err(why) => {
+                    entry.status = "failed".to_owned();
+                    entry.note = Some(why);
+                }
+            }
+            out.entries.push(entry);
+        }
+        out
+    }
+
+    /// Imports a document the design refers to from `file` into a document
+    /// of its own (a stop of this import stops it too).
+    fn import_reference(
+        &self,
+        file: &str,
+        options: &TimelineOptions,
+    ) -> Result<Arc<Imported>, String> {
+        let mut document = crate::Document(mitcad_model::Document::new(OcctKernel));
+        document.0.set_monitor(self.0.monitor().cloned());
+        let mut sub = document.import_timeline(file, options).map_err(|e| e.0)?;
+        if sub.designs.is_empty() {
+            return Err("the file holds no design".to_owned());
+        }
+        let d = sub.designs.remove(0);
+        // Its bodies by the stored bodies they match: the report's
+        // `F36.b0 Body3` is the body `F36.b0`.
+        let stored = d
+            .bodies
+            .iter()
+            .filter_map(|b| {
+                let uid = b.mitcad.as_deref()?.split_whitespace().next()?;
+                Some((b.file.clone(), uid.parse::<BodyUid>().ok()?))
+            })
+            .collect();
+        Ok(Arc::new(Imported {
+            items: d
+                .counts()
+                .into_iter()
+                .map(|(o, n)| (o.as_str().to_owned(), n))
+                .collect(),
+            references: d.references.clone(),
+            guids: d.components.occurrence_guids.clone(),
+            stored,
+            document,
+        }))
+    }
+}
+
+/// The files of the documents the design refers to (found as
+/// [`crate::Document::load_references`] finds them), opened, with the GUIDs
+/// its inputs name their entities with (lower case) and its keys for them:
+/// for the entities it names in them (`mitcad_f3d::design::resolve_external_inputs`).
+/// `label` is the design's label in its file.
+pub(crate) fn external_files(
+    path: &str,
+    label: &str,
+    options: &TimelineOptions,
+    dump: &Dump,
+) -> Vec<(String, String, mitcad_f3d::F3dFile)> {
+    let documents = external_documents(dump);
+    let mut out = Vec::new();
+    if documents.is_empty() {
+        return out;
+    }
+    let mut resolver = Resolver::new(
+        Path::new(path),
+        &options.references,
+        &options.reference_files,
+    );
+    let avoid = avoided(path, label, &options.stack);
+    for d in documents {
+        let Some(guid) = d.guid.as_deref().map(str::to_lowercase) else {
+            continue;
+        };
+        let found = resolver.resolve_avoiding(&d.urn, d.guid.as_deref(), &avoid);
+        let Some(file) = found.file else {
+            continue;
+        };
+        let Ok(designs) = mitcad_f3d::design::documents(&file) else {
+            continue;
+        };
+        let wanted = found.design;
+        let pick = designs.into_iter().find(|(label, _)| match &wanted {
+            Some(w) => label == w || label.ends_with(&format!("!{w}")),
+            None => true,
+        });
+        if let Some((_, f)) = pick {
+            out.push((guid, d.key.clone().unwrap_or_default(), f));
+        }
+    }
+    out
+}
+
+/// The labels of the designs of the package `path` that are being imported
+/// (`label` and those on the import's `stack`): not taken for a document
+/// by the GUIDs their manifests list (mitcad#229).
+fn avoided(path: &str, label: &str, stack: &[String]) -> Vec<String> {
+    let here = std::fs::canonicalize(path)
+        .map(|p| p.to_string_lossy().into_owned())
+        .unwrap_or_else(|_| path.to_owned());
+    let prefix = format!("{here}!");
+    let mut out = vec![label.to_owned()];
+    for k in stack {
+        if let Some(l) = k.strip_prefix(&prefix)
+            && !l.is_empty()
+            && !out.iter().any(|o| o == l)
+        {
+            out.push(l.to_owned());
+        }
+    }
+    out
 }

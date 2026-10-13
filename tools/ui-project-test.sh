@@ -708,6 +708,11 @@ in_git "$ROBOT" commit -qm "Add plate.mitcad"
 cp "$WORK/block.mitcad" "$GEAR/pin.mitcad"
 in_git "$GEAR" add pin.mitcad
 in_git "$GEAR" commit -qm "Add pin.mitcad"
+# nut.mitcad began as a new design: its active Part1 takes no components
+# (mitcad#220), the root (an assembly) does.
+ui_mark
+ui_step "activate the root"              ui_click_logged "Browser radio Root"
+ui_expect_new "Activated Root" "the root is active"
 ui_mark
 ui_step "insert component (search)"      ui_command "Insert Component"
 ui_expect_new "Project picker Insert from a Project: a design, reading the projects" "the project picker"

@@ -700,7 +700,33 @@ fn bounding_curves(
                             })
                     })
             };
-            if (along.iter().all(|&a| a) || coarse || (part && !overlapped() && !between()))
+            // An edge of a loop on it with the profiles on one side only,
+            // though it runs through a profile elsewhere: the side of a
+            // small region it closes, beside a circle across it whose
+            // parts make one profile, or past a circle it runs into
+            // *(seen)*.
+            let one_sided = || {
+                let off = 4.0 * tolerance + 1e-5;
+                mine.iter().any(|(_, o)| {
+                    (0..o.len()).any(|i| {
+                        let (a, b) = (o[i], o[(i + 1) % o.len()]);
+                        let (tx, ty) = (b[0] - a[0], b[1] - a[1]);
+                        let l = tx.hypot(ty);
+                        let m = [(a[0] + b[0]) / 2.0, (a[1] + b[1]) / 2.0];
+                        l > 1e-4
+                            && on_curve(a)
+                            && on_curve(b)
+                            && on_curve(m)
+                            && inside([m[0] - off * ty / l, m[1] + off * tx / l], &mine)
+                                != inside([m[0] + off * ty / l, m[1] - off * tx / l], &mine)
+                    })
+                })
+            };
+            let bounds = along.iter().all(|&a| a)
+                || coarse
+                || (part && !overlapped() && !between())
+                || (!part && one_sided() && !overlapped());
+            if bounds
                 && !copy
                 && let Some(o) = curves[k].as_object_mut()
             {
@@ -1508,6 +1534,60 @@ mod tests {
     }
 
     #[test]
+    fn a_placed_sketch_block_brings_its_curves_where_it_is_placed() {
+        for major in [24, 27] {
+            let dc = Definitions::from_records(major, &crate::testdesign::block_design(major));
+            let d = design(&dc, DisplayUnit::Mm, "block.ipt", None);
+            let json = serde_json::to_value(&d.dump).unwrap();
+            let sketch = &json["timeline"]["items"][0]["detail"];
+            let points: Vec<[f64; 2]> = sketch["points"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|p| [p["xyz"][0].as_f64().unwrap(), p["xyz"][1].as_f64().unwrap()])
+                .collect();
+            // The square's corners turned by 90 degrees and moved by (2, 1).
+            let expected = [[2.0, 1.0], [2.0, 2.0], [1.0, 2.0], [1.0, 1.0]];
+            assert_eq!(points.len(), 4, "{sketch}");
+            for (p, q) in points.iter().zip(expected) {
+                assert!(
+                    (p[0] - q[0]).abs() < 1e-12 && (p[1] - q[1]).abs() < 1e-12,
+                    "{p:?}"
+                );
+            }
+            let curves = sketch["curves"].as_array().unwrap();
+            assert_eq!(curves.len(), 4);
+            assert!(
+                curves
+                    .iter()
+                    .all(|c| c["isFixed"] == true && c["type"] == "SketchLine")
+            );
+            assert!(
+                !sketch["constraints"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|c| c["type"].as_str().unwrap().starts_with("NotDecoded")),
+                "{sketch}"
+            );
+        }
+    }
+
+    #[test]
+    fn reads_the_second_side_of_an_extrusion() {
+        let records = crate::testdesign::two_sided_cube_design(24, 0.5);
+        let dc = Definitions::from_records(24, &records);
+        let d = design(&dc, DisplayUnit::Mm, "cube.ipt", None);
+        let json = serde_json::to_value(&d.dump).unwrap();
+        let detail = &json["timeline"]["items"][1]["detail"];
+        assert_eq!(detail["extentType"], "TwoSidesFeatureExtentType");
+        assert_eq!(detail["extentOne"]["_type"], "DistanceExtentDefinition");
+        assert_eq!(detail["extentTwo"]["_type"], "DistanceExtentDefinition");
+        assert_eq!(detail["extentTwo"]["distance"]["value"], 0.5);
+        assert_eq!(detail["extentTwo"]["distance"]["name"], "d4");
+    }
+
+    #[test]
     fn reads_the_objects_extrusions_extend_to() {
         for major in [24, 27] {
             let dc = Definitions::from_records(major, &crate::testdesign::extents_design(major));
@@ -1610,6 +1690,37 @@ mod tests {
             .map(|c| c["isConstruction"] == true)
             .collect();
         assert_eq!(construction, [false, true, true, true]);
+    }
+
+    #[test]
+    fn a_flagged_line_that_closes_a_corner_bounds_it_though_it_crosses_a_profile() {
+        // c0 is the top side of a corner square (outside above it) and
+        // runs on through a square across it; c1 only crosses that square.
+        let line = |id: &str, a: [f64; 2], b: [f64; 2]| {
+            json!({"id": id, "type": "SketchLine", "isConstruction": true,
+                   "geometry": {"type": "Line3D", "startPoint": [a[0], a[1], 0.0],
+                                "endPoint": [b[0], b[1], 0.0]}})
+        };
+        let mut items = vec![
+            json!({"index": 0, "objectType": "Sketch", "detail": {"curves": [
+                line("c0", [0.0, 1.0], [4.0, 1.0]),
+                line("c1", [0.0, 1.5], [2.0, 1.5]),
+            ]}}),
+        ];
+        let sketches = HashMap::from([(7, (0, "Sketch1".to_owned()))]);
+        let flagged = HashMap::from([(7, vec!["c0".into(), "c1".into()])]);
+        let outlines = vec![
+            (7, 1, vec![[3.0, 0.0], [4.0, 0.0], [4.0, 1.0], [3.0, 1.0]]),
+            (7, 1, vec![[0.0, 0.0], [2.0, 0.0], [2.0, 2.0], [0.0, 2.0]]),
+        ];
+        bounding_curves(&mut items, &sketches, &flagged, &outlines);
+        let construction: Vec<bool> = items[0]["detail"]["curves"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|c| c["isConstruction"] == true)
+            .collect();
+        assert_eq!(construction, [false, true]);
     }
 
     #[test]

@@ -10,6 +10,7 @@ use serde_json::{Value, json};
 use super::ApiError;
 use crate::assembly::{from_rows, matrix_rows, matrix4};
 use crate::document::{Document, InsertOptions};
+use crate::features::OccurrencePath;
 use crate::ids::{BodyUid, ComponentUid, OccurrenceUid};
 use crate::kernel::Kernel;
 use crate::transform::Transform;
@@ -71,6 +72,10 @@ pub(crate) enum ComponentCommand {
         transform: Option<TransformInput>,
         #[serde(default = "yes")]
         activate: bool,
+        /// Its design policy (mitcad#220): a preset name or settings over
+        /// the general defaults; the general defaults when left out.
+        #[serde(default)]
+        policy: Option<Value>,
     },
     ComponentsFromBodies {
         bodies: Vec<BodyUid>,
@@ -129,6 +134,14 @@ pub(crate) enum ComponentCommand {
         #[serde(default)]
         base: Option<String>,
     },
+    // Moving an occurrence to another parent (mitcad#219).
+    ReparentOccurrence {
+        /// Its path from the root.
+        occurrence: String,
+        /// The path of the new parent's occurrence; empty: the root.
+        #[serde(default)]
+        parent: String,
+    },
 }
 
 fn yes() -> bool {
@@ -136,7 +149,7 @@ fn yes() -> bool {
 }
 
 /// The commands' names, to send them here.
-pub(crate) const COMMANDS: [&str; 12] = [
+pub(crate) const COMMANDS: [&str; 13] = [
     "create_component",
     "components_from_bodies",
     "activate_component",
@@ -149,7 +162,18 @@ pub(crate) const COMMANDS: [&str; 12] = [
     "delete_occurrence",
     "insert_component",
     "update_links",
+    "reparent_occurrence",
 ];
+
+/// The `reparent_occurrence` query (mitcad#219): where an occurrence can
+/// go and, with `parent`, what moving it there does.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct ReparentQuery {
+    occurrence: String,
+    #[serde(default)]
+    parent: Option<String>,
+}
 
 /// The `instances` query.
 #[derive(Debug, Default, Deserialize)]
@@ -222,10 +246,26 @@ impl<K: Kernel> Document<K> {
                 name,
                 transform,
                 activate,
+                policy,
             } => {
                 let transform = optional(transform.as_ref())?.unwrap_or(Transform::IDENTITY);
+                let base = crate::policy::Policy::GENERAL;
+                let policy = match &policy {
+                    None => base,
+                    Some(Value::String(preset)) => {
+                        super::policy::changed_policy(base, Some(preset.as_str()), None)?
+                    }
+                    Some(Value::Object(settings)) => {
+                        super::policy::changed_policy(base, None, Some(settings))?
+                    }
+                    Some(_) => {
+                        return Err(ApiError(
+                            "policy: a preset name or an object of settings".to_owned(),
+                        ));
+                    }
+                };
                 let (component, occurrence) =
-                    self.create_component(name.as_deref(), transform, activate)?;
+                    self.create_component_with(name.as_deref(), transform, activate, policy)?;
                 json!({"component": component, "occurrence": occurrence,
                        "name": self.assembly().name(component)})
             }
@@ -330,7 +370,130 @@ impl<K: Kernel> Document<K> {
                 let messages = self.update_links(base.as_deref())?;
                 json!({"messages": messages})
             }
+            ComponentCommand::ReparentOccurrence { occurrence, parent } => {
+                let source = self.path_ref(&occurrence)?;
+                let destination = self.path_ref(&parent)?;
+                let plan = self.reparent_occurrence(&source, &destination)?;
+                let a = self.assembly();
+                let path = plan.path();
+                json!({"occurrence": plan.occurrence, "component": plan.component,
+                       "path": OccurrencePath(path.clone()), "path_name": a.path_name(&path),
+                       "parent": plan.destination, "updated": plan.updates})
+            }
         })
+    }
+
+    /// An occurrence path from the root by uids (`O1/O4`) or names
+    /// (`Arm:1/Pin:2`); the empty text is the root.
+    fn path_ref(&self, text: &str) -> Result<Vec<OccurrenceUid>, ApiError> {
+        self.assembly()
+            .find_path(text)
+            .ok_or_else(|| ApiError(format!("no occurrence path {text}")))
+    }
+
+    /// The `reparent_occurrence` query (mitcad#219): the occurrence, what
+    /// moves with it, every parent it could go into with the reason it
+    /// cannot, and with `parent` what the move there does.
+    pub(crate) fn reparent_json(&self, query: &ReparentQuery) -> Result<Value, ApiError> {
+        let a = self.assembly();
+        let source = self.path_ref(&query.occurrence)?;
+        let label = |path: &[OccurrenceUid]| {
+            if path.is_empty() {
+                a.root_name.clone()
+            } else {
+                format!("{}/{}", a.root_name, a.path_name(path))
+            }
+        };
+        let problems: Vec<String> = self
+            .reparent_source(&source)
+            .err()
+            .map(|e| e.to_string())
+            .into_iter()
+            .collect();
+        let Some((&uid, parents)) = source.split_last() else {
+            let root = json!({"occurrence": null, "path": "", "path_name": a.root_name,
+                              "problems": problems, "destinations": []});
+            return Ok(root);
+        };
+        let occurrence = a
+            .occurrence(uid)
+            .ok_or_else(|| ApiError(format!("occurrence {uid} does not exist")))?;
+        // What moves with it: its component and everything placed in it.
+        let mut inside = Vec::new();
+        let mut components = vec![occurrence.component];
+        let mut todo = vec![(occurrence.component, String::new())];
+        while let Some((component, prefix)) = todo.pop() {
+            if inside.len() > 4096 {
+                break; // a guard against cycles in loaded data
+            }
+            for child in a.children(component) {
+                let name = format!("{prefix}{}", a.occurrence_name(child.uid));
+                inside.push(name.clone());
+                if !components.contains(&child.component) {
+                    components.push(child.component);
+                }
+                todo.push((child.component, format!("{name}/")));
+            }
+        }
+        inside.sort();
+        let bodies: usize = components
+            .iter()
+            .map(|c| self.component_bodies(*c).len())
+            .sum();
+        let features = self
+            .features()
+            .filter(|f| components.contains(&f.component))
+            .count();
+        let mut destinations = Vec::new();
+        for component in
+            std::iter::once(ComponentUid::ROOT).chain(a.components.iter().map(|c| c.uid))
+        {
+            for path in a.paths_to(component) {
+                let reason = self
+                    .plan_reparent(&source, &path)
+                    .err()
+                    .map(|blockers| blockers.join("; "));
+                let parent_occurrence =
+                    OccurrencePath(path[..path.len().saturating_sub(1)].to_vec());
+                destinations.push(json!({
+                    "component": component, "name": a.name(component),
+                    "occurrence": OccurrencePath(path.clone()), "path": label(&path),
+                    "parent_occurrence": parent_occurrence,
+                    "current": path == parents,
+                    "eligible": reason.is_none(), "reason": reason.unwrap_or_default(),
+                }));
+            }
+        }
+        let mut value = json!({
+            "occurrence": uid,
+            "name": a.occurrence_name(uid),
+            "path": OccurrencePath(source.clone()),
+            "path_name": label(&source),
+            "component": occurrence.component,
+            "component_name": a.name(occurrence.component),
+            "parent": occurrence.parent,
+            "parent_path": label(parents),
+            "grounded": occurrence.grounded,
+            "contents": {"occurrences": inside, "components": components.len(),
+                         "bodies": bodies, "features": features},
+            "problems": problems,
+            "destinations": destinations,
+        });
+        if let Some(parent) = &query.parent {
+            let destination = self.path_ref(parent)?;
+            value["plan"] = match self.plan_reparent(&source, &destination) {
+                Ok(plan) => json!({
+                    "eligible": true, "parent": plan.destination,
+                    "parent_path": label(&plan.destination_path),
+                    "from": plan.parent, "from_path": label(&plan.source[..plan.source.len() - 1]),
+                    "path": OccurrencePath(plan.path()),
+                    "transform": matrix_rows(&plan.transform),
+                    "updates": plan.updates, "problems": [],
+                }),
+                Err(blockers) => json!({"eligible": false, "problems": blockers, "updates": []}),
+            };
+        }
+        Ok(value)
     }
 
     /// The `components` query: the components, the occurrence tree and
@@ -354,6 +517,8 @@ impl<K: Kernel> Document<K> {
                 "features": features,
                 "bodies": bodies,
                 "occurrences": a.occurrences_of(uid).filter(|o| self.placement(o.uid).is_some()).count(),
+                // Design policy (mitcad#220).
+                "policy": super::policy::policy_json(&a.policy(uid)),
             })
         };
         let mut components = vec![component(ComponentUid::ROOT)];

@@ -10,12 +10,16 @@
 #   - The cut face of Body1 is shown as a section cap (hatched); Body3,
 #     from z = 0 to 5, only touches the plane: its top face is its own, no
 #     cap.
+#   - Offset (mitcad#223) on a circle under Body1's top: the bodies stay
+#     cut while its panel is open, while it previews and after Cancel and
+#     OK; with the option off, Offset does not turn it on.
 #   - The option stays for the next sketch, and the bodies are cut only
 #     while sketching.
 #
 # Runs headless on Xvfb (see ui-test-lib.sh).
 # Usage: tools/ui-sketch-hide-test.sh [screenshot.png]
 # check-all sources: tools/cli
+# check-all sources: app/MainWindow.cpp app/MainWindow.hpp app/framework/CommandSession.cpp
 
 source "$(dirname "$0")/ui-test-lib.sh"
 
@@ -51,6 +55,37 @@ cat > "$WORK/model.json" << 'EOF'
 EOF
 "$CLI" run "$WORK/model.json" --save "$FILE" > "$WORK/cli.log" 2>&1 || { cat "$WORK/cli.log"; ui_fail "mitcad-cli"; }
 
+# since_mark "text": whether a line logged after the mark has the text.
+since_mark() { tail -n +$((${UI_MARK:-0} + 1)) "$UI_LOG" | grep -qF -- "$1"; }
+
+# still_hidden "when": Hide Above Sketch still cuts the bodies at the
+# sketch plane: since the mark it was not turned off, the caps did not go
+# and no body came back in front of the plane, and the last reach logged
+# is Body1 cut at it (mitcad#223).
+still_hidden() {
+  local last
+  ui_sync
+  since_mark "Hide Above Sketch off" && ui_fail "$1: Hide Above Sketch turned off"
+  since_mark "Section caps: none" && ui_fail "$1: the bodies shown whole (no section caps)"
+  since_mark "In front of the sketch plane: F2.b0 5.0" && ui_fail "$1: Body1 in front of the sketch plane again"
+  last=$(grep "In front of the sketch plane: " "$UI_LOG" | tail -1)
+  case "$last" in
+  "In front of the sketch plane: F2.b0 0.0"*) ;;
+  *) ui_fail "$1: the last reach is '$last'" ;;
+  esac
+  echo "ok   $1: the bodies stay cut at the sketch plane"
+}
+
+# offset_circle: starts Offset with nothing selected and picks the circle
+# (diameter 20 at (15, 10)) by its rim; it previews at 5 mm.
+offset_circle() {
+  ui_step "offset (O)"                     ui_key o
+  ui_expect_new "Command Offset started" "Offset started"
+  ui_step "pick the circle"                ui_sketch_click 25 10
+  ui_expect_new "Offset Curves: 1 sketch curve" "the circle picked"
+  ui_expect_new "Preview Offset: ok" "offset previewed"
+}
+
 ui_start_display
 ui_start_app --open "$FILE"
 ui_step "fit (F6)"                         ui_key F6
@@ -60,6 +95,11 @@ echo "--- A sketch on Plane1"
 ui_create_sketch F3
 ui_expect_log "Palette paletteHideAbove at" "the option is in the palette"
 ui_expect_log "In front of the sketch plane: F2.b0 5.0, F5.b0 10.0" "5 mm of Body1 and Body2 in front"
+ui_step "circle tool (C)"                  ui_key c
+ui_step "circle: centre"                   ui_sketch_click 15 10
+ui_step "circle: rim"                      ui_sketch_click 25 10
+ui_expect_log "Added circle, diameter 20 mm at (15, 10)" "a circle under Body1's top"
+ui_step "end the tool (Esc)"               ui_key Escape
 
 echo "--- Hide Above Sketch"
 ui_mark
@@ -71,10 +111,42 @@ if [ -n "$SHOT" ]; then
   ui_sync
   ui_capture "$SHOT"
 fi
+
+echo "--- Offset keeps Hide Above Sketch (mitcad#223)"
+ui_mark
+offset_circle
+still_hidden "Offset started and previewed"
+ui_mark
+ui_step "distance 2"                       ui_type_in "Panel Offset input distance" "2"
+ui_expect_new "Preview Offset: ok" "2 mm previewed"
+still_hidden "the preview refreshed"
+ui_mark
+ui_step "cancel (Esc)"                     ui_key Escape
+ui_expect_new "Command Offset cancelled" "Offset cancelled"
+still_hidden "after Cancel"
+ui_mark
+offset_circle
+ui_step "OK (Enter)"                       ui_key Return
+ui_expect_new "Offset 1 curve(s) by 5 mm" "offset made"
+still_hidden "after OK"
+
 ui_mark
 ui_step "uncheck Hide Above Sketch"        ui_click_logged "Palette paletteHideAbove"
 ui_expect_new "Hide Above Sketch off" "off"
 ui_expect_new "In front of the sketch plane: F2.b0 5.0, F5.b0 10.0" "the bodies whole again"
+ui_expect_new "Section caps: none" "no caps"
+
+echo "--- Offset with Hide Above Sketch off leaves it off"
+ui_mark
+offset_circle
+ui_step "cancel (Esc)"                     ui_key Escape
+ui_expect_new "Command Offset cancelled" "Offset cancelled"
+ui_sync
+since_mark "Hide Above Sketch on" && ui_fail "Offset turned Hide Above Sketch on"
+since_mark "Section caps: 1 face(s)" && ui_fail "Offset cut the bodies"
+grep "In front of the sketch plane: " "$UI_LOG" | tail -1 | grep -qF "F2.b0 5.0, F5.b0 10.0" ||
+  ui_fail "the bodies are not whole after Offset"
+echo "ok   Offset leaves the option off and the bodies whole"
 
 echo "--- The next sketch"
 ui_step "check Hide Above Sketch"          ui_click_logged "Palette paletteHideAbove"

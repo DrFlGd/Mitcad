@@ -14,17 +14,21 @@
 #include <BRepAlgoAPI_Cut.hxx>
 #include <BRepAlgoAPI_Fuse.hxx>
 #include <BRepBuilderAPI_Copy.hxx>
+#include <BRepBuilderAPI_MakeFace.hxx>
+#include <BRepBuilderAPI_MakePolygon.hxx>
 #include <BRepFilletAPI_MakeFillet.hxx>
 #include <BRepGProp.hxx>
 #include <BRepPrimAPI_MakeBox.hxx>
 #include <BRepPrimAPI_MakeCone.hxx>
 #include <BRepPrimAPI_MakeCylinder.hxx>
+#include <BRepPrimAPI_MakePrism.hxx>
 #include <BRepPrimAPI_MakeTorus.hxx>
 #include <BRep_Builder.hxx>
 #include <BRep_Tool.hxx>
 #include <GProp_GProps.hxx>
 #include <Geom2d_Curve.hxx>
 #include <NCollection_List.hxx>
+#include <ShapeUpgrade_UnifySameDomain.hxx>
 #include <TopExp.hxx>
 #include <TopExp_Explorer.hxx>
 #include <TopoDS.hxx>
@@ -986,6 +990,84 @@ void test_fillets_of_knife_edges() {
   CHECK(volume(*rounded) < volume(*body));
 }
 
+// A block 5 x 10 x 10 and, beside it, a wedge as high whose front face
+// slopes forward (from y = 0 at the top to y = -3 at the bottom): the top
+// front edges of the two run on in line, but the faces below them meet at
+// an angle and two more sharp edges meet at the vertex between them.
+ShapePtr block_and_sloped_wedge() {
+  const TopoDS_Shape box = BRepPrimAPI_MakeBox(gp_Pnt(0, 0, 0), gp_Pnt(5, 10, 10)).Shape();
+  BRepBuilderAPI_MakePolygon outline(gp_Pnt(5, -3, 0), gp_Pnt(5, 10, 0), gp_Pnt(5, 10, 10),
+                                     gp_Pnt(5, 0, 10), true);
+  const TopoDS_Shape wedge =
+      BRepPrimAPI_MakePrism(BRepBuilderAPI_MakeFace(outline.Wire()).Face(), gp_Vec(5, 0, 0)).Shape();
+  ShapeUpgrade_UnifySameDomain unify(BRepAlgoAPI_Fuse(box, wedge).Shape(), true, true, true);
+  unify.Build();
+  return import_body(unify.Shape(), "F1", 0);
+}
+
+// The edge from (x0, 0, 10) to (x1, 0, 10); -1 for none.
+int top_front_edge(const Shape& body, double x0, double x1) {
+  for (int i = 0; i < body.edge_count(); ++i) {
+    const gp_Pnt a = BRep_Tool::Pnt(TopExp::FirstVertex(body.edge(i)));
+    const gp_Pnt b = BRep_Tool::Pnt(TopExp::LastVertex(body.edge(i)));
+    const auto at = [](const gp_Pnt& p, double x) {
+      return near(p.X(), x) && std::abs(p.Y()) < 1e-7 && near(p.Z(), 10);
+    };
+    if ((at(a, x0) && at(b, x1)) || (at(a, x1) && at(b, x0))) {
+      return i;
+    }
+  }
+  return -1;
+}
+
+void test_own_tangent_chains() {
+  // mitcad#224: OCCT does not follow the chain from the block's top front
+  // edge into the wedge's (a third sharp edge meets the vertex); Mitcad's
+  // own chain does.
+  const ShapePtr body = block_and_sloped_wedge();
+  const int left = top_front_edge(*body, 0, 5);
+  const int right = top_front_edge(*body, 5, 10);
+  CHECK(left >= 0 && right >= 0);
+  if (left < 0 || right < 0) {
+    return;
+  }
+  std::vector<int> owner(static_cast<std::size_t>(body->edge_count()), -1);
+  owner[static_cast<std::size_t>(left)] = 0;
+  // Not for a set that does not follow chains.
+  CHECK(detail::follow_tangent_chains(*body, owner, {0}) == 0);
+  CHECK(owner[static_cast<std::size_t>(right)] == -1);
+  CHECK(detail::follow_tangent_chains(*body, owner, {1}) == 1);
+  CHECK(owner[static_cast<std::size_t>(right)] == 0);
+  // The block's edges at right angles are no continuation.
+  const ShapePtr plain = block();
+  std::vector<int> alone(static_cast<std::size_t>(plain->edge_count()), -1);
+  alone[static_cast<std::size_t>(plain->find_edges(top_front()).front())] = 0;
+  CHECK(detail::follow_tangent_chains(*plain, alone, {1}) == 0);
+
+  // A fillet and a chamfer of the one edge round and bevel both.
+  const std::string first = body->edge_name(left);
+  const std::string second = body->edge_name(right);
+  FilletSet set;
+  set.edges = {first};
+  set.radius = 1;
+  const ShapePtr rounded = fillet("F5", *body, {set});
+  CHECK(faces_named(*rounded, "F5:fillet(" + first + ")") == 1);
+  CHECK(faces_named(*rounded, "F5:fillet(" + second + ")") == 1);
+  ChamferSpec spec;
+  spec.distance = 1;
+  const ShapePtr bevelled = chamfer("F5", *body, {first}, spec);
+  CHECK(faces_named(*bevelled, "F5:chamfer(" + first + ")") == 1);
+  // Where OCCT cannot build the chain it does not follow itself (it does
+  // not bevel these two contours meeting end to end), the kernel's chain
+  // alone, with a note.
+  CHECK(faces_named(*bevelled, "F5:chamfer(" + second + ")") == 1 || !bevelled->notes().empty());
+  // Without a tangent chain the one edge only.
+  set.tangent_chain = false;
+  const ShapePtr one = fillet("F5", *body, {set});
+  CHECK(faces_named(*one, "F5:fillet(" + first + ")") == 1);
+  CHECK(faces_named(*one, "F5:fillet(" + second + ")") == 0);
+}
+
 } // namespace
 
 void dressup_tests() {
@@ -1008,6 +1090,7 @@ void dressup_tests() {
   guarded("test_dressups_that_take_a_face_away", test_dressups_that_take_a_face_away);
   guarded("test_dressups_of_circles_built_as_rings", test_dressups_of_circles_built_as_rings);
   guarded("test_dressups_of_faulty_inputs", test_dressups_of_faulty_inputs);
+  guarded("test_own_tangent_chains", test_own_tangent_chains);
   guarded("test_fillets_of_circles_in_pieces", test_fillets_of_circles_in_pieces);
   guarded("test_fillets_of_knife_edges", test_fillets_of_knife_edges);
 }

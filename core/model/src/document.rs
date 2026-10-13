@@ -55,6 +55,11 @@ mod autoselect;
 pub use autoselect::AutoselectProfiles;
 // Sheet-metal Flat Patterns kept in the document (mitcad#208).
 mod flat_patterns;
+// Design policy: per-component creation and link permissions (mitcad#220).
+mod policy;
+pub use policy::{PolicyItem, PolicyReport};
+// Moving an occurrence to another parent (mitcad#219).
+mod reparent;
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fmt;
@@ -224,6 +229,14 @@ impl Default for DocState {
             flat_patterns: BTreeMap::new(),
         }
     }
+}
+
+/// What [`Document::fill_component_copy`] copied: each occurrence and
+/// feature of the source document with its copy.
+#[derive(Debug, Clone, Default)]
+pub struct ComponentCopy {
+    pub occurrences: HashMap<OccurrenceUid, OccurrenceUid>,
+    pub features: HashMap<FeatureUid, FeatureUid>,
 }
 
 /// A feature added by a command.
@@ -937,6 +950,20 @@ pub struct Document<K: Kernel> {
     source_directory: RwLock<Option<PathBuf>>,
     /// Flat Pattern evaluations (mitcad#208), separate from modelling results.
     flat_cache: flat_patterns::FlatCache<K::Shape>,
+    /// The components an import filled from other documents, by the
+    /// document's name for them, with their sub-components
+    /// ([`Document::set_import_scopes`]). Runtime context only.
+    import_scopes: Vec<(String, BTreeSet<ComponentUid>)>,
+    /// The components each entity of another document that a design names
+    /// can be in, by the id of the reference ([`Document::set_import_focus`]).
+    /// Runtime context only.
+    import_focus: std::collections::HashMap<u64, Vec<ComponentUid>>,
+    /// Changes are checked against the design policy (mitcad#220): on
+    /// while a JSON command runs ([`Document::with_policy_checks`]).
+    policy_checks: bool,
+    /// Policy checks are off even in commands (an importer replaying a
+    /// file's design, [`Document::without_policy_checks`]).
+    policy_suspended: bool,
 }
 
 impl<K: Kernel> Document<K> {
@@ -971,6 +998,10 @@ impl<K: Kernel> Document<K> {
             resolver: None,
             source_directory: RwLock::new(None),
             flat_cache: Default::default(),
+            import_scopes: Vec::new(),
+            import_focus: Default::default(),
+            policy_checks: false,
+            policy_suspended: false,
         }
     }
 
@@ -1190,6 +1221,10 @@ impl<K: Kernel> Document<K> {
             resolver: self.resolver.clone(),
             source_directory: RwLock::new(self.source_directory()),
             flat_cache: Default::default(),
+            import_scopes: self.import_scopes.clone(),
+            import_focus: self.import_focus.clone(),
+            policy_checks: false,
+            policy_suspended: self.policy_suspended,
         })
     }
 
@@ -1283,16 +1318,109 @@ impl<K: Kernel> Document<K> {
     /// Bodies at the timeline marker, by id, of every component (each in
     /// its component's coordinates; [`Document::instances`] places them).
     pub fn bodies(&self) -> Vec<BodyView<'_, K::Shape>> {
+        self.bodies_where(|component| {
+            !self
+                .import_scopes
+                .iter()
+                .any(|(_, components)| components.contains(&component))
+        })
+    }
+
+    /// The bodies of the components `keep` takes, with the components they
+    /// are in.
+    fn bodies_where(&self, keep: impl Fn(ComponentUid) -> bool) -> Vec<BodyView<'_, K::Shape>> {
         let names = display_names(&self.state, &self.result);
         self.result
             .bodies
             .iter()
+            .filter(|(uid, _)| {
+                self.result
+                    .owners
+                    .get(uid)
+                    .is_none_or(|component| keep(*component))
+            })
             .map(|(uid, shape)| BodyView {
                 uid: *uid,
                 name: names.get(uid).cloned().unwrap_or_else(|| uid.to_string()),
                 shape: &shape.value,
             })
             .collect()
+    }
+
+    /// Sets the components that stand for other documents while an import
+    /// replays a design: `scopes` are each document's name for them (the
+    /// `.f3d` import: its GUID) and the components it filled from it.
+    /// Their sub-components belong to them. While set, [`Document::bodies`]
+    /// leaves out the bodies of the components of all scopes (the import
+    /// matches the design's own history, which holds none of them), and
+    /// [`Document::scope_bodies`] gives those of one. An empty list clears
+    /// them. Runtime context of an import (mitcad#196): not part of the
+    /// design, not undone.
+    pub fn set_import_scopes(&mut self, scopes: Vec<(String, Vec<ComponentUid>)>) {
+        let assembly = &self.state.assembly;
+        self.import_scopes = scopes
+            .into_iter()
+            .map(|(name, roots)| {
+                let mut all: BTreeSet<ComponentUid> = BTreeSet::new();
+                let mut open = roots;
+                while let Some(c) = open.pop() {
+                    if all.insert(c) {
+                        open.extend(assembly.children(c).map(|o| o.component));
+                    }
+                }
+                (name, all)
+            })
+            .collect();
+    }
+
+    /// Sets the components each entity of another document can be in, by
+    /// the id of the reference that names it (the `.f3d` import: the
+    /// occurrences the reference's context transform says, an occurrence
+    /// and those inside it that sit at the same placement, mitcad#196), for
+    /// the lookups that find the entities among [`Document::scope_bodies`]:
+    /// a document placed several times has a copy per arrangement and the
+    /// entity is in one of them. An empty map clears it. Runtime context of
+    /// an import: not part of the design, not undone.
+    pub fn set_import_focus(&mut self, focus: std::collections::HashMap<u64, Vec<ComponentUid>>) {
+        self.import_focus = focus;
+    }
+
+    /// The components an entity of another document can be in, when the
+    /// import knows them ([`Document::set_import_focus`]).
+    pub fn import_focus(&self, reference: u64) -> Option<&[ComponentUid]> {
+        self.import_focus.get(&reference).map(Vec::as_slice)
+    }
+
+    /// Whether a component belongs to an import scope
+    /// ([`Document::set_import_scopes`]): a component filled from another
+    /// document or one inside it.
+    pub fn in_import_scope(&self, component: ComponentUid) -> bool {
+        self.import_scopes
+            .iter()
+            .any(|(_, components)| components.contains(&component))
+    }
+
+    /// The components of an import scope ([`Document::set_import_scopes`]).
+    pub fn import_scope(&self, name: &str) -> Vec<ComponentUid> {
+        self.import_scopes
+            .iter()
+            .filter(|(n, _)| n == name)
+            .flat_map(|(_, c)| c.iter().copied())
+            .collect()
+    }
+
+    /// The bodies of the components of one import scope
+    /// ([`Document::set_import_scopes`]).
+    pub fn scope_bodies(&self, name: &str) -> Vec<BodyView<'_, K::Shape>> {
+        let scope: BTreeSet<ComponentUid> = self.import_scope(name).into_iter().collect();
+        self.bodies_where(|component| scope.contains(&component))
+    }
+
+    /// The bodies of some components with their names (an import's lookups
+    /// of the entities in a component of another document,
+    /// [`Document::set_import_focus`]).
+    pub fn bodies_of_components(&self, components: &[ComponentUid]) -> Vec<BodyView<'_, K::Shape>> {
+        self.bodies_where(|c| components.contains(&c))
     }
 
     /// The component a body at the marker belongs to.
@@ -1399,8 +1527,32 @@ impl<K: Kernel> Document<K> {
         &mut self,
         edit: impl FnOnce(&mut DocState) -> Result<(String, T, bool), ModelError>,
     ) -> Result<T, ModelError> {
+        self.apply_inner(edit, |_, _| Ok(()))
+    }
+
+    /// Like [`Document::apply`]; `check` sees the result of the new state
+    /// before it is taken and can still refuse it (mitcad#219: a hierarchy
+    /// move must not make a feature fail).
+    pub(crate) fn apply_checked<T>(
+        &mut self,
+        edit: impl FnOnce(&mut DocState) -> Result<(String, T), ModelError>,
+        check: impl FnOnce(&DocState, &Recomputed<K::Shape>) -> Result<(), ModelError>,
+    ) -> Result<T, ModelError> {
+        self.apply_inner(
+            |state| edit(state).map(|(label, value)| (label, value, true)),
+            check,
+        )
+    }
+
+    fn apply_inner<T>(
+        &mut self,
+        edit: impl FnOnce(&mut DocState) -> Result<(String, T, bool), ModelError>,
+        check: impl FnOnce(&DocState, &Recomputed<K::Shape>) -> Result<(), ModelError>,
+    ) -> Result<T, ModelError> {
         let mut next = self.state.clone();
         let (label, value, recompute) = edit(&mut next)?;
+        // Nothing that breaks the design policy is added (mitcad#220).
+        self.check_policy(&next)?;
         // Parameters can disappear with their owning features or
         // components, or change units or dependencies. Keep every saved
         // configuration applicable before committing any such edit.
@@ -1420,6 +1572,9 @@ impl<K: Kernel> Document<K> {
         } else {
             None
         };
+        if let Some(result) = &result {
+            check(&next, result)?;
+        }
         // An edited definition that builds clears its import note
         // (mitcad#170).
         if let Some(result) = &result {
@@ -2018,7 +2173,8 @@ impl<K: Kernel> Document<K> {
                 .map(|c| crate::sketch::project::transform_curve(t, c))
                 .collect();
         }
-        let projected = crate::sketch::project::project(&curves, &frame);
+        let projected =
+            crate::sketch::project::distinct(crate::sketch::project::project(&curves, &frame));
         let source = source.clone();
         let ((), report) = self.edit_sketch(sketch, "Project to {sketch}", |edit| {
             let entities = crate::sketch::project::entities(&projected, &mut || edit.id());
@@ -2374,6 +2530,11 @@ impl<K: Kernel> Document<K> {
         state: DocState,
         uid: FeatureUid,
     ) -> Result<PreviewReport, ModelError> {
+        // A preview of what the policy refuses says so at once (mitcad#220).
+        if let Err(error) = self.check_policy(&state) {
+            self.preview = None;
+            return Err(error);
+        }
         let result = match self.compute(&state) {
             Ok(result) => result,
             Err(error) => {

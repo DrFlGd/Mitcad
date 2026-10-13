@@ -106,6 +106,9 @@ public:
   const TopoDS_Shape& result() const { return m_result; }
   // Marks the shapes it makes as unified (Shape::unified).
   void set_unified(bool unified) { m_unified = unified; }
+  // Marks the shapes it makes as found valid by OCCT's checker
+  // (Shape::checked_valid): the result was checked.
+  void set_valid(bool valid) { m_valid = valid; }
   // The whole result with its names.
   ShapePtr shape() const;
   // One shape per solid of the result, in geometric order, with the tags of
@@ -126,6 +129,7 @@ private:
   std::vector<NameList> m_names;
   std::vector<std::set<int>> m_sources;
   bool m_unified = false;
+  bool m_valid = false;
 };
 
 } // namespace mitcad::geometry::detail

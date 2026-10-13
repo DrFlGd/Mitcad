@@ -38,6 +38,9 @@ struct NativeMacAction {
   bool toolbarPinned = false; // Same visible command membership as the CAD ribbon.
   int toolbarOrder = -1; // Registry order, independent of menu traversal order.
   QString submenu; // Optional child menu path for a toolbar popup action.
+  // A ribbon subgroup's pinned default (mitcad#222): a toolbar button of its
+  // group, whose menu lists it under the subgroup's popup entry instead.
+  bool toolbarOnly = false;
   bool separator = false;
 };
 

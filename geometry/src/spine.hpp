@@ -149,9 +149,11 @@ ShapePtr pipe_shell(const NamedWire& loop, const TopoDS_Wire& spine, const PipeM
 // The solid through the sections (wires, or vertices first and last), side
 // faces named after the edges of `named` (one of the sections), caps
 // `first` and `last`. `compatible` lets the algorithm match the wires' edges
-// and starts; a closed loft repeats its first section at the end.
+// and starts; a closed loft repeats its first section at the end. `solid`
+// false: the side faces only (a shell, no caps).
 ShapePtr through_sections(const std::vector<TopoDS_Shape>& sections, const NamedWire& named,
-                          const NameList& first, const NameList& last, bool ruled, bool compatible);
+                          const NameList& first, const NameList& last, bool ruled, bool compatible,
+                          bool solid = true);
 
 // The outer solid with the holes' solids cut out; the names carry.
 ShapePtr with_holes(const ShapePtr& outer, const std::vector<ShapePtr>& holes, const char* what);

@@ -378,6 +378,12 @@ struct CommandDef {
   QString tab = QStringLiteral("SOLID");
   QString group = QStringLiteral("CREATE");
   bool pinned = false;  // also a button next to the group's menu
+  // A submenu of the group's menu (the sketch CREATE group's "Circles",
+  // mitcad#222): the commands with the same subgroup, together where the
+  // first of them is. Its pinned command is the default of a split button
+  // whose arrow opens the submenu; a subgroup of one command is a plain
+  // entry.
+  QString subgroup;
   QStringList keywords; // other words the command search finds it by
   Kind kind = Kind::Feature;
   Mode mode = Mode::Model;
@@ -402,7 +408,20 @@ struct CommandDef {
   // edited (`edit_analysis`), and `load` fills the inputs from an entry of
   // the `analyses` query to edit it.
   bool keepsSection = false;
+  // Application commands with a panel (3D Print, mitcad#234): the inputs
+  // are picked and checked as a feature's are (`build` gives an empty
+  // definition, or the failure the panel shows), nothing is previewed, and
+  // OK calls `accept`, which does the work outside the model's history;
+  // false keeps the panel open.
+  std::function<bool(const CommandState&, const CommandContext&)> accept;
+  // The OK button's text when it is not "OK" (3D Print: Send).
+  QString okLabel;
   QVector<InputDef> inputs;
+  // Fills the inputs from the selection made before the command, instead
+  // of each item going to the first input that takes it (3D Print: a face
+  // stands for its body, an occurrence for the bodies shown in it, nothing
+  // for every shown body).
+  std::function<void(const Selection&, CommandState&, const CommandContext&)> preselect;
   // Defaults that depend on the model (the newest profile, ...), after the
   // inputs' own defaults and the selection made before the command.
   std::function<void(CommandState&, const CommandContext&)> init;

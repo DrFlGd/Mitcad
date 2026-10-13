@@ -222,7 +222,8 @@ impl Backend for CadBackend {
         match name {
             "document_create" => {
                 self.require_writable()?;
-                self.insert(crate::new_document(), None)
+                // A new design as File > New makes it (mitcad#220).
+                self.insert(crate::new_design_document(), None)
             }
             "document_open" => self.open(string(arguments, "path")?),
             "document_list" => {
@@ -549,6 +550,13 @@ fn safe_command(command: &str) -> bool {
             // Sheet-metal Flat Pattern items (mitcad#208, mitcad#210).
             | "set_flat_pattern"
             | "remove_flat_pattern"
+            // Design policy (mitcad#220).
+            | "set_policy"
+            // Moving an occurrence to another parent (mitcad#219).
+            | "reparent_occurrence"
+            // Equal spacing in sketches (mitcad#221).
+            | "sketch.add_equal_spacing"
+            | "sketch.edit_equal_spacing"
     )
 }
 
@@ -677,6 +685,12 @@ fn safe_query(query: &str) -> bool {
             | "sheet_reference"
             | "sheet_seam"
             | "sheet_bodies"
+            // Design policy (mitcad#220).
+            | "policy"
+            | "policies"
+            | "sketch_supports"
+            // Moving an occurrence to another parent (mitcad#219).
+            | "reparent_occurrence"
     )
 }
 

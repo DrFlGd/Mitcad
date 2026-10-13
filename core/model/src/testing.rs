@@ -1361,6 +1361,9 @@ impl Kernel for MockKernel {
             spec.closed,
             spec.centerline.map_or_else(|| "none".to_owned(), names)
         );
+        if !spec.solid {
+            text += " surface";
+        }
         // Rails and end conditions only when there are any.
         if !spec.rails.is_empty() {
             let rails: Vec<String> = spec.rails.iter().map(|r| names(r)).collect();

@@ -20,6 +20,14 @@ struct GeneralSettings {
   bool autosave = true;
   int autosaveMinutes = 5;
 
+  // The .f3d import's geometric tolerance (mm, mitcad#224; the setting
+  // import/geometricTolerance): how far the replay's geometry may be from
+  // the file's where it is not exact (the model's import option
+  // geometric_tolerance).
+  static constexpr double kMinImportTolerance = 0.001;
+  static constexpr double kMaxImportTolerance = 1.0;
+  double importTolerance = 0.01;
+
   static GeneralSettings load();
   void save() const;
 };

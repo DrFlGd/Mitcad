@@ -46,8 +46,8 @@
   {"cmd": "add_feature", "def": {"type": "coil", "plane": "xy", "center": [0, 200], "diameter": 40,
     "helix": {"type": "revolutions_and_pitch", "revolutions": "turns", "pitch": 10}, "section_size": 4,
     "operation": "new_body"}},
-  {"expect": {"feature": "Coil1", "status": "ok", "body": "F10.b0", "volume": 4752.386440264496, "tolerance": 1e-5,
+  {"expect": {"feature": "Coil1", "status": "ok", "body": "F10.b0", "volume": 4737.410096881198, "tolerance": 1e-5,
     "has_face": "F10:start"}},
   {"cmd": "set_parameter", "name": "turns", "value": 2},
-  {"expect": {"body": "F10.b0", "volume": 3168.2576268429974, "tolerance": 1e-5, "has_face": "F10:end"}}
+  {"expect": {"body": "F10.b0", "volume": 3158.273392936258, "tolerance": 1e-5, "has_face": "F10:end"}}
 ]

@@ -41,6 +41,52 @@ fn the_cube_design_replays_parametric() {
     }
 }
 
+/// An extrusion on two sides (10 mm and 5 mm) replays as Mitcad's two-sided
+/// extent with both distances as its parameters.
+#[test]
+fn a_two_sided_extrusion_replays_parametric() {
+    for major in [21, 24, 28] {
+        let records = mitcad_ipt::testdesign::two_sided_cube_design(major, 0.5);
+        let dc = Definitions::from_records(major, &records);
+        let design = mitcad_ipt::design::design(&dc, DisplayUnit::Mm, "cube.ipt", None);
+        let mut doc = Document::new(MockKernel::default());
+        let report = import_design(&mut doc, &design.dump, &mut NoGeometry, &Options::default());
+        let outcomes: Vec<Outcome> = report.items.iter().map(|i| i.outcome).collect();
+        assert_eq!(
+            outcomes,
+            [Outcome::Parametric, Outcome::Parametric],
+            "{}",
+            report.text()
+        );
+        let params = doc.parameters();
+        let d4 = params.get(params.find("d4").unwrap()).unwrap();
+        assert!((d4.value() - 5.0).abs() < 1e-12, "{}", d4.expression());
+        assert!(params.owner(params.find("d4").unwrap()).is_some());
+        assert_eq!(doc.bodies().len(), 1);
+    }
+}
+
+/// A sketch of a placed block (a square) and its extrusion replay
+/// parametric.
+#[test]
+fn a_placed_sketch_block_replays_parametric() {
+    for major in [24, 27] {
+        let records = mitcad_ipt::testdesign::block_design(major);
+        let dc = Definitions::from_records(major, &records);
+        let design = mitcad_ipt::design::design(&dc, DisplayUnit::Mm, "block.ipt", None);
+        let mut doc = Document::new(MockKernel::default());
+        let report = import_design(&mut doc, &design.dump, &mut NoGeometry, &Options::default());
+        let outcomes: Vec<Outcome> = report.items.iter().map(|i| i.outcome).collect();
+        assert_eq!(
+            outcomes,
+            [Outcome::Parametric, Outcome::Parametric],
+            "{}",
+            report.text()
+        );
+        assert_eq!(doc.bodies().len(), 1);
+    }
+}
+
 /// The cube from a square of lines flagged 0x40 whose profile the
 /// extrusion selected: the lines bound it, and both items are parametric.
 #[test]

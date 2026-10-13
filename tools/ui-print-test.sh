@@ -1,16 +1,20 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: MIT
 # check-all sources: app/files
-# 3D Print (mitcad#13) through the real UI, with a fake slicer: a script
-# that writes the arguments it was started with, so no slicer runs.
+# check-all sources: app/framework/Command.hpp app/framework/CommandSession.cpp app/OcctViewer.cpp
+# 3D Print (mitcad#13; its panel mitcad#234) through the real UI, with a
+# fake slicer: a script that writes the arguments it was started with, so
+# no slicer runs.
 #   1. Nothing selected: the three visible bodies as an STL file each
 #      (named after the bodies) in <temp>/mitcad-print/<design>, one start
 #      of the slicer with the three files.
-#   2. The format 3MF: one file, the folder emptied first (the STL files
-#      are gone); the file holds one object of three parts named after the
-#      bodies, in their places and with the appearance's colour, and the
-#      parts' volumes are the bodies' within the refinement's deviation.
-#   3. A body selected: only it is sent. Cancel sends nothing.
+#   2. The format 3MF (the panel's Format): one file, the folder emptied
+#      first (the STL files are gone); the file holds one object of three
+#      parts named after the bodies, in their places and with the
+#      appearance's colour, and the parts' volumes are the bodies' within
+#      the refinement's deviation.
+#   3. A body selected: only it is in the panel and sent. Cancel (Esc)
+#      sends nothing.
 #   4. Preferences' 3D Print group keeps the slicer.
 #   5. A body in a component placed twice (mitcad#17): an STL file per
 #      occurrence, named with it, each with the body where the design
@@ -18,6 +22,11 @@
 #   6. A mesh body in a moved and turned occurrence (mitcad#20): the file
 #      opens, the view shows the mesh where it shows the solid it was made
 #      of (placed the same), and its STL file has it there.
+#   7. Bodies picked in the panel (mitcad#234): with nothing selected the
+#      shown solids are in Bodies and highlighted, a surface body left
+#      out; a click on a body takes it and its highlight out, a click on
+#      the surface body picks nothing, and Send writes the files of the
+#      bodies left only.
 #
 # Runs headless on Xvfb (see ui-test-lib.sh).
 # Usage: tools/ui-print-test.sh
@@ -72,16 +81,17 @@ slicer_ran() {
   ui_fail "the slicer was not started"
 }
 
-# send "keys before Enter...": 3D Print through the search, the dialog's
-# keys, then Send (Enter).
+# send [entries]: 3D Print through the search, the panel's Format that many
+# entries down (negative: up) when given, then Send (Enter).
 send() {
   rm -f "$ARGS"
   ui_mark
   ui_command "3D Print"
-  ui_focus_dialog '^3D Print$'
-  [ $# -gt 0 ] && ui_key "$@"
+  ui_expect_new "Panel 3D Print input format at " "the panel"
+  if [ $# -gt 0 ]; then
+    ui_step "format"                     ui_choose "Panel 3D Print input format" "$1"
+  fi
   ui_key Return
-  ui_focus_main
 }
 
 ui_start_display
@@ -90,8 +100,8 @@ ui_step "fit (F6)"                       ui_key F6
 
 echo "--- Nothing selected: an STL file per visible body"
 ui_step "3D print, STL (Enter)"          send
-ui_expect_new "3D Print dialog: 3 visible: Plate, Cube, Pin; format stl, refinement high, slicer Fake slicer" \
-  "the dialog: the visible bodies, STL and High by default, the slicer of the settings"
+ui_expect_new "3D Print panel: 3 visible: Plate, Cube, Pin; format stl, refinement high, slicer Fake slicer" \
+  "the panel: the visible bodies, STL and High by default, the slicer of the settings"
 ui_expect_new "3D Print: 3 bodies as stl (high) to $FOLDER: Plate.stl, Cube.stl, Pin.stl" "three STL files"
 ui_expect_new "3D Print: started $WORK/fake-slicer.sh $FOLDER/Plate.stl $FOLDER/Cube.stl $FOLDER/Pin.stl" \
   "one start of the slicer"
@@ -106,8 +116,10 @@ done
 echo "ok   the files are there"
 
 echo "--- 3MF: one object with three parts"
-ui_step "3D print, 3MF (Down, Enter)"    send Down
-ui_expect_new "3D Print dialog: 3 visible: Plate, Cube, Pin; format stl" "the dialog"
+ui_step "3D print, 3MF (Format, Enter)"  send 1
+ui_expect_new "3D Print panel: 3 visible: Plate, Cube, Pin; format stl" "the panel"
+ui_expect_new "3D Print: Format = 3MF, one object with parts" "3MF chosen"
+ui_expect_new "3D Print: Format = 3MF, one object with parts" "3MF chosen"
 ui_expect_new "3D Print: 3 bodies as 3mf (high) to $FOLDER: Plate " "a 3MF file"
 slicer_ran
 [ "$(cat "$ARGS")" = "$FOLDER/parts.3mf" ] || ui_fail "the slicer's arguments: $(cat "$ARGS")"
@@ -157,15 +169,19 @@ echo "--- A selected body; Cancel"
 ui_step "select the cube"                ui_click_logged "Body F2.b0"
 ui_expect_new "of F2.b0]" "something of the cube selected"
 ui_step "3D print (Enter)"               send
-ui_expect_new "3D Print dialog: 1 selected: Cube; format 3mf" "the dialog: the selected body, 3MF remembered"
+ui_expect_new "3D Print panel: 1 selected: Cube; format 3mf" "the panel: the selected body, 3MF remembered"
 ui_expect_new "3D Print: 1 bodies as 3mf (high) to $FOLDER: Cube " "the cube alone"
 slicer_ran
+rm -f "$ARGS"
 ui_mark
 ui_step "3D print (search)"              ui_command "3D Print"
-ui_focus_dialog '^3D Print$'
+ui_expect_new "Command 3D Print started" "the panel"
 ui_step "cancel (Esc)"                   ui_key Escape
-ui_focus_main
-ui_expect_new "3D Print cancelled" "cancelled: nothing sent"
+ui_expect_new "Command 3D Print cancelled" "cancelled"
+sleep 1
+[ -f "$ARGS" ] && ui_fail "the slicer was started after Cancel"
+tail -n +$((UI_MARK + 1)) "$UI_LOG" | grep -q "3D Print: .* bodies as" && ui_fail "files were written after Cancel"
+echo "ok   nothing sent"
 
 echo "--- Preferences keep the slicer"
 ui_mark
@@ -194,8 +210,8 @@ EOF
 ui_stop_app
 ui_start_app --open "$WORK/assembly.mitcad"
 ASSEMBLY=$TMPDIR/mitcad-print/assembly
-ui_step "3D print, STL (Up, Enter)"      send Up
-ui_expect_new "3D Print dialog: 1 visible: Pin; format 3mf" "the dialog: the pin, 3MF remembered"
+ui_step "3D print, STL (Format, Enter)"  send -1
+ui_expect_new "3D Print panel: 1 visible: Pin; format 3mf" "the panel: the pin, 3MF remembered"
 ui_expect_new "3D Print: 1 bodies as stl (high) to $ASSEMBLY: Pin (Pin_1).stl, Pin (Pin_2).stl" \
   "an STL file per occurrence, named with it"
 slicer_ran
@@ -245,7 +261,7 @@ mesh_at=$(ui_logged_at "Body F2.b0 in O2")
 [ "$pin_at" = "$mesh_at" ] || ui_fail "the view shows the mesh at $mesh_at, the solid at $pin_at"
 echo "ok   the view shows the mesh where it shows the solid ($mesh_at)"
 ui_step "3D print (Enter)"               send
-ui_expect_new "3D Print dialog: 2 visible: Pin, Mesh; format stl" "the dialog: both bodies, STL remembered"
+ui_expect_new "3D Print panel: 2 visible: Pin, Mesh; format stl" "the panel: both bodies, STL remembered"
 ui_expect_new "3D Print: 2 bodies as stl (high) to $MESH: Pin.stl, Mesh.stl" "an STL file each"
 slicer_ran
 python3 - "$MESH" << 'EOF' || ui_fail "the STL files' places"
@@ -259,6 +275,61 @@ for name in ["Pin", "Mesh"]:
     assert all(abs(box[k][0] - (90, 0, 0)[k]) < 1e-4 and abs(box[k][1] - (100, 20, 5)[k]) < 1e-4 for k in range(3)), name
 EOF
 echo "ok   the mesh's file has it where the view shows it"
+
+echo "--- Bodies picked in the panel (mitcad#234)"
+# The plate (F1) and the cube (F2) as above, and a surface body: an open
+# tube of 10 mm diameter, 20 high, lofted between two circles (F3, F5 on
+# Plane1 F4; Loft1 F6).
+cat > "$WORK/panel.json" << 'EOF'
+[
+  {"cmd": "add_feature", "def": {"type": "box", "plane": "xy", "corner": [0, 0],
+    "length": 20, "width": 10, "height": 5, "operation": "new_body"}},
+  {"cmd": "add_feature", "def": {"type": "box", "plane": "xy", "corner": [30, 0],
+    "length": 10, "width": 10, "height": 10, "operation": "new_body"}},
+  {"cmd": "sketch.create"},
+  {"cmd": "sketch.add_circle", "sketch": "F3", "center": [55, 5], "diameter": 10},
+  {"cmd": "add_feature", "def": {"type": "construction_plane", "definition": {"type": "offset", "plane": "xy", "distance": 20}}},
+  {"cmd": "sketch.create", "plane": "F4"},
+  {"cmd": "sketch.add_circle", "sketch": "F5", "center": [55, 5], "diameter": 10},
+  {"cmd": "add_feature", "def": {"type": "loft", "sections": [
+    {"type": "profile", "sketch": "F3", "region": "r{c1}"}, {"type": "profile", "sketch": "F5", "region": "r{c1}"}],
+    "surface": true, "operation": "new_body"}},
+  {"cmd": "rename_body", "uid": "F1.b0", "name": "Plate"},
+  {"cmd": "rename_body", "uid": "F2.b0", "name": "Cube"},
+  {"cmd": "rename_body", "uid": "F6.b0", "name": "Surface"}
+]
+EOF
+"$CLI" run "$WORK/panel.json" --save "$WORK/panel.mitcad" > "$WORK/cli.log" 2>&1 ||
+  { cat "$WORK/cli.log"; ui_fail "mitcad-cli"; }
+ui_stop_app
+ui_start_app --open "$WORK/panel.mitcad"
+PANEL=$TMPDIR/mitcad-print/panel
+ui_step "fit (F6)"                       ui_key F6
+ui_expect_log "Body F6.b0 at " "the bodies placed in the view"
+rm -f "$ARGS"
+ui_mark
+ui_step "3D print (search)"              ui_command "3D Print"
+ui_expect_new "3D Print: left out Surface (a surface body)" "the surface body left out"
+ui_expect_new "3D Print panel: 2 visible: Plate, Cube; format stl" "the panel: the plate and the cube, STL remembered"
+ui_expect_new "3D Print Bodies: 2 bodies [body F1.b0; body F2.b0]" "both solids in Bodies"
+ui_expect_new "View body highlights: F1.b0, F2.b0" "both highlighted"
+ui_mark
+ui_step "click the cube"                 ui_click_logged "Body F2.b0"
+ui_expect_new "3D Print Bodies: 1 body [body F1.b0]" "the click took the cube out"
+ui_expect_new "View body highlights: F1.b0" "and its highlight"
+ui_mark
+ui_step "click the surface"              ui_click_logged "Body F6.b0"
+sleep 0.5
+tail -n +$((UI_MARK + 1)) "$UI_LOG" | grep -qE "3D Print Bodies:|View body highlights:" &&
+  ui_fail "the click on the surface body changed Bodies"
+echo "ok   the surface body cannot be picked"
+ui_mark
+ui_step "send (Enter)"                   ui_key Return
+ui_expect_new "3D Print: 1 bodies as stl (high) to $PANEL: Plate.stl" "the plate's file alone"
+slicer_ran
+[ "$(cat "$ARGS")" = "$PANEL/Plate.stl" ] || ui_fail "the slicer's arguments: $(cat "$ARGS")"
+[ "$(ls "$PANEL")" = "Plate.stl" ] || ui_fail "the folder has: $(ls "$PANEL")"
+echo "ok   the slicer got the plate's file alone"
 
 ui_crashed && ui_fail "crashed"
 ui_finish "UI 3D print test"

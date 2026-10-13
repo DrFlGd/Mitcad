@@ -690,7 +690,10 @@ EndRows end_rows(const LoftEnd& condition, const SkinSection& section, const std
     axis = n;
     const double out = turning(curves, n, here.centre);
     const double c = std::cos(condition.angle);
-    const double s = std::sin(condition.angle);
+    // The angle is measured along the loft: positive leaves the first section
+    // outward and arrives at the last one moving outward, so the takeoff into
+    // the loft from the last section tilts inward.
+    const double s = std::sin(condition.angle) * (index == 0 ? 1.0 : -1.0);
     for (const Curve& curve : curves) {
       takeoff.push_back([=](double u) {
         const gp_Vec outward = tangent(curve, u).Crossed(n) * out;
@@ -858,6 +861,79 @@ void check_end(const LoftEnd& condition, const SkinSection& section, const char*
   }
 }
 
+// Sections of several edges each, as many as the first has, turned (and
+// reversed) so that every vertex lies as near as possible to the one of the
+// section before it: the matching of OCCT takes a section turned a quarter
+// round the loft's axis (a square ring) a corner off. Sections of one edge
+// (circles) and points are left as they are.
+void align_to_previous(std::vector<Matched>& matched) {
+  const auto sample = [](const Curve& curve) {
+    std::array<gp_Pnt, 3> points;
+    const double a = curve->FirstParameter();
+    const double b = curve->LastParameter();
+    for (int k = 0; k < 3; ++k) {
+      points[static_cast<std::size_t>(k)] = curve->Value(a + (b - a) * k / 3.0);
+    }
+    return points;
+  };
+  for (std::size_t i = 1; i < matched.size(); ++i) {
+    Matched& m = matched[i];
+    const Matched& before = matched[i - 1];
+    const std::size_t n = m.curves.size();
+    if (m.point || before.point || n < 2 || before.curves.size() != n) {
+      continue;
+    }
+    std::vector<Curve> forward = m.curves;
+    std::vector<Curve> backward;
+    for (std::size_t j = n; j-- > 0;) {
+      backward.push_back(Handle(Geom_BSplineCurve)::DownCast(m.curves[j]->Copy()));
+      backward.back()->Reverse();
+    }
+    double best = std::numeric_limits<double>::max();
+    double current = 0.0;
+    std::size_t best_turn = 0;
+    bool best_reversed = false;
+    for (const bool reversed : {false, true}) {
+      const std::vector<Curve>& curves = reversed ? backward : forward;
+      for (std::size_t turn = 0; turn < n; ++turn) {
+        double cost = 0.0;
+        for (std::size_t j = 0; j < n; ++j) {
+          const auto here = sample(curves[(j + turn) % n]);
+          const auto there = sample(before.curves[j]);
+          for (std::size_t k = 0; k < here.size(); ++k) {
+            cost += here[k].Distance(there[k]);
+          }
+        }
+        if (!reversed && turn == 0) {
+          current = cost;
+        }
+        if (cost < best) {
+          best = cost;
+          best_turn = turn;
+          best_reversed = reversed;
+        }
+      }
+    }
+    // Only a clear improvement moves what the matching chose.
+    if (best >= current * 0.999 || (!best_reversed && best_turn == 0)) {
+      continue;
+    }
+    std::vector<Curve> curves;
+    std::vector<TopoDS_Edge> edges;
+    std::vector<TopoDS_Edge> origins;
+    for (std::size_t j = 0; j < n; ++j) {
+      const std::size_t from = (j + best_turn) % n;
+      curves.push_back((best_reversed ? backward : forward)[from]);
+      const std::size_t source = best_reversed ? n - 1 - from : from;
+      edges.push_back(best_reversed ? TopoDS::Edge(m.edges[source].Reversed()) : m.edges[source]);
+      origins.push_back(m.origins[source]);
+    }
+    m.curves = std::move(curves);
+    m.edges = std::move(edges);
+    m.origins = std::move(origins);
+  }
+}
+
 // The side faces' surfaces at the loft's parameters `v`: each edge
 // index's curves made compatible (polynomial ones when `plain`), its pole
 // rows interpolated in homogeneous coordinates with the derivatives the
@@ -865,7 +941,7 @@ void check_end(const LoftEnd& condition, const SkinSection& section, const char*
 // derivatives carry over to the rational surface.
 std::vector<Surface> skin_surfaces(const std::vector<Matched>& matched, const std::vector<SkinSection>& sections,
                                    const LoftEnd& start, const LoftEnd& end, const std::vector<double>& v,
-                                   bool plain) {
+                                   bool plain, bool closed, bool hermite_free) {
   const std::size_t count = matched.size();
   const auto first = std::find_if(matched.begin(), matched.end(), [](const Matched& m) { return !m.point; });
   const std::size_t edge_count = first->curves.size();
@@ -921,7 +997,7 @@ std::vector<Surface> skin_surfaces(const std::vector<Matched>& matched, const st
           const double a = strip.weights[i](k);
           const double b = strip.weights[reference](k);
           if (std::abs(a - b) > 1.0e-12 * std::max(1.0, std::abs(b))) {
-            return skin_surfaces(matched, sections, start, end, v, true);
+            return skin_surfaces(matched, sections, start, end, v, true, closed, hermite_free);
           }
         }
       }
@@ -936,12 +1012,25 @@ std::vector<Surface> skin_surfaces(const std::vector<Matched>& matched, const st
   } else if (count == 2 && ends.order > 0 && starts.order == 0) {
     starts = far_end(ends, end, strips, 1, 0, v[1] - v[0]);
   }
-  const EndInterpolation basis(v, starts.order, ends.order);
+  // Free ends (no end conditions, no rails) through three or more sections
+  // and closed lofts: the stored lofts' piecewise cubic Hermite form; else
+  // the interpolation with the ends' derivatives.
+  const bool hermite = closed || (hermite_free && count >= 3 && starts.order == 0 && ends.order == 0);
+  std::optional<EndInterpolation> derived;
+  std::optional<HermiteInterpolation> piecewise;
+  if (hermite) {
+    piecewise.emplace(v, closed);
+  } else {
+    derived.emplace(v, starts.order, ends.order);
+  }
+  const int v_degree = hermite ? piecewise->degree() : derived->degree();
+  const int columns = hermite ? piecewise->pole_count() : derived->pole_count();
+  const NCollection_Array1<double>& v_knots = hermite ? piecewise->knots() : derived->knots();
+  const NCollection_Array1<int>& v_mults = hermite ? piecewise->multiplicities() : derived->multiplicities();
   std::vector<Surface> surfaces;
   for (std::size_t j = 0; j < edge_count; ++j) {
     const Strip& strip = strips[j];
     const int rows = strip.pole_count();
-    const int columns = basis.pole_count();
     NCollection_Array2<gp_Pnt> net(1, rows, 1, columns);
     NCollection_Array2<double> weights(1, rows, 1, columns);
     bool rational = false;
@@ -965,7 +1054,9 @@ std::vector<Surface> skin_surfaces(const std::vector<Matched>& matched, const st
           }
           return d;
         };
-        solved[static_cast<std::size_t>(c)] = basis.solve(values, derivatives(starts, 0), derivatives(ends, count - 1));
+        solved[static_cast<std::size_t>(c)] =
+            hermite ? piecewise->solve(values)
+                    : derived->solve(values, derivatives(starts, 0), derivatives(ends, count - 1));
       }
       for (int l = 1; l <= columns; ++l) {
         const std::size_t at = static_cast<std::size_t>(l) - 1;
@@ -979,11 +1070,11 @@ std::vector<Surface> skin_surfaces(const std::vector<Matched>& matched, const st
       }
     }
     if (rational) {
-      surfaces.push_back(new Geom_BSplineSurface(net, weights, strip.knots, basis.knots(), strip.mults,
-                                                 basis.multiplicities(), strip.degree, basis.degree()));
+      surfaces.push_back(new Geom_BSplineSurface(net, weights, strip.knots, v_knots, strip.mults, v_mults,
+                                                 strip.degree, v_degree, false, closed));
     } else {
-      surfaces.push_back(new Geom_BSplineSurface(net, strip.knots, basis.knots(), strip.mults,
-                                                 basis.multiplicities(), strip.degree, basis.degree()));
+      surfaces.push_back(new Geom_BSplineSurface(net, strip.knots, v_knots, strip.mults, v_mults, strip.degree,
+                                                 v_degree, false, closed));
     }
   }
   return surfaces;
@@ -993,12 +1084,15 @@ std::vector<Surface> skin_surfaces(const std::vector<Matched>& matched, const st
 
 ShapePtr skinned_loft(const std::vector<SkinSection>& sections, const LoftEnd& start, const LoftEnd& end,
                       const std::vector<Path>& rail_paths, const NamedWire& named, const NameList& first,
-                      const NameList& last) {
+                      const NameList& last, bool closed, bool solid) {
   const std::size_t count = sections.size();
   check_end(start, sections.front(), "start");
   check_end(end, sections.back(), "end");
   if (!rail_paths.empty() && (sections.front().point || sections.back().point)) {
     throw std::invalid_argument("unsupported: loft rails with a point section");
+  }
+  if (closed && (!rail_paths.empty() || count < 3)) {
+    throw std::invalid_argument("a closed loft through two sections or along rails is not supported");
   }
   Bnd_Box box;
   for (const SkinSection& section : sections) {
@@ -1065,6 +1159,8 @@ ShapePtr skinned_loft(const std::vector<SkinSection>& sections, const LoftEnd& s
     }
   }
 
+  align_to_previous(matched);
+
   // The rails run through corresponding vertices.
   for (std::size_t r = 0; r < rails.size(); ++r) {
     for (std::size_t i = 0; i < count; ++i) {
@@ -1094,7 +1190,12 @@ ShapePtr skinned_loft(const std::vector<SkinSection>& sections, const LoftEnd& s
   for (std::size_t i = 1; i < count; ++i) {
     v.push_back(v.back() + std::max(matched[i].centre.Distance(matched[i - 1].centre), 1.0e-3));
   }
-  std::vector<Surface> surfaces = skin_surfaces(matched, sections, start, end, v, false);
+  if (closed) {
+    // The span back to the first section, where the surface closes.
+    v.push_back(v.back() + std::max(matched.back().centre.Distance(matched.front().centre), 1.0e-3));
+  }
+  const bool hermite_free = rails.empty();
+  std::vector<Surface> surfaces = skin_surfaces(matched, sections, start, end, v, false, closed, hermite_free);
 
   // Rails: each face bent by the rails' distances from it along the
   // vertex lines they run through, in shares that fall from 1 at a rail's
@@ -1182,7 +1283,7 @@ ShapePtr skinned_loft(const std::vector<SkinSection>& sections, const LoftEnd& s
       // The bends are polynomial: so must the surfaces be.
       if (std::any_of(surfaces.begin(), surfaces.end(),
                       [](const Surface& s) { return s->IsURational() || s->IsVRational(); })) {
-        surfaces = skin_surfaces(matched, sections, start, end, v, true);
+        surfaces = skin_surfaces(matched, sections, start, end, v, true, closed, hermite_free);
         fit_bends();
       }
       for (std::size_t j = 0; j < edge_count; ++j) {
@@ -1259,7 +1360,8 @@ ShapePtr skinned_loft(const std::vector<SkinSection>& sections, const LoftEnd& s
     faces.emplace_back(face.Face(), names[j].empty() ? NameList{} : NameList{names[j]});
   }
   for (const auto& [index, caps] : {std::pair<std::size_t, const NameList*>{0, &first}, {count - 1, &last}}) {
-    if (sections[index].point) {
+    // A closed loft and a surface loft have no caps.
+    if (sections[index].point || closed || !solid) {
       continue;
     }
     const TopoDS_Wire wire = TopoDS::Wire(compatible.Shape().Value(static_cast<int>(index) + 1));
@@ -1276,7 +1378,7 @@ ShapePtr skinned_loft(const std::vector<SkinSection>& sections, const LoftEnd& s
     sewing.Add(face);
   }
   detail::interruptible([&](const Message_ProgressRange& range) { sewing.Perform(range); });
-  FaceNamer namer(oriented_solid(sewing.SewedShape(), "the loft"));
+  FaceNamer namer(solid ? oriented_solid(sewing.SewedShape(), "the loft") : sewing.SewedShape());
   for (const auto& [face, face_names] : faces) {
     const TopoDS_Shape sewn = sewing.IsModified(face) ? sewing.Modified(face) : face;
     for (const std::string& name : face_names) {

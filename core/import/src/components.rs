@@ -47,6 +47,10 @@ pub struct ComponentReport {
     /// Captured positions of occurrences inside those components that
     /// placed the copied occurrences.
     pub placed_inside: usize,
+    /// Components made for occurrences of a component of another document
+    /// that the captured positions arrange differently inside (each is
+    /// filled with a copy of its own, mitcad#196).
+    pub copies: usize,
     /// Timeline items by the component they went into (the file's names).
     pub items: BTreeMap<String, usize>,
     /// The empty components standing for components of other documents,
@@ -54,13 +58,31 @@ pub struct ComponentReport {
     #[serde(skip)]
     pub inserted: Vec<InsertedComponent>,
     /// The occurrences by the GUIDs the file gives them (occurrence paths
-    /// of a design that inserts this one name them so, mitcad#196).
+    /// of a design that inserts this one name them so, mitcad#196). A GUID
+    /// names several where the copies of a document placed with different
+    /// arrangements inside have each their own (the one whose parent is
+    /// the path's component is meant).
     #[serde(skip)]
-    pub occurrence_guids: HashMap<String, OccurrenceUid>,
+    pub occurrence_guids: HashMap<String, Vec<OccurrenceUid>>,
     /// The captured positions of occurrences inside the components of other
     /// documents, which the replay leaves out (mitcad#196).
     #[serde(skip)]
     pub positions_inside: Vec<crate::InsidePosition>,
+    /// The empty components that were filled from their documents'
+    /// files ([`crate::references::Linker::fill`]), for the items that name
+    /// things inside them ([`crate::prefill`]).
+    #[serde(skip)]
+    pub filled: Vec<ComponentUid>,
+    /// What filling the components from their documents did, once the
+    /// import has ended ([`crate::prefill`]).
+    #[serde(skip)]
+    pub link: crate::references::LinkOutcome,
+    /// The bodies of the filled components that match the stored bodies of
+    /// their documents, by `<document GUID>|<stored body>` (`_f3d.document`,
+    /// `_f3d.stored`): where a design's reference to a body of another
+    /// document is found (mitcad#196): one body per copy of the document.
+    #[serde(skip)]
+    pub external_bodies: HashMap<String, Vec<mitcad_model::BodyUid>>,
 }
 
 /// An empty component standing for a component of another document
@@ -81,7 +103,7 @@ pub struct InsertedComponent {
 }
 
 /// The file's components and the items in them, in Mitcad's terms.
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 pub(crate) struct Components {
     /// By the component's object id in the file (`_f3d.object_id`).
     by_object: HashMap<u64, ComponentUid>,
@@ -100,6 +122,9 @@ pub(crate) struct Components {
     /// The empty components standing for components of other documents,
     /// by document key and component object.
     inserted: HashMap<(String, u64), ComponentUid>,
+    /// Of those, the components filled from their documents' files
+    /// (known to the items that name things inside them, `prefill.rs`).
+    filled: std::collections::HashSet<ComponentUid>,
 }
 
 impl Components {
@@ -150,6 +175,32 @@ impl Components {
     /// Whether `component` stands for a component of another document.
     pub fn is_inserted(&self, component: ComponentUid) -> bool {
         self.inserted.values().any(|c| *c == component)
+    }
+
+    /// Registers a component made for some of the occurrences of the
+    /// inserted component `of` (`references::split_variants`).
+    pub(crate) fn add_inserted_copy(&mut self, of: ComponentUid, component: ComponentUid) {
+        let found = self
+            .inserted
+            .iter()
+            .find(|(_, c)| **c == of)
+            .map(|((key, object), _)| (key.clone(), *object));
+        if let Some((key, object)) = found {
+            let n = self.inserted.len();
+            self.inserted
+                .insert((format!("{key}#{n}"), object), component);
+        }
+    }
+
+    /// Whether `component` stands for a component of another document
+    /// and has been filled from that document's file.
+    pub fn is_filled(&self, component: ComponentUid) -> bool {
+        self.filled.contains(&component)
+    }
+
+    /// Takes the components filled from their documents as filled.
+    pub fn set_filled(&mut self, filled: &[ComponentUid]) {
+        self.filled.extend(filled.iter().copied());
     }
 }
 
@@ -367,10 +418,14 @@ impl<K: Kernel> Placer<'_, K> {
             self.out.occurrences.entry(o).or_insert(occurrence);
         }
         for g in node.f3d.iter().flat_map(|f| f.guids.iter().flatten()) {
-            self.report
+            let list = self
+                .report
                 .occurrence_guids
                 .entry(g.to_lowercase())
-                .or_insert(occurrence);
+                .or_default();
+            if !list.contains(&occurrence) {
+                list.push(occurrence);
+            }
         }
         if node.is_grounded == Some(true) {
             let _ = self.doc.set_occurrence_grounded(occurrence, true);
@@ -678,36 +733,85 @@ impl<K: crate::ImportKernel> crate::Importer<'_, K> {
             }
             false
         };
+        // A sibling item of one that made all the components of its state.
+        if let Some((uid, note)) = self.made_ahead.remove(&index) {
+            self.features.insert(index, uid);
+            let owner = item
+                .f3d
+                .as_ref()
+                .and_then(|f| f.component)
+                .and_then(|o| self.components.of_object(o))
+                .unwrap_or(ComponentUid::ROOT);
+            let report = &mut self.report.items[at];
+            report.features.push(uid.to_string());
+            report.verified = Some(true);
+            report.component = (!owner.is_root()).then(|| self.doc.assembly().name(owner));
+            self.note(at, crate::report::Outcome::Parametric, note);
+            return true;
+        }
         if !self.pending.is_empty() {
             return not("items before it are pending");
         }
         let Some(state) = self.oracle.item_state(index) else {
             return not("no state of its own");
         };
-        let Some(&[made]) = self.oracle.item_components(index).as_deref() else {
-            return not("not one component's history");
+        let Some(mut made) = self.oracle.item_components(index) else {
+            return not("not a component's history");
         };
+        made.sort_unstable();
+        made.dedup();
+        // The items that made them together: the file's state holds the
+        // components of all of them, each item takes the next one.
+        let dump = self.dump;
+        let mut siblings: Vec<(usize, String)> = Vec::new();
+        if made.len() > 1 {
+            for (position, other) in dump.timeline_items().iter().enumerate() {
+                let j = other.index.unwrap_or(position as i64);
+                if other.object_type() == Some("ComponentFromBodies")
+                    && self.oracle.state_of_item(j) == Some(state)
+                    && self.oracle.item_components(j).is_some_and(|mut c| {
+                        c.sort_unstable();
+                        c.dedup();
+                        c == made
+                    })
+                {
+                    siblings.push((position, crate::item_name(other)));
+                }
+            }
+            if siblings.first().map(|(p, _)| *p) != Some(at) {
+                return not("a component made together with an item before it");
+            }
+        }
         let owner = item
             .f3d
             .as_ref()
             .and_then(|f| f.component)
             .and_then(|o| self.components.of_object(o));
-        let (Some(owner), Some(target)) = (owner, self.components.known_body(Some(made))) else {
+        let Some(owner) = owner else {
             return not("its components are not known");
         };
-        // Into a component the replay has not put anything in yet.
-        if target == owner {
-            return not("the new component is its own");
+        let mut targets = Vec::new();
+        for m in &made {
+            let Some(target) = self.components.known_body(Some(*m)) else {
+                return not("its components are not known");
+            };
+            targets.push(target);
         }
-        if let Some(f) = self.doc.features().find(|f| f.component == target) {
-            return not(&format!("the new component has {} already", f.name));
-        }
-        if self
-            .current_bodies()
-            .iter()
-            .any(|(uid, _)| self.doc.body_component(*uid) == Some(target))
-        {
-            return not("the new component has bodies already");
+        // Into components the replay has not put anything in yet.
+        for &target in &targets {
+            if target == owner {
+                return not("the new component is its own");
+            }
+            if let Some(f) = self.doc.features().find(|f| f.component == target) {
+                return not(&format!("the new component has {} already", f.name));
+            }
+            if self
+                .current_bodies()
+                .iter()
+                .any(|(uid, _)| self.doc.body_component(*uid) == Some(target))
+            {
+                return not("the new component has bodies already");
+            }
         }
         let kernel = self.doc.kernel();
         let before = state
@@ -720,14 +824,6 @@ impl<K: crate::ImportKernel> crate::Importer<'_, K> {
         let Ok(stored) = self.oracle.state(kernel, state).map(<[_]>::to_vec) else {
             return not("its state was not rebuilt");
         };
-        let moved: Vec<Sig> = stored
-            .iter()
-            .filter(|(b, _)| self.components.of_body(b.component) == target)
-            .map(|(_, s)| *s)
-            .collect();
-        if moved.is_empty() {
-            return not("no body of the new component in its state");
-        }
         // Each moved body: a body of the replay's in the item's component,
         // and the same body as the file's own component's history keeps it.
         let mine: Vec<(BodyUid, Sig)> = self
@@ -735,24 +831,37 @@ impl<K: crate::ImportKernel> crate::Importer<'_, K> {
             .into_iter()
             .filter(|(uid, _)| self.doc.body_component(*uid) == Some(owner))
             .collect();
-        let mut bodies = Vec::new();
+        let mut groups: Vec<Vec<BodyUid>> = Vec::new();
         let mut retired = Vec::new();
-        for sig in &moved {
-            let Some((uid, _)) = mine
+        for &target in &targets {
+            let moved: Vec<Sig> = stored
                 .iter()
-                .find(|(uid, s)| !bodies.contains(uid) && s.same(sig))
-            else {
-                return not("a body of the new component is none of its own component's");
-            };
-            bodies.push(*uid);
-            if let Some(id) = stored.iter().find_map(|(b, s)| {
-                (self.components.of_body(b.component) == owner && s.same(sig))
-                    .then_some(b.id)
-                    .flatten()
-                    .filter(|id| !retired.contains(id))
-            }) {
-                retired.push(id);
+                .filter(|(b, _)| self.components.of_body(b.component) == target)
+                .map(|(_, s)| *s)
+                .collect();
+            if moved.is_empty() {
+                return not("no body of the new component in its state");
             }
+            let mut bodies: Vec<BodyUid> = Vec::new();
+            for sig in &moved {
+                let Some((uid, _)) = mine.iter().find(|(uid, s)| {
+                    !bodies.contains(uid)
+                        && !groups.iter().flatten().any(|g| g == uid)
+                        && s.same(sig)
+                }) else {
+                    return not("a body of the new component is none of its own component's");
+                };
+                bodies.push(*uid);
+                if let Some(id) = stored.iter().find_map(|(b, s)| {
+                    (self.components.of_body(b.component) == owner && s.same(sig))
+                        .then_some(b.id)
+                        .flatten()
+                        .filter(|id| !retired.contains(id))
+                }) {
+                    retired.push(id);
+                }
+            }
+            groups.push(bodies);
         }
         // The state as the design has it: without the copies the item's
         // own component's history keeps.
@@ -762,23 +871,33 @@ impl<K: crate::ImportKernel> crate::Importer<'_, K> {
             .map(|(_, s)| *s)
             .collect();
         let depth = self.doc.undo_depth();
-        let def = serde_json::json!({"type": "component_from_bodies",
-                                     "bodies": bodies.iter().map(ToString::to_string).collect::<Vec<_>>()});
-        let added = self.add_in(&def, Some(&name), owner).and_then(|uid| {
-            self.doc
-                .move_made_component(uid, target)
-                .map(|()| uid)
-                .map_err(|e| e.to_string())
-        });
-        let uid = match added {
-            Ok(uid) => uid,
-            Err(e) => {
-                self.undo_to(depth);
-                return not(&e);
+        // One feature per component; the first sibling item has the first.
+        let mut made_features = Vec::new();
+        for (k, (&target, bodies)) in targets.iter().zip(&groups).enumerate() {
+            let feature_name = siblings.get(k).map_or(name.as_str(), |(_, n)| n.as_str());
+            let def = serde_json::json!({"type": "component_from_bodies",
+                "bodies": bodies.iter().map(ToString::to_string).collect::<Vec<_>>()});
+            let added = self
+                .add_in(&def, Some(feature_name), owner)
+                .and_then(|uid| {
+                    self.doc
+                        .move_made_component(uid, target)
+                        .map(|()| uid)
+                        .map_err(|e| e.to_string())
+                });
+            match added {
+                Ok(uid) => made_features.push(uid),
+                Err(e) => {
+                    self.undo_to(depth);
+                    return not(&e);
+                }
             }
-        };
+        }
         if bodies_distance(&expected, &self.current_sigs()).is_none()
-            || self.doc.body_component(bodies[0]) != Some(target)
+            || targets
+                .iter()
+                .zip(&groups)
+                .any(|(&target, bodies)| self.doc.body_component(bodies[0]) != Some(target))
         {
             self.undo_to(depth);
             return not("the moved bodies do not give its state");
@@ -786,21 +905,89 @@ impl<K: crate::ImportKernel> crate::Importer<'_, K> {
         self.oracle.retire(state, &retired);
         self.oracle.cursor = Some(state);
         self.report.history.matched += 1;
+        let notes: Vec<String> = targets
+            .iter()
+            .zip(&groups)
+            .map(|(&target, bodies)| {
+                format!(
+                    "moves {} into {}",
+                    if bodies.len() == 1 {
+                        "its body".to_owned()
+                    } else {
+                        format!("its {} bodies", bodies.len())
+                    },
+                    self.doc.assembly().name(target)
+                )
+            })
+            .collect();
+        // The later siblings take the next components' features.
+        for (k, (position, _)) in siblings.iter().enumerate().skip(1) {
+            if let (Some(&uid), Some(note)) = (made_features.get(k), notes.get(k)) {
+                let j = dump.timeline_items()[*position]
+                    .index
+                    .unwrap_or(*position as i64);
+                self.made_ahead.insert(j, (uid, note.clone()));
+            }
+        }
+        let uid = made_features[0];
         self.features.insert(index, uid);
         let report = &mut self.report.items[at];
         report.features.push(uid.to_string());
         report.verified = Some(true);
         report.component = (!owner.is_root()).then(|| self.doc.assembly().name(owner));
-        let note = format!(
-            "moves {} into {}",
-            if bodies.len() == 1 {
-                "its body".to_owned()
-            } else {
-                format!("its {} bodies", bodies.len())
-            },
-            self.doc.assembly().name(target)
-        );
+        let note = notes.into_iter().next().unwrap_or_default();
         self.note(at, crate::report::Outcome::Parametric, note);
         true
     }
+}
+
+/// A document whose components the design places (mitcad#196).
+#[derive(Debug, Clone, PartialEq)]
+pub struct ExternalDocument {
+    /// Its URN (`…?version=N`).
+    pub urn: String,
+    /// The GUID that tells its file (`_f3d.external_documents[].document_guid`).
+    pub guid: Option<String>,
+    /// The design's key for it (`_f3d.external_key`).
+    pub key: Option<String>,
+}
+
+/// The documents the occurrences of a dump's components come from, in the
+/// order the occurrence tree places them, each once.
+pub fn external_documents(dump: &Dump) -> Vec<ExternalDocument> {
+    let guids: HashMap<String, String> = dump
+        .f3d
+        .as_ref()
+        .and_then(|f| f.external_documents.as_ref())
+        .into_iter()
+        .flatten()
+        .filter_map(|x| Some((x.key.clone()?, x.document_guid.clone()?)))
+        .collect();
+    fn walk<'a>(
+        nodes: impl Iterator<Item = &'a OccurrenceNode>,
+        guids: &HashMap<String, String>,
+        out: &mut Vec<ExternalDocument>,
+    ) {
+        for node in nodes {
+            let f3d = node.f3d.as_ref();
+            if node.is_referenced_component == Some(true)
+                && let Some(urn) = f3d.and_then(|f| f.external_document.clone())
+            {
+                let key = f3d.and_then(|f| f.external_key.clone());
+                let guid = key.as_ref().and_then(|k| guids.get(k)).cloned();
+                match out.iter_mut().find(|d| d.urn == urn) {
+                    Some(known) => {
+                        if known.guid.is_none() {
+                            known.guid = guid;
+                        }
+                    }
+                    None => out.push(ExternalDocument { urn, guid, key }),
+                }
+            }
+            walk(node.children.iter().flatten(), guids, out);
+        }
+    }
+    let mut out = Vec::new();
+    walk(dump.occurrences.iter().flatten(), &guids, &mut out);
+    out
 }

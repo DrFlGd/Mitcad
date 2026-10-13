@@ -522,6 +522,9 @@ pub struct Segment {
     by_guid: HashMap<String, usize>,
     /// The references carry the target's class GUID (writer 2.0.5119).
     pub long_refs: bool,
+    /// The transforms the input slots carry for their entities
+    /// ([`super::decode::slot_contexts`]), read on first use.
+    pub(crate) contexts: std::sync::OnceLock<HashMap<u64, [[f64; 4]; 4]>>,
 }
 
 impl Segment {
@@ -568,6 +571,7 @@ impl Segment {
             class_upper,
             by_guid,
             long_refs,
+            contexts: std::sync::OnceLock::new(),
         }
     }
 

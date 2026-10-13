@@ -275,6 +275,32 @@ fn current_names(reference: &Value) -> Value {
 /// the dumps of the reference models instead (`design_models.rs`), and an
 /// extrusion's direction vector.
 const DECODER_ONLY: &[&str] = &[
+    // The external documents of mitcad#196 (their keys, GUIDs and versions,
+    // and the occurrences' GUIDs that name levels inside them) and a sweep's
+    // orientation (the controlled variant models), which the reference
+    // decoder did not read.
+    "._f3d.external_documents[].guids",
+    "._f3d.external_documents[].document_guid",
+    "._f3d.external_documents[].version",
+    ".occurrences[]._f3d.guids",
+    ".occurrences[].children[]._f3d.guids",
+    ".occurrences[].children[].children[]._f3d.guids",
+    ".timeline.items[].detail.orientation",
+    // The light bulbs of hidden occurrences, checked against the API
+    // reference dumps instead (core/import/README.md, *Light bulbs*).
+    ".occurrences[].isLightBulbOn",
+    ".occurrences[].children[].isLightBulbOn",
+    ".occurrences[].children[].children[].isLightBulbOn",
+    // A coil's choices, plane and placement, and a pipe's section and
+    // hollow flag (mitcad#25); the reference decoder read none of them.
+    ".timeline.items[].detail.coilType",
+    ".timeline.items[].detail.sectionType",
+    ".timeline.items[].detail.sectionPosition",
+    ".timeline.items[].detail.isClockwise",
+    ".timeline.items[].detail.isHollow",
+    ".timeline.items[].detail.plane",
+    ".timeline.items[].detail.frame",
+    ".timeline.items[].detail.placement",
     // A move's definition (rotate by its angle parameter, translate,
     // free), which the reference decoder did not read; checked against the
     // API reference dumps.

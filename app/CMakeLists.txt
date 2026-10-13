@@ -23,6 +23,9 @@ qt_add_executable(mitcad
   browser/AppearanceDialog.hpp
   browser/ParametersDialog.cpp
   browser/ParametersDialog.hpp
+  # Design policy of components (mitcad#220).
+  browser/PolicyDialog.cpp
+  browser/PolicyDialog.hpp
   browser/TimelineWidget.cpp
   browser/TimelineWidget.hpp
   browser/TimelineSearch.cpp
@@ -54,6 +57,7 @@ qt_add_executable(mitcad
   framework/DesktopEntry.cpp
   framework/DesktopEntry.hpp
   framework/Diagnostics.hpp
+  framework/EventFilterGuard.hpp
   framework/Icons.cpp
   framework/Icons.hpp
   framework/Json.hpp
@@ -97,6 +101,8 @@ qt_add_executable(mitcad
   commands/PrimitiveCommands.cpp
   commands/SketchCommands.cpp
   commands/SweepCommands.cpp
+  # Equal spacing in sketches (mitcad#221).
+  commands/EqualSpacingCommands.cpp
   # Sketch mode (U2).
   sketch/AutoConstraint.cpp
   sketch/AutoConstraint.hpp
@@ -263,7 +269,10 @@ qt_add_executable(mitcad
   # Sheet metal: its command group, browser rows and Flat Pattern export
   # (mitcad#210).
   commands/SheetCommands.cpp
-  MainWindowSheet.cpp)
+  MainWindowSheet.cpp
+  # Move to... on a component occurrence: another parent (mitcad#219).
+  framework/MoveOccurrenceDialog.cpp
+  framework/MoveOccurrenceDialog.hpp)
 
 # Toolbar and command icons (own drawings, MIT), rendered with Qt SVG.
 file(GLOB MITCAD_ICONS RELATIVE "${CMAKE_CURRENT_SOURCE_DIR}" CONFIGURE_DEPENDS icons/*.svg)
@@ -277,6 +286,15 @@ qt_add_resources(mitcad branding PREFIX / FILES ${MITCAD_APP_ICONS})
 if(WIN32)
   target_sources(mitcad PRIVATE branding/mitcad.rc)
 endif()
+
+# Sketch selection filters: three states per category, body edges in sight
+# or behind faces, Shift's wider clicks, Project's sources (mitcad#217).
+target_sources(mitcad PRIVATE
+  framework/SelectionScope.cpp
+  framework/SelectionScope.hpp
+  framework/SelectionFilterPanel.cpp
+  framework/SelectionFilterPanel.hpp
+  MainWindowSelection.cpp)
 
 target_include_directories(mitcad PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
 target_compile_definitions(mitcad PRIVATE MITCAD_VERSION="${PROJECT_VERSION}")
@@ -456,6 +474,18 @@ if(BUILD_TESTING)
   target_sources(test_app PRIVATE view/ViewNavigation.hpp)
   # Where an orthographic render's camera stands (mitcad#215): plain C++.
   target_sources(test_app PRIVATE render/RenderCamera.hpp)
+  # Event filters on the 3D view when the main window closes (mitcad#226):
+  # plain Qt Widgets.
+  target_sources(test_app PRIVATE tests/event_filter_guard.cpp framework/EventFilterGuard.hpp)
+  # Move to... on an occurrence: the parent picker and cancellation
+  # (mitcad#219): modal Qt Widgets.
+  target_sources(test_app PRIVATE tests/move_occurrence.cpp framework/MoveOccurrenceDialog.cpp)
+  # Sketch selection filters' three states, Shift and edge sight (mitcad#217):
+  # plain Qt Core.
+  target_sources(test_app PRIVATE tests/selection_scope.cpp framework/SelectionScope.cpp
+                 framework/SelectionScope.hpp)
+  # The icons' colour roles on both themes and the disabled rule (mitcad#230).
+  target_sources(test_app PRIVATE tests/icon_colours.cpp)
   target_include_directories(test_app PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
   target_link_libraries(test_app PRIVATE Qt6::Widgets Qt6::Svg mitcad_warnings)
   add_test(NAME app.unit COMMAND test_app)

@@ -67,6 +67,8 @@ project_top_face() {
 
 # Part:1 (O1, C1): Sketch1 (F1) 30 x 20, Extrude1 (F2) 10 up: Body1
 # (F2.b0). Cover:1 (O2, C2), empty and active, beside it in the root.
+# Sketches on another component's face need both sides' design policy
+# (mitcad#220): Part takes attachments, Cover and the root may attach.
 cat > "$WORK/model.json" << 'EOF'
 [
   {"cmd": "create_component", "name": "Part"},
@@ -76,7 +78,10 @@ cat > "$WORK/model.json" << 'EOF'
     "profiles": [{"sketch": "F1", "region": "r{c1[c4,c2],c2[c1,c3],c3[c2,c4],c4[c3,c1]}"}],
     "extent": {"type": "distance", "distance": 10}, "operation": "new_body"}},
   {"cmd": "activate_component", "component": "Root"},
-  {"cmd": "create_component", "name": "Cover"}
+  {"cmd": "create_component", "name": "Cover"},
+  {"cmd": "set_policy", "component": "Part", "policy": {"attachments_from_others": true}},
+  {"cmd": "set_policy", "component": "Cover", "policy": {"attach_to_others": true}},
+  {"cmd": "set_policy", "component": "Root", "policy": {"attach_to_others": true}}
 ]
 EOF
 "$CLI" run "$WORK/model.json" --save "$FILE" > "$WORK/cli.log" 2>&1 || { cat "$WORK/cli.log"; ui_fail "mitcad-cli"; }

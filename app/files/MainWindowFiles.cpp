@@ -153,16 +153,9 @@ void MainWindow::registerFileCommands() {
                         QStringLiteral("save as"), QStringLiteral("3mf"), QStringLiteral("usdz"),
                         QStringLiteral("augmented reality")};
   m_registry->add(exportDef);
-  // 3D Print (mitcad#13, MainWindowPrint.cpp): the MAKE group, next to
-  // Render Image.
-  CommandDef print = def("make.print3d", tr("3D Print..."), "print-3d",
-                         tr("Sends the selected bodies, or all visible ones, to a slicer as 3MF or STL files"),
-                         [this] { print3d(); });
-  print.group = QStringLiteral("MAKE");
-  print.pinned = true;
-  print.keywords = {QStringLiteral("print"), QStringLiteral("slicer"), QStringLiteral("3mf"),
-                    QStringLiteral("stl"), QStringLiteral("3d print"), QStringLiteral("make")};
-  m_registry->add(print);
+  // 3D Print (mitcad#13, mitcad#234, MainWindowPrint.cpp): a panel in the
+  // MAKE group, next to Render Image.
+  m_registry->add(print3dCommand());
   CommandDef recover = def("file.recover", tr("Recover Documents..."), "recover",
                            tr("Restores changes that were not saved when Mitcad last ended without closing"),
                            [this] { recoverDocuments(false); });

@@ -429,6 +429,38 @@ fn hole_def(placement: Value, extra: Value) -> FeatureDef<crate::ValueInput> {
 }
 
 #[test]
+fn holes_start_on_a_plane() {
+    // A hole placed on an origin plane (mitcad#25): the point is put on the
+    // plane, and the hole goes against the plane's normal, or with it
+    // flipped.
+    let mut b = block();
+    let on_plane = json!({"type": "plane", "plane": "xy", "points": [[10, 20, 5]]});
+    let uid = b
+        .doc
+        .add_feature(&hole_def(on_plane.clone(), json!({})), None)
+        .unwrap()
+        .uid;
+    assert_eq!(status(&b.doc, uid), FeatureStatus::Ok);
+    let spec = last_spec(&b.doc);
+    assert!(
+        spec.contains("([10.0, 20.0, 0.0], [-0.0, -0.0, -1.0])"),
+        "{spec}"
+    );
+    b.doc.undo();
+    let uid = b
+        .doc
+        .add_feature(&hole_def(on_plane, json!({"flip": true})), None)
+        .unwrap()
+        .uid;
+    assert_eq!(status(&b.doc, uid), FeatureStatus::Ok);
+    let spec = last_spec(&b.doc);
+    assert!(
+        spec.contains("([10.0, 20.0, 0.0], [0.0, 0.0, 1.0])"),
+        "{spec}"
+    );
+}
+
+#[test]
 fn holes_go_into_faces_and_sketch_points() {
     let mut b = block();
     let on_top = json!({"type": "face", "body": "F2.b0", "face": TOP, "points": [[10, 10, 50], [50, 30, 20]]});

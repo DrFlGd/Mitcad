@@ -67,6 +67,27 @@ private:
       m_ancestors;
 };
 
+// Mitcad's own tangent chains of edge selections (mitcad#224). OCCT's
+// fillets and chamfers continue a selected edge into the next only where
+// every other edge at the vertex between them lies between tangent faces
+// (ChFi3d_Builder::FaceTangency): at a vertex where a third sharp edge
+// meets (a ring that two chamfers split into two arcs) they stop, although
+// the next edge continues the first smoothly. This adds to `owner` (the
+// selection of each edge of the body: its set, -1 for none) every edge
+// that no set selects and that meets an edge of a set that `follows` (by
+// set) end to end with the same direction (within
+// kTangentChainAngle) and lies between two faces at an angle (not a smooth
+// edge, which no dressup rounds), then the same from those edges. Returns
+// how many it added.
+//
+// The angle: in the reference data of imported designs, the edges a
+// file's tangent chain added met within 5.3e-4 rad; the next larger
+// angles between edges of one selection (0.012 rad and up) were between
+// edges the file had selected itself. 1e-2 rad lies between, and is also
+// OCCT's own angular tolerance of its fillets.
+constexpr double kTangentChainAngle = 1.0e-2;
+int follow_tangent_chains(const Shape& body, std::vector<int>& owner, const std::vector<char>& follows);
+
 // The plane of a planar face with its normal pointing out of the material;
 // null for other surfaces.
 std::optional<gp_Pln> face_plane(const TopoDS_Face& face);

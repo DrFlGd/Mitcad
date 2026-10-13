@@ -38,6 +38,10 @@ pub mod params;
 pub mod references;
 // Where the files of the documents a design refers to are (mitcad#196).
 pub mod reference_folder;
+// Components of other documents filled before the replay (mitcad#196).
+mod prefill;
+// The occurrence an entity of another document is in (mitcad#196).
+mod focus;
 pub mod report;
 pub mod sketch;
 // FreeCAD documents (.FCStd): bodies and structure.
@@ -45,6 +49,8 @@ pub mod freecad;
 
 mod features;
 mod ops;
+// Box, cylinder, sphere, torus and coil primitives (mitcad#25).
+mod primitives;
 mod refs;
 // Sweeps, pipes and lofts (F3).
 mod sweeps;
@@ -69,6 +75,9 @@ mod snap;
 mod removal;
 // Bodies the file cut and pasted into other components.
 mod pasting;
+// Sketches on other components' faces, linked curves as projections
+// (mitcad#225).
+mod linked;
 
 use std::cell::Cell;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
@@ -81,11 +90,12 @@ use mitcad_model::assembly::inverse;
 use mitcad_model::features::{FeatureDef, ValueInput};
 use mitcad_model::{
     BaseInput, BodyUid, ComponentUid, Document, FeatureUid, ImportBody, Kernel, KernelError,
-    RecomputeMonitor, SketchFrame, Transform,
+    OccurrenceUid, RecomputeMonitor, SketchFrame, Transform,
 };
 use serde_json::Value;
 
 pub use history::{NoGeometry, Oracle, SheetSig, Sig, StoredBody, StoredGeometry};
+pub use refs::DEFAULT_GEOMETRIC_TOLERANCE;
 pub use report::{
     BodyReport, ComponentReport, DesignReport, ImportReport, InputProvenance, ItemReport,
     JointReport, LightBulbReport, LowMemoryReport, Outcome, ReferenceReport, StopReport,
@@ -163,6 +173,17 @@ pub struct Options {
     ///
     /// [`Kernel::is_valid`]: mitcad_model::Kernel::is_valid
     pub validate: bool,
+    /// How far (mm) the replay's geometry may be from the file's where no
+    /// exact result is (mitcad#224; default 0.01 mm,
+    /// [`DEFAULT_GEOMETRIC_TOLERANCE`]): the second pass of the lookups of
+    /// decoded edges, faces and vertices in the replay (within 1e-3 mm
+    /// first; `refs::geometric_tolerance` on the import's thread, for the
+    /// crate's own matchers) and the face distance of the
+    /// geometric check of an item's new faces. Volume and area checks keep
+    /// their relative tolerances. The report gives it
+    /// ([`DesignReport::geometric_tolerance`]) and each item's largest
+    /// deviation beyond the exact tolerance.
+    pub geometric_tolerance: f64,
 }
 
 impl Default for Options {
@@ -186,6 +207,7 @@ impl Default for Options {
             spawn: None,
             learn: None,
             validate: false,
+            geometric_tolerance: DEFAULT_GEOMETRIC_TOLERANCE,
         }
     }
 }
@@ -539,6 +561,13 @@ impl Candidate {
         }
     }
 
+    /// Where the inputs came from, for items whose translation knows it
+    /// (the assembly items: `joints.rs`, `relationships.rs`).
+    pub fn with_provenance(mut self, provenance: InputProvenance) -> Self {
+        self.input_provenance = provenance;
+        self
+    }
+
     pub fn with_note(mut self, note: impl Into<String>) -> Self {
         self.note = Some(note.into());
         self
@@ -679,6 +708,70 @@ pub(crate) struct Importer<'a, K: Kernel> {
     /// The items suppressed in the file in a row, built until the next
     /// item that is not (mitcad#180).
     suppressed: suppressed::Run,
+    /// Items that made components together with an item before them: the
+    /// feature the first made for each of them, and its note
+    /// ([`Importer::component_from_bodies`]).
+    made_ahead: HashMap<i64, (FeatureUid, String)>,
+    /// The documents the components of other documents are filled from
+    /// before the replay ([`import_design_with`]).
+    sources: Option<&'a HashMap<String, references::Referenced<'a, K>>>,
+    /// What filled them, for the end of the import ([`prefill`]).
+    linker: Option<references::Linker>,
+    /// The occurrence path each reference to an entity of another document
+    /// is in, by the reference's object id ([`focus`]).
+    focus_paths: HashMap<u64, Vec<focus::Hit>>,
+    /// The occurrence path each body found for such a reference is in, for
+    /// the links of the features that use it ([`focus`]).
+    link_paths: std::sync::Mutex<HashMap<BodyUid, Vec<OccurrenceUid>>>,
+}
+
+impl<'a, K: Kernel> Importer<'a, K> {
+    /// An importer with nothing replayed yet.
+    fn start(
+        doc: &'a mut Document<K>,
+        dump: &'a Dump,
+        options: &'a Options,
+        oracle: Oracle<'a, K::Shape>,
+        report: DesignReport,
+    ) -> Self {
+        Importer {
+            oracle,
+            doc,
+            dump,
+            options,
+            params: ParamMap::default(),
+            sketches: HashMap::new(),
+            features: HashMap::new(),
+            report,
+            pending: Vec::new(),
+            defined: std::collections::HashSet::new(),
+            at_final: false,
+            started: std::time::Instant::now(),
+            components: components::Components::default(),
+            component: ComponentUid::ROOT,
+            sketch_copies: HashMap::new(),
+            stopped_at: Cell::new(None),
+            trying: false,
+            alternatives: HashMap::new(),
+            guesses: None,
+            defer_guesses: false,
+            start_bases: HashMap::new(),
+            deadline: None,
+            captures: captures::Captures::default(),
+            memory_released: 0,
+            frame_entities: Default::default(),
+            workers: Default::default(),
+            learn: learn::store(options),
+            dressups: HashMap::new(),
+            notes: Default::default(),
+            suppressed: Default::default(),
+            sources: None,
+            linker: None,
+            focus_paths: HashMap::new(),
+            link_paths: Default::default(),
+            made_ahead: HashMap::new(),
+        }
+    }
 }
 
 /// Where the edge guesses of a fillet or chamfer go on from, when they come
@@ -721,11 +814,27 @@ pub fn import_design<K: ImportKernel>(
     geometry: &mut dyn StoredGeometry<K::Shape>,
     options: &Options,
 ) -> DesignReport {
+    import_design_with(doc, dump, geometry, options, None)
+}
+
+/// [`import_design`] with the documents the design's components of other
+/// documents come from, imported already (by their URNs): the components
+/// are filled from them before the items are replayed ([`prefill`],
+/// mitcad#196).
+pub fn import_design_with<K: ImportKernel>(
+    doc: &mut Document<K>,
+    dump: &Dump,
+    geometry: &mut dyn StoredGeometry<K::Shape>,
+    options: &Options,
+    sources: Option<&HashMap<String, references::Referenced<'_, K>>>,
+) -> DesignReport {
     let depth = doc.undo_depth();
     // Loops deep in the import tick the watchdog (mitcad#82).
     let _ticking = Ticking::new(options.progress.clone());
     // Planar faces found once per body shape (mitcad#103).
     let _planes = refs::KeptPlanes::new();
+    // The lookups' and the geometric check's tolerance (mitcad#224).
+    let _tolerance = refs::GeometricTolerance::set(options.geometric_tolerance);
     // The threads beside the import's own share `threads` (mitcad#103).
     if let Some(p) = &options.progress {
         p.set_threads(options.threads);
@@ -745,40 +854,11 @@ pub fn import_design<K: ImportKernel>(
             .as_ref()
             .and_then(|s| s.mode.clone())
             .unwrap_or_default(),
+        geometric_tolerance: refs::geometric_tolerance(),
         ..DesignReport::default()
     };
-    let mut importer = Importer {
-        oracle: Oracle::new(geometry),
-        doc,
-        dump,
-        options,
-        params: ParamMap::default(),
-        sketches: HashMap::new(),
-        features: HashMap::new(),
-        report,
-        pending: Vec::new(),
-        defined: std::collections::HashSet::new(),
-        at_final: false,
-        started: std::time::Instant::now(),
-        components: components::Components::default(),
-        component: ComponentUid::ROOT,
-        sketch_copies: HashMap::new(),
-        stopped_at: Cell::new(None),
-        trying: false,
-        alternatives: HashMap::new(),
-        guesses: None,
-        defer_guesses: false,
-        start_bases: HashMap::new(),
-        deadline: None,
-        captures: captures::Captures::default(),
-        memory_released: 0,
-        frame_entities: Default::default(),
-        workers: Default::default(),
-        learn: learn::store(options),
-        dressups: HashMap::new(),
-        notes: Default::default(),
-        suppressed: Default::default(),
-    };
+    let mut importer = Importer::start(doc, dump, options, Oracle::new(geometry), report);
+    importer.sources = sources;
     if !options.verify {
         importer.oracle.enabled = false;
     }
@@ -787,6 +867,7 @@ pub fn import_design<K: ImportKernel>(
     importer.light_bulbs();
     importer.timeline_notes();
     importer.learn_write();
+    importer.finish_references();
     let Importer { doc, report, .. } = importer;
     if let Some(label) = &options.undo_label {
         doc.merge_undo(depth, label);
@@ -825,6 +906,11 @@ const NOT_IN_HISTORY: &str = "its result is not in the file's history";
 /// an extrusion that found no body to cut in the file).
 const FAILED_IN_FILE: &str = "failed in the file: its operation in the file's history \
                               left every body as it was, which none of its definitions does";
+
+/// The note of the file's own base feature, which comes in as a base
+/// feature of the bodies the file stores for it.
+const FILE_BASE_FEATURE: &str = "the file's base feature: its bodies as the file stores them \
+                                 (it has no history in the file)";
 
 /// The most memory (estimated) the document's cached results may take for
 /// the rest of an import once the process ran low on memory (mitcad#80).
@@ -1533,6 +1619,9 @@ impl<'a, K: ImportKernel> Importer<'a, K> {
                     .push(format!("{name}: its captured position: {e}"));
             }
         }
+        // The components of other documents, filled from those documents
+        // where the caller has imported them (mitcad#196).
+        self.fill_references();
         self.report.history.states = self.oracle.count();
         if self.oracle.enabled {
             // The replay starts with no bodies: the first state without
@@ -1701,7 +1790,24 @@ impl<'a, K: ImportKernel> Importer<'a, K> {
     }
 
     fn item(&mut self, position: usize, item: &TimelineItem) {
+        // The largest deviation beyond the exact tolerance its inputs'
+        // lookups took (mitcad#224).
+        let at = self.report.items.len();
+        refs::take_deviation();
+        self.replay_item(position, item);
+        if let Some(deviation) = refs::take_deviation()
+            && let Some(report) = self.report.items.get_mut(at)
+        {
+            report.geometric_deviation = Some(deviation);
+        }
+    }
+
+    fn replay_item(&mut self, position: usize, item: &TimelineItem) {
         let index = item.index.unwrap_or(position as i64);
+        // The bodies other documents' entities were found on are this item's.
+        if let Ok(mut paths) = self.link_paths.lock() {
+            paths.clear();
+        }
         let object_type = item.object_type().map(str::to_owned);
         let name = item
             .name()
@@ -1723,6 +1829,7 @@ impl<'a, K: ImportKernel> Importer<'a, K> {
             input_provenance: None,
             change_difference: None,
             geometric_check: None,
+            geometric_deviation: None,
             note: None,
             component: None,
         };
@@ -2390,7 +2497,17 @@ impl<'a, K: ImportKernel> Importer<'a, K> {
                         .and_then(|g| Some((geom::mm3(g.origin?), geom::unit(g.direction?)?))),
                     _ => None,
                 };
-                for c in candidates {
+                for mut c in candidates {
+                    // Faces of other components' bodies: where the design places
+                    // them (mitcad#196).
+                    for def in &mut c.defs {
+                        if def["type"] == "construction_plane"
+                            && let Ok(links) = self.plane_links(self.component, def)
+                            && !links.is_empty()
+                        {
+                            def["links"] = Value::Object(links);
+                        }
+                    }
                     let depth = self.doc.undo_depth();
                     match self.add_all(&c, item.name()) {
                         Ok(uids)
@@ -3568,6 +3685,19 @@ impl<'a, K: ImportKernel> Importer<'a, K> {
         let label = self.report.items[at].name.clone();
         let depth = self.doc.undo_depth();
         match self.fallback_to(state, Some(&label)) {
+            Ok(Some(uid))
+                if item.object_type() == Some("BaseFeature")
+                    && self.pending.is_empty()
+                    && self.bases_made_with(uid) == 1 =>
+            {
+                // The file's own base feature (bodies without a history in
+                // the file): its stored bodies, in its component alone, are
+                // its translation, not a stand-in.
+                self.oracle.cursor = Some(state);
+                self.report.items[at].features.push(uid.to_string());
+                self.note(at, Outcome::Parametric, FILE_BASE_FEATURE);
+                self.report.items[at].input_provenance = Some(InputProvenance::Read);
+            }
             Ok(Some(uid)) => {
                 self.oracle.cursor = Some(state);
                 self.report.items[at].features.push(uid.to_string());
@@ -5035,7 +5165,11 @@ impl<'a, K: ImportKernel> Importer<'a, K> {
                 p.tick();
             }
         };
-        self.report.bodies = refs::compare_bodies(self.doc, &finals, compare, &tick);
+        let components: Vec<ComponentUid> = finals
+            .iter()
+            .map(|(b, _)| self.components.of_body(b.component))
+            .collect();
+        self.report.bodies = refs::compare_bodies(self.doc, &finals, &components, compare, &tick);
         let matched: Vec<String> = self
             .report
             .bodies
@@ -5230,6 +5364,17 @@ fn def_component<K: Kernel>(
             .and_then(|b| doc.body_component(b))
     {
         return c;
+    }
+    // A sketch on another component's face or with projections of other
+    // components' geometry (mitcad#225): the linked bodies are not its
+    // component's.
+    if def["type"] == "sketch"
+        && (def.get("plane_link").is_some()
+            || def["projections"]
+                .as_array()
+                .is_some_and(|p| p.iter().any(|p| p.get("link").is_some())))
+    {
+        return component;
     }
     // So does a split with tools of other components: where the split
     // bodies are.

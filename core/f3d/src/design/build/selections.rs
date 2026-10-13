@@ -212,6 +212,33 @@ impl Builder<'_> {
                 map.insert("toolBodies".into(), json_value(&tools));
             }
         }
+        // A combine whose tools are bodies of other documents lists the
+        // body record it made where the target is (mitcad#196): the tools
+        // are the selections of the first list, the target the only other
+        // selection among the item's inputs.
+        if !map.contains_key("targetBody")
+            && let Some((first, _)) = ref_end(seg, d, k + 6).and_then(|q| ref_list(seg, d, q + 8))
+        {
+            let tool_selections: Vec<u64> = first.iter().flatten().copied().collect();
+            let others: Vec<u64> = self
+                .selections(it)
+                .into_iter()
+                .filter(|s| !tool_selections.contains(s))
+                .collect();
+            let tools: Option<Vec<Reference>> = tool_selections
+                .iter()
+                .map(|s| self.bodies_of(Some(*s)))
+                .collect::<Option<Vec<_>>>()
+                .map(|v| v.into_iter().flatten().collect());
+            if let ([target], Some(tools)) = (&others[..], tools)
+                && !tools.is_empty()
+                && let Some(mut target) = self.bodies_of(Some(*target))
+                && target.len() == 1
+            {
+                map.insert("targetBody".into(), json_value(&target.remove(0)));
+                map.insert("toolBodies".into(), json_value(&tools));
+            }
+        }
         Detail::Other(map)
     }
 

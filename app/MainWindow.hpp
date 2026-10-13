@@ -62,6 +62,7 @@ class ProjectsPanel;
 class RemoteController;
 class LiveController;
 class Ribbon;
+class SelectionFilterPanel;
 class UpdateController;
 class ReportCenter;
 class ViewController;
@@ -168,12 +169,14 @@ public:
   QJsonValue section() const override { return m_section; }
   void editInstead(const QString& uid, const QString& input) override;
   QString profileOccurrence(const QString& sketch) const override { return placingOccurrence(sketch); }
+  const SelectionScope* commandScope() const override; // mitcad#217
 
   // SketchHost
   const Selection& selection() const override { return m_selection; }
   void setSelection(const Selection& items) override;
   void pick(const Selection& items, Qt::KeyboardModifiers modifiers) override;
   void showError(const QString& message) override;
+  bool sketchClickable(const SelectionItem& item, bool expanded) const override; // mitcad#217
 
   // DocumentHost (the browser, the timeline and the parameters dialog)
   const CommandContext& model() const override { return *this; }
@@ -365,6 +368,17 @@ private:
   void startSketch();
   // sketch.create with these fields (the plane, where it was picked).
   void createSketch(const QJsonObject& fields);
+  // Design policy (mitcad#220): reads whose faces and planes sketches of
+  // the active component may lie on (the model's sketch_supports) and
+  // why the active component refuses sketches (empty when it does not).
+  QString refreshSketchSupports();
+  // Why a sketch cannot be made on this plane or face; empty when it can.
+  QString sketchSupportRefusal(const SelectionItem& item) const;
+  // The occurrence paths ("O1/O4", "" the root) whose geometry the active
+  // component's sketches may not lie on, with the reason.
+  QHash<QString, QString> m_sketchDenied;
+  // The names of the owners of those paths.
+  QStringList m_sketchDeniedOwners;
   // A feature's error at the marker; empty when it did not fail.
   QString featureError(const QString& uid) const;
   void enterSketch(const QString& uid, bool existing);
@@ -393,8 +407,13 @@ private:
   // Sets the plane the bodies are cut at, logging a change; showSection
   // also redraws.
   bool setSection(const QJsonValue& plane);
+  // Whether the view shows the edited sketch: sketch mode, and also while
+  // a command started in it (Offset, Mirror, Project, ...) has its panel
+  // open (mitcad#223).
+  bool sketchShown() const;
   // The plane the bodies are shown cut at: the sketch's while Hide Above
-  // Sketch is on in sketch mode, else Section Analysis' (null: whole).
+  // Sketch is on and the sketch is shown, else Section Analysis' (null:
+  // whole).
   QJsonValue cutPlane() const;
   // The faces where the section cuts the shown bodies, for the view.
   void showSectionCaps(const std::vector<BodyDisplay>& bodies);
@@ -691,8 +710,12 @@ private:
   void insertComponent(const QString& path = QString());
   void startF3dImport(const QString& path);
   void exportFile();
-  // 3D Print (mitcad#13, files/MainWindowPrint.cpp): bodies to a slicer.
-  void print3d();
+  // 3D Print (mitcad#13, mitcad#234; files/MainWindowPrint.cpp): a panel of
+  // the bodies to send, picked in the view, and the format, refinement and
+  // slicer; OK writes the files and starts the slicer (sendToSlicer: false
+  // when the files could not be written).
+  CommandDef print3dCommand();
+  bool sendToSlicer(const CommandState& state);
   // The appearance colours the view shows of bodies (all when empty), as
   // `export`'s `colors` for 3MF files.
   QJsonObject appearanceColors(const QStringList& bodies) const;
@@ -870,6 +893,42 @@ private:
   bool& m_sketchExisting = m_documentSession->state().sketchExisting;
   int& m_sketchEnterDepth = m_documentSession->state().sketchEnterDepth;
   int& m_sketchRestoreMarker = m_documentSession->state().sketchRestoreMarker;
+
+  // Sketch selection filters (mitcad#217, MainWindowSelection.cpp): the
+  // three-state filter of sketch mode, Project's context while it runs, the
+  // SKETCH tab's Selection Filter control, and what they do to picks. The
+  // SOLID tab's filters (m_filterActions) are separate and stay as they are.
+  void setUpSelectionScope();
+  // The SKETCH tab's control: an action whose menu holds the panel.
+  QAction* createSketchFilterAction();
+  // The context the control shows and changes: the running command's
+  // (Project's), else the sketch's while a sketch is edited; null else.
+  SelectionScope* activeSelectionScope();
+  // Sketch mode's picks through the sketch filter (none while a tool draws).
+  void applySketchScope(bool drawing);
+  // The row of the edited sketch's own curve or point: ordinary,
+  // construction or projected (centre lines are ordinary: they bound
+  // profiles).
+  FilterRow sketchRowOf(const SelectionItem& item) const;
+  // What a window in sketch mode selects: what the view took (every kind
+  // the filter lets a window take) and the dimensions and constraints it
+  // holds when their row is a cross.
+  Selection sketchWindowItems(const Selection& items) const;
+  // A command starts or ends: a command with a selection filter context
+  // (Project in sketch mode) shows its own rows in the control while it
+  // runs; the sketch's come back as they were, on OK and on Cancel.
+  void beginCommandScope(const CommandDef& def);
+  void endCommandScope();
+  // A row of the control changed (`what`: "<row> <state>" or "reset").
+  void selectionScopeChanged(const QString& what);
+  // For UI tests (MITCAD_LOG_EDGE_PLACES): where a click hits each body edge,
+  // in sight and behind faces ("Sketch pick edge F1.b0/<edge> visible at
+  // x,y"), once the camera rests in sketch mode.
+  void logSketchPickPlaces();
+  SelectionScope m_sketchScope = SelectionScope::sketch();
+  std::optional<SelectionScope> m_commandScope;
+  QAction* m_sketchFilterAction = nullptr;
+  SelectionFilterPanel* m_selectionFilterPanel = nullptr;
 };
 
 } // namespace mitcad

@@ -1,10 +1,13 @@
 // SPDX-License-Identifier: MIT
 #include "util.hpp"
 
+#include <atomic>
 #include <cctype>
 #include <cmath>
+#include <optional>
 #include <sstream>
 #include <utility>
+#include <vector>
 
 #include <BRepAdaptor_Curve.hxx>
 #include <BRepBndLib.hxx>
@@ -13,10 +16,16 @@
 #include <BRepCheck_Result.hxx>
 #include <TopExp_Explorer.hxx>
 #include <BRepGProp.hxx>
+#include <BRep_Builder.hxx>
 #include <BRep_Tool.hxx>
 #include <Bnd_Box.hxx>
 #include <GProp_GProps.hxx>
+#include <NCollection_IndexedDataMap.hxx>
+#include <NCollection_List.hxx>
+#include <TopExp.hxx>
 #include <TopoDS.hxx>
+#include <TopoDS_Compound.hxx>
+#include <TopoDS_Iterator.hxx>
 
 namespace mitcad::geometry::detail {
 namespace {
@@ -154,5 +163,194 @@ void require_valid(const TopoDS_Shape& shape, const char* operation) {
     throw std::runtime_error(std::string(operation) + " produced an invalid shape" + first_problem(analyzer, shape));
   }
 }
+
+namespace {
+
+// The faces is_valid_where_changed gives the checker (in a compound), or
+// none where the whole shape is to be checked: the result is not solids of
+// one shell each, a face is not forward or reversed or is there twice, an
+// edge of a shell does not have exactly one forward and one reversed use in
+// it (a seam: both in its face), a shell is not connected, or more than half
+// of the faces changed. In any of those cases the checker on the whole
+// shape decides, so what it would say is never guessed.
+std::optional<TopoDS_Compound> faces_to_check(const TopoDS_Shape& result, const ShapeMap& kept) {
+  if (kept.IsEmpty()) {
+    return std::nullopt;
+  }
+  // The shells, as the solids hold them.
+  std::vector<TopoDS_Shape> shells;
+  const auto add_solid = [&](const TopoDS_Shape& solid) {
+    int count = 0;
+    for (TopoDS_Iterator it(solid); it.More(); it.Next()) {
+      if (it.Value().ShapeType() != TopAbs_SHELL) {
+        return false;
+      }
+      shells.push_back(it.Value());
+      ++count;
+    }
+    return count == 1;
+  };
+  if (result.ShapeType() == TopAbs_SOLID) {
+    if (!add_solid(result)) {
+      return std::nullopt;
+    }
+  } else if (result.ShapeType() == TopAbs_COMPOUND) {
+    for (TopoDS_Iterator it(result); it.More(); it.Next()) {
+      if (it.Value().ShapeType() != TopAbs_SOLID || !add_solid(it.Value())) {
+        return std::nullopt;
+      }
+    }
+  } else {
+    return std::nullopt;
+  }
+  if (shells.empty()) {
+    return std::nullopt;
+  }
+
+  using Uses = NCollection_IndexedDataMap<TopoDS_Shape, NCollection_List<int>, TopTools_ShapeMapHasher>;
+  ShapeMap all;
+  std::vector<TopoDS_Shape> faces;
+  std::vector<int> parent;
+  const auto find = [&parent](int i) {
+    while (parent[static_cast<std::size_t>(i)] != i) {
+      parent[static_cast<std::size_t>(i)] = parent[static_cast<std::size_t>(parent[static_cast<std::size_t>(i)])];
+      i = parent[static_cast<std::size_t>(i)];
+    }
+    return i;
+  };
+  for (const TopoDS_Shape& shell : shells) {
+    const int first = static_cast<int>(faces.size());
+    // Each edge's forward and reversed uses in the shell, and the first
+    // face that uses it.
+    NCollection_IndexedDataMap<TopoDS_Shape, std::array<int, 3>, TopTools_ShapeMapHasher> edges;
+    for (TopExp_Explorer f(shell, TopAbs_FACE); f.More(); f.Next()) {
+      const TopoDS_Shape& face = f.Current();
+      if (face.Orientation() != TopAbs_FORWARD && face.Orientation() != TopAbs_REVERSED) {
+        return std::nullopt;
+      }
+      const int before = all.Extent();
+      if (all.Add(face) <= before) {
+        return std::nullopt; // twice in the result
+      }
+      const int index = static_cast<int>(faces.size());
+      faces.push_back(face);
+      parent.push_back(index);
+      for (TopExp_Explorer e(face, TopAbs_EDGE); e.More(); e.Next()) {
+        const TopoDS_Shape& edge = e.Current();
+        if (BRep_Tool::Degenerated(TopoDS::Edge(edge))) {
+          continue;
+        }
+        const TopAbs_Orientation orientation = edge.Orientation();
+        if (orientation != TopAbs_FORWARD && orientation != TopAbs_REVERSED) {
+          return std::nullopt;
+        }
+        int k = edges.FindIndex(edge);
+        if (k == 0) {
+          k = edges.Add(edge, {0, 0, index});
+        }
+        std::array<int, 3>& use = edges.ChangeFromIndex(k);
+        use[orientation == TopAbs_FORWARD ? 0 : 1] += 1;
+        const int a = find(index);
+        const int b = find(use[2]);
+        if (a != b) {
+          parent[static_cast<std::size_t>(a)] = b;
+        }
+      }
+    }
+    for (int k = 1; k <= edges.Extent(); ++k) {
+      const std::array<int, 3>& use = edges(k);
+      if (use[0] != 1 || use[1] != 1) {
+        return std::nullopt;
+      }
+    }
+    const int root = find(first);
+    for (int i = first; i < static_cast<int>(faces.size()); ++i) {
+      if (find(i) != root) {
+        return std::nullopt;
+      }
+    }
+  }
+
+  // The faces the result does not share with the inputs, and those that
+  // meet them at a vertex.
+  std::vector<bool> check(faces.size(), false);
+  std::size_t changed = 0;
+  Uses vertices;
+  for (std::size_t i = 0; i < faces.size(); ++i) {
+    const int k = kept.FindIndex(faces[i]);
+    if (k > 0 && kept(k).IsEqual(faces[i])) {
+      continue;
+    }
+    check[i] = true;
+    ++changed;
+  }
+  if (2 * changed > faces.size()) {
+    return std::nullopt;
+  }
+  for (std::size_t i = 0; i < faces.size(); ++i) {
+    ShapeMap own;
+    TopExp::MapShapes(faces[i], TopAbs_VERTEX, own);
+    for (int v = 1; v <= own.Extent(); ++v) {
+      int k = vertices.FindIndex(own(v));
+      if (k == 0) {
+        k = vertices.Add(own(v), NCollection_List<int>());
+      }
+      vertices.ChangeFromIndex(k).Append(static_cast<int>(i));
+    }
+  }
+  std::vector<bool> near = check;
+  for (int k = 1; k <= vertices.Extent(); ++k) {
+    const NCollection_List<int>& users = vertices(k);
+    bool touched = false;
+    for (const int i : users) {
+      touched = touched || check[static_cast<std::size_t>(i)];
+    }
+    if (touched) {
+      for (const int i : users) {
+        near[static_cast<std::size_t>(i)] = true;
+      }
+    }
+  }
+  BRep_Builder builder;
+  TopoDS_Compound compound;
+  builder.MakeCompound(compound);
+  for (std::size_t i = 0; i < faces.size(); ++i) {
+    if (near[i]) {
+      builder.Add(compound, faces[i]);
+    }
+  }
+  return compound;
+}
+
+std::atomic<std::size_t> g_local_checks{0};
+std::atomic<std::size_t> g_local_faces{0};
+
+std::optional<TopoDS_Compound> counted(std::optional<TopoDS_Compound> faces) {
+  if (faces) {
+    g_local_checks += 1;
+    std::size_t n = 0;
+    for (TopoDS_Iterator it(*faces); it.More(); it.Next()) {
+      ++n;
+    }
+    g_local_faces += n;
+  }
+  return faces;
+}
+
+} // namespace
+
+bool is_valid_where_changed(const TopoDS_Shape& result, const ShapeMap& kept) {
+  throw_if_cancelled();
+  const std::optional<TopoDS_Compound> faces = counted(faces_to_check(result, kept));
+  return is_valid(faces ? *faces : result);
+}
+
+void require_valid_where_changed(const TopoDS_Shape& result, const ShapeMap& kept, const char* operation) {
+  throw_if_cancelled();
+  const std::optional<TopoDS_Compound> faces = counted(faces_to_check(result, kept));
+  require_valid(faces ? *faces : result, operation);
+}
+
+ChecksWhereChanged checks_where_changed() { return {g_local_checks.load(), g_local_faces.load()}; }
 
 } // namespace mitcad::geometry::detail

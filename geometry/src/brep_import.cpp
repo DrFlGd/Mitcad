@@ -1778,6 +1778,7 @@ bool build_reusing(const Body& body, const reuse::BodyKeys& keys, const BuildOpt
       return false;
     }
     report.solid = true;
+    report.valid = true;
     const auto seconds = [](std::chrono::steady_clock::time_point a, std::chrono::steady_clock::time_point b) {
       return std::to_string(std::chrono::duration<double>(b - a).count()).substr(0, 5);
     };
@@ -1862,7 +1863,10 @@ void build_into(const Body& body, const BuildOptions& options, BuildResult& resu
           }
         }
       }
-      if (!BRepCheck_Analyzer(shape, true, true).IsValid()) {
+      if (BRepCheck_Analyzer(shape, true, true).IsValid()) {
+        // (Orienting the solids below keeps them valid.)
+        report.valid = true;
+      } else {
         keep = false;
         double widest = 0.0;
         const int cusps = widen_cusps(shape, widest);

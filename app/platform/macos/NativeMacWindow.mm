@@ -1373,6 +1373,7 @@ struct NativeMacWindowState {
   NSMenu* groupMenu(const QString& group) {
     NSMenu* menu = [[NSMenu alloc] initWithTitle:ns(group)];
     for (const NativeMacAction* item : groupActions(group)) {
+      if (item->toolbarOnly) continue; // listed in its subgroup's popup (mitcad#222)
       NSMenuItem* entry = menuAction(*item, true);
       if (!item->submenu.isEmpty()) {
         NSMenu* children = [[NSMenu alloc] initWithTitle:ns(item->label)];
@@ -1783,7 +1784,10 @@ void NativeMacWindow::setActions(const QList<NativeMacAction>& actions) {
       const auto& a = actions[index]; const auto& b = m_state->actions[index];
       if (a.id != b.id || a.label != b.label || a.menu != b.menu || a.group != b.group ||
           a.workspace != b.workspace || a.shortcut != b.shortcut || a.shortcuts != b.shortcuts || a.submenu != b.submenu ||
-          a.toolbarPinned != b.toolbarPinned || a.toolbarOrder != b.toolbarOrder) { structureChanged = true; break; }
+          a.toolbarPinned != b.toolbarPinned || a.toolbarOnly != b.toolbarOnly || a.toolbarOrder != b.toolbarOrder) {
+        structureChanged = true;
+        break;
+      }
     }
   }
   m_state->actions = actions;

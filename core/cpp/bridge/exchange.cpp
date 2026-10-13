@@ -306,7 +306,13 @@ std::shared_ptr<geometry::Shape> f3d_build_body(const f3d::BrepBodyData& data) {
   if (!result.report.built || result.shape.IsNull()) {
     return nullptr;
   }
-  return std::make_shared<geometry::Shape>(result.shape);
+  auto shape = std::make_shared<geometry::Shape>(result.shape);
+  // (Checked when it was healed: operations on it check only what they
+  // change, geometry::detail::is_valid_where_changed.)
+  if (result.report.valid) {
+    shape->set_checked_valid(true);
+  }
+  return shape;
 }
 
 std::unique_ptr<F3dBases> f3d_bases() { return std::make_unique<F3dBases>(); }
@@ -336,6 +342,9 @@ std::shared_ptr<F3dBuilt> f3d_build_body_from(const f3d::BrepBodyData& data, con
   }
   if (result.report.built && !result.shape.IsNull()) {
     built->shape = std::make_shared<geometry::Shape>(result.shape);
+    if (result.report.valid) {
+      built->shape->set_checked_valid(true);
+    }
     built->healed = result.healed;
     built->reused = static_cast<std::uint32_t>(result.report.reused_faces);
   }

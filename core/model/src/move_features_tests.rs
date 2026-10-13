@@ -211,6 +211,7 @@ fn references_from_other_components_follow_the_new_occurrence() {
         .doc
         .create_component(Some("B"), Transform::translation([0.0, 50.0, -3.0]), true)
         .unwrap();
+    crate::policy_tests::allow_attachments(&mut b.doc);
     let top = format!("{}:end({})", b.extrude, b.region);
     let sketch = command(
         &mut b.doc,
@@ -918,6 +919,7 @@ fn explicit_existing_destination_keeps_external_support_links_and_isolation() {
             true,
         )
         .unwrap();
+    crate::policy_tests::allow_attachments(&mut b.doc);
     let top = format!("{}:end({})", b.extrude, b.region);
     let sketch = command(
         &mut b.doc,
@@ -942,6 +944,8 @@ fn explicit_existing_destination_keeps_external_support_links_and_isolation() {
         &mut b.doc,
         json!({"cmd": "set_isolation", "items": [{"body": b.body}]}),
     );
+    // Target takes the attachment that moves with the face (mitcad#220).
+    crate::policy_tests::allow_attachments(&mut b.doc);
     command(
         &mut b.doc,
         json!({"cmd": "move_to_component", "features": [b.sketch],

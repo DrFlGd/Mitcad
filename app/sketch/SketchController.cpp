@@ -45,6 +45,17 @@ const QString kInvalidFieldStyle = QStringLiteral(
     " border-radius: 3px; padding: 1px 4px; selection-background-color: #7aa6dc;"
     " selection-color: #101418; }");
 
+// A dimension's value or a constraint's glyph of sketch `uid` as a
+// selection item ("fix:<entity>" for a fixed entity's lock).
+SelectionItem annotationItem(const QString& uid, const SketchOverlay::Hit& hit) {
+  SelectionItem item;
+  item.kind = hit.kind == SketchOverlay::Hit::Kind::Dimension ? SelectKind::SketchDimension
+                                                              : SelectKind::SketchConstraint;
+  item.owner = uid;
+  item.name = hit.kind == SketchOverlay::Hit::Kind::Fixed ? QStringLiteral("fix:") + hit.id : hit.id;
+  return item;
+}
+
 double unitScale(const QString& unit) {
   if (unit == QStringLiteral("cm")) {
     return 10.0;
@@ -270,6 +281,21 @@ SketchController::SketchController(SketchHost& host, OcctViewer& viewer, Command
         setHover(ours ? item.name : QString());
       },
       Qt::QueuedConnection);
+  // Shift widens what a click picks (mitcad#217): the dimension or
+  // constraint under the pointer is highlighted as the click would take it.
+  connect(&viewer, &OcctViewer::shiftChanged, this, [this](bool held) {
+    if (!isActive() || m_tool || m_paused) {
+      return;
+    }
+    SketchOverlay::Hit hit = m_overlay->hitTest(m_cursor);
+    if (hit.valid() && !m_host.sketchClickable(annotationItem(m_uid, hit), held)) {
+      hit = SketchOverlay::Hit();
+    }
+    if (hit.id != m_hoverAnnotation) {
+      m_hoverAnnotation = hit.id;
+      m_overlay->update();
+    }
+  });
   m_dragTimer.setSingleShot(true);
   connect(&m_dragTimer, &QTimer::timeout, this, &SketchController::applyDrag);
   TestSync::watch(&m_dragTimer);
@@ -281,6 +307,7 @@ void SketchController::enter(const QString& uid) {
   m_uid = uid;
   m_status.clear();
   m_loggedView.clear();
+  m_loggedSpacings.clear();
   reload();
   m_viewer.setSketchPlane(toAx3(m_model.frame));
   m_overlay->resize(m_viewer.size());
@@ -324,8 +351,52 @@ void SketchController::reload() {
     m_status = status;
     qDebug().noquote() << status;
   }
+  logSpacings();
   m_overlay->update();
   emit changed();
+}
+
+void SketchController::setSpacingPreview(const QStringList& anchors) {
+  if (anchors == m_spacingPreview) {
+    return;
+  }
+  m_spacingPreview = anchors;
+  if (!anchors.isEmpty()) {
+    qDebug().noquote() << QStringLiteral("Equal spacing preview: %1").arg(anchors.join(QStringLiteral(", ")));
+  }
+  if (m_overlay != nullptr) {
+    m_overlay->update();
+  }
+}
+
+void SketchController::logSpacings() {
+  // "Equal spacing k4 horizontal: p1, c2, c5 (spacing k6 = 12.00)" when a chain
+  // changes, for UI tests: the order the model keeps.
+  QHash<QString, QString> now;
+  for (const ConstraintData& k : m_model.constraints) {
+    if (k.type != QStringLiteral("equal_spacing")) {
+      continue;
+    }
+    QString text = QStringLiteral("%1: %2").arg(k.json.value(QStringLiteral("mode")).toString(),
+                                                 k.refs.join(QStringLiteral(", ")));
+    const QString direction = k.json.value(QStringLiteral("direction")).toString();
+    if (!direction.isEmpty()) {
+      text += QStringLiteral(" along %1").arg(direction);
+    }
+    if (const DimensionData* d = m_model.spacingDimension(k.id)) {
+      text += QStringLiteral(" (spacing %1 = %2)").arg(d->id, formatLength(d->measured));
+    }
+    now.insert(k.id, text);
+    if (m_loggedSpacings.value(k.id) != text) {
+      qDebug().noquote() << QStringLiteral("Equal spacing %1 %2").arg(k.id, text);
+    }
+  }
+  for (auto it = m_loggedSpacings.cbegin(); it != m_loggedSpacings.cend(); ++it) {
+    if (!now.contains(it.key())) {
+      qDebug().noquote() << QStringLiteral("Equal spacing %1 removed").arg(it.key());
+    }
+  }
+  m_loggedSpacings = now;
 }
 
 QString SketchController::describeStatus() const {
@@ -1024,6 +1095,16 @@ bool SketchController::viewerEvent(QEvent* event) {
       m_viewer.cubeInteraction()) {
     return false;
   }
+  // The dimension or constraint under the pointer, when the selection
+  // filter lets a click take it (with Shift: its empty rows too; mitcad#217).
+  const auto clickableHit = [this](const QPointF& position, Qt::KeyboardModifiers modifiers) {
+    SketchOverlay::Hit hit = m_overlay->hitTest(position);
+    if (hit.valid() &&
+        !m_host.sketchClickable(annotationItem(m_uid, hit), modifiers.testFlag(Qt::ShiftModifier))) {
+      hit = SketchOverlay::Hit();
+    }
+    return hit;
+  };
   switch (event->type()) {
   case QEvent::Leave:
     m_cursorValid = false;
@@ -1054,7 +1135,7 @@ bool SketchController::viewerEvent(QEvent* event) {
       m_overlay->update();
       return (e->buttons() & Qt::LeftButton) != 0;
     }
-    const SketchOverlay::Hit hit = m_overlay->hitTest(e->position());
+    const SketchOverlay::Hit hit = clickableHit(e->position(), e->modifiers());
     if (hit.id != m_hoverAnnotation) {
       m_hoverAnnotation = hit.id;
       m_overlay->update();
@@ -1063,6 +1144,10 @@ bool SketchController::viewerEvent(QEvent* event) {
   }
   case QEvent::MouseButtonPress: {
     auto* e = static_cast<QMouseEvent*>(event);
+    if (e->button() == Qt::RightButton) {
+      m_rightPressPosition = e->position(); // a click or a drag of the view
+      return false;
+    }
     if (e->button() != Qt::LeftButton) {
       return false;
     }
@@ -1079,7 +1164,7 @@ bool SketchController::viewerEvent(QEvent* event) {
       m_overlay->update();
       return true;
     }
-    const SketchOverlay::Hit hit = m_overlay->hitTest(e->position());
+    const SketchOverlay::Hit hit = clickableHit(e->position(), e->modifiers());
     if (hit.valid()) {
       if (hit.kind == SketchOverlay::Hit::Kind::Dimension) {
         selectAnnotation(QStringLiteral("dimension"), hit.id, e->modifiers());
@@ -1095,7 +1180,14 @@ bool SketchController::viewerEvent(QEvent* event) {
       return true;
     }
     const QString entity = entityAt(e->position());
-    if (!entity.isEmpty() && !(e->modifiers() & (Qt::ControlModifier | Qt::ShiftModifier))) {
+    // Geometry the selection filter leaves empty is neither dragged nor
+    // clicked here: the press is the view's (a window, mitcad#217).
+    SelectionItem pressed;
+    pressed.kind = m_model.point(entity) != nullptr ? SelectKind::SketchPoint : SelectKind::SketchCurve;
+    pressed.owner = m_uid;
+    pressed.name = entity;
+    if (!entity.isEmpty() && !(e->modifiers() & (Qt::ControlModifier | Qt::ShiftModifier)) &&
+        m_host.sketchClickable(pressed, false)) {
       m_pressed = true;
       m_dragEntity = entity;
       m_pressPosition = e->position();
@@ -1106,6 +1198,19 @@ bool SketchController::viewerEvent(QEvent* event) {
   }
   case QEvent::MouseButtonRelease: {
     auto* e = static_cast<QMouseEvent*>(event);
+    if (e->button() == Qt::RightButton && !m_tool && !m_editor &&
+        screenDistance(e->position(), m_rightPressPosition) <= kDragPixels) {
+      // A right click on a dimension or a constraint's symbol selects it,
+      // unless it is selected already, as a right click on geometry does:
+      // the view's context menu, which comes after, then offers its
+      // commands (Edit Dimension, Edit Equal Spacing).
+      const SketchOverlay::Hit hit = clickableHit(e->position(), Qt::NoModifier);
+      if (hit.valid() && !m_host.selection().contains(annotationItem(m_uid, hit))) {
+        m_host.pick({annotationItem(m_uid, hit)}, Qt::NoModifier);
+        m_overlay->update();
+      }
+      return false;
+    }
     if (e->button() != Qt::LeftButton) {
       return false;
     }
@@ -1148,6 +1253,15 @@ bool SketchController::viewerEvent(QEvent* event) {
       m_pressed = false;
       m_dragDimension.clear();
       editDimension(hit.id);
+      return true;
+    }
+    // An equal spacing's symbol (the first click selected it) opens its
+    // edit panel (mitcad#221).
+    if (const ConstraintData* k = hit.kind == SketchOverlay::Hit::Kind::Constraint ? m_model.constraint(hit.id)
+                                                                                    : nullptr;
+        k != nullptr && k->type == QStringLiteral("equal_spacing")) {
+      qDebug().noquote() << QStringLiteral("Double-click on %1: sketch.edit_equal_spacing").arg(hit.id);
+      m_host.trigger(QStringLiteral("sketch.edit_equal_spacing"));
       return true;
     }
     // A text, a pattern's curve or an offset's curve the first click picked
@@ -1197,6 +1311,28 @@ void SketchController::selectAnnotation(const QString& kind, const QString& id,
   item.name = id;
   m_host.pick({item}, modifiers);
   m_overlay->update();
+}
+
+bool SketchController::annotationAt(const QPointF& position) const {
+  if (!isActive()) {
+    return false;
+  }
+  const SketchOverlay::Hit hit = m_overlay->hitTest(position);
+  return hit.valid() && m_host.sketchClickable(annotationItem(m_uid, hit), false);
+}
+
+Selection SketchController::annotationsIn(const QRectF& area, bool crossing) const {
+  Selection items;
+  if (!isActive()) {
+    return items;
+  }
+  for (const SketchOverlay::Hit& hit : m_overlay->hitsIn(area, crossing)) {
+    const SelectionItem item = annotationItem(m_uid, hit);
+    if (!items.contains(item)) {
+      items.append(item);
+    }
+  }
+  return items;
 }
 
 // ---------------------------------------------------------------------------

@@ -8,7 +8,11 @@
 //!   folder given with `references`): its `references.json` maps the
 //!   documents' version ids (the URNs the design names them by) to their
 //!   files, for the whole tree of references;
-//! - another design of the same `.f3z` package;
+//! - another design of the same `.f3z` package: the one its
+//!   `DesignDescription.json` names for the document's URN (mitcad#229;
+//!   the same document at another version after that), else the one whose
+//!   `Manifest.dat` lists the GUID the design keeps after the URN (and the
+//!   fewest GUIDs), never the package's root design or one being imported;
 //! - any `.f3d` file of those folders whose `Manifest.dat` lists the GUID
 //!   the design keeps after the document's URN (so a file is found without
 //!   `references.json`, and a chosen file's folder is searched for the
@@ -90,6 +94,18 @@ pub struct Found {
 /// A design of an `.f3z` package: its label and its manifest's GUIDs.
 type PackageDesign = (String, Vec<String>);
 
+/// An `.f3z` package's designs (the design imported is one of them).
+#[derive(Debug, Default)]
+struct Package {
+    path: PathBuf,
+    /// Its designs with their manifests' GUIDs.
+    designs: Vec<PackageDesign>,
+    /// The root design's label (`Manifest.json`).
+    root: Option<String>,
+    /// The designs its `DesignDescription.json` lists: (URN, label, name).
+    described: Vec<(String, String, Option<String>)>,
+}
+
 /// Finds the documents of one import (shared by the imports of the
 /// documents it refers to).
 #[derive(Debug, Default)]
@@ -99,8 +115,8 @@ pub struct Resolver {
     entries: HashMap<String, Entry>,
     /// The scanned files' manifest GUIDs.
     scanned: HashMap<PathBuf, Vec<String>>,
-    /// An `.f3z` package's designs with their manifest GUIDs.
-    package: Option<(PathBuf, Vec<PackageDesign>)>,
+    /// The `.f3z` package imported.
+    package: Option<Package>,
     warnings: Vec<String>,
 }
 
@@ -125,15 +141,47 @@ impl Resolver {
         if path
             .extension()
             .is_some_and(|e| e.eq_ignore_ascii_case("f3z"))
-            && let Ok(documents) = mitcad_f3d::design::documents(path)
+            && let Ok(package) = mitcad_f3d::design::package(path)
         {
-            let designs = documents
-                .iter()
-                .map(|(label, doc)| (label.clone(), manifest_guids(doc)))
-                .collect();
-            r.package = Some((path.to_path_buf(), designs));
+            r.package = Some(Package {
+                path: path.to_path_buf(),
+                designs: package
+                    .documents
+                    .iter()
+                    .map(|(label, doc)| (label.clone(), manifest_guids(doc)))
+                    .collect(),
+                root: package.root,
+                described: package
+                    .described
+                    .into_iter()
+                    .map(|(label, d)| (d.urn, label, d.name))
+                    .collect(),
+            });
         }
         r
+    }
+
+    /// The root design of the `.f3z` package imported, where its
+    /// `Manifest.json` names it.
+    pub fn package_root(&self) -> Option<&str> {
+        self.package.as_ref()?.root.as_deref()
+    }
+
+    /// The design of the package `DesignDescription.json` names for `urn`
+    /// (the same document at another version after that): its label, its
+    /// name and its version where it is another one.
+    fn described(&self, urn: &str) -> Option<(String, Option<String>, Option<u32>)> {
+        let package = self.package.as_ref()?;
+        if let Some((_, label, name)) = package.described.iter().find(|(u, _, _)| u == urn) {
+            return Some((label.clone(), name.clone(), None));
+        }
+        let base = urn.split('?').next().unwrap_or(urn);
+        package
+            .described
+            .iter()
+            .filter(|(u, _, _)| u.split('?').next() == Some(base))
+            .max_by_key(|(u, _, _)| urn_version(u))
+            .map(|(u, label, name)| (label.clone(), name.clone(), urn_version(u)))
     }
 
     /// Searches `folder` too (its `references.json` and its `.f3d` files).
@@ -209,6 +257,19 @@ impl Resolver {
     /// Where the document `urn` (whose file's manifest lists
     /// `document_guid`) is.
     pub fn resolve(&mut self, urn: &str, document_guid: Option<&str>) -> Found {
+        self.resolve_avoiding(urn, document_guid, &[])
+    }
+
+    /// [`Resolver::resolve`] where the designs of the package labelled
+    /// `avoid` (those being imported) are not taken for a document by its
+    /// GUID: an assembly's manifest lists the GUIDs of the documents it
+    /// refers to as well as its own.
+    pub fn resolve_avoiding(
+        &mut self,
+        urn: &str,
+        document_guid: Option<&str>,
+        avoid: &[String],
+    ) -> Found {
         let entry = self.entries.get(urn).cloned();
         let mut found = Found {
             name: entry.as_ref().and_then(|e| e.name.clone()),
@@ -221,6 +282,19 @@ impl Resolver {
         if let Some(file) = self.files.get(urn).filter(|f| f.is_file()) {
             found.file = Some(file.clone());
             found.how = Some("chosen");
+            return found;
+        }
+        // The package's own map of its designs (mitcad#229).
+        if let Some((label, name, version)) = self.described(urn)
+            && let Some(package) = &self.package
+        {
+            if name.is_some() {
+                found.name = name;
+            }
+            found.note = version.and_then(|v| other_version(Some(v), found.version));
+            found.file = Some(package.path.clone());
+            found.design = Some(label);
+            found.how = Some("package");
             return found;
         }
         if let Some(file) = entry.and_then(|e| e.file) {
@@ -250,10 +324,30 @@ impl Resolver {
         else {
             return found;
         };
-        if let Some((path, designs)) = &self.package
-            && let Some((label, _)) = designs.iter().find(|(_, g)| g.contains(&guid))
+        // Without the package's map: a design of it whose manifest lists the
+        // GUID, other than its root and those being imported. A design's
+        // manifest lists the GUIDs of the documents it refers to as well as
+        // its own, so of those that list it the one listing the fewest is the
+        // document itself (those referring to it list its GUIDs and more).
+        if let Some(package) = &self.package
+            && let Some((label, _)) = package
+                .designs
+                .iter()
+                .filter(|(label, g)| {
+                    g.contains(&guid)
+                        && package.root.as_ref() != Some(label)
+                        && !avoid.contains(label)
+                })
+                .min_by_key(|(_, g)| g.len())
         {
-            found.file = Some(path.clone());
+            found.name = found.name.take().or_else(|| {
+                package
+                    .described
+                    .iter()
+                    .find(|(_, l, _)| l == label)
+                    .and_then(|(_, _, n)| n.clone())
+            });
+            found.file = Some(package.path.clone());
             found.design = Some(label.clone());
             found.how = Some("package");
             return found;
@@ -349,20 +443,23 @@ fn list_file(
     seen: &mut Vec<String>,
     out: &mut Vec<Value>,
 ) -> Result<(), String> {
-    let documents = mitcad_f3d::design::documents(path)?;
-    let doc = match design {
+    let package = mitcad_f3d::design::package(path)?;
+    let documents = &package.documents;
+    // A package's root design where its manifest names it.
+    let doc = match design.or(package.root.as_deref()) {
         Some(label) => documents.iter().find(|(l, _)| l == label),
         None => documents.first(),
     };
-    let Some((_, doc)) = doc else {
+    let Some((label, doc)) = doc else {
         return Ok(());
     };
+    let avoid = [label.clone()];
     for r in referenced_documents(doc)? {
         if r.occurrences == 0 || seen.contains(&r.urn) {
             continue;
         }
         seen.push(r.urn.clone());
-        let found = resolver.resolve(&r.urn, Some(&r.document_guid));
+        let found = resolver.resolve_avoiding(&r.urn, Some(&r.document_guid), &avoid);
         out.push(json!({
             "document": r.urn,
             "name": found.name.clone().or_else(|| found.file.as_ref().map(|f| stem_name(&f.to_string_lossy()))),
@@ -488,6 +585,66 @@ mod tests {
         assert_eq!(part.file, Some(elsewhere.join(t::file_name(&PART))));
         // A GUID no file has.
         assert_eq!(resolver.resolve("urn:x?version=1", Some("0000")).file, None);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn package_documents_are_found_by_its_description_never_the_root() {
+        let dir =
+            std::env::temp_dir().join(format!("mitcad-references-package-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("Package.f3z");
+        let labels: Vec<String> = t::PACKAGE_ENTRIES
+            .iter()
+            .map(|(_, e)| format!("Package.f3z!{}", &e[..8]))
+            .collect();
+        let (root, holder, part) = (&labels[0], &labels[1], &labels[2]);
+
+        // The package's description gives each URN its design and name.
+        std::fs::write(&path, t::package_file(true)).unwrap();
+        let mut resolver = Resolver::new(&path, &[], &HashMap::new());
+        assert_eq!(resolver.package_root(), Some(root.as_str()));
+        for (doc, label) in [(&PART, part), (&HOLDER, holder)] {
+            let found = resolver.resolve(doc.urn, Some(doc.document_guid));
+            assert_eq!(found.how, Some("package"));
+            assert_eq!(found.file.as_deref(), Some(path.as_path()));
+            assert_eq!(found.design.as_ref(), Some(label));
+            assert_eq!(found.name, Some(t::package_name(doc)));
+            assert_eq!(found.note, None);
+        }
+        // Another version of a document of the package, with a note.
+        let other = resolver.resolve("urn:mitcad.test:fs.file:vf.part?version=5", None);
+        assert_eq!(other.design.as_ref(), Some(part));
+        assert_eq!(other.version, Some(5));
+        assert!(other.note.unwrap().contains("version 2"));
+        // The listing starts at the root and lists each document once.
+        let listed = list(&path.to_string_lossy(), &[], &HashMap::new()).unwrap();
+        let docs = listed["documents"].as_array().unwrap();
+        assert_eq!(docs.len(), 2, "{listed}");
+        assert_eq!(docs[0]["design"], part.as_str());
+        assert_eq!(docs[1]["design"], holder.as_str());
+        assert_eq!(docs[1]["name"], "Packaged holder");
+
+        // Without the description the manifests' GUIDs tell the designs:
+        // the root's and the holder's list the part's GUID too, the part's
+        // the fewest.
+        std::fs::write(&path, t::package_file(false)).unwrap();
+        let mut resolver = Resolver::new(&path, &[], &HashMap::new());
+        assert_eq!(resolver.package_root(), None);
+        let avoid = [root.clone()];
+        let found = resolver.resolve_avoiding(PART.urn, Some(PART.document_guid), &avoid);
+        assert_eq!(found.design.as_ref(), Some(part));
+        let found = resolver.resolve_avoiding(HOLDER.urn, Some(HOLDER.document_guid), &avoid);
+        assert_eq!(found.design.as_ref(), Some(holder));
+        let found = resolver.resolve(PART.urn, Some(PART.document_guid));
+        assert_eq!(found.design.as_ref(), Some(part));
+        // A document the package lacks: only the designs that refer to it
+        // list its GUID, and those being imported are never taken for it.
+        let avoid = [root.clone(), holder.clone(), part.clone()];
+        let found = resolver.resolve_avoiding(PART.urn, Some(PART.document_guid), &avoid);
+        assert_eq!(found.file, None);
+        let found = resolver.resolve_avoiding(PART.urn, Some(PART.document_guid), &avoid[1..]);
+        assert_eq!(found.design.as_ref(), Some(root));
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

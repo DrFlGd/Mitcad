@@ -750,6 +750,10 @@ int main(int argc, char** argv) {
       mitcad::bridge::f3d_write_test_references(args[1], args.size() == 3 ? args[2] : std::string());
       return 0;
     }
+    if (args.size() == 2 && args[0] == "--write-f3d-package") {
+      mitcad::bridge::f3d_write_test_package(args[1]);
+      return 0;
+    }
     if (args.size() == 2 && args[0] == "--write-ipt") {
       mitcad::bridge::ipt_write_test_file(args[1]);
       return 0;

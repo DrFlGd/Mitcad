@@ -244,8 +244,8 @@ ui_step "Revolution and Pitch"             ui_choose "Panel Coil input type" 1
 ui_expect_log "Preview Coil: ok" "previewed"
 ui_step "OK (Enter)"                       ui_key Return
 ui_expect_log "Added coil (New Body), diameter 40" "coil added"
-# ui_coil: pi 2^2 * 3 sqrt((40 pi)^2 + 10^2).
-ui_expect_volume "New body Body6 (F14.b0): volume \([0-9.]*\) mm3" 4752.386440264496 "coil" 1e-5
+# ui_coil: pi 2^2 * 3 * 2 pi 20 (the section in the plane through the axis).
+ui_expect_volume "New body Body6 (F14.b0): volume \([0-9.]*\) mm3" 4737.410096881198 "coil" 1e-5
 [ -n "$SHOT" ] && ui_capture "$SHOT"
 grep -q "Recompute failed" "$UI_LOG" && ui_fail "a recompute failed"
 ui_stop_app

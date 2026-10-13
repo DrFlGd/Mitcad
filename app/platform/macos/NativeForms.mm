@@ -134,7 +134,10 @@ public:
     cancel.accessibilityIdentifier = @"commandCancel";
     cancel.keyEquivalent = @"\033";
     [buttons addArrangedSubview:cancel];
-    m_ok = button(m_def.inspect ? QObject::tr("Close") : QObject::tr("OK"), QStringLiteral("accept"));
+    m_ok = button(m_def.inspect             ? QObject::tr("Close")
+                  : m_def.okLabel.isEmpty() ? QObject::tr("OK")
+                                            : m_def.okLabel,
+                  QStringLiteral("accept"));
     m_ok.accessibilityIdentifier = @"commandOk";
     m_ok.keyEquivalent = @"\r";
     [buttons addArrangedSubview:m_ok];

@@ -100,6 +100,10 @@ bool SketchModel::load(const QJsonObject& sketch) {
   name = sketch.value(QStringLiteral("name")).toString(uid);
   solved = flag(sketch, "solved");
   error = sketch.value(QStringLiteral("error")).toString();
+  warnings.clear();
+  for (const QJsonValue& warning : sketch.value(QStringLiteral("warnings")).toArray()) {
+    warnings << warning.toString();
+  }
   dof = sketch.value(QStringLiteral("dof")).toInt();
   points.clear();
   curves.clear();
@@ -174,6 +178,13 @@ bool SketchModel::load(const QJsonObject& sketch) {
     c.type = k.value(QStringLiteral("type")).toString();
     c.json = k;
     c.refs = refsOf(k);
+    if (c.type == QStringLiteral("equal_spacing")) {
+      // Its anchors in their order; the direction line is not one.
+      c.refs.clear();
+      for (const QJsonValue& anchor : k.value(QStringLiteral("anchors")).toArray()) {
+        c.refs << anchor.toString();
+      }
+    }
     constraints.push_back(c);
   }
 
@@ -366,6 +377,40 @@ QStringList SketchModel::curvesAt(const QString& point, bool centers) const {
     }
   }
   return found;
+}
+
+std::optional<V2> SketchModel::anchorAt(const QString& id) const {
+  if (const PointData* p = point(id)) {
+    return p->at;
+  }
+  if (const CurveData* c = curve(id)) {
+    if (c->isLine()) {
+      return (c->curve.a + c->curve.b) / 2.0;
+    }
+    if (c->isCircular()) {
+      return c->curve.center;
+    }
+  }
+  return std::nullopt;
+}
+
+const ConstraintData* SketchModel::equalSpacingOf(const QString& entity) const {
+  for (const ConstraintData& c : constraints) {
+    if (c.type == QStringLiteral("equal_spacing") && c.refs.contains(entity)) {
+      return &c;
+    }
+  }
+  return nullptr;
+}
+
+const DimensionData* SketchModel::spacingDimension(const QString& constraint) const {
+  for (const DimensionData& d : dimensions) {
+    if (d.type == QStringLiteral("spacing") &&
+        d.json.value(QStringLiteral("constraint")).toString() == constraint) {
+      return &d;
+    }
+  }
+  return nullptr;
 }
 
 V2 toSketch(const geometry::Frame& frame, const gp_Pnt& point) {

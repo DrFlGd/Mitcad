@@ -5,6 +5,7 @@
 #include <cmath>
 #include <stdexcept>
 
+#include <BRepAdaptor_Curve.hxx>
 #include <BRepAdaptor_Surface.hxx>
 #include <BRepBndLib.hxx>
 #include <BRepBuilderAPI_MakeFace.hxx>
@@ -14,10 +15,16 @@
 #include <GeomAbs_SurfaceType.hxx>
 #include <NCollection_IndexedDataMap.hxx>
 #include <NCollection_List.hxx>
+#include <Standard_ErrorHandler.hxx>
+#include <Standard_Failure.hxx>
 #include <TopExp.hxx>
 #include <TopExp_Explorer.hxx>
 #include <TopoDS.hxx>
+#include <TopoDS_Vertex.hxx>
+#include <gp.hxx>
 #include <gp_Ax3.hxx>
+#include <gp_Pnt.hxx>
+#include <gp_Vec.hxx>
 
 namespace mitcad::geometry::detail {
 namespace {
@@ -136,6 +143,105 @@ std::vector<int> EdgeFaces::at(int edge) const {
 
 std::vector<int> faces_at_edge(const Shape& body, int edge) {
   return EdgeFaces(body).at(edge);
+}
+
+namespace {
+
+// The unit tangents of the edge at the vertex, pointing away from the edge
+// (two for a closed edge, whose ends are both there; none where the curve
+// has no direction there).
+std::vector<gp_Vec> tangents_away(const TopoDS_Edge& edge, const TopoDS_Vertex& vertex) {
+  std::vector<gp_Vec> out;
+  // (The curve's own parameters, whatever the edge's orientation: its
+  // forward vertex, TopExp::FirstVertex, is at the first.)
+  const BRepAdaptor_Curve curve(edge);
+  for (const bool at_first : {true, false}) {
+    const TopoDS_Vertex end = at_first ? TopExp::FirstVertex(edge) : TopExp::LastVertex(edge);
+    if (!end.IsSame(vertex)) {
+      continue;
+    }
+    gp_Pnt point;
+    gp_Vec d;
+    curve.D1(at_first ? curve.FirstParameter() : curve.LastParameter(), point, d);
+    if (d.Magnitude() <= gp::Resolution()) {
+      continue;
+    }
+    d.Normalize();
+    out.push_back(at_first ? -d : d);
+  }
+  return out;
+}
+
+} // namespace
+
+int follow_tangent_chains(const Shape& body, std::vector<int>& owner, const std::vector<char>& follows) {
+  std::vector<int> queue;
+  for (int e = 0; e < body.edge_count(); ++e) {
+    const int s = owner[static_cast<std::size_t>(e)];
+    if (s >= 0 && static_cast<std::size_t>(s) < follows.size() && follows[static_cast<std::size_t>(s)] != 0) {
+      queue.push_back(e);
+    }
+  }
+  if (queue.empty()) {
+    return 0;
+  }
+  NCollection_IndexedDataMap<TopoDS_Shape, NCollection_List<TopoDS_Shape>, TopTools_ShapeMapHasher> edges_of;
+  TopExp::MapShapesAndUniqueAncestors(body.occt(), TopAbs_VERTEX, TopAbs_EDGE, edges_of);
+  const EdgeFaces edge_faces(body);
+  const auto sharp = [&](int edge) {
+    const std::vector<int> faces = edge_faces.at(edge);
+    if (faces.size() != 2) {
+      return false;
+    }
+    try {
+      OCC_CATCH_SIGNALS
+      return !is_smooth(body.edge(edge), body.face(faces[0]), body.face(faces[1]));
+    } catch (const Standard_Failure&) {
+      return false;
+    }
+  };
+  int added = 0;
+  while (!queue.empty()) {
+    const int e = queue.back();
+    queue.pop_back();
+    const int s = owner[static_cast<std::size_t>(e)];
+    const TopoDS_Edge& edge = body.edge(e);
+    if (BRep_Tool::Degenerated(edge)) {
+      continue;
+    }
+    for (const TopoDS_Vertex& vertex : {TopExp::FirstVertex(edge), TopExp::LastVertex(edge)}) {
+      const int index = vertex.IsNull() ? 0 : edges_of.FindIndex(vertex);
+      if (index == 0) {
+        continue;
+      }
+      try {
+        OCC_CATCH_SIGNALS
+        const std::vector<gp_Vec> away = tangents_away(edge, vertex);
+        for (const TopoDS_Shape& next : edges_of(index)) {
+          const int o = body.edge_index(next);
+          if (o < 0 || o == e || owner[static_cast<std::size_t>(o)] >= 0 ||
+              BRep_Tool::Degenerated(TopoDS::Edge(next))) {
+            continue;
+          }
+          // The next edge runs on where its direction away from the
+          // vertex is the opposite of this one's.
+          bool continues = false;
+          for (const gp_Vec& out : tangents_away(TopoDS::Edge(next), vertex)) {
+            for (const gp_Vec& from : away) {
+              continues = continues || from.Angle(-out) <= kTangentChainAngle;
+            }
+          }
+          if (continues && sharp(o)) {
+            owner[static_cast<std::size_t>(o)] = s;
+            queue.push_back(o);
+            ++added;
+          }
+        }
+      } catch (const Standard_Failure&) {
+      }
+    }
+  }
+  return added;
 }
 
 std::vector<int> tangent_closure(const Shape& body, std::vector<int> faces) {

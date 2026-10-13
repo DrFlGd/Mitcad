@@ -288,7 +288,7 @@ ProjectSettingsDialog::ProjectSettingsDialog(QWidget* parent, QString root, cons
   layout->addWidget(m_progress);
   m_progress->hide();
 
-  m_fields = new ProjectSettingsFields(this);
+  m_fields = new ProjectSettingsFields(ProjectSettingsFields::Host::ProjectSettings, this);
   layout->addWidget(m_fields);
 
   m_problem = note();
@@ -885,13 +885,16 @@ void ProjectSettingsDialog::writeAuthor() {
 
 } // namespace
 
-ProjectSettingsFields::ProjectSettingsFields(QWidget* parent) : QWidget(parent) {
+ProjectSettingsFields::ProjectSettingsFields(Host host, QWidget* parent) : QWidget(parent) {
+  // New Project uses S F L O I N C and the Cloud section V R Y W D E B P K:
+  // there the fields take T U A H M, or none.
+  const bool creating = host == Host::NewProject;
   auto* layout = new QVBoxLayout(this);
   layout->setContentsMargins(0, 0, 0, 0);
   // For everyone.
   m_everyone = new QGroupBox(tr("For everyone in this project (saved as a version)"));
   auto* everyone = new QFormLayout(m_everyone);
-  m_locks = new QCheckBox(tr("&Edit locks"));
+  m_locks = new QCheckBox(creating ? tr("Edi&t locks") : tr("&Edit locks"));
   m_locks->setToolTip(tr("A design has one editor at a time; the others open it read-only and can ask for it"));
   m_idle = new QSpinBox;
   m_idle->setRange(1, 120);
@@ -902,11 +905,11 @@ ProjectSettingsFields::ProjectSettingsFields(QWidget* parent) : QWidget(parent) 
   auto* locksRow = new QHBoxLayout;
   locksRow->addWidget(m_locks);
   locksRow->addSpacing(12);
-  auto* idleLabel = new QLabel(tr("Idle &time:"));
+  auto* idleLabel = new QLabel(creating ? tr("Idle time:") : tr("Idle &time:"));
   idleLabel->setBuddy(m_idle);
   locksRow->addWidget(idleLabel);
   locksRow->addWidget(m_idle);
-  auto* pollLabel = new QLabel(tr("&Poll:"));
+  auto* pollLabel = new QLabel(creating ? tr("Poll:") : tr("&Poll:"));
   pollLabel->setBuddy(m_poll);
   locksRow->addWidget(pollLabel);
   locksRow->addWidget(m_poll);
@@ -916,8 +919,8 @@ ProjectSettingsFields::ProjectSettingsFields(QWidget* parent) : QWidget(parent) 
   setErrorStyleSheet(m_locksNote);
   m_locksNote->hide();
   everyone->addRow(m_locksNote);
-  m_liveNone = new QRadioButton(tr("&None"));
-  m_liveBroker = new QRadioButton(tr("B&roker:"));
+  m_liveNone = new QRadioButton(creating ? tr("None") : tr("&None"));
+  m_liveBroker = new QRadioButton(creating ? tr("Broker:") : tr("B&roker:"));
   auto* liveGroup = new QButtonGroup(this);
   liveGroup->addButton(m_liveNone);
   liveGroup->addButton(m_liveBroker);
@@ -926,7 +929,7 @@ ProjectSettingsFields::ProjectSettingsFields(QWidget* parent) : QWidget(parent) 
   m_prefix = new QLineEdit;
   m_prefix->setPlaceholderText(QStringLiteral("mitcad"));
   m_prefix->setMaximumWidth(120);
-  m_test = new QPushButton(tr("Te&st"));
+  m_test = new QPushButton(creating ? tr("Test") : tr("Te&st"));
   m_test->setAutoDefault(false);
   auto* liveColumn = new QVBoxLayout;
   liveColumn->addWidget(m_liveNone);
@@ -949,7 +952,7 @@ ProjectSettingsFields::ProjectSettingsFields(QWidget* parent) : QWidget(parent) 
   m_displayName->setObjectName(QStringLiteral("projectDisplayName"));
   m_displayName->setMaxLength(200);
   m_displayName->setClearButtonEnabled(true);
-  auto* displayLabel = new QLabel(tr("&Display name:"));
+  auto* displayLabel = new QLabel(creating ? tr("Display na&me:") : tr("&Display name:"));
   displayLabel->setBuddy(m_displayName);
   hereForm->addRow(displayLabel, m_displayName);
   m_name = new QLineEdit;
@@ -961,7 +964,7 @@ ProjectSettingsFields::ProjectSettingsFields(QWidget* parent) : QWidget(parent) 
   auto* authorRow = new QHBoxLayout;
   authorRow->addWidget(m_name, 1);
   authorRow->addWidget(m_email, 1);
-  auto* authorLabel = new QLabel(tr("&Author:"));
+  auto* authorLabel = new QLabel(creating ? tr("A&uthor:") : tr("&Author:"));
   authorLabel->setBuddy(m_name);
   hereForm->addRow(authorLabel, authorRow);
   m_sendAtOnce = new QCheckBox(tr("Send each version at once"));
@@ -973,7 +976,7 @@ ProjectSettingsFields::ProjectSettingsFields(QWidget* parent) : QWidget(parent) 
                                  : checkText(minutes),
                      minutes);
   }
-  auto* checkLabel = new QLabel(tr("&Check for newer versions:"));
+  auto* checkLabel = new QLabel(creating ? tr("C&heck for newer versions:") : tr("&Check for newer versions:"));
   checkLabel->setBuddy(m_check);
   hereForm->addRow(checkLabel, m_check);
   m_liveHere = new QComboBox;
@@ -991,7 +994,7 @@ ProjectSettingsFields::ProjectSettingsFields(QWidget* parent) : QWidget(parent) 
   hereRow->addWidget(m_hereBroker, 1);
   hereRow->addWidget(new QLabel(tr("Prefix:")));
   hereRow->addWidget(m_herePrefix);
-  auto* liveHereLabel = new QLabel(tr("L&ive updates here:"));
+  auto* liveHereLabel = new QLabel(creating ? tr("Live upd&ates here:") : tr("L&ive updates here:"));
   liveHereLabel->setBuddy(m_liveHere);
   hereForm->addRow(liveHereLabel, m_liveHere);
   hereForm->addRow(QString(), m_hereRow);

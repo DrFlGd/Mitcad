@@ -164,13 +164,14 @@ native-click commandCancel
 expect-log 'Command Fillet cancelled' 30
 
 # Measurement reads the model on the document worker and publishes the
-# result to the real native inspector. Select through the native outline.
+# result to the real native inspector. Select through the native outline:
+# the body is the new design's Part1's (mitcad#220), its row Part1:1's (O1).
 mark
 native-action inspect.measure
 expect-log 'Command Measure started'
 native-choice input_filter 'Bodies'
 native-expand native.modelTree
-native-select native.model.body:F1.b0@
+native-select native.model.body:F1.b0@O1
 expect-log 'Measure Body 1: 1 body' 30
 expect-log 'Computing inspection started' 30
 expect-log 'Inspect Measure: volume 10000' 30
@@ -184,7 +185,8 @@ mark
 native-action inspect.measure
 expect-log 'Command Measure started'
 native-choice input_filter 'Bodies'
-native-select native.model.body:F1.b0@
+native-expand native.modelTree
+native-select native.model.body:F1.b0@O1
 expect-log 'Measure Body 1: 1 body' 30
 key Escape
 expect-log 'Command Measure cancelled' 30

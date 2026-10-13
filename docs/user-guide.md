@@ -256,7 +256,8 @@ application menu.
   left also what the window crosses (in a design with components, a drag
   that starts on a body drags the component or says why it does not:
   see [Components](#components)). The filters of the SELECT group limit
-  what can be selected. A selection made before a command goes into the
+  what can be selected; sketch mode has its own (see [Selection in sketch
+  mode](#selection-in-sketch-mode)). A selection made before a command goes into the
   command's input. What a click would pick is highlighted under the
   pointer: a face see-through in light blue (in a command, its input's
   colour) with its boundary drawn, so that its shading still shows, an
@@ -329,17 +330,38 @@ brings back the layout of the other systems.
 
 ### Sketch mode
 
-The SKETCH tab has the drawing tools (CREATE: line, rectangles, circles,
-arcs, polygons, ellipse, slots, splines, point, text, mirror, patterns,
-project, dimension), modification (MODIFY: fillet, chamfer, Trim, Extend,
-Offset, Move/Copy, construction, centre line) and constraints
-(CONSTRAINTS). On the right is the sketch palette: degrees of freedom,
+The SKETCH tab has the drawing tools (CREATE), modification (MODIFY:
+fillet, chamfer, Trim, Extend, Offset, Move/Copy, Edit Pattern, Edit
+Offset, Edit Text, construction, centre line) and constraints
+(CONSTRAINTS). The CREATE menu groups its tools:
+
+| Entry | Tools |
+| --- | --- |
+| Line | the line tool (lines end to end, with tangent arcs) |
+| Rectangles | 2-Point, 3-Point and Center Rectangle |
+| Circles | Center Diameter, 2-Point, 3-Point, 2-Tangent and 3-Tangent Circle |
+| Arcs | 3-Point, Center Point and Tangent Arc |
+| Other Geometry | Ellipse, the polygons, the slots, the splines and Point |
+| Text | Text |
+| Patterns | Rectangular Pattern, Circular Pattern and Mirror |
+| Project | Project (references from the bodies) |
+| Sketch Dimension | Sketch Dimension |
+
+On the toolbar, Line and Sketch Dimension are buttons; Rectangles, Circles
+and Arcs are split buttons: the button starts the default tool (2-Point
+Rectangle, Center Diameter Circle, 3-Point Arc) and its arrow opens the
+other variants. The keyboard shortcuts and the command search reach every
+tool as before.
+
+On the right is the sketch palette: degrees of freedom,
 options (construction, snap to grid, showing dimensions, constraints and
 profiles, Hide Above Sketch, Look At) and the constraint buttons.
 *Hide Above Sketch* cuts the bodies at the sketch plane, so that a sketch
 on a face below other parts of a body is not hidden by them (the cut
 bodies cannot be picked meanwhile). The faces where it cuts the bodies are
-drawn in a colour of their own and hatched, as in Section Analysis. It
+drawn in a colour of their own and hatched, as in Section Analysis. The
+bodies stay cut while a sketch command's panel is open (Offset, Mirror,
+the patterns, Project, sketch Fillet, ...) and its preview is shown. It
 stays on for the next sketch.
 
 - While a tool is active the pointer is a slim cross with the tool's
@@ -380,6 +402,32 @@ stays on for the next sketch.
   on several lines makes each one horizontal or vertical. The constraints
   are one undo step; ones the sketch refuses (already implied or
   conflicting) are left out with a message.
+- **Equal Spacing** (Constraints) keeps the intervals between three or
+  more independent objects equal without copying them: points, circles
+  and arcs (their centres) and lines (their midpoints), mixed as needed.
+  Choose how the intervals are measured: Horizontal (x), Vertical (y),
+  Along a Line (pick the line) or Point to Point (the distances, a chain
+  that may bend). Only successive intervals count (A-B, B-C, C-D); nothing
+  is aligned and no size is made equal (an arc spaced by its centre keeps
+  its radius when the radius is dimensioned). Horizontal, vertical and along
+  spacings take the objects in their order along the direction; when two
+  are at the same place along it, the panel names them: order the list
+  and check Keep Listed Order. A point-to-point chain follows the list's
+  order (objects picked in the panel come in the order clicked; for a
+  selection made beforehand check Chain in Listed Order once the list is
+  right). The preview draws the chain numbered 1, 2, 3.
+- Without a dimension the intervals stay equal but their size is free.
+  **Common Spacing Dimension** adds one dimension that sets every
+  interval; selecting three or more such objects and pressing Dimension
+  (D) opens Equal Spacing Dimension directly, with the current mean
+  interval to type over. Editing that one value changes every interval;
+  deleting it keeps the intervals equal. A double-click on the equal
+  spacing's symbol (or **Edit Equal Spacing**, also in the context menu
+  of a right-clicked symbol) changes its objects, their
+  order, the measurement and the dimension. Deleting one of its objects
+  takes it out of the chain; with fewer than three left the constraint
+  goes. Copies of a sketch pattern are spaced by the pattern: change them
+  with Edit Pattern.
 - Fully defined geometry is black, free geometry blue, construction
   geometry an orange dashed line, projected geometry purple. Dragging a
   point or a curve moves it as far as the constraints allow.
@@ -390,6 +438,44 @@ stays on for the next sketch.
   constraints can be added to the curves of an offset of an ellipse or a
   spline.
 
+#### Selection in sketch mode
+
+While a sketch is edited, the **Selection Filter** button of the SKETCH
+tab's SELECT group says what a click and a window select. Each row cycles
+when clicked: an empty square (cannot be selected), a filled square (a
+click selects it) and a square with a cross (a click and a window select
+it, in both drag directions). Each sketch edit starts with:
+
+| Row | Default |
+| --- | --- |
+| Sketch geometry, construction geometry, projected geometry | cross |
+| Dimensions and constraints, profiles, visible body edges | square |
+| Occluded body edges, body faces, body vertices, bodies, components, planes/axes/points | empty |
+
+So a window selects the sketch's ordinary, construction and projected
+geometry together and nothing of the bodies, and a click on a body edge
+in sight selects it, one behind faces does not. Whether an edge is in
+sight depends on the view at the moment (orbit and it changes); for an
+edge partly hidden, the part clicked or inside the window counts. The
+rows only concern the edited sketch: other sketches' geometry cannot be
+selected, and hidden bodies neither. *Reset to Defaults* restores the
+rows; the SOLID tab's filters are kept apart and apply again after the
+sketch.
+
+- **Shift+click** also selects what empty rows hold (for example an edge
+  behind a face); the highlight under the pointer shows it while Shift is
+  down and goes back when Shift is released. Ctrl+click adds or removes,
+  Ctrl+Shift+click does both. Shift with a window adds to the selection
+  but does not go beyond the filter. Shift with the other mouse buttons
+  and the wheel navigates as before. A right click offers the commands
+  for what Shift+click would select, so a face still offers Project.
+- **Project** (P) has rows of its own while it runs, shown in the same
+  control: visible body edges cross, occluded edges empty, faces and
+  vertices square. They can be changed while it runs, and Shift+click
+  reaches an edge behind faces; it takes nothing but edges, faces and
+  vertices. OK and Cancel bring back the sketch's rows as they were; the
+  projected geometry then follows the projected geometry row.
+
 ### Browser, timeline and parameters
 
 - **Browser:** Document Settings (unit), Named Views, Origin, and the root
@@ -399,8 +485,9 @@ stays on for the next sketch.
   shows again when the last such feature is deleted; the eye overrides
   that. The radio button after a component's name activates it; F2
   renames. Context menu: Edit, Show/Hide, Isolate, New Component, Move
-  Features into a Component, Copy, Paste, Paste New, Ground, Create
-  Components from Bodies, Move to Component, Create Sketch, Look At,
+  Features into a Component, Copy, Paste, Paste New, Move to... (a
+  component: another parent), Ground, Create Components from Bodies,
+  Move to Component (bodies and sketches), Create Sketch, Look At,
   Rename, Delete, Find in Timeline.
 - **Timeline:** features as icons in their component's colour, a failed
   one in red with its error, one with a warning in yellow with the
@@ -482,7 +569,7 @@ new component with it.
 
 The same is at hand later: **Move Features into a Component** on a
 component's row moves all its modelled features, **Move to Component**
-on a body or on a feature in the timeline moves that one with the
+on a body, a sketch or a feature in the timeline moves that one with the
 features that go with it, and **Move the Features That Made It into the
 Component** on a Component from Bodies step gives that component its
 history and removes the step. A feature that works on bodies that would
@@ -490,6 +577,23 @@ end up in different components (a combine, a cut through both, a sketch
 on a face of another body) cannot go with only one of them: Mitcad lists
 such features and offers to keep those bodies together. Each move is one
 undo step.
+
+**Moving a component to another parent:** a component made inside
+another one (because that one was active) can be moved out: **Move
+to...** on its row in the browser lists the root and the other
+components by their full paths and moves the component, with everything
+in it, under the one chosen. It stays where it is in the design, also
+under turned parents; its history, parameters, name and grounding stay
+too, and sketches, links, joints, cut scopes, section analyses and
+Isolate that refer to it through its old place follow it. Parents it
+cannot go into are listed greyed with the reason: its current parent,
+itself and what is placed in it, a component placed more than once (the
+move would change every copy of it), a linked component. What the move
+cannot keep is named instead of changed: an occurrence placed by a Move,
+a captured position, a joint, a constraint or a rigid group in its
+parent; a joint whose moved component would change; a link across it
+while a parent on the way is moved by the timeline; Pattern at Points.
+The move is one undo step; Cancel changes nothing.
 
 **Dragging components:** a component that its joints and constraints
 leave free to move can be dragged in the view with the left mouse
@@ -630,7 +734,8 @@ choice.
   project, File › New Design opens an untitled design instead): type its
   name in the panel and press Enter. It is recorded as a version (`Add parts/bracket.mitcad`) and
   opens. **New Folder** adds a folder the same way (`Add folder parts`).
-- **Rename** (F2) and a **drag** onto another folder or the project move
+- **Rename** (F2, or the context menu of a design or a folder) and a
+  **drag** onto another folder or the project move
   a design or a folder within its project, as one version (`Move
   parts/a.mitcad to old/a.mitcad`); a design that is open follows its new
   name. Moving between projects is not possible.
@@ -1072,19 +1177,23 @@ edges (a fillet, for example).
 
 **3D Print** sends bodies to a slicer (Bambu Studio, OrcaSlicer,
 PrusaSlicer, UltiMaker Cura or any program that opens files given on its
-command line): the selected bodies (a face, edge or vertex stands for its
-body, a component's occurrence in the browser for the bodies shown in
-it), or with nothing selected every visible solid and mesh body. Surface
-bodies and empty ones cannot be printed; the dialog lists them as left
-out. The dialog chooses:
+command line). Its panel starts with the selected bodies in **Bodies** (a
+face, edge or vertex stands for its body, a component's occurrence in the
+browser for the bodies shown in it), or with nothing selected every
+visible solid and mesh body. The bodies to be sent are highlighted; while
+the panel is open, a click on a body in the view adds it or takes it out
+(a window selection adds several). Surface bodies and empty ones cannot
+be printed, nor picked; those that were selected are left out. The panel
+also chooses:
 
 - **Format:** *STL, one file per body* (the default; a body shown more
   than once, in a component placed several times, gets a file per
-  occurrence, such as `Pin (Arm_2).stl`) or *3MF, one object with parts*:
-  one file in which the bodies are the parts of one object, with their
-  names and appearance colours. Both have the bodies where the view shows
-  them. 3MF is the reliable way to get one object of several parts in the
-  slicer (UltiMaker Cura loads the parts as a group).
+  occurrence picked, such as `Pin (Arm_2).stl`) or *3MF, one object
+  with parts*: one file in which the bodies are the parts of one object,
+  with their names and appearance colours. Both have the bodies where
+  the view shows them. 3MF is the reliable way to get one object of
+  several parts in the slicer (UltiMaker Cura loads the parts as a
+  group).
 - **Refinement:** Low, Medium, High (the default) or Custom: how far the
   triangles may lie from the surface (mm) and the angle between
   neighbouring triangles.
@@ -1092,9 +1201,10 @@ out. The dialog chooses:
   where possible, or another program (an AppImage or, on macOS, an
   application in the Applications folder, for example).
 
-The files go into `mitcad-print/<design>` in the temporary folder, which
-is emptied before each send. Without a slicer, or when it does not
-start, the folder opens instead. The choices are remembered.
+**Send** (Enter) writes the files into `mitcad-print/<design>` in the
+temporary folder, which is emptied before each send, and gives them to
+the slicer. Without a slicer, or when it does not start, the folder
+opens instead. The choices are remembered.
 
 Slicers are found in their usual install folders and the list of
 installed programs (Windows), in the Applications folders (macOS; an
@@ -1139,7 +1249,7 @@ patterns, mirrors, splits and Combine are replayed as Mitcad features,
 and after every feature the bodies are checked against the file. A
 feature that cannot be replayed comes in as a base feature of the file's
 bodies at its place, and the timeline continues on them, so the result
-always has the file's geometry. Coils and ribs always come in this way.
+always has the file's geometry. Ribs and webs always come in this way.
 The whole import is one undoable step.
 
 Components and occurrences come in at the file's placements. Joints,

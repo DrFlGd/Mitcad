@@ -189,6 +189,11 @@ ui_expect_new "Undo: Insert plate.dxf" "one undo step; the document is as saved"
 echo "--- Insert Component"
 ui_step "new design (Ctrl+N)"              ui_key ctrl+n
 ui_expect_log "New document" "an empty document"
+# A new design's active Part1 takes no components (mitcad#220): the
+# component goes into the root, an assembly.
+ui_mark
+ui_step "activate the root"                ui_click_logged "Browser radio Root"
+ui_expect_new "Activated Root" "the root is active"
 ui_mark
 ui_step "Insert Component (search)"        ui_command "Insert Component"
 type_into_dialog 'Insert Component' "$WORK/block.mitcad"

@@ -159,5 +159,8 @@ void shell_vanishing_tests();
 void fillet_rolling_ball_tests();
 // The faces a run of features made, copied by a pattern.
 void face_copy_tests();
+// Operations on bodies of thousands of faces, with the port's patch 0110
+// (mitcad#121).
+void large_body_tests();
 
 } // namespace test

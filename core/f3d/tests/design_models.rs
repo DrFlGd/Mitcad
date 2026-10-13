@@ -1074,7 +1074,34 @@ fn sweeps_and_lofts_match_the_reference_dumps() {
                 let what = format!("{id}: {}", item.name().unwrap_or("?"));
                 let theirs = sweep_inputs(item);
                 let mine = twins.get(k).map(|t| sweep_inputs(t));
-                if mine.as_ref() == Some(&theirs) {
+                // The options the stream decoder reads since mitcad#25 (a
+                // sweep's orientation, a loft's closed and solid flags, a
+                // pipe's section and hollow flag) where the dump has them.
+                let options = |i: &ir::TimelineItem| {
+                    let d = i
+                        .detail
+                        .as_ref()
+                        .map(|d| serde_json::to_value(d).unwrap())
+                        .unwrap_or_default();
+                    let keys: &[&str] = match kind {
+                        "SweepFeature" => &["orientation"],
+                        "LoftFeature" => &["isClosed", "isSolid"],
+                        _ => &["sectionType", "isHollow"],
+                    };
+                    keys.iter()
+                        .map(|key| d.get(*key).cloned().unwrap_or(serde_json::Value::Null))
+                        .collect::<Vec<_>>()
+                };
+                let (theirs_options, mine_options) =
+                    (options(item), twins.get(k).map(|t| options(t)));
+                let options_agree = theirs_options.iter().enumerate().all(|(n, v)| {
+                    // (A sweep along a guide rail stores 3; the dump's
+                    // orientation is an error there.)
+                    v.is_null()
+                        || v.get("_error").is_some()
+                        || mine_options.as_ref().is_some_and(|m| &m[n] == v)
+                });
+                if mine.as_ref() == Some(&theirs) && options_agree {
                     agree += 1;
                 } else {
                     differ.push(format!("{what}: {mine:?}, dump {theirs}"));
@@ -1964,4 +1991,50 @@ fn sketch_texts_match_the_reference_dumps() {
         }
     }
     println!("sketch texts: {seen} checked");
+}
+
+/// A hole's direction (mitcad#25): `isDefaultDirection` is the flag behind
+/// the first null reference of its record, on every hole of the reference
+/// models whose record has that layout (class version 7).
+#[test]
+fn hole_directions_match_the_reference_dumps() {
+    let Some(dir) = models_dir() else {
+        eprintln!("reference models not found; skipped");
+        return;
+    };
+    let (mut agree, mut differ) = (0usize, Vec::new());
+    for (id, f3d, json) in models(&dir) {
+        let text = std::fs::read_to_string(&json).unwrap();
+        let reference = ir::Dump::from_json(&text).unwrap_or_else(|e| panic!("{id}: {e}"));
+        let designs = design::decode_path(&f3d).unwrap_or_else(|e| panic!("{id}: {e}"));
+        let Some(decoded) = designs.into_iter().find_map(|d| d.dump) else {
+            panic!("{id}: no design decoded");
+        };
+        let holes = of_kind(&decoded, "HoleFeature");
+        for (k, item) in of_kind(&reference, "HoleFeature").into_iter().enumerate() {
+            let (Some(ir::Detail::Hole(theirs)), Some(ir::Detail::Hole(mine))) =
+                (&item.detail, holes.get(k).and_then(|t| t.detail.as_ref()))
+            else {
+                continue;
+            };
+            let Some(wanted) = theirs.is_default_direction else {
+                continue;
+            };
+            if mine.is_default_direction == Some(wanted) {
+                agree += 1;
+            } else {
+                differ.push(format!(
+                    "{id}: {}: {:?}, dump {wanted}",
+                    item.name().unwrap_or("?"),
+                    mine.is_default_direction
+                ));
+            }
+        }
+    }
+    println!("hole directions: {agree} agree, {} differ", differ.len());
+    for d in &differ {
+        println!("  {d}");
+    }
+    assert!(differ.is_empty(), "{differ:#?}");
+    assert!(agree > 0 || models_dir().is_none());
 }

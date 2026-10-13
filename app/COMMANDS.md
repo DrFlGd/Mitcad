@@ -19,6 +19,7 @@ CommandDef chamfer(const CommandContext& context) {
   def.tab = "SOLID";                   // SOLID or SKETCH; empty: menus only
   def.group = "MODIFY";                // see Ribbon::groups()
   def.pinned = true;                   // a button besides the group menu entry
+  def.subgroup = "";                   // a submenu of the group's menu, see below
   def.keywords = {"bevel"};            // the command search finds it by these too
   def.featureType = "chamfer";         // the definition type it adds and edits
   def.inputs = {
@@ -43,6 +44,17 @@ CommandContext&)` (called from `MainWindow::registerCommands`); the order
 of registration is the order of the group menus and buttons. The toolbar,
 menus, command search, shortcut dialog and context menu pick it up from
 the registry. (The real Chamfer has sets of edges, see `listInput`.)
+
+**Subgroups** (mitcad#222): commands of a group with the same `subgroup`
+are one submenu of the group's menu, where the first of them is, in
+registration order (`Ribbon::createGroup`). The subgroup's pinned command
+is the default of a split button (`QToolButton::MenuButtonPopup`; in the
+Mac presentation `RibbonButton` draws the arrow part): the button runs it,
+its arrow opens the submenu. A subgroup without a pinned command has no
+button; a subgroup of one command is a plain entry. The sketch commands
+give it with the group, `"CREATE/Circles"` (`sketchCommand` in
+`SketchCommands.cpp`). The native macOS frontend mirrors the submenus as
+popup entries of its group menus; the default keeps its plain button there.
 
 Checklist for a new command or feature type:
 
@@ -178,16 +190,28 @@ becomes the active one (Extrude's To Object).
 - `init(state, context)`: defaults that depend on the model, applied after
   the inputs' defaults and the pre-selection (Extrude and Revolve take the
   newest unused profile).
+- `preselect(selection, state, context)`: fills the inputs from the
+  selection made before the command itself, instead of each item going to
+  the first input that takes it (3D Print: a face stands for its body, an
+  occurrence for the bodies shown in it, nothing selected for every shown
+  body); `init` follows.
 - `describe(state, context)`: a log line after OK (UI tests read it);
   with `describeBefore` it reads the model as before OK (the edges a
   fillet rounds), else after.
 - `enabled()`: whether the command can start.
 
-Two other kinds of panels:
+Three other kinds of panels:
 
 - `modelCommand`: `build` gives `{"commands": [...], "label": "..."}`, run
   on OK as one undo step through `CommandHost::runCommands` (Physical
   Material, Appearance, New Component); no preview, outside the timeline.
+- `accept(state, context)` (mitcad#234): an application command with a
+  panel (3D Print). The inputs are picked and checked as a feature's are,
+  and the view highlights the selections; `build` gives an empty
+  definition or a `Built::failure` the panel shows; nothing is previewed.
+  OK calls `accept`, which does the work outside the model's history
+  (files, other programs) and returns false to keep the panel open; then
+  `Done <command>` is logged. `okLabel` names the OK button (Send).
 - `inspect(state, context)` instead of `build`: an `Inspection` (rich
   text, a log line, a shape drawn over the view, red for a problem, a
   section plane) computed while inputs change; OK closes the panel
@@ -318,9 +342,18 @@ A drawing or picking tool is a `sketch::SketchTool` (`sketch/SketchTool.hpp`)
 made by a factory and started by a `Tool` command:
 
 ```cpp
-add({"sketch.line", QObject::tr("Line"), "line", "CREATE",
+add({"sketch.line", QObject::tr("Line"), "line", "CREATE/Lines",
      [&c] { c.startTool(sketch::lineTool(c)); }, QKeySequence(Qt::Key_L), true, tooltip});
 ```
+
+The sketch CREATE group's subgroups (mitcad#222), in this order: Lines
+(Line), Rectangles (default 2-Point Rectangle), Circles (default Center
+Diameter Circle), Arcs (default 3-Point Arc), Other Geometry (Ellipse, the
+polygons, the slots, the splines, Point; no default), Text, Patterns
+(Rectangular Pattern, Circular Pattern, Mirror; no default), References
+(Project); Sketch Dimension follows on its own. Offset, Edit Pattern, Edit
+Offset and Edit Text are in MODIFY. The toolbar row has Line, the three
+split buttons and Sketch Dimension (`tools/ui-sketch-create-menu-test.sh`).
 
 - `move(snap)`, `press(snap)`, `release`, `doubleClick` get the cursor
   snapped (`SketchSnap`: points, origin, midpoints, centres, quadrants,
@@ -363,8 +396,23 @@ when an input changes, OK keeps it as one undo step, Cancel undoes it.
 Their selection inputs take `SelectKind::SketchCurve`/`SketchPoint` of
 the edited sketch (`ofSketch`, `linesOf` in `SketchCommands.cpp`; not
 texts). While a panel is open, sketch mode's mouse handling pauses
-(`SketchController::setPaused`). Drive Joint (outside sketches) runs its
-`drive_joint` the same way.
+(`SketchController::setPaused`); the window is in `Mode::Command`, but
+the sketch is still what the view shows (`MainWindow::sketchShown`), so
+Hide Above Sketch keeps the bodies cut through the panel, its previews,
+OK and Cancel (mitcad#223). Drive Joint (outside sketches) runs its
+`drive_joint` the same way. A sketch command's `warnings` are the panel's
+message (not red) and the preview's log line (`Preview <name>: ok,
+warning: ...`).
+
+**Clean Up Projections** (`sketch.clean_up_projections`, CREATE's
+References, mitcad#232) is such a panel with one input, Merge Overlapping
+Lines (checked): its preview runs the command, whose warnings list what it
+removes and merges, the links merged curves lose and the regions later
+features use that change their names; OK keeps it as one undo step, Cancel
+takes it back, and with nothing to clean up the panel says so and OK stays
+off. The Sketch Palette's status adds the sketch's `warnings` (linked
+projections that could not follow their sources) under the degrees of
+freedom.
 
 Texts, patterns and offsets stay editable:
 
@@ -381,6 +429,46 @@ Texts, patterns and offsets stay editable:
   as points: the query marks what the offset computes `derived`, and
   `SketchModel` drops the other control points (no snapping to them).
   Dragging or moving it carries its source along at the same distance.
+
+Equal spacing (mitcad#221, `commands/EqualSpacingCommands.cpp`;
+commands.md, "Equal spacing in sketches") is a constraint with a panel:
+
+- **Equal Spacing** (`sketch.equal_spacing`, in CONSTRAINTS and the
+  palette's constraint grid) and **Equal Spacing Dimension**
+  (`sketch.equal_spacing_dimension`, the same panel with its Common
+  Spacing Dimension checked) build `sketch.add_equal_spacing`. Sketch
+  Dimension (D) with three or more points, circles, arcs or lines selected
+  (only those) opens Equal Spacing Dimension instead of its tool
+  (`dimensionEqualSpacing`): the spacing field shows the mean interval
+  and has the keyboard, OK adds the constraint and its one dimension as
+  one undo step.
+- Inputs: Objects (an ordered list, `withOrdered`: its order is the
+  chain's; points, lines, circles and arcs of the sketch), Measure
+  (Horizontal, Vertical, Along a Line, Point to Point; the start chooses
+  Horizontal or Vertical by the objects' spread), Direction (a line, for
+  Along a Line), Keep Listed Order (directional modes: otherwise the model
+  sorts along the direction and refuses ties, naming them), Chain in
+  Listed Order (Point to Point: needed unless every object was clicked
+  into the list in the panel, one by one, as the list's `onPick` records;
+  a selection made before the command or a window has no order of its
+  own, so the chain's order is confirmed explicitly), Common Spacing
+  Dimension and Spacing.
+- The preview runs the command, so the model's refusal (too few or
+  unsupported objects, a tie, a pattern's copies, redundant or
+  conflicting) is the panel's message before OK. `build` gives the
+  objects to `SketchController::setSpacingPreview`; the overlay draws the
+  previewed chain dashed, numbered 1, 2, 3 in the order the model keeps
+  (`SketchOverlay::paintChain`), and the same for a selected or hovered
+  equal spacing. Each anchor has the constraint's glyph (three ticks on a
+  line); the `spacing` dimension is drawn on the first interval.
+- **Edit Equal Spacing** (`sketch.edit_equal_spacing`) takes the
+  constraint's glyph or one of its objects (also by a double-click on the
+  selected glyph, and in the sketch's context menu when the glyph is
+  selected or right-clicked: a right click on a glyph or a dimension
+  selects it, as on geometry), fills the panel from the stored order (Keep Listed
+  Order checked), and builds `sketch.edit_equal_spacing` with
+  `sketch.add_dimension`, `sketch.set_dimension` or `sketch.remove` for
+  the common spacing, one undo step.
 
 ## Browser, timeline and parameters
 
@@ -439,9 +527,9 @@ only when the answers changed). They only show and emit;
   with its features into its own component (`groups`) and the command is
   done; a new feature whose references moved (`feature_references`
   query) is added to the new component (`add_feature`'s `component`).
-  Move to Component (a body's row, a timeline feature: `bodies` or
-  `features`) and Move Features into a Component (a component's row) run
-  `moveToComponent`. Its dialog always asks for an existing destination or
+  Move to Component (a body's row, a sketch's row (mitcad#218), a
+  timeline feature: `bodies` or `features`) and Move Features into a
+  Component (a component's row) run `moveToComponent`. Its dialog always asks for an existing destination or
   Create New, with a name and parent, before running a command. Component
   paths and occurrence identifiers distinguish repeated names; browser
   rows also supply `source_occurrence`. The plan lists expanded sketches,
@@ -454,6 +542,22 @@ only when the answers changed). They only show and emit;
   has Body1`, `Hybrid assembly: move|continue as is[, don't ask again]`,
   `Moved Sketch1, Extrude1 into Component1`. Test:
   `tools/ui-hybrid-test.sh`; explicit destination dialog checks: `app.unit`.
+- **Move to...** on a component occurrence's row (not the root; mitcad#219,
+  `framework/MoveOccurrenceDialog.cpp`, `BrowserController::moveOccurrence`):
+  another parent for the occurrence with everything in it, where it stays
+  in the design. The dialog (title `Move Component`) reads the
+  `reparent_occurrence` query: the root and every placed component by full
+  path, the current parent marked, unavailable parents grey with their
+  reason (selectable, so that the reason shows); what is in the occurrence
+  and, for the chosen parent, the references that follow it or the
+  blockers. Move runs the `reparent_occurrence` command (one undo step) and
+  selects the occurrence's row at its new path; a refused command leaves
+  the dialog open; Cancel changes nothing. Log lines: `Move Component
+  parents of Part:1: Root | Root/Assembly:1 (unavailable) | …`, `Move
+  Component parent: Root, ok` (or `…, unavailable: <reason>`), `Moved
+  Part:1 to Root`, `Move of Holder:1 cancelled`. Tests: `app.unit`
+  (`tests/move_occurrence.cpp`), `tools/ui-move-test.sh` (also the sketch
+  row's Move to Component).
 - **Selection:** rows set the selection outside commands
   (`DocumentHost::pickItems`); in a command a row goes to the active input
   like a click in the view; while Create Sketch waits for a plane, a plane
@@ -853,7 +957,12 @@ settings in the user's settings (`ViewSettings`, group `view`);
   body's face), hatched at 45 degrees to the plane's x axis (the sketch's
   in Hide Above Sketch; `OcctViewer::setSectionCaps`, the lines lifted off
   the caps toward the removed side so that they are drawn over them); the
-  clip is the model's `analysis_shape {"shape": "clip"}`.
+  clip is the model's `analysis_shape {"shape": "clip"}`. What is left of
+  the bodies keeps their names, so its faces, edges and vertices are picked
+  as the bodies' own (Project while Hide Above Sketch is on, also the face
+  the sketch lies on, which stays whole); the caps cannot be picked
+  (mitcad#233). Test: `tools/ui-windows-section-pick-test.ps1` (ctest
+  `app.ui-windows-section-pick`).
 
 - **Rendered** (`view.rendered`, in View > Visual Style; only when the
   render worker `mitcad-render`, which every build has, is next to the
@@ -1002,6 +1111,7 @@ UI thread.
 |---|---|
 | `framework/Command.hpp` | `CommandDef`, `InputDef`, `CommandState`, `Built`, `CommandContext` |
 | `framework/Selection.hpp` | `SelectKind`, `SelectFilter`, `SelectionItem` (a picked entity by its model name) |
+| `framework/SelectionScope.*`, `framework/SelectionFilterPanel.*`, `MainWindowSelection.cpp` | sketch selection filters (mitcad#217): the three-state rows, the sketch's and Project's contexts, the Selection Filter control, sketch mode's picks through them |
 | `framework/CommandSession.*` | a running feature command: state, panel, selections in the view, previews, OK and Cancel, editing |
 | `framework/CommandPanel.*` | the panel generated from the inputs |
 | `framework/CommandRegistry.*` | every command with its `QAction`; shortcuts saved in the settings |
@@ -1066,7 +1176,7 @@ UI thread.
 | `files/ProjectIndicator.*` | the project indicator and its menu |
 | `projects/` | the Projects panel (mitcad#145, [below](#projects-panel)): `ProjectsPanel` (the tree, names typed in place, drags), `ProjectsTree` (the projects read with `project_tree`, their names), `MainWindowProjectsPanel.cpp` (its dock or card, View › Projects, File › New Design, what the panel asks for) |
 | `files/Remote*.*` | the current Cloud project's remote: sync, check for newer versions, open in browser, sending versions, Resolve Sync Conflicts, Preferences' Cloud page; `RemoteTask` runs one operation (a project's or a projects command) on a thread of its own |
-| `files/Print3d.*`, `files/MainWindowPrint.cpp` | 3D Print: slicers found, settings, file names, the dialog and Preferences group; the command |
+| `files/Print3d.*`, `files/MainWindowPrint.cpp` | 3D Print: slicers found, settings, file names, the start bodies and the Slicer row's choices, the Preferences group; the command's panel (`print3dCommand`) and its send (`sendToSlicer`) |
 | `update/` | automatic updates ([docs/updates.md](../docs/updates.md)) |
 | `report/` | feedback and error reports ([below](#feedback-and-error-reports)): `ReportCenter` (Help › Send Feedback, the offers, the delivery), `ReportDialogs` (the form, the screenshot's crop, the preview), `ReportText` (masking, crash files, duplicate keys, the issue form's address; Qt Core, `app.unit`), `CrashHandler` (the signal and exception handlers, plain C++, also in `mitcad-render`) |
 | `MainWindow.*` | the host: document, modes (idle, picking a sketch plane, sketch, command), selection, context menu, actions |
@@ -1142,12 +1252,31 @@ line adds the materials (`…, 2 material(s)`) and each texture written in
 its base colour is a warning (`Export: Wood: the texture image …`).
 
 **3D Print** (`make.print3d`; `files/MainWindowPrint.cpp`,
-`files/Print3d`): the selected bodies (an occurrence: the bodies shown in
-it), or with nothing selected those with a shown instance (`instances`);
-sheet and empty bodies (`geometry::body_kind`) are left out with a
-warning. Settings group `print`: `format`, `refinement`, `deviation`,
-`angle`, `slicerName`, `slicerProgram`, `slicerArguments`,
-`slicerArgumentsAfter`.
+`files/Print3d`) is a panel (mitcad#234; an `accept` command, see
+[Glue](#glue)):
+
+- **Bodies** (`SelectKind::Body`, any number): starts with what the
+  selection stands for (`printStartBodies`: a face, edge or vertex its
+  body, an occurrence the bodies shown in it), or with nothing of that
+  selected the bodies with a shown instance (`instances`); a body item per
+  placement, with its occurrence. A click on a body in the view adds or
+  removes it (Ctrl and Shift as in other inputs, a window adds several);
+  the bodies in it are highlighted whole in the input's colour. Its
+  `withAccepts` takes solids and mesh bodies only (`geometry::body_kind`):
+  sheet and empty bodies cannot be picked, and those of the start
+  selection are left out with a warning.
+- **Format** (STL, 3MF), **Refinement** (Low, Medium, High, Custom with
+  **Deviation** and **Angle**, checked in `build`), **Slicer** (none: open
+  the folder; the settings' slicer, the ones found, Other program... with
+  a file dialog in its `withOnChange`; a choice is the slicer as JSON,
+  `slicerChoice`). They start with the settings, group `print`: `format`,
+  `refinement`, `deviation`, `angle`, `slicerName`, `slicerProgram`,
+  `slicerArguments`, `slicerArgumentsAfter`; Send (Enter) saves them.
+- Send writes the files and starts the slicer (`sendToSlicer`): each body
+  once; of a body shown more than once, STL files for the placements
+  picked (all when none is); 3MF takes every shown placement of a body
+  picked (one `export`). Left room for filament assignment (mitcad#21):
+  further rows of the panel.
 
 - Files go to `<QDir::tempPath()>/mitcad-print/<design>`
   (`preparePrintFolder`: emptied before each send; `mitcad-print` is made
@@ -1169,7 +1298,8 @@ warning. Settings group `print`: `format`, `refinement`, `deviation`,
   <files> @@`: the sandbox has its own /tmp) and desktop files
   (AppImages). `SlicerPreferencesBox` is the Preferences group.
 - Tests: `tools/ui-print-test.sh` (a fake slicer script), the Windows
-  workflow test's part 10, `app.unit`.
+  workflow test's parts 10 and 15 (the format chosen with the wheel,
+  `Ui-WheelLogged`: drop-down lists do not open in session 0), `app.unit`.
 
 ### Unsaved changes
 
@@ -1430,7 +1560,8 @@ display name does not change.
 
 In the panel (toolbar, context menu, keys): **Open** (double-click, Enter;
 unsaved changes asked as with Open), **New Design** and **New Folder**
-(named in place), **Rename** (F2), **Delete** (Del; confirmed, with the
+(named in place), **Rename** (F2 and the context menu of a design or a
+folder; no toolbar button), **Delete** (Del; confirmed, with the
 designs it holds, changes no version holds and whether it is open), a
 **drag** onto a folder, a project or a design (its folder) of the same
 project (`move`), **Version History...** (the design opened first),
@@ -1662,16 +1793,58 @@ part <name>: <library> <version>, size <row>, <status>`, `Library changes:
 ...`, `Updated library parts: ...`, `Parts list row: <qty> x <part>
 (...)`, `Publish: ...`. Test: `tools/ui-library-test.sh`.
 
+### Design policy
+
+`browser/PolicyDialog.cpp`, `BrowserController::openPolicy`,
+`MainWindow::startSketch` (mitcad#220; the model's side in commands.md,
+"Design policy").
+
+| Command | What it does | Model command / query |
+|---|---|---|
+| `assembly.policy` Design Policy... (command search; the browser's component menu, last entry, opens it for that component) | `PolicyDialog`: the seven settings of the component or the root, each with what it allows in words (incoming and outgoing links told apart), the presets (Alt+A Assembly, Alt+P Part, Alt+D Defaults), and next to a blocked setting the number of objects that break it, a button that lists them; counts follow the edited settings; OK sets them as one undo step, Cancel changes nothing | `policy` (with the proposed `policy`), then `set_policy` |
+
+- A new design (File > New, the window's first design) has the root at
+  Assembly and an empty Part1 at Part, active; opened and imported designs
+  are not rearranged.
+- New Component (the command and the browser's) makes a component with
+  the Part preset.
+- Create Sketch asks the model (`sketch_supports`) first: an active
+  component that takes no sketches refuses with the reason and the user
+  activates another one or changes the policy (nothing is redirected).
+  While a plane is picked, the faces and planes of owners the policy
+  leaves out (either side refuses the attachment) are not picked or
+  highlighted, the hint names them, and a browser row, a selected face or
+  Create Sketch on a plane of theirs is refused with the reason. The
+  active component's origin planes are always its own. Linked projections
+  are not filtered: the model checks the reference settings and refuses
+  with the reason (a projection without Projection Link is always allowed).
+- Commands that the policy refuses (features in an Assembly, components in
+  a Part, a move into a component that refuses what moves) show the
+  model's reason in their panel's preview or when OK is pressed.
+
+Logs: `Create Sketch refused: <reason>`, `Create Sketch: policy leaves out
+<owners>`, `Sketch <name> is in <component>`, `Design Policy dialog opened
+for <name>`, `Policy dialog <name>: <preset|custom>; <setting>
+allowed|blocked (<count>), ...`, `Policy dialog preset <name>`, `Policy
+violations of <name> <setting>: <objects>`, `Policy of <name> set:
+<preset|custom>`, `Design Policy dialog closed without a change`; with
+`MITCAD_LOG_PICKS`, Create Sketch's `Pick places:` lists the faces it can
+pick (`Pick face <body>/<face> in <occurrence> at x,y`). Test:
+`tools/ui-windows-policy-test.ps1` (ctest `app.ui-windows-policy`).
+
 ## Selection
 
 `OcctViewer` names picks through the bodies' `geometry::Shape`
 (`names_of_face`, `name_of_edge`, `name_of_vertex`) and reports them as
 `SelectionItem`s; it keeps no selection of its own. Its pick filter
-(`setPickFilter(kinds, test)`) also limits the hover highlight. Selection
-outside commands is the main window's (`m_selection`). A window selection
-keeps one kind (profiles, bodies, edges, faces, vertices, sketch curves,
-points, datums, in that order of preference). Faces win over bodies, so
-the bodies filter is off by default.
+(`setPickFilter(kinds, test)`) also limits the hover highlight; a
+selection scope (`setPickScope`, sketch mode and Project, see [Sketch
+selection filters](#sketch-selection-filters)) also tells its test how an
+item is picked. Selection outside commands is the main window's
+(`m_selection`). Outside sketch mode a window selection keeps one kind
+(profiles, bodies, edges, faces, vertices, sketch curves, points, datums,
+in that order of preference), and Shift with a click adds or removes as
+Ctrl does. Faces win over bodies, so the bodies filter is off by default.
 
 The highlights look alike (mitcad#149): the hover (`setHoverColor`,
 OCCT's dynamic highlight styles, set up by `setHighlightStyle`) and the
@@ -1718,6 +1891,74 @@ model's `profile` query names the region a key means now
 
 Tests: `app.unit` (`selectionEntryTests`), `tools/ui-profile-toggle-test.sh`,
 part 14 of `tools/ui-windows-workflow-test.ps1`.
+
+### Sketch selection filters
+
+While a sketch is edited, picks go through the sketch's three-state
+filter (mitcad#217, `framework/SelectionScope.hpp`, `MainWindowSelection.cpp`)
+instead of the SOLID tab's filters (`m_filterActions`), which stay as they
+are and decide again once sketch mode ends. Each row cycles empty (cannot
+be selected) -> square (a click) -> cross (a click and a window, either
+direction: inside, or crossing). The rows and their defaults, which every
+sketch edit starts with (`SelectionScope::sketch`):
+
+| Row | Default |
+| --- | --- |
+| Sketch geometry (the edited sketch's ordinary curves and points; centre lines too, they bound profiles) | cross |
+| Construction geometry | cross |
+| Projected geometry (reference entities) | cross |
+| Dimensions and constraints (sketch mode's overlay) | square |
+| Profiles | square |
+| Visible body edges | square |
+| Occluded body edges | empty |
+| Body faces, body vertices, bodies, components, planes/axes/points | empty |
+
+- Another sketch's geometry has no row and is never selectable
+  (`filterRowOf`). A window collects every kind the filter lets a window
+  take, not one preferred kind; dimensions and constraints come from the
+  overlay (`SketchController::annotationsIn`) when their row is a cross.
+- Visible or occluded: for a body edge, the view looks from the picked
+  point of the edge (a click: the edge's point nearest where it hit; a
+  window: its samples inside the window) towards the eye, along the view
+  in an orthographic camera, and asks whether a face of a shown body lies
+  in between (`OcctViewer::occluded`, `IntCurvesFace_ShapeIntersector` per
+  body, made once; 0.01 mm tolerance). An edge partly hidden is one item:
+  a window takes it when the part it holds is allowed. Bodies that are
+  hidden are not shown, see-through ones (previews, ghosts) hide nothing.
+  The camera of the moment decides, so an orbit changes the answer.
+- Shift: a click with Shift also picks what empty rows hold (the view's
+  kinds widen while Shift is down, `setPickScope`'s `expanded`); faces win
+  over whole bodies as outside sketch mode. Shift pressed or released
+  picks again under the pointer, so the hover shows what the click would
+  take (`OcctViewer::eventFilter`, an application event filter for the
+  key). Ctrl adds and removes; Ctrl+Shift does both; Shift with a window
+  adds it as before without widening it. Other buttons and the wheel keep
+  Shift's navigation. A face, a plane or a body is not picked where an
+  edge the filter offers is within the edge's pick width, also one behind
+  it (with Shift the sketch's own plane lies in front of the bodies). A
+  right click opens the context menu for what a Shift+click would take,
+  so a body's face in sketch mode still offers Project.
+- The control: the SKETCH tab's SELECT group has a Selection Filter
+  button whose menu holds `SelectionFilterPanel`: the symbols' legend, a
+  button per row (its action `command_select.filter.<row>`, the symbol as
+  its icon, the state in its tooltip and accessible description) and
+  Reset to Defaults (`command_select.filter.reset`).
+- Project (`commandSelectionScope("sketch.project")`, `CommandHost::commandScope`)
+  has its own context while it runs: visible edges cross, occluded edges
+  empty, faces and vertices square; the control shows and changes it, and
+  Shift widens a click to occluded edges. The input's own kinds (edges,
+  faces, vertices) always hold. On OK and on Cancel the sketch's rows are
+  as they were before. Other commands' inputs decide with their own
+  filters as before.
+
+Logs: `Selection filter sketch defaults: <row>=<state>, ...` (entering a
+sketch), `Selection filter <scope> <row> <state>: ...` (a row clicked),
+`... reset: ...`, `Selection filter project defaults: ...`, `Selection
+filter sketch restored: ...`, `Selection filter widened (Shift)` and
+`Selection filter as set`; with `MITCAD_LOG_PICKS` also `Sketch hover:
+<item>|nothing`, and with `MITCAD_LOG_EDGE_PLACES` once the camera rests `Sketch pick places:` then
+`Sketch pick edge F1.b0/<edge> visible|occluded at x,y`. Tests: `app.unit`
+(`selectionScopeTests`), `tools/ui-sketch-select-test.sh`.
 
 ## Icons
 
@@ -1788,6 +2029,8 @@ SVG at several sizes (`themeIcon`).
 |---|---|
 | `View area x y w h` | the 3D view's place in the window (`ui_view_click`) |
 | `Ribbon SOLID/CREATE at x,y` | group menus (`ui_click_logged`) |
+| `Ribbon split SKETCH/CREATE/Circles at x,y`, `Ribbon split SKETCH/CREATE/Circles arrow at x,y` | a subgroup's split button: the part that starts its default, the arrow that opens the submenu (mitcad#222; logged with the group menus) |
+| `Ribbon menu SKETCH/CREATE: Line \| Rectangles > [2-Point Rectangle \| …] \| … \| Sketch Dimension`, `Ribbon menu SKETCH/CREATE/Circles: Center Diameter Circle \| …` | a group menu or a subgroup's submenu as it opens (`-` a separator, a submenu as `Name > [its entries]`) |
 | `Panel <command> input <id> at x,y [(hidden)]`, `Panel <command> OK at x,y` | a panel opened |
 | `Datum xy at x,y`, `Sketch entity F1/c4 at x,y` | an input that takes them became active |
 | `Command <name> started`, `Editing F2 with <name>`, `Editing analysis Section1 with <name>`, `Command <name> cancelled` | |
@@ -1804,6 +2047,8 @@ SVG at several sizes (`themeIcon`).
 | `Selected: 1 face [face F2:end(…) of F2.b0]`, `Context menu: A \| B` | outside commands |
 | `Create Sketch: select a plane`, `Create Sketch picked …`, `Sketch started on xy, origin (0, 0, 0)`, `Editing sketch F1 (Sketch1)`, `Sketch finished` | sketch mode |
 | `Sketch view x0,y0 x1,y1 x2,y2` | where sketch points (0, 0), (100, 0), (0, 100) are in the window, when it changed (`ui_sketch_click x y`) |
+| `Selection filter sketch defaults: sketch-geometry=cross, …`, `Selection filter sketch visible-edges cross: …`, `… reset: …`, `Selection filter project defaults: …`, `Selection filter sketch restored: …`, `Selection filter button at x,y`, `Selection filter row visible-edges at x,y`, `Selection filter reset at x,y`, `Selection filter widened (Shift)`, `Selection filter as set` | sketch selection filters (mitcad#217): the rows when a sketch edit or Project starts, a row clicked, the sketch's rows back after Project, where the control and its rows are (the rows when its menu opens), Shift down and up |
+| `Sketch hover: edge E{…} of F1.b0` / `nothing`, `Sketch pick places:` then `Sketch pick edge F1.b0/E{…} visible at x,y` (`occluded`) | with `MITCAD_LOG_PICKS`: what a click would take under the pointer in sketch mode and Project; with `MITCAD_LOG_EDGE_PLACES` (`tools/ui-sketch-select-test.sh`; every edge is tried) where a click hits each body edge in sight and behind faces once the camera rests in sketch mode |
 | `Sketch Sketch1: 2 DOF`, `… 0 DOF, fully constrained`, `…, conflicts k3+k5` | the sketch's status changed |
 | `Sketch tool Line`, `Added line c2 from (0, 0) to (40, 0) (horizontal)`, `Line chain closed`, `Added rectangle 40 x 25 mm at (0, 0) [c1, …]`, `Added circle, diameter 20 mm at (x, y) [c5]`, `Added arc …`, `Added polygon (6 sides) …`, `Added slot, width 12 mm …`, `Added ellipse …`, `Added spline c9 through 3 points`, `Added point p4 at …`, `Added text t7 "…" at …` (or `in a frame from (x, y) to (x, y)`), `Trimmed c3 at (x, y)`, `Extended …` | the tools |
 | `Sketch cursor: bitmap 32x32, hot spot 10,10, ratio 1, icon line`, `Sketch cursor: arrow` | the view's pointer when a sketch tool starts or ends, or the screen's ratio changes (logical pixels) |
@@ -1813,6 +2058,7 @@ SVG at several sizes (`themeIcon`).
 | `Palette Auto constraint: Link to first ( ), Link to last (x); Equal (x), Horizontal/Vertical alignment ( ), Concentric ( )` (or `hidden`), `Palette paletteAutoLast at x,y` (`paletteAutoFirst`, `paletteAuto_equal`, …, the section `paletteAutoConstraint`), `Auto constraint link: first`, `Auto constraint equal: on (checked: equal)`, `Auto constraint target c2`, `Auto constraint reference highlighted: c2` / `highlight off`, `Auto constraint equal k7 on c2, c4` (the reference first; the alignment as `horizontal_points`/`vertical_points` of the curves' centres), `Auto constraint equal on c2, c4 refused: <reason>`, `Auto constraint dialog: Equal: <reason>`, `Auto constraint accepted: c4 kept without them` / `cancelled: c4 taken back`, `Auto constraint entities: c2, c4` | the palette's Auto constraint section (mitcad#189): its state when it changes, its places, the choices, the reference the preview targets, the constraints each new entity gets, a refused one's dialog and answer, the tool session's entities |
 | `Dragged p5 to (x, y)`, `Dragged c7 to (x, y)`, `Drag of p5 did not move it` | a drag ended: where the point is, or the curve's point nearest the cursor |
 | `Double-click on t26: sketch.edit_text`, `Edited text t26: "MIT", Droid Sans, center`, `Edited pattern k8: 4 in all`, `Edited offset k13: 3 mm` | the edit panels of texts, patterns and offsets |
+| `Equal spacing k4 horizontal: p1, c2, c5 (spacing k6 = 12.00)` (`… along c9`; without the spacing when it is free), `Equal spacing k4 removed`, `Equal spacing preview: p1, c5, c2` (the panel's objects in its order), `Sketch Dimension on 3 objects: Equal Spacing Dimension`, `Double-click on k4: sketch.edit_equal_spacing`, `Equal spacing of 3 object(s), horizontal, spacing 12 mm`, `Edited equal spacing k4 of 4 object(s), vertical` | equal spacings (mitcad#221): each chain in the order the model keeps, when it changes (also during a preview), the panels |
 | `Timeline Sketch1 at x,y`, `Timeline marker at x,y`, `Timeline button back at x,y` (start, back, forward, end) | the timeline's items, when they changed |
 | `Timeline search opened` / `closed`, `Timeline search field at x,y`, `Timeline button search at x,y` (`search-previous`, `search-next`), `Timeline search "fillet in:cover": 2 matches: Fillet2 (Cover), Fillet7 (Cover)` (`no matches`, `unknown filter is:x`), `Timeline search result Fillet2 (Cover) at x,y`, `Timeline search results hidden`, `Timeline search match 1 of 2: Fillet2 (Cover)`, `Timeline search cleared` / `cleared: selected Plane1 again, scrolled to 0`, `Selection restored after the timeline search: 1 item(s)` | the timeline search (mitcad#179): its field, the matches (when they change), the listed ones in sight, a step, the end and what it restored |
 | `Timeline colours: dark, marker #c8d0da, buttons #f0f0f0, window #323232` (`light, marker #2b3a4a, buttons the style's, …`), `Asking the platform for the dark colour scheme` | the timeline's palette colours at start and when the theme changes; the switch of `MITCAD_TEST_COLOR_SCHEME` |
@@ -1835,6 +2081,7 @@ SVG at several sizes (`themeIcon`).
 | `Panel Extrude width 284 of 284` (after its places), `Panel Extrude message 284x36, panel width 284 of 284` (`message hidden`; `284x96 scrolling`) | the panel's width and its page's (mitcad#198): with its places, and once laid out after its message or a note under a field changed (`tools/ui-panel-message-test.sh`) |
 | `Pick places:` then `Pick face F2.b0/F2:end(…) at x,y`, `Pick edge …`, `Pick vertex …`, `Pick profile F1/r{…} at x,y` | an input became active (with `MITCAD_LOG_PICKS=1`, which the tests set): where a click picks each item it takes (`ui_click_pick`) |
 | `View ghosts: O2 (1 body)`, `View ghosts: none` | the occurrences a command draws as ghosts changed (`withGhosts`, mitcad#147); logged before the pick places of the input that picks through them |
+| `View body highlights: F1.b0, F2.b0 in O1`, `View body highlights: none` | the bodies highlighted whole changed (a selection input of bodies, such as 3D Print's, mitcad#234) |
 | `Manipulator <command> <input> at x,y`, `Manipulator <command> <input> dragged to <value>` | a handle's knob, a drag ended |
 | `Manipulator Circular Pattern suppressed.2 at x,y` (`… (off) at` when suppressed), `Manipulator Circular Pattern suppressed.2 toggled`, `Circular Pattern Suppressed: 2` | a pattern's instance dots |
 | `Inspect <command>: <log>`, `Closed <command>` | an inspection's result (Measure: `area 2400, distance 45, angle 90 deg`, of a circle or arc `length 31.416, radius 5, diameter 10`; Interference: `Body1 x Body2: <volume>` or `none`; Section Analysis: `area …, length …`) |
@@ -1848,13 +2095,13 @@ SVG at several sizes (`themeIcon`).
 | `Orientation cube arrow up at x,y` (up, down, left, right, cw, ccw), `Orientation cube arrow cw`, `Orientation cube arrows hidden` | the cube's arrows: where they are when the view comes to rest face on, a click |
 | `Visual style Shaded with Hidden Edges`, `Camera perspective`, `Background #525761 #1f2126`, `Layout grid off`, `Snap to grid on`, `Grid spacing 10 mm` | display settings |
 | `Saved named view NamedView1`, `View NamedView1`, `Deleted named view …` | named views |
-| `Rendered view on`/`off`, `No render worker (mitcad-render) next to the application: no rendered view`, `Render worker started (pid <n>): <path of mitcad-render>`, `Render frame memory 1: 910 x 735` (debug; the frame memory's id and capacity), `Render worker ready: Cycles 5.3.0 on <CPU>`, `Render scene 1: 2 bodies, 1 meshes sent (F4.b0), 1 meshed, 0 released`, `Render scene 1 applied in 2.1 ms: received F4.b0; added -; changed F4.b0; moved -; removed -; kept 1; meshes 3; instanced 0`, `Render view 3: orthographic 728 x 588` (debug; a view sent to the worker, once a navigation of the view ends, mitcad#214), `Render view 3: first frame (145 x 117) after 26 ms`, `Render view 3: first denoised frame (145 x 117, 1 samples) after 60 ms`, `Render frame view 3 728x588 samples 4 denoised covers x0,y0 x1,y1` (debug; what the frame's alpha covers, in view pixels; `denoised` for a denoised frame), `Render view 3: 64 samples in 2.91 s`, `Render worker stopped: <reason>`, `View message: <text>`, `Render worker ended` | View > Rendered (`tools/ui-render-test.sh`) |
+| `Rendered view on`/`off`, `No render worker (mitcad-render) next to the application: no rendered view`, `Render worker started (pid <n>): <path of mitcad-render>`, `Render frame memory 1: 910 x 735` (debug; the frame memory's id and capacity), `Render worker ready: Cycles 5.3.0 on <CPU>`, `Render scene 1: 2 bodies, 1 meshes sent (F4.b0), 1 meshed, 0 released`, `Render scene 1 applied in 2.1 ms: received F4.b0; added -; changed F4.b0; moved -; removed -; kept 1; meshes 3; instanced 0`, `Render view 3: orthographic 728 x 588` (debug; a view sent to the worker, once a navigation of the view ends, mitcad#214), `Render view 3: first frame (145 x 117) after 26 ms`, `Render view 3: first denoised frame (145 x 117, 1 samples) after 60 ms`, `Render frame view 3 728x588 samples 4 denoised covers x0,y0 x1,y1` (debug; what the frame's alpha covers, in view pixels; `denoised` for a denoised frame), `Render image dropped: camera moved` (debug; `size changed`, `animation`: the view draws the bodies shaded from this frame, once per navigation, mitcad#216), `Render view 3: 64 samples in 2.91 s`, `Render worker stopped: <reason>`, `View message: <text>`, `Render worker ended` | View > Rendered (`tools/ui-render-test.sh`) |
 | `Preferences opened: General, 640 x 330` (the page shown and the size the window asks for), `Preferences: navigation middle-orbit, zoom to cursor on, …, autosave every 5 min` (or `…, autosave off`), `Shortcut overview: 23 command shortcuts` | the dialogs |
-| `Section caps: 2 face(s) at {"normal":[1,0,0],"origin":[30,…]}` | the caps of Section Analysis or Hide Above Sketch drawn (when they change) |
-| `Hide Above Sketch on`/`off`, `In front of the sketch plane: F2.b0 5.0, F5.b0 10.0` | the sketch palette's option; in sketch mode, how far each shown body reaches in front of the sketch plane (mm, when it changes; 0 or less once cut, a body cut away entirely is left out) |
+| `Section caps: 2 face(s) at {"normal":[1,0,0],"origin":[30,…]}`, `Section caps: none` | the caps of Section Analysis or Hide Above Sketch drawn (when they change), and gone again (the bodies whole) |
+| `Hide Above Sketch on`/`off`, `In front of the sketch plane: F2.b0 5.0, F5.b0 10.0` | the sketch palette's option; in sketch mode (also while a sketch command's panel is open), how far each shown body reaches in front of the sketch plane (mm, when it changes; 0 or less once cut, a body cut away entirely is left out) |
 | `Exported <path>: dxf flat pattern of Body1, 5 entities (CUT_OUTER 4, BEND_DOWN 1), mm`, `Export of the flat pattern of Body1 refused: <reasons>`, `Flat pattern of Body1 shown` (`folded`), `Flat pattern of Body1: valid, area 1086.39 mm2, 1 bend(s)`, `Deleted the flat pattern of Body1`, `Added sheet face of 1 profile(s), new rules, thickness 2`, `Added flange, length 15 (tangent), angle 90 deg`, `Sheet rules: thickness …` | sheet metal (mitcad#210): the Flat Pattern's export, display and item, the commands' describe lines |
 | `Export dialog: STEP AP214 (*.step) to <path>`, `Exported <path>: step, 1 body(ies), mm` (with occurrences `…, mm, design coordinates` or `component coordinates`), `Exported <path>: usdz, 1 body(ies), 1 material(s)`, `Exported <path>: dxf, 4 entities` | export |
-| `3D Print dialog: 3 visible: Plate, Cube, Pin; format stl, refinement high, slicer Fake slicer (/path <files>); slicers None: … \| …`, `3D Print: left out Surface1 (a surface body)`, `3D Print: 3 bodies as stl (high) to <folder>: Plate.stl, Cube.stl, Pin.stl` (a body shown twice: `Pin (Pin_1).stl, Pin (Pin_2).stl`; 3MF: `parts.3mf`… per body `Plate 12 triangles, 1000.000 mm3`), `3D Print: started <program> <arguments>`, `3D Print: <slicer> did not start`, `3D Print: opened <folder>`, `3D Print cancelled`, `Preferences: slicer <slicer>` (or `automatic`) | 3D Print |
+| `3D Print panel: 3 visible: Plate, Cube, Pin; format stl, refinement high, slicer Fake slicer (/path <files>); slicers None: … \| …` (`1 selected: Cube`), `3D Print Bodies: 2 bodies [body F1.b0; body F2.b0]` (the input, as every selection input logs), `3D Print: Format = 3MF, one object with parts`, `3D Print: left out Surface1 (a surface body)`, `3D Print: no solid or mesh bodies`, `3D Print: 3 bodies as stl (high) to <folder>: Plate.stl, Cube.stl, Pin.stl` (a body shown twice: `Pin (Pin_1).stl, Pin (Pin_2).stl`; 3MF: `parts.3mf`… per body `Plate 12 triangles, 1000.000 mm3`), `3D Print: started <program> <arguments>`, `3D Print: <slicer> did not start`, `3D Print: opened <folder>`, `Done 3D Print`, `Command 3D Print cancelled`, `Preferences: slicer <slicer>` (or `automatic`) | 3D Print (mitcad#234: the panel replaced the dialog, whose `3D Print dialog: …` and `3D Print cancelled` lines are gone) |
 | `Export dialog opened: unit mm (mm \| cm \| m \| in \| ft)` (with occurrences also `, coordinates design (design \| component)`), `Insert Mesh dialog opened: unit …`, `Insert DXF dialog opened: unit …`, `Units dialog opened: mm (…)`, `Add User Parameter dialog opened: unit mm`, `Grid settings dialog opened: automatic, fixed spacing 10 mm` | a dialog that offers units opened, with its default first |
 | `Panel Hole choices: placement=face, …, standard=iso_metric, size=6, designation=M6x1, class=6H`, `Panel Hole options size: 1 \| 1.1 \| …` | a panel's choices when it starts; the options of a `withChoices` input when they change |
 | `Imported block.step as Base1: 1 body(ies)`, `Inserted drawing.dxf into Sketch2: 4 curves, 4 points, 0 texts, 1 profiles, 0 warnings`, `Inserted component block (linked) from block.mitcad` | import |
@@ -1937,7 +2184,7 @@ sync works: [docs/development.md](../docs/development.md)).
 - `ui_type_in "Panel Hole input diameter" "8"` (selects the field's text
   and types; `--` lets "-25" through).
 - `ui_choose "Panel Extrude input operation" 2` (the entry two below the
-  current one).
+  current one; -1 the one above).
 - `ui_expect_volume "sed pattern with a group" volume "description"
   [tolerance]` (waits for the line, relative tolerance).
 - `ui_step`, `ui_sync [window]`, `ui_wait_idle`: wait until the app has
@@ -1964,9 +2211,10 @@ Open Recent) and imports a corpus design when
 **Windows** (the build VM): `tools/ui-windows-lib.ps1` has the same
 helpers in PowerShell (`Ui-Key "ctrl+z"`, `Ui-Type`, `Ui-ViewClick`,
 `Ui-SketchClick`, `Ui-ClickLogged`, `Ui-ClickPick`, `Ui-TypeIn`,
-`Ui-FocusDialog`, `Ui-ExpectNew`, `Ui-ExpectVolume`, ...). They post mouse
-and keyboard messages to the window, read the same log lines, and give
-commands without a default shortcut one in the test's settings
-(`Ui-Init ... @{'sketch.create' = 'F7'}`), since popups close at once in
-session 0. `tools/ui-windows-workflow-test.ps1` (ctest
+`Ui-FocusDialog`, `Ui-ExpectNew`, `Ui-ExpectVolume`, `Ui-WheelLogged`,
+...). They post mouse and keyboard messages to the window, read the same
+log lines, and give commands without a default shortcut one in the
+test's settings (`Ui-Init ... @{'sketch.create' = 'F7'}`), since popups
+close at once in session 0; a panel's drop-down changes with the wheel
+(`Ui-WheelLogged "Panel 3D Print input format" -1`: the next entry). `tools/ui-windows-workflow-test.ps1` (ctest
 `app.ui-windows-workflow`, with `MITCAD_MESA_DIR`) is the workflow test.

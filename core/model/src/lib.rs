@@ -55,8 +55,8 @@ mod extrude_scope_tests;
 mod profile_feature_tests;
 
 pub use document::{
-    Added, BodyView, DocState, Document, FeatureError, ModelError, PreviewReport, ProfileView,
-    RecomputeStats, ShapeAdded, TimelineItem,
+    Added, BodyView, ComponentCopy, DocState, Document, FeatureError, ModelError, PreviewReport,
+    ProfileView, RecomputeStats, ShapeAdded, TimelineItem,
 };
 pub use exchange::{BaseInput, BodyKind, ImportBody, Imported};
 pub use features::{FeatureDef, FeatureEntry, ValueInput};
@@ -175,3 +175,13 @@ mod move_features_tests;
 // Selected profile areas: toggled regions, sets of references (mitcad#199).
 #[cfg(test)]
 mod profile_selection_tests;
+
+// Design policy: per-component creation and link permissions (mitcad#220).
+pub mod policy;
+pub use document::{PolicyItem, PolicyReport};
+pub use policy::{Policy, Setting};
+#[cfg(test)]
+mod policy_tests;
+// Moving an occurrence to another parent (mitcad#219).
+#[cfg(test)]
+mod reparent_tests;

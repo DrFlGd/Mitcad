@@ -24,6 +24,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use serde::{Deserialize, Serialize};
 
 use crate::ids::{BodyUid, ComponentUid, FeatureUid, OccurrenceUid};
+use crate::policy::Policy;
 use crate::transform::Transform;
 
 /// The root component's name unless renamed.
@@ -43,6 +44,8 @@ pub struct ComponentDef {
     /// The library it came from, linked or copied (mitcad#64, mitcad#63):
     /// the version, configuration, licence and designation.
     pub library: Option<crate::library::LibraryRef>,
+    /// What may be created in and linked to and from it (mitcad#220).
+    pub policy: Policy,
 }
 
 /// A component linked from another design file: its bodies are the
@@ -95,11 +98,14 @@ pub struct Assembly {
     pub active: ComponentUid,
     pub next_component: u32,
     pub next_occurrence: u32,
+    /// The root component's policy (mitcad#220).
+    pub root_policy: Policy,
 }
 
 impl Default for Assembly {
     fn default() -> Self {
         Self {
+            root_policy: Policy::GENERAL,
             root_name: ROOT_NAME.to_owned(),
             components: Vec::new(),
             occurrences: Vec::new(),
@@ -230,8 +236,33 @@ impl Assembly {
             created_by,
             link: None,
             library: None,
+            policy: Policy::GENERAL,
         });
         uid
+    }
+
+    /// A component's policy (the general defaults for one that does not
+    /// exist).
+    pub fn policy(&self, uid: ComponentUid) -> Policy {
+        if uid.is_root() {
+            return self.root_policy;
+        }
+        self.component(uid).map_or(Policy::GENERAL, |c| c.policy)
+    }
+
+    /// Sets a component's policy; false when it does not exist.
+    pub(crate) fn set_policy(&mut self, uid: ComponentUid, policy: Policy) -> bool {
+        if uid.is_root() {
+            self.root_policy = policy;
+            return true;
+        }
+        match self.component_mut(uid) {
+            Some(c) => {
+                c.policy = policy;
+                true
+            }
+            None => false,
+        }
     }
 
     /// Places a component in `parent`; the caller checks that this makes

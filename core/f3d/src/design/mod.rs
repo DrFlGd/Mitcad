@@ -44,6 +44,8 @@ pub mod stream;
 mod unicode;
 // Synthetic design streams for tests (mitcad#196).
 pub mod writer;
+// What an `.f3z` package says about its designs (mitcad#229).
+pub mod package;
 
 use std::path::Path;
 
@@ -139,13 +141,39 @@ pub fn short_name(path: &Path) -> String {
 /// The documents of a file with their labels: the file itself, or the
 /// `.f3d` entries of an `.f3z` package.
 pub fn documents(path: &Path) -> Result<Vec<(String, F3dFile)>, String> {
+    package(path).map(|p| p.documents)
+}
+
+/// The documents of a file ([`documents`]) and what an `.f3z` package says
+/// about them (mitcad#229, [`package::PackageDescription`]).
+pub struct Package {
+    /// The documents with their labels.
+    pub documents: Vec<(String, F3dFile)>,
+    /// The root design's label, where `Manifest.json` names it.
+    pub root: Option<String>,
+    /// The designs `DesignDescription.json` lists that the package holds,
+    /// with their labels.
+    pub described: Vec<(String, package::DescribedDesign)>,
+}
+
+/// [`documents`] with what an `.f3z` package says about them.
+pub fn package(path: &Path) -> Result<Package, String> {
     let f = F3dFile::open(path).map_err(|e| format!("{}: {e}", path.display()))?;
     let name = short_name(path);
     let is_package = path.to_string_lossy().to_lowercase().ends_with(".f3z");
     if !is_package {
-        return Ok(vec![(name, f)]);
+        return Ok(Package {
+            documents: vec![(name, f)],
+            root: None,
+            described: Vec::new(),
+        });
     }
-    let mut out = Vec::new();
+    let description = package::PackageDescription::read(&f);
+    let mut out = Package {
+        documents: Vec::new(),
+        root: None,
+        described: Vec::new(),
+    };
     for e in f.archive().entries() {
         if !e.name.to_lowercase().ends_with(".f3d") {
             continue;
@@ -157,7 +185,20 @@ pub fn documents(path: &Path) -> Result<Vec<(String, F3dFile)>, String> {
         let doc = F3dFile::from_bytes(data)
             .map_err(|err| format!("{}!{}: {err}", path.display(), e.name))?;
         let prefix: String = e.name.chars().take(8).collect();
-        out.push((format!("{name}!{prefix}"), doc));
+        let label = format!("{name}!{prefix}");
+        if description
+            .root
+            .as_deref()
+            .is_some_and(|r| package::is_entry(&e.name, r))
+        {
+            out.root = Some(label.clone());
+        }
+        for d in &description.designs {
+            if package::is_entry(&e.name, &d.path) {
+                out.described.push((label.clone(), d.clone()));
+            }
+        }
+        out.documents.push((label, doc));
     }
     Ok(out)
 }
@@ -202,6 +243,17 @@ pub fn decode_streams(doc: &F3dFile, label: &str) -> Result<FileDesign, String> 
 pub fn resolve_inputs(design: &mut FileDesign, doc: &F3dFile, threads: usize) {
     if let Some(dump) = &mut design.dump {
         inputs::resolve_on(dump, doc, threads);
+    }
+}
+
+/// [`resolve_inputs`] for the entities of other documents the design
+/// names (mitcad#196): `documents` are those documents' files with the GUIDs
+/// the design's inputs name them with (`_f3d.document`) and the design's keys
+/// for them; their entities are found in the last state of those files'
+/// histories.
+pub fn resolve_external_inputs(design: &mut FileDesign, documents: &[inputs::ExternalFile<'_>]) {
+    if let Some(dump) = &mut design.dump {
+        inputs::resolve_external(dump, documents);
     }
 }
 

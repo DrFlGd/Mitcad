@@ -112,13 +112,18 @@ impl Document {
                 shape,
             });
         }
-        let imported = self.0.add_base_feature(BaseInput {
+        let input = BaseInput {
             name: options.name,
             source: options.source,
             operation: options.operation,
             participants: options.participants,
             ..BaseInput::new(bodies)
-        })?;
+        };
+        // An import into the active component, as a command is: checked
+        // against its design policy (mitcad#220).
+        let imported = self
+            .0
+            .with_policy_checks(|document| document.add_base_feature(input))?;
         Ok(imported_json(&imported).to_string())
     }
 

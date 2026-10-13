@@ -155,6 +155,55 @@ void test_interpolation() {
   CHECK(throws_with([] { detail::EndInterpolation({0.0, 0.0}, 0, 0); }, "must increase"));
 }
 
+// The curve of the piecewise cubic Hermite interpolation of the points.
+occ::handle<Geom_BSplineCurve> hermite_curve(const std::vector<gp_Pnt>& points, const std::vector<double>& parameters,
+                                             bool periodic) {
+  const detail::HermiteInterpolation basis(parameters, periodic);
+  std::array<std::vector<double>, 3> coordinates;
+  for (int c = 1; c <= 3; ++c) {
+    std::vector<double> values;
+    for (const gp_Pnt& point : points) {
+      values.push_back(point.Coord(c));
+    }
+    coordinates[static_cast<std::size_t>(c) - 1] = basis.solve(values);
+  }
+  NCollection_Array1<gp_Pnt> poles(1, basis.pole_count());
+  for (int i = 1; i <= basis.pole_count(); ++i) {
+    const std::size_t k = static_cast<std::size_t>(i) - 1;
+    poles(i) = gp_Pnt(coordinates[0][k], coordinates[1][k], coordinates[2][k]);
+  }
+  return new Geom_BSplineCurve(poles, basis.knots(), basis.multiplicities(), basis.degree(), periodic);
+}
+
+void test_hermite() {
+  // Four points a quarter turn apart on a circle of 30, parameters 0 to 3:
+  // the first piece is the parabola y = 30 - x^2 / 30 that arrives at the
+  // second point with the tangent along the neighbours' chord, the middle
+  // piece the cubic Hermite one (the stored ring's centre line).
+  const std::vector<gp_Pnt> square{gp_Pnt(30, 0, 0), gp_Pnt(0, 30, 0), gp_Pnt(-30, 0, 0), gp_Pnt(0, -30, 0)};
+  const occ::handle<Geom_BSplineCurve> open = hermite_curve(square, {0, 1, 2, 3}, false);
+  CHECK(open->Degree() == 3 && open->NbPoles() == 10);
+  for (std::size_t i = 0; i < square.size(); ++i) {
+    CHECK(near_point(open->Value(static_cast<double>(i)), square[i]));
+  }
+  const gp_Pnt first = open->Value(0.25);
+  CHECK(near_point(first, gp_Pnt(22.5, 30 - 22.5 * 22.5 / 30, 0)));
+  CHECK(near_point(open->Value(1.0 + 1.0 / 12.0), gp_Pnt(-2.6909, 29.6007, 0), 5e-3));
+  // Periodic: tangent-continuous at the closing point, the diagonal at 18.75.
+  const occ::handle<Geom_BSplineCurve> closed = hermite_curve(square, {0, 1, 2, 3, 4}, true);
+  CHECK(closed->IsPeriodic() && closed->NbPoles() == 12);
+  for (std::size_t i = 0; i < square.size(); ++i) {
+    CHECK(near_point(closed->Value(static_cast<double>(i)), square[i]));
+  }
+  CHECK(near_point(closed->Value(0.5), gp_Pnt(18.75, 18.75, 0)));
+  CHECK(near_vec(closed->DN(0.0, 1), gp_Vec(0, 30, 0)) && near_vec(closed->DN(4.0, 1), gp_Vec(0, 30, 0)));
+  // Uneven spans: the tangent follows the parabola through three points.
+  const std::vector<gp_Pnt> three{gp_Pnt(0, 0, 0), gp_Pnt(1, 1, 0), gp_Pnt(4, 4, 0)};
+  const occ::handle<Geom_BSplineCurve> uneven = hermite_curve(three, {0, 1, 3}, false);
+  CHECK(uneven->Degree() == 2 && uneven->NbPoles() == 3);
+  CHECK(near_point(uneven->Value(2.0), gp_Pnt(7.0 / 3.0, 7.0 / 3.0, 0)));
+}
+
 void test_fields() {
   // The radial unit field of a circle is an affine image of it: exact.
   const gp_Pnt center(1, 2, 3);
@@ -335,10 +384,12 @@ void test_loft_conditions() {
   cone.end = condition(LoftEnd::Kind::Direction);
   cone.sections = {region_at(0, circle(2, 0, 0, 10)), region_at(30, circle(1, 0, 0, 20))};
   CHECK_NEAR_TOL(volume(*loft(cone)), 8600 * kPi, 1e-6);
-  // A positive angle tilts the takeoff out of the section: fuller.
+  // A positive angle is measured along the loft: it arrives at the end
+  // section moving outward, here a wider circle, so the radius grows late
+  // and the loft is slimmer (at the start the takeoff leaves outward, fuller).
   cone.end.angle = 10 * kPi / 180;
   const double tilted = volume(*loft(cone));
-  CHECK(tilted > 8600 * kPi * 1.01);
+  CHECK(tilted < 8600 * kPi * 0.99);
 
   // Three sections, conditions at both ends (degree 5 with a smooth one):
   // symmetric about the middle section.
@@ -613,6 +664,7 @@ void test_loft_rails() {
 
 void skin_tests() {
   guarded("interpolation with end derivatives", test_interpolation);
+  guarded("piecewise cubic Hermite interpolation", test_hermite);
   guarded("fields along curves", test_fields);
   guarded("gordon surfaces", test_gordon);
   guarded("lofts with end conditions", test_loft_conditions);

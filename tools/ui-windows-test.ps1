@@ -10,7 +10,12 @@
 #   5. View > Rendered, with the render worker: its frames refine and show
 #      the block (mitcad#51); an orbit sends the worker no view while the
 #      button is held and one after the release, a burst of wheel steps one
-#      view (mitcad#214).
+#      view (mitcad#214); the rendered image stays over the view while the
+#      camera keeps still, after the first render, an orbit, wheel steps
+#      and a click on the orientation cube, and differs from the shaded
+#      view (mitcad#216).
+#   6. The app ends with Render Image and Render Environment open: no crash
+#      at the close (mitcad#226).
 # The app renders into an offscreen framebuffer and --screenshot reads it
 # back, so this works over SSH, in session 0 without a desktop.
 #
@@ -129,6 +134,41 @@ public static class Shot {
                 stats.Shades.Add(shade);
             }
             return stats;
+        }
+    }
+
+    // The mean difference of two screenshots of the same size, per colour
+    // channel (0-255), without the orientation cube's corner; -1 for
+    // screenshots of different sizes.
+    public static double MeanDifference(string pathA, string pathB) {
+        byte[] a, b;
+        int w, h, stride, wb, hb, strideB;
+        Pixels(pathA, out a, out w, out h, out stride);
+        Pixels(pathB, out b, out wb, out hb, out strideB);
+        if (wb != w || hb != h) return -1;
+        int cube = Math.Min(w, h) / 3;
+        long sum = 0, count = 0;
+        for (int y = 0; y < h; y++) {
+            for (int x = 0; x < w; x++) {
+                if (x > w - cube && y < cube) continue;
+                int i = y * stride + 3 * x;
+                for (int k = 0; k < 3; k++) sum += Math.Abs(a[i + k] - b[i + k]);
+                count += 3;
+            }
+        }
+        return count == 0 ? -1 : (double)sum / count;
+    }
+
+    static void Pixels(string path, out byte[] px, out int w, out int h, out int stride) {
+        using (Bitmap bitmap = new Bitmap(path)) {
+            w = bitmap.Width;
+            h = bitmap.Height;
+            BitmapData data = bitmap.LockBits(new Rectangle(0, 0, w, h), ImageLockMode.ReadOnly,
+                                              PixelFormat.Format24bppRgb);
+            stride = data.Stride;
+            px = new byte[stride * h];
+            Marshal.Copy(data.Scan0, px, 0, px.Length);
+            bitmap.UnlockBits(data);
         }
     }
 
@@ -310,14 +350,27 @@ if (-not (Test-Path $worker)) {
   Fail "View > Rendered: no render worker $worker next to the app"
 } else {
   $script = Join-Path $Out 'render.script'
+  function Shot-Path([string]$Name) { return (Join-Path $Out "$Name.png") -replace "'", "''" }
+  # mitcad#216: once the render is done and the camera keeps still, the
+  # rendered image stays over the view (`Render image dropped` would say
+  # the view drew the bodies shaded instead).
+  function Still([string]$Name) {
+    return @"
+wait-log 'Render frame view [0-9]+ [0-9]+x[0-9]+ samples 16 ' 60
+sleep 500
+mark
+sleep 1500
+screenshot-view '$(Shot-Path $Name)'
+mark
+"@
+  }
   @"
+screenshot-view '$(Shot-Path 'shaded')'
 command view.rendered
 expect-log 'Rendered view on'
-wait-log 'Render frame view [0-9]+ [0-9]+x[0-9]+ samples 16 ' 120
-screenshot-view '$((Join-Path $Out 'rendered.png') -replace "'", "''")'
+$(Still 'rendered')
 # mitcad#214: no view goes to the worker while a button is held, however
 # long it keeps still; one when it goes up.
-mark
 view-pointer press 40 50 middle shift
 view-pointer move 45 48 middle shift
 view-pointer move 50 46 middle shift
@@ -326,27 +379,34 @@ sleep 700
 expect-no-log 'Render view [0-9]+: (orthographic|perspective) '
 view-pointer release 55 45 middle shift
 wait-log 'Render view [0-9]+: first frame' 60
-sleep 1000
-mark
+$(Still 'orbited')
 # A burst of wheel steps 50 ms apart: one view, after the quiet time.
 wheel-burst 50 50 -1 5
 wait-log 'Render view [0-9]+: first frame' 60
-sleep 1000
-mark
+$(Still 'zoomed')
+# The orientation cube turns the view to the front, animated.
+click-logged 'Orientation cube front at'
+wait-log 'Render view [0-9]+: first frame' 60
+$(Still 'front')
 command view.rendered
 expect-log 'Rendered view off'
 "@ | Set-Content -Encoding ascii $script
   $log = Invoke-Mitcad 'rendered' @('--no-recovery', '--demo') @{
-    'MITCAD_TEST_INPUT' = $script; 'MITCAD_RENDER_SAMPLES' = '16' }
+    'MITCAD_TEST_INPUT' = $script; 'MITCAD_RENDER_SAMPLES' = '16'; 'MITCAD_LOG_ORIENTATION_CUBE' = '1' }
   Expect-Log $log 'TestDriver: done' 'View > Rendered: the script ran'
   $frames = ([regex]::Matches($log, 'Render frame view [0-9]+ [0-9]+x[0-9]+ samples ')).Count
   if ($frames -ge 2) { Pass "View > Rendered: the view refined in $frames frames" }
   else { Fail "View > Rendered: $frames frames shown" }
+  # The part of the log from a step of the script to the next mark.
+  function Log-Part([string]$Step) {
+    $part = [regex]::Match($log, "TestDriver: line [0-9]+: $Step[\s\S]*?TestDriver: line [0-9]+: mark")
+    if ($part.Success) { return $part.Value } else { return $null }
+  }
   # The views sent between a step of the script and the next mark.
   function Views-Sent([string]$Step) {
-    $part = [regex]::Match($log, "TestDriver: line [0-9]+: $Step[\s\S]*?TestDriver: line [0-9]+: mark")
-    if (-not $part.Success) { return -1 }
-    return ([regex]::Matches($part.Value, 'Render view [0-9]+: (orthographic|perspective) ')).Count
+    $part = Log-Part $Step
+    if ($null -eq $part) { return -1 }
+    return ([regex]::Matches($part, 'Render view [0-9]+: (orthographic|perspective) ')).Count
   }
   $sent = Views-Sent 'view-pointer press'
   if ($sent -eq 1) { Pass 'View > Rendered: an orbit sent one view, after the release' }
@@ -354,6 +414,16 @@ expect-log 'Rendered view off'
   $sent = Views-Sent 'wheel-burst'
   if ($sent -eq 1) { Pass 'View > Rendered: a burst of 5 wheel steps sent one view' }
   else { Fail "View > Rendered: a burst of 5 wheel steps sent $sent views (1 wanted)" }
+  # mitcad#216: the image stays while the camera keeps still.
+  foreach ($still in @('rendered', 'orbited', 'zoomed', 'front')) {
+    # From the pause before the screenshot to the screenshot itself.
+    $part = [regex]::Match($log, "TestDriver: line [0-9]+: sleep 1500((?:(?!TestDriver: line)[\s\S])*)" +
+      "TestDriver: line [0-9]+: screenshot-view [^\r\n]*[\\/]$still\.png")
+    if (-not $part.Success) { Fail "View > Rendered ($still): the script did not get there"; continue }
+    $dropped = ([regex]::Matches($part.Groups[1].Value, 'Render image dropped')).Count
+    if ($dropped -eq 0) { Pass "View > Rendered ($still): the rendered image stays while the camera keeps still" }
+    else { Fail "View > Rendered ($still): the rendered image was dropped $dropped times while the camera kept still" }
+  }
   $path = Join-Path $Out 'rendered.png'
   if (-not (Test-Path $path)) { Fail 'View > Rendered: no screenshot' }
   else {
@@ -362,7 +432,32 @@ expect-log 'Rendered view off'
       $stats.Background, $stats.Percent($stats.FacePixels))
     if ($stats.Percent($stats.FacePixels) -ge 10) { Pass 'View > Rendered: the block is in the rendered view' }
     else { Fail 'View > Rendered: no block in the rendered view' }
+    # The rendered view is not the shaded one (mitcad#216: it was, as the
+    # image was dropped before every frame).
+    $difference = [Shot]::MeanDifference((Join-Path $Out 'shaded.png'), $path)
+    Write-Host ("     rendered vs shaded: mean difference {0:0.00}" -f $difference)
+    if ($difference -ge 3) { Pass 'View > Rendered: the view shows the render, not the shaded bodies' }
+    else { Fail "View > Rendered: the view looks shaded (mean difference $difference from the shaded view)" }
   }
+
+  # mitcad#226: the app ends with Render Image and Render Environment open:
+  # the main window deletes the 3D view before the dialogs that watch it,
+  # which crashed at the close.
+  $script = Join-Path $Out 'close-dialogs.script'
+  @"
+command file.render_image
+expect-log 'Render image dialog opened'
+command view.render_environment
+expect-log 'Render environment dialog opened'
+"@ | Set-Content -Encoding ascii $script
+  $crashes = Join-Path $Out 'crashes-close'
+  if (Test-Path $crashes) { Remove-Item -Recurse -Force $crashes }
+  $log = Invoke-Mitcad 'close-dialogs' @('--no-recovery', '--demo') @{
+    'MITCAD_TEST_INPUT' = $script; 'MITCAD_CRASH_DIR' = $crashes }
+  Expect-Log $log 'TestDriver: done' 'Closing with the render dialogs open: the script ran'
+  if ((Test-Path $crashes) -and (Get-ChildItem -Recurse -File $crashes)) {
+    Fail 'Closing with the render dialogs open: a crash report was written'
+  } else { Pass 'Closing with the render dialogs open: no crash report' }
 }
 
 Write-Host "Screenshots and logs: $Out"

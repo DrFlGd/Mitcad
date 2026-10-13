@@ -786,6 +786,38 @@ void test_sections() {
              4000.0, 1e-7));
   CHECK(near(mitcad::analysis::physical_properties(clip(a, Plane{{0, 0, -50}, {0, 0, 1}})).volume,
              0.0, 1e-7));
+  // What became of each face (mitcad#233): at z = 10 the top is gone, the
+  // four sides are cut and the bottom is whole; the cap comes from none.
+  const auto pieces = [](const std::vector<mitcad::analysis::ClippedFace>& faces) {
+    std::vector<std::pair<double, double>> found; // (face's area, its pieces' area)
+    for (const auto& face : faces) {
+      double area = 0.0;
+      for (const TopoDS_Shape& piece : face.pieces) {
+        area += mitcad::analysis::surface_properties(piece).Mass();
+      }
+      found.emplace_back(mitcad::analysis::surface_properties(face.face).Mass(), area);
+    }
+    return found;
+  };
+  std::vector<mitcad::analysis::ClippedFace> faces;
+  const TopoDS_Shape cut = clip(a, Plane{{0, 0, 10}, {0, 0, 1}}, &faces);
+  CHECK(faces.size() == 6);
+  double left = 0.0;
+  for (const auto& [area, kept] : pieces(faces)) {
+    left += kept;
+    CHECK(near(area, 200.0, 1e-7) ? (near(kept, 200.0, 1e-7) || near(kept, 0.0, 1e-7))
+                                  : near(kept, area / 3.0, 1e-7));
+  }
+  CHECK(near(left, 200.0 + 2.0 * (100.0 + 200.0), 1e-7));
+  CHECK(near(mitcad::analysis::surface_properties(cut).Mass(), left + 200.0, 1e-7));
+  // On the top face's plane nothing is removed and every face is whole,
+  // the top face too.
+  const TopoDS_Shape touched = clip(a, Plane{{0, 0, 30}, {0, 0, 1}}, &faces);
+  CHECK(faces.size() == 6);
+  for (const auto& [area, kept] : pieces(faces)) {
+    CHECK(near(kept, area, 1e-7));
+  }
+  CHECK(near(mitcad::analysis::surface_properties(touched).Mass(), 2200.0, 1e-7));
   CHECK(throws([&] { section(a, Plane{{0, 0, 0}, {0, 0, 0}}); }));
 }
 

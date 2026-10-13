@@ -64,6 +64,39 @@ pub enum SplineEnd {
     Free,
 }
 
+/// Where an equal spacing measures from: a point (a sketch point, the centre
+/// of a circle or an arc), or the middle of two points (the midpoint of a
+/// line).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Anchor {
+    Point(PointId),
+    Mid(PointId, PointId),
+}
+
+impl Anchor {
+    /// The points the anchor is made of.
+    pub fn points(self) -> Vec<PointId> {
+        match self {
+            Anchor::Point(p) => vec![p],
+            Anchor::Mid(p, q) => vec![p, q],
+        }
+    }
+}
+
+/// What the intervals of an equal spacing measure.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SpacingMode {
+    /// The x offset of successive anchors (their y is left free).
+    Horizontal,
+    /// The y offset of successive anchors (their x is left free).
+    Vertical,
+    /// The offset projected on the direction of a line (the offset across
+    /// it is left free).
+    Along(EntityId),
+    /// The distance between successive anchors.
+    PointToPoint,
+}
+
 /// A constraint or a dimension. Dimensions carry a target `value` in
 /// millimetres or radians, which [`crate::System::set_dimension_value`]
 /// changes later.
@@ -228,6 +261,26 @@ pub enum Constraint {
     /// The size the points of a circle or an ellipse leave free: equal
     /// radii of circles, equal minor radii of ellipses and elliptical arcs.
     EqualSize(EntityId, EntityId),
+    // Equal spacing (mitcad#221).
+    /// Successive intervals between the anchors, in the order given, are
+    /// equal: `interval(a[i], a[i+1]) = interval(a[i+1], a[i+2])` measured
+    /// by `mode` (signed for the directional modes, so the order holds),
+    /// n - 2 equations for n anchors. Their common size stays free; a
+    /// [`Constraint::Spacing`] drives it. Nothing else of the anchors is
+    /// constrained (no alignment).
+    EqualSpacing {
+        anchors: Vec<Anchor>,
+        mode: SpacingMode,
+    },
+    /// The interval from `a` to `b` measured by `mode`: the common spacing
+    /// of an equal spacing whose first two anchors they are. Directional
+    /// modes measure it the way the anchors are apart when it is added.
+    Spacing {
+        a: Anchor,
+        b: Anchor,
+        mode: SpacingMode,
+        value: f64,
+    },
 }
 
 impl Constraint {
@@ -247,7 +300,8 @@ impl Constraint {
             | Diameter { value, .. }
             | ArcLength { value, .. }
             | MajorRadius { value, .. }
-            | MinorRadius { value, .. } => Some(value),
+            | MinorRadius { value, .. }
+            | Spacing { value, .. } => Some(value),
             _ => None,
         }
     }
@@ -271,7 +325,8 @@ impl Constraint {
             | Diameter { value, .. }
             | ArcLength { value, .. }
             | MajorRadius { value, .. }
-            | MinorRadius { value, .. } => *value = v,
+            | MinorRadius { value, .. }
+            | Spacing { value, .. } => *value = v,
             _ => {}
         }
     }

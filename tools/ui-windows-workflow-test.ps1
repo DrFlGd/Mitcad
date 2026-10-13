@@ -26,10 +26,12 @@
 #   9. Version History (P12e, Ctrl+Shift+H): the three versions with what
 #      each changed, compared; Restore of the second (the changed one)
 #      records it as a fourth version and opens it.
-#  10. 3D Print (mitcad#13) to a fake slicer (a PowerShell script that
-#      writes its arguments): the body as an STL file, then as a 3MF file
-#      (one object, the part named after the body, closed, of the body's
-#      volume), each in one start; the folder holds only the last send.
+#  10. 3D Print (mitcad#13, its panel mitcad#234) to a fake slicer (a
+#      PowerShell script that writes its arguments): the body highlighted
+#      in the panel, sent as an STL file, then as a 3MF file (the format
+#      chosen with the wheel; one object, the part named after the body,
+#      closed, of the body's volume), each in one start; the folder holds
+#      only the last send.
 #  11. Cloud project (P12 remote, mitcad#89, where git is installed):
 #      Project Settings shares the project to a bare repository in a folder
 #      (its path typed into the Cloud section's address) and sends the
@@ -50,6 +52,11 @@
 #      component: a click on the newest profile takes it out instead of
 #      listing it twice; clicks on nested squares' regions toggle them, and
 #      the bodies have the odd/even area that is left.
+#  15. 3D Print's panel (mitcad#234) on a design mitcad-cli makes, a plate,
+#      a cube and a surface body: with nothing selected the plate and the
+#      cube are in Bodies and highlighted, the surface left out; a click on
+#      the cube takes it and its highlight out, a click on the surface picks
+#      nothing; Send writes the plate's file alone.
 # Commands without a default shortcut get one in the test's settings
 # (popups such as the command search close at once in session 0).
 # Mitcad runs with Mesa's software OpenGL (MITCAD_MESA_DIR) in session 0
@@ -320,8 +327,9 @@ function Slicer-Arguments {
 }
 Ui-Mark
 Ui-Step '3D print (Shift+F9)'            { Ui-Key 'shift+F9' }
-Ui-ExpectNew '3D Print dialog: 1 visible: Body1; format stl, refinement high, slicer Fake slicer' 'the dialog: the visible body, STL, High, the slicer of the settings'
-Ui-Step 'send (Enter)'                   { Ui-FocusDialog '^3D Print$'; Ui-Key 'Return'; Ui-FocusMain }
+Ui-ExpectNew '3D Print panel: 1 visible: Body1; format stl, refinement high, slicer Fake slicer' 'the panel: the visible body, STL, High, the slicer of the settings'
+Ui-ExpectNew 'View body highlights: F' 'the body to send highlighted'
+Ui-Step 'send (Enter)'                   { Ui-Key 'Return' }
 Ui-ExpectNew '3D Print: 1 bodies as stl (high) to ' 'the body written as STL'
 Ui-ExpectNew '3D Print: started ' 'the slicer started with it'
 $stl = Join-Path $printFolder 'Body1.stl'
@@ -332,8 +340,11 @@ Write-Host 'ok   one start with the STL file'
 Remove-Item -Force $slicerArgs
 Ui-Mark
 Ui-Step '3D print (Shift+F9)'            { Ui-Key 'shift+F9' }
-Ui-ExpectNew '3D Print dialog: 1 visible: Body1; format stl' 'the dialog'
-Ui-Step '3MF and send (Down, Enter)'     { Ui-FocusDialog '^3D Print$'; Ui-Key 'Down'; Ui-Key 'Return'; Ui-FocusMain }
+Ui-ExpectNew '3D Print panel: 1 visible: Body1; format stl' 'the panel, STL remembered'
+Ui-ExpectNew 'Panel 3D Print input format at ' 'the panel laid out'
+Ui-Step 'format 3MF (wheel)'             { Ui-WheelLogged 'Panel 3D Print input format' -1 }
+Ui-ExpectNew '3D Print: Format = 3MF, one object with parts' 'the format 3MF chosen'
+Ui-Step 'send (Enter)'                   { Ui-Key 'Return' }
 Ui-ExpectNew '3D Print: 1 bodies as 3mf (high) to ' 'the body written as 3MF'
 $threeMf = Join-Path $printFolder 'block.3mf'
 $got = @(Slicer-Arguments)
@@ -622,5 +633,66 @@ foreach ($line in $lines[$script:UiMark..($lines.Count - 1)]) {
 $expected = 10 * (3600 - 1600 + 400)
 if ([Math]::Abs($added - $expected) -gt 1e-6 * $expected) { Ui-Fail "new bodies of $added mm3, expected $expected" }
 Write-Host "ok   the odd/even area extruded: $added mm3"
+
+Write-Host "--- 3D Print's panel: the bodies picked in the view (mitcad#234)"
+# A 20 x 10 x 5 plate (F1), a 10 mm cube (F2) and a surface body: an open
+# tube of 10 mm diameter, 20 high, lofted between two circles (F3, F5 on
+# Plane1 F4; Loft1 F6).
+$printScript = Join-Path $work 'print.json'
+$printDesign = Join-Path $work 'print.mitcad'
+Set-Content -Encoding ascii $printScript @'
+[
+  {"cmd": "add_feature", "def": {"type": "box", "plane": "xy", "corner": [0, 0],
+    "length": 20, "width": 10, "height": 5, "operation": "new_body"}},
+  {"cmd": "add_feature", "def": {"type": "box", "plane": "xy", "corner": [30, 0],
+    "length": 10, "width": 10, "height": 10, "operation": "new_body"}},
+  {"cmd": "sketch.create"},
+  {"cmd": "sketch.add_circle", "sketch": "F3", "center": [55, 5], "diameter": 10},
+  {"cmd": "add_feature", "def": {"type": "construction_plane", "definition": {"type": "offset", "plane": "xy", "distance": 20}}},
+  {"cmd": "sketch.create", "plane": "F4"},
+  {"cmd": "sketch.add_circle", "sketch": "F5", "center": [55, 5], "diameter": 10},
+  {"cmd": "add_feature", "def": {"type": "loft", "sections": [
+    {"type": "profile", "sketch": "F3", "region": "r{c1}"}, {"type": "profile", "sketch": "F5", "region": "r{c1}"}],
+    "surface": true, "operation": "new_body"}},
+  {"cmd": "rename_body", "uid": "F1.b0", "name": "Plate"},
+  {"cmd": "rename_body", "uid": "F2.b0", "name": "Cube"},
+  {"cmd": "rename_body", "uid": "F6.b0", "name": "Surface"}
+]
+'@
+$made = & $cli run $printScript --save $printDesign
+if ($LASTEXITCODE -ne 0 -or -not (Test-Path $printDesign)) { Ui-Fail "mitcad-cli: $($made -join ' / ')" }
+Ui-StartApp 'print' @('--open', $printDesign)
+Ui-ExpectLog "Opened $workLogged/print.mitcad" 'the design opened'
+Ui-Step 'fit (F6)'                       { Ui-Key 'F6' }
+Ui-ExpectLog 'Body F6.b0 at ' 'the bodies placed in the view'
+Remove-Item -Force $slicerArgs -ErrorAction SilentlyContinue
+Ui-Mark
+Ui-Step '3D print (Shift+F9)'            { Ui-Key 'shift+F9' }
+Ui-ExpectNew '3D Print: left out Surface (a surface body)' 'the surface body left out'
+Ui-ExpectNew '3D Print panel: 2 visible: Plate, Cube; format 3mf' 'the panel: the plate and the cube, 3MF remembered'
+Ui-ExpectNew '3D Print Bodies: 2 bodies [body F1.b0; body F2.b0]' 'both solids in Bodies'
+Ui-ExpectNew 'View body highlights: F1.b0, F2.b0' 'both highlighted'
+Ui-Mark
+Ui-Step 'click the cube'                 { Ui-ClickLogged 'Body F2.b0' }
+Ui-ExpectNew '3D Print Bodies: 1 body [body F1.b0]' 'the click took the cube out'
+Ui-ExpectNew 'View body highlights: F1.b0' 'and its highlight'
+Ui-Mark
+Ui-Step 'click the surface'              { Ui-ClickLogged 'Body F6.b0' }
+Start-Sleep -Milliseconds 500
+$since = @(Ui-LogLines)
+$since = $since[$script:UiMark..($since.Count - 1)]
+if ($since | Where-Object { $_.Contains('3D Print Bodies:') -or $_.Contains('View body highlights:') }) {
+  Ui-Fail "the click on the surface body changed Bodies: $($since -join ' / ')"
+}
+Write-Host 'ok   the surface body cannot be picked'
+Ui-Mark
+Ui-Step 'send (Enter)'                   { Ui-Key 'Return' }
+Ui-ExpectNew '3D Print: 1 bodies as 3mf (high) to ' 'the plate written'
+$sentLine = Ui-LastMatch '3D Print: 1 bodies as 3mf \(high\) to .*: (.*)$'
+if ($sentLine -notmatch '^Plate \d+ triangles' -or $sentLine.Contains('Cube')) { Ui-Fail "3D Print wrote: $sentLine" }
+$got = @(Slicer-Arguments)
+$printFile = [IO.Path]::GetFullPath((Join-Path $printTemp 'mitcad-print\print\print.3mf'))
+if ($got.Count -ne 1 -or $got[0] -ne $printFile) { Ui-Fail "the slicer's arguments: $($got -join ' | ')" }
+Write-Host "ok   the plate alone sent: $sentLine"
 
 Ui-Finish 'UI Windows workflow test'

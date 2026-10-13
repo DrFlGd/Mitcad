@@ -5,10 +5,12 @@
 #include "import.hpp"
 
 #include <algorithm>
+#include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <filesystem>
 #include <iostream>
+#include <locale>
 #include <sstream>
 #include <thread>
 
@@ -181,6 +183,19 @@ int import_f3d_timeline(const Arguments& a) {
   if (const std::string* seconds = a.option("--hang-limit")) {
     add(R"("hang_limit": )" + std::to_string(std::atof(seconds->c_str())));
   }
+  // How far the replay's geometry may be from the file's (mitcad#224).
+  if (const std::string* mm = a.option("--geometric-tolerance")) {
+    char* end = nullptr;
+    const double tolerance = std::strtod(mm->c_str(), &end);
+    if (end == mm->c_str() || *end != '\0' || !(tolerance > 0.0) || !std::isfinite(tolerance)) {
+      return usage("--geometric-tolerance needs a distance in millimetres greater than 0");
+    }
+    std::ostringstream text;
+    text.imbue(std::locale::classic());
+    text.precision(17);
+    text << tolerance;
+    add(R"("geometric_tolerance": )" + text.str());
+  }
   if (const std::string* path = a.option("--report")) {
     add(R"("report_path": )" + json_string(*path));
   }
@@ -237,7 +252,7 @@ int import_f3d(const std::vector<std::string>& args) {
   std::string problem;
   if (!parse_arguments(args,
                        {"--save", "--report", "--dump", "--design", "--time-limit", "--hang-limit", "--threads",
-                        "--learn", "--references"},
+                        "--learn", "--references", "--geometric-tolerance"},
                        {"--bodies-only", "--history", "--owners", "--json", "--no-verify", "--no-fallback",
                         "--no-compare", "--no-references"},
                        a, problem)) {

@@ -866,8 +866,8 @@ ShapePtr pipe_shell(const NamedWire& loop, const TopoDS_Wire& spine, const PipeM
 }
 
 ShapePtr through_sections(const std::vector<TopoDS_Shape>& sections, const NamedWire& named,
-                          const NameList& first, const NameList& last, bool ruled, bool compatible) {
-  BRepOffsetAPI_ThruSections loft(true, ruled, 1.0e-6);
+                          const NameList& first, const NameList& last, bool ruled, bool compatible, bool solid) {
+  BRepOffsetAPI_ThruSections loft(solid, ruled, 1.0e-6);
   loft.CheckCompatibility(compatible);
   loft.SetMutableInput(false);
   for (const TopoDS_Shape& section : sections) {
@@ -881,14 +881,14 @@ ShapePtr through_sections(const std::vector<TopoDS_Shape>& sections, const Named
   if (!loft.IsDone()) {
     throw std::runtime_error("no surface could be built through the sections");
   }
-  FaceNamer namer(oriented_solid(loft.Shape(), "the loft"));
+  FaceNamer namer(solid ? oriented_solid(loft.Shape(), "the loft") : loft.Shape());
   for (const auto& [edge, name] : named.edges) {
     namer.generated(loft, edge, name);
   }
-  if (!first.empty() && sections.front().ShapeType() != TopAbs_VERTEX) {
+  if (solid && !first.empty() && sections.front().ShapeType() != TopAbs_VERTEX) {
     name_caps(namer, loft.FirstShape(), first);
   }
-  if (!last.empty() && sections.back().ShapeType() != TopAbs_VERTEX) {
+  if (solid && !last.empty() && sections.back().ShapeType() != TopAbs_VERTEX) {
     name_caps(namer, loft.LastShape(), last);
   }
   return namer.shape();

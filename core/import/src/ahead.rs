@@ -337,6 +337,7 @@ impl<K: crate::ImportKernel> Importer<'_, K> {
             let component = self.component;
             let deadline = self.deadline;
             let share = Some(ahead.share);
+            let tolerance = self.options.geometric_tolerance;
             let progress = self.options.progress.clone();
             self.workers.fetch_add(1, Ordering::SeqCst);
             RUNNING.fetch_add(1, Ordering::SeqCst);
@@ -344,6 +345,7 @@ impl<K: crate::ImportKernel> Importer<'_, K> {
             let job: WorkerJob = Box::new(move || {
                 let _running = running;
                 let _helper = helper;
+                let _tolerance = crate::refs::GeometricTolerance::set(tolerance);
                 let done = evaluate_on(
                     doc,
                     &candidate,

@@ -23,6 +23,8 @@
 #include <BRepFill_Edge3DLaw.hxx>
 #include <BRepFill_ShapeLaw.hxx>
 #include <BRepFill_Sweep.hxx>
+#include <BRepGProp.hxx>
+#include <GProp_GProps.hxx>
 #include <BRepLib_MakeFace.hxx>
 #include <BRep_Builder.hxx>
 #include <GeomFill_LocationLaw.hxx>
@@ -35,6 +37,7 @@
 #include <gp_Mat.hxx>
 #include <Message_ProgressRange.hxx>
 #include <ShapeFix_Solid.hxx>
+#include <BRepOffsetAPI_MakeOffset.hxx>
 #include <BRepOffsetAPI_MakePipe.hxx>
 #include <BRepBuilderAPI_GTransform.hxx>
 #include <BRepBuilderAPI_MakeEdge.hxx>
@@ -183,6 +186,45 @@ NamedWire moved(const NamedWire& loop, const gp_GTrsf& transformation, bool affi
   return result;
 }
 
+// The face's loops offset in its plane by `distance` (positive: away from the
+// material, so that the outline grows and a hole closes in), each with its
+// edges' names; a taper leans every side by this much per unit of the path.
+// `loops` are the face's loops as detail::face_loops gives them.
+std::vector<NamedWire> offset_loops(const TopoDS_Face& face, const std::vector<NamedWire>& loops, double distance) {
+  BRepOffsetAPI_MakeOffset offset(face, GeomAbs_Intersection);
+  offset.Perform(distance);
+  if (!offset.IsDone() || offset.Shape().IsNull()) {
+    throw std::invalid_argument("the taper closes the profile before the end of the sweep");
+  }
+  std::vector<NamedWire> result;
+  for (const NamedWire& loop : loops) {
+    NamedWire moved_loop;
+    for (const auto& [edge, name] : loop.edges) {
+      for (const TopoDS_Shape& image : offset.Generated(edge)) {
+        if (image.ShapeType() == TopAbs_EDGE) {
+          moved_loop.edges.emplace_back(TopoDS::Edge(image), name);
+        }
+      }
+    }
+    if (moved_loop.edges.size() < loop.edges.size()) {
+      throw std::invalid_argument("the taper closes the profile before the end of the sweep");
+    }
+    for (TopExp_Explorer w(offset.Shape(), TopAbs_WIRE); w.More() && moved_loop.wire.IsNull(); w.Next()) {
+      for (TopExp_Explorer e(w.Current(), TopAbs_EDGE); e.More(); e.Next()) {
+        if (e.Current().IsSame(moved_loop.edges.front().first)) {
+          moved_loop.wire = TopoDS::Wire(w.Current());
+          break;
+        }
+      }
+    }
+    if (moved_loop.wire.IsNull()) {
+      throw std::invalid_argument("the taper closes the profile before the end of the sweep");
+    }
+    result.push_back(std::move(moved_loop));
+  }
+  return result;
+}
+
 // A sweep that turns or sizes its profile along the path: copies of the
 // profile placed along the part, lofted. The path must be smooth.
 struct Variation {
@@ -253,13 +295,6 @@ ShapePtr varied_sweep(const SweepSpec& spec, const std::vector<detail::SweepFace
     const gp_Vec t(frames[i].Direction());
     return std::atan2(n.Crossed(towards[i]).Dot(t), n.Dot(towards[i]));
   };
-  double size = 1.0;
-  if (variation.taper != 0.0) {
-    size = reach(faces, spine.point(s0));
-    if (size <= Precision::Confusion()) {
-      throw std::invalid_argument("the profile has no size to taper");
-    }
-  }
   std::vector<gp_GTrsf> placements;
   bool affine = false;
   for (std::size_t i = 0; i < stations.size(); ++i) {
@@ -275,11 +310,6 @@ ShapePtr varied_sweep(const SweepSpec& spec, const std::vector<detail::SweepFace
       angle = turn;
       if (variation.scaling != ProfileScaling::None) {
         scale = towards[i].Magnitude() / towards[k0].Magnitude();
-      }
-    } else if (variation.taper != 0.0) {
-      scale = 1.0 + std::abs(stations[i] - s0) * std::tan(variation.taper) / size;
-      if (scale <= 1e-6) {
-        throw std::invalid_argument("the taper closes the profile before the end of the sweep");
       }
     }
     gp_Trsf turn;
@@ -304,14 +334,26 @@ ShapePtr varied_sweep(const SweepSpec& spec, const std::vector<detail::SweepFace
     const auto caps = cap_order(range, detail::cap_names(spec.feature, "start", face),
                                 detail::cap_names(spec.feature, "end", face));
     const std::vector<NamedWire> loops = detail::face_loops(face.face, face.edges);
+    // The profile at every station: moved, and with a taper offset first (each
+    // side leans out by the angle, as an extrusion's does, so a square stays
+    // a square and a circle becomes a cone).
+    std::vector<std::vector<NamedWire>> at_station(stations.size());
+    for (std::size_t i = 0; i < stations.size(); ++i) {
+      const double lean = variation.taper != 0.0 ? std::abs(stations[i] - s0) * std::tan(variation.taper) : 0.0;
+      const std::vector<NamedWire> shaped =
+          std::abs(lean) > Precision::Confusion() ? offset_loops(face.face, loops, lean) : loops;
+      for (const NamedWire& loop : shaped) {
+        at_station[i].push_back(i == k0 ? loop : moved(loop, placements[i], affine));
+      }
+    }
     std::vector<ShapePtr> solids;
     for (std::size_t l = 0; l < loops.size(); ++l) {
       std::vector<TopoDS_Shape> sections;
       for (std::size_t i = 0; i < stations.size(); ++i) {
-        sections.push_back(i == k0 ? TopoDS_Shape(loops[l].wire)
-                                   : TopoDS_Shape(moved(loops[l], placements[i], affine).wire));
+        sections.push_back(at_station[i][l].wire);
       }
-      solids.push_back(detail::through_sections(sections, loops[l], l == 0 ? caps.first : NameList{},
+      // The first section's own edges carry the names of the faces swept.
+      solids.push_back(detail::through_sections(sections, at_station.front()[l], l == 0 ? caps.first : NameList{},
                                                 l == 0 ? caps.second : NameList{}, false, false));
     }
     parts.push_back(detail::with_holes(solids.front(), {solids.begin() + 1, solids.end()}, "the sweep"));
@@ -694,7 +736,10 @@ NamedWire section(const std::string& feature, const std::string& role, const gp_
 ShapePtr pipe(const PipeSpec& spec) {
   detail::require_positive("pipe section size", spec.size);
   detail::require_finite("pipe wall thickness", spec.thickness);
-  const double radius = spec.size / 2.0;
+  // The radius of the circle round the section: half the circle's size,
+  // the square's side over the root of two, two thirds of the triangle's
+  // height (mitcad#25: the volumes of the variant models).
+  double radius = spec.size / 2.0;
   // The circle inside the section, and what the wall takes off the
   // circle round it.
   double inside = radius;
@@ -705,12 +750,14 @@ ShapePtr pipe(const PipeSpec& spec) {
   case PipeSection::Circular:
     break;
   case PipeSection::Square:
+    radius = spec.size / std::sqrt(2.0);
     inside = radius / std::sqrt(2.0);
     shrink = spec.thickness * std::sqrt(2.0);
     corners = 4;
     angle = kPi / 4.0;
     break;
   case PipeSection::Triangular:
+    radius = 2.0 * spec.size / 3.0;
     inside = radius / 2.0;
     shrink = 2.0 * spec.thickness;
     corners = 3;
@@ -725,7 +772,18 @@ ShapePtr pipe(const PipeSpec& spec) {
     const gp_Dir tangent = path.tangent(0.0);
     const std::optional<gp_Dir> plane = path.plane_normal();
     const gp_Dir x = plane ? plane->Crossed(tangent) : detail::any_normal(tangent);
-    const NamedWire outer = section(spec.feature, "side", start, tangent, x, radius, corners, angle);
+    gp_Pnt center = start;
+    if (spec.section == PipeSection::Triangular) {
+      // A corner points along the path's plane normal (along x without a
+      // plane) and the path passes through the middle of the height: the
+      // circle's centre lies a sixth of the height towards the base.
+      const gp_Dir apex = plane ? *plane : x;
+      if (plane) {
+        angle = kPi / 2.0;
+      }
+      center = start.Translated(gp_Vec(apex) * (-spec.size / 6.0));
+    }
+    const NamedWire outer = section(spec.feature, "side", center, tangent, x, radius, corners, angle);
     const double length = path.length();
     Range range;
     if (path.closed()) {
@@ -744,141 +802,10 @@ ShapePtr pipe(const PipeSpec& spec) {
     ShapePtr result = detail::pipe_shell(outer, part, mode, first, last);
     if (spec.thickness > 0.0) {
       const NamedWire inner =
-          section(spec.feature, "inner", start, tangent, x, radius - shrink, corners, angle);
+          section(spec.feature, "inner", center, tangent, x, radius - shrink, corners, angle);
       result = detail::with_holes(result, {detail::pipe_shell(inner, part, mode, {}, {})}, "the pipe");
     }
     return detail::finished(*result, "the pipe");
-  });
-}
-
-ShapePtr coil(const CoilSpec& spec) {
-  detail::require_positive("coil diameter", spec.diameter);
-  detail::require_positive("coil revolutions", spec.revolutions);
-  detail::require_positive("coil pitch", spec.pitch);
-  detail::require_positive("coil section size", spec.size);
-  detail::require_finite("coil angle", spec.angle);
-  if (std::abs(spec.angle) >= kPi / 2.0) {
-    throw std::invalid_argument("the coil's angle must be less than 90 degrees");
-  }
-  if (spec.spiral && spec.angle != 0.0) {
-    throw std::invalid_argument("a spiral coil has no angle");
-  }
-  // The section's corners on a circle of radius r, and how far it reaches
-  // out of the coil (`out`), into it (`in`) and along it (`along`).
-  const double r = spec.size / 2.0;
-  int corners = 0;
-  double angle = 0.0;
-  double out = r;
-  double in = r;
-  double along = r;
-  switch (spec.section) {
-  case CoilSection::Circular:
-    break;
-  case CoilSection::Square:
-    corners = 4;
-    angle = kPi / 4.0;
-    out = in = along = r / std::sqrt(2.0);
-    break;
-  case CoilSection::TriangularExternal:
-    corners = 3;
-    in = r / 2.0;
-    along = r * std::sqrt(3.0) / 2.0;
-    break;
-  case CoilSection::TriangularInternal:
-    corners = 3;
-    angle = kPi;
-    out = r / 2.0;
-    along = r * std::sqrt(3.0) / 2.0;
-    break;
-  }
-  double radius = spec.diameter / 2.0;
-  if (spec.position == CoilPosition::Inside) {
-    radius -= out;
-  } else if (spec.position == CoilPosition::Outside) {
-    radius += in;
-  }
-  if (radius - in <= Precision::Confusion()) {
-    throw std::invalid_argument("the coil's section reaches its axis; make the diameter larger");
-  }
-  const double height = spec.revolutions * spec.pitch;
-  if (spec.spiral) {
-    if (spec.pitch <= out + in) {
-      throw std::invalid_argument("the spiral's pitch is smaller than its section, so its turns overlap");
-    }
-  } else {
-    // The section is tilted by the helix angle; neighbouring turns must not
-    // meet.
-    const double slope = spec.pitch / (kTwoPi * radius);
-    if (spec.pitch <= 2.0 * along * std::sqrt(1.0 + slope * slope)) {
-      throw std::invalid_argument("the coil's pitch is smaller than its section, so its turns overlap");
-    }
-    if (radius + height * std::tan(spec.angle) - in <= Precision::Confusion()) {
-      throw std::invalid_argument("the coil's angle narrows it into its axis");
-    }
-  }
-  return detail::run("coil", [&] {
-    const gp_Pnt origin = spec.frame.origin;
-    const gp_Dir axis = spec.frame.normal();
-    gp_Ax3 axes(origin, axis, spec.frame.x_axis);
-    if (spec.clockwise) {
-      axes.YReverse();
-    }
-    TopoDS_Edge edge;
-    const int samples = std::max(32, static_cast<int>(std::ceil(spec.revolutions * 32.0)));
-    if (spec.spiral) {
-      // An Archimedean spiral, interpolated.
-      const int count = std::max(64, static_cast<int>(std::ceil(spec.revolutions * 64.0)));
-      const occ::handle<NCollection_HArray1<gp_Pnt>> points = new NCollection_HArray1<gp_Pnt>(1, count + 1);
-      const gp_Vec x(axes.XDirection());
-      const gp_Vec y(axes.YDirection());
-      for (int i = 0; i <= count; ++i) {
-        const double t = kTwoPi * spec.revolutions * i / count;
-        const double rho = radius + spec.pitch * t / kTwoPi;
-        points->SetValue(i + 1, origin.Translated(x * (rho * std::cos(t)) + y * (rho * std::sin(t))));
-      }
-      GeomAPI_Interpolate interpolate(points, false, 1.0e-9);
-      interpolate.Perform();
-      if (!interpolate.IsDone()) {
-        throw std::runtime_error("the spiral could not be built");
-      }
-      edge = BRepBuilderAPI_MakeEdge(interpolate.Curve()).Edge();
-    } else {
-      // On the unrolled cylinder or cone the helix is a line: a turn round
-      // the axis rises one pitch.
-      occ::handle<Geom_Surface> surface;
-      const double c = std::cos(spec.angle);
-      if (spec.angle == 0.0) {
-        surface = new Geom_CylindricalSurface(axes, radius);
-      } else {
-        surface = new Geom_ConicalSurface(axes, spec.angle, radius);
-      }
-      const gp_Vec2d direction(kTwoPi * c, spec.pitch);
-      const occ::handle<Geom2d_Line> line = new Geom2d_Line(gp_Pnt2d(0.0, 0.0), gp_Dir2d(direction));
-      BRepBuilderAPI_MakeEdge helix(line, surface, 0.0, spec.revolutions * direction.Magnitude() / c);
-      if (!helix.IsDone()) {
-        throw std::runtime_error("the coil's helix could not be built");
-      }
-      edge = helix.Edge();
-      BRepLib::BuildCurves3d(edge, 1.0e-7, GeomAbs_C1, 14, std::max(30, samples));
-    }
-    const TopoDS_Wire spine = BRepBuilderAPI_MakeWire(edge).Wire();
-    const BRepAdaptor_Curve curve(edge);
-    gp_Pnt start;
-    gp_Vec velocity;
-    curve.D1(curve.FirstParameter(), start, velocity);
-    const gp_Dir tangent(velocity);
-    // Outwards from the axis, at right angles to the helix.
-    gp_Vec radial(origin, start);
-    radial -= gp_Vec(axis) * radial.Dot(gp_Vec(axis));
-    radial -= gp_Vec(tangent) * radial.Dot(gp_Vec(tangent));
-    const NamedWire profile =
-        section(spec.feature, "side", start, tangent, gp_Dir(radial), r, corners, angle);
-    PipeMode mode;
-    mode.kind = PipeMode::Kind::Binormal;
-    mode.binormal = axis;
-    const ShapePtr result = detail::pipe_shell(profile, spine, mode, {face_name(spec.feature, "start")},
-                                               {face_name(spec.feature, "end")}, 1.0e-6);
-    return detail::finished(*result, "the coil");
   });
 }
 
@@ -1160,7 +1087,7 @@ ShapePtr screwed_loop(const NamedWire& loop, const GrowingScrew& screw, double r
                       const NameList& last) {
   // The law's curve: the axis, as long as the rise.
   const TopoDS_Edge line =
-      BRepBuilderAPI_MakeEdge(screw.base, screw.base.Translated(gp_Vec(screw.axis) * screw.rise)).Edge();
+      BRepBuilderAPI_MakeEdge(screw.base, screw.base.Translated(gp_Vec(screw.axis) * (screw.rise != 0.0 ? screw.rise : 1.0))).Edge();
   const TopoDS_Wire path = BRepBuilderAPI_MakeWire(line).Wire();
   const occ::handle<BRepFill_ShapeLaw> section = new BRepFill_ShapeLaw(loop.wire, true);
   const occ::handle<BRepFill_LocationLaw> location = new BRepFill_Edge3DLaw(path, new GrowingScrewLaw(screw));
@@ -1206,7 +1133,14 @@ ShapePtr screwed_loop(const NamedWire& loop, const GrowingScrew& screw, double r
     caps.push_back(face);
     builder.Add(shell, face);
   }
-  detail::FaceNamer namer(detail::oriented_solid(shell, "the helix"));
+  TopoDS_Shape closed = detail::oriented_solid(shell, "the helix");
+  // A profile wound the other way gives a solid turned inside out.
+  GProp_GProps volume;
+  BRepGProp::VolumeProperties(closed, volume);
+  if (volume.Mass() < 0.0) {
+    closed.Reverse();
+  }
+  detail::FaceNamer namer(closed);
   const occ::handle<NCollection_HArray2<TopoDS_Shape>> faces = sweep.SubShape();
   for (int i = 1; i <= section->NbLaw(); ++i) {
     const TopoDS_Edge& edge = section->Edge(i);
@@ -1304,6 +1238,10 @@ ShapePtr growing_helix(const HelixSweepSpec& spec, const std::vector<detail::Swe
 constexpr double kOffCylinder = 1.0e-4;
 constexpr double kCornerDepth = 1.0e-3;
 constexpr double kSpineTurns = 1.0 / 3.0;
+// How close to a cylinder a side counts as on it (mm): thread profiles are
+// often drawn a fraction of a micrometre off the cylinder they are cut
+// into, which the booleans fail on as they do on sides exactly on it.
+constexpr double kOnCylinder = 1.0e-3;
 
 // A cylinder of a body about the axis: its radius and its extent along
 // the axis (from the axis' location).
@@ -1431,7 +1369,7 @@ NamedWire off_cylinders(const NamedWire& loop, const TopoDS_Face& face, const gp
       const double low = std::min(t0, t1);
       const double high = std::max(t0, t1) + rise;
       for (const AxialCylinder& c : cylinders) {
-        if (std::abs(c.radius - radius) <= 1.0e-4 && c.from < high - 1.0e-6 && c.to > low + 1.0e-6) {
+        if (std::abs(c.radius - radius) <= kOnCylinder && c.from < high - 1.0e-6 && c.to > low + 1.0e-6) {
           e.on_cylinder = true;
           e.touching = length >= pitch - 1.0e-6;
         }
@@ -1456,7 +1394,7 @@ NamedWire off_cylinders(const NamedWire& loop, const TopoDS_Face& face, const gp
           }
           const double radius = off_axis.Magnitude() + sign * circle.Radius();
           for (const AxialCylinder& c : cylinders) {
-            if (u <= curve.LastParameter() + 1.0e-9 && std::abs(c.radius - radius) <= 1.0e-4 &&
+            if (u <= curve.LastParameter() + 1.0e-9 && std::abs(c.radius - radius) <= kOnCylinder &&
                 c.from < t + rise && c.to > t) {
               e.on_cylinder = true;
             }
@@ -1552,7 +1490,122 @@ NamedWire off_cylinders(const NamedWire& loop, const TopoDS_Face& face, const gp
   return moved;
 }
 
+// How far the faces reach along the axis.
+double axial_extent(const std::vector<detail::SweepFace>& faces, const gp_Ax1& axis) {
+  gp_Trsf local;
+  local.SetTransformation(gp_Ax3(axis.Location(), axis.Direction()));
+  Bnd_Box box;
+  for (const detail::SweepFace& face : faces) {
+    BRepBndLib::AddOptimal(BRepBuilderAPI_Transform(face.face, local, true).Shape(), box, false, false);
+  }
+  if (box.IsVoid()) {
+    return 0.0;
+  }
+  double x0 = 0, y0 = 0, z0 = 0, x1 = 0, y1 = 0, z1 = 0;
+  box.Get(x0, y0, z0, x1, y1, z1);
+  return z1 - z0;
+}
+
 } // namespace
+
+// A coil: the section lies in the plane through the axis and the start
+// direction and moves by a screw motion (the helix's: it turns about the
+// axis and rises, and a cone's or a spiral's section also moves out), so
+// that its volume is the section's area times the turns of its centroid
+// (mitcad#25: the volumes of the variant models). The size is the circle's
+// diameter, the square's side or the triangle's height (its radial extent);
+// the section is positioned by its radial extent.
+ShapePtr coil(const CoilSpec& spec) {
+  detail::require_positive("coil diameter", spec.diameter);
+  detail::require_positive("coil revolutions", spec.revolutions);
+  detail::require_positive("coil pitch", spec.pitch);
+  detail::require_positive("coil section size", spec.size);
+  detail::require_finite("coil angle", spec.angle);
+  if (std::abs(spec.angle) >= kPi / 2.0) {
+    throw std::invalid_argument("the coil's angle must be less than 90 degrees");
+  }
+  if (spec.spiral && spec.angle != 0.0) {
+    throw std::invalid_argument("a spiral coil has no angle");
+  }
+  // The section's corners on a circle of radius r about its centre, the
+  // first at `angle` from the way out, and how far it reaches out of the
+  // coil (`out`), into it (`in`) and along the axis (`along`, half).
+  double r = spec.size / 2.0;
+  int corners = 0;
+  double angle = 0.0;
+  double out = r;
+  double in = r;
+  double along = r;
+  switch (spec.section) {
+  case CoilSection::Circular:
+    break;
+  case CoilSection::Square:
+    corners = 4;
+    angle = kPi / 4.0;
+    r = spec.size / std::sqrt(2.0);
+    out = in = along = spec.size / 2.0;
+    break;
+  case CoilSection::TriangularExternal:
+    corners = 3;
+    r = 2.0 * spec.size / 3.0;
+    out = r;
+    in = r / 2.0;
+    along = r * std::sqrt(3.0) / 2.0;
+    break;
+  case CoilSection::TriangularInternal:
+    corners = 3;
+    angle = kPi;
+    r = 2.0 * spec.size / 3.0;
+    out = r / 2.0;
+    in = r;
+    along = r * std::sqrt(3.0) / 2.0;
+    break;
+  }
+  // The radius of the section's centre: its radial extent centred on the
+  // diameter, or touching it from inside or outside.
+  double radius = spec.diameter / 2.0 + (in - out) / 2.0;
+  if (spec.position == CoilPosition::Inside) {
+    radius = spec.diameter / 2.0 - out;
+  } else if (spec.position == CoilPosition::Outside) {
+    radius = spec.diameter / 2.0 + in;
+  }
+  if (radius - in <= Precision::Confusion()) {
+    throw std::invalid_argument("the coil's section reaches its axis; make the diameter larger");
+  }
+  const double rise = spec.spiral ? 0.0 : spec.revolutions * spec.pitch;
+  if (spec.spiral) {
+    if (spec.pitch <= out + in) {
+      throw std::invalid_argument("the spiral's pitch is smaller than its section, so its turns overlap");
+    }
+  } else {
+    if (spec.pitch <= 2.0 * along) {
+      throw std::invalid_argument("the coil's pitch is smaller than its section, so its turns overlap");
+    }
+    if (radius + rise * std::tan(spec.angle) - in <= Precision::Confusion()) {
+      throw std::invalid_argument("the coil's angle narrows it into its axis");
+    }
+  }
+  return detail::run("coil", [&] {
+    const gp_Pnt origin = spec.frame.origin;
+    const gp_Dir axis = spec.frame.normal();
+    const gp_Dir x = spec.frame.x_axis;
+    GrowingScrew screw;
+    screw.base = origin;
+    screw.axis = axis;
+    screw.out = x;
+    screw.angle = (spec.clockwise ? -1.0 : 1.0) * kTwoPi * spec.revolutions;
+    screw.rise = rise;
+    screw.growth = spec.spiral ? spec.revolutions * spec.pitch : rise * std::tan(spec.angle);
+    // In the plane through the axis: the way out is the section's x and
+    // the axis its y.
+    const gp_Dir normal = gp_Dir(gp_Vec(x).Crossed(gp_Vec(axis)));
+    const gp_Pnt center = origin.Translated(gp_Vec(x) * radius);
+    const NamedWire profile = section(spec.feature, "side", center, normal, x, r, corners, angle);
+    const ShapePtr result = screwed_loop(profile, screw, spec.revolutions, {face_name(spec.feature, "start")},
+                                         {face_name(spec.feature, "end")});
+    return detail::finished(*result, "the coil");
+  });
+}
 
 ShapePtr helix_sweep(const HelixSweepSpec& spec) {
   if (spec.regions.empty()) {
@@ -1612,11 +1665,18 @@ ShapePtr helix_sweep(const HelixSweepSpec& spec) {
       }
       face_loops.push_back(std::move(loops));
     }
+    // Turns that overlap (profiles longer along the axis than the pitch)
+    // make a tool that passes through itself, which the booleans cannot
+    // use: it is swept in pieces of at most kSpineTurns, none of which
+    // meets itself, and they are fused.
+    const bool overlapping = axial_extent(faces, spec.axis) > spec.pitch + 1.0e-6;
     // One edge, else edges of at most kSpineTurns each.
-    const int count =
-        on_cylinder ?std::max(1, static_cast<int>(std::ceil(spec.revolutions / kSpineTurns - 1.0e-9))) : 1;
+    const int count = on_cylinder || overlapping
+                          ? std::max(1, static_cast<int>(std::ceil(spec.revolutions / kSpineTurns - 1.0e-9)))
+                          : 1;
     const double length = spec.revolutions * direction.Magnitude();
     BRepBuilderAPI_MakeWire spine_wire;
+    std::vector<TopoDS_Edge> spine_edges;
     for (int k = 0; k < count; ++k) {
       BRepBuilderAPI_MakeEdge helix(line, surface, length * k / count, length * (k + 1) / count);
       if (!helix.IsDone()) {
@@ -1626,12 +1686,40 @@ ShapePtr helix_sweep(const HelixSweepSpec& spec) {
       const int samples = std::max(32, static_cast<int>(std::ceil(spec.revolutions / count * 32.0)));
       BRepLib::BuildCurves3d(edge, 1.0e-7, GeomAbs_C1, 14, samples);
       spine_wire.Add(edge);
+      spine_edges.push_back(edge);
     }
     const TopoDS_Wire spine = spine_wire.Wire();
     PipeMode mode;
     mode.kind = PipeMode::Kind::Binormal;
     mode.binormal = axis;
     std::vector<ShapePtr> parts;
+    if (overlapping) {
+      // Each piece from the profiles moved by the screw motion to its start.
+      const double sign = spec.left_handed ? -1.0 : 1.0;
+      for (int k = 0; k < count; ++k) {
+        const double turns = spec.revolutions * k / count;
+        gp_Trsf turn;
+        turn.SetRotation(spec.axis, sign * kTwoPi * turns);
+        gp_Trsf rise;
+        rise.SetTranslation(gp_Vec(axis) * (spec.pitch * turns));
+        const gp_GTrsf screw(rise * turn);
+        const TopoDS_Wire piece = BRepBuilderAPI_MakeWire(spine_edges[static_cast<std::size_t>(k)]).Wire();
+        for (std::size_t f = 0; f < faces.size(); ++f) {
+          const detail::SweepFace& face = faces[f];
+          const std::vector<NamedWire>& loops = face_loops[f];
+          const ShapePtr outer = detail::pipe_shell(
+              moved(loops.front(), screw, false), piece, mode,
+              k == 0 ? detail::cap_names(spec.feature, "start", face) : NameList{},
+              k == count - 1 ? detail::cap_names(spec.feature, "end", face) : NameList{}, 1.0e-6);
+          std::vector<ShapePtr> holes;
+          for (std::size_t l = 1; l < loops.size(); ++l) {
+            holes.push_back(detail::pipe_shell(moved(loops[l], screw, false), piece, mode, {}, {}, 1.0e-6));
+          }
+          parts.push_back(detail::with_holes(outer, holes, "the helix"));
+        }
+      }
+      return detail::finished(*detail::fused(parts, "the helix"), "the helix");
+    }
     for (std::size_t f = 0; f < faces.size(); ++f) {
       const detail::SweepFace& face = faces[f];
       const std::vector<NamedWire>& loops = face_loops[f];

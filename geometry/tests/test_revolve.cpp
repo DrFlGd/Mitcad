@@ -4,6 +4,9 @@
 
 #include "check.hpp"
 
+#include <array>
+#include <cmath>
+
 namespace test {
 namespace {
 
@@ -108,12 +111,62 @@ void test_to_object() {
   CHECK(throws_with([&] { revolve(spec); }, "no offset"));
 }
 
+// A triangle c<first>..c<first+2> through the points (sketch coordinates).
+Region triangle(const std::string& name, int first, const std::array<gp_Pnt2d, 3>& points) {
+  Region region;
+  region.name = name;
+  Loop loop;
+  for (std::size_t i = 0; i < 3; ++i) {
+    Segment segment;
+    segment.name = "c" + std::to_string(first + static_cast<int>(i));
+    segment.start = points[i];
+    segment.end = points[(i + 1) % 3];
+    loop.segments.push_back(segment);
+  }
+  region.loops.push_back(loop);
+  return region;
+}
+
+// Two regions that share an edge, with a straight outer side the shared edge
+// cuts in two (a wedge between a wall of a cylinder and a cone and the line
+// across both), revolved a full turn: one solid of three faces, the volume
+// Pappus gives for the two triangles. Revolved apart and fused, the two
+// parts of the cone face were merged into one face built wrong (2.6 % too
+// much volume).
+void test_touching_regions() {
+  // The line from (27, 10) to (26, 50) crosses y = 20 at x = 26.75.
+  const std::array<gp_Pnt2d, 3> lower{gp_Pnt2d(27, 10), gp_Pnt2d(27, 20), gp_Pnt2d(26.75, 20)};
+  const std::array<gp_Pnt2d, 3> upper{gp_Pnt2d(26.75, 20), gp_Pnt2d(27, 20), gp_Pnt2d(26, 50)};
+  RevolveSpec spec;
+  spec.feature = "F3";
+  spec.regions = {triangle("r{c1[c3,c2],c2[c1,c3],c3[c2,c1]}", 1, lower),
+                  triangle("r{c4[c6,c5],c5[c4,c6],c6[c5,c4]}", 4, upper)};
+  spec.axis = gp_Ax1(gp_Pnt(0, 0, 0), gp_Dir(0, 1, 0));
+  spec.angle1 = 2.0 * kPi;
+  const auto pappus = [](const std::array<gp_Pnt2d, 3>& t) {
+    const double area = std::abs((t[1].X() - t[0].X()) * (t[2].Y() - t[0].Y()) -
+                                 (t[2].X() - t[0].X()) * (t[1].Y() - t[0].Y())) /
+                        2.0;
+    return 2.0 * kPi * (t[0].X() + t[1].X() + t[2].X()) / 3.0 * area;
+  };
+  const ShapePtr wedge = revolve(spec);
+  CHECK(near(volume(*wedge), pappus(lower) + pappus(upper), 1e-9));
+  CHECK(wedge->face_count() == 3);
+  // The cone across both regions carries both their segments' names.
+  const std::string lower_line = face_name("F3", "side", "c3");
+  const std::string upper_line = face_name("F3", "side", "c6");
+  CHECK(faces_named(*wedge, lower_line) == 1 && faces_named(*wedge, upper_line) == 1);
+  CHECK(wedge->find_faces(lower_line) == wedge->find_faces(upper_line));
+  CHECK(edge_names_unique(*wedge));
+}
+
 } // namespace
 
 void revolve_tests() {
   guarded("test_angles", test_angles);
   guarded("test_axes", test_axes);
   guarded("test_to_object", test_to_object);
+  guarded("test_touching_regions", test_touching_regions);
 }
 
 } // namespace test

@@ -494,6 +494,7 @@ pub enum Detail {
     Shell(Box<ShellDetail>),
     OffsetFaces(Box<OffsetFacesDetail>),
     Coil(Box<CoilDetail>),
+    Primitive(Box<PrimitiveDetail>),
     ConstructionPlane(Box<ConstructionPlaneDetail>),
     JointOrigin(Box<JointOriginDetail>),
     ConstructionPoint(Box<ConstructionPointDetail>),
@@ -526,6 +527,9 @@ impl Detail {
                 Detail::OffsetFaces(Box::new(OffsetFacesDetail::from_map(map)))
             }
             Some("CoilFeature") => Detail::Coil(Box::new(CoilDetail::from_map(map))),
+            Some("BoxFeature" | "CylinderFeature" | "SphereFeature" | "TorusFeature") => {
+                Detail::Primitive(Box::new(PrimitiveDetail::from_map(map)))
+            }
             Some("ConstructionPlane") => {
                 Detail::ConstructionPlane(Box::new(ConstructionPlaneDetail::from_map(map)))
             }
@@ -1102,6 +1106,21 @@ record! {
         /// order as the recipe lists them (mitcad#106: they tell mirror-image
         /// edges between the same two faces apart).
         "end_faces" => end_faces: Vec<Vec<i64>>,
+        /// The GUID of the document that owns the entity (lower case,
+        /// [`super::recipe::owner_guid`]): that of one of `_f3d.
+        /// external_documents` where the entity is in a component of
+        /// another document, whose own history names it (mitcad#196).
+        "document" => document: String,
+        /// A body found in another document's history: its name there, the
+        /// blob and the ASM record of the body in the last state
+        /// (`BREP.<guid>.smbh#<record>`), as that document's import names its
+        /// stored bodies (mitcad#196).
+        "stored" => stored: String,
+        /// An entity of another component (or document) that a plane or an
+        /// extent names: the transform of its component's occurrence in the
+        /// design when it was selected (cm), as the slot that holds the
+        /// entity carries it (`decode::slot_contexts`).
+        "context" => context: Mat4,
     }
 }
 
@@ -1394,6 +1413,59 @@ record! {
         "sectionSize" => section_size: Reference,
         "isClockwise" => is_clockwise: bool,
         "operation" => operation: String,
+        /// The plane or face the coil stands on (mitcad#25).
+        "plane" => plane: Reference,
+        /// The frame input's matrix (the plane's frame); absent: the
+        /// identity (mitcad#25).
+        "frame" => frame: Mat4,
+        /// The coil's own placement in that frame; absent: the identity
+        /// (mitcad#25).
+        "placement" => placement: Mat4,
+        "participantBodies" => participant_bodies: Vec<Reference>,
+    }
+}
+
+record! {
+    /// A box, cylinder, sphere or torus primitive (mitcad#25), the
+    /// `objectType` `BoxFeature`, `CylinderFeature`, `SphereFeature` or
+    /// `TorusFeature`. The file stores the placement as a matrix in the
+    /// frame of the plane or face the primitive stands on: a point `p` of
+    /// the primitive's own frame is at `frame * placement * p` in the
+    /// component's coordinates (the frame carries the plane's origin). The
+    /// own frame has the box's
+    /// width along x, its length along y and its height along z; a
+    /// cylinder's axis, a sphere's centre and a torus' axis and centre
+    /// are its origin and z axis.
+    pub struct PrimitiveDetail {
+        "operation" => operation: String,
+        /// The plane or face the primitive stands on.
+        "plane" => plane: Reference,
+        /// The frame input's matrix (cm); absent: the identity.
+        "frame" => frame: Mat4,
+        /// The primitive's placement in that frame (cm); absent: the
+        /// identity.
+        "placement" => placement: Mat4,
+        "participantBodies" => participant_bodies: Vec<Reference>,
+        /// A box's size along its own x axis (its width).
+        "distanceX" => distance_x: Reference,
+        /// A box's size along its own y axis (its length).
+        "distanceY" => distance_y: Reference,
+        /// A box's height.
+        "distanceZ" => distance_z: Reference,
+        "offsetDistanceX" => offset_distance_x: Reference,
+        "offsetDistanceY" => offset_distance_y: Reference,
+        /// A cylinder's height (signed).
+        "height" => height: Reference,
+        /// A cylinder's or sphere's diameter.
+        "diameter" => diameter: Reference,
+        /// A torus' diameter (of its centre line, or its inner or outer
+        /// side: `torusPosition`).
+        "majorDiameter" => major_diameter: Reference,
+        /// A torus' section diameter.
+        "minorDiameter" => minor_diameter: Reference,
+        /// `CenterTorusPosition`, `InsideTorusPosition` or
+        /// `OutsideTorusPosition`.
+        "torusPosition" => torus_position: String,
     }
 }
 

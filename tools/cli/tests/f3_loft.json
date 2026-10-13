@@ -91,13 +91,13 @@
     "closed": true, "ruled": true, "operation": "new_body"}},
   {"expect": {"feature": "Loft6", "status": "ok", "body": "F29.b0", "volume": 12000, "tolerance": 1e-6, "faces": 16,
     "has_face": "F29:side(c1[c4,c2])#0", "min": [-35, -35, -5], "max": [35, 35, 5]}},
-  {"comment": "Smooth, the ring is tangent where it closes: one face per side of the square, round the ring, bulging out between the sections (19200 against 100 * 2 pi 30)."},
+  {"comment": "Smooth, the ring is tangent where it closes: one face per side of the square, round the ring, the corners following periodic Catmull-Rom curves, 16400 against 12000 ruled."},
   {"cmd": "edit_feature", "uid": "F29", "def": {"type": "loft", "sections": [
     {"type": "profile", "sketch": "F22", "region": "r{c1[c4,c2],c2[c1,c3],c3[c2,c4],c4[c3,c1]}"},
     {"type": "profile", "sketch": "F24", "region": "r{c1[c4,c2],c2[c1,c3],c3[c2,c4],c4[c3,c1]}"},
     {"type": "profile", "sketch": "F26", "region": "r{c1[c4,c2],c2[c1,c3],c3[c2,c4],c4[c3,c1]}"},
     {"type": "profile", "sketch": "F28", "region": "r{c1[c4,c2],c2[c1,c3],c3[c2,c4],c4[c3,c1]}"}],
     "closed": true, "operation": "new_body"}},
-  {"expect": {"feature": "Loft6", "status": "ok", "body": "F29.b0", "volume": 19200, "tolerance": 1e-5, "faces": 4,
+  {"expect": {"feature": "Loft6", "status": "ok", "body": "F29.b0", "volume": 16400, "tolerance": 1e-5, "faces": 4,
     "has_face": "F29:side(c3[c2,c4])"}}
 ]

@@ -13,7 +13,7 @@ use mitcad_model::{Document, Kernel};
 use crate::report::ParameterReport;
 
 /// The file's parameter names and what they became.
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 pub struct ParamMap {
     /// Name in the file → Mitcad name.
     names: HashMap<String, String>,

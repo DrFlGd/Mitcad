@@ -26,6 +26,8 @@ using sketch::SketchController;
 
 const QString kSketchTab = QStringLiteral("SKETCH");
 
+// `group` is the toolbar group, "CREATE/Circles" with its subgroup
+// (CommandDef::subgroup, mitcad#222).
 CommandDef sketchCommand(const char* id, const QString& name, const char* icon, const char* group,
                          CommandDef::Kind kind) {
   CommandDef def;
@@ -35,7 +37,10 @@ CommandDef sketchCommand(const char* id, const QString& name, const char* icon, 
   def.kind = kind;
   def.mode = CommandDef::Mode::Sketch;
   def.tab = kSketchTab;
-  def.group = QString::fromLatin1(group);
+  const QString path = QString::fromLatin1(group);
+  const qsizetype slash = path.indexOf(QLatin1Char('/'));
+  def.group = slash < 0 ? path : path.left(slash);
+  def.subgroup = slash < 0 ? QString() : path.mid(slash + 1);
   return def;
 }
 
@@ -159,7 +164,7 @@ void addOffset(CommandRegistry& registry, SketchController& c) {
 }
 
 void addMirror(CommandRegistry& registry, SketchController& c) {
-  CommandDef def = sketchCommand("sketch.mirror", QObject::tr("Mirror"), "mirror", "CREATE",
+  CommandDef def = sketchCommand("sketch.mirror", QObject::tr("Mirror"), "mirror", "CREATE/Patterns",
                                  CommandDef::Kind::Feature);
   def.sketchCommand = true;
   def.tooltip = QObject::tr("Mirrored copies about a line, kept symmetric");
@@ -196,7 +201,7 @@ void addMirror(CommandRegistry& registry, SketchController& c) {
 
 void addCircularPattern(CommandRegistry& registry, SketchController& c) {
   CommandDef def = sketchCommand("sketch.circular_pattern", QObject::tr("Circular Pattern"),
-                                 "circular-pattern", "CREATE", CommandDef::Kind::Feature);
+                                 "circular-pattern", "CREATE/Patterns", CommandDef::Kind::Feature);
   def.sketchCommand = true;
   def.tooltip = QObject::tr("Copies around a centre point (the origin when none is picked)");
   def.inputs = {
@@ -235,7 +240,7 @@ void addCircularPattern(CommandRegistry& registry, SketchController& c) {
 
 void addRectangularPattern(CommandRegistry& registry, SketchController& c) {
   CommandDef def = sketchCommand("sketch.rectangular_pattern", QObject::tr("Rectangular Pattern"),
-                                 "rectangular-pattern", "CREATE", CommandDef::Kind::Feature);
+                                 "rectangular-pattern", "CREATE/Patterns", CommandDef::Kind::Feature);
   def.sketchCommand = true;
   def.tooltip = QObject::tr("Copies in rows and columns along a line (the sketch x axis when none is picked)");
   def.inputs = {
@@ -281,7 +286,7 @@ void addRectangularPattern(CommandRegistry& registry, SketchController& c) {
 }
 
 void addProject(CommandRegistry& registry, SketchController& c) {
-  CommandDef def = sketchCommand("sketch.project", QObject::tr("Project"), "project", "CREATE",
+  CommandDef def = sketchCommand("sketch.project", QObject::tr("Project"), "project", "CREATE/References",
                                  CommandDef::Kind::Feature);
   def.sketchCommand = true;
   def.shortcut = QKeySequence(Qt::Key_P);
@@ -309,6 +314,33 @@ void addProject(CommandRegistry& registry, SketchController& c) {
   };
   def.describe = [](const CommandState& s, const CommandContext&) {
     return QStringLiteral("Projected %1 item(s)").arg(s.items(QStringLiteral("geometry")).size());
+  };
+  registry.add(def);
+}
+
+// Clean Up Projections (mitcad#232): projected curves the same as another,
+// and lines on or overlapping another, removed with what refers to them
+// moved to the kept curve. The preview lists what it removes and what
+// changes (the command's warnings); OK keeps it as one undo step.
+void addCleanUpProjections(CommandRegistry& registry, SketchController& c) {
+  CommandDef def = sketchCommand("sketch.clean_up_projections", QObject::tr("Clean Up Projections"), "project",
+                                 "CREATE/References", CommandDef::Kind::Feature);
+  def.sketchCommand = true;
+  def.tooltip = QObject::tr("Removes projected curves that repeat another, and projected lines that lie on "
+                            "another, keeping their constraints and dimensions on the curve kept");
+  def.keywords = {QStringLiteral("duplicate"), QStringLiteral("overlapping"), QStringLiteral("merge")};
+  def.inputs = {
+      checkInput(QStringLiteral("merge"), QObject::tr("Merge Overlapping Lines"), true)
+          .withTooltip(QObject::tr("Also a projected line on a longer one, and overlapping unlinked lines; a "
+                                   "merged line follows one source only")),
+  };
+  def.build = [&c](const CommandState& s, const CommandContext&) -> Built {
+    QJsonObject cmd = base(c, "sketch.clean_up_projections");
+    cmd.insert(QStringLiteral("merge"), s.checked(QStringLiteral("merge")));
+    return Built::of(cmd);
+  };
+  def.describe = [](const CommandState&, const CommandContext&) {
+    return QStringLiteral("Cleaned up projections");
   };
   registry.add(def);
 }
@@ -567,7 +599,7 @@ QVector<QPair<QString, QString>> fontChoices() {
 }
 
 void addEditText(CommandRegistry& registry, SketchController& c) {
-  CommandDef def = sketchCommand("sketch.edit_text", QObject::tr("Edit Text"), "text", "CREATE",
+  CommandDef def = sketchCommand("sketch.edit_text", QObject::tr("Edit Text"), "text", "MODIFY",
                                  CommandDef::Kind::Feature);
   def.sketchCommand = true;
   def.tooltip = QObject::tr("A sketch text's content, size, font, style, alignment and path");
@@ -688,7 +720,9 @@ QStringList sketchConstraintCommands() {
           QStringLiteral("sketch.constraint.parallel"),           QStringLiteral("sketch.constraint.perpendicular"),
           QStringLiteral("sketch.constraint.fix"),                QStringLiteral("sketch.constraint.midpoint"),
           QStringLiteral("sketch.constraint.concentric"),         QStringLiteral("sketch.constraint.collinear"),
-          QStringLiteral("sketch.constraint.symmetric"),          QStringLiteral("sketch.constraint.smooth")};
+          QStringLiteral("sketch.constraint.symmetric"),          QStringLiteral("sketch.constraint.smooth"),
+          // A panel, not a tool (mitcad#221).
+          QStringLiteral("sketch.equal_spacing")};
 }
 
 void registerSketchCommands(CommandRegistry& registry, SketchController& c) {
@@ -722,71 +756,83 @@ void registerSketchCommands(CommandRegistry& registry, SketchController& c) {
   };
   const QKeySequence none;
 
-  // --- CREATE
-  add({"sketch.line", QObject::tr("Line"), "line", "CREATE", [&c] { c.startTool(sketch::lineTool(c)); },
+  // --- CREATE, in submenus (mitcad#222): Lines, Rectangles, Circles,
+  // Arcs, Other Geometry, Text, Patterns, References; a pinned command is
+  // its submenu's split button default. Offset is in MODIFY.
+  add({"sketch.line", QObject::tr("Line"), "line", "CREATE/Lines", [&c] { c.startTool(sketch::lineTool(c)); },
        QKeySequence(Qt::Key_L), true, QObject::tr("Lines end to end; drag from the end for a tangent arc")});
-  add({"sketch.rectangle", QObject::tr("2-Point Rectangle"), "rectangle", "CREATE",
+  add({"sketch.rectangle", QObject::tr("2-Point Rectangle"), "rectangle", "CREATE/Rectangles",
        draw(sketch::rectangleTool, "two_point"), QKeySequence(Qt::Key_R), true,
        QObject::tr("A rectangle from two opposite corners")});
-  add({"sketch.rectangle_3pt", QObject::tr("3-Point Rectangle"), "rectangle-3pt", "CREATE",
+  add({"sketch.rectangle_3pt", QObject::tr("3-Point Rectangle"), "rectangle-3pt", "CREATE/Rectangles",
        draw(sketch::rectangleTool, "three_point"), none, false,
        QObject::tr("A rectangle at any angle: a side, then the opposite side")});
-  add({"sketch.rectangle_center", QObject::tr("Center Rectangle"), "rectangle-center", "CREATE",
+  add({"sketch.rectangle_center", QObject::tr("Center Rectangle"), "rectangle-center", "CREATE/Rectangles",
        draw(sketch::rectangleTool, "center"), none, false, QObject::tr("A rectangle from its centre and a corner")});
-  add({"sketch.circle", QObject::tr("Center Diameter Circle"), "circle", "CREATE",
+  add({"sketch.circle", QObject::tr("Center Diameter Circle"), "circle", "CREATE/Circles",
        draw(sketch::circleTool, "center"), QKeySequence(Qt::Key_C), true,
        QObject::tr("A circle from its centre and a point on it")});
-  add({"sketch.circle_2pt", QObject::tr("2-Point Circle"), "circle-2pt", "CREATE", draw(sketch::circleTool, "two_point"),
-       none, false, QObject::tr("A circle from the ends of a diameter")});
-  add({"sketch.circle_3pt", QObject::tr("3-Point Circle"), "circle-3pt", "CREATE",
+  add({"sketch.circle_2pt", QObject::tr("2-Point Circle"), "circle-2pt", "CREATE/Circles",
+       draw(sketch::circleTool, "two_point"), none, false, QObject::tr("A circle from the ends of a diameter")});
+  add({"sketch.circle_3pt", QObject::tr("3-Point Circle"), "circle-3pt", "CREATE/Circles",
        draw(sketch::circleTool, "three_point"), none, false, QObject::tr("A circle through three points")});
-  add({"sketch.circle_2tangent", QObject::tr("2-Tangent Circle"), "circle-tangent", "CREATE",
+  add({"sketch.circle_2tangent", QObject::tr("2-Tangent Circle"), "circle-tangent", "CREATE/Circles",
        draw(sketch::circleTool, "two_tangent"), none, false, QObject::tr("A circle tangent to two lines")});
-  add({"sketch.circle_3tangent", QObject::tr("3-Tangent Circle"), "circle-tangent", "CREATE",
+  add({"sketch.circle_3tangent", QObject::tr("3-Tangent Circle"), "circle-tangent", "CREATE/Circles",
        draw(sketch::circleTool, "three_tangent"), none, false, QObject::tr("A circle tangent to three lines")});
-  add({"sketch.arc", QObject::tr("3-Point Arc"), "arc-3pt", "CREATE", draw(sketch::arcTool, "three_point"), none,
-       true, QObject::tr("An arc from its start and end through a third point")});
-  add({"sketch.arc_center", QObject::tr("Center Point Arc"), "arc-center", "CREATE", draw(sketch::arcTool, "center"),
-       none, false, QObject::tr("An arc around a centre, from its start to its end")});
-  add({"sketch.arc_tangent", QObject::tr("Tangent Arc"), "arc-tangent", "CREATE", draw(sketch::arcTool, "tangent"),
-       none, false, QObject::tr("An arc that continues a line or an arc smoothly")});
-  add({"sketch.polygon", QObject::tr("Circumscribed Polygon"), "polygon", "CREATE",
-       draw(sketch::polygonTool, "circumscribed"), none, true,
+  add({"sketch.arc", QObject::tr("3-Point Arc"), "arc-3pt", "CREATE/Arcs", draw(sketch::arcTool, "three_point"),
+       none, true, QObject::tr("An arc from its start and end through a third point")});
+  add({"sketch.arc_center", QObject::tr("Center Point Arc"), "arc-center", "CREATE/Arcs",
+       draw(sketch::arcTool, "center"), none, false, QObject::tr("An arc around a centre, from its start to its end")});
+  add({"sketch.arc_tangent", QObject::tr("Tangent Arc"), "arc-tangent", "CREATE/Arcs",
+       draw(sketch::arcTool, "tangent"), none, false, QObject::tr("An arc that continues a line or an arc smoothly")});
+  // No natural default: the submenu has no button of its own.
+  add({"sketch.ellipse", QObject::tr("Ellipse"), "ellipse", "CREATE/Other Geometry",
+       [&c] { c.startTool(sketch::ellipseTool(c)); }, none, false,
+       QObject::tr("An ellipse: the centre, the end of the major axis, a point on it")});
+  add({"sketch.polygon", QObject::tr("Circumscribed Polygon"), "polygon", "CREATE/Other Geometry",
+       draw(sketch::polygonTool, "circumscribed"), none, false,
        QObject::tr("A regular polygon around a circle: the centre, then a side's middle")});
-  add({"sketch.polygon_inscribed", QObject::tr("Inscribed Polygon"), "polygon-inscribed", "CREATE",
+  add({"sketch.polygon_inscribed", QObject::tr("Inscribed Polygon"), "polygon-inscribed", "CREATE/Other Geometry",
        draw(sketch::polygonTool, "inscribed"), none, false,
        QObject::tr("A regular polygon in a circle: the centre, then a corner")});
-  add({"sketch.polygon_edge", QObject::tr("Edge Polygon"), "polygon-edge", "CREATE", draw(sketch::polygonTool, "edge"),
-       none, false, QObject::tr("A regular polygon from one of its sides")});
-  add({"sketch.ellipse", QObject::tr("Ellipse"), "ellipse", "CREATE", [&c] { c.startTool(sketch::ellipseTool(c)); },
-       none, false, QObject::tr("An ellipse: the centre, the end of the major axis, a point on it")});
-  add({"sketch.slot", QObject::tr("Center to Center Slot"), "slot", "CREATE",
+  add({"sketch.polygon_edge", QObject::tr("Edge Polygon"), "polygon-edge", "CREATE/Other Geometry",
+       draw(sketch::polygonTool, "edge"), none, false, QObject::tr("A regular polygon from one of its sides")});
+  add({"sketch.slot", QObject::tr("Center to Center Slot"), "slot", "CREATE/Other Geometry",
        draw(sketch::slotTool, "center_to_center"), none, false, QObject::tr("A slot between the centres of its ends")});
-  add({"sketch.slot_overall", QObject::tr("Overall Slot"), "slot", "CREATE", draw(sketch::slotTool, "overall"), none,
-       false, QObject::tr("A slot from end to end")});
-  add({"sketch.slot_center", QObject::tr("Center Point Slot"), "slot", "CREATE", draw(sketch::slotTool, "center_point"),
-       none, false, QObject::tr("A slot from its centre and the centre of an end")});
-  add({"sketch.slot_arc", QObject::tr("Three Point Arc Slot"), "slot-arc", "CREATE",
+  add({"sketch.slot_overall", QObject::tr("Overall Slot"), "slot", "CREATE/Other Geometry",
+       draw(sketch::slotTool, "overall"), none, false, QObject::tr("A slot from end to end")});
+  add({"sketch.slot_center", QObject::tr("Center Point Slot"), "slot", "CREATE/Other Geometry",
+       draw(sketch::slotTool, "center_point"), none, false,
+       QObject::tr("A slot from its centre and the centre of an end")});
+  add({"sketch.slot_arc", QObject::tr("Three Point Arc Slot"), "slot-arc", "CREATE/Other Geometry",
        draw(sketch::slotTool, "three_point_arc"), none, false, QObject::tr("A curved slot along a 3-point arc")});
-  add({"sketch.slot_arc_center", QObject::tr("Center Point Arc Slot"), "slot-arc", "CREATE",
+  add({"sketch.slot_arc_center", QObject::tr("Center Point Arc Slot"), "slot-arc", "CREATE/Other Geometry",
        draw(sketch::slotTool, "center_point_arc"), none, false,
        QObject::tr("A curved slot along an arc around a centre")});
-  add({"sketch.spline", QObject::tr("Fit Point Spline"), "spline-fit", "CREATE",
+  add({"sketch.spline", QObject::tr("Fit Point Spline"), "spline-fit", "CREATE/Other Geometry",
        [&c] { c.startTool(sketch::splineTool(c, false)); }, none, false,
        QObject::tr("A smooth curve through points; Enter or a double-click ends it")});
-  add({"sketch.spline_control", QObject::tr("Control Point Spline"), "spline-control", "CREATE",
+  add({"sketch.spline_control", QObject::tr("Control Point Spline"), "spline-control", "CREATE/Other Geometry",
        [&c] { c.startTool(sketch::splineTool(c, true)); }, none, false,
        QObject::tr("A smooth curve shaped by control points; Enter or a double-click ends it")});
-  add({"sketch.point", QObject::tr("Point"), "point", "CREATE", [&c] { c.startTool(sketch::pointTool(c)); }, none,
-       false, QObject::tr("A sketch point")});
-  add({"sketch.text", QObject::tr("Text"), "text", "CREATE", [&c] { c.startTool(sketch::textTool(c)); }, none, false,
-       QObject::tr("Text: click where it starts, type it and its height")});
-  addMirror(registry, c);
-  addCircularPattern(registry, c);
+  add({"sketch.point", QObject::tr("Point"), "point", "CREATE/Other Geometry",
+       [&c] { c.startTool(sketch::pointTool(c)); }, none, false, QObject::tr("A sketch point")});
+  add({"sketch.text", QObject::tr("Text"), "text", "CREATE/Text", [&c] { c.startTool(sketch::textTool(c)); }, none,
+       false, QObject::tr("Text: click where it starts, type it and its height")});
   addRectangularPattern(registry, c);
+  addCircularPattern(registry, c);
+  addMirror(registry, c);
   addProject(registry, c);
+  addCleanUpProjections(registry, c);
   add({"sketch.dimension", QObject::tr("Sketch Dimension"), "dimension", "CREATE",
-       [&c] { c.startTool(sketch::dimensionTool(c)); }, QKeySequence(Qt::Key_D), true,
+       [&c] {
+         // Three or more objects selected: their equal spacing (mitcad#221).
+         if (!dimensionEqualSpacing(c)) {
+           c.startTool(sketch::dimensionTool(c));
+         }
+       },
+       QKeySequence(Qt::Key_D), true,
        QObject::tr("Dimensions what is picked: a length, distance, angle, radius or diameter")});
 
   // --- MODIFY
@@ -828,6 +874,9 @@ void registerSketchCommands(CommandRegistry& registry, SketchController& c) {
                               QStringLiteral("parallel"),            QStringLiteral("perpendicular"),
                               QStringLiteral("fix")};
   for (const QString& id : sketchConstraintCommands()) {
+    if (!id.startsWith(QStringLiteral("sketch.constraint."))) {
+      continue; // Equal Spacing: registered below
+    }
     const QString type = id.mid(static_cast<int>(QStringLiteral("sketch.constraint.").size()));
     CommandDef def = sketchCommand("", sketch::constraintName(type), "", "CONSTRAINTS", CommandDef::Kind::Tool);
     def.id = id;
@@ -850,6 +899,8 @@ void registerSketchCommands(CommandRegistry& registry, SketchController& c) {
     }
     registry.add(def);
   }
+  // Equal spacing (mitcad#221).
+  registerEqualSpacingCommands(registry, c);
 }
 
 } // namespace mitcad

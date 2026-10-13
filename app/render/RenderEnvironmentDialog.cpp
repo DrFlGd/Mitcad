@@ -906,7 +906,7 @@ void RenderEnvironmentDialog::aimAtFace() {
   }
   m_aiming = true;
   m_aim->setChecked(true);
-  m_viewer.installEventFilter(this);
+  m_aimFilter.install(&m_viewer);
   m_viewer.setCursor(Qt::CrossCursor);
   m_message->setText(tr("Click a face in the view to aim the light at (Esc cancels)."));
   qDebug().noquote() << QStringLiteral("Render light %1: click a face to aim at").arg(m_lightId);
@@ -921,8 +921,11 @@ void RenderEnvironmentDialog::stopAiming() {
   }
   m_aiming = false;
   m_aim->setChecked(false);
-  m_viewer.removeEventFilter(this);
-  m_viewer.unsetCursor();
+  // The view can be gone already when the main window closes (mitcad#226).
+  if (m_aimFilter.active()) {
+    m_viewer.unsetCursor();
+  }
+  m_aimFilter.remove();
   m_message->clear();
 }
 

@@ -55,7 +55,7 @@ struct ConstraintData {
   QString id; // k2
   QString type;
   QJsonObject json; // the definition's fields
-  QStringList refs; // the entities, in the definition's order
+  QStringList refs; // the entities, in the definition's order (an equal spacing's anchors)
 };
 
 struct DimensionData {
@@ -124,6 +124,9 @@ public:
   geometry::Frame frame;
   bool solved = false;
   QString error;
+  // What the evaluation warns about (linked projections that could not
+  // follow their sources, mitcad#232).
+  QStringList warnings;
   int dof = 0;
   std::vector<PointData> points;
   std::vector<CurveData> curves;
@@ -150,6 +153,13 @@ public:
   QStringList curvesAt(const QString& point, bool centers = false) const;
   // Whether everything is constrained (and there is something).
   bool fullyConstrained() const { return dof == 0 && !points.empty(); }
+
+  // Equal spacing (mitcad#221): where an anchor is (a point, a circle's or
+  // an arc's centre, a line's midpoint), the first equal spacing an entity
+  // is an anchor of, and an equal spacing's common spacing dimension.
+  std::optional<V2> anchorAt(const QString& id) const;
+  const ConstraintData* equalSpacingOf(const QString& entity) const;
+  const DimensionData* spacingDimension(const QString& constraint) const;
 };
 
 // The sketch point of a 3D frame point and back.

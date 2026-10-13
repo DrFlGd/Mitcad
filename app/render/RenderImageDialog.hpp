@@ -12,6 +12,8 @@
 #include <QTemporaryDir>
 #include <QVector>
 
+#include "framework/EventFilterGuard.hpp"
+
 class QCheckBox;
 class QComboBox;
 class QDoubleSpinBox;
@@ -79,6 +81,7 @@ private:
 
   DocumentHost& m_host;
   OcctViewer& m_viewer;
+  EventFilterGuard m_viewerFilter{this}; // its resizes; the view may go first (mitcad#226)
   QJsonObject m_settings;
   QString m_documentFolder;
   QString m_documentName;

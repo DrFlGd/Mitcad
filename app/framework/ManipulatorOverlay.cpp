@@ -57,14 +57,14 @@ ManipulatorOverlay::ManipulatorOverlay(OcctViewer& viewer, const QString& comman
   setAttribute(Qt::WA_NoSystemBackground);
   resize(viewer.size());
   show();
-  viewer.installEventFilter(this);
+  m_viewerFilter.install(&viewer);
   connect(&viewer, &OcctViewer::viewChanged, this, [this] {
     update();
     logPlaces();
   });
 }
 
-ManipulatorOverlay::~ManipulatorOverlay() { m_viewer.removeEventFilter(this); }
+ManipulatorOverlay::~ManipulatorOverlay() = default;
 
 void ManipulatorOverlay::setHandles(std::vector<Handle> handles) {
   if (m_drag >= 0) {

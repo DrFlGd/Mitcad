@@ -91,6 +91,10 @@ impl Builder<'_> {
                 entities,
                 producer: producer.map(|p| p.0),
                 body_index: producer.map(|p| p.1),
+                document: recipe::owner_guid(self.seg, input),
+                context: super::super::decode::slot_contexts(self.seg)
+                    .get(&input)
+                    .copied(),
                 ..FingerprintF3d::default()
             }),
             ..Fingerprint::default()

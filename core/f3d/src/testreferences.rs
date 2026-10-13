@@ -8,7 +8,8 @@
 //! 1 cm cube of [`crate::testdata::cube_blob`], stored without a design
 //! (its bodies only); the assemblies have design streams with occurrence
 //! trees and no bodies. Next to the assembly, `Assembly v1.refs/` holds
-//! the other two files and `references.json`.
+//! the other two files and `references.json`. [`package_file`] puts the
+//! three into one `.f3z` package instead (mitcad#229).
 
 use crate::design::classes::{COMPONENT, OCCURRENCE, OCCURRENCE_CONTAINER};
 use crate::design::writer::{DesignWriter, WriterExternal};
@@ -170,20 +171,26 @@ fn assembly_streams(
     d.streams()
 }
 
-/// A `Manifest.dat` that lists the document's GUID.
-fn manifest(document_guid: &str) -> Vec<u8> {
-    [
+/// A `Manifest.dat` that lists the document's GUID (and `others`: an
+/// assembly's manifest lists those of the documents it refers to too).
+fn manifest(document_guid: &str, others: &[&str]) -> Vec<u8> {
+    let mut v = [
         &3u32.to_le_bytes()[..],
         b"f3d",
         &s16("A Mitcad test document"),
         &s16(document_guid),
     ]
-    .concat()
+    .concat();
+    for g in others {
+        v.extend(s16(g));
+    }
+    v
 }
 
 /// An `.f3d` archive: its manifest, design streams and body blobs.
 fn archive(
     document_guid: &str,
+    others: &[&str],
     streams: Option<(Vec<u8>, Vec<u8>)>,
     blobs: &[(&str, Vec<u8>)],
 ) -> Vec<u8> {
@@ -192,7 +199,7 @@ fn archive(
         w.add(name, data, Method::Stored)
             .expect("a small entry is written");
     };
-    add("Manifest.dat", &manifest(document_guid));
+    add("Manifest.dat", &manifest(document_guid, others));
     if let Some((meta, bulk)) = streams {
         add(
             "FusionAssetName[Active]/FusionDesignSegmentType1/MetaStream.dat",
@@ -216,6 +223,7 @@ fn archive(
 pub fn part_file() -> Vec<u8> {
     archive(
         PART.document_guid,
+        &[],
         None,
         &[("mitcad-test-part", cube_blob())],
     )
@@ -223,8 +231,14 @@ pub fn part_file() -> Vec<u8> {
 
 /// `Holder v1.f3d`: places the part.
 pub fn holder_file() -> Vec<u8> {
+    holder_listing(&[])
+}
+
+/// The holder whose manifest lists the GUIDs `others` too.
+fn holder_listing(others: &[&str]) -> Vec<u8> {
     archive(
         HOLDER.document_guid,
+        others,
         Some(assembly_streams(
             HOLDER.name,
             HOLDER_ROOT,
@@ -236,11 +250,84 @@ pub fn holder_file() -> Vec<u8> {
 
 /// `Assembly v1.f3d`: places the part and the holder twice.
 pub fn assembly_file() -> Vec<u8> {
+    assembly_listing(&[])
+}
+
+/// The assembly whose manifest lists the GUIDs `others` too.
+fn assembly_listing(others: &[&str]) -> Vec<u8> {
     archive(
         ASSEMBLY.document_guid,
+        others,
         Some(assembly_streams(ASSEMBLY.name, 4, &ASSEMBLY_PLACEMENTS)),
         &[],
     )
+}
+
+/// The `.f3d` entries of the test package (mitcad#229): the assembly, the
+/// holder and the part, named by GUIDs so that the assembly's sorts first.
+pub const PACKAGE_ENTRIES: [(&TestDocument, &str); 3] = [
+    (&ASSEMBLY, "0a5e3b10-0000-4000-8000-0000000000f1.f3d"),
+    (&HOLDER, "5b6c7d20-0000-4000-8000-0000000000f2.f3d"),
+    (&PART, "9c8d7e30-0000-4000-8000-0000000000f3.f3d"),
+];
+
+/// The name the test package's `DesignDescription.json` gives a document.
+pub fn package_name(doc: &TestDocument) -> String {
+    format!("Packaged {}", doc.name.to_lowercase())
+}
+
+/// An `.f3z` package of the test assembly with the documents it refers to
+/// (mitcad#229). The assembly's manifest lists the GUIDs of the holder and
+/// the part too, and the holder's that of the part (as a package's
+/// assemblies do), so a design found by those GUIDs alone could be the
+/// assembly. `described`: with `Manifest.json` (the root) and
+/// `DesignDescription.json` (each document's URN, entry and name).
+pub fn package_file(described: bool) -> Vec<u8> {
+    let mut w = Writer::new();
+    let mut add = |name: &str, data: &[u8]| {
+        w.add(name, data, Method::Stored)
+            .expect("a small entry is written");
+    };
+    for (doc, entry) in PACKAGE_ENTRIES {
+        let data = match doc.urn {
+            u if u == ASSEMBLY.urn => assembly_listing(&[HOLDER.document_guid, PART.document_guid]),
+            u if u == HOLDER.urn => holder_listing(&[PART.document_guid]),
+            _ => part_file(),
+        };
+        add(entry, &data);
+    }
+    if described {
+        add(
+            "Manifest.json",
+            format!("{{\"root\":\"{}\"}}", PACKAGE_ENTRIES[0].1).as_bytes(),
+        );
+        let objects: Vec<String> = PACKAGE_ENTRIES
+            .iter()
+            .enumerate()
+            .map(|(i, (doc, entry))| {
+                format!(
+                    "{{\"id\":{},\"version\":{},\"about\":\"{}\",\"lineage\":\"{}\",\
+                     \"relativePath\":\"{entry}\",\"friendlyName\":\"{}\",\"displayName\":\"{}\"}}",
+                    i + 1,
+                    doc.version,
+                    doc.urn,
+                    doc.lineage,
+                    package_name(doc),
+                    package_name(doc)
+                )
+            })
+            .collect();
+        add(
+            "DesignDescription.json",
+            format!(
+                "{{\"name\":\"A Mitcad test package\",\"version\":\"0.1\",\"designDescription\":\
+                 {{\"id\":\"0\",\"designGraphs\":[{{\"rootIds\":[1],\"designObjects\":[{}]}}]}}}}",
+                objects.join(",")
+            )
+            .as_bytes(),
+        );
+    }
+    w.finish().expect("the package is written")
 }
 
 fn reference_entry(doc: &TestDocument, children: &[String]) -> String {
@@ -353,5 +440,49 @@ mod tests {
         assert_eq!(manifest_guids(&part), [PART.document_guid]);
         assert!(referenced_documents(&part).unwrap().is_empty());
         assert!(references_json().contains("\"file\": \"Part v2.f3d\""));
+    }
+
+    #[test]
+    fn the_package_names_its_root_and_documents() {
+        let dir = std::env::temp_dir().join(format!("mitcad-package-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("Package.f3z");
+        std::fs::write(&path, package_file(true)).unwrap();
+        let p = crate::design::package(&path).unwrap();
+        let labels: Vec<&str> = p.documents.iter().map(|(l, _)| l.as_str()).collect();
+        assert_eq!(
+            labels,
+            [
+                "Package.f3z!0a5e3b10",
+                "Package.f3z!5b6c7d20",
+                "Package.f3z!9c8d7e30"
+            ]
+        );
+        assert_eq!(p.root.as_deref(), Some("Package.f3z!0a5e3b10"));
+        let described: Vec<(&str, &str, Option<&str>)> = p
+            .described
+            .iter()
+            .map(|(l, d)| (l.as_str(), d.urn.as_str(), d.name.as_deref()))
+            .collect();
+        assert_eq!(
+            described[1],
+            (labels[1], HOLDER.urn, Some("Packaged holder"))
+        );
+        assert_eq!(described[2], (labels[2], PART.urn, Some("Packaged part")));
+        // The assembly's manifest lists the GUIDs of the others too.
+        assert_eq!(
+            manifest_guids(&p.documents[0].1),
+            [
+                ASSEMBLY.document_guid,
+                HOLDER.document_guid,
+                PART.document_guid
+            ]
+        );
+
+        std::fs::write(&path, package_file(false)).unwrap();
+        let p = crate::design::package(&path).unwrap();
+        assert_eq!(p.documents.len(), 3);
+        assert!(p.root.is_none() && p.described.is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

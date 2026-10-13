@@ -16,7 +16,7 @@
 use serde::{Deserialize, Serialize};
 
 use super::extrude::{Operation, apply_operation, check_participants, participant_bodies};
-use super::geom_ref::GeomRef;
+use super::geom_ref::{GeomRef, Want};
 use super::reference::{ExtentObject, normalized};
 use super::thread::{ThreadSize, check_clearance, clearance_value, thread_clearance, thread_part};
 use super::thread_table::ThreadStandard;
@@ -61,6 +61,14 @@ pub enum HolePlacement<P = ParamId> {
     SketchPoints {
         sketch: FeatureUid,
         points: Vec<SketchPoint>,
+    },
+    /// Points projected onto a plane (an origin plane, a construction
+    /// plane or a planar face: `setPositionByPoint` on a plane in .f3d
+    /// designs); the holes start on it, against its normal, in the
+    /// participants that reach it.
+    Plane {
+        plane: GeomRef,
+        points: Vec<[f64; 3]>,
     },
 }
 
@@ -246,6 +254,10 @@ impl<P> HoleDef<P> {
                 sketch: *sketch,
                 points: points.clone(),
             },
+            HolePlacement::Plane { plane, points } => HolePlacement::Plane {
+                plane: plane.clone(),
+                points: points.clone(),
+            },
         };
         let diameter = f("diameter", &self.diameter)?;
         let kind = match &self.kind {
@@ -318,6 +330,7 @@ impl<P> HoleDef<P> {
             HolePlacement::Face { points, .. } => points.len(),
             HolePlacement::FaceOffsets { .. } => 1,
             HolePlacement::SketchPoints { points, .. } => points.len(),
+            HolePlacement::Plane { points, .. } => points.len(),
         }
     }
 }
@@ -360,6 +373,7 @@ impl FeatureInfo for HoleDef {
             HolePlacement::SketchPoints { sketch, .. } => {
                 references.features.insert(*sketch);
             }
+            HolePlacement::Plane { plane, .. } => plane.add_to(&mut references),
         }
         if let HoleExtent::ToObject { object, .. } = &self.extent {
             object.add_references(&mut references);
@@ -398,6 +412,15 @@ impl FeatureInfo for HoleDef {
                         .map_err(|e| format!("face {face}: {e}"))?;
                 }
                 ctx.edges(&[(**edge1).clone(), (**edge2).clone()])?;
+            }
+            HolePlacement::Plane { plane, points } => {
+                plane.check(ctx, Want::Plane)?;
+                if points.is_empty() {
+                    return Err("the hole has no position".to_owned());
+                }
+                if points.iter().flatten().any(|v| !v.is_finite()) {
+                    return Err("the hole positions must be finite points".to_owned());
+                }
             }
             HolePlacement::SketchPoints { sketch, points } => {
                 ctx.sketch(*sketch)?;
@@ -619,6 +642,18 @@ impl HoleDef {
                     located.push(output.frame.point(uv));
                 }
                 (located, output.frame.normal())
+            }
+            HolePlacement::Plane { plane, points } => {
+                let frame = ctx.plane(plane)?.frame();
+                let normal = frame.normal();
+                let on_plane = points
+                    .iter()
+                    .map(|p| {
+                        let height = dot(std::array::from_fn(|i| p[i] - frame.origin[i]), normal);
+                        std::array::from_fn(|i| p[i] - height * normal[i])
+                    })
+                    .collect();
+                (on_plane, normal)
             }
         };
         if points.is_empty() {

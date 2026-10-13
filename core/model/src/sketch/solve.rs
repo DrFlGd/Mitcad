@@ -13,10 +13,13 @@ use mitcad_solver::{
     Constraint as S, ConstraintId, DragGoal, EntityId, PointId, SolveOptions, SolveStatus,
     SplineEnd, System,
 };
+// Equal spacing (mitcad#221).
+use mitcad_solver::{Anchor as SolverAnchor, SpacingMode as SolverSpacing};
 
 use super::geometry::{Curve2, Nurbs, P2, angle_after, cross, dist, dot, norm, sub, unit};
 use super::pattern::{Binding, BindingKind};
 use super::{Constraint, ConstraintKind, ConstraintUid, DimensionKind, Entity, EntityKind, Ref};
+use super::{SpacingMode, spacing};
 use crate::ids::EntityUid;
 
 /// The tolerance of a second solve where the first did not converge
@@ -61,6 +64,9 @@ pub struct SketchStatus {
     /// satisfy before the solve (those of an imported sketch the file's
     /// own solution does not keep).
     pub stored_violations: Vec<SolverItem>,
+    /// For each redundant constraint, the set it follows from (itself
+    /// included), so that a refusal can name them (mitcad#221).
+    pub redundant_sets: Vec<Vec<SolverItem>>,
 }
 
 /// The solved sketch geometry.
@@ -165,6 +171,11 @@ struct Built {
     points: BTreeMap<EntityUid, PointId>,
     curves: BTreeMap<EntityUid, EntityId>,
     items: BTreeMap<ConstraintId, SolverItem>,
+    /// What equal spacings measure from (mitcad#221): points, circle and
+    /// arc centres, line midpoints.
+    anchors: BTreeMap<Ref, SolverAnchor>,
+    /// The equal spacings, for their spacing dimensions.
+    spacings: BTreeMap<ConstraintUid, (Vec<Ref>, SpacingMode, Option<EntityUid>)>,
 }
 
 fn list(items: &[SolverItem]) -> String {
@@ -264,11 +275,41 @@ impl Built {
             };
             curves.insert(e.id, id);
         }
+        let mut anchors = BTreeMap::new();
+        for e in &entities {
+            let anchor = match &e.kind {
+                EntityKind::Point { .. } => points.get(&e.id).map(|p| SolverAnchor::Point(*p)),
+                EntityKind::Circle { center, .. } | EntityKind::Arc { center, .. } => {
+                    points.get(center).map(|p| SolverAnchor::Point(*p))
+                }
+                EntityKind::Line { start, end, .. } => points
+                    .get(start)
+                    .zip(points.get(end))
+                    .map(|(a, b)| SolverAnchor::Mid(*a, *b)),
+                _ => None,
+            };
+            if let Some(anchor) = anchor {
+                anchors.insert(e.as_ref(), anchor);
+            }
+        }
+        let spacings = constraints
+            .iter()
+            .filter_map(|c| match &c.kind {
+                ConstraintKind::EqualSpacing {
+                    anchors,
+                    mode,
+                    direction,
+                } => Some((c.id, (anchors.clone(), *mode, *direction))),
+                _ => None,
+            })
+            .collect();
         let mut built = Self {
             system,
             points,
             curves,
             items: BTreeMap::new(),
+            anchors,
+            spacings,
         };
         for e in entities.iter().filter(|e| e.fixed) {
             let c = if e.is_point() {
@@ -396,6 +437,40 @@ impl Built {
                 },
                 _ => return Err("symmetric entities must be two points or two curves".to_owned()),
             }],
+            K::EqualSpacing {
+                anchors,
+                mode,
+                direction,
+            } => vec![S::EqualSpacing {
+                anchors: anchors
+                    .iter()
+                    .map(|r| self.anchor(*r))
+                    .collect::<Result<Vec<_>, _>>()?,
+                mode: self.spacing_mode(*mode, *direction)?,
+            }],
+        })
+    }
+
+    /// What an equal spacing measures from.
+    fn anchor(&self, r: Ref) -> Result<SolverAnchor, String> {
+        self.anchors
+            .get(&r)
+            .copied()
+            .ok_or_else(|| format!("{r} is not a point, line, circle or arc to space"))
+    }
+
+    fn spacing_mode(
+        &self,
+        mode: SpacingMode,
+        direction: Option<EntityUid>,
+    ) -> Result<SolverSpacing, String> {
+        Ok(match mode {
+            SpacingMode::Horizontal => SolverSpacing::Horizontal,
+            SpacingMode::Vertical => SolverSpacing::Vertical,
+            SpacingMode::Along => SolverSpacing::Along(
+                self.curve(direction.ok_or("an along spacing needs a direction line")?)?,
+            ),
+            SpacingMode::PointToPoint => SolverSpacing::PointToPoint,
         })
     }
 
@@ -474,6 +549,21 @@ impl Built {
                     value: value / 2.0,
                 },
             },
+            // The first interval; the equal spacing passes it on.
+            D::Spacing { constraint } => {
+                let Some((anchors, mode, direction)) = self.spacings.get(constraint) else {
+                    return Err(format!("{constraint} is not an equal spacing"));
+                };
+                let [a, b, ..] = anchors.as_slice() else {
+                    return Err(format!("{constraint} has fewer than two anchors"));
+                };
+                S::Spacing {
+                    a: self.anchor(*a)?,
+                    b: self.anchor(*b)?,
+                    mode: self.spacing_mode(*mode, *direction)?,
+                    value,
+                }
+            }
         })
     }
 
@@ -550,7 +640,12 @@ impl Built {
         }
     }
 
-    fn read(&self, entities: &[Entity], dimensions: &[DimensionInput<'_>]) -> Solved {
+    fn read(
+        &self,
+        entities: &[Entity],
+        constraints: &[Constraint],
+        dimensions: &[DimensionInput<'_>],
+    ) -> Solved {
         let s = &self.system;
         let mut solved = Solved::default();
         for (uid, id) in &self.points {
@@ -646,7 +741,7 @@ impl Built {
         solved.curves = curves;
         solved.radii = radii;
         for d in dimensions.iter().filter(|d| d.value.is_none()) {
-            if let Some(value) = measure(d.kind, &solved) {
+            if let Some(value) = measure_in(d.kind, &solved, constraints) {
                 solved.status.driven.insert(d.id, value);
             }
         }
@@ -673,6 +768,11 @@ impl Built {
             .copied()
             .collect();
         status.redundant = self.items(&a.redundant_constraints());
+        status.redundant_sets = a
+            .redundant
+            .iter()
+            .map(|d| self.items(&d.involved))
+            .collect();
         status.conflicts = a
             .conflicts
             .iter()
@@ -747,7 +847,32 @@ pub fn measure(kind: &DimensionKind, solved: &Solved) -> Option<f64> {
                 }
             }
         }
+        // Measured on its constraint: see `measure_in`.
+        D::Spacing { .. } => return None,
     })
+}
+
+/// [`measure`], also of a spacing dimension: the size of its equal
+/// spacing's first interval (mitcad#221).
+pub fn measure_in(
+    kind: &DimensionKind,
+    solved: &Solved,
+    constraints: &[Constraint],
+) -> Option<f64> {
+    if let DimensionKind::Spacing { constraint } = kind {
+        let ConstraintKind::EqualSpacing {
+            anchors,
+            mode,
+            direction,
+        } = &constraints.iter().find(|c| c.id == *constraint)?.kind
+        else {
+            return None;
+        };
+        return spacing::intervals(solved, anchors, *mode, *direction)?
+            .first()
+            .map(|v| v.abs());
+    }
+    measure(kind, solved)
 }
 
 /// Solves the sketch from its stored positions.
@@ -770,7 +895,7 @@ pub fn solve_extra(
         Built::new(entities, constraints, dimensions, extra).map_err(SolveError::new)?;
     let violated = built.violated();
     built.solve()?;
-    let mut solved = built.read(entities, dimensions);
+    let mut solved = built.read(entities, constraints, dimensions);
     built.analyze(&mut solved);
     solved.status.stored_violations = violated;
     Ok(solved)
@@ -814,7 +939,7 @@ pub fn drag_extra(
     built.system.drag(&solver_goals, &SolveOptions::default());
     // The drag leaves the constraints satisfied; tighten as after a solve.
     built.solve()?;
-    let mut solved = built.read(entities, dimensions);
+    let mut solved = built.read(entities, constraints, dimensions);
     built.analyze(&mut solved);
     Ok(solved)
 }

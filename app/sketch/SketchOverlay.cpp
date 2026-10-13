@@ -11,6 +11,7 @@
 #include <QPainter>
 #include <QPainterPath>
 #include <QRegularExpression>
+#include <QSet>
 
 #include "SketchController.hpp"
 #include "SketchTool.hpp"
@@ -20,6 +21,10 @@ namespace {
 
 const QColor kDimensionColor(0x2a, 0x30, 0x3a);
 const QColor kDrivenColor(0x70, 0x76, 0x80);
+// The lines of the two above on a dark background (their values stay dark
+// in their light boxes).
+const QColor kDimensionColorDark(0xd8, 0xde, 0xe8);
+const QColor kDrivenColorDark(0xa0, 0xa8, 0xb4);
 const QColor kSelectedColor(0x1f, 0x7a, 0xff);
 const QColor kHoverColor(0x5a, 0xa8, 0xff);
 const QColor kPreviewColor(0x26, 0x6e, 0xe8);
@@ -57,8 +62,11 @@ bool plainNumber(const QString& expression) {
 }
 
 // The two points a linear dimension measures between, and its direction.
+// `lineB`: the line `b` is the foot on, which may lie beyond its ends; the
+// extension line then starts from the line's nearest end.
 struct Linear {
   V2 a, b, u;
+  const Curve2* lineB = nullptr;
 };
 
 std::optional<Linear> linearOf(const DimensionData& d, const SketchModel& model, const V2& text) {
@@ -95,7 +103,7 @@ std::optional<Linear> linearOf(const DimensionData& d, const SketchModel& model,
     const V2 dir = unit(line->curve.b - line->curve.a);
     const V2 foot = line->curve.a + dir * dot(*p - line->curve.a, dir);
     const V2 u = dist(foot, *p) > 1e-9 ? unit(foot - *p) : perp(dir);
-    return Linear{*p, foot, u};
+    return Linear{*p, foot, u, &line->curve};
   }
   if (t == QStringLiteral("line_distance")) {
     const CurveData* a = r.curve(d.json, "a");
@@ -107,7 +115,7 @@ std::optional<Linear> linearOf(const DimensionData& d, const SketchModel& model,
     const V2 dir = unit(b->curve.b - b->curve.a);
     const V2 foot = b->curve.a + dir * dot(p - b->curve.a, dir);
     const V2 u = dist(foot, p) > 1e-9 ? unit(foot - p) : perp(dir);
-    return Linear{p, foot, u};
+    return Linear{p, foot, u, &b->curve};
   }
   if (t == QStringLiteral("tangent_distance")) {
     const CurveData* circle = r.curve(d.json, "circle");
@@ -120,7 +128,7 @@ std::optional<Linear> linearOf(const DimensionData& d, const SketchModel& model,
     const V2 centre = circle->curve.center;
     const V2 foot = line->curve.a + dir * dot(centre - line->curve.a, dir);
     const V2 towards = dist(foot, centre) > 1e-9 ? unit(foot - centre) : perp(dir);
-    return Linear{centre + towards * circle->curve.radius, foot, towards};
+    return Linear{centre + towards * circle->curve.radius, foot, towards, &line->curve};
   }
   if (t == QStringLiteral("linear_diameter")) {
     const CurveData* axis = r.curve(d.json, "axis");
@@ -142,6 +150,32 @@ std::optional<Linear> linearOf(const DimensionData& d, const SketchModel& model,
     const V2 mirrored = foot * 2.0 - *p;
     const V2 u = dist(mirrored, *p) > 1e-9 ? unit(mirrored - *p) : perp(dir);
     return Linear{*p, mirrored, u};
+  }
+  if (t == QStringLiteral("spacing")) {
+    // An equal spacing's common spacing (mitcad#221), drawn on its first
+    // interval as the constraint measures it.
+    const ConstraintData* k = model.constraint(d.json.value(QStringLiteral("constraint")).toString());
+    if (k == nullptr || k->refs.size() < 2) {
+      return std::nullopt;
+    }
+    const auto a = model.anchorAt(k->refs.at(0));
+    const auto b = model.anchorAt(k->refs.at(1));
+    if (!a || !b) {
+      return std::nullopt;
+    }
+    const QString mode = k->json.value(QStringLiteral("mode")).toString();
+    V2 u = dist(*a, *b) > 1e-9 ? unit(*b - *a) : V2{1, 0};
+    if (mode == QStringLiteral("horizontal")) {
+      u = {1, 0};
+    } else if (mode == QStringLiteral("vertical")) {
+      u = {0, 1};
+    } else if (mode == QStringLiteral("along")) {
+      const CurveData* line = model.curve(k->json.value(QStringLiteral("direction")).toString());
+      if (line != nullptr && line->isLine()) {
+        u = unit(line->curve.b - line->curve.a);
+      }
+    }
+    return Linear{*a, *b, u};
   }
   return std::nullopt;
 }
@@ -289,15 +323,16 @@ DimensionShape dimensionShape(const DimensionData& d, const SketchModel& model,
     const double s2 = dot(at - linear->b, n);
     const V2 d1 = linear->a + n * s1;
     const V2 d2 = linear->b + n * s2;
-    const auto extension = [&](const V2& from, const V2& to, double s) {
+    const auto extension = [&](const V2& from, const V2& to) {
+      const double s = dot(to - from, n);
       if (std::abs(s) < 3.0 * px) {
         return;
       }
       const double sign = s > 0 ? 1.0 : -1.0;
       shape.lines.emplace_back(S(from + n * (sign * 3.0 * px)), S(to + n * (sign * 5.0 * px)));
     };
-    extension(linear->a, d1, s1);
-    extension(linear->b, d2, s2);
+    extension(linear->a, d1);
+    extension(linear->lineB != nullptr ? linear->lineB->nearest(d2) : linear->b, d2);
     shape.lines.emplace_back(S(d1), S(d2));
     // A value placed beyond the ends gets the dimension line to it.
     const double along = dot(at - d1, unit(d2 - d1));
@@ -580,6 +615,37 @@ SketchOverlay::Hit SketchOverlay::hitTest(const QPointF& position) const {
   return hit;
 }
 
+std::vector<SketchOverlay::Hit> SketchOverlay::hitsIn(const QRectF& area, bool crossing) const {
+  std::vector<Hit> hits;
+  if (!m_c.isActive()) {
+    return hits;
+  }
+  const auto held = [&area, crossing](const QRectF& rect) {
+    return crossing ? area.intersects(rect) : area.contains(rect);
+  };
+  if (m_c.showDimensions()) {
+    for (const DimensionLayout& d : dimensions()) {
+      if (held(d.textRect)) {
+        Hit hit;
+        hit.kind = Hit::Kind::Dimension;
+        hit.id = d.id;
+        hits.push_back(hit);
+      }
+    }
+  }
+  if (m_c.showConstraints()) {
+    for (const Glyph& g : glyphs()) {
+      if (held(g.rect)) {
+        Hit hit;
+        hit.kind = g.constraint.isEmpty() ? Hit::Kind::Fixed : Hit::Kind::Constraint;
+        hit.id = g.constraint.isEmpty() ? g.entity : g.constraint;
+        hits.push_back(hit);
+      }
+    }
+  }
+  return hits;
+}
+
 QRectF SketchOverlay::dimensionTextRect(const QString& id) const {
   for (const DimensionLayout& d : dimensions()) {
     if (d.id == id) {
@@ -669,6 +735,12 @@ void SketchOverlay::paintGlyph(QPainter& painter, const Glyph& glyph, bool selec
     path.cubicTo(QPointF(c.x() - s * 0.2, c.y() + s * 0.6), QPointF(c.x() + s * 0.2, c.y() - s * 0.6),
                  QPointF(c.x() + s, c.y() - s * 0.6));
     painter.drawPath(path);
+  } else if (t == QStringLiteral("equal_spacing")) {
+    // Three ticks equally apart on a line (mitcad#221).
+    L(-1, 0, 1, 0);
+    L(-1, -0.7, -1, 0.7);
+    L(0, -0.7, 0, 0.7);
+    L(1, -0.7, 1, 0.7);
   } else if (t == QStringLiteral("fix")) {
     painter.drawRect(QRectF(c.x() - s * 0.75, c.y() - s * 0.05, s * 1.5, s * 1.05));
     painter.drawArc(QRectF(c.x() - s * 0.45, c.y() - s * 0.85, s * 0.9, s * 1.4), 0, 180 * 16);
@@ -676,8 +748,9 @@ void SketchOverlay::paintGlyph(QPainter& painter, const Glyph& glyph, bool selec
 }
 
 void SketchOverlay::paintDimension(QPainter& painter, const DimensionShape& shape,
-                                   const QRectF& rect, const QColor& color, bool driven) const {
-  painter.setPen(QPen(color, 1.0));
+                                   const QRectF& rect, const QColor& color, const QColor& lines,
+                                   bool driven) const {
+  painter.setPen(QPen(lines, 1.0));
   painter.setBrush(Qt::NoBrush);
   for (const QLineF& line : shape.lines) {
     painter.drawLine(line);
@@ -685,7 +758,7 @@ void SketchOverlay::paintDimension(QPainter& painter, const DimensionShape& shap
   for (const QPolygonF& arc : shape.arcs) {
     painter.drawPolyline(arc);
   }
-  painter.setBrush(color);
+  painter.setBrush(lines);
   for (const auto& [tip, towards] : shape.arrows) {
     const QPointF dir = unitOf(towards);
     const QPointF side(-dir.y(), dir.x());
@@ -717,6 +790,30 @@ void SketchOverlay::paintEntityHighlight(QPainter& painter, const QString& entit
       polyline << m_c.toScreen(p);
     }
     painter.drawPolyline(polyline);
+  }
+}
+
+void SketchOverlay::paintChain(QPainter& painter, const QStringList& anchors, const QColor& color) const {
+  const SketchModel& model = m_c.model();
+  QPolygonF chain;
+  for (const QString& id : anchors) {
+    if (const auto p = model.anchorAt(id)) {
+      chain << m_c.toScreen(*p);
+    }
+  }
+  painter.setPen(QPen(color, 1.5, Qt::DashLine, Qt::RoundCap, Qt::RoundJoin));
+  painter.setBrush(Qt::NoBrush);
+  painter.drawPolyline(chain);
+  for (int i = 0; i < chain.size(); ++i) {
+    const QPointF at = chain.at(i);
+    painter.setPen(QPen(color, 1.0));
+    painter.setBrush(color);
+    painter.drawEllipse(at, 3.0, 3.0);
+    const QString number = QString::number(i + 1);
+    const QRectF rect = textRect(at + QPointF(-12.0, 14.0), number);
+    painter.setBrush(QColor(255, 255, 255, 230));
+    painter.drawRoundedRect(rect, 3, 3);
+    painter.drawText(rect, Qt::AlignCenter, number);
   }
 }
 
@@ -779,7 +876,8 @@ void SketchOverlay::paintPreview(QPainter& painter, const ToolPreview& preview) 
     const DimensionData& d = *preview.dimension;
     const DimensionShape shape = dimensionShape(d, m_c.model(), projection(), dimensionText(d));
     if (shape.valid) {
-      paintDimension(painter, shape, textRect(shape.textAt, shape.text), kPreviewColor, false);
+      paintDimension(painter, shape, textRect(shape.textAt, shape.text), kPreviewColor, kPreviewColor,
+                     false);
     }
   }
   if (!preview.glyph.isEmpty() && m_c.cursorInView()) {
@@ -911,14 +1009,18 @@ void SketchOverlay::paintEvent(QPaintEvent* event) {
 
   const QString hover = m_c.hoverAnnotation();
   if (m_c.showDimensions()) {
+    const bool dark = m_c.viewer().backgroundDark();
     for (const DimensionLayout& layout : dimensions()) {
       const DimensionData* d = model.dimension(layout.id);
       const bool selected = isSelected(QStringLiteral("dimension"), layout.id);
+      const bool driven = d != nullptr && d->driven;
+      const bool marked = selected || hover == layout.id;
       const QColor color = selected ? kSelectedColor
                            : hover == layout.id ? kHoverColor
-                           : d != nullptr && d->driven ? kDrivenColor
-                                                       : kDimensionColor;
-      paintDimension(painter, layout.shape, layout.textRect, color, d != nullptr && d->driven);
+                           : driven ? kDrivenColor
+                                    : kDimensionColor;
+      const QColor lines = !dark || marked ? color : driven ? kDrivenColorDark : kDimensionColorDark;
+      paintDimension(painter, layout.shape, layout.textRect, color, lines, driven);
     }
   }
   if (m_c.showConstraints()) {
@@ -928,6 +1030,26 @@ void SketchOverlay::paintEvent(QPaintEvent* event) {
       const bool hovered = g.constraint.isEmpty() ? hover == g.entity : hover == g.constraint;
       paintGlyph(painter, g, selected, hovered);
     }
+  }
+  // Equal spacings' chains (mitcad#221), numbered in the order the model
+  // keeps: a selected or hovered one's, and the one an Equal Spacing panel
+  // previews (its objects in the panel's order until the model has it).
+  const QStringList previewed = m_c.spacingPreview();
+  const QSet<QString> previewSet(previewed.begin(), previewed.end());
+  bool previewShown = false;
+  for (const ConstraintData& k : model.constraints) {
+    if (k.type != QStringLiteral("equal_spacing")) {
+      continue;
+    }
+    const bool mine = !previewSet.isEmpty() && QSet<QString>(k.refs.begin(), k.refs.end()) == previewSet;
+    previewShown = previewShown || mine;
+    const bool marked = m_c.showConstraints() && (isSelected(QStringLiteral("constraint"), k.id) || hover == k.id);
+    if (mine || marked) {
+      paintChain(painter, k.refs, mine ? kPreviewColor : kSelectedColor);
+    }
+  }
+  if (!previewShown && previewed.size() >= 2) {
+    paintChain(painter, previewed, kGuideColor);
   }
 
   if (SketchTool* tool = m_c.tool()) {

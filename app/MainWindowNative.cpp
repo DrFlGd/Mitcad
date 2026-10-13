@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT
 #include "MainWindow.hpp"
 
+#include <algorithm>
 #include <functional>
 #include <stdexcept>
 #include <utility>
@@ -458,6 +459,55 @@ void MainWindow::refreshNativeActions() {
     QAction* action = m_registry->action(def->id);
     if (action && !assigned.contains(action)) {
       append(action, QString());
+    }
+  }
+  // The ribbon's subgroups (mitcad#222: the sketch CREATE group's Circles,
+  // ...), as its group menus have them: a popup entry where its commands
+  // were, with them as its children (also a submenu of the menu bar's menu
+  // of the workspace). A pinned one (the default) keeps its button.
+  for (const QToolButton* group : m_ribbon->findChildren<QToolButton*>()) {
+    const QString name = group->objectName();
+    if (!name.startsWith(QStringLiteral("ribbonMenu_")) || group->menu() == nullptr) {
+      continue;
+    }
+    const QString workspace = name.mid(11).section(QLatin1Char('/'), 0, 0);
+    const QString groupName = name.mid(11).section(QLatin1Char('/'), 1);
+    if (groupName == QStringLiteral("SELECT")) {
+      continue; // its filters below
+    }
+    for (QAction* entry : group->menu()->actions()) {
+      QMenu* submenu = entry->menu();
+      if (submenu == nullptr || entry->isSeparator() || !entry->isVisible()) {
+        continue;
+      }
+      const QString top = workspace == QStringLiteral("SKETCH") ? QStringLiteral("Sketch") : displayName(groupName);
+      const QString path = top + QLatin1Char('/') + menuLabel(entry->text());
+      int first = -1;
+      for (QAction* child : submenu->actions()) {
+        const QString id = child->objectName().mid(8); // "command_<id>"
+        for (mac::NativeMacAction& item : actions) {
+          if (item.id != id || item.separator) {
+            continue;
+          }
+          first = first < 0 ? item.toolbarOrder : std::min(first, item.toolbarOrder);
+          item.menu = path;
+          if (item.toolbarPinned) {
+            item.toolbarOnly = true; // its button stays, its menu entry is the popup's
+          } else {
+            item.group.clear();
+          }
+        }
+      }
+      const qsizetype before = actions.size();
+      append(entry, QString());
+      if (actions.size() == before) {
+        continue;
+      }
+      mac::NativeMacAction& popup = actions.last();
+      popup.group = groupName;
+      popup.workspace = workspace;
+      popup.submenu = path;
+      popup.toolbarOrder = first;
     }
   }
   // SELECT uses shared actions added to the ribbon rather than registry

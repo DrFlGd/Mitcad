@@ -43,7 +43,7 @@ use std::collections::{BTreeSet, HashMap, HashSet};
 use mitcad_f3d::design::ir::Geometry;
 use serde_json::Value;
 
-use curves::{Curve, inside, pieces};
+use curves::{Curve, closes, inside, pieces};
 
 /// One record of a loop: the curve's sketch-local id (where the sketch
 /// has it) and its ids in the file, and which piece.
@@ -169,6 +169,10 @@ pub(crate) fn mapped_with(
             }
         }
     }
+    // A sketch with one region has one choice: whatever the profile's
+    // records say (a profile older than the sketch's last edit lists curves
+    // the sketch has since replaced), the selection is that region.
+    let exact = exact || (regions.len() == 1 && !out.is_empty());
     (!out.is_empty()).then(|| (out.into_iter().collect(), exact))
 }
 
@@ -203,6 +207,10 @@ fn by_geometry(
             continue;
         }
         let mut known: Vec<(&Piece, Curve)> = Vec::new();
+        // Records of curves the sketch no longer has (the profile is older
+        // than the sketch's last edit); see `closes` below.
+        let mut ghosts = false;
+        let from = listed.len();
         for r in &l.pieces {
             let Some(id) = &r.id else {
                 if crate::tracing() {
@@ -211,7 +219,7 @@ fn by_geometry(
                         r.key
                     );
                 }
-                complete = false;
+                ghosts = true;
                 if crate::tracing() {
                     eprintln!("import:   a profile loop piece without a curve id");
                 }
@@ -224,7 +232,7 @@ fn by_geometry(
                         r.key
                     );
                 }
-                complete = false;
+                ghosts = true;
                 if crate::tracing() {
                     eprintln!(
                         "import:   a profile loop names curve {id}, which the sketch does not have"
@@ -335,6 +343,14 @@ fn by_geometry(
                 }
             };
             listed.push((c.clone(), t0, t1));
+        }
+        // A record of a curve the sketch no longer has is left out where
+        // the loop's other pieces close up without it: the loop's inside
+        // is what they enclose, and the file's own reading of the profile
+        // lists no curve of it (the original application's dumps of such
+        // profiles list the closed loop's curves only).
+        if ghosts && !closes(&listed[from..]) {
+            complete = false;
         }
     }
     if listed.is_empty() {
@@ -515,22 +531,30 @@ mod tests {
         for loops in [&square, &half, &all] {
             assert!(mapped(loops, &curves, &regions).unwrap().1);
         }
-        // A record naming a curve the sketch no longer has, or a piece the
-        // curve does not have, leaves the selection inexact.
+        // A record naming a curve the sketch no longer has is left out
+        // where the loop's other curves close up without it (the square):
+        // exact. Where they do not (the square's three sides), or where a
+        // record names a piece the curve does not have, the selection is
+        // inexact.
         let stale = json!([{"loops": [
             {"outer": true, "curves": [rec("c0", 1), rec("c1", 1), rec("c2", 1), rec("c3", 1),
                                        rec("c9", 1)]},
             {"outer": false, "curves": [rec("c4", 1)]}], "children": []}]);
         let (found, exact) = mapped(&stale, &curves, &regions).unwrap();
         assert_eq!(found, vec![0, 1]);
-        assert!(!exact);
+        assert!(exact);
+        let open = json!([{"loops": [
+            {"outer": true, "curves": [rec("c0", 1), rec("c1", 1), rec("c2", 1), rec("c9", 1)]},
+            {"outer": false, "curves": [rec("c4", 1)]}], "children": []}]);
+        assert!(!mapped(&open, &curves, &regions).unwrap().1);
         let beyond = json!([{"loops": [
             {"outer": true, "curves": [rec("c4", 1), rec("c5", 7)]}], "children": []}]);
         assert!(!mapped(&beyond, &curves, &regions).unwrap().1);
         // A hole whose curves are all gone is dropped: the square's
         // regions, the circle's too, are inside the profile, exactly. A
-        // hole with a curve the sketch has and one it does not stays
-        // inexact, and so does an outer loop that lost its curves.
+        // hole of a curve the sketch has and one it does not is the
+        // circle, which closes alone; an outer loop that lost a curve of
+        // its square does not close.
         let no_curve = json!({"primary": 9, "secondary": 0, "piece": 1, "pieces": 1});
         let outer = json!({"outer": true,
             "curves": [rec("c0", 1), rec("c1", 1), rec("c2", 1), rec("c3", 1)]});
@@ -543,11 +567,33 @@ mod tests {
             {"outer": false, "curves": [rec("c4", 1), no_curve.clone()]}], "children": []}]);
         let (found, exact) = mapped(&partly, &curves, &regions).unwrap();
         assert_eq!(found, vec![0, 1]);
-        assert!(!exact);
+        assert!(exact);
         let lost = json!([{"loops": [
             {"outer": true, "curves": [rec("c0", 1), rec("c1", 1), rec("c2", 1), no_curve]}],
             "children": []}]);
         assert!(mapped(&lost, &curves, &regions).is_none_or(|(_, exact)| !exact));
+    }
+
+    #[test]
+    fn a_sketch_of_one_region_selects_it_whatever_the_records_say() {
+        // A profile older than the sketch's last edit: its records name
+        // curves the sketch no longer has. The one region is the choice.
+        let region = |outer: &[&str]| RegionView {
+            inside: Some([0.0, 0.0]),
+            outer: Some(outer.iter().map(|s| s.to_string()).collect()),
+        };
+        let curves = HashMap::from([("c0".to_owned(), circle([0.0, 0.0], 1.0))]);
+        let gone =
+            |primary: u64| json!({"primary": primary, "secondary": 0, "piece": 1, "pieces": 1});
+        let stale = json!([{"loops": [{"outer": true, "curves": [gone(7), gone(8)]}],
+                            "children": []}]);
+        assert_eq!(
+            mapped(&stale, &curves, &[region(&["c0"])]),
+            Some((vec![0], true))
+        );
+        // Two regions: nothing says which; not exact.
+        let two = [region(&["c0"]), region(&["c0"])];
+        assert!(mapped(&stale, &curves, &two).is_none_or(|(_, exact)| !exact));
     }
 
     #[test]

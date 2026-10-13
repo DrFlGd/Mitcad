@@ -6,6 +6,7 @@
 
 use super::*;
 use crate::references::{Referenced, link_references};
+use mitcad_model::OccurrenceUid;
 
 /// The part: the block of [`block_dump`] with an occurrence of a component
 /// of its own (`Pin`, 3 cm up), which carries a GUID.
@@ -88,35 +89,74 @@ fn components_of_other_documents_are_filled_from_their_imports() {
     let component = inserted[0].component;
     assert!(doc.component_bodies(component).is_empty());
 
+    let stored = HashMap::new();
     let sources = HashMap::from([(
         PART_URN.to_owned(),
         Referenced {
             document: &part,
             occurrence_guids: &part_report.components.occurrence_guids,
             name: "Part".to_owned(),
+            stored_bodies: &stored,
         },
     )]);
     let outcome = link_references(&mut doc, &mut report, &sources);
     assert!(outcome.failed.is_empty(), "{outcome:?}");
-    assert_eq!(outcome.linked.len(), 1);
+    // The position arranges the inside of the first occurrence only, so
+    // the occurrences are not alike: the second one has a copy of its own.
+    assert_eq!(outcome.linked.len(), 2, "{outcome:?}");
     assert_eq!(outcome.linked[0].name, "Part");
+    assert_eq!(outcome.linked[1].name, "Part (1)");
+    assert_eq!(report.components.copies, 1);
     assert_eq!(doc.assembly().name(component), "Part");
+    let occurrences: Vec<_> = doc.assembly().occurrences_of(component).collect();
+    assert_eq!(occurrences.len(), 1);
+    let other = doc
+        .assembly()
+        .occurrences
+        .iter()
+        .find(|o| o.component != component);
+    let second = other
+        .expect("the second occurrence has another component")
+        .component;
+    assert_eq!(doc.assembly().name(second), "Part (1)");
+    assert_eq!(report.components.inserted.len(), 2);
+    assert_eq!(
+        report
+            .components
+            .inserted
+            .iter()
+            .map(|i| i.occurrences)
+            .sum::<usize>(),
+        2
+    );
     // The part's block, with its history: the copy's features are the
     // component's.
     doc.recompute();
     assert_eq!(doc.component_bodies(component).len(), 1);
+    assert_eq!(doc.component_bodies(second).len(), 1);
     assert!(doc.features().filter(|f| f.component == component).count() >= 2);
     // The pin inside the part, where the captured position puts it in the
     // first occurrence: (10, 20, 0) mm in the assembly, (0, 20, 0) mm in
     // the part.
     assert_eq!(outcome.positions, 1, "{outcome:?}");
-    let pin = report.components.occurrence_guids["c0ffee00-0000-4000-8000-0000000000b1"];
+    let pin = report.components.occurrence_guids["c0ffee00-0000-4000-8000-0000000000b1"][0];
     let placed = doc.assembly().occurrence(pin).unwrap();
     assert_eq!(placed.parent, component);
     doc.recompute();
     let t = doc.placement(pin).unwrap().translation;
     assert!(
         (t[0]).abs() < 1e-9 && (t[1] - 20.0).abs() < 1e-9 && t[2].abs() < 1e-9,
+        "{t:?}"
+    );
+    // The second occurrence's copy keeps the pin where the part has it
+    // (3 cm up), and the GUID names both pins.
+    let pins = &report.components.occurrence_guids["c0ffee00-0000-4000-8000-0000000000b1"];
+    assert_eq!(pins.len(), 2);
+    let other_pin = doc.assembly().occurrence(pins[1]).unwrap();
+    assert_eq!(other_pin.parent, second);
+    let t = doc.placement(pins[1]).unwrap().translation;
+    assert!(
+        t[0].abs() < 1e-9 && t[1].abs() < 1e-9 && (t[2] - 30.0).abs() < 1e-9,
         "{t:?}"
     );
     // The captured position came in as a feature of the part's component,
@@ -132,7 +172,7 @@ fn components_of_other_documents_are_filled_from_their_imports() {
     assert_eq!(doc.import_note(feature), None);
     // A second link has nothing left to fill.
     let again = link_references(&mut doc, &mut report, &sources);
-    assert_eq!(again.failed.len(), 1);
+    assert_eq!(again.failed.len(), 2);
 }
 
 #[test]
@@ -149,4 +189,501 @@ fn components_of_documents_not_found_stay_empty() {
     );
     let component = report.components.inserted[0].component;
     assert!(doc.component_bodies(component).is_empty());
+}
+
+/// The assembly with a rigid as-built joint of the part's pin (inside the
+/// first occurrence) to the second occurrence, as the file names the
+/// pin: by the GUID the part's occurrence carries.
+fn joined_assembly_dump() -> Dump {
+    let mut v = serde_json::to_value(assembly_dump()).unwrap();
+    v["timeline"]["items"].as_array_mut().unwrap().push(json!({
+        "index": 1, "name": "As-built1", "objectType": "AsBuiltJoint",
+        "_f3d": {"component": 1},
+        "detail": {
+            "occurrenceOne": {"kind": "occurrence", "_f3d": {
+                "path": [10, null],
+                "path_guids": ["c0ffee00-0000-4000-8000-0000000000a1",
+                               "C0FFEE00-0000-4000-8000-0000000000B1"],
+                "context_component": 1}},
+            "occurrenceTwo": {"kind": "occurrence", "_f3d": {
+                "path": [11], "path_guids": ["c0ffee00-0000-4000-8000-0000000000a2"],
+                "context_component": 1}},
+            "geometry": null,
+            "jointMotion": {"_type": "RigidJointMotion",
+                            "_f3d": {"type_code": 11, "values": []}}
+        }
+    }));
+    dump(v)
+}
+
+#[test]
+fn components_filled_before_the_replay_take_the_joints_in_place() {
+    let mut part = Document::new(MockKernel::default());
+    let part_report = import(&mut part, &part_dump());
+    let dump = joined_assembly_dump();
+    let stored = HashMap::new();
+    let sources = HashMap::from([(
+        PART_URN.to_owned(),
+        Referenced {
+            document: &part,
+            occurrence_guids: &part_report.components.occurrence_guids,
+            name: "Part".to_owned(),
+            stored_bodies: &stored,
+        },
+    )]);
+    let mut doc = Document::new(MockKernel::default());
+    let report = crate::import_design_with(
+        &mut doc,
+        &dump,
+        &mut NoGeometry,
+        &Options::default(),
+        Some(&sources),
+    );
+    // The component is filled, and the pin inside it is where the design's
+    // captured position puts it.
+    let link = &report.components.link;
+    assert_eq!(link.linked.len(), 2, "{link:?}");
+    assert_eq!(link.positions, 1, "{link:?}");
+    let component = link.linked[0].component;
+    assert!(report.components.filled.contains(&component));
+    // The joint came in where its item is, not after the replay.
+    let item = &report.items[1];
+    assert_eq!(item.outcome, Outcome::Parametric, "{item:?}");
+    assert_eq!(report.joints.as_built, 1);
+    let uid: FeatureUid = item.features[0].parse().unwrap();
+    let FeatureDef::AsBuiltJoint(def) = doc.feature(uid).unwrap().def.clone() else {
+        panic!("an as-built joint");
+    };
+    let t = def.relative.unwrap().translation;
+    assert!(
+        (t[0] - 10.0).abs() < 1e-9 && (t[1] + 30.0).abs() < 1e-9 && t[2].abs() < 1e-9,
+        "{t:?}"
+    );
+    // The import ended: the document's bodies include the part's block
+    // again (its history was copied).
+    doc.recompute();
+    assert_eq!(doc.component_bodies(component).len(), 1);
+    assert_eq!(doc.bodies().len(), 2);
+    // The captured position's report entry says it was placed.
+    assert_eq!(report.items[0].outcome, Outcome::Parametric);
+    // (The scopes were the import's: gone with it.)
+    assert!(doc.import_scope("c0ffee00").is_empty());
+
+    // A document not found: the joint comes out as without references.
+    let plain = import(&mut Document::new(MockKernel::default()), &dump);
+    let mut doc = Document::new(MockKernel::default());
+    let none = HashMap::new();
+    let report = crate::import_design_with(
+        &mut doc,
+        &dump,
+        &mut NoGeometry,
+        &Options::default(),
+        Some(&none),
+    );
+    assert_eq!(report.items[1].outcome, Outcome::Skipped);
+    assert!(
+        report.items[1]
+            .note
+            .as_deref()
+            .is_some_and(|n| n.contains("inside a component of another document")),
+        "{:?}",
+        report.items[1]
+    );
+    assert_eq!(report.joints.skipped, plain.joints.skipped);
+    assert!(report.components.filled.is_empty());
+    assert_eq!(
+        report
+            .components
+            .link
+            .positions_left_out
+            .get("a position inside a component of a document not found"),
+        Some(&1)
+    );
+}
+
+/// An assembly whose own block is cut by a body of the part (a tool in a
+/// component of another document), named as the decoder gives such a tool:
+/// by the document's GUID and the stored body it found it as.
+fn cut_by_a_referenced_body_dump(guid: &str) -> Dump {
+    let mut v = serde_json::to_value(block_dump()).unwrap();
+    v["document"] = json!({"name": "Assembly", "root_component": "Assembly"});
+    v["components"] = json!([{"name": "Assembly", "is_root": true, "_f3d": {"object_id": 1}}]);
+    // The part, 5 mm along x.
+    v["occurrences"] = json!([{
+        "transform": [[1.0, 0.0, 0.0, 0.5], [0.0, 1.0, 0.0, 0.0], [0.0, 0.0, 1.0, 0.0],
+                      [0.0, 0.0, 0.0, 1.0]],
+        "isReferencedComponent": true,
+        "children": [],
+        "_f3d": {"object_id": 10, "component_object": 1, "external_key": "00000000000000bb",
+                 "external_document": PART_URN, "guids": ["c0ffee00-0000-4000-8000-0000000000c1"]}
+    }]);
+    v["_f3d"] = json!({"external_documents": [{
+        "key": "00000000000000bb", "urn": PART_URN, "version": 1, "document_guid": guid}]});
+    let items = v["timeline"]["items"].as_array_mut().unwrap();
+    items.push(json!({
+        "index": 2, "name": "Combine1", "objectType": "CombineFeature",
+        "detail": {
+            "operation": "CutFeatureOperation", "isKeepToolBodies": true,
+            "targetBody": {"kind": "body", "objectType": "BRepBody",
+                           "_f3d": {"producer": 1, "body_index": 0}},
+            "toolBodies": [{"kind": "body", "objectType": "BRepBody",
+                            "_f3d": {"document": guid, "stored": "BREP.part.smbh#1",
+                                     "entities": [[{"tag": "1", "kind": 3, "ops": []}]]}}]}
+    }));
+    dump(v)
+}
+
+#[test]
+fn a_combine_takes_a_tool_in_a_component_of_another_document() {
+    let guid = "0a0a0a0a-0000-4000-8000-00000000d0c0";
+    let mut part = Document::new(MockKernel::default());
+    let part_report = import(&mut part, &part_dump());
+    // The part's block is the body its import matched to the stored one.
+    let block = format!("{}.b0", part_report.items[1].features[0]);
+    let stored = HashMap::from([("BREP.part.smbh#1".to_owned(), block.parse().unwrap())]);
+    let sources = HashMap::from([(
+        PART_URN.to_owned(),
+        Referenced {
+            document: &part,
+            occurrence_guids: &part_report.components.occurrence_guids,
+            name: "Part".to_owned(),
+            stored_bodies: &stored,
+        },
+    )]);
+    let dump = cut_by_a_referenced_body_dump(guid);
+
+    let mut doc = Document::new(MockKernel::default());
+    let report = crate::import_design_with(
+        &mut doc,
+        &dump,
+        &mut NoGeometry,
+        &Options::default(),
+        Some(&sources),
+    );
+    let combine = &report.items[2];
+    assert_eq!(combine.outcome, Outcome::Parametric, "{}", report.text());
+    assert_eq!(report.components.external_bodies.len(), 1);
+    let copy = report.components.external_bodies[&format!("{guid}|BREP.part.smbh#1")][0];
+    let uid: FeatureUid = combine.features[0].parse().unwrap();
+    let def: Value = serde_json::from_str(
+        &doc.query(&format!(r#"{{"query": "feature", "uid": "{uid}"}}"#))
+            .unwrap(),
+    )
+    .unwrap();
+    // The tool is the copy's block, taken by its occurrence link.
+    assert_eq!(def["def"]["tools"], json!([copy.to_string()]));
+    assert!(
+        def["def"]["tool_links"][copy.to_string()].is_object(),
+        "{def}"
+    );
+    // The own block was cut by it.
+    let target = format!("{}.b0", report.items[1].features[0]);
+    let cut = &doc.body_shape(target.parse().unwrap()).unwrap().history;
+    assert!(cut.starts_with("cut("), "{cut}");
+
+    // Without the document the tool is not found.
+    let mut doc = Document::new(MockKernel::default());
+    let report = import(&mut doc, &dump);
+    assert_ne!(report.items[2].outcome, Outcome::Parametric);
+}
+
+const SUB_URN: &str = "urn:mitcad.test:fs.file:vf.sub?version=1";
+
+/// An occurrence of a root component of another document.
+fn external_occurrence(id: u64, key: &str, urn: &str, at: [f64; 3], guid: &str) -> Value {
+    json!({
+        "transform": [[1.0, 0.0, 0.0, at[0]], [0.0, 1.0, 0.0, at[1]], [0.0, 0.0, 1.0, at[2]],
+                      [0.0, 0.0, 0.0, 1.0]],
+        "isReferencedComponent": true,
+        "children": [],
+        "_f3d": {"object_id": id, "component_object": 1, "external_key": key,
+                 "external_document": urn, "guids": [guid]}
+    })
+}
+
+/// A sub-assembly that places the part twice (10 and 30 cm along x).
+fn sub_dump() -> Dump {
+    dump(json!({
+        "schema": "mitcad-f3d-dump", "schema_version": 2,
+        "source": {"mode": "f3d_stream", "file": "sub.f3d"},
+        "document": {"name": "Sub", "root_component": "Sub"},
+        "components": [{"name": "Sub", "is_root": true, "_f3d": {"object_id": 1}}],
+        "occurrences": [
+            external_occurrence(20, "00000000000000aa", PART_URN, [10.0, 0.0, 0.0],
+                                "c0ffee00-0000-4000-8000-0000000000a1"),
+            external_occurrence(21, "00000000000000aa", PART_URN, [30.0, 0.0, 0.0],
+                                "c0ffee00-0000-4000-8000-0000000000a2")
+        ],
+        "timeline": {"items": []},
+        "_f3d": {"external_documents": [{"key": "00000000000000aa", "urn": PART_URN, "version": 1}]}
+    }))
+}
+
+/// An assembly that places the sub-assembly once, with one captured
+/// position that arranges the pin inside each of the part's occurrences
+/// differently (the pin is one occurrence in the part's component, which
+/// the sub-assembly places twice).
+fn nested_dump() -> Dump {
+    let position = |part: &str, at: [f64; 3]| {
+        json!({
+            "occurrence": {"kind": "occurrence", "_f3d": {
+                "path": [10, null, null],
+                "path_guids": ["c0ffee00-0000-4000-8000-0000000000e1", part,
+                               "C0FFEE00-0000-4000-8000-0000000000B1"],
+                "context_component": 1}},
+            "transform": [[1.0, 0.0, 0.0, at[0]], [0.0, 1.0, 0.0, at[1]], [0.0, 0.0, 1.0, at[2]],
+                          [0.0, 0.0, 0.0, 1.0]]
+        })
+    };
+    dump(json!({
+        "schema": "mitcad-f3d-dump", "schema_version": 2,
+        "source": {"mode": "f3d_stream", "file": "nested.f3d"},
+        "document": {"name": "Nested", "root_component": "Nested"},
+        "components": [{"name": "Nested", "is_root": true, "_f3d": {"object_id": 1}}],
+        "occurrences": [external_occurrence(
+            10, "00000000000000bb", SUB_URN, [0.0, 0.0, 0.0],
+            "c0ffee00-0000-4000-8000-0000000000e1")],
+        "timeline": {"items": [{
+            "index": 0, "name": "Position1", "objectType": "Snapshot",
+            "detail": {"positions": [
+                position("c0ffee00-0000-4000-8000-0000000000a1", [11.0, 2.0, 0.0]),
+                position("c0ffee00-0000-4000-8000-0000000000a2", [35.0, 4.0, 0.0])
+            ]},
+            "_f3d": {"component": 1}
+        }]},
+        "_f3d": {"external_documents": [{"key": "00000000000000bb", "urn": SUB_URN, "version": 1}]}
+    }))
+}
+
+#[test]
+fn a_component_placed_twice_inside_a_copy_gets_a_copy_for_each_arrangement() {
+    // The part, and the sub-assembly that places it twice (filled from the
+    // part).
+    let mut part = Document::new(MockKernel::default());
+    let part_report = import(&mut part, &part_dump());
+    let stored = HashMap::new();
+    let part_sources = HashMap::from([(
+        PART_URN.to_owned(),
+        Referenced {
+            document: &part,
+            occurrence_guids: &part_report.components.occurrence_guids,
+            name: "Part".to_owned(),
+            stored_bodies: &stored,
+        },
+    )]);
+    let mut sub = Document::new(MockKernel::default());
+    let sub_report = crate::import_design_with(
+        &mut sub,
+        &sub_dump(),
+        &mut NoGeometry,
+        &Options::default(),
+        Some(&part_sources),
+    );
+    assert_eq!(sub_report.components.linked, 2, "{}", sub_report.text());
+    // One component for both occurrences: the pin has one occurrence.
+    let pins = &sub_report.components.occurrence_guids["c0ffee00-0000-4000-8000-0000000000b1"];
+    assert_eq!(pins.len(), 1);
+
+    let sources = HashMap::from([(
+        SUB_URN.to_owned(),
+        Referenced {
+            document: &sub,
+            occurrence_guids: &sub_report.components.occurrence_guids,
+            name: "Sub".to_owned(),
+            stored_bodies: &stored,
+        },
+    )]);
+    let mut doc = Document::new(MockKernel::default());
+    let report = crate::import_design_with(
+        &mut doc,
+        &nested_dump(),
+        &mut NoGeometry,
+        &Options::default(),
+        Some(&sources),
+    );
+    // The two positions place the pin differently, so the second
+    // occurrence of the part inside the copy has a part copy of its own.
+    assert_eq!(report.components.copies, 1, "{}", report.text());
+    assert_eq!(
+        report.components.link.positions, 2,
+        "{:?}",
+        report.components.link
+    );
+    assert!(report.components.link.positions_left_out.is_empty());
+    assert_eq!(
+        report.items[0].outcome,
+        Outcome::Parametric,
+        "{:?}",
+        report.items[0]
+    );
+    let pins = report.components.occurrence_guids["c0ffee00-0000-4000-8000-0000000000b1"].clone();
+    assert_eq!(pins.len(), 2);
+    doc.recompute();
+    // Where the pins are in the design: (11, 2, 0) cm and (35, 4, 0) cm.
+    let world = |pin: OccurrenceUid| {
+        let a = doc.assembly();
+        let mut chain = vec![pin];
+        let mut at = a.occurrence(pin).unwrap().parent;
+        while !at.is_root() {
+            let o = a.occurrences_of(at).next().expect("placed");
+            chain.push(o.uid);
+            at = o.parent;
+        }
+        chain.reverse();
+        doc.path_transform(&chain).translation
+    };
+    let mut places: Vec<[f64; 3]> = pins.iter().map(|p| world(*p)).collect();
+    places.sort_by(|a, b| a[0].total_cmp(&b[0]));
+    let want = [[110.0, 20.0, 0.0], [350.0, 40.0, 0.0]];
+    for (got, want) in places.iter().zip(want) {
+        assert!(
+            (0..3).all(|i| (got[i] - want[i]).abs() < 1e-6),
+            "{places:?} against {want:?}"
+        );
+    }
+}
+
+#[test]
+fn a_tool_of_the_part_placed_twice_is_linked_through_the_occurrence_its_context_names() {
+    // The part is placed twice (5 mm and 20 mm along x, no positions inside:
+    // both share one copy); the combine's tool carries the placement of the
+    // occurrence it was selected in (the second).
+    let guid = "0a0a0a0a-0000-4000-8000-00000000d0c0";
+    let mut part = Document::new(MockKernel::default());
+    let part_report = import(&mut part, &part_dump());
+    let block = format!("{}.b0", part_report.items[1].features[0]);
+    let stored = HashMap::from([("BREP.part.smbh#1".to_owned(), block.parse().unwrap())]);
+    let sources = HashMap::from([(
+        PART_URN.to_owned(),
+        Referenced {
+            document: &part,
+            occurrence_guids: &part_report.components.occurrence_guids,
+            name: "Part".to_owned(),
+            stored_bodies: &stored,
+        },
+    )]);
+    let mut v = serde_json::to_value(cut_by_a_referenced_body_dump(guid)).unwrap();
+    let mut second = v["occurrences"][0].clone();
+    second["transform"][0][3] = json!(2.0);
+    second["_f3d"]["object_id"] = json!(11);
+    second["_f3d"]["guids"] = json!(["c0ffee00-0000-4000-8000-0000000000c2"]);
+    v["occurrences"].as_array_mut().unwrap().push(second);
+    let tool = &mut v["timeline"]["items"][2]["detail"]["toolBodies"][0]["_f3d"];
+    tool["object_id"] = json!(77);
+    tool["context"] = json!([
+        [1.0, 0.0, 0.0, 2.0],
+        [0.0, 1.0, 0.0, 0.0],
+        [0.0, 0.0, 1.0, 0.0],
+        [0.0, 0.0, 0.0, 1.0]
+    ]);
+    let dump = dump(v);
+
+    let mut doc = Document::new(MockKernel::default());
+    let report = crate::import_design_with(
+        &mut doc,
+        &dump,
+        &mut NoGeometry,
+        &Options::default(),
+        Some(&sources),
+    );
+    let combine = &report.items[2];
+    assert_eq!(combine.outcome, Outcome::Parametric, "{}", report.text());
+    assert_eq!(report.components.copies, 0);
+    let component = report.components.inserted[0].component;
+    let paths = doc.assembly().paths_to(component);
+    assert_eq!(paths.len(), 2);
+    // The occurrence 20 mm along x.
+    let second = paths
+        .iter()
+        .find(|p| {
+            doc.assembly()
+                .occurrence(p[0])
+                .is_some_and(|o| (o.transform.translation[0] - 20.0).abs() < 1e-9)
+        })
+        .expect("the second occurrence");
+    let uid: FeatureUid = combine.features[0].parse().unwrap();
+    let def: Value = serde_json::from_str(
+        &doc.query(&format!(r#"{{"query": "feature", "uid": "{uid}"}}"#))
+            .unwrap(),
+    )
+    .unwrap();
+    let links = def["def"]["tool_links"].as_object().expect("tool links");
+    assert_eq!(links.len(), 1, "{def}");
+    let link = links.values().next().unwrap();
+    assert_eq!(link["source"], json!(second[0].to_string()), "{def}");
+}
+
+#[test]
+fn two_occurrences_of_one_part_named_by_one_item_get_a_copy_each() {
+    // The combine's two tools are the part's block in each of its two
+    // occurrences: the occurrences share one copy, so the tools would be the
+    // same body; each gets a copy of its own and the tools differ.
+    let guid = "0a0a0a0a-0000-4000-8000-00000000d0c0";
+    let mut part = Document::new(MockKernel::default());
+    let part_report = import(&mut part, &part_dump());
+    let block = format!("{}.b0", part_report.items[1].features[0]);
+    let stored = HashMap::from([("BREP.part.smbh#1".to_owned(), block.parse().unwrap())]);
+    let sources = HashMap::from([(
+        PART_URN.to_owned(),
+        Referenced {
+            document: &part,
+            occurrence_guids: &part_report.components.occurrence_guids,
+            name: "Part".to_owned(),
+            stored_bodies: &stored,
+        },
+    )]);
+    let mut v = serde_json::to_value(cut_by_a_referenced_body_dump(guid)).unwrap();
+    let mut second = v["occurrences"][0].clone();
+    second["transform"][0][3] = json!(2.0);
+    second["_f3d"]["object_id"] = json!(11);
+    second["_f3d"]["guids"] = json!(["c0ffee00-0000-4000-8000-0000000000c2"]);
+    v["occurrences"].as_array_mut().unwrap().push(second);
+    let at = |x: f64| {
+        json!([
+            [1.0, 0.0, 0.0, x],
+            [0.0, 1.0, 0.0, 0.0],
+            [0.0, 0.0, 1.0, 0.0],
+            [0.0, 0.0, 0.0, 1.0]
+        ])
+    };
+    let tools = v["timeline"]["items"][2]["detail"]["toolBodies"]
+        .as_array_mut()
+        .unwrap();
+    let mut other = tools[0].clone();
+    tools[0]["_f3d"]["object_id"] = json!(77);
+    tools[0]["_f3d"]["context"] = at(0.5);
+    other["_f3d"]["object_id"] = json!(78);
+    other["_f3d"]["context"] = at(2.0);
+    tools.push(other);
+    let dump = dump(v);
+
+    let mut doc = Document::new(MockKernel::default());
+    let report = crate::import_design_with(
+        &mut doc,
+        &dump,
+        &mut NoGeometry,
+        &Options::default(),
+        Some(&sources),
+    );
+    let combine = &report.items[2];
+    assert_eq!(combine.outcome, Outcome::Parametric, "{}", report.text());
+    assert_eq!(report.components.copies, 1);
+    let uid: FeatureUid = combine.features[0].parse().unwrap();
+    let def: Value = serde_json::from_str(
+        &doc.query(&format!(r#"{{"query": "feature", "uid": "{uid}"}}"#))
+            .unwrap(),
+    )
+    .unwrap();
+    let tools = def["def"]["tools"].as_array().expect("tools");
+    assert_eq!(tools.len(), 2, "{def}");
+    assert_ne!(tools[0], tools[1], "{def}");
+    // Each tool is read through its own occurrence.
+    let sources: Vec<&str> = def["def"]["tool_links"]
+        .as_object()
+        .unwrap()
+        .values()
+        .map(|l| l["source"].as_str().unwrap())
+        .collect();
+    assert_eq!(sources.len(), 2, "{def}");
+    assert_ne!(sources[0], sources[1], "{def}");
 }

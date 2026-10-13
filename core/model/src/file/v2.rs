@@ -22,6 +22,7 @@ use crate::expr::{EvalContext, ParamSpec, TableError, Unit, value_to_expression}
 use crate::features::{CheckContext, FeatureDef, FeatureEntry, HelixConstruction, is_false};
 use crate::ids::{BodyUid, ComponentUid, FeatureUid, OccurrenceUid};
 use crate::parameters::{Parameters, default_context, slot_unit};
+use crate::policy::Policy;
 use crate::render_settings::RenderSettings;
 use crate::sketch::legacy::{LegacyShape, convert, settle};
 use crate::transform::Transform;
@@ -75,6 +76,9 @@ struct FileOut<'a> {
     flat_patterns: Vec<FlatPatternOut<'a>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     marker: Option<usize>,
+    // The root component's policy (mitcad#220), when not the defaults.
+    #[serde(skip_serializing_if = "Policy::is_default")]
+    root_policy: Policy,
 }
 
 /// A Flat Pattern: its body and settings.
@@ -109,6 +113,9 @@ struct ComponentOut<'a> {
     // The library it came from (mitcad#64).
     #[serde(skip_serializing_if = "Option::is_none")]
     library: Option<&'a crate::library::LibraryRef>,
+    // Its policy (mitcad#220), when not the general defaults.
+    #[serde(skip_serializing_if = "Policy::is_default")]
+    policy: Policy,
 }
 
 #[derive(Serialize)]
@@ -233,6 +240,7 @@ pub(super) fn save(state: &DocState) -> String {
                 created_by: c.created_by,
                 link: c.link.as_ref(),
                 library: c.library.as_ref(),
+                policy: c.policy,
             })
             .collect(),
         occurrences: assembly
@@ -297,6 +305,7 @@ pub(super) fn save(state: &DocState) -> String {
             .map(|(body, def)| FlatPatternOut { body: *body, def })
             .collect(),
         marker: (state.marker < state.features.len()).then_some(state.marker),
+        root_policy: assembly.root_policy,
     };
     let mut json =
         serde_json::to_string_pretty(&file).expect("the design file schema always serializes");
@@ -367,6 +376,8 @@ struct ComponentIn {
     link: Option<ExternalLink>,
     #[serde(default)]
     library: Option<crate::library::LibraryRef>,
+    #[serde(default)]
+    policy: Policy,
 }
 
 #[derive(Deserialize)]
@@ -402,7 +413,7 @@ struct FeatureIn {
     shapes: Option<Value>,
 }
 
-const TOP_FIELDS: [&str; 20] = [
+const TOP_FIELDS: [&str; 21] = [
     "format",
     "version",
     "units",
@@ -426,6 +437,8 @@ const TOP_FIELDS: [&str; 20] = [
     "hybrid_assembly",
     // Flat Patterns of sheet-metal bodies (mitcad#208).
     "flat_patterns",
+    // The root component's policy (mitcad#220), when not the defaults.
+    "root_policy",
 ];
 
 fn schema(message: impl Into<String>) -> FileError {
@@ -527,6 +540,11 @@ fn assembly_in(top: &mut Map<String, Value>) -> Result<Assembly, FileError> {
         Some(Value::String(name)) if !name.trim().is_empty() => assembly.root_name = name,
         Some(_) => return Err(schema("\"root_component\" must be a name")),
     }
+    // Files without it have the general defaults (mitcad#220).
+    if let Some(policy) = top.remove("root_policy") {
+        assembly.root_policy =
+            serde_json::from_value(policy).map_err(|e| schema(format!("root_policy: {e}")))?;
+    }
     for (i, c) in array(top, "components", false)?.into_iter().enumerate() {
         let c: ComponentIn =
             serde_json::from_value(c).map_err(|e| schema(format!("components[{i}]: {e}")))?;
@@ -543,6 +561,7 @@ fn assembly_in(top: &mut Map<String, Value>) -> Result<Assembly, FileError> {
             created_by: c.created_by,
             link: c.link,
             library: c.library,
+            policy: c.policy,
         });
     }
     for (i, o) in array(top, "occurrences", false)?.into_iter().enumerate() {

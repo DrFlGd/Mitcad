@@ -855,9 +855,19 @@ impl<K: crate::ImportKernel> Importer<'_, K> {
             };
             match (self.doc.body_component(uid), own) {
                 (Some(c), Some(own)) if c != own => {
+                    // The occurrence the file's reference to the tool is in,
+                    // where its component is placed more than once.
+                    let source = match self.hinted_path(uid) {
+                        Some(path) => path
+                            .iter()
+                            .map(ToString::to_string)
+                            .collect::<Vec<_>>()
+                            .join("/"),
+                        None => only_path(c)?,
+                    };
                     links.insert(
                         tool.clone(),
-                        json!({"source": only_path(c)?, "target": only_path(own)?}),
+                        json!({"source": source, "target": only_path(own)?}),
                     );
                 }
                 _ => {}
@@ -1137,6 +1147,7 @@ impl<K: crate::ImportKernel> Importer<'_, K> {
                 let (body, face) = self
                     .face_input(fp)
                     .or_else(|| refs::resolve_face_by_plane(self.doc, fp))?;
+                self.hint_path(fp, body);
                 Some(json!({"body": body.to_string(), "face": face.to_string()}))
             }
             // A profile: the plane of its sketch, fixed where it is.
@@ -1336,7 +1347,10 @@ impl<K: crate::ImportKernel> Importer<'_, K> {
                 }
                 // The bodies are those the items that made them gave (not bodies
                 // found by their names or measures alone).
-                let produced = |r: &Reference| matches!(r, Reference::Body(fp) if self.produced_body(fp).is_some());
+                let produced = |r: &Reference| {
+                    matches!(r, Reference::Body(fp)
+                        if self.produced_body(fp).or_else(|| self.external_body(fp)).is_some())
+                };
                 let bodies_produced = target.as_ref().is_some_and(produced)
                     && !tools.is_empty()
                     && tools.iter().all(produced);
@@ -1762,7 +1776,10 @@ impl<K: crate::ImportKernel> Importer<'_, K> {
                 // that made them gave, the tools are planes of the file's
                 // geometry, faces the decoder named or bodies the items
                 // that made them gave, and the extend flag is decoded.
-                let produced = |r: &Reference| matches!(r, Reference::Body(fp) if self.produced_body(fp).is_some());
+                let produced = |r: &Reference| {
+                    matches!(r, Reference::Body(fp)
+                        if self.produced_body(fp).or_else(|| self.external_body(fp)).is_some())
+                };
                 let inputs_read = flag(item, "isSplittingToolExtended").is_some()
                     && !tools.is_empty()
                     && references(get("splitBodies")).iter().all(produced)
@@ -2038,13 +2055,26 @@ impl<K: crate::ImportKernel> Importer<'_, K> {
                 Reference::Face(fp) => self.face_input(&fp),
                 _ => None,
             });
-        let inferred_face = named.is_none();
-        let (body, face) = match named {
-            Some(f) => f,
-            None => refs::planar_faces(self.doc)
+        // A hole placed on a construction plane or an origin plane (its
+        // position definition's plane, mitcad#25): the holes start on it.
+        let on_plane = if named.is_none() {
+            get("holePositionDefinition")
+                .and_then(Value::as_object)
+                .and_then(|m| m.get("planarEntity"))
+                .and_then(reference)
+                .filter(|r| matches!(r, Reference::ConstructionPlane(_)))
+                .and_then(|r| self.plane_ref(&r))
+        } else {
+            None
+        };
+        let inferred_face = named.is_none() && on_plane.is_none();
+        let (body, face) = match (named, &on_plane) {
+            (Some((b, f)), _) => (b.to_string(), f.to_string()),
+            (None, Some(_)) => (String::new(), String::new()),
+            (None, None) => refs::planar_faces(self.doc)
                 .into_iter()
                 .find(|(_, _, p)| geom::dot(geom::sub(at, p.origin), p.normal).abs() < 1e-4)
-                .map(|(b, f, _)| (b, f))
+                .map(|(b, f, _)| (b.to_string(), f.to_string()))
                 .ok_or("no planar face through its position")?,
         };
         let kind = get("holeType")
@@ -2056,7 +2086,10 @@ impl<K: crate::ImportKernel> Importer<'_, K> {
             .filter(|p| !p.is_empty())
             .map(|p| p.into_iter().map(mm3).collect())
             .unwrap_or_else(|| vec![at]);
-        let def = self.hole_def(d, body, &face.to_string(), &points, kind)?;
+        let mut def = self.hole_def(d, &body, &face, &points, kind)?;
+        if let Some(plane) = on_plane {
+            def["placement"] = json!({"type": "plane", "plane": plane, "points": points});
+        }
         // A hole through all whose depth the file keeps (a lead, mitcad#96):
         // through all first, the history to check it.
         let mut defs = Vec::new();
@@ -2078,6 +2111,10 @@ impl<K: crate::ImportKernel> Importer<'_, K> {
                         predicted: None,
                         input_provenance: if inferred_face {
                             crate::InputProvenance::Inferred
+                        } else if !guess && get("isDefaultDirection").is_some() {
+                            // The face, position, type, depth and direction
+                            // are decoded (mitcad#25).
+                            crate::InputProvenance::Read
                         } else {
                             crate::InputProvenance::Unknown
                         },
@@ -2208,7 +2245,9 @@ impl<K: crate::ImportKernel> Importer<'_, K> {
                 for kind in &kinds {
                     let defs: Result<Vec<Value>, String> = groups
                         .iter()
-                        .map(|(body, face, points)| self.hole_def(d, *body, face, points, kind))
+                        .map(|(body, face, points)| {
+                            self.hole_def(d, &body.to_string(), face, points, kind)
+                        })
                         .collect();
                     let defs = match defs {
                         Ok(defs) => defs,
@@ -2321,14 +2360,14 @@ impl<K: crate::ImportKernel> Importer<'_, K> {
     fn hole_def(
         &self,
         d: &Map<String, Value>,
-        body: BodyUid,
+        body: &str,
         face: &str,
         points: &[[f64; 3]],
         kind: &str,
     ) -> Result<Value, String> {
         let get = |k: &str| d.get(k);
         let mut def = json!({"type": "hole",
-            "placement": {"type": "face", "body": body.to_string(), "face": face, "points": points},
+            "placement": {"type": "face", "body": body, "face": face, "points": points},
             "diameter": self.value_of(get("holeDiameter")).ok_or("no diameter")?});
         match Some(kind) {
             Some(t) if t.starts_with("Counterbore") => {

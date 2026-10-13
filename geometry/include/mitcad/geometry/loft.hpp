@@ -64,7 +64,8 @@ struct LoftSpec {
   std::vector<LoftSection> sections;
   bool ruled = false;
   bool closed = false;
-  Path centerline; // empty: none
+  bool solid = true; // false: a surface through the sections, the side faces only (a shell)
+  Path centerline;   // empty: none
   std::vector<Path> rails;
   LoftEnd start;
   LoftEnd end;

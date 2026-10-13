@@ -31,9 +31,13 @@ struct SkinSection {
 
 // The solid through the sections (two or more, points only first or last),
 // side faces named after the edges of `named` (one of the sections), caps
-// `first` and `last` (empty for none). Names are not numbered yet.
+// `first` and `last` (empty for none). Names are not numbered yet. `closed`:
+// from the last section back to the first, periodic and tangent-continuous,
+// without caps; `solid` false: the side faces only, a shell. Without end
+// conditions and rails the surfaces are the piecewise cubic Hermite ones
+// (HermiteInterpolation).
 ShapePtr skinned_loft(const std::vector<SkinSection>& sections, const LoftEnd& start, const LoftEnd& end,
                       const std::vector<Path>& rails, const NamedWire& named, const NameList& first,
-                      const NameList& last);
+                      const NameList& last, bool closed = false, bool solid = true);
 
 } // namespace mitcad::geometry::detail

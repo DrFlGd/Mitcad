@@ -19,11 +19,13 @@
 #include "../framework/Dialogs.hpp"
 #include "../framework/GlassCard.hpp"
 #include "../framework/Icons.hpp"
+#include "../framework/MoveOccurrenceDialog.hpp"
 #include "../framework/TestSync.hpp"
 #include "../framework/Theme.hpp"
 #include "DocumentHost.hpp"
 #include "AppearanceDialog.hpp"
 #include "ParametersDialog.hpp"
+#include "PolicyDialog.hpp"
 #include "TimelineWidget.hpp"
 
 namespace mitcad {
@@ -554,7 +556,9 @@ void BrowserController::newComponent(const BrowserNode& node) {
     // It is made in the component the menu was opened on.
     commands.append(cmd("activate_component", {{QStringLiteral("component"), node.uid}}));
   }
-  commands.append(cmd("create_component"));
+  // A part (mitcad#220): its own sketches and features, no components
+  // nested in it by accident.
+  commands.append(cmd("create_component", {{QStringLiteral("policy"), QStringLiteral("part")}}));
   if (m_host.runModelCommands(commands, tr("New Component"))) {
     qDebug().noquote() << QStringLiteral("New component in %1").arg(node.name);
   }
@@ -594,6 +598,25 @@ void BrowserController::moveToComponent(const QJsonObject& selection) {
   if (canChange()) {
     mitcad::moveToComponent(m_window, hybridModel(), selection);
   }
+}
+
+// Move to... on an occurrence (mitcad#219): the occurrence with everything
+// in it under another parent, where it stays in the design; its row is
+// selected again at its new path.
+void BrowserController::moveOccurrence(const BrowserNode& node) {
+  if (node.occurrence.isEmpty() || !canChange()) {
+    return;
+  }
+  const QString moved = mitcad::moveOccurrence(m_window, hybridModel(), node.occurrence);
+  if (moved.isEmpty()) {
+    qDebug().noquote() << QStringLiteral("Move of %1 cancelled").arg(node.name);
+    return;
+  }
+  SelectionItem item;
+  item.kind = SelectKind::Component;
+  item.occurrence = moved;
+  item.owner = node.uid;
+  pick({item}, QStringList());
 }
 
 // The features that made a component-from-bodies' bodies go into its
@@ -780,6 +803,10 @@ void BrowserController::browserMenu(const BrowserNode& node, const QPoint& at) {
       menu.add(QStringLiteral("paste"), tr("Paste"), [this] { paste(false); });
       menu.add(QStringLiteral("paste"), tr("Paste New"), [this] { paste(true); });
     }
+    // Another parent for the occurrence, with what is in it (mitcad#219).
+    if (!root) {
+      menu.add(QStringLiteral("component"), tr("Move to..."), [this, node] { moveOccurrence(node); });
+    }
     menu.separator();
     if (!root) {
       const DocumentSnapshot::Occurrence* placed = occurrence(node.occurrence);
@@ -809,6 +836,9 @@ void BrowserController::browserMenu(const BrowserNode& node, const QPoint& at) {
     if (!root) {
       menu.add(QStringLiteral("delete"), tr("Delete"), [this, node] { deleteNode(node); });
     }
+    // Last, so that the entries above keep their places (mitcad#220).
+    menu.separator();
+    menu.add(QStringLiteral("component"), tr("Design Policy..."), [this, node] { openPolicy(node.uid); });
     break;
   }
   case BrowserNode::Type::Body: {
@@ -851,6 +881,13 @@ void BrowserController::browserMenu(const BrowserNode& node, const QPoint& at) {
     menu.add(QStringLiteral("sketch"), tr("Edit Sketch"), [this, node] { m_host.editFeature(node.uid); });
     menu.add(QStringLiteral("look-at"), tr("Look At"), [this, item] { m_host.lookAt(item); });
     menu.add(QStringLiteral("export"), tr("Save As DXF"), [this, node] { m_host.exportSketch(node.uid); });
+    // The timeline's Move to Component (mitcad#218): the sketch from the
+    // occurrence of the row, with what goes with it.
+    menu.add(QStringLiteral("component"), tr("Move to Component..."), [this, node] {
+      moveToComponent({{QStringLiteral("component"), node.component},
+                       {QStringLiteral("features"), QJsonArray{node.uid}},
+                       {QStringLiteral("source_occurrence"), node.occurrence}});
+    });
     menu.separator();
     visibility();
     renameEntry();
@@ -1374,6 +1411,30 @@ void BrowserController::openAppearances(const Selection& targets) {
   qDebug().noquote() << "Appearances dialog opened";
   m_appearances->refresh();
   m_appearances->setTargets(targets);
+}
+
+void BrowserController::openPolicy(const QString& component) {
+  if (!canChange()) {
+    return;
+  }
+  PolicyDialog dialog([this](const QJsonObject& query) { return m_host.model().queryObject(query); }, component,
+                      m_window);
+  prepareModal(&dialog);
+  qDebug().noquote() << QStringLiteral("Design Policy dialog opened for %1").arg(m_snapshot.componentName(component));
+  if (execDialog(&dialog) != QDialog::Accepted || !dialog.changed()) {
+    qDebug() << "Design Policy dialog closed without a change";
+    return;
+  }
+  QJsonObject result;
+  if (m_host.runModelCommand(cmd("set_policy", {{QStringLiteral("component"), component},
+                                                {QStringLiteral("policy"), dialog.policy()}}),
+                             &result)) {
+    const QJsonObject policy = result.value(QStringLiteral("policy")).toObject();
+    const QString preset = policy.value(QStringLiteral("preset")).toString();
+    qDebug().noquote() << QStringLiteral("Policy of %1 set: %2")
+                              .arg(m_snapshot.componentName(component),
+                                   preset.isEmpty() ? QStringLiteral("custom") : preset);
+  }
 }
 
 } // namespace mitcad

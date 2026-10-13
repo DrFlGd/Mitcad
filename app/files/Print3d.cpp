@@ -6,28 +6,22 @@
 #include <utility>
 
 #include <QComboBox>
-#include <QDialog>
-#include <QDialogButtonBox>
 #include <QDir>
 #include <QDirIterator>
 #include <QFile>
-#include <QFileDialog>
 #include <QFileInfo>
 #include <QFormLayout>
+#include <QJsonArray>
+#include <QJsonDocument>
 #include <QJsonObject>
 #include <QJsonValue>
-#include <QLabel>
 #include <QProcess>
-#include <QPushButton>
 #include <QSet>
 #include <QSettings>
 #include <QStandardPaths>
 #include <QTextStream>
-#include <QVBoxLayout>
 #include <QVariantMap>
 #include <QtLogging>
-
-#include "../framework/Numbers.hpp"
 
 #ifndef _WIN32
 #include <unistd.h>
@@ -157,6 +151,16 @@ DesktopEntry readDesktopEntry(const QString& path) {
     }
   }
   return entry;
+}
+
+// An instance's placement: its path of occurrence uids ("O1/O4"), as a
+// pick names it; empty in the root component.
+QString placementOf(const QJsonObject& instance) {
+  QStringList path;
+  for (const QJsonValue& occurrence : instance.value(QStringLiteral("path")).toArray()) {
+    path << occurrence.toString();
+  }
+  return path.join(QLatin1Char('/'));
 }
 
 } // namespace
@@ -354,7 +358,8 @@ QStringList printFileNames(const QStringList& bodies, const QString& extension) 
   return names;
 }
 
-QVector<PrintPiece> printPieces(const QStringList& bodies, const QStringList& names, const QJsonArray& instances) {
+QVector<PrintPiece> printPieces(const QStringList& bodies, const QStringList& names, const QJsonArray& instances,
+                                const Selection& chosen) {
   QVector<PrintPiece> pieces;
   for (int i = 0; i < bodies.size(); ++i) {
     QVector<QJsonObject> mine;
@@ -373,12 +378,15 @@ QVector<PrintPiece> printPieces(const QStringList& bodies, const QStringList& na
       pieces.append({bodies[i], QString(), names[i]});
       continue;
     }
+    // The placements chosen (mitcad#234), all when none of them is.
+    QVector<QJsonObject> sent;
     for (const QJsonObject& instance : placed) {
-      QStringList path;
-      for (const QJsonValue& occurrence : instance.value(QStringLiteral("path")).toArray()) {
-        path << occurrence.toString();
+      if (chosen.contains(SelectionItem{SelectKind::Body, bodies[i], QString(), QString(), placementOf(instance)})) {
+        sent << instance;
       }
-      pieces.append({bodies[i], path.join(QLatin1Char('/')),
+    }
+    for (const QJsonObject& instance : sent.isEmpty() ? placed : sent) {
+      pieces.append({bodies[i], placementOf(instance),
                      QStringLiteral("%1 (%2)").arg(names[i], instance.value(QStringLiteral("occurrence")).toString())});
     }
   }
@@ -423,11 +431,15 @@ QString preparePrintFolder(const QString& root, const QString& design, QString* 
 }
 
 // ---------------------------------------------------------------------------
-// The slicer's combo box, the dialog and Preferences
+// The slicer's combo box, the panel's rows and Preferences
 
 namespace {
 
 const QString kBrowse = QStringLiteral("browse");
+// The panel's Slicer choices besides the slicers (slicerChoice): none, and
+// another program, chosen in a file dialog.
+const QString kNoSlicer = QStringLiteral("none");
+const QString& kOtherSlicer = kBrowse;
 
 QVariant slicerData(const Slicer& slicer) {
   return QVariantMap{{QStringLiteral("name"), slicer.name},
@@ -490,94 +502,84 @@ Slicer slicerOf(const QComboBox* combo) {
   return data.toString() == kBrowse ? Slicer{} : slicerFromData(data);
 }
 
-std::optional<PrintChoice> askPrint(QWidget* parent, const QString& bodies, const QString& leftOut,
-                                    const QVector<Slicer>& found) {
-  const PrintSettings settings = PrintSettings::load();
-  QDialog dialog(parent);
-  dialog.setWindowTitle(QObject::tr("3D Print"));
-  auto* layout = new QVBoxLayout(&dialog);
-  auto* form = new QFormLayout;
-  layout->addLayout(form);
-  auto* what = new QLabel(bodies);
-  what->setWordWrap(true);
-  form->addRow(QObject::tr("Bodies:"), what);
-  if (!leftOut.isEmpty()) {
-    auto* left = new QLabel(leftOut);
-    left->setWordWrap(true);
-    form->addRow(QObject::tr("Left out:"), left);
+QString slicerChoice(const Slicer& slicer) {
+  if (!slicer.isValid()) {
+    return kNoSlicer;
   }
-  auto* format = new QComboBox;
-  format->addItem(QObject::tr("STL, one file per body"), QStringLiteral("stl"));
-  format->addItem(QObject::tr("3MF, one object with parts"), QStringLiteral("3mf"));
-  format->setCurrentIndex(format->findData(settings.format));
-  format->setToolTip(QObject::tr("3MF keeps the bodies together as the parts of one object in their places; "
-                                 "STL gives the slicer a file per body"));
-  form->addRow(QObject::tr("&Format:"), format);
-  auto* refinement = new QComboBox;
-  refinement->addItem(QObject::tr("Low"), QStringLiteral("low"));
-  refinement->addItem(QObject::tr("Medium"), QStringLiteral("medium"));
-  refinement->addItem(QObject::tr("High"), QStringLiteral("high"));
-  refinement->addItem(QObject::tr("Custom"), QStringLiteral("custom"));
-  refinement->setCurrentIndex(refinement->findData(settings.refinement));
-  form->addRow(QObject::tr("&Refinement:"), refinement);
-  auto* deviation = new DecimalSpinBox;
-  deviation->setDecimals(3);
-  deviation->setRange(0.001, 10.0);
-  deviation->setSingleStep(0.005);
-  deviation->setSuffix(QStringLiteral(" mm"));
-  deviation->setValue(settings.deviation);
-  deviation->setToolTip(QObject::tr("The largest distance between the triangles and the surface"));
-  auto* angle = new DecimalSpinBox;
-  angle->setDecimals(1);
-  angle->setRange(0.5, 90.0);
-  angle->setSuffix(QStringLiteral(" deg"));
-  angle->setValue(settings.angle);
-  angle->setToolTip(QObject::tr("The largest angle between neighbouring triangles"));
-  form->addRow(QObject::tr("&Deviation:"), deviation);
-  form->addRow(QObject::tr("&Angle:"), angle);
-  const auto showCustom = [&] {
-    const bool custom = refinement->currentData().toString() == QStringLiteral("custom");
-    form->setRowVisible(deviation, custom);
-    form->setRowVisible(angle, custom);
+  return QString::fromUtf8(QJsonDocument(QJsonObject{{QStringLiteral("name"), slicer.name},
+                                                     {QStringLiteral("program"), slicer.program},
+                                                     {QStringLiteral("arguments"),
+                                                      QJsonArray::fromStringList(slicer.arguments)},
+                                                     {QStringLiteral("after"),
+                                                      QJsonArray::fromStringList(slicer.argumentsAfter)}})
+                               .toJson(QJsonDocument::Compact));
+}
+
+Slicer slicerOfChoice(const QString& choice) {
+  const QJsonObject object = QJsonDocument::fromJson(choice.toUtf8()).object();
+  const auto strings = [&object](const char* key) {
+    QStringList list;
+    for (const QJsonValue& value : object.value(QLatin1String(key)).toArray()) {
+      list << value.toString();
+    }
+    return list;
   };
-  showCustom();
-  QObject::connect(refinement, &QComboBox::currentIndexChanged, &dialog, showCustom);
-  const Slicer current = settings.slicer.isValid() ? settings.slicer : found.value(0);
-  QComboBox* slicer = slicerComboBox(found, current, QObject::tr("None: open the files' folder"), &dialog);
-  form->addRow(QObject::tr("&Slicer:"), slicer);
-  auto* buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel);
-  buttons->button(QDialogButtonBox::Ok)->setText(QObject::tr("Send"));
-  QObject::connect(buttons, &QDialogButtonBox::accepted, &dialog, &QDialog::accept);
-  QObject::connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
-  layout->addWidget(buttons);
-  format->setFocus();
-  QStringList slicers;
-  for (int i = 0; i < slicer->count(); ++i) {
-    slicers << slicer->itemText(i);
+  return Slicer{object.value(QStringLiteral("name")).toString(), object.value(QStringLiteral("program")).toString(),
+                strings("arguments"), strings("after")};
+}
+
+QVector<QPair<QString, QString>> slicerChoices(const QVector<Slicer>& found, const Slicer& current,
+                                               const Slicer& other) {
+  QVector<QPair<QString, QString>> choices{{kNoSlicer, QObject::tr("None: open the files' folder")}};
+  QVector<Slicer> listed;
+  for (const Slicer& slicer : {current, other}) {
+    if (slicer.isValid() && !found.contains(slicer) && !listed.contains(slicer)) {
+      listed << slicer;
+    }
   }
-  qDebug().noquote() << QStringLiteral("3D Print dialog: %1; format %2, refinement %3, slicer %4; slicers %5")
-                            .arg(bodies, settings.format, settings.refinement, slicerOf(slicer).describe(),
-                                 slicers.join(QStringLiteral(" | ")));
-  if (execDialog(&dialog) != QDialog::Accepted) {
-    return std::nullopt;
+  listed += found;
+  for (const Slicer& slicer : std::as_const(listed)) {
+    choices.append({slicerChoice(slicer), itemLabel(slicer)});
   }
-  PrintChoice choice;
-  choice.format = format->currentData().toString();
-  choice.refinement = refinement->currentData().toString();
-  choice.deviation = deviation->value();
-  choice.angle = angle->value();
-  choice.slicer = slicerOf(slicer);
-  // Remembered; "None" this time keeps the slicer of the settings.
-  PrintSettings chosen = settings;
-  chosen.format = choice.format;
-  chosen.refinement = choice.refinement;
-  chosen.deviation = choice.deviation;
-  chosen.angle = choice.angle;
-  if (choice.slicer.isValid()) {
-    chosen.slicer = choice.slicer;
+  choices.append({kOtherSlicer, QObject::tr("Other program...")});
+  return choices;
+}
+
+QString otherSlicerChoice() { return kOtherSlicer; }
+
+Selection printStartBodies(const Selection& selection, const QJsonArray& instances, bool* selected) {
+  Selection bodies;
+  const auto add = [&bodies](const QString& body, const QString& occurrence) {
+    const SelectionItem item{SelectKind::Body, body, QString(), QString(), occurrence};
+    if (!bodies.contains(item)) {
+      bodies.append(item);
+    }
+  };
+  for (const SelectionItem& item : selection) {
+    if (item.kind == SelectKind::Body || item.kind == SelectKind::Face || item.kind == SelectKind::Edge ||
+        item.kind == SelectKind::Vertex) {
+      add(item.owner, item.occurrence);
+    } else if (item.kind == SelectKind::Component) {
+      for (const QJsonValue& value : instances) {
+        const QJsonObject instance = value.toObject();
+        const QString occurrence = placementOf(instance);
+        if (instance.value(QStringLiteral("visible")).toBool() &&
+            (occurrence == item.occurrence || occurrence.startsWith(item.occurrence + QLatin1Char('/')))) {
+          add(instance.value(QStringLiteral("body")).toString(), occurrence);
+        }
+      }
+    }
   }
-  chosen.save();
-  return choice;
+  *selected = !bodies.isEmpty();
+  if (bodies.isEmpty()) {
+    for (const QJsonValue& value : instances) {
+      const QJsonObject instance = value.toObject();
+      if (instance.value(QStringLiteral("visible")).toBool()) {
+        add(instance.value(QStringLiteral("body")).toString(), placementOf(instance));
+      }
+    }
+  }
+  return bodies;
 }
 
 SlicerPreferencesBox::SlicerPreferencesBox(QWidget* parent) : QGroupBox(tr("3D Print"), parent) {

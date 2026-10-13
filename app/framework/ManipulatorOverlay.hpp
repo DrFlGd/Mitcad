@@ -9,6 +9,7 @@
 #include <QWidget>
 
 #include "Command.hpp"
+#include "EventFilterGuard.hpp"
 
 namespace mitcad {
 
@@ -67,6 +68,7 @@ private:
   void logPlaces();
 
   OcctViewer& m_viewer;
+  EventFilterGuard m_viewerFilter{this}; // its input; the view may go first (mitcad#226)
   QString m_command;
   std::vector<Handle> m_handles;
   int m_hover = -1;

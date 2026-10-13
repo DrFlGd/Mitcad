@@ -36,7 +36,7 @@
 //! - `vertex_recipe_data`: the faces at the vertex.
 
 use super::ir::EntityName;
-use super::stream::{Segment, i32_at, u32_at};
+use super::stream::{Segment, i32_at, str16_at, u32_at};
 
 /// Recipe objects: they name entities.
 pub const RECIPE: &str = "7ACC2A03-0261-4879-A14A-A93D661A5BDC";
@@ -263,6 +263,35 @@ pub fn edge_tail(tail: &[u8]) -> Option<EdgeTail> {
         fans.push(fan);
     }
     (p == w.len()).then_some(EdgeTail { faces, fans })
+}
+
+/// Whether `s` is a GUID as the streams write them (`8-4-4-4-12` hex
+/// digits).
+fn is_guid(s: &str) -> bool {
+    s.len() == 36
+        && s.char_indices().all(|(i, c)| match i {
+            8 | 13 | 18 | 23 => c == '-',
+            _ => c.is_ascii_hexdigit(),
+        })
+}
+
+/// The GUID of the document that owns the entity a feature input refers
+/// to (lower case): the first of the two GUIDs of the reference object
+/// *(read from the proxies of faces, edges and bodies: in a design that
+/// refers to other documents it is the GUID of the referenced file's
+/// `Manifest.dat` where the entity is in a component of that document
+/// (mitcad#196), the same for all its entities; for the design's own
+/// entities another one)*. None when the object has no such text.
+pub fn owner_guid(seg: &Segment, input: u64) -> Option<String> {
+    let d = seg.data_of(input);
+    let start = seg.root_part(d)?.end;
+    (start..d.len().saturating_sub(4)).find_map(|p| {
+        if u32_at(d, p)? != 36 {
+            return None;
+        }
+        let (s, _) = str16_at(d, p)?;
+        is_guid(&s).then(|| s.to_lowercase())
+    })
 }
 
 #[cfg(test)]

@@ -117,11 +117,10 @@ std::vector<detail::SweepFace> split_across_axis(const std::vector<detail::Sweep
   if (!std::any_of(input.begin(), input.end(), straddles)) {
     return input;
   }
-  // Faces that touch are one face first: their solids, fused where they share a
-  // surface, can lose each other.
-  const std::vector<detail::SweepFace> faces = detail::merged(input);
+  // (Faces that touch are one face already: their solids, fused where they
+  // share a surface, can lose each other.)
   std::vector<detail::SweepFace> result;
-  for (const detail::SweepFace& face : faces) {
+  for (const detail::SweepFace& face : input) {
     if (!straddles(face)) {
       result.push_back(face);
       continue;
@@ -223,8 +222,16 @@ ShapePtr revolve(const RevolveSpec& spec) {
     throw std::invalid_argument("the revolve angles add up to more than a full turn");
   }
   return detail::run("revolve", [&] {
-    const std::vector<detail::SweepFace> faces =
-        split_across_axis(detail::region_faces(spec.feature, spec.frame, spec.regions), spec.frame, spec.axis, total);
+    // Regions that touch are one face first. Revolved apart and fused, two
+    // parts of one surface (a cone a shared edge cut in two) are merged
+    // back into one face by the fuse's simplification, which built that
+    // face wrong: the solid came out 2.6 % too big. One face revolves
+    // exactly, and no shared face is left for the fuse to merge.
+    std::vector<detail::SweepFace> faces = detail::region_faces(spec.feature, spec.frame, spec.regions);
+    if (faces.size() > 1) {
+      faces = detail::merged(faces);
+    }
+    faces = split_across_axis(faces, spec.frame, spec.axis, total);
     check_axis(faces, spec.frame, spec.axis);
     const bool two = spec.angle2.has_value();
     const bool full = !spec.target && total >= kTwoPi - 1.0e-9;

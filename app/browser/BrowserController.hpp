@@ -52,6 +52,9 @@ public:
   // Edit Appearances (mitcad#46); Assign gives the targets (bodies, and
   // faces: mitcad#53) the selected appearance.
   void openAppearances(const Selection& targets);
+  // Design Policy (mitcad#220) of a component (C0 the root): its seven
+  // settings, presets and violations; OK sets it as one undo step.
+  void openPolicy(const QString& component);
   // Find in Browser for an item picked in the view (a face finds its body).
   void findInBrowser(const SelectionItem& item);
 
@@ -112,6 +115,8 @@ private:
   HybridModel hybridModel();
   void componentsFromBodies(const BrowserNode& node);
   void moveToComponent(const QJsonObject& selection);
+  // Move to... on an occurrence: another parent for it (mitcad#219).
+  void moveOccurrence(const BrowserNode& node);
   void moveHistory(const QString& uid);
   void paste(bool asNew);
   void changeUnits();

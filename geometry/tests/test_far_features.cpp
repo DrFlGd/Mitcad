@@ -172,6 +172,32 @@ void test_holes_whose_merge_could_change_stay() {
   same_both_ways("counterbores", BooleanOp::Cut, counterbored, extrude("F4", {rectangle(9, -5, 80, 12, 30)}, -1, 6));
 }
 
+void test_holes_touching_an_edge_stay() {
+  // A plate 102 mm wide with the 10 x 10 holes and four countersunk holes
+  // from the bottom whose countersinks (6 mm wide, 45 degrees) touch its
+  // side x = 102 at one point each: the side's bottom edge is split there.
+  // A slot cut into that side away from them changes the side; the edge
+  // must stay split, or the countersinks' circles would touch the merged
+  // edge without a vertex there.
+  const ShapePtr plate = extrude("F2", {rectangle(1, 0, 0, 102, 100)}, 0, 5);
+  const ShapePtr perforated_plate = run(BooleanOp::Cut, plate, holes(10)).pieces.at(0).shape;
+  std::vector<ShapePtr> touching;
+  for (int k = 0; k < 4; ++k) {
+    const std::string instance = ":inst" + std::to_string(k);
+    ExtrudeFeatureSpec sink;
+    sink.feature = "F5" + instance + "(F5)";
+    sink.regions = {circle(5, 99.0, 20.0 + 20.0 * k, 3.0)};
+    sink.side1.distance = 1.4;
+    sink.side1.taper = -kPi / 4.0;
+    touching.push_back(extrude_feature(sink));
+    touching.push_back(extrude("F6" + instance + "(F6)", {circle(6, 99.0, 20.0 + 20.0 * k, 1.6)}, 1, 6));
+  }
+  const ShapePtr touched = run(BooleanOp::Cut, perforated_plate, united(touching)).pieces.at(0).shape;
+  CHECK(BRepCheck_Analyzer(touched->occt()).IsValid());
+  same_both_ways("slot beside touching holes", BooleanOp::Cut, touched,
+                 extrude("F4", {rectangle(9, 99, 1, 4, 2)}, 2, 6));
+}
+
 void test_tiled_pattern_cut_matches_one_cut() {
   // 26 x 26 holes: more than twice a tile's solids, cut region by region.
   const int n = 26;
@@ -211,6 +237,7 @@ void test_holes_in_a_curved_wall() {
 void far_features_tests() {
   guarded("test_cuts_and_joins_match_the_whole_body", test_cuts_and_joins_match_the_whole_body);
   guarded("test_holes_whose_merge_could_change_stay", test_holes_whose_merge_could_change_stay);
+  guarded("test_holes_touching_an_edge_stay", test_holes_touching_an_edge_stay);
   guarded("test_tiled_pattern_cut_matches_one_cut", test_tiled_pattern_cut_matches_one_cut);
   guarded("test_holes_in_a_curved_wall", test_holes_in_a_curved_wall);
 }

@@ -475,6 +475,18 @@ volumes, partly with OCCT alone.
   methods of `BRepOffset_Inter2d` and `BRepOffset_Inter3d` get parameters;
   no class gets members.
 
+The patches 0110 and later change OCCT's face merge after booleans
+(`ShapeUpgrade_UnifySameDomain`).
+
+- `0110-shapeupgrade-unifysamedomain-chain-not-concatenated.patch`: a chain
+  of B-spline edges whose curves cannot be concatenated (the end of one
+  lies farther from the start of the next than the tolerance of the vertex
+  between them, which `GeomConvert::ConcatC1` refuses with "Courbes non
+  jointives") stays as its edges, as chains of other curves that cannot be
+  merged do (`MergeSubSeq` returns false). Before, the exception ended the
+  whole merge, and a join whose boolean had given a valid result failed
+  (`BRepAlgoAPI_BuilderAlgo::SimplifyResult`).
+
 Each patch has a report for OCCT, with a reproduction that uses OCCT alone
 and measurements: mitcad#84 (0006), mitcad#90 (0007), mitcad#91 (0008) and
 mitcad#92 (0009); for 0010 to 0019 and 0050 and later, mitcad#121 and the tests in

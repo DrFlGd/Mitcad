@@ -400,7 +400,7 @@ NewProjectDialog::NewProjectDialog(QWidget* parent, const NewProjectOptions& opt
   m_section = new CloudSection(checkRemote, describeForNewProject);
   cloudColumn->addWidget(m_section);
   layout->addWidget(m_cloudBox);
-  m_fields = new ProjectSettingsFields;
+  m_fields = new ProjectSettingsFields(ProjectSettingsFields::Host::NewProject);
   m_name = m_fields->m_name;
   m_email = m_fields->m_email;
   layout->addWidget(m_fields);

@@ -21,6 +21,7 @@ use crate::kernel::{
 use crate::profile::{ProfileRegion, SegmentGeometry, SketchFrame, cross, dot};
 use crate::testing::{MockKernel, MockShape};
 use crate::topo::{EdgeName, FaceName, RoleKey, SegmentKey, VertexName};
+use crate::transform::{Instance, Transform};
 
 /// An extrusion as the kernel received it.
 #[derive(Debug)]
@@ -142,6 +143,32 @@ impl Kernel for GeoKernel {
                 prisms: shape.prisms.clone(),
             })
             .collect())
+    }
+
+    fn transform_shape(
+        &self,
+        shape: &GeoShape,
+        transform: &Transform,
+        instance: Option<Instance>,
+    ) -> Result<GeoShape, KernelError> {
+        let mock = self
+            .mock
+            .transform_shape(&shape.mock, transform, instance)?;
+        let prisms = shape
+            .prisms
+            .iter()
+            .map(|p| {
+                Arc::new(Prism {
+                    feature: p.feature,
+                    frame: transform.apply_frame(&p.frame),
+                    regions: p.regions.clone(),
+                    direction: transform.apply_vector(p.direction),
+                    start: p.start,
+                    end: p.end,
+                })
+            })
+            .collect();
+        Ok(GeoShape { mock, prisms })
     }
 
     fn boolean(
@@ -1652,4 +1679,57 @@ fn planes_along_a_path_of_several_sketch_curves() {
                 "distance": 0.5}}}),
     );
     assert!(error.contains("at least two"), "{error}");
+}
+
+#[test]
+fn a_plane_between_faces_of_components_is_made_where_the_design_places_them() {
+    // A block (60 x 40 x 20) in a component placed 5 mm up: its top face is
+    // at z = 25 in the design. A plane in the root halfway between that face
+    // and the root's XY plane is at z = 12.5, not 10 as the face's own
+    // coordinates would give (mitcad#196).
+    let mut doc = Document::new(GeoKernel::default());
+    let (part, _) = doc
+        .create_component(Some("Part"), Transform::translation([0.0, 0.0, 5.0]), true)
+        .unwrap();
+    command(
+        &mut doc,
+        json!([{"cmd": "sketch.create"},
+               {"cmd": "sketch.add_rectangle", "sketch": "F1", "corner": [0, 0], "width": 60, "height": 40},
+               {"cmd": "add_feature", "def": {"type": "extrude",
+                "profiles": [{"sketch": "F1", "region": REGION}],
+                "extent": {"type": "distance", "distance": 20}, "operation": "new_body"}}]),
+    );
+    doc.activate_component(crate::ids::ComponentUid::ROOT)
+        .unwrap();
+    let definition = json!({"type": "midplane", "plane1": face(&top()), "plane2": "xy"});
+    let occurrence = doc.assembly().occurrences_of(part).next().unwrap().uid;
+    let added = command(
+        &mut doc,
+        json!({"cmd": "add_feature", "def": {"type": "construction_plane",
+               "definition": definition,
+               "links": {"F2.b0": {"source": occurrence.to_string()}}}}),
+    );
+    let uid = added["uid"].as_str().unwrap().to_owned();
+    let feature = query(&doc, json!({"query": "feature", "uid": uid}));
+    assert_eq!(feature["status"], "ok", "{feature}");
+    let datum = query(&doc, json!({"query": "datum", "uid": uid}));
+    let z = datum["origin"][2].as_f64().unwrap();
+    assert!((z - 12.5).abs() < 1e-9, "{datum}");
+    assert_near(&datum["normal"], [0.0, 0.0, 1.0]);
+    // The link is kept in the definition.
+    assert_eq!(
+        feature["def"]["links"]["F2.b0"]["source"],
+        json!(occurrence.to_string())
+    );
+    // Without it the face of the other component is not in reach.
+    let (_, plain) = add_construction(&mut doc, "construction_plane", &definition);
+    assert_ne!(plain["status"], "ok", "{plain}");
+    // Moving the component moves the plane (it follows the placement).
+    doc.set_occurrence_transform(occurrence, Transform::translation([0.0, 0.0, 15.0]), false)
+        .unwrap();
+    let moved = query(&doc, json!({"query": "datum", "uid": uid}));
+    assert!(
+        (moved["origin"][2].as_f64().unwrap() - 17.5).abs() < 1e-9,
+        "{moved}"
+    );
 }

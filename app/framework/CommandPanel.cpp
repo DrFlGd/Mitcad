@@ -258,7 +258,7 @@ CommandPanel::CommandPanel(const CommandDef& def, const CommandState& state, boo
   layout->addWidget(m_message);
 
   auto* buttons = new QHBoxLayout;
-  m_ok = new QPushButton(tr("OK"));
+  m_ok = new QPushButton(def.okLabel.isEmpty() ? tr("OK") : def.okLabel);
   m_ok->setObjectName(QStringLiteral("commandOk"));
   auto* cancel = new QPushButton(tr("Cancel"));
   cancel->setObjectName(QStringLiteral("commandCancel"));
@@ -269,7 +269,9 @@ CommandPanel::CommandPanel(const CommandDef& def, const CommandState& state, boo
   }
   // In a floating card OK is the accent-coloured default button.
   m_ok->setDefault(chromeStyle() == ChromeStyle::Floating);
-  m_ok->setToolTip(def.inspect ? tr("Close (Enter)") : tr("Create the feature (Enter)"));
+  m_ok->setToolTip(def.inspect             ? tr("Close (Enter)")
+                   : def.okLabel.isEmpty() ? tr("Create the feature (Enter)")
+                                           : tr("%1 (Enter)").arg(def.okLabel));
   cancel->setToolTip(tr("Close without changes (Esc)"));
   connect(m_ok, &QPushButton::clicked, this, &CommandPanel::accepted);
   connect(cancel, &QPushButton::clicked, this, &CommandPanel::rejected);
@@ -826,6 +828,11 @@ void CommandPanel::logFit() const {
                             .arg(m_def.name, shown)
                             .arg(width())
                             .arg(page->width());
+  // A message that changed its height moved the rows: their new places.
+  const int messageHeight = m_message->isHidden() ? 0 : m_message->height();
+  if (messageHeight != m_loggedMessageHeight) {
+    logLayout();
+  }
 }
 
 void CommandPanel::setResult(const QString& text) { m_result->setText(text); }
@@ -900,6 +907,7 @@ bool CommandPanel::focusValue(const QString& key) {
 void CommandPanel::logLayout() const {
   // Rows made or shown just now are placed first.
   QCoreApplication::sendPostedEvents(nullptr, QEvent::LayoutRequest);
+  m_loggedMessageHeight = m_message->isHidden() ? 0 : m_message->height();
   const auto position = [](const QWidget* widget) {
     const QPoint center = GlassCard::mapToHost(widget, widget->rect().center());
     return QStringLiteral("%1,%2").arg(center.x()).arg(center.y());

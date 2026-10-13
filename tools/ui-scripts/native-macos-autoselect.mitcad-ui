@@ -76,9 +76,10 @@ native-click autoselect_drawn
 expect-selection 0 0
 
 # A body selected through the real browser remains selected through both
-# group toggles, while Clear selection removes it too.
+# group toggles, while Clear selection removes it too. The body is the new
+# design's Part1's (mitcad#220): its row is Part1:1's (O1).
 native-expand native.modelTree
-native-select native.model.body:F1.b0@
+native-select native.model.body:F1.b0@O1
 expect-selection 1 0
 native-click autoselect_drawn
 expect-selection 4 3

@@ -11,6 +11,7 @@ use crate::document_tests::{extrude, num};
 use crate::features::SketchPlane;
 use crate::ids::{BodyUid, ComponentUid, FeatureUid, OccurrenceUid};
 use crate::kernel::Curve3;
+use crate::policy_tests::allow_attachments;
 use crate::testing::MockKernel;
 use crate::transform::Transform;
 
@@ -57,6 +58,7 @@ fn siblings() -> (Document<MockKernel>, BodyUid, String, ComponentUid) {
         .create_component(Some("B"), shift(0.0, 50.0, -3.0), true)
         .unwrap();
     assert_eq!(doc.active_component(), b);
+    allow_attachments(&mut doc);
     (doc, body, face, b)
 }
 
@@ -276,6 +278,7 @@ fn a_construction_plane_of_another_component_needs_a_link() {
     );
     let plane = plane["uid"].clone();
     doc.activate_component(ComponentUid::ROOT).unwrap();
+    allow_attachments(&mut doc);
     let error = rejected(&mut doc, json!({"cmd": "sketch.create", "plane": plane}));
     assert!(error.contains("is in A"), "{error}");
     // Linked, in the root: 4 above A's origin, which is 10 up.
@@ -447,6 +450,7 @@ fn linked_assembly() -> LinkedAssembly {
         .create_component(Some("B"), shift(0.0, 50.0, -3.0), true)
         .unwrap();
     let (_, target, _) = block(&mut doc);
+    allow_attachments(&mut doc);
     let source = crate::features::OccurrencePath(vec![occurrence, a]);
     let target_path = crate::features::OccurrencePath(vec![occurrence, b]);
     command(

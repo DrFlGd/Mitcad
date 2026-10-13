@@ -20,7 +20,12 @@ namespace mitcad {
 
 class ProjectSettingsFields : public QWidget {
 public:
-  explicit ProjectSettingsFields(QWidget* parent = nullptr);
+  // The dialog the fields are in. Their Alt+letter mnemonics differ per
+  // dialog so that none repeats one of the dialog's own: Qt only moves the
+  // focus on a repeated mnemonic, it presses no button (New Project's Open
+  // It Instead, Create as Local for Now, Create).
+  enum class Host { ProjectSettings, NewProject };
+  explicit ProjectSettingsFields(Host host, QWidget* parent = nullptr);
   QJsonObject sharedChosen() const;
   QJsonObject localChosen(bool includeName = false) const;
 

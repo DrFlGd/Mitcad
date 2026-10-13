@@ -188,6 +188,18 @@ public static class UiInput {
     public static void Button(IntPtr hwnd, uint message, int x, int y, int keys) {
         PostMessage(hwnd, message, (IntPtr)keys, Point(x, y));
     }
+
+    [StructLayout(LayoutKind.Sequential)] struct POINT { public int X, Y; }
+    [DllImport("user32.dll")] static extern bool ClientToScreen(IntPtr hwnd, ref POINT point);
+    const uint WM_MOUSEWHEEL = 0x20A;
+
+    // Wheel steps at a point of the window (client coordinates; the message
+    // carries screen coordinates): a negative count turns towards the user.
+    public static void Wheel(IntPtr hwnd, int x, int y, int steps) {
+        var point = new POINT { X = x, Y = y };
+        ClientToScreen(hwnd, ref point);
+        PostMessage(hwnd, WM_MOUSEWHEEL, (IntPtr)((steps * 120) << 16), Point(point.X, point.Y));
+    }
 }
 '@
 
@@ -460,6 +472,16 @@ function Ui-LoggedAt([string]$Text) {
 function Ui-ClickLogged([string]$Text, [int]$Button = 1) {
   $at = Ui-LoggedAt $Text
   Ui-Click $at[0] $at[1] $Button
+}
+
+# Ui-WheelLogged "text" steps: wheel steps over a logged place, such as a
+# panel's drop-down ("Panel 3D Print input format"), whose list cannot open
+# in session 0: -1 (a step towards the user) chooses the next entry.
+function Ui-WheelLogged([string]$Text, [int]$Steps) {
+  $at = Ui-LoggedAt $Text
+  [UiInput]::Move($script:UiWindow, $at[0], $at[1], 0)
+  Start-Sleep -Milliseconds 80
+  [UiInput]::Wheel($script:UiWindow, $at[0], $at[1], $Steps)
 }
 
 function Ui-DoubleClickLogged([string]$Text) {

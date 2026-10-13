@@ -24,6 +24,8 @@ mod joints;
 mod libraries;
 // Move Features into a Component (mitcad#171).
 mod move_features;
+// Design policy (mitcad#220).
+mod policy;
 
 use std::fmt;
 
@@ -501,6 +503,13 @@ enum Query {
         moving: crate::sheet::PanelId,
     },
     SheetBodies,
+    // Design policy (mitcad#220, `policy.rs`): one owner's settings and
+    // violations, every owner's, and whose geometry sketches may attach to.
+    Policy(policy::PolicyQuery),
+    Policies,
+    SketchSupports(policy::SketchSupportsQuery),
+    // Moving an occurrence to another parent (mitcad#219, `components.rs`).
+    ReparentOccurrence(components::ReparentQuery),
 }
 
 fn names(names: &[String]) -> Value {
@@ -528,7 +537,13 @@ impl<K: Kernel> Document<K> {
         Ok(result.to_string())
     }
 
+    /// Runs one command with its changes checked against the design
+    /// policy (mitcad#220).
     pub(crate) fn run_command(&mut self, value: Value) -> Result<Value, ApiError> {
+        self.with_policy_checks(|doc| doc.run_checked_command(value))
+    }
+
+    fn run_checked_command(&mut self, value: Value) -> Result<Value, ApiError> {
         let recomputes = self.recompute_count();
         let is_sketch = value
             .get("cmd")
@@ -553,6 +568,11 @@ impl<K: Kernel> Document<K> {
             .get("cmd")
             .and_then(Value::as_str)
             .is_some_and(|cmd| move_features::COMMANDS.contains(&cmd));
+        // Design policy (mitcad#220).
+        let is_policy = value
+            .get("cmd")
+            .and_then(Value::as_str)
+            .is_some_and(|cmd| policy::COMMANDS.contains(&cmd));
         let mut result = if let Some(rules) = inline_face_rules(&value) {
             self.add_face_with_rules_command(rules, &value)?
         } else if is_sketch {
@@ -566,6 +586,8 @@ impl<K: Kernel> Document<K> {
             self.run_library_command(parse(value, "command")?)?
         } else if is_move {
             self.run_move_command(parse(value, "command")?)?
+        } else if is_policy {
+            self.run_policy_command(parse(value, "command")?)?
         } else {
             self.run_document_command(parse(value, "command")?)?
         };
@@ -920,6 +942,10 @@ impl<K: Kernel> Document<K> {
     /// Evaluates an `add_feature` or `edit_feature` command without
     /// committing it; the shapes are then available as preview handles.
     pub fn preview(&mut self, json: &str) -> Result<String, ApiError> {
+        self.with_policy_checks(|doc| doc.checked_preview(json))
+    }
+
+    fn checked_preview(&mut self, json: &str) -> Result<String, ApiError> {
         let value = read_json(json)?;
         let report = if let Some(rules) = inline_face_rules(&value) {
             let (rules, face, name) = face_with_rules(rules, &value)?;
@@ -1192,6 +1218,11 @@ impl<K: Kernel> Document<K> {
                 .sheet_seam_json(body, stationary, moving)
                 .map_err(ApiError)?,
             Query::SheetBodies => self.sheet_bodies_json(),
+            Query::Policy(query) => self.policy_query_json(&query)?,
+            Query::Policies => self.policies_json()?,
+            Query::SketchSupports(query) => self.sketch_supports_json(&query)?,
+            // Moving an occurrence to another parent (mitcad#219).
+            Query::ReparentOccurrence(query) => self.reparent_json(&query)?,
         };
         Ok(result.to_string())
     }
@@ -1508,6 +1539,12 @@ mod appearance_tests;
 mod autoselect_tests;
 #[cfg(test)]
 mod render_settings_tests;
+// Equal spacing (mitcad#221).
+#[cfg(test)]
+mod equal_spacing_tests;
+// Linked projections that follow by geometry, and their clean-up (mitcad#232).
+#[cfg(test)]
+mod projection_tests;
 
 // A Face with new rules of its own (mitcad#210): `add_feature` (and its
 // preview) of a `sheet_face` whose `rules` is the rules' definition adds a

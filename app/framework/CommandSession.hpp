@@ -104,6 +104,11 @@ public:
   // (the newest, a loaded definition) are highlighted where they are shown,
   // and a click on one is on the same entry (mitcad#199).
   virtual QString profileOccurrence(const QString& /*sketch*/) const { return QString(); }
+  // The selection filter context the running command's selections pick
+  // through besides their inputs' own tests (mitcad#217: Project in sketch
+  // mode; framework/SelectionScope.hpp), null when there is none. Shift
+  // widens a click to its empty rows, never beyond what the input takes.
+  virtual const SelectionScope* commandScope() const { return nullptr; }
 };
 
 // A feature command from start to OK or Cancel: its inputs' state and
@@ -161,6 +166,9 @@ public:
 
   // A pick in the view goes to the active selection input.
   void picked(const Selection& items, Qt::KeyboardModifiers modifiers, bool window);
+  // The host's selection filter context (CommandHost::commandScope)
+  // changed: the active input picks through it as it is now (mitcad#217).
+  void scopeChanged();
   // OK: adds or edits the feature; false (with the panel showing why) when
   // it cannot, or when its computation was cancelled.
   bool commit();
@@ -195,6 +203,9 @@ private:
   bool isShown(const Slot& slot) const;
   const InputDef* activeInput() const;
   void activate(const QString& key);
+  // What the view lets the input pick (with the host's selection filter
+  // context, when it has one).
+  void applyPickFilter(const InputDef* input);
   void activateFirstNeeded();
   void advanceIfFull();
   void selectionChanged(const QString& key);
@@ -255,6 +266,9 @@ private:
   // OK of an inspection that keeps an analysis in the document: adds it,
   // or changes the one edited; false when the model refuses it.
   bool keepAnalysis();
+  // OK of an application command (CommandDef::accept, mitcad#234): does
+  // its work; false (the panel stays) when it could not.
+  bool acceptCommand();
   // OK of a command that makes a component in a root with modelled bodies
   // (mitcad#171): asks whether the root's features move into a component
   // first. False when the user cancels; `done` when the move did the

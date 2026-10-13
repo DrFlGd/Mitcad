@@ -153,6 +153,20 @@ public:
   std::shared_ptr<void> boundary_index() const { return m_boundaryIndex.get().value_or(nullptr); }
   void set_boundary_index(std::shared_ptr<void> index) const { m_boundaryIndex.set(std::move(index)); }
 
+  // Each face's surface kind and area (query.cpp's face_infos), once
+  // measured: the .f3d import asks for the faces of the same large body
+  // again and again (an extrusion's face lookups on a body of 5 000 faces
+  // measured every face's area dozens of times); null until then.
+  struct FaceMeasure {
+    std::string surface;
+    double area = 0.0;
+  };
+  using FaceMeasures = std::vector<FaceMeasure>;
+  std::shared_ptr<const FaceMeasures> face_measures() const { return m_faceMeasures.get().value_or(nullptr); }
+  void set_face_measures(std::shared_ptr<const FaceMeasures> measures) const {
+    m_faceMeasures.set(std::move(measures));
+  }
+
   // Whether OCCT's checker finds the shape valid, once something asked
   // (transforms check their input once instead of every copy they make).
   std::optional<bool> checked_valid() const { return m_valid.get(); }
@@ -190,6 +204,7 @@ private:
   LazyValue<std::array<double, 5>> m_measured;
   LazyValue<std::array<double, 6>> m_bounds;
   LazyValue<std::shared_ptr<void>> m_boundaryIndex;
+  LazyValue<std::shared_ptr<const FaceMeasures>> m_faceMeasures;
   LazyValue<bool> m_valid;
   // A large shape's faces by each reference that matches one of their
   // names (naming.hpp: the name, or the name before a "#k"), made the

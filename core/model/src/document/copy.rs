@@ -12,7 +12,7 @@ use std::sync::Arc;
 
 use serde_json::Value;
 
-use super::{DocState, ModelError, invalid};
+use super::{ComponentCopy, DocState, ModelError, invalid};
 use crate::appearance::{self, ImageData, Texture};
 use crate::assembly::{Assembly, Occurrence};
 use crate::expr::ParamSpec;
@@ -124,7 +124,7 @@ impl DocState {
             .map(|(into, _)| into)
     }
 
-    /// [`DocState::copy_component`], also returning the copied occurrences
+    /// [`DocState::copy_component`], also returning the copied occurrences and features
     /// (the source's, each with its copy).
     pub(crate) fn copy_component_mapped(
         &mut self,
@@ -133,7 +133,7 @@ impl DocState {
         into: ComponentUid,
         maker: Option<FeatureUid>,
         origin: CopySource<'_>,
-    ) -> Result<(ComponentUid, HashMap<OccurrenceUid, OccurrenceUid>), ModelError> {
+    ) -> Result<(ComponentUid, ComponentCopy), ModelError> {
         let same_document = matches!(origin, CopySource::SameDocument);
         let a = &source.assembly;
         let from =
@@ -200,6 +200,9 @@ impl DocState {
                     .component(*c)
                     .and_then(|d| d.created_by)
                     .and_then(|f| uids.get(&f).copied());
+                // A copy keeps the policy; another design's root gives its
+                // own (mitcad#220).
+                copy.policy = a.policy(*c);
             }
         }
         let mut occurrences: HashMap<OccurrenceUid, OccurrenceUid> = HashMap::new();
@@ -359,7 +362,13 @@ impl DocState {
             })
             .collect();
         self.flat_patterns.extend(flat_patterns);
-        Ok((into, occurrences))
+        Ok((
+            into,
+            ComponentCopy {
+                occurrences,
+                features: uids,
+            },
+        ))
     }
 
     fn copy_appearances(
@@ -750,6 +759,16 @@ impl CopyReferences<'_> {
                     let (link, internal) = self.link(link, component)?;
                     let mapped = if internal { self.body(*body) } else { *body };
                     copy.body_links.insert(mapped, link);
+                }
+            }
+            // A construction plane's faces on other components' bodies
+            // (mitcad#196): as a sweep's.
+            (FeatureDef::ConstructionPlane(copy), FeatureDef::ConstructionPlane(original)) => {
+                copy.links.clear();
+                for (body, link) in &original.links {
+                    let (link, internal) = self.link(link, component)?;
+                    let mapped = if internal { self.body(*body) } else { *body };
+                    copy.links.insert(mapped, link);
                 }
             }
             // A split's tool bodies of other components: as a sweep's.

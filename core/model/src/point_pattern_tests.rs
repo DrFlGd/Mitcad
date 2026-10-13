@@ -352,6 +352,7 @@ fn point_pattern_linked_geometry_cannot_read_an_unavailable_instance() {
         },
     );
     let occurrence = doc.instances()[1].path[0];
+    crate::policy_tests::allow_attachments(&mut doc);
     let added = command(
         &mut doc,
         json!({"cmd":"sketch.create","plane":{"body":body,"face":"F1:top"},

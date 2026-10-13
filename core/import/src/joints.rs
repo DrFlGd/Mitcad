@@ -70,7 +70,7 @@ use serde_json::{Map, Value, json};
 
 use crate::geom::{self, mm, mm3};
 use crate::report::Outcome;
-use crate::{Candidate, Importer, components};
+use crate::{Candidate, Importer, InputProvenance, components};
 
 type Vec3 = [f64; 3];
 
@@ -455,13 +455,51 @@ impl<K: crate::ImportKernel> Importer<'_, K> {
         let levels = f3d["path"]
             .as_array()
             .ok_or_else(|| format!("{label}'s path was not decoded"))?;
-        let mut path = Vec::new();
-        for level in levels {
+        let owner = item.f3d.as_ref().and_then(|f| f.component);
+        let component = f3d["context_component"]
+            .as_u64()
+            .or(owner)
+            .and_then(|c| self.components.of_object(c))
+            .unwrap_or(self.component);
+        let mut path: Vec<OccurrenceUid> = Vec::new();
+        let mut at = component;
+        let mut inside = false;
+        for (k, level) in levels.iter().enumerate() {
             let Some(id) = level.as_u64() else {
-                return Err(format!("{label} is inside a component of another document"));
+                // A level inside a component of another document: an
+                // occurrence of that document, named by a GUID, once the
+                // component is filled from the document (`prefill.rs`).
+                let found = f3d["path_guids"][k]
+                    .as_str()
+                    .filter(|_| inside || self.components.is_filled(at))
+                    .and_then(|g| {
+                        self.report
+                            .components
+                            .occurrence_guids
+                            .get(&g.to_lowercase())
+                    })
+                    .and_then(|list| {
+                        list.iter()
+                            .filter_map(|o| self.doc.assembly().occurrence(*o))
+                            .find(|o| o.parent == at)
+                    });
+                match found {
+                    Some(o) => {
+                        path.push(o.uid);
+                        at = o.component;
+                        inside = true;
+                        continue;
+                    }
+                    None => {
+                        return Err(format!("{label} is inside a component of another document"));
+                    }
+                }
             };
             match self.components.occurrence(id) {
-                Some(o) => path.push(o),
+                Some(o) => {
+                    path.push(o);
+                    at = self.path_end(at, &[o]);
+                }
                 None => {
                     return Err(format!(
                         "{label} (object {id}) is not in the occurrence tree"
@@ -469,12 +507,6 @@ impl<K: crate::ImportKernel> Importer<'_, K> {
                 }
             }
         }
-        let owner = item.f3d.as_ref().and_then(|f| f.component);
-        let component = f3d["context_component"]
-            .as_u64()
-            .or(owner)
-            .and_then(|c| self.components.of_object(c))
-            .unwrap_or(self.component);
         Ok((component, path))
     }
 
@@ -727,15 +759,20 @@ impl<K: crate::ImportKernel> Importer<'_, K> {
         named: Vec<Value>,
         edges_first: bool,
     ) -> SideGeometry {
-        // A component of another document: its origin (its geometry is
-        // not in the file).
-        let inserted = self.components.is_inserted(component);
-        let mut candidates = if inserted {
+        // A component of another document: its origin where it is empty
+        // (its geometry is not in the file); once filled from the
+        // document's file, its faces and edges first.
+        let external = self.components.is_inserted(component);
+        let filled = self.components.is_filled(component);
+        let mut candidates = if external && !filled {
             vec![json!("origin")]
         } else {
             named
         };
         candidates.extend(self.frame_entities(component, target, edges_first));
+        if external && filled {
+            candidates.push(json!("origin"));
+        }
         if crate::tracing() {
             let [o, _, _, z] = parts(target);
             eprintln!(
@@ -754,6 +791,7 @@ impl<K: crate::ImportKernel> Importer<'_, K> {
                 .resolved_frame(component, &g, over.as_ref())
                 .is_some_and(|f| same(&f, target))
             {
+                let inserted = external && (!filled || g == json!("origin"));
                 return SideGeometry {
                     geometry: g,
                     frame_override: over,
@@ -865,6 +903,27 @@ impl<K: crate::ImportKernel> Importer<'_, K> {
         alignment: &Transform,
     ) -> Result<BTreeMap<Motion, f64>, String> {
         let mut first_gap = None;
+        if crate::tracing() {
+            for (label, path) in [("one", a_path), ("two", b_path)] {
+                for o in path {
+                    let a = self.doc.assembly();
+                    eprintln!(
+                        "import: joint side {label}: {} in {:?}: placement {:?}, stored {:?}",
+                        a.occurrence_name(*o),
+                        a.occurrence(*o).map(|x| x.parent),
+                        self.doc.placement(*o).map(|t| (t.translation, t.linear)),
+                        a.occurrence(*o)
+                            .map(|x| (x.transform.translation, x.transform.linear))
+                    );
+                }
+            }
+            eprintln!(
+                "import: joint frames: one {:?} two {:?}; alignment {:?}",
+                (local_a.translation, local_a.linear),
+                (local_b.translation, local_b.linear),
+                (alignment.translation, alignment.linear)
+            );
+        }
         for after in [false, true] {
             let world_a = self.path_world(a_path, index, after).after(local_a);
             let world_b = self.path_world(b_path, index, after).after(local_b);
@@ -1127,7 +1186,17 @@ impl<K: crate::ImportKernel> Importer<'_, K> {
                     }
                     notes.extend(rounded_note.take());
                     let fixed = usize::from(side_a.fixed) + usize::from(side_b.fixed);
-                    let candidate = Candidate::new(def).with_note(notes.join("; "));
+                    // Every input a decoded field: the motion, the sides'
+                    // origins (found, not fixed), the angle, the offsets and
+                    // the flip as they are, the limits kept.
+                    let read = fixed == 0 && exact_offset.is_none() && without_limits.is_none();
+                    let candidate = Candidate::new(def)
+                        .with_note(notes.join("; "))
+                        .with_provenance(if read {
+                            InputProvenance::Read
+                        } else {
+                            InputProvenance::Inferred
+                        });
                     self.accepted(at, index, &[uid], &candidate, None);
                     if fixed > 0 {
                         self.report.items[at].outcome = Outcome::Partial;
@@ -1211,7 +1280,10 @@ impl<K: crate::ImportKernel> Importer<'_, K> {
                         "{name} does not hold where the file places the occurrences ({why}): \
                          kept as an as-built joint"
                     ));
-                    let candidate = Candidate::new(def).with_note(note);
+                    // The joint did not hold: the placements stand in for it.
+                    let candidate = Candidate::new(def)
+                        .with_note(note)
+                        .with_provenance(InputProvenance::Inferred);
                     self.accepted(at, index, &[uid], &candidate, None);
                     self.report.items[at].outcome = Outcome::Partial;
                     self.report.joints.kept_as_built += 1;
@@ -1251,6 +1323,7 @@ impl<K: crate::ImportKernel> Importer<'_, K> {
         };
         let mut notes = Vec::new();
         let mut at_record = true;
+        let mut motion_frame_unread = false;
         if let (Some(ra), Some(rb)) = (recorded(0), recorded(1)) {
             let recorded_relative = rb.after(&inverse(&ra));
             if !same(&recorded_relative, &relative) {
@@ -1292,10 +1365,14 @@ impl<K: crate::ImportKernel> Importer<'_, K> {
                     }
                     if side.fixed {
                         notes.push("its motion frame fixed".to_owned());
+                        motion_frame_unread = true;
                     }
                     def["origin"] = side.origin(path);
                 }
-                None => notes.push("its motion frame not decoded: occurrence two's".to_owned()),
+                None => {
+                    notes.push("its motion frame not decoded: occurrence two's".to_owned());
+                    motion_frame_unread = true;
+                }
             }
             // Mitcad's values are 0 where the occurrences are, the file's at
             // the recorded placement: the limits hold where those agree,
@@ -1362,8 +1439,19 @@ impl<K: crate::ImportKernel> Importer<'_, K> {
         for (def, more) in defs {
             match self.add_unmoved(&def, item.name(), component, index) {
                 Ok(uid) => {
+                    // Read where the file's own placement and motion frame
+                    // stand and the limits (if any) are kept; the placements
+                    // at the item's point or a frame fixed in place are not
+                    // what the item records.
+                    let read = more.is_none() && at_record && !motion_frame_unread;
                     notes.extend(more.map(|m| format!("{m} ({last})")));
-                    let candidate = Candidate::new(def).with_note(notes.join("; "));
+                    let candidate = Candidate::new(def)
+                        .with_note(notes.join("; "))
+                        .with_provenance(if read {
+                            InputProvenance::Read
+                        } else {
+                            InputProvenance::Inferred
+                        });
                     self.accepted(at, index, &[uid], &candidate, None);
                     self.report.joints.as_built += 1;
                     return Ok(());
@@ -1438,7 +1526,15 @@ impl<K: crate::ImportKernel> Importer<'_, K> {
                         last = "its frame is not the file's".to_owned();
                         continue;
                     }
-                    let candidate = Candidate::new(def).with_note(note.unwrap_or_default());
+                    // The first definition: the file's geometry, angle,
+                    // offset and flip; the frame fixed in place is another.
+                    let candidate = Candidate::new(def)
+                        .with_note(note.unwrap_or_default())
+                        .with_provenance(if note.is_none() {
+                            InputProvenance::Read
+                        } else {
+                            InputProvenance::Inferred
+                        });
                     self.accepted(at, index, &[uid], &candidate, None);
                     if note.is_some() {
                         self.report.items[at].outcome = Outcome::Partial;
@@ -1502,7 +1598,10 @@ impl<K: crate::ImportKernel> Importer<'_, K> {
         } else {
             format!("left out: {}", counted(&left_out))
         };
-        let candidate = Candidate::new(json!({"type": "capture_position"})).with_note(note);
+        // The positions are the file's own: its captured matrices, else the
+        // occurrences' placements it stores (both decoded).
+        let mut candidate = Candidate::new(json!({"type": "capture_position"})).with_note(note);
+        candidate.input_provenance = InputProvenance::Read;
         self.accepted(at, index, &uids, &candidate, None);
         if !left_out.is_empty() {
             self.report.items[at].outcome = Outcome::Partial;
@@ -1586,6 +1685,15 @@ impl<K: crate::ImportKernel> Importer<'_, K> {
             json!({"type": "as_built_joint", "kind": "rigid"})
         } else {
             if tops.len() < 2 {
+                // Members all inside one occurrence move with it: nothing
+                // to join (its own rigid group does not move them apart).
+                if tops.len() == 1 && (below > 0 || inserted > 0) {
+                    return Err(
+                        "no geometry: all its members are inside one occurrence, which \
+                                moves them together"
+                            .to_owned(),
+                    );
+                }
                 return Err(format!(
                     "it joins {} occurrence{} of its component",
                     tops.len(),
@@ -1600,7 +1708,10 @@ impl<K: crate::ImportKernel> Importer<'_, K> {
         if uids.is_empty() {
             return Err("it joins no occurrence of its component".to_owned());
         }
-        let candidate = Candidate::new(def).with_note(notes.join("; "));
+        // The members and the placements are the file's.
+        let candidate = Candidate::new(def)
+            .with_note(notes.join("; "))
+            .with_provenance(InputProvenance::Read);
         self.accepted(at, index, &uids, &candidate, None);
         self.report.joints.rigid_groups += 1;
         Ok(())

@@ -6,10 +6,10 @@
 use std::collections::HashSet;
 use std::sync::OnceLock;
 
-use crate::equations::{CurvTerm, EqKind, P, Rad, SplineEq, TParam};
+use crate::equations::{CurvTerm, EqKind, Interval, P, Rad, SplineEq, TParam};
 use crate::sparse::{GramPlan, Rows};
 use crate::system::{ConstraintRec, EntityData, System};
-use crate::types::{Constraint, EntityId, SplineEnd};
+use crate::types::{Anchor, Constraint, EntityId, SpacingMode, SplineEnd};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Owner {
@@ -214,6 +214,30 @@ impl Ctx<'_> {
 
     fn centre(&self, e: usize) -> usize {
         self.ent(e).centre().expect("validated as round")
+    }
+
+    /// An equal spacing's anchor: its two points (a point twice).
+    fn anchor(&self, v: &mut Vars, a: Anchor) -> [P; 2] {
+        match a {
+            Anchor::Point(p) => {
+                let q = self.p(v, p.index());
+                [q, q]
+            }
+            Anchor::Mid(p, q) => [self.p(v, p.index()), self.p(v, q.index())],
+        }
+    }
+
+    /// How an equal spacing measures its intervals.
+    fn interval(&self, v: &mut Vars, mode: SpacingMode) -> Interval {
+        match mode {
+            SpacingMode::Horizontal => Interval::Axis(0),
+            SpacingMode::Vertical => Interval::Axis(1),
+            SpacingMode::Along(e) => {
+                let (p1, p2) = self.line(e.index());
+                Interval::Along(self.p(v, p1), self.p(v, p2))
+            }
+            SpacingMode::PointToPoint => Interval::Distance,
+        }
     }
 }
 
@@ -1129,6 +1153,26 @@ fn constraint_equations(
                 b: Rad::Param(v.v(s2)),
             });
         }
+        EqualSpacing { ref anchors, mode } => {
+            // Each interval equal to the next: n - 2 equations.
+            for w in anchors.windows(3) {
+                let (a0, a1, a2) = (w[0], w[1], w[2]);
+                b.push(z, |v, x| EqKind::EqualSpacing {
+                    a: x.anchor(v, a0),
+                    b: x.anchor(v, a1),
+                    c: x.anchor(v, a2),
+                    how: x.interval(v, mode),
+                });
+            }
+        }
+        Spacing {
+            a: a0, b: a1, mode, ..
+        } => b.push(dim, |v, x| EqKind::Spacing {
+            a: x.anchor(v, a0),
+            b: x.anchor(v, a1),
+            how: x.interval(v, mode),
+            side: rec.side,
+        }),
     }
 }
 

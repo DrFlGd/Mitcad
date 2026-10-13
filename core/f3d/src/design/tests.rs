@@ -588,6 +588,31 @@ fn parameters_of_class_version_8() {
     assert!(dec.parameters[1].is_user());
 }
 
+/// A class-version-9 parameter (writer 2705) has one more `u32 0` in front of
+/// the `u32 6` of the version 8 layout.
+#[test]
+fn parameters_of_class_version_9() {
+    let mut d = Doc::default();
+    d.class(ROOT, "", 0);
+    d.class(PARAMETER, ROOT, 9);
+    d.class(PARAMETER_LIST, ROOT, 4);
+    d.class(PARAMETER_HOLDER, ROOT, 0);
+    d.obj(30, PARAMETER_HOLDER, vec![0, 0]);
+    d.obj(32, PARAMETER_LIST, vec![0, 0]);
+    let mut p = parameter_v8(1, Some(30), "5 mm", "Radius", "", "mm", "d1", 0.5);
+    // After the two root bytes and the byte before the `u32 6`.
+    p.splice(3..3, [0, 0, 0, 0]);
+    d.obj(40, PARAMETER, p);
+    let dec = decode::decode(&d.segment());
+    assert_eq!(dec.parameter_failures, 0);
+    assert_eq!(dec.parameters.len(), 1);
+    let q = &dec.parameters[0];
+    assert_eq!(
+        (q.number, q.expression.as_str(), q.name.as_str(), q.value),
+        (1, "5 mm", "d1", 0.5)
+    );
+}
+
 /// A text parameter keeps a default expression with a unit (`1 mm`) in the
 /// string after its role: it is no comment, and the parameter has no number.
 #[test]
@@ -4287,4 +4312,180 @@ fn occurrence_of_a_component_of_another_document() {
     );
     assert_eq!(super::build::urn_version("urn:x?version=12"), Some(12));
     assert_eq!(super::build::urn_version("urn:x"), None);
+}
+
+/// An input slot's role key carries the placement of the occurrence the
+/// entity it holds is in (mitcad#196): 16 doubles, a row-major 4 x 4
+/// transform in cm.
+#[test]
+fn a_slot_carries_the_placement_of_its_entitys_occurrence() {
+    const SLOT_KEY: &str = "2DF7DA30-A4E4-4260-AFD1-D9C7154CB44B";
+    let mut d = sample();
+    for (g, v) in [(BODY_INPUT, 1), (BODY_REF, 1), (SLOT_KEY, 1)] {
+        d.class(g, ROOT, v);
+    }
+    // The entity's reference, and a slot holding it with its key.
+    d.obj(511, BODY_REF, vec![0, 0]);
+    d.obj(
+        510,
+        BODY_INPUT,
+        cat(&[
+            &[0, 0],
+            &u32b(1),
+            &r(511),
+            &[0; 6],
+            &r(541),
+            &u32b(0),
+            &u32b(17),
+            &[0; 4],
+        ]),
+    );
+    let matrix = [
+        0.0, 1.0, 0.0, -1.5, //
+        0.0, 0.0, -1.0, 0.25, //
+        -1.0, 0.0, 0.0, 101.5, //
+        0.0, 0.0, 0.0, 1.0,
+    ];
+    d.obj(
+        541,
+        SLOT_KEY,
+        cat(&[&[0, 0], &[0], &f64s(&matrix), &[1, 0]]),
+    );
+    // A slot whose key is no placement (not a rotation) gives nothing.
+    d.obj(521, BODY_REF, vec![0, 0]);
+    d.obj(
+        520,
+        BODY_INPUT,
+        cat(&[
+            &[0, 0],
+            &u32b(1),
+            &r(521),
+            &[0; 6],
+            &r(542),
+            &u32b(0),
+            &u32b(17),
+            &[0; 4],
+        ]),
+    );
+    d.obj(
+        542,
+        SLOT_KEY,
+        cat(&[&[0, 0], &[0], &f64s(&[2.0; 16]), &[1, 0]]),
+    );
+    let (mb, b) = d.streams();
+    let seg = Segment::parse(&mb, b).unwrap();
+    let contexts = decode::slot_contexts(&seg);
+    let found = contexts.get(&511).expect("the entity's placement");
+    assert_eq!(found[0], [0.0, 1.0, 0.0, -1.5]);
+    assert_eq!(found[2], [-1.0, 0.0, 0.0, 101.5]);
+    assert_eq!(found[3], [0.0, 0.0, 0.0, 1.0]);
+    assert!(!contexts.contains_key(&521));
+}
+
+/// Occurrence light bulbs: one [`HIDDEN_OCCURRENCE`] object per hidden
+/// occurrence path, its last reference list the path from the root down;
+/// one whose path list is empty hides the one occurrence it refers to (a
+/// top-level occurrence of another document's component); one whose path
+/// goes on inside another document hides nothing here. Occurrences without
+/// one keep their light bulbs unknown.
+#[test]
+fn hidden_occurrences_turn_their_light_bulbs_off() {
+    let key = 0x0102_0304_0506_0708;
+    let ext = |d: &mut Doc, id: u64, guid: &str| {
+        d.obj(
+            id,
+            OCCURRENCE,
+            cat(&[
+                &[0, 0],
+                &context_ref(0x7777, key, COMPONENT),
+                &[1],
+                &u32b(0),
+                &s16(guid),
+                &r(84),
+            ]),
+        );
+    };
+    let make = |hidden: &[Vec<u8>]| {
+        let mut d = sample();
+        d.class(HIDDEN_OCCURRENCE, ROOT, 1);
+        ext(&mut d, 83, "124bea26-b9ef-4785-962e-5f51a19652ce");
+        ext(&mut d, 85, "d3c5a1a0-0a57-4e0f-9a37-5f0e3c2d9b11");
+        d.obj(
+            84,
+            OCCURRENCE_CONTAINER,
+            cat(&[&[0, 0], &r(83), &r(85), &r(2)]),
+        );
+        d.externals.push(super::writer::WriterExternal {
+            key,
+            guids: [
+                "7A3F46D6-B137-489D-84BA-42A1B0ED13DF".into(),
+                "f7d6678d-a812-4537-98bd-7db7eea2ea52".into(),
+            ],
+            urn: "urn:test:fs.file:vf.part?version=3".into(),
+            document_guid: "6bb3e201-b763-4428-a07d-12d3975a4494".into(),
+        });
+        for (i, data) in hidden.iter().enumerate() {
+            d.obj(100 + i as u64, HIDDEN_OCCURRENCE, data.clone());
+        }
+        let (m, b) = d.streams();
+        let v = serde_json::to_value(Design::parse(&m, b).unwrap().dump("x", "Design1")).unwrap();
+        let bulbs: Vec<(u64, Value)> = v["occurrences"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|o| {
+                (
+                    o["_f3d"]["object_id"].as_u64().unwrap(),
+                    o.get("isLightBulbOn").cloned().unwrap_or(Value::Null),
+                )
+            })
+            .collect();
+        bulbs
+    };
+    // The path list after the slots: `u32 n | n × ref` (here [80]).
+    let path_of_80 = cat(&[
+        &[0, 0],
+        &u32b(2),
+        &r(5),
+        &u32b(20),
+        &r(80),
+        &[1, 0, 0, 0, 0, 0],
+        &u32b(1),
+        &r(80),
+        &[2],
+        &u32b(1),
+    ]);
+    // No path list, one occurrence of this file: that one (83).
+    let only_83 = cat(&[
+        &[0, 0],
+        &u32b(2),
+        &context_ref(0x7777, key, COMPONENT),
+        &u32b(5),
+        &r(83),
+        &[4, 0, 0, 0, 0, 0],
+        &u32b(0),
+    ]);
+    // A path inside the other document (85, then an occurrence there).
+    let inside_85 = cat(&[
+        &[0, 0],
+        &u32b(3),
+        &r(85),
+        &[0, 0, 0, 0],
+        &u32b(2),
+        &r(85),
+        &context_ref(0x5555, key, OCCURRENCE),
+    ]);
+    let bulbs = make(&[path_of_80, only_83, inside_85]);
+    let bulb = |id: u64| {
+        bulbs
+            .iter()
+            .find(|(o, _)| *o == id)
+            .map(|(_, b)| b.clone())
+            .unwrap()
+    };
+    assert_eq!(bulb(80), json!(false), "{bulbs:?}");
+    assert_eq!(bulb(83), json!(false), "{bulbs:?}");
+    assert_eq!(bulb(85), Value::Null, "{bulbs:?}");
+    // Without the objects every light bulb stays unknown.
+    assert!(make(&[]).iter().all(|(_, b)| b.is_null()));
 }

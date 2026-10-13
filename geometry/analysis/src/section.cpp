@@ -2,6 +2,7 @@
 #include "mitcad/analysis/section.hpp"
 
 #include <cmath>
+#include <utility>
 
 #include <BRepAlgoAPI_Common.hxx>
 #include <BRepAlgoAPI_Cut.hxx>
@@ -10,8 +11,11 @@
 #include <BRepGProp.hxx>
 #include <BRepPrimAPI_MakePrism.hxx>
 #include <GProp_GProps.hxx>
+#include <NCollection_IndexedMap.hxx>
 #include <NCollection_List.hxx>
+#include <TopExp.hxx>
 #include <TopExp_Explorer.hxx>
+#include <TopTools_ShapeMapHasher.hxx>
 #include <TopoDS_Face.hxx>
 #include <gp_Pln.hxx>
 
@@ -106,7 +110,7 @@ Section section(const TopoDS_Shape& shape, const Plane& plane) {
   return result;
 }
 
-TopoDS_Shape clip(const TopoDS_Shape& shape, const Plane& plane) {
+TopoDS_Shape clip(const TopoDS_Shape& shape, const Plane& plane, std::vector<ClippedFace>* faces) {
   if (shape.IsNull()) {
     throw Error("cannot clip a null shape");
   }
@@ -122,7 +126,30 @@ TopoDS_Shape clip(const TopoDS_Shape& shape, const Plane& plane) {
   if (!cut.IsDone() || cut.HasErrors()) {
     throw Error("the shape could not be clipped");
   }
-  return cut.Shape();
+  const TopoDS_Shape& result = cut.Shape();
+  if (faces) {
+    // Each face's images; a face the cut leaves as it is is its own.
+    NCollection_IndexedMap<TopoDS_Shape, TopTools_ShapeMapHasher> kept;
+    TopExp::MapShapes(result, TopAbs_FACE, kept);
+    NCollection_IndexedMap<TopoDS_Shape, TopTools_ShapeMapHasher> own;
+    TopExp::MapShapes(shape, TopAbs_FACE, own);
+    faces->clear();
+    for (int i = 1; i <= own.Extent(); ++i) {
+      ClippedFace face{own(i), {}};
+      if (!cut.IsDeleted(face.face)) {
+        for (const TopoDS_Shape& image : cut.Modified(face.face)) {
+          if (image.ShapeType() == TopAbs_FACE && kept.Contains(image)) {
+            face.pieces.push_back(image);
+          }
+        }
+        if (face.pieces.empty() && kept.Contains(face.face)) {
+          face.pieces.push_back(face.face);
+        }
+      }
+      faces->push_back(std::move(face));
+    }
+  }
+  return result;
 }
 
 } // namespace mitcad::analysis

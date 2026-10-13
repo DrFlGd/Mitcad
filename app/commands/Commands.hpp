@@ -55,4 +55,11 @@ QStringList sketchConstraintCommands();
 // window adds Edit Sheet Rules, Show Flat Pattern and Export Flat Pattern.
 void registerSheetMetalCommands(CommandRegistry& registry, const CommandContext& context);
 
+// Equal spacing in sketches (mitcad#221, EqualSpacingCommands.cpp): Equal
+// Spacing, Equal Spacing Dimension and Edit Equal Spacing. Sketch Dimension
+// with three or more points, circles, arcs or lines selected opens Equal
+// Spacing Dimension instead of its tool (true then).
+void registerEqualSpacingCommands(CommandRegistry& registry, sketch::SketchController& controller);
+bool dimensionEqualSpacing(sketch::SketchController& controller);
+
 } // namespace mitcad

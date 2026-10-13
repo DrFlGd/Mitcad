@@ -39,6 +39,31 @@ constexpr int kMacIconSize = 26;
 constexpr int kMacButtonSize = kMacIconSize + 10;
 constexpr int kMacCaptionHeight = 20;
 constexpr int kHeight = 30;
+// The arrow part of a split button (mitcad#222) in the Mac presentation; the
+// logged arrow position of the classic one is as far in from its right edge.
+constexpr int kSplitArrowWidth = 14;
+
+// A menu's entries for the UI tests' log: "-" a separator, a submenu as
+// "Name > [its entries]".
+QString menuEntries(const QMenu* menu) {
+  QStringList entries;
+  for (const QAction* action : menu->actions()) {
+    if (action->isSeparator()) {
+      entries << QStringLiteral("-");
+      continue;
+    }
+    if (!action->isVisible()) {
+      continue;
+    }
+    QString name = action->text();
+    name.remove(QLatin1Char('&'));
+    if (const QMenu* submenu = action->menu()) {
+      name += QStringLiteral(" > [%1]").arg(menuEntries(submenu));
+    }
+    entries << name;
+  }
+  return entries.join(QStringLiteral(" | "));
+}
 
 // The palette's text colour at a fraction of full opacity: the hover and pressed
 // highlights and the quiet fills, which are right on a light and a dark palette.
@@ -215,7 +240,21 @@ RibbonButton::RibbonButton(QAction* action, int iconSize, QWidget* parent)
   }
 }
 
-QSize RibbonButton::sizeHint() const { return QSize(m_iconSize + 10, m_iconSize + 10); }
+QSize RibbonButton::sizeHint() const {
+  const int arrow = popupMode() == QToolButton::MenuButtonPopup ? kSplitArrowWidth : 0;
+  return QSize(m_iconSize + 10 + arrow, m_iconSize + 10);
+}
+
+void RibbonButton::mousePressEvent(QMouseEvent* event) {
+  // A split button's arrow part opens its menu; the rest runs the action.
+  if (popupMode() == QToolButton::MenuButtonPopup && event->button() == Qt::LeftButton &&
+      event->position().x() >= width() - kSplitArrowWidth) {
+    event->accept();
+    showMenu();
+    return;
+  }
+  QToolButton::mousePressEvent(event);
+}
 
 void RibbonButton::changeEvent(QEvent* event) {
   QToolButton::changeEvent(event);
@@ -248,11 +287,22 @@ void RibbonButton::paintEvent(QPaintEvent*) {
     painter.setBrush(Qt::NoBrush);
     painter.drawRoundedRect(box.adjusted(0.5, 0.5, -0.5, -0.5), 7.5, 7.5);
   }
+  // A split button (mitcad#222): the icon left of the arrow part, a chevron
+  // in it, divided from the icon while hovered.
+  const int arrow = popupMode() == QToolButton::MenuButtonPopup ? kSplitArrowWidth : 0;
+  if (arrow > 0) {
+    const QColor color = textTint(pal, active ? 190 : 80);
+    drawChevron(painter, QPointF(width() - arrow / 2.0, height() / 2.0 + 0.5), color);
+    if (underMouse() && active) {
+      painter.setPen(QPen(textTint(pal, 40), 1));
+      painter.drawLine(QPointF(width() - arrow + 0.5, 8), QPointF(width() - arrow + 0.5, height() - 8));
+    }
+  }
   const QIcon::Mode mode = active ? QIcon::Normal : QIcon::Disabled;
   const QPixmap pixmap = icon().pixmap(QSize(m_iconSize, m_iconSize), devicePixelRatioF(), mode,
                                        isChecked() ? QIcon::On : QIcon::Off);
   const QSizeF size = pixmap.deviceIndependentSize();
-  painter.drawPixmap(QPointF((width() - size.width()) / 2, (height() - size.height()) / 2), pixmap);
+  painter.drawPixmap(QPointF((width() - arrow - size.width()) / 2, (height() - size.height()) / 2), pixmap);
 }
 
 CapsuleFrame::CapsuleFrame(int radius, QWidget* parent) : QWidget(parent), m_radius(radius) {}
@@ -379,23 +429,76 @@ QWidget* Ribbon::createGroup(const QString& tab, const QString& group, GroupInfo
   buttons->setSpacing(0);
   QToolButton* menuButton = mac ? new GroupCaption(displayName(group)) : new QToolButton;
   auto* menu = new QMenu(menuButton);
-  int pinnedCount = 0;
+  // The group's commands in registration order; a subgroup's together,
+  // where its first command is (CommandDef::subgroup, mitcad#222).
+  struct Entry {
+    QString subgroup; // empty: a command of its own
+    QList<const CommandDef*> defs;
+  };
+  QList<Entry> entries;
   for (const auto& def : m_registry.commands()) {
-    if (def->tab != tab || def->group != group) {
+    if (def->tab != tab || def->group != group || m_registry.action(def->id) == nullptr) {
       continue;
     }
-    QAction* action = m_registry.action(def->id);
-    if (action == nullptr) {
+    const auto same = std::find_if(entries.begin(), entries.end(), [&def](const Entry& entry) {
+      return !def->subgroup.isEmpty() && entry.subgroup == def->subgroup;
+    });
+    if (same != entries.end()) {
+      same->defs.append(def.get());
+    } else {
+      entries.append(Entry{def->subgroup, {def.get()}});
+    }
+  }
+  int pinnedCount = 0;
+  for (const Entry& entry : entries) {
+    if (entry.defs.size() == 1) {
+      // A command of its own, also a subgroup of one (Line, Text, Project).
+      const CommandDef* def = entry.defs.first();
+      QAction* action = m_registry.action(def->id);
+      menu->addAction(action);
+      if (def->pinned) {
+        QToolButton* button = commandButton(action, mac);
+        button->setObjectName(QStringLiteral("ribbon_") + def->id);
+        buttons->addWidget(button);
+        ++pinnedCount;
+      }
       continue;
     }
-    menu->addAction(action);
-    if (def->pinned) {
+    // A submenu; its pinned command is the default of a split button whose
+    // arrow opens the submenu. Without one (Other Geometry, Patterns) it is
+    // in the group's menu only.
+    const QString path = key(tab, group) + QLatin1Char('/') + entry.subgroup;
+    QMenu* submenu = menu->addMenu(entry.subgroup);
+    submenu->setObjectName(QStringLiteral("ribbonSubmenu_") + path);
+    const CommandDef* primary = nullptr;
+    for (const CommandDef* def : entry.defs) {
+      submenu->addAction(m_registry.action(def->id));
+      if (def->pinned && primary == nullptr) {
+        primary = def;
+      }
+    }
+    submenu->setIcon(m_registry.action((primary != nullptr ? primary : entry.defs.first())->id)->icon());
+    connect(submenu, &QMenu::aboutToShow, submenu, [submenu, path] {
+      qDebug().noquote() << QStringLiteral("Ribbon menu %1: %2").arg(path, menuEntries(submenu));
+    });
+    if (mac) {
+      mac::showMenuImages(submenu); // also when the split button's arrow opens it alone
+    }
+    if (primary != nullptr) {
+      QAction* action = m_registry.action(primary->id);
       QToolButton* button = commandButton(action, mac);
-      button->setObjectName(QStringLiteral("ribbon_") + def->id);
+      button->setObjectName(QStringLiteral("ribbon_") + primary->id);
+      button->setMenu(submenu);
+      button->setPopupMode(QToolButton::MenuButtonPopup);
+      button->setAccessibleDescription(tr("%1; its arrow opens %2").arg(action->text(), entry.subgroup));
       buttons->addWidget(button);
+      m_splitButtons.insert(path, button);
       ++pinnedCount;
     }
   }
+  connect(menu, &QMenu::aboutToShow, menu, [menu, name = key(tab, group)] {
+    qDebug().noquote() << QStringLiteral("Ribbon menu %1: %2").arg(name, menuEntries(menu));
+  });
   const Extras extras = m_extras.value(key(tab, group));
   if (!extras.menu.isEmpty()) {
     if (!menu->isEmpty()) {
@@ -534,6 +637,22 @@ void Ribbon::logLayout() const {
     const QPoint center = button->mapTo(window(), button->rect().center());
     qDebug().noquote()
         << QStringLiteral("Ribbon %1 at %2,%3").arg(it.key()).arg(center.x()).arg(center.y());
+  }
+  // The split buttons' two parts (mitcad#222): "Ribbon split
+  // SKETCH/CREATE/Circles at x,y" runs the default, "... arrow at x,y"
+  // opens the submenu.
+  for (auto it = m_splitButtons.cbegin(); it != m_splitButtons.cend(); ++it) {
+    const QToolButton* button = it.value();
+    if (!button->isVisible()) {
+      continue;
+    }
+    const int y = button->height() / 2;
+    const QPoint direct = button->mapTo(window(), QPoint((button->width() - kSplitArrowWidth) / 2, y));
+    const QPoint arrow = button->mapTo(window(), QPoint(button->width() - kSplitArrowWidth / 2 - 1, y));
+    qDebug().noquote()
+        << QStringLiteral("Ribbon split %1 at %2,%3").arg(it.key()).arg(direct.x()).arg(direct.y());
+    qDebug().noquote()
+        << QStringLiteral("Ribbon split %1 arrow at %2,%3").arg(it.key()).arg(arrow.x()).arg(arrow.y());
   }
 }
 

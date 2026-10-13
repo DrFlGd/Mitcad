@@ -87,6 +87,12 @@ pub struct ItemReport {
     /// (`crate::geometric`, mitcad#138); None when they were not asked.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub geometric_check: Option<String>,
+    /// The largest distance (mm) beyond the exact tolerance at which a
+    /// lookup of its decoded inputs took the replay's geometry for the
+    /// file's (within `geometric_tolerance`, mitcad#224); None when every
+    /// lookup was exact.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub geometric_deviation: Option<f64>,
     /// Why it is not parametric, or what was simplified or guessed.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub note: Option<String>,
@@ -154,6 +160,9 @@ pub struct DesignReport {
     pub label: String,
     /// `f3d_stream` (the file's design streams) or an external dump's mode.
     pub source: String,
+    /// The geometric tolerance the import used (mm,
+    /// `Options::geometric_tolerance`, mitcad#224).
+    pub geometric_tolerance: f64,
     pub parameters: ParameterReport,
     pub items: Vec<ItemReport>,
     pub history: HistoryReport,
@@ -470,6 +479,20 @@ impl DesignReport {
                 n(InputProvenance::Read),
                 n(InputProvenance::Inferred),
                 n(InputProvenance::Unknown)
+            );
+        }
+        let deviations: Vec<f64> = self
+            .items
+            .iter()
+            .filter_map(|i| i.geometric_deviation)
+            .collect();
+        if !deviations.is_empty() {
+            let _ = writeln!(
+                out,
+                "  geometric tolerance {} mm: {} items took inputs beyond 0.001 mm (up to {:.4} mm)",
+                self.geometric_tolerance,
+                deviations.len(),
+                deviations.iter().copied().fold(0.0, f64::max)
             );
         }
         let _ = writeln!(

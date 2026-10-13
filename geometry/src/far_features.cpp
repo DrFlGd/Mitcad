@@ -257,11 +257,11 @@ std::optional<FarFeatures> FarFeatures::split(const TopoDS_Shape& body, const Bn
       usable[b] = usable[b] && !far[b];
     }
   }
+  Ancestors vertex_edges;
+  TopExp::MapShapesAndUniqueAncestors(solid, TopAbs_VERTEX, TopAbs_EDGE, vertex_edges);
   // A vertex between only two edges that run along the same faces: the
   // merge could join the edges.
   if (!unified) {
-    Ancestors vertex_edges;
-    TopExp::MapShapesAndUniqueAncestors(solid, TopAbs_VERTEX, TopAbs_EDGE, vertex_edges);
     for (int k = 1; k <= vertex_edges.Extent(); ++k) {
       std::vector<TopoDS_Shape> edges;
       for (const TopoDS_Shape& edge : vertex_edges(k)) {
@@ -311,6 +311,41 @@ std::optional<FarFeatures> FarFeatures::split(const TopoDS_Shape& body, const Bn
     if (far[i]) {
       const std::size_t f = feature(i);
       feature_ok[f] = feature_ok[f] && usable[i];
+    }
+  }
+  // A feature with a vertex on an edge outside it stays (a hole whose
+  // circle touches its face's outer edge, which that vertex splits): left
+  // out, the vertex would hold only the outer edge's two halves, which the
+  // merge after the operation could join, and the hole put back would then
+  // touch the joined edge with no vertex between them (wires of a face that
+  // intersect, also for a merged body).
+  for (int k = 1; k <= vertex_edges.Extent(); ++k) {
+    std::vector<std::size_t> touching;
+    bool outside = false;
+    for (const TopoDS_Shape& edge : vertex_edges(k)) {
+      const NCollection_List<TopoDS_Shape>* around = edge_faces.Seek(edge);
+      if (around == nullptr) {
+        continue;
+      }
+      std::optional<std::size_t> owner;
+      for (const TopoDS_Shape& face : *around) {
+        const std::size_t i = index_of(face);
+        if (far[i]) {
+          owner = feature(i);
+        }
+      }
+      if (owner) {
+        touching.push_back(*owner);
+      } else {
+        outside = true;
+      }
+    }
+    const bool shared =
+        std::any_of(touching.begin(), touching.end(), [&](std::size_t f) { return f != touching.front(); });
+    if (outside || shared) {
+      for (const std::size_t f : touching) {
+        feature_ok[f] = false;
+      }
     }
   }
   for (int k = 1; k <= edge_faces.Extent(); ++k) {

@@ -62,7 +62,7 @@ use crate::joints::{
     ANGULAR, FrameEntity, LINEAR, detail, frame, parts, path_text, same_sides, vec3,
 };
 use crate::report::Outcome;
-use crate::{Candidate, Importer};
+use crate::{Candidate, Importer, InputProvenance};
 
 type Vec3 = [f64; 3];
 
@@ -244,7 +244,12 @@ impl<K: crate::ImportKernel> Importer<'_, K> {
         }
         notes.extend(reasons.iter().cloned());
         let def = set(&kept);
-        let candidate = Candidate::new(def).with_note(notes.join("; "));
+        // The rows' kinds, sides and values are the file's; the flip of a
+        // row and the sign of an offset are chosen by where the file places
+        // the occurrences, and each side's geometry is found by its frame.
+        let candidate = Candidate::new(def)
+            .with_note(notes.join("; "))
+            .with_provenance(InputProvenance::Inferred);
         self.accepted(at, index, &[uid], &candidate, None);
         if fixed > 0 || kept.len() < rows.len() {
             self.report.items[at].outcome = Outcome::Partial;
@@ -516,7 +521,7 @@ impl<K: crate::ImportKernel> Importer<'_, K> {
             }
             v
         };
-        if self.components.is_inserted(side.end) {
+        if self.components.is_inserted(side.end) && !self.components.is_filled(side.end) {
             let g = fixed(kind, frame)
                 .ok_or("a circle on a component of another document (no edge of it here)")?;
             return Ok(Reference {
@@ -538,10 +543,16 @@ impl<K: crate::ImportKernel> Importer<'_, K> {
             None => {
                 let g = fixed(kind, frame)
                     .ok_or("no circular edge of the component is where the file's circle is")?;
+                // Nothing of a component filled from another document is
+                // where the file's frame is (an origin plane of that
+                // document, say): fixed geometry of that component, as of
+                // an empty one.
+                let inserted =
+                    self.components.is_inserted(side.end) || self.doc.in_import_scope(side.end);
                 Ok(Reference {
                     origin: with_path(g),
-                    fixed: true,
-                    inserted: false,
+                    fixed: !inserted,
+                    inserted,
                 })
             }
         }
@@ -669,7 +680,7 @@ impl<K: crate::ImportKernel> Importer<'_, K> {
                 .map(mm3)
                 .ok_or("its points were not decoded")?;
             let end = self.path_end(component, path);
-            if self.components.is_inserted(end) {
+            if self.components.is_inserted(end) && !self.components.is_filled(end) {
                 return Err(format!(
                     "side {label} is on a component of another document (no face of it here)"
                 ));
@@ -696,8 +707,12 @@ impl<K: crate::ImportKernel> Importer<'_, K> {
             let def = json!({"type": "constraint_set", "rows": [row]});
             match self.add_held(&def, item.name(), component, index) {
                 Ok(uid) => {
+                    // The faces are found at the file's points and the flip
+                    // is the one that holds where the file places the
+                    // occurrences.
                     let candidate = Candidate::new(def)
-                        .with_note(format!("a {} touching a {}", refs[1].1, refs[0].1));
+                        .with_note(format!("a {} touching a {}", refs[1].1, refs[0].1))
+                        .with_provenance(InputProvenance::Inferred);
                     self.accepted(at, index, &[uid], &candidate, None);
                     let r = &mut self.report.relationships;
                     r.sets += 1;

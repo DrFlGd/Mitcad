@@ -35,6 +35,7 @@ use serde_json::{Value, json};
 
 use crate::Document;
 use crate::brep_import::{Source, to_ffi};
+use crate::f3d_references::References;
 use crate::kernel::exchange::ffi::{
     F3dBuilt, brep_data, f3d_bases, f3d_bases_add, f3d_build_body, f3d_build_body_from,
     f3d_built_kept, f3d_built_note, f3d_built_reused, f3d_built_shape, f3d_read_body,
@@ -1352,7 +1353,8 @@ impl StoredGeometry<SharedPtr<Shape>> for F3dGeometry {
 #[serde(deny_unknown_fields)]
 pub struct TimelineOptions {
     /// The document of an .f3z package to import (its label or a prefix of
-    /// it); the one with the longest timeline when left out.
+    /// it); when left out, the root design its `Manifest.json` names, else
+    /// the one with the longest timeline.
     #[serde(default)]
     pub design: Option<String>,
     /// A dump (JSON, SCHEMA.md) to replay instead of the file's own streams;
@@ -1372,6 +1374,11 @@ pub struct TimelineOptions {
     /// trying definitions.
     #[serde(default)]
     pub time_limit: Option<f64>,
+    /// How far (mm) the replay's geometry may be from the file's where no
+    /// exact result is (`mitcad_import::Options::geometric_tolerance`,
+    /// mitcad#224); 0.01 mm when left out.
+    #[serde(default)]
+    pub geometric_tolerance: Option<f64>,
     /// A readable report instead of JSON.
     #[serde(default)]
     pub text: bool,
@@ -1426,6 +1433,11 @@ pub struct TimelineOptions {
     /// to one of them is not imported again (a cycle).
     #[serde(skip)]
     pub(crate) stack: Vec<String>,
+    /// The documents the import has imported for references so far, shared
+    /// by the imports of the documents it refers to (mitcad#229): each is
+    /// imported once and reused for every occurrence and level.
+    #[serde(skip)]
+    pub(crate) reference_cache: Option<crate::f3d_references::ReferenceCache>,
 }
 
 /// What a try of the import is told by the watchdog.
@@ -1715,7 +1727,8 @@ struct Prepared {
 fn prepare(path: &str, options: &TimelineOptions) -> Result<Prepared, ApiError> {
     let fail = |e: String| ApiError(e);
     let clock = Instant::now();
-    let documents = mitcad_f3d::design::documents(std::path::Path::new(path)).map_err(fail)?;
+    let package = mitcad_f3d::design::package(std::path::Path::new(path)).map_err(fail)?;
+    let (documents, root) = (package.documents, package.root);
     if documents.is_empty() {
         return Err(ApiError(format!("{path} holds no design")));
     }
@@ -1737,15 +1750,22 @@ fn prepare(path: &str, options: &TimelineOptions) -> Result<Prepared, ApiError> 
                     labels.join(", ")
                 ))
             })?,
-        None => (0..designs.len())
-            .max_by_key(|&i| {
-                designs[i]
-                    .2
-                    .dump
-                    .as_ref()
-                    .map_or(0, |d| d.timeline_items().len())
-            })
-            .unwrap_or(0),
+        // A package's root design where its manifest names it (mitcad#229).
+        None => match designs
+            .iter()
+            .position(|(label, _, _)| Some(label) == root.as_ref())
+        {
+            Some(i) => i,
+            None => (0..designs.len())
+                .max_by_key(|&i| {
+                    designs[i]
+                        .2
+                        .dump
+                        .as_ref()
+                        .map_or(0, |d| d.timeline_items().len())
+                })
+                .unwrap_or(0),
+        },
     };
     let others: Vec<String> = designs
         .iter()
@@ -1815,6 +1835,29 @@ fn prepare(path: &str, options: &TimelineOptions) -> Result<Prepared, ApiError> 
         file
     }
     .map_err(fail)?;
+    // The entities the design names in other documents (mitcad#196) are
+    // found in those documents' own histories, when the files are at hand.
+    if resolve
+        && !options.no_references
+        && let Some(dump) = decoded.dump.as_ref()
+    {
+        let files = crate::f3d_references::external_files(path, &label, options, dump);
+        if !files.is_empty() {
+            let clock = Instant::now();
+            let documents: Vec<mitcad_f3d::design::inputs::ExternalFile<'_>> = files
+                .iter()
+                .map(
+                    |(guid, key, file)| mitcad_f3d::design::inputs::ExternalFile {
+                        guid: guid.clone(),
+                        key: key.clone(),
+                        file,
+                    },
+                )
+                .collect();
+            mitcad_f3d::design::resolve_external_inputs(&mut decoded, &documents);
+            trace_reading("inputs in other documents found", clock);
+        }
+    }
     let dump = match &options.dump {
         Some(dump_path) => {
             let text = std::fs::read_to_string(dump_path)
@@ -1909,20 +1952,15 @@ impl Document {
         Ok(if options.text { report.text() } else { json })
     }
 
-    /// The import of the design, then of the documents it refers to into
-    /// its components of other documents (mitcad#196), as one undo step.
+    /// The import of the design; the documents it refers to are imported
+    /// first and fill its components of other documents when it is replayed
+    /// (mitcad#196), all one undo step.
     pub(crate) fn import_timeline(
         &mut self,
         path: &str,
         options: &TimelineOptions,
     ) -> Result<mitcad_import::ImportReport, ApiError> {
-        let depth = self.0.undo_depth();
-        let mut report = self.import_design_timeline(path, options)?;
-        if !options.no_references && self.import_references(path, options, &mut report) {
-            self.0
-                .merge_undo(depth, &format!("Import {}", file_name(path)));
-        }
-        Ok(report)
+        self.import_design_timeline(path, options)
     }
 
     /// The import of the design itself.
@@ -1951,7 +1989,8 @@ impl Document {
                     };
                     MemoryGuard::new(options).around(&progress, || {
                         let prepared = prepare(path, options)?;
-                        document.import_try(&prepared, path, options, &attempt)
+                        let references = document.references_of(path, options, &prepared);
+                        document.import_try(&prepared, &references, path, options, &attempt)
                     })
                 }
             }
@@ -1984,6 +2023,9 @@ impl Document {
         };
         // The file is read once: the tries share its design and bodies.
         let prepared = Arc::new(prepare_on_thread(path, options)?);
+        // The documents it refers to are imported before the tries (each
+        // with a watchdog of its own), and fill its components in each.
+        let references = Arc::new(self.references_of(path, options, &prepared));
         let mut warnings = Vec::new();
         for _ in 0..=HANG_RETRIES {
             // Each try has the whole time limit: the items before the one
@@ -1994,11 +2036,12 @@ impl Document {
             let mut guard = MemoryGuard::new(options);
             guard.check(&progress);
             let (sender, receiver) = std::sync::mpsc::channel();
-            let (path_owned, options_owned, try_owned, prepared_shared) = (
+            let (path_owned, options_owned, try_owned, prepared_shared, references_shared) = (
                 path.to_owned(),
                 options.clone(),
                 attempt.clone(),
                 prepared.clone(),
+                references.clone(),
             );
             let watched = progress.clone();
             let thread = TryThread::new();
@@ -2007,9 +2050,15 @@ impl Document {
                 // Dropped last, once the try's document and shapes are gone.
                 let _ended = ended;
                 let mut document = Document(mitcad_model::Document::new(OcctKernel));
-                let result =
-                    document.import_try(&prepared_shared, &path_owned, &options_owned, &try_owned);
+                let result = document.import_try(
+                    &prepared_shared,
+                    &references_shared,
+                    &path_owned,
+                    &options_owned,
+                    &try_owned,
+                );
                 drop(prepared_shared);
+                drop(references_shared);
                 drop(try_owned);
                 // A try given up (mitcad#71) stopped early: what it made is
                 // dropped here, never reported.
@@ -2114,10 +2163,27 @@ impl Document {
         )))
     }
 
+    /// The documents the prepared design refers to, imported from their
+    /// files (mitcad#196); none for an import without references.
+    fn references_of(
+        &mut self,
+        path: &str,
+        options: &TimelineOptions,
+        prepared: &Prepared,
+    ) -> References {
+        match &prepared.dump {
+            Some(dump) if !options.no_references => {
+                self.load_references(path, &prepared.label, options, dump)
+            }
+            _ => References::default(),
+        }
+    }
+
     /// One try of the import of a prepared file into this document.
     fn import_try(
         &mut self,
         prepared: &Prepared,
+        references: &References,
         path: &str,
         options: &TimelineOptions,
         attempt: &Try,
@@ -2168,6 +2234,10 @@ impl Document {
             failed_items: attempt.failed.clone(),
             threads: options.threads.unwrap_or(1).max(1),
             spawn: Some(worker_spawner()),
+            geometric_tolerance: options
+                .geometric_tolerance
+                .filter(|t| t.is_finite() && *t > 0.0)
+                .unwrap_or(mitcad_import::DEFAULT_GEOMETRIC_TOLERANCE),
             learn: options
                 .learn
                 .clone()
@@ -2179,8 +2249,17 @@ impl Document {
                 }),
             ..mitcad_import::Options::default()
         };
-        let design =
-            mitcad_import::import_design(&mut self.0, dump, &mut geometry, &import_options);
+        // The documents the design refers to fill its components of other
+        // documents before its items are replayed (mitcad#196).
+        let sources = references.sources();
+        let mut design = mitcad_import::import_design_with(
+            &mut self.0,
+            dump,
+            &mut geometry,
+            &import_options,
+            references.has_documents().then_some(&sources),
+        );
+        references.finish(path, &self.0, &mut design);
         let mut report = mitcad_import::ImportReport {
             file: file_name(path).to_owned(),
             designs: vec![design],

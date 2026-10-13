@@ -516,7 +516,21 @@ detail::FaceNamer run_operation(BooleanOp op, const std::vector<std::pair<const 
     }
     return true;
   }();
-  if (simplify && !untouched && !detail::is_valid(namer.result())) {
+  // The faces of the targets OCCT's checker found valid, as the operation
+  // got them: the result's faces that are still theirs need no check
+  // (is_valid_where_changed).
+  ShapeMap kept;
+  bool targets_valid = true;
+  for (std::size_t i = 0; i < targets.size(); ++i) {
+    if (!targets[i].first->checked_valid().value_or(false)) {
+      targets_valid = false;
+      continue;
+    }
+    for (TopExp_Explorer it(copy.shape(i), TopAbs_FACE); it.More(); it.Next()) {
+      kept.Add(it.Current());
+    }
+  }
+  if (simplify && !untouched && !detail::is_valid_where_changed(namer.result(), kept)) {
     // The merge can break a result the operation made valid (a join of a
     // corpus design: its merged faces made a shell that cannot be
     // oriented); then the result keeps the faces as the operation left
@@ -524,8 +538,10 @@ detail::FaceNamer run_operation(BooleanOp op, const std::vector<std::pair<const 
     return run_operation(op, targets, tool, tool_tag, false, seen, reduce, split, fuzzy);
   }
   if (!simplify && !untouched) {
-    detail::require_valid(namer.result(), "the boolean operation");
+    detail::require_valid_where_changed(namer.result(), kept, "the boolean operation");
   }
+  // Checked, or the targets as they were (a cut that left them alone).
+  namer.set_valid(!untouched || targets_valid);
   if (split != nullptr) {
     // Whether a face of a target became several.
     *split = false;
@@ -577,6 +593,8 @@ detail::FaceNamer run_operation(BooleanOp op, const std::vector<std::pair<const 
   }
   whole.finish();
   whole.set_unified(simplify);
+  // As valid as the result the checker saw: the holes are as they were.
+  whole.set_valid(!untouched || targets_valid);
   return whole;
 }
 

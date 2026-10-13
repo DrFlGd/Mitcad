@@ -212,8 +212,13 @@ fn joints_come_in_where_they_hold() {
         "{}",
         report.text()
     );
-    // No geometry of the mock's components gives the frames: fixed planes.
+    // No geometry of the mock's components gives the frames: fixed planes
+    // (not every input a decoded field).
     assert_eq!(report.items[0].outcome, Outcome::Partial);
+    assert_eq!(
+        report.items[0].input_provenance,
+        Some(InputProvenance::Inferred)
+    );
     assert!(
         report.items[0]
             .note
@@ -351,6 +356,11 @@ fn joints_that_do_not_hold_are_kept_as_built() {
         report.text()
     );
     assert_eq!(report.items[0].outcome, Outcome::Partial);
+    // The placements stand in for the joint that did not hold.
+    assert_eq!(
+        report.items[0].input_provenance,
+        Some(InputProvenance::Inferred)
+    );
     assert!(
         report
             .warnings
@@ -464,6 +474,13 @@ fn joint_origins_and_ground_items() {
     assert_eq!(outcomes, [Outcome::Parametric; 2], "{}", report.text());
     let j = &report.joints;
     assert_eq!((j.origins, j.grounded), (1, 1));
+    // The origin's geometry, offset and angle are the file's; a ground item
+    // makes no feature of inputs.
+    assert_eq!(
+        report.items[0].input_provenance,
+        Some(InputProvenance::Read)
+    );
+    assert_eq!(report.items[1].input_provenance, None);
     // On Base's origin point, its z offset the file's parameter.
     let uid: FeatureUid = report.items[0].features[0].parse().unwrap();
     let entry = doc.feature(uid).unwrap();
@@ -667,6 +684,14 @@ fn captured_positions_come_in_and_place_the_joints() {
         &doc.feature(uid).unwrap().def,
         FeatureDef::CapturePosition(_)
     ));
+    // The captured placements are the file's.
+    for k in [1, 2] {
+        assert_eq!(
+            report.items[k].input_provenance,
+            Some(InputProvenance::Read),
+            "{k}"
+        );
+    }
     let q = joint_query(&doc);
     assert_eq!(q["joints"][1]["state"], "satisfied", "{q}");
 }

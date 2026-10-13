@@ -10,16 +10,18 @@ use crate::features::sketch::{FrameDef, SketchDef, SketchOutput};
 use crate::features::{FeatureDef, OccurrencePath, SketchPlane, ValueInput};
 use crate::ids::{BodyUid, EntityUid, FeatureUid};
 use crate::kernel::Kernel;
+use crate::sketch::cleanup::Removal;
 use crate::sketch::edit::{EditReport, PointInput};
 use crate::sketch::geometry::Curve2;
 use crate::sketch::modify::{DragTarget, Item, Map2, point_input};
 use crate::sketch::offset::derived_entities;
 use crate::sketch::pattern::PatternChange;
 use crate::sketch::solve::{SketchStatus, SolverItem};
+use crate::sketch::spacing::{SpacingDimension, SpacingInput};
 use crate::sketch::tools::{ArcMode, CircleMode, RectangleMode, SlotMode};
 use crate::sketch::{
     ConstraintKind, ConstraintUid, DimensionKind, EntityIndex, EntityKind, Ref, SketchText,
-    TextAlign, TextPath, TextVAlign,
+    SpacingMode, TextAlign, TextPath, TextVAlign,
 };
 use crate::topo::TopoName;
 
@@ -463,6 +465,48 @@ pub(super) enum SketchCommand {
         #[serde(default)]
         layers: Option<Vec<String>>,
     },
+    // Equal spacing (mitcad#221).
+    #[serde(rename = "sketch.add_equal_spacing")]
+    AddEqualSpacing {
+        sketch: FeatureUid,
+        anchors: Vec<Ref>,
+        mode: SpacingMode,
+        #[serde(default, with = "crate::sketch::curve_opt_serde")]
+        direction: Option<EntityUid>,
+        #[serde(default)]
+        keep_order: bool,
+        /// A common spacing dimension: driving with `spacing` (or the mean
+        /// of the current intervals), or `driven`.
+        #[serde(default)]
+        dimension: bool,
+        #[serde(default)]
+        spacing: Option<ValueInput>,
+        #[serde(default)]
+        driven: bool,
+        #[serde(default)]
+        text: Option<[f64; 2]>,
+    },
+    #[serde(rename = "sketch.edit_equal_spacing")]
+    EditEqualSpacing {
+        sketch: FeatureUid,
+        constraint: ConstraintUid,
+        #[serde(default)]
+        anchors: Option<Vec<Ref>>,
+        #[serde(default)]
+        mode: Option<SpacingMode>,
+        #[serde(default, with = "crate::sketch::curve_opt_serde")]
+        direction: Option<EntityUid>,
+        #[serde(default)]
+        keep_order: bool,
+    },
+    // Duplicate and overlapping projected curves (mitcad#232).
+    #[serde(rename = "sketch.clean_up_projections")]
+    CleanUpProjections {
+        sketch: FeatureUid,
+        /// Also lines on or overlapping a collinear one.
+        #[serde(default = "yes")]
+        merge: bool,
+    },
 }
 
 /// The `dxf_info` query (P9): what the Insert DXF dialog offers, its
@@ -796,6 +840,9 @@ impl<K: Kernel> Document<K> {
                 value["warnings"] = json!(warnings);
                 value
             }
+            SketchCommand::CleanUpProjections { sketch, merge } => {
+                self.clean_up_projections(sketch, merge)?
+            }
             command => self.edit_command(command)?,
         })
     }
@@ -845,11 +892,14 @@ impl<K: Kernel> Document<K> {
             C::EditPattern { sketch, .. } => (*sketch, "Edit Pattern in {sketch}"),
             C::EditOffset { sketch, .. } => (*sketch, "Edit Offset in {sketch}"),
             C::SetDimensionText { sketch, .. } => (*sketch, "Move Dimension in {sketch}"),
+            C::AddEqualSpacing { sketch, .. } => (*sketch, "Equal Spacing in {sketch}"),
+            C::EditEqualSpacing { sketch, .. } => (*sketch, "Edit Equal Spacing in {sketch}"),
             C::Create { .. }
             | C::AddRectangle { .. }
             | C::AddCircle { .. }
             | C::Project { .. }
-            | C::ImportDxf { .. } => {
+            | C::ImportDxf { .. }
+            | C::CleanUpProjections { .. } => {
                 unreachable!("handled above")
             }
         };
@@ -1403,11 +1453,61 @@ impl<K: Kernel> Document<K> {
                 C::SetDimensionText {
                     dimension, text, ..
                 } => edit.set_text_position(dimension, text)?,
+                C::AddEqualSpacing {
+                    anchors,
+                    mode,
+                    direction,
+                    keep_order,
+                    dimension,
+                    spacing,
+                    driven,
+                    text,
+                    ..
+                } => {
+                    let input = SpacingInput {
+                        anchors,
+                        mode,
+                        direction,
+                        keep_order,
+                    };
+                    let dimension = match (dimension || spacing.is_some() || driven, driven) {
+                        (false, _) => SpacingDimension::None,
+                        (true, true) => SpacingDimension::Driven,
+                        (true, false) => SpacingDimension::Driving(spacing),
+                    };
+                    // Refused, not added in part, when it or its dimension
+                    // is implied by the others or contradicts them.
+                    let before = edit.redundancy().ok();
+                    let (id, dim) = edit.add_equal_spacing(&input, &dimension)?;
+                    if let Some(before) = before {
+                        edit.require_spacing_needed(before, id)?;
+                    }
+                    if let (Some(dim), Some(at)) = (dim, text) {
+                        edit.set_text_position(dim, at)?;
+                    }
+                    made_ref.push(id.to_string());
+                }
+                C::EditEqualSpacing {
+                    constraint,
+                    anchors,
+                    mode,
+                    direction,
+                    keep_order,
+                    ..
+                } => {
+                    let before = edit.redundancy().ok();
+                    edit.edit_equal_spacing(constraint, anchors, mode, direction, keep_order)?;
+                    if let Some(before) = before {
+                        edit.require_spacing_needed(before, constraint)?;
+                    }
+                    made_ref.push(constraint.to_string());
+                }
                 C::Create { .. }
                 | C::AddRectangle { .. }
                 | C::AddCircle { .. }
                 | C::Project { .. }
-                | C::ImportDxf { .. } => {
+                | C::ImportDxf { .. }
+                | C::CleanUpProjections { .. } => {
                     unreachable!("handled above")
                 }
             }
@@ -1417,6 +1517,83 @@ impl<K: Kernel> Document<K> {
         if !made.is_empty() {
             value["made"] = json!(made);
         }
+        Ok(value)
+    }
+
+    /// `sketch.clean_up_projections` (mitcad#232): the clean-up, with what
+    /// it removed and, in `warnings`, what the user is to know before
+    /// keeping it (the Clean Up Projections panel shows them).
+    fn clean_up_projections(&mut self, sketch: FeatureUid, merge: bool) -> Result<Value, ApiError> {
+        let regions = |doc: &Self| -> Vec<String> {
+            doc.sketch_output(sketch)
+                .map(|o| o.regions.iter().map(|r| r.key.to_string()).collect())
+                .unwrap_or_default()
+        };
+        let before = regions(self);
+        let (removed, report) =
+            self.edit_sketch(sketch, "Clean Up Projections in {sketch}", |edit| {
+                edit.clean_up_projections(merge)
+            })?;
+        let after = regions(self);
+        let curve = |id: EntityUid| Ref::Curve(id).to_string();
+        let mut warnings = Vec::new();
+        for (how, what, word) in [
+            (Removal::Same, "the same as another", "as"),
+            (Removal::On, "on a longer line", "on"),
+            (Removal::Joined, "joined to a line it overlaps", "into"),
+        ] {
+            let list: Vec<String> = removed
+                .iter()
+                .filter(|r| r.how == how)
+                .map(|r| format!("{} ({word} {})", curve(r.curve), curve(r.kept)))
+                .collect();
+            if !list.is_empty() {
+                warnings.push(format!(
+                    "{} {what} removed: {}",
+                    if list.len() == 1 { "1 curve" } else { "curves" },
+                    list.join(", ")
+                ));
+            }
+        }
+        for r in &removed {
+            if let Some(source) = &r.link {
+                warnings.push(format!(
+                    "{} followed {source}; {} in its place does not (a merged curve follows \
+                     one source and is not split again when the sources differ)",
+                    curve(r.curve),
+                    curve(r.kept)
+                ));
+            }
+        }
+        // Profile regions whose names change, where later features use them.
+        let changed: Vec<&String> = before.iter().filter(|k| !after.contains(k)).collect();
+        if !changed.is_empty() {
+            for entry in self.features().skip_while(|e| e.uid != sketch).skip(1) {
+                let params = self.parameters();
+                let text = entry
+                    .def
+                    .map_params(&mut |_, id| Ok::<_, ()>(params.name(*id)))
+                    .ok()
+                    .and_then(|def| serde_json::to_string(&def).ok())
+                    .unwrap_or_default();
+                for key in changed.iter().filter(|k| text.contains(k.as_str())) {
+                    warnings.push(format!(
+                        "{} uses the region {key}, whose name changes: check it",
+                        entry.name
+                    ));
+                }
+            }
+        }
+        let cleaned: Vec<Value> = removed
+            .iter()
+            .map(|r| {
+                json!({"curve": curve(r.curve), "kept": curve(r.kept), "how": r.how.name(),
+                       "link": r.link})
+            })
+            .collect();
+        let mut value = report_json(&report, self.sketch_def(sketch));
+        value["cleaned"] = json!(cleaned);
+        value["warnings"] = json!(warnings);
         Ok(value)
     }
 
@@ -1605,6 +1782,35 @@ impl<K: Kernel> Document<K> {
                 value
             })
             .collect();
+        // Linked projections with what of them did not follow (mitcad#232).
+        let projections: Vec<Value> = def
+            .projections
+            .iter()
+            .enumerate()
+            .map(|(k, p)| {
+                let mut value = serde_json::to_value(p).expect("serializes");
+                if let Some(report) =
+                    output.and_then(|o| o.follow.iter().find(|r| r.projection == k))
+                {
+                    if report.lost {
+                        value["lost"] = json!(true);
+                    }
+                    if !report.unfollowed.is_empty() {
+                        let ids: Vec<String> = report
+                            .unfollowed
+                            .iter()
+                            .filter_map(|id| p.entities.iter().find(|r| r.uid() == *id))
+                            .map(ToString::to_string)
+                            .collect();
+                        value["unfollowed"] = json!(ids);
+                    }
+                    if report.unmatched > 0 {
+                        value["unmatched"] = json!(report.unmatched);
+                    }
+                }
+                value
+            })
+            .collect();
         let mut result = json!({
             "uid": uid,
             "name": entry.name,
@@ -1613,10 +1819,11 @@ impl<K: Kernel> Document<K> {
             "frame": frame,
             "solved": solved.is_some(),
             "error": error.map(|e| e.message),
+            "warnings": self.warnings(uid),
             "entities": entities,
             "constraints": def.constraints,
             "dimensions": dimensions,
-            "projections": def.projections,
+            "projections": projections,
             "texts": texts,
             "patterns": patterns,
             "offsets": offsets,

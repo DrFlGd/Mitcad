@@ -457,7 +457,19 @@ as the items whose definitions gave no state do.
   profiles are a union of Mitcad's regions, which the import matches by
   area and centroid); the others as construction geometry *(seen)*. A curve drawn twice (the same ends, centre, radius or
   angles) bounds profiles once: the later copy comes in as construction
-  geometry *(seen)*.
+  geometry *(seen)*. A line flagged 0x40 along an edge of a profile's
+  loop with the profiles on one side only is that profile's side even
+  where it runs on through another profile (a circle across it whose
+  parts one feature takes, a circle it runs into) *(seen)*.
+- **Sketch blocks**: a placed block (`4c12f14c…`) is an entity of the
+  sketch that refers to its definition (`c4aaa486…`, laid out as a sketch
+  without a transform) and ends with the placement, two rows of three
+  f64 (a rigid motion of the sketch plane, cm) and a u32; the block's
+  points as the sketch sees them (`7e71a918…`) refer to the placement and
+  the definition's point, and `cf8d56f2…` groups them. The definition's
+  points and curves come in moved by the placement and fixed; the
+  sketch's constraints on the block's points apply to them *(seen: one
+  block in each of six parts)*.
 - **Constraints and dimensions**: the header, i32, a reference, two maps,
   the parameter, the entities. Coincident `944d…`, parallel `954d…`,
   perpendicular `964d…`, tangent `974d…`, horizontal `984d…`, vertical
@@ -553,7 +565,7 @@ value), booleans (`284d8790…`: the value is the last byte), directions
 
 | Kind | Slots and records | Decoded |
 |---|---|---|
-| Extrusion | 0 operation, 1 profiles (`91739422…`), 2 direction, 3 reversed, 4 distance, 5 taper, 6 extent (1 distance, 2 symmetric, 5 through all, 7 up to a face or plane, 4 up to the next face), 7 symmetric (set in every symmetric extent, and in 9 of 279 through all: through all both ways); up to the next face, 24 the body it reaches (a list `83aadad5…`: all 48 such extrusions of the older parts); up to a face, 18 the face's surface (`f0801215…`: after the prefix 16 zero bytes, a byte 1 and a u32 kind; `0x19` a plane: a u32, its origin (cm) and x and y axes, both across the extrusion in all 130 such records; `0x49` a cone: two u32, the cosine and sine of its half angle, a point on its axis (cm), its two radii, its axis and a reference direction: 8 cylinders) and 13 a boolean (`fd24893d…`, not decoded), or 11 a work plane (4), or 25 a work point (2, not decoded) *(seen)* | all; the next face as the first face of that body reached, the face as its plane or a cylindrical face on that cylinder, which the import looks for |
+| Extrusion | 0 operation, 1 profiles (`91739422…`), 2 direction, 3 reversed, 4 distance, 5 taper, 6 extent (1 distance, 2 symmetric, 5 through all, 7 up to a face or plane, 4 up to the next face), 7 symmetric (set in every symmetric extent, and in 9 of 279 through all: through all both ways); up to the next face, 24 the body it reaches (a list `83aadad5…`: all 48 such extrusions of the older parts); up to a face, 18 the face's surface (`f0801215…`: after the prefix 16 zero bytes, a byte 1 and a u32 kind; `0x19` a plane: a u32, its origin (cm) and x and y axes, both across the extrusion in all 130 such records; `0x49` a cone: two u32, the cosine and sine of its half angle, a point on its axis (cm), its two radii, its axis and a reference direction: 8 cylinders) and 13 a boolean (`fd24893d…`, not decoded), or 11 a work plane (4), or 25 a work point (2, not decoded: both suppressed in their files); two sides, 27 the second side's distance, 28 its taper and 29 its extent (1 a distance: both such extrusions) *(seen)* | all; two sides as Mitcad's two-sided extent; the next face as the first face of that body reached, the face as its plane or a cylindrical face on that cylinder, which the import looks for |
 | Revolution | 0 operation, 1 profiles, 2 axis (a work axis `896cf08e…`: a point and a direction before its last byte), 3 extent (1 an angle, 3 a full turn *(verified)*: its angle parameter keeps a value it does not use, 0 or the angle it was made with), 4 angle, 5 direction (an enumeration `c26aa0c7…`, not decoded) | the axis as a sketch line on it or an origin axis, else the work axis fixed where it is |
 | Thread | 0 its faces (named by the file's topological naming, not decoded), 1 full length (a boolean), 3 length and 4 offset of one that is not, 6 modelled (a boolean), 10 its ends (`9984474c…`: after the prefix two points, cm, on its cylinder's surface or axis, where it starts and ends); its size in a record of its own (`1f7e08a4…`, its header's context the thread: after the header a reference, then texts: the nominal size, the designation `M3x0.5`, the thread type, an empty text, a u32, four empty texts, the class `6g`, then its diameters' limits and pitch as texts in the saving machine's number format) *(seen)* | all; the face as the cylinder through both ends, which the import looks for |
 | Coil | 0 operation, 1 profiles, 2 axis (a work axis), 3 against the axis (a boolean: the coil runs against the work axis' stored direction), 5 its type (`b80cb14f…`: the prefix, u16 kind, u16 value: 0 pitch and turns, 1 turns and height, 2 pitch and height; 3, a spiral, not seen), 6 pitch, 7 height, 8 turns, 9 taper *(seen)*; the parameters its type does not use keep values | all but its hand (the import tries both, the direction slot 3 gives first), as Mitcad's helix; the axis a line of its sketch on the work axis, an origin axis, else the work axis fixed where it is (a cylinder's axis: 46 of the 85 coils of the older parts, all of which fell back before); tapered coils are not replayed |
@@ -723,6 +735,22 @@ fallbacks (30 and 43), in 35 files. Of the coils left, one is tapered,
 two run out of memory, one out of time, two do not cut into the bodies
 the import offers and six have no definition whose result is in the
 history.
+
+Extrusions on two sides (slots 27–29), flagged lines that are a
+profile's side with nothing beyond it though they run on through another
+profile, profiles touching only at a point extruded as parts apart, and
+holes touching an edge outside them kept in a boolean's body instead of
+sitting it out (release build, 2026-10-13, mitcad#60, each part run
+alone): seven more extrusions come in parametric in seven parts (two
+two-sided; two through all that needed both such a line and a circle
+touching another profile at a point; two up to a face that needed such
+lines; one cut beside countersinks touching the plate's edge), and the
+flagged lines bring four more items (three extrusions and a revolution
+whose sketches had no profiles, or none the history matched). The
+extrusions up to a work point (both of them) are suppressed in their
+files. With placed sketch blocks read, the six parts whose one sketch is
+a block come in whole (sketch and extrusion parametric; before, the
+sketch partial without curves and the extrusion a fallback).
 
 ### What the files do not tell (feasibility)
 

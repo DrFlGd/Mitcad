@@ -62,7 +62,9 @@ impl<K: crate::ImportKernel> crate::Importer<'_, K> {
             }
             let depth = self.doc.undo_depth();
             let text = command.to_string();
-            let result = self.interruptible(|doc| doc.command(&text));
+            // The file's design as it is: no design policy (mitcad#220).
+            let result =
+                self.interruptible(|doc| doc.without_policy_checks(|doc| doc.command(&text)));
             let features = match result {
                 Ok(done) => serde_json::from_str::<serde_json::Value>(&done)
                     .ok()

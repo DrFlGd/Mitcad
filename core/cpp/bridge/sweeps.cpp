@@ -153,6 +153,7 @@ std::shared_ptr<geometry::Shape> loft_solid(rust::Str feature, const LoftInput& 
   spec.centerline = path(input.centerline);
   spec.ruled = input.ruled;
   spec.closed = input.closed;
+  spec.solid = input.solid;
   std::size_t at = 0;
   for (const std::size_t count : input.rails) {
     if (at + count > input.rail_curves.size()) {

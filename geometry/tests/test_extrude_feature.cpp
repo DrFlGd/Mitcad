@@ -5,7 +5,10 @@
 
 #include <algorithm>
 #include <cmath>
+#include <string>
 #include <utility>
+
+#include <BRepCheck_Analyzer.hxx>
 
 #include "check.hpp"
 
@@ -436,6 +439,37 @@ void test_clockwise_loops() {
   CHECK(faces_named(*block, side("F2", 1, 0)) == 1 && faces_named(*block, side("F2", 5, 0)) == 1);
 }
 
+// A circle whose one arc starts and ends where it touches another
+// profile's circle (a region `c2[c1,c1]`): its parameters run past a full
+// turn from there.
+Region touching_circle(int curve, double cx, double cy, double radius, double at) {
+  Segment arc;
+  arc.name = "c" + std::to_string(curve) + "[c1,c1]";
+  arc.kind = SegmentKind::Arc;
+  arc.center = gp_Pnt2d(cx, cy);
+  arc.radius = radius;
+  arc.start_angle = at;
+  arc.end_angle = at;
+  Region region;
+  region.name = "r{" + arc.name + "}";
+  region.loops.push_back(Loop{{arc}});
+  return region;
+}
+
+void test_circles_touching_at_a_point() {
+  // A circle of 5 mm and one of 3 mm touching it from outside at (5, 0),
+  // whose arc starts there (angle pi, and the same past 2 pi).
+  for (const double at : {kPi, 3.0 * kPi}) {
+    ExtrudeFeatureSpec spec = spec_of({circle(1, 0, 0, 5), touching_circle(2, 8, 0, 3, at)}, 10);
+    const ShapePtr shape = extrude_feature(spec);
+    CHECK(BRepCheck_Analyzer(shape->occt()).IsValid());
+    CHECK(near(volume(*shape), kPi * (25.0 + 9.0) * 10.0, 1e-6));
+    spec.side1.taper = 0.05;
+    const ShapePtr tapered = extrude_feature(spec);
+    CHECK(BRepCheck_Analyzer(tapered->occt()).IsValid());
+  }
+}
+
 void test_several_regions() {
   // Touching regions with a taper still fuse into one solid.
   ExtrudeFeatureSpec spec = spec_of({rectangle(1, 0, 0, 10, 10), rectangle(5, 10, 0, 10, 10)}, 5);
@@ -461,6 +495,7 @@ void extrude_feature_tests() {
   guarded("test_to_faces_and_bodies", test_to_faces_and_bodies);
   guarded("test_to_body_from_inside", test_to_body_from_inside);
   guarded("test_clockwise_loops", test_clockwise_loops);
+  guarded("test_circles_touching_at_a_point", test_circles_touching_at_a_point);
   guarded("test_several_regions", test_several_regions);
 }
 

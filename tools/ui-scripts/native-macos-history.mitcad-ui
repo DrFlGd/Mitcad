@@ -1,8 +1,10 @@
 # SPDX-License-Identifier: MIT
 # Native horizontal CAD timeline: real AppKit controls, actual OCCT bodies,
 # shared feature artwork, multi-selection and one undo step for a marker drag.
-# Run on macOS with an empty document, the result store off, MITCAD_TEST_WORK
-# set and MITCAD_TEST_RECOMPUTE_DELAY_MS=0,set_marker=800.
+# Run on macOS with an empty design without a stored policy (the boxes are
+# the root's own, as in designs made before mitcad#220; ui-macos-native-test.sh
+# history opens one), the result store off, MITCAD_TEST_WORK set and
+# MITCAD_TEST_RECOMPUTE_DELAY_MS=0,set_marker=800.
 expect-ever 'Native UI: AppKit shell with embedded OCCT viewport'
 expect-ever 'View area'
 sleep 800

@@ -17,6 +17,7 @@
 #include <QObject>
 #include <QPointF>
 #include <QPointer>
+#include <QRectF>
 #include <QString>
 #include <QStringList>
 #include <QTimer>
@@ -46,6 +47,11 @@ public:
   // Starts a command of the registry (an edit panel opened by a
   // double-click).
   virtual void trigger(const QString& id) = 0;
+  // Whether sketch mode's selection filter (mitcad#217) lets a click take
+  // an item of the edited sketch that sketch mode itself picks: its
+  // dimensions and constraints, and its curves and points a press would
+  // drag. `expanded`: Shift is held.
+  virtual bool sketchClickable(const SelectionItem& /*item*/, bool /*expanded*/) const { return true; }
 };
 
 namespace sketch {
@@ -128,7 +134,12 @@ public:
   void reload();
   // While a command's panel runs in the sketch, its picks are the view's:
   // no tools, drags or picking of constraints and dimensions.
-  void setPaused(bool paused) { m_paused = paused; }
+  void setPaused(bool paused) {
+    m_paused = paused;
+    if (!paused) {
+      setSpacingPreview({});
+    }
+  }
   // Turns the view to look at the sketch plane.
   void lookAt();
   // Logs where the sketch origin and axes are in the window, when that
@@ -219,6 +230,13 @@ public:
   void setPicked(const QStringList& entities);
   const QStringList& picked() const { return m_picked; }
   QString hoverAnnotation() const { return m_hoverAnnotation; }
+  // The dimensions and constraints a window holds (view pixels; with
+  // `crossing` also those it touches), as selection items (mitcad#217).
+  Selection annotationsIn(const QRectF& area, bool crossing) const;
+  // Whether a dimension or a constraint's symbol is at a place in the view
+  // (view pixels): a right click there is for it, not for the geometry
+  // under it.
+  bool annotationAt(const QPointF& position) const;
   // A dimension's text being dragged.
   std::optional<std::pair<QString, V2>> textOverride() const { return m_textOverride; }
   void refreshView();
@@ -255,6 +273,11 @@ public:
   QJsonObject runModel(const QJsonObject& command);
   int undoDepth() const;
   QString undoLabel() const;
+
+  // Equal spacing (mitcad#221): the objects an Equal Spacing panel has
+  // (its preview's chain is drawn numbered, in the order the model keeps).
+  void setSpacingPreview(const QStringList& anchors);
+  const QStringList& spacingPreview() const { return m_spacingPreview; }
 
 signals:
   // The sketch or its status changed (the palette shows the DOF).
@@ -334,6 +357,7 @@ private:
   bool m_dragging = false;
   bool m_forwarding = false;
   QPointF m_pressPosition;
+  QPointF m_rightPressPosition;
   Qt::KeyboardModifiers m_pressModifiers;
   QString m_dragEntity;
   QString m_dragDimension; // a dimension's text
@@ -350,6 +374,12 @@ private:
   QPointer<QLineEdit> m_editor;
   FieldSpec::Kind m_editorKind = FieldSpec::Kind::Length;
   std::function<void(const QString&)> m_editorAccept;
+
+  // Equal spacing (mitcad#221): a running panel's objects, and the chains
+  // last logged (by constraint).
+  QStringList m_spacingPreview;
+  QHash<QString, QString> m_loggedSpacings;
+  void logSpacings();
 };
 
 } // namespace sketch

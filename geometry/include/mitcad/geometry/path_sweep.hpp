@@ -99,8 +99,10 @@ enum class CoilPosition { Inside, OnCenter, Outside };
 // axis, counter-clockwise about the normal unless `clockwise`,
 // `revolutions` turns rising `pitch` per turn and widening by `angle` (a
 // cone), or with `spiral` a flat spiral growing `pitch` in radius per turn;
-// the section at right angles to it, positioned on the diameter. Faces
-// side<i>, start and end.
+// the section in the plane through the axis (it moves by a screw motion),
+// its radial extent on the diameter (centred on it, or touching it from
+// inside or outside). `size` is the circle's diameter, the square's side
+// or the triangle's height. Faces side<i>, start and end.
 struct CoilSpec {
   std::string feature;
   Frame frame;

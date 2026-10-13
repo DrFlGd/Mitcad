@@ -142,6 +142,9 @@ private:
   QString m_shownRows; // the rows shown at the last refresh
   QTimer* m_logTimer = nullptr;
   QTimer* m_fitTimer = nullptr;
+  // The message's height when the rows' places were last logged: a message
+  // that grows or shrinks moves them (UI tests click where they are logged).
+  mutable int m_loggedMessageHeight = -1;
 };
 
 } // namespace mitcad

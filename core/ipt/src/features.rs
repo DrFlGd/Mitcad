@@ -210,7 +210,30 @@ pub fn extrude(
     let taper = cx.parameter(slot(5), &mut t.parameters);
     let mut d = json!({"operation": operation, "isSolid": true});
     participants(cx, &slots, operation, &mut d);
+    // Two sides: slots 27 the second side's distance, 28 its taper and 29
+    // its extent (1 a distance) *(seen: both such extrusions of the test
+    // files, each with a distance on both sides)*.
+    let side_two = cx.enumeration(slot(29), &ENUM_EXTENT);
+    match (extent, side_two) {
+        (Some(1), Some(1)) => {
+            let distance_two = cx.parameter(slot(27), &mut t.parameters);
+            d["extentType"] = json!("TwoSidesFeatureExtentType");
+            d["hasTwoExtents"] = json!(true);
+            d["extentOne"] = json!({"_type": "DistanceExtentDefinition", "distance": distance});
+            d["extentTwo"] = json!({"_type": "DistanceExtentDefinition", "distance": distance_two});
+            if let Some(taper) = cx.parameter(slot(28), &mut t.parameters) {
+                d["taperAngleTwo"] = taper;
+            }
+        }
+        (_, Some(other)) => {
+            return Err(format!(
+                "extents {extent:?} and {other} on two sides are not known"
+            ));
+        }
+        _ => {}
+    }
     match extent {
+        _ if side_two.is_some() => {}
         Some(1) => {
             d["extentType"] = json!("OneSideFeatureExtentType");
             d["extentOne"] = json!({"_type": "DistanceExtentDefinition", "distance": distance});

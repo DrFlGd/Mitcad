@@ -1,0 +1,75 @@
+Mitcad's patch to OCCT 8.0.1, under OCCT's licence:
+SPDX-License-Identifier: LGPL-2.1-only WITH OCCT-exception-1.0
+
+ShapeUpgrade_UnifySameDomain: a chain of edges whose curves cannot be
+concatenated stays as its edges. Merging a chain concatenates the edges'
+p-curves on the faces that are not planes (UnionPCurves, with
+Geom2dConvert::ConcatC1) after a chain of lines or circles, and their 3D
+curves (GlueEdgesWith3DCurves, with GeomConvert::ConcatC1) for a chain of
+B-splines. Both throw ("Courbes non jointives") where the end of one curve
+lies farther from the start of the next than the tolerance of the vertex
+between them. The exception left the whole unification (the face merge
+after a boolean, BRepAlgoAPI_BuilderAlgo::SimplifyResult) unfinished, so a
+join or cut whose result was valid failed. MergeSubSeq now returns false
+for such a chain, as it does for chains it cannot merge otherwise: their
+edges are kept, and the rest of the shape is unified as before. (In the safe
+input mode the chain's end vertices may already have been replaced by
+copies of themselves, as for a chain that merges: the same points and
+tolerances.)
+--- a/src/ModelingAlgorithms/TKShHealing/ShapeUpgrade/ShapeUpgrade_UnifySameDomain.cxx
++++ b/src/ModelingAlgorithms/TKShHealing/ShapeUpgrade/ShapeUpgrade_UnifySameDomain.cxx
+@@ -2386,7 +2386,17 @@
+     B.Add(E, V[1]);
+     B.UpdateVertex(V[0], 0., E, 0.);
+     B.UpdateVertex(V[1], dist, E, 0.);
+-    UnionPCurves(theChain, E);
++    // A chain whose p-curves cannot be concatenated (their ends farther
++    // apart than the tolerance of the vertex between them) stays as its
++    // edges, instead of failing the whole unification.
++    try
++    {
++      UnionPCurves(theChain, E);
++    }
++    catch (Standard_Failure const&)
++    {
++      return false;
++    }
+     OutEdge = E;
+     return true;
+   }
+@@ -2513,7 +2523,14 @@
+       B.UpdateVertex(V[0], 0., E, 0.);
+       B.UpdateVertex(V[1], lpar, E, 0.);
+     }
+-    UnionPCurves(theChain, E);
++    try
++    {
++      UnionPCurves(theChain, E);
++    }
++    catch (Standard_Failure const&)
++    {
++      return false;
++    }
+     OutEdge = E;
+     return true;
+   }
+@@ -2550,7 +2567,18 @@
+     }
+     if (NeedUnion)
+     {
+-      OutEdge = GlueEdgesWith3DCurves(theChain, VF, VL);
++      // A chain whose curves cannot be concatenated (their ends farther
++      // apart than the tolerance of the vertex between them) stays as its
++      // edges, as chains of other curves that cannot be merged do, instead
++      // of failing the whole unification.
++      try
++      {
++        OutEdge = GlueEdgesWith3DCurves(theChain, VF, VL);
++      }
++      catch (Standard_Failure const&)
++      {
++        return false;
++      }
+       return true;
+     }
+   }

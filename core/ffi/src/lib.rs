@@ -106,6 +106,9 @@ mod ffi {
         fn validate_mcp_query(request: &str) -> Result<()>;
 
         fn new_document() -> Box<Document>;
+        /// A new, empty design: Root with the Assembly policy, an empty
+        /// component Part1 with the Part policy, active (mitcad#220).
+        fn new_design_document() -> Box<Document>;
         /// A 60 x 40 x 20 mm block (Sketch1, Extrude1), used by tests.
         fn new_demo_document() -> Box<Document>;
         /// Reads a design file (.mitcad JSON, version 1, 2 or 3; the
@@ -468,6 +471,13 @@ pub struct Document(mitcad_model::Document<OcctKernel>);
 
 fn new_document() -> Box<Document> {
     Box::new(Document(mitcad_model::Document::new(OcctKernel)))
+}
+
+/// A new, empty design as File > New makes it (mitcad#220): the root with
+/// the Assembly policy and an empty component Part1 with the Part policy,
+/// active.
+fn new_design_document() -> Box<Document> {
+    Box::new(Document(mitcad_model::Document::new_design(OcctKernel)))
 }
 
 fn new_demo_document() -> Box<Document> {

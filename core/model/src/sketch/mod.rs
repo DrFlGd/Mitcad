@@ -37,9 +37,16 @@ pub mod dxf;
 pub mod offset;
 pub mod pattern;
 pub mod text;
+// Equal spacing (mitcad#221).
+pub mod spacing;
+// Duplicate and overlapping projected curves (mitcad#232).
+pub mod cleanup;
 
 #[cfg(test)]
 mod tests;
+// Equal spacing (mitcad#221).
+#[cfg(test)]
+mod spacing_tests;
 
 use std::collections::BTreeMap;
 use std::fmt;
@@ -582,6 +589,67 @@ pub enum ConstraintKind {
         #[serde(with = "curve_serde")]
         axis: EntityUid,
     },
+    /// Equal spacing (mitcad#221): the successive intervals between the
+    /// anchors, in their stored order, are equal, measured as `mode` says.
+    /// An anchor is a point, the centre of a circle or an arc, or the
+    /// midpoint of a line (`p3`, `c4`); at least three. `direction` is the
+    /// line an `along` spacing measures along. The common spacing is free
+    /// unless a `spacing` dimension drives it.
+    EqualSpacing {
+        anchors: Vec<Ref>,
+        mode: SpacingMode,
+        #[serde(
+            default,
+            skip_serializing_if = "Option::is_none",
+            with = "curve_opt_serde"
+        )]
+        direction: Option<EntityUid>,
+    },
+}
+
+/// What the intervals of an equal spacing measure.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SpacingMode {
+    /// Successive x intervals.
+    Horizontal,
+    /// Successive y intervals.
+    Vertical,
+    /// Successive intervals projected on the direction of a line.
+    Along,
+    /// The distances between successive anchors.
+    PointToPoint,
+}
+
+impl SpacingMode {
+    /// Whether the intervals are measured along a direction (signed),
+    /// not as distances.
+    pub fn directional(self) -> bool {
+        self != Self::PointToPoint
+    }
+}
+
+/// An optional curve id: `"c4"`.
+pub(crate) mod curve_opt_serde {
+    use crate::ids::EntityUid;
+
+    pub fn serialize<S: serde::Serializer>(
+        id: &Option<EntityUid>,
+        s: S,
+    ) -> Result<S::Ok, S::Error> {
+        match id {
+            Some(id) => s.serialize_str(&id.curve_name()),
+            None => s.serialize_none(),
+        }
+    }
+
+    pub fn deserialize<'de, D: serde::Deserializer<'de>>(
+        d: D,
+    ) -> Result<Option<EntityUid>, D::Error> {
+        let text: Option<String> = serde::Deserialize::deserialize(d)?;
+        text.map(|t| EntityUid::parse_curve(&t).map_err(serde::de::Error::custom))
+            .transpose()
+    }
 }
 
 impl ConstraintKind {
@@ -603,6 +671,13 @@ impl ConstraintKind {
             | Concentric { a, b } => vec![c(*a), c(*b)],
             Midpoint { point, curve } => vec![p(*point), c(*curve)],
             Symmetric { a, b, axis } => vec![*a, *b, c(*axis)],
+            EqualSpacing {
+                anchors, direction, ..
+            } => anchors
+                .iter()
+                .copied()
+                .chain(direction.map(Ref::Curve))
+                .collect(),
         }
     }
 
@@ -741,6 +816,10 @@ pub enum DimensionKind {
         axis: EntityUid,
         entity: Ref,
     },
+    /// The common spacing of an equal spacing constraint (mitcad#221): every
+    /// interval of it, measured as the constraint measures them. One per
+    /// constraint; it goes with the constraint.
+    Spacing { constraint: ConstraintUid },
 }
 
 /// How a dimension value must be: positive, not negative, or an angle.
@@ -768,6 +847,8 @@ impl DimensionKind {
             ArcLength { arc } => vec![c(*arc)],
             MajorRadius { ellipse } | MinorRadius { ellipse } => vec![c(*ellipse)],
             LinearDiameter { axis, entity } => vec![c(*axis), *entity],
+            // Its entities are its constraint's.
+            Spacing { .. } => Vec::new(),
         }
     }
 
@@ -790,6 +871,7 @@ impl DimensionKind {
             MajorRadius { .. } => "major_radius",
             MinorRadius { .. } => "minor_radius",
             LinearDiameter { .. } => "linear_diameter",
+            Spacing { .. } => "spacing",
         }
     }
 

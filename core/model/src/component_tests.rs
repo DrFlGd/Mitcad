@@ -827,3 +827,155 @@ fn another_documents_design_is_copied_into_a_component() {
             .is_err()
     );
 }
+
+#[test]
+fn import_scopes_leave_the_filled_components_bodies_out_of_the_body_view() {
+    // A part with one block, copied into an empty component of another
+    // document (what the `.f3d` import does for components of other
+    // documents, mitcad#196).
+    let mut part = Document::new(MockKernel::default());
+    small_block(&mut part);
+    let mut doc = Document::new(MockKernel::default());
+    let (ext, _) = doc
+        .create_component(Some("Ext"), Transform::IDENTITY, false)
+        .unwrap();
+    doc.fill_component_copy(&part, ext, Some("Part")).unwrap();
+    doc.activate_component(ComponentUid::ROOT).unwrap();
+    small_block(&mut doc);
+    doc.recompute();
+    assert_eq!(doc.bodies().len(), 2);
+
+    // While the scope is set, the body view has the document's own body
+    // only; the scope's has the copy's.
+    doc.set_import_scopes(vec![("guid".to_owned(), vec![ext])]);
+    assert_eq!(doc.bodies().len(), 1);
+    assert_eq!(
+        doc.body_component(doc.bodies()[0].uid),
+        Some(ComponentUid::ROOT)
+    );
+    assert_eq!(doc.scope_bodies("guid").len(), 1);
+    assert_eq!(doc.scope_bodies("other").len(), 0);
+    assert_eq!(doc.import_scope("guid"), vec![ext]);
+    // The copy's bodies are still the component's own.
+    assert_eq!(doc.component_bodies(ext).len(), 1);
+    // A fork has them too.
+    if let Some(fork) = doc.fork() {
+        assert_eq!(fork.bodies().len(), 1);
+    }
+
+    doc.set_import_scopes(Vec::new());
+    assert_eq!(doc.bodies().len(), 2);
+    assert!(doc.import_scope("guid").is_empty());
+}
+
+#[test]
+fn an_occurrence_gets_a_component_of_its_own_or_joins_another() {
+    // An importer's operations (mitcad#196): occurrences of one component
+    // that are to differ get components of their own.
+    let mut doc = Document::new(MockKernel::default());
+    let (part, first) = doc
+        .create_component(Some("Part"), Transform::IDENTITY, false)
+        .unwrap();
+    let second = doc
+        .add_occurrence(part, ComponentUid::ROOT, shift(20.0, 0.0, 0.0))
+        .unwrap();
+    let third = doc
+        .add_occurrence(part, ComponentUid::ROOT, shift(40.0, 0.0, 0.0))
+        .unwrap();
+    assert_eq!(doc.assembly().occurrence_name(third), "Part:3");
+
+    // The second occurrence gets an empty component of its own and keeps
+    // its uid and placement.
+    let own = doc
+        .give_occurrence_own_component(second, Some("Part"))
+        .unwrap();
+    assert_ne!(own, part);
+    assert_eq!(doc.assembly().name(own), "Part (1)");
+    let o = doc.assembly().occurrence(second).unwrap();
+    assert_eq!((o.component, o.number), (own, 1));
+    assert!(near(
+        doc.placement(second).unwrap().translation,
+        [20.0, 0.0, 0.0]
+    ));
+    assert_eq!(doc.assembly().occurrences_of(part).count(), 2);
+    assert_eq!(doc.assembly().occurrence_name(second), "Part (1):1");
+
+    // The third joins it and takes the next number.
+    doc.place_other_component(third, own).unwrap();
+    assert_eq!(doc.assembly().occurrence_name(third), "Part (1):2");
+    assert_eq!(doc.assembly().occurrences_of(part).count(), 1);
+    assert!(doc.assembly().occurrences_of(part).any(|o| o.uid == first));
+    assert!(near(
+        doc.placement(third).unwrap().translation,
+        [40.0, 0.0, 0.0]
+    ));
+
+    // Not the root, a component that does not exist, or one that would
+    // contain its own parent; one step of undo takes each back.
+    assert!(
+        doc.place_other_component(third, ComponentUid::ROOT)
+            .is_err()
+    );
+    assert!(doc.place_other_component(third, ComponentUid(99)).is_err());
+    let (inner, _) = doc
+        .add_component(Some("Inner"), own, Transform::IDENTITY)
+        .unwrap();
+    let inside = doc.assembly().children(own).next().unwrap().uid;
+    assert!(doc.place_other_component(inside, own).is_err(), "{inner:?}");
+    doc.undo().unwrap();
+    assert_eq!(doc.assembly().occurrence_name(third), "Part (1):2");
+}
+
+#[test]
+fn make_unique_copies_the_component_of_one_occurrence() {
+    let mut doc = Document::new(MockKernel::default());
+    let (part, first) = doc
+        .create_component(Some("Part"), Transform::IDENTITY, true)
+        .unwrap();
+    small_block(&mut doc);
+    doc.activate_component(ComponentUid::ROOT).unwrap();
+    let second = doc
+        .copy_occurrence(first, Some(shift(50.0, 0.0, 0.0)))
+        .unwrap();
+    assert_eq!(doc.assembly().occurrences_of(part).count(), 2);
+
+    let (copy, copied) = doc.make_unique(second).unwrap();
+    assert_ne!(copy, part);
+    assert_eq!(doc.assembly().name(copy), "Part (1)");
+    // The occurrence keeps its uid and placement; the original keeps the
+    // first.
+    let o = doc.assembly().occurrence(second).unwrap();
+    assert_eq!((o.component, o.number), (copy, 1));
+    assert_eq!(doc.assembly().occurrence(first).unwrap().component, part);
+    assert!(near(
+        doc.placement(second).unwrap().translation,
+        [50.0, 0.0, 0.0]
+    ));
+    // The copy has its own features and parameters: a change of the
+    // original's does not reach it.
+    assert_eq!(copied.features.len(), 2);
+    assert_eq!(doc.features().filter(|f| f.component == copy).count(), 2);
+    let original = doc
+        .parameters()
+        .iter()
+        .find(|p| p.comment() == "Extrude1 distance")
+        .unwrap()
+        .name()
+        .to_owned();
+    doc.set_parameter(&original, 9.0).unwrap();
+    let boxes = world_boxes(&doc);
+    assert_eq!(boxes.len(), 2);
+    let heights: Vec<f64> = boxes.iter().map(|b| b.2.max[2]).collect();
+    assert!(
+        heights.contains(&9.0) && heights.contains(&5.0),
+        "{heights:?}"
+    );
+
+    // Undo takes it back in one step (after the parameter edit); an
+    // occurrence that does not exist is refused.
+    doc.undo().unwrap();
+    doc.undo().unwrap();
+    assert_eq!(doc.assembly().occurrence(second).unwrap().component, part);
+    assert_eq!(doc.assembly().occurrences_of(part).count(), 2);
+    assert!(doc.make_unique(OccurrenceUid(999)).is_err());
+}

@@ -4,12 +4,16 @@
 #include <cmath>
 #include <limits>
 #include <stdexcept>
+#include <string>
+#include <vector>
 
 #include <BRepAdaptor_Surface.hxx>
 #include <BRepAlgoAPI_Fuse.hxx>
+#include <BRep_Builder.hxx>
 #include <BRepPrimAPI_MakePrism.hxx>
 #include <Bnd_Box.hxx>
 #include <NCollection_List.hxx>
+#include <TopoDS_Compound.hxx>
 #include <gp_Vec.hxx>
 
 #include "history.hpp"
@@ -149,6 +153,35 @@ ShapePtr oblique_side(const std::string& feature, const detail::SweepFace& face,
                          unreached);
 }
 
+// The parts of an extrusion as one shape. Profiles that touch only at a
+// point (a circle touching another profile's curve) make parts that touch
+// along a line, which the fuse joins into a shell that cannot be oriented:
+// then the parts stay apart, as those of profiles apart from each other do.
+ShapePtr joined(const std::vector<ShapePtr>& parts) {
+  try {
+    return detail::finished(*detail::fused(parts, "the extrusion"), "the extrusion");
+  } catch (const std::runtime_error& error) {
+    if (parts.size() < 2 || std::string(error.what()).find("produced an invalid shape") == std::string::npos) {
+      throw;
+    }
+  }
+  BRep_Builder builder;
+  TopoDS_Compound apart;
+  builder.MakeCompound(apart);
+  for (const ShapePtr& part : parts) {
+    builder.Add(apart, part->occt());
+  }
+  detail::FaceNamer namer(apart);
+  for (const ShapePtr& part : parts) {
+    for (int i = 0; i < part->face_count(); ++i) {
+      for (const std::string& name : part->face_names(i)) {
+        namer.add(part->face(i), name);
+      }
+    }
+  }
+  return detail::finished(*namer.shape(), "the extrusion");
+}
+
 } // namespace
 
 ShapePtr extrude_feature(const ExtrudeFeatureSpec& spec) {
@@ -224,7 +257,7 @@ ShapePtr extrude_feature(const ExtrudeFeatureSpec& spec) {
         }
       }
     }
-    return detail::finished(*detail::fused(parts, "the extrusion"), "the extrusion");
+    return joined(parts);
   });
 }
 

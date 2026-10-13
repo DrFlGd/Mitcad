@@ -17,6 +17,7 @@
 #include <QMargins>
 #include <QOpenGLWidget>
 #include <QPoint>
+#include <QRectF>
 #include <QString>
 #include <QStringList>
 #include <QSurfaceFormat>
@@ -32,6 +33,7 @@
 #include <SelectMgr_EntityOwner.hxx>
 #include <SelectMgr_Filter.hxx>
 #include <TopLoc_Location.hxx>
+#include <TopoDS_Edge.hxx>
 #include <TopoDS_Shape.hxx>
 #include <V3d_View.hxx>
 #include <V3d_Viewer.hxx>
@@ -43,7 +45,9 @@
 #include "LayoutGrid.hpp"
 #include "framework/Appearances.hpp"
 #include "framework/Selection.hpp"
+#include "framework/SelectionScope.hpp"
 #include "mitcad/geometry/shape.hpp"
+#include "view/ViewMatch.hpp"
 #include "view/ViewNavigation.hpp"
 
 class QNativeGestureEvent;
@@ -331,6 +335,8 @@ public:
   bool isNavigating() const { return m_navigationState.active(); }
   // The background's colours, top and bottom (the same for one colour).
   void backgroundColors(QColor& top, QColor& bottom) const;
+  // Whether the background is dark (what is drawn over it needs light lines).
+  bool backgroundDark() const { return m_backgroundDark; }
   // Replaces the visible sketch profiles (planar faces, placed already);
   // `occurrences` are those that place the sketches of components.
   void setProfiles(const std::vector<std::pair<ProfileKey, TopoDS_Shape>>& profiles,
@@ -345,6 +351,30 @@ public:
 
   // What can be picked: kinds, and optionally a finer test.
   void setPickFilter(SelectFilter filter, std::function<bool(const SelectionItem&)> test = {});
+  // A selection scope (mitcad#217, framework/SelectionScope.hpp): `kinds`
+  // can be picked, `expanded` (which holds them) while Shift is held over a
+  // click; `test` decides each item by how it is picked: a click or a
+  // window, Shift, and for body edges which part of the edge was hit (in
+  // sight or behind the faces of the shown bodies, seen from the camera
+  // now). Shift pressed or released picks again under the pointer, so the
+  // hover shows what the click would select.
+  using PickTest = std::function<bool(const SelectionItem&, const PickCase&)>;
+  void setPickScope(SelectFilter kinds, SelectFilter expanded, PickTest test);
+  bool shiftHeld() const { return m_shiftHeld; }
+  // The last window selection in widget pixels, and whether it also took
+  // what it crosses (dragged to the left).
+  QRectF lastWindow() const { return m_windowRect; }
+  bool lastWindowCrossing() const { return m_windowCrossing; }
+  // For UI tests (MITCAD_LOG_EDGE_PLACES): per edge of the shown bodies, a place
+  // in the widget where a click hits that edge first among what the view
+  // offers now, one where the edge is in sight and one where it is behind
+  // faces (when it has such parts in the view).
+  struct EdgePlace {
+    SelectionItem item;
+    QPoint at;
+    EdgeSight sight = EdgeSight::Visible;
+  };
+  std::vector<EdgePlace> edgePlaces();
   // Dragging components (mitcad#55).
   void setOccurrenceDrag(OccurrenceDrag drag) { m_occurrenceDrag = std::move(drag); }
   // The move cursor over a body a drag would move (mitcad#150).
@@ -438,8 +468,12 @@ signals:
   void themeChanged();
   // setBodies() changed what is shown.
   void bodiesChanged();
+  // Shift went down or up while a selection scope is set (setPickScope).
+  void shiftChanged(bool held);
 
 protected:
+  // Shift anywhere in the window widens a scope's clicks (setPickScope).
+  bool eventFilter(QObject* watched, QEvent* event) override;
   // A modal dialog that opens meanwhile (a long computation's progress, P7)
   // takes the release of a button held down: the view lets go of it then.
   bool event(QEvent* event) override;
@@ -468,6 +502,9 @@ private:
     bool highlight = false;
   };
   class Filter;
+  // A shown body's faces for looking along a line (occluded()), made when
+  // first needed.
+  struct Occluder;
 
   struct BodyEntry {
     std::string uid;
@@ -484,6 +521,8 @@ private:
     // The hidden-edge styles' edges: dashed through faces, solid in sight.
     occ::handle<AIS_Shape> hiddenEdges;
     occ::handle<AIS_Shape> visibleEdges;
+    // Its faces placed, for occluded() (mitcad#217).
+    mutable std::shared_ptr<Occluder> occluder;
   };
 
   Aspect_Drawable occtDrawable();
@@ -539,8 +578,10 @@ private:
   void navigationStep();
   // The last button held on the view went up.
   void buttonsReleased();
-  // Whether the rendered image is no longer of the view's camera or size.
-  bool renderedImageStale() const;
+  // The view's camera and size now; why the rendered image no longer
+  // fits the view (its camera or size changed), or nothing.
+  ViewPose viewPose() const;
+  QString renderedImageStale() const;
   // Rebuilds the grid's lines when the zoom changes their step or the view
   // nears their edge (or always with `force`).
   void updateGrid(bool force = false);
@@ -555,6 +596,16 @@ private:
   // Ends a drag of a component (mitcad#55), cancelled or where it is.
   void endOccurrenceDrag(const QPointF& position, bool cancelled);
   bool accepts(const occ::handle<SelectMgr_EntityOwner>& owner) const;
+  // Selection scopes (mitcad#217): the kinds pickable now (the expanded
+  // ones while Shift is held), Shift's state (`hover`: pick again where the
+  // pointer is), whether a point of the design is behind a face of a shown
+  // body seen from the camera, and which part of an edge a click (at its
+  // picked point) or the last window (its samples inside) hit.
+  SelectFilter activeKinds() const;
+  void setShiftHeld(bool held, bool hover);
+  bool occluded(const gp_Pnt& point) const;
+  EdgeSight edgeSight(const occ::handle<SelectMgr_EntityOwner>& owner) const;
+  EdgeSight windowSight(const TopoDS_Edge& edge, const gp_Trsf& toWorld) const;
   void sceneChanged();
   // Asks for a frame (update()). The view handles its events (picks,
   // camera animations) while it draws a frame; where Qt never exposes the
@@ -595,13 +646,26 @@ private:
   std::map<QString, std::pair<QString, occ::handle<AIS_Shape>>> m_sketchEntityKeys;
   std::vector<occ::handle<AIS_Shape>> m_datums;
   std::vector<occ::handle<AIS_Shape>> m_highlights;
+  // The whole bodies highlighted, as last logged ("View body highlights:",
+  // for UI tests: the bodies a command's selection input holds).
+  QString m_loggedBodyHighlights = QStringLiteral("none");
   // What each pickable object shows.
   std::map<const AIS_InteractiveObject*, PickInfo> m_pickInfo;
   occ::handle<AIS_Shape> m_preview;
   occ::handle<AIS_Shape> m_sketchPreview;
   occ::handle<Graphic3d_Camera> m_savedCamera;
   SelectFilter m_filter;
-  std::function<bool(const SelectionItem&)> m_filterTest;
+  // setPickFilter's test, or setPickScope's (m_scoped).
+  PickTest m_pickTest;
+  SelectFilter m_expandedFilter; // the kinds while Shift is held
+  bool m_scoped = false;
+  bool m_shiftHeld = false;
+  bool m_contextPick = false; // a right click finds what a Shift+click would take
+  // A window selection is being applied (from its release until the
+  // selection is reported): its rectangle and direction.
+  bool m_windowSelecting = false;
+  QRectF m_windowRect;
+  bool m_windowCrossing = false;
   gp_Ax3 m_sketchPlane;
   bool m_sketchInput = false;
   // The sketch tool's cursor (mitcad#3): its icon, and whether it snaps.
@@ -664,9 +728,7 @@ private:
   occ::handle<Graphic3d_Texture2D> m_renderedTexture;
   bool m_renderedMode = false;
   // The camera and the window's size when the image was set.
-  occ::handle<Graphic3d_Camera> m_renderedCamera;
-  int m_renderedWidth = 0;
-  int m_renderedHeight = 0;
+  ViewPose m_renderedPose;
   // Navigation (isNavigating()): its state, its clock, and the timer that
   // ends a step's quiet time.
   ViewNavigation m_navigationState;

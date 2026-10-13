@@ -1,4 +1,4 @@
-# mitcad-import: .f3d and FreeCAD designs with their history
+ (by its `DesignDescription.json`, mitcad#229)# mitcad-import: .f3d and FreeCAD designs with their history
 
 `core/import` replays a design's history as Mitcad features, checks each
 step against the bodies stored in the file, and brings in what it cannot
@@ -48,7 +48,7 @@ Entry points:
 | `timeline_notes.rs` | The report's outcomes on the timeline (mitcad#170): import notes on fallbacks' base features, partial items and placeholders of items suppressed or failed in the file (*The outcomes on the timeline* below). |
 | `suppressed.rs` | Items suppressed in the file as suppressed features with their definitions (mitcad#180, *Items suppressed in the file* below). |
 | `references.rs` | Components of other documents filled from those documents' own imports, and the captured positions inside them (mitcad#196, *Components of other documents* below). |
-| `reference_folder.rs` | Where the files of the documents a design refers to are: the reference folder next to it, folders and files given, an `.f3z` package's designs, the GUIDs the files' manifests list (mitcad#196). |
+| `reference_folder.rs` | Where the files of the documents a design refers to are: the reference folder next to it, folders and files given, an `.f3z` package's designs (by its `DesignDescription.json`, mitcad#229), the GUIDs the files' manifests list (mitcad#196). |
 
 ### The history as the reference
 
@@ -195,7 +195,8 @@ Matching rules:
   the state before it) against the result, at up to 16 points spread over
   each (`Kernel::boundary_distances`; 3000 a side at most, so a pattern's
   thousands of faces get fewer each). A face is off when a point lies
-  farther than 0.01 mm (`geometric::TOLERANCE`). The result is taken when
+  farther than the geometric tolerance (`geometric::tolerance`, the
+  option `geometric_tolerance`, 0.01 mm by default; mitcad#224). The result is taken when
   every face off on either side is a corner patch, at most 2 % of that
   side's new area (`geometric::CORNER`) and at most 0.3 mm off
   (`geometric::CORNER_DISTANCE`: the corners of roundings that are the
@@ -276,6 +277,30 @@ just before the item (its `_f3d.result_no`) and finds them there
     middle lies within 2 % of its length of them
     (`refs::dressup_edge_match`). Two edges between the
     same ends of the same length are not told apart;
+  - the geometric tolerance (mitcad#224, the import option
+    `geometric_tolerance`, 0.01 mm by default): the replay's geometry
+    differs from the file's by the kernels' noise (a chamfer built 1 µm
+    otherwise moves the circle a later fillet names from z = 33.100 to
+    33.099 mm). Where nothing is within the exact 1e-3 mm, the edge
+    matcher looks again within the tolerance (the middle, the points on
+    the file's circle, segment or ellipse, the ends, the sums of pieces),
+    as do the lookups of faces through a point (`refs::resolve_face_where`,
+    and `refs::face_resolved_uniquely` with the same tolerance), of edges
+    by their middle (`refs::resolve_edge_where`) and of vertices
+    (`refs::resolve_vertex`). The uniqueness rules stay: a decoded input
+    found once within the tolerance is `read`; the item's report gives the
+    largest such distance (`geometric_deviation`), the design's report the
+    tolerance. Tolerances of 1e-3 mm or less turn the second look off;
+  - the two edges of a sliver face (mitcad#224): a dressup that takes a
+    face away exactly is built 1e-3 smaller (below), which leaves a strip
+    that narrow where the file's two faces meet in one edge (two chamfers
+    of 1 mm on the edges of a 2 mm band meet in a circle; the replay keeps
+    a band 2 µm high). Where the edge found has a twin of its length on
+    the file's curve within the geometric tolerance that shares a face
+    with it (the strip), the file's edge is both (`refs::with_sliver_twin`;
+    two such closed edges within 1e-3 are both, not ambiguous). A 0.2 mm
+    fillet of the circle where such chamfers meet came `inferred` from the
+    history's guess of both edges; it is `read` now;
   - the edge's body: the edge refers to its body's record like a body
     input does, so `_f3d.producer` and `_f3d.body_index` name the item that
     made the body. Bodies that touch have edges in the same place (the slot
@@ -312,7 +337,12 @@ just before the item (its `_f3d.result_no`) and finds them there
   that item's own records, which of its bodies (`_f3d.body_index`;
   `core/f3d/src/design/build/producers.rs`). The import keeps what each
   item made (`producers.rs`): the bodies of the features made for it (a
-  split's pieces from the bodies it split, which keep their ids). A body
+  split's pieces from the bodies it split, which keep their ids; a
+  combine's own bodies, the pieces a cut makes, without its target, which
+  keeps the record of the item that made it: the combine's records are
+  its new pieces only, so a removal that names the
+  combine's first record takes the first new piece, not what is left of the
+  target). A body
   input is found there first, then by its names (for an item with several
   bodies the names choose among them, else the index). Where base
   features took the item's state (a fallback), they bring every body that
@@ -526,8 +556,7 @@ The decoder reads their inputs (SCHEMA.md, *SweepFeature*, *PipeFeature*,
   their weight and angle parameters.
 - **Operations** of all three (a pipe's from one design only).
 
-Not decoded: a sweep's orientation, direction and rail scaling, a pipe's
-section type and whether it is hollow, closed lofts and participant
+Not decoded: a sweep's direction and rail scaling and participant
 bodies. Edges of other components (through their occurrences) are
 recognised and make the item fall back. Guide surfaces are found in the
 history as other face inputs are (mitcad#161, *Named inputs*): a point
@@ -698,7 +727,9 @@ candidates against the next state:
   chain after another (sets and edges in order); those edges with the
   gone edges that continue them tangentially (a rounding that ends where
   its edge runs on tangentially takes the next edge's middle away too,
-  and Mitcad's fillet follows the chain); the edges whose dressup the
+  and Mitcad's fillet follows the chain: also where a third sharp edge
+  meets the vertex, at which OCCT's own chain stops, mitcad#224,
+  `commands.md`, fillet); the edges whose dressup the
   state has whatever their distance, with their continuations; then
   looser guesses (the edges at that distance, all, the largest group at
   one distance). A definition refused because it holds only a part of a
@@ -1525,6 +1556,57 @@ still reaches the limit near its 50th item: its joins and roundings on the
 the whole result and the face merge after it), and three joins whose
 decoded definitions OCCT leaves invalid try their other definitions.
 
+A fourth round, on the 116-item design (stack samples of the import's
+threads, the trace of every item):
+
+- **Faces measured once.** An extrusion up to a face looked the face up on
+  each body of the definitions it tried (`refs::resolve_face_where`,
+  `face_resolved_uniquely`), and each lookup measured the area of every
+  face of the 5 000-face body (`Kernel::faces`, one face after another):
+  88 s for one extrusion, which then fell back because its time was over.
+  A shape now keeps its faces' kinds and areas once measured, measured on
+  all cores (`Shape::face_measures`, geometry); the extrusion takes 6–9 s
+  and is parametric.
+- **A rounding's edges mapped to faces once.** After OCCT failed a
+  rounding as asked, the retries mapped the whole body's edges to faces
+  for each selected edge (`faces_at_edge`): 15 s of a rounding of a few
+  dozen edges on the large body. The map is made once per try.
+- **Checks only where the body changed.** A boolean whose targets the
+  checker found valid checks only the faces it changed and those meeting
+  them at a vertex, and counts the shells' closure, orientation and
+  connection over the whole result (`is_valid_where_changed`,
+  `docs/architecture.md`); a join near a few faces of the large body
+  checked about 200 of its 5 000 faces. Booleans, roundings, chamfers and
+  the bodies built from the file say when the checker found them valid
+  (`Shape::checked_valid`).
+- **The optimal box on all cores.** An extrusion through all asks for the
+  box of the bodies; the box of each new body was the particle search over
+  every spline face on one thread (3 s on the large body). The faces'
+  boxes are now found on all cores, the same box.
+- **A face merge that cannot concatenate a chain keeps it.** OCCT's face
+  merge after a boolean (`ShapeUpgrade_UnifySameDomain`) threw "Courbes
+  non jointives" when the p-curves or curves of a chain of edges it merges
+  did not meet within their vertex's tolerance, and the join or cut whose
+  boolean had given a valid result failed (two extrusions of the design,
+  one of them its decoded definition). The port's patch 0110 keeps such a
+  chain as its edges.
+
+The design goes from 70 to 77 items parametric (27 → 34 inputs read) at
+300 s on a loaded machine; its first component (57 items) now finishes
+within the limit, and with the limit at 600 s 87 items are parametric (43
+read). What it keeps: an extrusion whose decoded profile names curve
+pieces the sketch's regions do not give cuts 3 % more than the file
+(OCCT's cut of the right region, also without the far features: 2052
+against 1985 mm³), a join that OCCT leaves invalid on bodies carrying an
+earlier pattern's approximation (1.8 · 10⁻⁵ of the volume) before it is
+tried on the history's state, a cut through all whose read side does not
+cut (the other side gives the state), and the second component's items
+after the limit. A 145-item design of the same round keeps its outcomes
+(116 parametric) and no longer reaches the limit (261 s); its fallbacks
+are roundings the geometry kernel fails with inputs as the file's
+(mitcad#121) and a guide-surface sweep along a 720-face thread that OCCT
+fails.
+
 ### Work beside the replay
 
 The timeline's items are replayed one after another; with `threads`
@@ -1622,7 +1704,8 @@ occurrence tree before the replay:
 - placements: the decoder's top-level `transform` (relative to the root)
   and nested `_f3d.local_transform` (relative to the parent), or an
   external dump's `transform2` (full path) made relative to the parent
-  occurrence; cm become mm; grounded and hidden occurrences stay so;
+  occurrence; cm become mm; grounded and hidden occurrences stay so (the
+  decoder reads the light bulbs: *Light bulbs*);
 - a component used several times comes in once and is placed by each
   occurrence;
 - occurrences of components of other documents (`isReferencedComponent`:
@@ -1747,6 +1830,18 @@ placements say, the copy does not follow it and the item falls back.
 Joints come in only where they hold where the file places the
 occurrences (*Joints*); occurrence moves are not replayed (*Limits*).
 
+The placements are given per path, in the root component. An occurrence
+inside a component placed several times is one occurrence in Mitcad (in
+that component) but has a path per placement of its parent: each of its
+steps is made relative to the parent's placement along the step's own path
+at the step's point of the timeline (`Captures::path_steps`), and those are
+its placements in the parent. Before, the last path's root placement was
+taken as its placement in the parent, so every copy of the parent moved it
+there: in a design of 20 copies of a part (each a component holding one
+occurrence of the part's body component), all 20 bodies stood one copy's
+offset away from their places (41 of the design's 113 occurrence paths
+misplaced; none after).
+
 ### Components of other documents (mitcad#196)
 
 A design can place components of other documents (inserted designs,
@@ -1792,33 +1887,126 @@ version id (the URN the design names it by) to its file (format:
   components as of any other; their geometry inside such a component is
   named through the key as above.
 
-**The import.** The replay places each occurrence of such a component as
-an occurrence of an empty component (*Components* above), as before, and
-records them (`ComponentReport::inserted`, with the document's URN and
-GUID), the GUIDs of all occurrences, and the captured positions whose
-paths go inside them (`positions_inside`). Then `mitcad-ffi`
-(`f3d_references.rs`) finds each document's file
-(`reference_folder.rs`: a file given for it; the reference folder next to
-the design or one given, by `references.json`, else another version of
-the same document there with a note; another design of an `.f3z`
-package; a `.f3d` of those folders whose manifest lists the document's
-GUID), imports it on its own with the same options and its own references
-(the same folders; a document that refers back to one being imported is
-not imported again; 16 levels at most), and `references.rs` copies it
-with its history into the empty component (`Document::fill_component_copy`,
-named after the document), one copy per document shared by all its
-occurrences. The captured positions inside it then place the copies'
-occurrences: each path's levels inside the document by their GUIDs, the
-last captured placement where the paths agree (a copy shared by several
-occurrences of the document has one placement for its own occurrences).
-It is all one undo step with the import.
+**The import.** The caller (`mitcad-ffi`, `f3d_references.rs`) first finds
+each document's file (`reference_folder.rs`: a file given for it; the
+reference folder next to the design or one given, by `references.json`,
+else another version of the same document there with a note; another
+design of an `.f3z` package, see below; a `.f3d` of those folders whose
+manifest lists the document's GUID) and imports it on its own with the
+same options and its own references (the same folders; a document that
+refers back to one being imported is not imported again; 16 levels at
+most), before the design is replayed. Each document (file and design) is
+imported once per import: the documents imported so far are shared by
+the imports of the documents it refers to, so a document placed by
+several occurrences, or referred to on several levels, is replayed once
+and copied from that import for each of them (mitcad#229).
 
-The replay does not see the copies: it matches the design's own history,
-which holds none of their bodies, so filling the components before it
-would make every comparison of bodies count them. So joints and
-relationships whose sides are on geometry inside those components are as
-before: on the components' origins, or left out. Re-trying them once the
-components are filled is left for later.
+**Packages.** An `.f3z` package holds the design and the documents it
+refers to, one `.f3d` per design. `Manifest.json` names the root design
+(`{"root": "<file>.f3d"}`; imported when no design is chosen, else the
+one with the longest timeline), and `DesignDescription.json` lists every
+design with the URN designs refer to it by (`about`, with its version),
+its `.f3d` in the package (`relativePath`) and its document's name
+(`friendlyName`, `displayName`; `mitcad_f3d::design::package`). A
+reference not given a file is resolved through that list before the
+reference folders (the exact URN, then the same document at another
+version, with a note), and the occurrences take the document's name
+from it. Without the list the design of the package whose `Manifest.dat`
+lists the document's GUID is taken (of several, the one listing the
+fewest GUIDs), but never the root design or a design being imported:
+an assembly's `Manifest.dat` lists the GUIDs of the documents it refers
+to as well as its own, so the first design listing the GUID was often
+the assembly itself (a root assembly with four fasteners replayed four
+times, its bodies placed for three of the fasteners).
+
+The replay places each occurrence of such a component as an occurrence
+of an empty component (*Components* above), records them (`ComponentReport::inserted`, with the document's URN and
+GUID), the GUIDs of all occurrences, and the captured positions whose
+paths go inside them (`positions_inside`); then, before its first item
+(`prefill.rs`), `references.rs` copies each imported document with its
+history into the component standing for it
+(`Document::fill_component_copy`, named after the document). Occurrences
+of one document share a copy where the captured positions arrange their
+insides alike (every inner occurrence either placed the same by the
+positions of both, or placed by neither: each level's placement is
+compared in the occurrence's coordinates, with the document's own
+placement where only one has a position, `split_variants`); the others
+get a component of their own, made for them first
+(`Document::give_occurrence_own_component`, `place_other_component`), so
+each arrangement has its own copy. Components placed more than once
+inside a copy (a bearing in an assembly) have one set of inner
+occurrences: where the positions put one of those differently by
+different paths, the occurrence of the later path gets a copy of its
+component (`Linker::separate`, `Document::make_unique`, which copies the
+component with its features and the components inside it) and the
+positions then name the occurrences of the copy (a GUID names one
+occurrence per copy, `ComponentReport::occurrence_guids` lists them; the
+one whose parent the path is at is meant). The occurrences inside start
+where the design's captured positions put them: each path's levels
+inside the document by their GUIDs, each placement in its parent worked
+out from the placements the earlier positions gave the levels above it
+(a position names the levels it moves and leaves those it does not), the
+last one where the paths agree, and every placement kept for the items
+between (`Captures::placement_at`). The captured positions come in as
+`capture_position` features at the end. It is all one undo step with the
+import.
+
+The replay matches the design's own history, which holds none of the
+copies' bodies, so while it runs the document's body view leaves the
+filled components (and the components inside them) out
+(`Document::set_import_scopes`, `refs::bodies_for`): matching, the final
+comparison and the fallbacks see the design's own bodies only. What the
+design names in another document is looked for among that document's
+bodies (its `_f3d.document` GUID): the reference resolution in `refs.rs`
+takes the bodies of the scope. So the items that name things inside the
+copies find them as they find those of any other component:
+
+- **Joints, as-built joints, relationships, grounded occurrences.** A
+  path level inside another document is an occurrence of that document,
+  named by a GUID (`Importer::occurrence_path`); a side whose frame lies
+  on the copy's faces and edges goes on them (with the frame override
+  where it does not), else on the copy's origin (a joint) or fixed
+  geometry (a relationship) as before, counted as sides on a component of
+  another document. A rigid group whose members are all inside one
+  occurrence has nothing to join (it says so).
+- **Bodies, faces and edges of another document named by an item**
+  (decoder: *Entities of other documents* in SCHEMA.md). A body is the
+  body of the copy that matches the stored body the decoder found in the
+  other document's history (`_f3d.stored`, the other import's
+  `bodies[].file`; `ComponentReport::external_bodies`, one per copy): a
+  combine whose tools are bodies of another document
+  (`Importer::external_body`) takes them by their occurrence links like
+  any tool of another component. A face or edge is found by its geometry
+  among the scope's bodies, so extrusions up to or from faces of other
+  documents' bodies and planes on them find the copy's face.
+- **Which occurrence.** A document placed more than once has an
+  occurrence per placement, and the file names the entity by its names in
+  the document only; what tells the occurrence is the placement of it that
+  the reference's slot carries (`_f3d.context`, SCHEMA.md). Once the
+  components are filled, `focus.rs` finds for each such reference the
+  occurrence path of the design whose placement at the item is that
+  (before the item or right after it, the design's own occurrences as the
+  captured positions have them there, those inside the copies as the
+  positions that placed them did): the reference is looked for among the
+  bodies of that occurrence's component
+  (`Document::set_import_focus`, `refs::bodies_for`), and the links of
+  the features that use the body (a combine's tools, an extrusion's
+  objects, a plane's faces) lead through that path, not through the
+  component's only path. Where one item names two occurrences that share
+  a component (a plane between the end faces of two copies of one bar),
+  the later one gets a copy of its own (`Document::make_unique`), so that
+  the body each reference is found on tells the occurrences apart.
+  Documents that share a GUID are told apart by the decoder the same way
+  (`resolve_external`). A reference that no occurrence is at (the
+  occurrence is inside a document the design does not name, or the file
+  has it moved since) is found as before.
+- **A plane between faces of components.** A construction plane's
+  definition takes faces, edges and vertices of other components' bodies
+  through `links` (`commands.md`, *construction_plane*; one link per body,
+  as an extrusion's `object_links`), so that a midplane between two
+  placed faces is made in the plane's component's coordinates where the
+  design places them, and follows when they move; before, such a plane
+  stayed a fixed plane.
 
 **Not found.** A document whose file is not found leaves its components
 empty, as before; the report lists it (`missing`, or `skipped` where the
@@ -1828,7 +2016,8 @@ reference folder gives one, else the design's, and its version), whose
 Skip leaves it out; a chosen file's folder is searched for the others
 ([app/COMMANDS.md](../../app/COMMANDS.md), *Files*). `mitcad-cli
 import-f3d` never asks: `--references DIR` adds folders,
-`--no-references` leaves the components empty.
+`--no-references` leaves the components empty (and the things inside them
+as before: joints on the origin, sides inside left out).
 
 **The report** (`references`): per document its URN, name, version,
 file and how it was found, `status` (`linked`, `missing`, `skipped`,
@@ -1840,32 +2029,241 @@ inside them that placed copied occurrences.
 **Tests.** `mitcad_f3d::testreferences` writes a synthetic assembly that
 places a part once and a sub-assembly (which places the part) twice, and
 its reference folder; `core.f3d` reads its occurrences and documents,
-`core.import` the folder's lookups and the filling on the mock kernel
-(a two-document dump with a captured position inside the part),
+`core.import` the folder's lookups, the filling on the mock kernel (a
+two-document dump with a captured position inside the part), a joint
+inside a copy translated in place, and a combine whose tool is a body of
+the part, the occurrences of a part that the positions arrange
+differently (a copy each), a component placed twice inside a copy whose
+inner occurrences the positions place differently (a copy of it, the
+pins where the file has them), a tool read through the occurrence its
+context names, two occurrences named by one item (a copy each), and a
+removal that names a cut's first record (the new piece, not the target),
+`core.f3d` the slot's placement and the choice among documents that
+share a GUID, `core.model` the import scopes, the operations that give an
+occurrence a component, make it unique, or place another one, and a
+construction plane between faces of components, and
 `cli.import_f3d_references*` the import from the folder, without it (the
 documents missing) and from a folder given (found by their GUIDs), and
 `app.ui-windows-references` the application's dialogs (skipped, then a
 file chosen whose folder holds the other).
 
-**Two real assemblies** with their folders (single designs, not a corpus
-run):
+**Corpus counts.** The 53 designs of the backup corpus that have a
+reference folder next to them, imported one by one (release build; the
+counts of a run without references of the same build first, then with the
+folders; 128 referenced documents linked, 2 not in their folders):
 
-- `b210bf9b`: five documents. Before, four occurrences in the tree (the
-  fifth, a bearing whose root component id is none of the assembly's, was
-  missing) and no bodies; now all five, each document imported with its
-  history (its items parametric/fallback/skipped: 22/3/3, 2/1/0, 8/0/0,
-  4/0/0, 15/0/0) and 12 placed bodies. The folder held a later version
-  of one document than the design uses: taken, with the note.
-- `57d68164`: ten documents in two levels (a sub-assembly placed six
-  times, with five documents of its own), 15 occurrences filled, the one
-  captured position inside them placed; before, no bodies. One body of a
-  referenced file is stored invalid and cannot be moved where the design
-  places it: `mitcad-cli`'s report now says so for that body instead of
-  ending (`core/model/src/api/report.rs`).
+| | without references | with the folders |
+|---|---|---|
+| items parametric / partial / fallback / skipped | 2089 / 49 / 196 / 633 | 2126 / 47 / 187 / 607 |
+| captured positions inside other documents' components left out | 1794 (in 20 items) | 0 placed inside the copies: 385 |
+| of them, left out because occurrences of the component put the occurrence in different places (one copy for all) | | 0 (112 in one design before a copy per arrangement) |
+| components made for occurrences arranged differently, copies of components placed twice inside a copy, copies for occurrences one item names | | 9 (in 5 designs) |
+| joints with a side on the origin of an empty component | 31 | 0 (on the copies' geometry) |
+| relationship rows with a side inside a component of another document, left out | 61 | 0 |
+| relationship sets / their rows translated | 54 / 76 | 67 / 91 |
+| joints skipped | 40 | 29 |
 
-The census's counts before and after (*positions inside other documents'
-components*, 47) are left to a coverage run with the reference folders
-on the Linux machine.
+All designs import without an error and with their final bodies as
+before. What the folders gave: the 4 combines whose tools are bodies of
+another document, 2 planes and 2 extrusions on faces of other
+documents' bodies, joints, relationships and rigid groups inside the
+copies (as joints where they hold where the file places the occurrences,
+else as as-built joints or constraint rows left out with the reason).
+What the copies per arrangement and the occurrence a reference is in gave
+on top: the captured positions of designs that place one assembly six
+times, or twice, each arranged differently inside, are placed (273
+positions placed inside the copies of one design, 26 before), the
+midplane between the end faces of two occurrences of a bar is a
+parametric plane (it was a fixed one), and the removal after a cut that
+splits its target takes the new piece: the fillets after it are
+parametric (2 designs; the two bodies of the cut were counted target
+first, the file counts the new piece alone). The rest, with the cause:
+
+- Rows and joints that do not hold where the file places the occurrences
+  (87 rows): the placements of occurrences inside a copy are known only
+  where a captured position names them.
+- An assembly of printed circuit boards names 201 of its inner
+  occurrences' positions by GUIDs that no stream of the board's file
+  holds (checked as text and as bytes in all of the file's streams and in
+  the design's other referenced files; they stand in the assembly, its
+  earlier versions and another design that embeds it): 29 of the 189
+  GUIDs of the board's components are the second GUID of an occurrence of
+  the board, the others name nothing the board has, and of those 157
+  positions only 18 put an occurrence where one of the board's
+  components is (140 do not; the board is dense, so a few millimetres of
+  tolerance would pair many by chance). The assembly's positions are
+  from a state of the board that the referenced version does not have, so
+  they stay left out ("the other document does not have it").
+- Planes and extents between faces of components of other documents
+  where the file's slot carries no placement that matches an occurrence
+  (an occurrence of a document the design does not name, or placed in the
+  file by a step the import does not follow): found as before, among all
+  the copies' bodies.
+- Derived designs: the three derive items of one design name a document
+  that no occurrence places, which is not in its reference folder (the
+  folder lists only the placed documents), and their selections are not
+  decoded; they stay skipped.
+- Primitives placed on a face (cylinders, spheres): the placement is not
+  decoded in any design.
+- Two designs of an enclosure whose documents are placed once each keep
+  two extrusion joins that change the bodies of two of the design's own
+  components (a lid and a base): the replayed result has other faces in
+  both components than the file's state, so they fall back. They name no
+  entity of another document; the fix is in the extrusion, not in the
+  references.
+
+### Sketches on other components' faces, linked curves as projections (mitcad#225)
+
+A sketch may lie on a face of a body of another component (a sketch of
+the root on a circuit board's face), and its linked curves (projected
+edges and faces, *Sketch curve flags* below) follow edges of its own
+component or of others. The model keeps both through occurrence links
+(mitcad#100, `commands.md`, *Geometry of other components*); the import
+uses them (`linked.rs`):
+
+- **The plane.** A sketch whose component the decoder gives, and that no
+  planar face of its own component carries, lies on the planar face of
+  another component's body, seen through one of its occurrences (those of
+  components of other documents, mitcad#196, included), that is in the
+  sketch's plane: the only one looking along the sketch's normal, else
+  the only one against it. It comes in on that face with a `plane_link`
+  (the occurrence path from the root to the face's component, and the one
+  the sketch's component is seen at: its first path) instead of a fixed
+  plane; the note names the component and occurrence. Two such faces
+  (two parts' faces at one height) leave the fixed plane.
+- **Projections.** The file does not name what a linked curve follows,
+  so the replay is searched: the edges of the sketch's own component and
+  those of every other component's bodies through each of their
+  occurrences (bodies whose box does not come near the sketch left out),
+  moved into the sketch's component. A linked line, circle, arc or
+  ellipse that exactly one edge projects onto (within the snap's 2e-3 mm;
+  the edges in the sketch's plane first, as the file projects the face a
+  sketch lies on) becomes a linked projection of that edge: with a `link`
+  when the edge is another component's, without in its own. The edge's
+  name must give one curve, and the curve must already be where the
+  model's projection puts it (the snap put it there: the choice of edge is
+  made once, and the snap puts the curve on the chosen edge's projection
+  first, mitcad#227; a line the edge runs the other way round is turned),
+  so following it moves nothing on import. The sketch is tried with the
+  projections first, then, at each level, without them.
+- **Kept fixed.** A linked curve no edge or several edges project onto
+  (a wall's top and bottom edges seen along it), a spline, or one whose
+  point the snap could not move (shared with a curve put elsewhere) stays
+  fixed reference geometry, and the sketch's note says so: "n linked
+  curves as projections (k of other components); m linked curves kept as
+  fixed reference geometry (no single edge of the replay they follow)".
+  A copy of a sketch in another component (*Components*) keeps its linked
+  curves fixed.
+
+A linked circle keeps where the file starts it (its `start_angle`, the
+seam of what is made from it) when it follows its edge (`commands.md`).
+A sketch with such links stays in its own component (the bodies its
+links name are not its component's).
+
+Six assembly designs imported one at a time (with their reference
+folders): sketches that stood on a fixed plane because their face was not
+found, now on a face of another component; linked curves now projections
+(of other components / of their own component) and those kept fixed. The
+item outcomes and modelling inputs are the same as before in all six.
+
+| Design | Sketches on another component's face | Linked curves as projections | Other / own component | Kept fixed |
+| --- | ---: | ---: | ---: | ---: |
+| `e3c34193` (a circuit board with a part around it) | 1 / 1 | 525 / 537 | 499 / 26 | 12 |
+| `c3e08097` | 5 / 10 | 192 / 266 | 58 / 134 | 74 |
+| `48ff426e` | 9 / 9 | 428 / 470 | 126 / 302 | 42 |
+| `52ba7a15` | 5 / 8 | 400 / 450 | 192 / 208 | 50 |
+| `bd57969c` | 4 / 9 | 191 / 265 | 57 / 134 | 74 |
+| `db73863f` | 2 / 4 | 92 / 193 | 32 / 60 | 101 |
+| all | 26 / 41 | 1828 / 2181 | 964 / 864 | 353 |
+
+The sketches left on fixed planes have no planar face of any replayed body
+in their plane at their point of the timeline (in the two related
+designs `c3e08097` and `bd57969c` the replay has no bodies of other
+components there yet). The linked curves left fixed have
+several edges projecting onto them (a wall's top and bottom edges seen
+along it), none (splines, edges of bodies not replayed), or a point the
+snap put elsewhere.
+
+### A revolution's touching regions, and a snap that keeps the sketch's regions (mitcad#227)
+
+The example design's Revolve3 (a 360° cut of two thin regions that share
+an edge: the wedge between a wall of a cylinder and a cone and the line
+across both) fell back with 1077 mm³ cut where the file cuts 1050 mm³. The
+ticket named the snap of linked curves (a line put on an edge 2 µm away,
+splitting the profile); on main after mitcad#224/#225 that no longer
+held: the solved sketch is the file's numbers to 1e-15 mm (the snap moved
+nothing), its two regions are the file's two profile regions exactly
+(1.454 and 4.846 mm²), and the cut failed on the file's own stored body
+too. The cause was the revolution: each region revolved on its own gives
+the file's volume (245.655 + 804.642 = 1050.297 mm³), but the two solids
+fused and simplified (`BRepAlgoAPI_Fuse::SimplifyResult`) merged the two
+parts of the cone face (the line the shared edge cut in two) into one
+face built wrong (the fused solid alone was 1077.658 mm³, its centre of
+mass off the axis). Regions that touch are now united as one planar face
+before the turn (`geometry/src/revolve.cpp`; the straddling profiles did
+so already), so no shared face is left for the fuse to merge; geometry
+test `test_touching_regions`.
+
+The snap (`snap.rs`) now follows the ticket's rules:
+
+- **One decision per curve.** The projection rule's choice of edge
+  (`linked::choices`: the distinct edges whose projection the curve lies
+  on, those in the sketch's plane first, the curve follows the only one)
+  is made once; the snap puts the curve on that edge's projection first,
+  then on any other fitting edge whose projection keeps the points
+  already placed (two edges' projections may differ by nanometres), and
+  the projection follows the same edge.
+- **The regions stay the file's.** A curve is moved only when the curves
+  it meets, and how (a crossing inside both, an end of one on the other),
+  stay those of the file's numbers, for the curve and for every curve the
+  move touches: points the file holds coincident move along, points held
+  on the curve go with it (the solver takes them), corners two curves
+  share are the solver's and not counted. A curve whose contacts would
+  change stays where the file stored it; the note says "n left where the
+  file stored them: a snap onto the model's edge would change the
+  sketch's regions" and the trace names the contacts. (Checking every
+  curve a point of which had moved in any earlier snap, instead of the
+  curves this move touches, cost 0.5 s on a 166-curve sketch; scoped, it
+  costs nothing measurable.)
+
+The example design (150 items, 78 of them occurrences and one a component
+insert that place components without geometry of their own):
+
+| Group | Target | Achieved |
+| --- | --- | --- |
+| Occurrences | placed as in the file | 78 / 78 (the final bodies the file's, volumes within 0.002 %) |
+| Modelling items (71) | parametric | 68 / 71 (before 67 / 71) |
+| their inputs | read from the bytes | 54 / 54 (0 inferred, 0 unknown; before 53) |
+| Sketches (14) | imported, on the right plane | 14 / 14 |
+| linked curves as projections | | 525 / 537 (12 kept fixed: several edges project onto them) |
+| Suppressed in the file (4) | definition imported as suppressed | 2 / 4 |
+
+Left, each with its cause:
+
+- **Fillet9** (fallback, also on the file's own stored state): a 0.9 mm
+  rounding of the 135° edge between Chamfer3 (0.5 mm) and a cylindrical
+  band beside it only 0.300 mm high (its seam; C-Pattern2's slots cut it).
+  The rounding needs 0.373 mm of the band (r·tan 22.5°), so the ball must
+  run over the band's far edge onto the blend face beyond; OCCT's rolling
+  ball with the port's overflow patches fails ("the radius may be too
+  large"); 0.7 mm builds. The overflow class of mitcad#121 (a narrow band
+  bounded by a blend face and cut by pattern slots), not this ticket.
+- **Extrude4, Extrude5** (suppressed in the file, placeholders): the
+  decoder gives Extrude4's two-sided extent only as guesses (its extent
+  records are not decoded), and a suppressed item has no history state to
+  check guesses against; Extrude5 cuts the body Extrude4 would make.
+  Decoding the two-sided extent records would bring both in.
+
+The 37 designs whose earlier reports had an extrusion or revolution not
+parametric (the designs the snap could touch), imported with main's
+import and with this one, item outcomes and the sketches' notes compared:
+
+| Group | Target | Achieved |
+| --- | --- | --- |
+| Sketches whose regions are the file's | all | no sketch's outcome or regions changed (502 sketches; 0 curves left where the file stored them) |
+| Curves snapped onto the model's edges | as before or more | 2162 / 2159 before (one design 42 / 49: edges the projection rule prefers place a shared point elsewhere, its projections 150 / 149) |
+| Linked curves as projections | as before or more | 3858 / 3857 |
+| Items parametric | as before or more | 1575 / 1574 (Revolve3 of the example design's other copy; nothing lost) |
 
 ### Parts of items, face profiles and sketch heights
 
@@ -2250,10 +2648,7 @@ their class (`core/f3d/src/design/classes.rs`, `ITEM_TYPES` and
   them (fallback), with the reason in the report. Sheet metal flanges
   (`FlangeFeature`), embosses (`EmbossFeature`), electronics boards
   (`PCBFeature`), moved faces (`MoveFaceFeature`) and drafts
-  (`DraftFeature`), whose inputs are not decoded; cylinder and sphere
-  primitives (`CylinderFeature`, `SphereFeature`), whose operation and
-  sizes are decoded (mitcad#154) but whose placement is not;
-  components mirrored into new ones (`MirrorComponent`) and bodies derived
+  (`DraftFeature`), whose inputs are not decoded; components mirrored into new ones (`MirrorComponent`) and bodies derived
   from other designs (`DerivedContext`). Copies and cuts of bodies
   (`CopyPasteBodies`) come in as Mitcad's except a cut whose body the file
   lost. Bodies moved into a new component
@@ -2283,6 +2678,23 @@ older sketches, construction axes and points stay unknown. Copies of a
 sketch imported into another component follow the default. The report
 counts sketches and construction features, those with unknown light bulb
 and those kept (`light_bulbs`).
+
+Occurrences: the file keeps one object (class `2BB3BB69`,
+`classes::HIDDEN_OCCURRENCE`) per occurrence path whose light bulb is off
+and none for those shown. Its last reference list is the path (`u32 n | n
+× ref occurrence`, from the root component down); a top-level occurrence
+of a component of another document has an empty list and the object refers
+to that one occurrence of the file only; a path that goes on inside another
+document names its levels there by context references and is that
+document's own (its file holds it). The decoder turns `isLightBulbOn` off
+on the occurrence node at the path; the others stay unknown (shown).
+Against the API reference dumps: the hidden occurrences of all 35 designs
+that have any agree by count per component (two designs name the
+components differently), and in one design of 113 occurrences one by one.
+An occurrence the file hides is hidden in Mitcad
+(`set_occurrence_visible`); one inside a component placed several times
+(one occurrence in Mitcad, a path per placement in the file) follows its
+first path.
 
 ### Crashes
 
@@ -2380,14 +2792,13 @@ memory cannot be caught: a fillet with a strip 1e-4 wide did, hence the
   many turns makes the cut fail), about 60 for an M10 thread 20 mm long,
   which later operations on the body have to take into account.
 - Sweeps, pipes and lofts (*Sweeps, pipes and lofts*): sections that are
-  faces or sketch curves, guide surfaces, inputs of other components and
-  closed lofts are not translated; a loft whose sections' sketches have
+  faces or sketch curves, guide surfaces and inputs of other components
+  are not translated; a loft whose sections' sketches have
   many regions is tried with twelve choices of them.
-- Not translated: coils, ribs and webs. A coil's object names its plane
-  (a face recipe) and holds a frame and the coil's choices (type, section,
-  position, direction, operation) in fields not decoded; the corpus has
-  one coil, too little to settle them, so coils come in as stored bodies.
-  No design of the corpus has a rib or a web.
+- Not translated: ribs and webs. A coil's plane, frame and choices (type,
+  section, position, rotation, operation) are decoded since mitcad#25; a
+  coil comes in where it rises along its plane's normal and starts on its
+  x axis. No design of the corpus has a rib or a web.
 - Surface extrusions, revolutions and sweeps (`isSolid` false) are not
   translated: their sheets come in as stored bodies (*Threads, tapped holes
   and sheets*). The stream decoder tells surface extrusions since
@@ -2932,6 +3343,79 @@ are four mirrors (other causes) and four rectangular patterns (a copy
 reaches no body in two, the history does not hold the result in two; one
 of them keeps defaults of a second direction without an entity).
 
+#### Primitives, coils and option constants (mitcad#25)
+
+Controlled one-option variants (`MITCAD_F3D_MODELS`: 19 primitives, 13 coils,
+and chamfer, hole, loft, sweep, pipe, thin-wall, through-all and font
+variants) of the newer writer (2705; its class version 9 parameters carry
+one more `u32 0`, without which no parameter of such a file was read).
+Every field below was read against the dump of the same model.
+
+| Group | Bytes | Variants / real designs |
+| --- | --- | --- |
+| Box, cylinder, sphere, torus: operation | `u32 operation` (1 join, 2 cut, 3 intersect, 4 new body, 5 new component), `u8 1`, then a run of references (holders, the frame input, a definition) | 19 variants; 8 primitives of one design |
+| Their placement | after the run `u8 flag`: 1 the identity, 0 and a row-major 4x4 matrix in cm. The frame input (`7B6C3C2D`) holds the matrix of the plane's or face's frame *with its origin* (none: the XY plane). A point of the primitive's own frame is at `frame * placement * p`; a box's width (`DistanceX`) is along x, its length (`DistanceY`) along y, its height along z | box on the XY plane, on an offset plane, on the XZ plane and on a face at another point; sizes; join and cut; cylinders and spheres likewise; all verified against the stored bodies (the bounding boxes of the dumps' bodies) |
+| Torus position | `u32` after the placement: 0 on the centre line, 1 outside, 2 inside | 4 variants |
+| Coil | `u8 flip` (1: left-handed), `u32 operation`, `u32 type` (1 revolutions and height, 2 revolutions and pitch, 3 height and pitch, 4 spiral), then the holders and the frame input, the placement, then `u32 position` (1 inside, 2 on centre, 3 outside) and, after one more reference, `u32 section` (1 circular, 2 square, 3 triangular outside, 4 triangular inside) | 13 variants; 1 real design (4 copies): all read |
+| Chamfer set | tangent chain and flip bytes (already read) agree with the dumps on the six variants; the flip means which face takes the first distance, the face of the coedge that runs the edge's way, which the replay's topology has, so the import still tries both readings | 6 variants |
+| Hole direction | the first null reference behind the header, then `u32 type` (0 simple, 1 counterbore, 2 countersink) at +9 and `u32 flipped` at +13 (class version 7 records) | 39 holes of the dumps: all agree; none of the 17 holes of older writers is decoded |
+| Loft | after the rails `u8 isClosed`, `u32 isSolid`, `u8` | 9 variants; 14 real lofts all open and solid |
+| Sweep | `u32 orientation` after the ten slots: 1 parallel, 2 perpendicular | 8 sweeps with dumps; 18 real sweeps perpendicular |
+| Pipe | `u8 isHollow` before `u32 operation`; `u32` after the first input slot: 0 circular, 1 square, 2 triangular | 5 variants; 2 real pipes circular |
+| Thin extrusion, two sides | `u8 1 | u32 location | holder | u32 location two | holder two | u32 1 | ref` | 6 variants |
+| Through all, newer writer | the flag byte of the older writers is 1 exactly where `isPositiveDirection` is false; the direction given to `setOneSideExtent` changes nothing | 4 variants |
+| Text style | the second flag byte after the horizontal alignment: 1 italic (bit 2) | 4 variants |
+
+What the variants showed about geometry: the stored coil's section lies in
+the plane through the axis (its size is the circle's diameter, the square's
+side, the triangle's height; the radial extent is placed on the diameter),
+which Mitcad's coil now builds by the helix's screw motion; a pipe's square
+size is its side and a triangle's its height with the path at its middle.
+
+What the loft, sweep and font variants showed, and the kernel work that
+followed (each checked against the stored bodies, import report
+*verified*):
+
+- *Lofts through three or more sections without end conditions or rails*
+  (open or closed) are piecewise cubic Hermite surfaces: each point of a
+  section follows a cubic piece through its matches in the sections, whose
+  tangent at a section is the derivative of the parabola through it and
+  its neighbours, the first and last pieces being the parabolas that
+  arrive with the inner tangents; a closed loft is the periodic form.
+  The stored surfaces' centre lines and volumes agree to 7 digits (an open
+  ring of four circles 9503.318 mm3; closed 12880.53, which the kernel
+  built as no solid before the closing curve and the corner matching were
+  right; the old C2 interpolation gave a ring 12 % fuller and an open one
+  17 % too large). The matching of the sections' corners takes a section
+  turned a quarter round the axis a corner off, so each section is turned
+  to lie nearest to the one before it.
+- *Surface lofts* (`isSolid` false) are sheet bodies of the side faces
+  (`surface`), a new body; the volume of an open shell is 0.
+- *Direction end conditions*: the angle is measured along the loft, so at
+  the last section a positive angle arrives moving outward (the takeoff
+  into the loft tilts inward); the end section's loft was 49 % too large
+  with the other sign and is 1.6 % small now, the start's 1.2 % large.
+  What stays: the stored takeoff fields (the derivative across the
+  section, row by row of the circle's polynomial form) carry a fourfold
+  ripple (the free end's 8 % down at the diagonals, its direction wobbling
+  by 2.6 degrees; the direction end's 1.5 %), a property of the stored
+  fit that no rule of the section's geometry gives, so these lofts stay
+  fallbacks of the history (0.5 % accepted).
+- *A tapered sweep* leans each side of the profile by the angle (the
+  outline offset by the distance times the tangent; a square stays a
+  square, a circle is a cone), as an extrusion's taper does; Mitcad scaled
+  the whole profile (10650.14 mm3 for the reference model, exact now).
+- *Sketch text height*: the file's capital height is that of the glyph A
+  (the apex is flat in a sans-serif face but reaches the roman face's
+  overshoot, 1387 against 1356 units of 2048 for a roman face's H), which
+  explains the 0.9776 scale of one roman face (exact for the sans-serif
+  ones); all three bodies of the reference text agree to 1e-6 now.
+
+Not translated, with the cause found: a chamfer without its tangent chain
+where a round continues the edge (the kernel always follows chains), and
+four primitives that stand on faces of a component inserted from another
+design.
+
 #### Twin edges and a thread's start angle (mitcad#106, mitcad#186)
 
 Two groups the corpus alone could not teach were read from controlled
@@ -3226,7 +3710,9 @@ sketch or any object that refers to the curves (the API's referenced entity
 is a face for 1,491 of 1,512 linked curves of five sampled designs, an edge
 for 20 and a sketch entity for one). Importing them as projections needs that source in the
 file and the face or edge resolved to a replayed body's name; neither is
-decoded, so the curves stay without their source.
+decoded, so the source is found in the replay by where the curve is
+(*Sketches on other components' faces, linked curves as projections*,
+mitcad#225).
 
 Linked curves on the model's edges. The numbers stored for a linked curve
 are single-precision rounded, up to 1e-5 mm and more off the geometry it
@@ -3235,7 +3721,15 @@ curve follows then no longer touched it, and a tool face tangent to the
 circle gave an invalid boolean. Before the sketch is added, each linked
 line, circle, arc and ellipse that an edge of the replay's bodies projects
 onto within 2e-3 mm goes to that projection (`snap.rs`; its shared points
-with it; the note counts them: "(n on the model's edges)"). Elliptical edges
+with it; the note counts them: "(n on the model's edges)"). A snap must
+not change the sketch's regions (mitcad#227): the curve is moved only when
+the curves it meets, and how (a crossing, an end on a curve), stay those
+of the file's numbers, for it and for every curve that moves with it (one
+sharing a point, or whose point the file holds coincident; a point the
+file holds on the curve goes with the curve, as the solver takes it);
+corners two curves share are the solver's and not counted. A curve whose
+contacts would change stays where the file stored it, and the note says
+"n left where the file stored them". Elliptical edges
 and splines are not matched (the kernel lists no curve for them). Of the
 35 designs this was tried on, it made 9 extrusions in 9 designs
 parametric, and the sketches of four designs that could not be solved
@@ -3898,6 +4392,35 @@ traces of the import (the backup corpus repeats some designs of
   tolerance, so the earlier fillet's missing rounding reaches the final
   body instead of being replaced by the stored state.
 
+  Where the edge overflow stands at the close of mitcad#121 (the port's
+  patches up to 0077, the later rounds' details in the [port's
+  README](../../third_party/vcpkg-ports/README.md)), measured the same way:
+  of the 249, 63 are the file's body (MATCH), 41 within 1e-3 (NEAR), 1 is
+  off and 144 (117 distinct inputs) fail. By class (MATCH / NEAR of all):
+  the narrow face gone 15 / 12 of 54, partly gone 6 / 13 of 59, kept
+  2 / 6 of 39, not known 0 / 0 of 5; two roundings overlapping on a face
+  6 / 4 of 16; the others (built before, crashes, wide faces) 34 / 6 of
+  76. Where OCCT stops for the 144, traced in the fillet builder
+  (distinct inputs in brackets):
+
+  | Where it stops | Fail (distinct) | Cause |
+  |---|---|---|
+  | the corner at a vertex where a rounding ends | 48 (40) | the end face's intersection with the blend fails (`PerformOneCorner`, 8), no face at the end for the cap (5), the vertex's edge not found (8), the cap crosses another rounding's contact line on the face at the end (6), the intersection at the end through several faces (7), an end on a tangent continuation with no point on the arc (3), others (11) |
+  | an invalid result | 27 (22) | the topological build gives self-intersecting wires (15) or unorientable faces (12): pieces that end on face boundaries, corner patches |
+  | rolling on an edge after an overflow start | 15 (13) | the blend rolling on the far edge stops where the ball pivots on the edge or turns at its end; its sections are OCCT's plane sections, not the rolling ball of 0075 |
+  | the walk between two faces | 16 (12) | after a contact reaches its face's edge, or from a start on it, the first step leaves the next face (11 distinct; traced: a wall's concave rounding of a smaller radius than the ball, which the ball cannot touch and should bridge); one walk whose steps stay too large |
+  | the computation of a rounding | 14 (11) | exceptions in the stripe's computation, mostly without a message; two of a fillet's roundings whose surfaces intersect (they consume each other's faces) |
+  | two roundings whose contact lines cross on a face | 8 (5) | the contacts of two roundings of one fillet cross on a face they share, not all along it as 0013 and 0016 handle (`ChFi3d_StripeEdgeInter`) |
+  | no start | 8 (8) | among them a wall's top rounded on both sides with one radius, the top 0.02 mm narrower than two radii: no ball touches both the bore and the other side's rounding (two equal radii) |
+  | chamfers wider than a face | 7 (5) | the overflow is for fillets only: no chamfer runs over a face or along an edge |
+  | no edge to round | 1 (1) | faces 1 degree from tangent |
+
+  No single cause covers more than a few designs: each class above is a
+  new construction in OCCT's fillet (corner patches after an overflow,
+  rolling-ball sections on an edge, a blend bridging a face the ball
+  cannot touch, chamfer overflow), which the follow-up tickets of
+  mitcad#121 take one by one.
+
 - **Edge names several edges fit** ("n edges fit the names"): 118 edges
   in 25 items. The recipe's tail after its type string, `i32 -1 | i32 -1
   | u32 n` then per vertex of the edge a record of entity indices
@@ -3986,8 +4509,8 @@ it (*What the history settles*).
 | Thicken, surface patch, extend, offset, stitch, trim, ruled, boundary fill, delete face (cadmpeg) | not read | not translated by the import |
 | Draft: angle, drafted faces, neutral plane or parting tool (cadmpeg) | not read | one corpus draft |
 | Split body, split face: tool and target groups (cadmpeg) | read (split body) | |
-| Cylinder, sphere, box, torus primitives: operation, placement matrix, sizes (cadmpeg) | **operation and sizes now**; placement not | the rigid matrix the records hold does not place the corpus' six cylinders and two spheres (one design: their bodies in the history lie elsewhere, and not by one transform), so they stay untranslated; box and torus not in the corpora |
-| Coil: operation, clockwise, extent kind, section, position, placement (cadmpeg) | not read | three corpus coils; Mitcad's coil exists, the import does not translate it yet |
+| Cylinder, sphere, box, torus primitives: operation, placement matrix, sizes (cadmpeg) | **read** (mitcad#25) | the matrix is in the frame of the plane or face the primitive stands on (that frame carries the plane's origin): `frame * placement`; two cylinders and both spheres of the corpus' one design come in, four cylinders on faces of an inserted component do not |
+| Coil: operation, clockwise, extent kind, section, position, placement (cadmpeg) | **read** (mitcad#25) | type, section, position, rotation and placement; the corpus' coil (four copies) comes in parametric |
 | Base feature: result bodies by entity suffix, state pair (cadmpeg) | read differently | the history's states stand in for base features |
 | Component insert, local occurrences, copy-paste, derived instances, occurrence patterns (cadmpeg) | read | occurrence placements (mitcad#75, mitcad#81) |
 | Work planes, axes, points: placement frames, solved axis, point data (cadmpeg) | read (planes: frame, definition and, since mitcad#178, the entities they are measured from; axes partly) | construction axes without decoded geometry are skipped; axes are fixed (their inputs are not read) |
@@ -4030,8 +4553,8 @@ Over both private corpora every fillet set is a constant radius with G1
 continuity and every chamfer has chamfer corners; 12 fillet sets have
 their tangent chain off (the import chained them before), and the
 options of 92 sets in older records are not read. Of the 249 dressups
-classified in mitcad#107 and rebuilt in mitcad#121 (the latest round: 50
-MATCH, 38 NEAR, 1 OFF, 160 failing), every one is a constant-radius G1
+classified in mitcad#107 and rebuilt in mitcad#121 (at its close: 63
+MATCH, 41 NEAR, 1 OFF, 144 failing), every one is a constant-radius G1
 fillet with rolling-ball corners and its tangent chain on, or an equal or
 two-distance chamfer with chamfer corners, as the import built them (15
 of them in records whose options are read only in part, none of the
@@ -4059,8 +4582,8 @@ kernel's.
 | Sketch texts | yes (`textex_tag`) | not done (21 texts) |
 | Shells whose body or faces were not found (5 + 1) | yes (face group, outward flag) | read now |
 | Offset faces whose faces were not decoded (2 + 2) | yes | read now |
-| Cylinder and sphere primitives (6 + 2) | operation and sizes yes; the placement matrix does not place the corpus' primitives | sizes read; still not translated |
-| Coils (3) | yes (operation, handedness, extent kind, section) | not done |
+| Cylinder and sphere primitives (6 + 2) | operation and sizes yes; the placement matrix does not place the corpus' primitives | placement read in the frame of the plane (mitcad#25): 4 of 8 come in |
+| Coils (3) | yes (operation, handedness, extent kind, section) | read (mitcad#25) |
 | Drafts (1), moved faces, embosses, sheet metal | drafts yes; sheet metal yes; the others no | not done (Mitcad's draft exists; one corpus item) |
 | Unknown item classes (`?…`) | — | none in the corpora |
 
@@ -4155,8 +4678,9 @@ other's state cannot be rebuilt (its input comes after a fallback).
   - 1)); the reference models' patterns, of the spacing type, store the
   spacing. The file's choice between the two is not read.
 - **Primitive placement.** The description reads the cylinder's and
-  sphere's matrix as their placement; it is not where the corpus'
-  primitives are.
+  sphere's matrix as their placement; it is placed in the frame of the
+  plane or face the primitive stands on, whose own matrix carries the
+  origin (mitcad#25).
 - **The bytes after a spline's degree.** One paragraph of the cadmpeg
   description calls them a constant token, another a fit tolerance: they
   are an `f64` (1e-9 in the records looked at).
@@ -4617,9 +5141,9 @@ Found and left, each with its cause:
   have no curve records, and the regions come from the glyph outlines of
   the font the file names, which is not installed.
 - **Primitives and coils** (a cylinder, a sphere and a coil: 9 items in 2
-  designs): the API dumps give no detail for them, the sizes are in the
-  parameter table (diameter, section size, pitch, revolutions) and the
-  placement is not decoded.
+  designs): the API dumps give no detail for them; the sizes are in the
+  parameter table and the placement and choices are decoded since
+  mitcad#25 (*Primitives, coils and option constants*).
 - **Extrusions whose profile records name curves the sketch no longer has**
   (stale selections, `inferred`): the regions come from the history.
 - **Where a circle starts (its seam)** is read now (see "Where a circle
@@ -4916,6 +5440,277 @@ geometry of the largest design stay skipped). Left, with causes:
 - Profile loops that name spline curves are not mapped to regions (`profile
   curve … is not a line, arc or circle`): the extrusions of such sketches
   are parametric but not `read`.
+
+### A circuit board assembly with a part around it (model by model)
+
+A design whose first 98 items place a circuit board brought in from an
+electronics tool (20 components of parts, each its bodies in one file base
+feature, the board's and the parts' 60 occurrences, most of them hidden),
+then model a part around the board in the root component and place a
+component of another document; an older version of it has the board only.
+It opened with the parts scattered and everything shown:
+
+- **Occurrences inside components placed several times** stood one copy's
+  offset off (*Occurrence placements*): each part is a component holding
+  one occurrence of the part's body component, and a part placed 20 times
+  put all 20 bodies where the 20th copy should be (41 of 113 occurrence
+  paths misplaced, 6 of them shown; none after).
+- **Hidden occurrences were shown**: the light bulbs of occurrences were
+  not read (*Light bulbs*): 51 of the 60 top-level occurrences, the board
+  among them, are hidden in the file; all 96 occurrence paths whose
+  visibility differed now agree.
+- **The file's own base features** (bodies a tool brought in, without a
+  history in the file) were fallbacks with a timeline warning each ("stands
+  in for Base Feature1"). Such a base feature is its stored bodies: where
+  the item's state changes its own component only and nothing waits
+  before it, its base feature is its translation, `parametric` with its
+  inputs `read`, and its feature gets no import note. A base feature whose
+  state also brings other components' bodies stays a fallback.
+- **Captured positions** read their positions from the file (its captured
+  matrices, else the placements it stores): `read`, before `unknown`.
+- **The final comparison** paired two parts' near-identical bodies across
+  their components (a deviation of 0.05 mm reported for two exact bodies):
+  a body of the file is matched in its own component first
+  (`refs::compare_bodies`).
+
+Before → after (items; the references folder in place; without it the same
+outcomes, the other document's component empty): parametric 47 → 67,
+fallback 22 → 2, skipped 81 → 81 (78 occurrence items, the component
+insert and 2 suppressed extrusions); modelling inputs `read` 29 → 51,
+`inferred` 2 → 2, `unknown` 2 → 0. The older version: 20 fallbacks → 20
+parametric, 41 → 0 misplaced occurrence paths. Final bodies as before: all
+exact.
+
+Left, with causes:
+
+- A revolution that cuts a taper groove with two adjacent profiles about a
+  construction line (360°): its inputs agree with the API reference dump
+  (profiles, axis, angle), but the cut removes 1077 mm³ where its tool's
+  toroids hold 1050 mm³, the file's (the tool's faces lie on the body's,
+  some candidates report `BRepCheck_BadOrientationOfSubshape`): a geometry
+  kernel failure. The fillet after it names an edge of the revolution's
+  result, which the stored bodies standing in for it no longer name, and
+  falls back with it.
+- The first sketch of the root lies on a face of the board, a body of
+  another component. It stood on a fixed plane in the face's place, and
+  its 166 projected edges of the board (and the projections of later
+  sketches) were fixed reference geometry; since mitcad#225 it lies on the
+  board's face through its occurrence, and 525 of the design's 537 linked
+  curves are projections (499 of the board's and other components' edges,
+  26 of the root's own), the other 12 fixed where no single edge of the
+  replay projects onto them (*Sketches on other components' faces, linked
+  curves as projections*). The board is a base feature, so nothing that
+  could move it is lost.
+- A suppressed extrusion up to a face: the decoder does not read the face
+  of an extent up to an object, and a suppressed item has no history state
+  to settle it; it stays a placeholder.
+
+### Eight designs, third round (model by model)
+
+Eight designs (four of them also stored in a second copy) that still had
+items outside `parametric` and `read` were imported one by one (release
+build) and every remaining item traced. Two rules that hold for any design:
+
+- **Components made together.** One history state can hold several new
+  components that a row of `ComponentFromBodies` items made (three
+  items, three components, one state). The first item of the row moves
+  the bodies into every component, one feature per component
+  (`component_from_bodies`), and the next items of the row take the
+  next components' features and notes (`Importer::made_ahead`); the
+  state is matched once, with all the moved bodies and the retired
+  copies of the owner's history. Before, such an item needed exactly one
+  component in its history and the stored bodies stood in. Designs: 1
+  item → parametric and its two siblings from skipped → parametric.
+- **Linked curves the file keeps inconsistent.** The curves a sketch
+  links to the model are locked in place, and tried free when their ends
+  do not meet exactly. Some are inconsistent by a few hundredths of a
+  millimetre among themselves (an arc whose end lies 0.024 mm off its
+  circle; a short stub whose end lies on such a curve), so no solution
+  moves less than 1e-4 mm and the sketch was skipped, and with it the
+  extrusions of its regions. With the reference curves free the points of
+  the linked curves, and those that constraints tie to them, may move up
+  to 0.05 mm (`sketch::reference_points`, `position_error_slack`); every
+  other point keeps the 1e-4 mm. The sketch keeps its constraints where it
+  can (its note says the reference curves are not locked). Designs: 2
+  sketches, and 2 extrusions that followed them.
+
+Over the 8 designs (items; the queue run before, this round after; parametric
+/ partial / fallback / skipped, then inputs read / inferred / unknown):
+
+| design | before | after |
+|---|---|---|
+| a bearing | 19 / 0 / 6 / 3, 6 / 2 / 6 | 25 / 0 / 2 / 1, 10 / 1 / 6 |
+| an end cap | 28 / 0 / 5 / 2, 16 / 0 / 1 | 32 / 0 / 3 / 0, 18 / 1 / 0 |
+| a lamp holder | 43 / 3 / 5 / 2, 17 / 7 / 16 | 45 / 2 / 5 / 1, 35 / 3 / 3 |
+| a pin holder | 13 / 1 / 9 / 1, 8 / 2 / 0 | 14 / 1 / 8 / 1, 9 / 1 / 1 |
+| a tube end | 127 / 0 / 8 / 16, 68 / 7 / 16 | 127 / 0 / 8 / 16, 78 / 6 / 7 |
+| a tube assembly | 88 / 0 / 9 / 13, 43 / 7 / 11 | 88 / 0 / 9 / 13, 52 / 6 / 3 |
+| a pyramid side | 48 / 5 / 5 / 8, 18 / 5 / 7 | 53 / 2 / 3 / 8, 20 / 6 / 5 |
+| a pyramid | 35 / 4 / 9 / 2, 12 / 3 / 6 | 40 / 1 / 8 / 1, 14 / 5 / 3 |
+
+(Much of the change comes from rules merged since the queue run; the two
+rules above account for the bearing's three component items and the end
+cap's two sketches, two extrusions and their notes. The copies of the
+designs give the same counts.)
+
+Left, each with its cause:
+
+- **Fillets and chamfers the kernel fails** (the rounding cannot end at a
+  vertex, the radius may be too large, an invalid shape, a volume off, a
+  result 1 % off; about 30 items): the decoded inputs agree with the API
+  reference dumps where a dump exists.
+- **Components of other documents** (a tube assembly: an extrusion up to a
+  face of such a component, a cut and a mirror in its parts, joints on
+  their origins).
+- **Sketch lines in three dimensions** (a lamp holder: a sketch whose
+  lines slope out of its plane and an extrusion and a plane taken from
+  them): Mitcad's sketches are planar.
+- **Stale profile records** (a pyramid: the profile curve of a revolution
+  is no curve of its sketch any more; the bodies after it, cut and
+  rounded on the stored one, make invalid wires in the boolean): no
+  mapping from the old curve to the new one is stored.
+- **Stale linked sketch constraints** (a pyramid side: an offset whose
+  source curve is none of the sketch's).
+- **Sketch text** (a bearing: an extrusion of text along a circle; the
+  glyph regions have no font here) and a cut and paste of a body whose
+  reference failed in the file itself (the file keeps the cached result).
+- **A cut whose decoded profiles the boolean cannot build** (an end cap:
+  the cut of two profiles lying within hundredths of a millimetre of the
+  body's faces gives an invalid shape; the extrusion comes in `inferred`
+  through another choice of regions, then the stored state): not
+  diagnosed further; a retry with a fuzzy value of 1e-5 and 1e-4 mm did
+  not build it.
+- **A tool body the file's own history no longer holds** (a pin holder:
+  two combines whose tool body is not in any state, the API reference
+  dump lists no tool either) and a sketch on a face of the body of the
+  base feature that no state keeps.
+- **Inputs not decoded**: sweeps, pipes and lofts have no `read` rule
+  (profile region, orientation and rail scaling are not stored in a
+  decoded form), dressup edges named as an edge of a bounded face, a
+  revolution whose profile has a stale record, joints, relationships and
+  positions (captured positions are `read` since: *A circuit board
+  assembly with a part around it*; the sweeps' and lofts' rules, the
+  bounded faces' edges, the revolution's record and the joints' and
+  relationships' provenance are in *Twenty-nine designs, third round,
+  second batch*).
+
+### Twenty-nine designs, third round, second batch (model by model)
+
+Twenty-nine designs (one of them stored in both corpora) with items outside
+`parametric` or `read` were imported one by one (release build; two at a
+time) and each remaining item was traced. Rules that hold for any design:
+
+- **Profile records of curves the sketch no longer has.** A profile older
+  than the sketch's last edit can list curves the sketch has since
+  replaced; its loops then carried a record without a curve and the
+  selection was never exact. A record left out where the loop's other
+  pieces close up without it (every end of a piece at the end of exactly
+  one other, a whole circle on its own: `profiles::closes`) leaves the
+  loop's inside what they enclose, as the original application reads it
+  (its dumps list the closed loop's curves only). A loop that does not
+  close without the record stays inexact. A sketch with one region has
+  one choice: whatever the records say, the selection is that region and
+  exact. Designs: 3 extrusions (one suppressed in the file) and 1
+  revolution → `read`.
+- **Edges of faces a set selects.** The decoder turns a face a dressup's
+  set selects (`bounded_face` recipe) into its edges ("an edge of a
+  face"); those edges are named by the file as the edges of an `edge`
+  recipe are, and count as read. Designs: 1 chamfer → `read` (the rest of
+  this kind came in earlier).
+- **Edges the file names that its history no longer has.** An edge the
+  decoder left unresolved because both faces are found with no edge
+  between them, or because a face of it is gone from the history, is no
+  input of the file's operation where the others resolve: the API
+  reference dumps list the resolved edges only: of the 79 dressups of the
+  dumps with edges the decoder left unresolved, 41 list exactly the edges
+  that resolved (all of them for these two reasons), 22 list them all
+  (suppressed items, and 6 of the second reason, where the decoder just
+  did not find the face) and 16 differ (names that fit several edges).
+  The definition without them comes
+  before the history's guesses, noted ("3 edges the file no longer has
+  left out") and `inferred`: the history checks it, a face the decoder
+  just did not find fails the check and the guesses follow as before. A
+  set of which none resolves is not reduced. Designs: 1 fillet by its
+  names instead of by the history's lost edges.
+- **A side through all of two sides.** The side through all of a
+  two-sided extrusion (sides 4 and 1 in the stream) goes the way its flag
+  says, as a one-sided extent does (`isPositiveDirection` of the dump:
+  1 against the sketch's normal); it was the first choice only after the
+  stored vector. The extent is read where the flag byte decides it.
+  Designs: 1 extrusion → `read`.
+- **Assembly items say where their inputs came from.** Rigid groups
+  (members and placements the file's), joint origins (the first
+  definition: the file's geometry, angle, offset and flip) and as-built
+  joints (the file's recorded placement and motion frame, limits kept)
+  are `read`; a joint is `read` where its sides' frames are found (not
+  fixed), its offset is the stored one and its limits are kept, and
+  `inferred` where it is not; a joint kept as an as-built one,
+  a relationship set and a tangent (rows whose flip and offset sign the
+  file's placements decide, sides found by their frames) are `inferred`.
+  Before, none of them said. Designs: 2 rigid groups and 1 joint origin
+  → `read`, 7 relationship sets `unknown` → `inferred`.
+- **Sweeps** are `read` only with an exact profile selection (the decoded
+  loops select the regions), like extrusions: a first set found by
+  probing is not read. (Sweeps, pipes and lofts have `read` rules for the
+  whole path, a pipe's section and a loft's one region per section; a
+  sweep's partial extent has its direction undecoded.)
+
+Over the 29 designs (items; the queue run before, this round after;
+parametric / partial / fallback / skipped, then inputs read / inferred /
+unknown):
+
+| | before | after |
+|---|---|---|
+| items of the 29 designs | 894 / 10 / 102 / 140, 488 / 34 / 86 | 948 / 4 / 55 / 139, 605 / 45 / 6 |
+
+Without the rules above (the same build without them, the merged earlier
+branches only) the 29 designs stood at 925 / 4 / 78 / 139, 565 / 39 / 29:
+the rules above account for read +17 and unknown −23 (the 7 relationship
+sets went to `inferred`); the rest of the change comes from the rules
+merged since the queue run (other batches and the components of other
+documents).
+
+Left, each with its cause (80 items outside `parametric`, apart from the
+items that place occurrences and have no geometry):
+
+- **Fillets and chamfers the kernel fails** (the rounding cannot end at a
+  vertex, the radius may be too large for the edges, an invalid wire, a
+  volume 0.4 to 138 % off, a rounding the watchdog gave up; about 45
+  items): the decoded edges and radii agree with the API reference dumps
+  where a dump exists. Some are radii as large as a rib is wide (two
+  roundings of 1 mm on a rib 1.5 mm wide) or distances as large as a
+  pocket's wall, where the kernel retries 0.1 % smaller (the feature's
+  warning says so; the mirror of such a rounding then differs from the
+  file's by about 1e-3 of the area: one design where it was traced).
+  Others come after
+  one of those (an edge of the stored face that a fallback left, an edge
+  the replay does not have: `missing_in_replay`), or follow a fillet
+  whose state the history shows as a variable blend the file stores
+  without an approximation (`VBL_SURF`: the state cannot be rebuilt, so
+  the items after it are not checked against it).
+- **Components of other documents** (extrusions and cuts whose bodies are
+  the other document's, a pattern direction taken from an edge of one, a
+  cut and paste of its bodies, a derived context): another batch.
+- **Stale profiles** (the dump itself cannot read the extrusion's profile:
+  an extrusion after the sketch's edit that its history has as a cached
+  result; a profile whose only record names a curve the sketch no longer
+  has; piece counts of curves that overlap each other in the loop, where
+  the file's count is not the one the crossings give).
+- **Sketch text** (extrusions of a sketch's text: the profile list holds
+  the glyph profiles without loops, and the font the file names is not
+  installed here, so a text extrusion comes in `inferred` on Droid Sans
+  or stays a fallback).
+- **Planes without their reference** (9 tangent planes and planes at an
+  angle, `inferred`: the file stores no plane the angle is measured from,
+  the API lists none either, and the 13 tangent planes of the dumps tell
+  no rule; 2 more are offsets of faces of components of other
+  documents), a plane whose inputs the file itself cannot resolve and
+  one whose stored geometry does not follow its angle (a fixed plane).
+- **Mirrors and patterns whose copies the replay does not build the same
+  way** (a mirror of features among which a fillet that comes in 0.1 %
+  smaller; a circular pattern whose copies reach nothing after a
+  fallback).
+- **Time** (an extrusion of 12 profiles out of time).
 
 ## FreeCAD import (.FCStd)
 

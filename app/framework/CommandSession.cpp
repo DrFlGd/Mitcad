@@ -108,6 +108,20 @@ QString plain(double value, int decimals) {
   return text == QStringLiteral("-0") ? QStringLiteral("0") : text;
 }
 
+// A sketch command's `warnings` (mitcad#232).
+QStringList answerWarnings(const QJsonObject& answer) {
+  QStringList warnings;
+  for (const QJsonValue& warning : answer.value(QStringLiteral("warnings")).toArray()) {
+    warnings << warning.toString();
+  }
+  return warnings;
+}
+
+// Warnings for a preview's log line: ", warning: a; b", or nothing.
+QString warningsLog(const QStringList& warnings) {
+  return warnings.isEmpty() ? QString() : QStringLiteral(", warning: ") + warnings.join(QStringLiteral("; "));
+}
+
 } // namespace
 
 CommandSession::CommandSession(const CommandDef& def, CommandHost& host, const QString& editUid,
@@ -283,6 +297,12 @@ bool CommandSession::start(const Selection& preselection, QString& error) {
       return false;
     }
     m_def.load(m_analysis, m_state, m_host);
+    setRowDefaults();
+  } else if (m_def.preselect) {
+    m_def.preselect(preselection, m_state, m_host);
+    if (m_def.init) {
+      m_def.init(m_state, m_host);
+    }
     setRowDefaults();
   } else {
     // What was selected before the command goes to the first input that
@@ -747,9 +767,7 @@ void CommandSession::activate(const QString& key) {
     m_host.inputActivated(SelectFilter());
     return;
   }
-  viewer.setPickFilter(input->filter, [this, input](const SelectionItem& item) {
-    return input->accepts(item) && isReferable(item);
-  });
+  applyPickFilter(input);
   // Before the input logs its pick places: the ghosts let picks through.
   updateGhosts();
   if (m_presenter) {
@@ -757,6 +775,31 @@ void CommandSession::activate(const QString& key) {
   }
   m_host.inputActivated(input->showsOrigin ? input->filter : input->filter & ~kConstructionGeometry);
   m_host.showHint(tr("%1: select %2.").arg(m_def.name, input->label.toLower()));
+}
+
+void CommandSession::applyPickFilter(const InputDef* input) {
+  OcctViewer& viewer = m_host.viewer();
+  const SelectionScope* scope = m_host.commandScope();
+  if (scope == nullptr) {
+    viewer.setPickFilter(input->filter, [this, input](const SelectionItem& item) {
+      return input->accepts(item) && isReferable(item);
+    });
+    return;
+  }
+  // Through the host's selection filter context (mitcad#217): its rows
+  // decide clicks and windows, Shift widens a click to its empty rows; the
+  // input's own test always holds.
+  viewer.setPickScope(input->filter & scope->kinds(false), input->filter & scope->kinds(true),
+                      [this, input, scope](const SelectionItem& item, const PickCase& how) {
+                        return input->accepts(item) && isReferable(item) &&
+                               scopeAccepts(*scope, item, how, QString(), SketchRowOf());
+                      });
+}
+
+void CommandSession::scopeChanged() {
+  if (const InputDef* input = activeInput(); input != nullptr && !m_done) {
+    applyPickFilter(input);
+  }
 }
 
 // Items made by the previewed feature itself, such as a fillet's own faces
@@ -811,10 +854,13 @@ void CommandSession::picked(const Selection& items, Qt::KeyboardModifiers modifi
   // whatever key or occurrence (mitcad#199).
   const ItemResolver resolve = resolver();
   if (window) {
-    // A window keeps one kind, and adds to what is there.
-    const SelectKind kind = preferredKind(accepted);
+    // A window keeps one kind, and adds to what is there. Through a
+    // selection filter context (mitcad#217) it keeps every kind the
+    // context let it take.
+    const bool scoped = m_host.commandScope() != nullptr;
+    const SelectKind kind = scoped ? SelectKind::None : preferredKind(accepted);
     for (const SelectionItem& item : accepted) {
-      if (item.kind == kind && !containsEntry(selection, item, resolve) &&
+      if ((scoped || item.kind == kind) && !containsEntry(selection, item, resolve) &&
           (input->max == 0 || selection.size() < input->max)) {
         selection.append(item);
       }
@@ -1315,7 +1361,7 @@ void CommandSession::runPreview() {
     updateHighlights();
     return;
   }
-  if (m_def.modelCommand) {
+  if (m_def.modelCommand || m_def.accept) {
     // Nothing to show before it runs.
     m_shownKey = compactJson(built.def);
     m_previewOk = true;
@@ -1603,12 +1649,13 @@ void CommandSession::showSketchPreview(const Built& built) {
   const QJsonArray commands = built.def.contains(QStringLiteral("commands"))
                                   ? built.def.value(QStringLiteral("commands")).toArray()
                                   : QJsonArray{built.def};
+  QJsonObject answer; // the last command's
   const int depth = undoDepth();
   QString problem;
   bool cancelled = false;
   for (const QJsonValue& command : commands) {
     try {
-      m_host.modelCommand(command.toObject());
+      answer = m_host.modelCommand(command.toObject());
     } catch (const ComputationCancelled& e) {
       problem = errorText(e);
       cancelled = true;
@@ -1639,9 +1686,12 @@ void CommandSession::showSketchPreview(const Built& built) {
   m_failed = !m_previewOk;
   m_host.refreshScene();
   if (m_previewOk) {
-    m_presenter->setMessage(QString(), false);
+    // What the command says the user is to know before keeping it
+    // (Clean Up Projections, mitcad#232), not in red.
+    const QStringList warnings = answerWarnings(answer);
+    m_presenter->setMessage(warnings.join(QLatin1Char('\n')), false);
     m_host.showHint(tr("%1: Enter to confirm, Esc to cancel.").arg(m_def.name));
-    qDebug().noquote() << QStringLiteral("Preview %1: ok").arg(m_def.name);
+    qDebug().noquote() << QStringLiteral("Preview %1: ok%2").arg(m_def.name, warningsLog(warnings));
   } else {
     m_presenter->setMessage(problem, true);
     qDebug().noquote() << QStringLiteral("Preview %1: failed: %2").arg(m_def.name, problem);
@@ -1690,7 +1740,7 @@ void CommandSession::clearPreview() {
     takeBackSketchPreview();
     return;
   }
-  if (m_def.modelCommand) {
+  if (m_def.modelCommand || m_def.accept) {
     return;
   }
   m_host.clearModelPreview();
@@ -2002,13 +2052,17 @@ void CommandSession::showSketchPreviewAsync(const Built& built) {
         m_previewOk = result.succeeded() || result.cancelled;
         m_failed = !m_previewOk;
         m_host.refreshScene();
-        m_presenter->setMessage(result.cancelled
-            ? tr("Preview cancelled; change an input to preview again.") : result.error, !m_previewOk);
+        // A sketch command's warnings (mitcad#232), not in red.
+        const QStringList warnings = result.succeeded() ? answerWarnings(result.answer) : QStringList();
+        m_presenter->setMessage(result.cancelled ? tr("Preview cancelled; change an input to preview again.")
+                                                 : (m_previewOk ? warnings.join(QLatin1Char('\n')) : result.error),
+                                !m_previewOk);
         m_presenter->setOkEnabled(m_previewOk);
         updateHighlights();
         qDebug().noquote() << QStringLiteral("Preview %1: %2").arg(m_def.name,
             result.cancelled ? QStringLiteral("cancelled")
-                             : (m_previewOk ? QStringLiteral("ok") : QStringLiteral("failed: ") + result.error));
+                             : (m_previewOk ? QStringLiteral("ok") + warningsLog(warnings)
+                                            : QStringLiteral("failed: ") + result.error));
         resumePendingCommit();
       };
       if (!result.succeeded() || generation != m_generation || m_cancelRequested) {
@@ -2109,6 +2163,9 @@ bool CommandSession::commitAsync() {
     qDebug().noquote() << QStringLiteral("Done %1").arg(m_def.name);
     finish(true);
     return true;
+  }
+  if (m_def.accept) {
+    return acceptCommand();
   }
   m_committing = true;
   m_presenter->setOkEnabled(false);
@@ -2370,6 +2427,9 @@ bool CommandSession::commit() {
     finish(true);
     return true;
   }
+  if (m_def.accept) {
+    return acceptCommand();
+  }
   if (m_def.modelCommand) {
     const Built built = m_def.build(m_state, m_host);
     const QString label = built.def.value(QStringLiteral("label")).toString(m_def.name);
@@ -2451,7 +2511,7 @@ bool CommandSession::commit() {
 bool CommandSession::askBeforeComponent(const Built& built, bool& done) {
   done = false;
   m_addTo.clear();
-  if (isEditing() || m_def.sketchCommand || m_def.inspect || !built.error.isEmpty()) {
+  if (isEditing() || m_def.sketchCommand || m_def.inspect || m_def.accept || !built.error.isEmpty()) {
     return true;
   }
   ComponentRequest request;
@@ -2523,6 +2583,16 @@ QJsonObject CommandSession::addFeatureCommand(const Built& built) const {
     command.insert(QStringLiteral("component"), m_addTo);
   }
   return command;
+}
+
+bool CommandSession::acceptCommand() {
+  if (!m_def.accept(m_state, m_host)) {
+    qDebug().noquote() << QStringLiteral("%1: OK not done").arg(m_def.name);
+    return false;
+  }
+  qDebug().noquote() << QStringLiteral("Done %1").arg(m_def.name);
+  finish(true);
+  return true;
 }
 
 bool CommandSession::keepAnalysis() {

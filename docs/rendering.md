@@ -187,8 +187,15 @@ file) simply has no rendered view (the log says `No render worker
   at once. There is no 3D mouse input. The view never draws a rendered
   image over a camera or size other than the one it was made for: once
   the camera or the size changes, or an animation starts, the frame that
-  shows it draws the bodies shaded (`OcctViewer::setRenderedImage`); a
-  navigation that ends where it began shows the last frame again.
+  shows it draws the bodies shaded (`OcctViewer::setRenderedImage`, the
+  debug line `Render image dropped: camera moved`); a
+  navigation that ends where it began shows the last frame again. The
+  camera is compared with `sameView` (`view/ViewMatch.hpp`): eye, target
+  and height within a billionth of the view's height, the up direction,
+  the projection and the size in device pixels (mitcad#216: OCCT's
+  `gp_XYZ::IsEqual` compares with a strict `<`, so with a tolerance of 0
+  it found every camera moved, the image was dropped before every frame
+  and the view stayed shaded).
 - **Display** (`OcctViewer::setRenderedImage`): the frame's light is
   scaled by the exposure and put through the view transform
   ([Environment](#environment)), composited over the view's background
@@ -1467,11 +1474,16 @@ the render ran on the GPU (tested with the build of `--cuda` on the GTX
   mitcad#214): a held button, a burst of wheel steps and its quiet time, a
   camera still moving after the last step, an animation, a trackpad
   scroll's drag; where an orthographic render's camera stands
-  (`orthographicEye`, mitcad#215).
+  (`orthographicEye`, mitcad#215); whether a rendered image still fits
+  the view (`sameView`, mitcad#216).
 - `ctest` `app.ui-windows`: View > Rendered in the Windows VM, with the
   test driver: the frames refine and show the block; an orbit sends no
   view while the button is held and one after the release, and a burst of
-  five wheel steps (`wheel-burst`) sends one view (mitcad#214).
+  five wheel steps (`wheel-burst`) sends one view (mitcad#214); once the
+  render is done and the camera keeps still (after the first render, the
+  orbit, the wheel steps and a click on the orientation cube) the image
+  is not dropped, and the rendered view differs from the shaded one
+  (mitcad#216).
 - `tools/appimage-test.sh`: see [AppImage](#appimage).
 - `mitcad-render --bench 1920x1080 --samples 64 [--interactive]
   [--orthographic] [--trace] [--frames folder] [--previews n,m] [--output image.png]

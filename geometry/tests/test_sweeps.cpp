@@ -158,6 +158,14 @@ void test_sweeps() {
   CHECK_NEAR_TOL(precise_volume(*sweep(bent_taper)), kPi * 10.0 / 3.0 * (r1 * r1 * r1 - 125), 1e-4);
   bent_taper.taper = -std::atan(0.1);
   CHECK(throws_with([&] { sweep(bent_taper); }, "taper closes the profile"));
+  // Each side of a square leans out by the angle (the outline is offset, not
+  // scaled): 5 degrees over 50 mm make the side 10 + 2 * 50 tan 5.
+  SweepSpec lean = twist;
+  lean.twist = 0;
+  lean.taper = kPi / 36;
+  const double end_side = 10 + 100 * std::tan(kPi / 36);
+  CHECK_NEAR_TOL(precise_volume(*sweep(lean)), 50.0 / 3 * (100 + 10 * end_side + end_side * end_side), 1e-6);
+  CHECK(faces_named(*sweep(lean), side("F5", 1, 0)) == 1);
 
   // Parallel along 60 degrees of a circle: the profile keeps facing +X, so
   // every slice across X is the circle: V = A * 50 sin 60.
@@ -419,18 +427,19 @@ void test_pipes() {
   const ShapePtr hollow = pipe(tube);
   CHECK_NEAR_TOL(precise_volume(*hollow), kPi * (25 - 16) * 50, 1e-6);
   CHECK(faces_named(*hollow, "F2:inner0") == 1);
-  // A square in a 10 mm circle: side 10 / sqrt 2; with the wall, minus a
-  // square of side 10 / sqrt 2 - 2.
+  // A square of side 10 (mitcad#25: the size is the side); with the wall,
+  // minus a square of side 8.
   tube.section = PipeSection::Square;
-  const double side_length = 10 / std::sqrt(2.0);
-  CHECK_NEAR_TOL(precise_volume(*pipe(tube)),
-                 (side_length * side_length - (side_length - 2) * (side_length - 2)) * 50, 1e-6);
+  CHECK_NEAR_TOL(precise_volume(*pipe(tube)), (100 - 64) * 50, 1e-6);
   CHECK(faces_named(*pipe(tube), "F2:side3") == 1 && faces_named(*pipe(tube), "F2:inner3") == 1);
-  // An equilateral triangle in it: area 3 sqrt(3) / 4 r^2.
+  // An equilateral triangle of height 10: area h^2 / sqrt 3, a corner up
+  // and the path at the middle of its height.
   tube.section = PipeSection::Triangular;
   tube.thickness = 0;
-  CHECK_NEAR_TOL(precise_volume(*pipe(tube)), 3 * std::sqrt(3.0) / 4 * 25 * 50, 1e-6);
-  tube.thickness = 2.5;
+  const ShapePtr prism = pipe(tube);
+  CHECK_NEAR_TOL(precise_volume(*prism), 100 / std::sqrt(3.0) * 50, 1e-6);
+  CHECK(near(bounding_box(*prism).min.Z(), -5, 1e-6) && near(bounding_box(*prism).max.Z(), 5, 1e-6));
+  tube.thickness = 3.5;
   CHECK(throws_with([&] { pipe(tube); }, "wall must be thinner"));
   // Round a circle: a torus without caps; three quarters of it, and a part
   // that runs back through the start.
@@ -452,8 +461,9 @@ void test_pipes() {
 }
 
 void test_coils() {
-  // ui_coil: diameter 40, 3 turns of pitch 10, a 4 mm circle on the
-  // diameter: V = pi 2^2 * 3 sqrt((40 pi)^2 + 10^2).
+  // Diameter 40, 3 turns of pitch 10, a 4 mm circle on the diameter: the
+  // section lies in the plane through the axis, so V = A 2 pi R 3
+  // (mitcad#25: the volumes of the variant models).
   CoilSpec spring;
   spring.feature = "F1";
   spring.diameter = 40;
@@ -461,8 +471,7 @@ void test_coils() {
   spring.pitch = 10;
   spring.size = 4;
   const ShapePtr helix = coil(spring);
-  const double turn = std::hypot(40 * kPi, 10.0);
-  CHECK_NEAR_TOL(precise_volume(*helix), kPi * 4 * 3 * turn, 1e-5);
+  CHECK_NEAR_TOL(precise_volume(*helix), kPi * 4 * 2 * kPi * 20 * 3, 1e-5);
   CHECK(faces_named(*helix, "F1:start") == 1 && faces_named(*helix, "F1:end") == 1);
   CHECK(!helix->find_faces("F1:side0").empty());
   const BoundingBox box = bounding_box(*helix);
@@ -470,28 +479,41 @@ void test_coils() {
   // Clockwise: mirrored in Y.
   spring.clockwise = true;
   const ShapePtr left = coil(spring);
-  CHECK_NEAR_TOL(precise_volume(*left), kPi * 4 * 3 * turn, 1e-5);
+  CHECK_NEAR_TOL(precise_volume(*left), kPi * 4 * 2 * kPi * 20 * 3, 1e-5);
   CHECK(near(mass_properties(*left).center.Y(), -mass_properties(*helix).center.Y(), 1e-4));
-  // A square inside the diameter: side 4 / sqrt 2, its centre 20 - side / 2
-  // from the axis.
+  // A square of side 4 inside the diameter: its centre 20 - 2 from the axis.
   spring.clockwise = false;
   spring.section = CoilSection::Square;
   spring.position = CoilPosition::Inside;
-  const double side_length = 4 / std::sqrt(2.0);
-  const double inner = 20 - side_length / 2;
-  CHECK_NEAR_TOL(precise_volume(*coil(spring)),
-                 side_length * side_length * 3 * std::hypot(2 * kPi * inner, 10.0), 1e-5);
+  CHECK_NEAR_TOL(precise_volume(*coil(spring)), 16 * 2 * kPi * 18 * 3, 1e-5);
   CHECK(near(bounding_box(*coil(spring)).max.X(), 20, 1e-3));
+  // Triangles of height 4 (a third of it from the base to the centre),
+  // their radial extent centred on the diameter.
+  const double triangle = 16 / std::sqrt(3.0);
+  spring.section = CoilSection::TriangularExternal;
+  spring.position = CoilPosition::OnCenter;
+  CHECK_NEAR_TOL(precise_volume(*coil(spring)), triangle * 2 * kPi * (20 - 4.0 / 6) * 3, 1e-5);
+  CHECK(near(bounding_box(*coil(spring)).max.X(), 22, 1e-3));
+  spring.section = CoilSection::TriangularInternal;
+  CHECK_NEAR_TOL(precise_volume(*coil(spring)), triangle * 2 * kPi * (20 + 4.0 / 6) * 3, 1e-5);
+  // A cone widening by 5 degrees: the centre's radius 20 grows by
+  // 30 tan 5 degrees on the way.
+  spring.section = CoilSection::Circular;
+  spring.angle = 5 * kPi / 180;
+  CHECK_NEAR_TOL(precise_volume(*coil(spring)),
+                 kPi * 4 * 2 * kPi * 3 * (20 + 30 * std::tan(spring.angle) / 2), 1e-4);
+  spring.angle = 0;
   // A flat spiral: two turns, growing 6 per turn, a 4 mm circle.
   CoilSpec flat = spring;
-  flat.section = CoilSection::Circular;
   flat.position = CoilPosition::OnCenter;
   flat.spiral = true;
   flat.revolutions = 2;
   flat.pitch = 6;
   const ShapePtr spiral = coil(flat);
-  CHECK(precise_volume(*spiral) > 0 && near(bounding_box(*spiral).max.Z(), 2, 1e-3));
+  CHECK_NEAR_TOL(precise_volume(*spiral), kPi * 4 * 2 * kPi * 2 * 26, 1e-4);
+  CHECK(near(bounding_box(*spiral).max.Z(), 2, 1e-3));
   // Overlapping turns and a section across the axis fail.
+  spring.section = CoilSection::Square;
   spring.pitch = 2;
   CHECK(throws_with([&] { coil(spring); }, "pitch is smaller than its section"));
   spring.pitch = 10;
@@ -675,9 +697,9 @@ Region polygon(const std::vector<gp_Pnt2d>& points) {
 
 // An M3 thread's groove (pitch 0.5005) with rounded roots and crests, on
 // the XZ plane as x the radius and y the height: its base on radius r1 =
-// 1.2294 from z = zm - 0.2368 to zm + 0.2368, its crest on r2 = 1.5.
-Region m3_groove(double zm) {
-  const double r1 = 1.2294, r2 = 1.5, p1 = 0.0313, p2 = 0.0625, zb = zm + 0.2368;
+// 1.2294 from z = zm - 0.2368 to zm + 0.2368, its crest on r2 (1.5).
+Region m3_groove(double zm, double r2 = 1.5) {
+  const double r1 = 1.2294, p1 = 0.0313, p2 = 0.0625, zb = zm + 0.2368;
   const double c30 = std::sqrt(3.0) / 2.0;
   const gp_Pnt2d a(r1 + 0.5 * p1, zb - c30 * p1);
   const double t = (r2 - 0.5 * p2 - r1 - 0.5 * p1) / c30;
@@ -776,6 +798,10 @@ void test_helices_on_cylinders() {
       // The groove through a ring as thick as it, from one end of the
       // ring past its other end.
       {"M3 ring", BooleanOp::Cut, ring_body(1.2294, 1.5, 0, 2), xz, m3_groove(-0.25), 0.5005, 3 / 0.5005, 0},
+      // An external M3 thread whose crest is drawn 0.17 um outside the rod
+      // it is cut into, from beyond one end of the rod past the other.
+      {"M3 crest off the rod", BooleanOp::Cut, ring_body(0, 1.5, 0, 3.35), xz, m3_groove(-0.25, 1.50017), 0.5005,
+       4.35 / 0.5005, 0},
   };
   for (const Case& c : cases) {
     HelixSweepSpec spec;
@@ -808,6 +834,61 @@ void test_helices_on_cylinders() {
       }
     } catch (const std::exception& error) {
       std::fprintf(stderr, "helix on a cylinder, %s: %s\n", c.what, error.what());
+      ++failures;
+    }
+  }
+  // Turns that overlap: a triangle whose base on the cylinder is longer
+  // than the pitch, joined to a nut (an internal thread) and cut from a
+  // rod. The tool is the union of its turns: at radius r they cover N w(r)
+  // along the axis where the triangle's width w(r) is at most the pitch,
+  // else (N - 1) pitch + w(r), N the (whole) turns.
+  struct Overlap {
+    const char* what;
+    BooleanOp op;
+    ShapePtr body;
+    double base_radius;
+    double apex_radius;
+    double base;
+    double pitch;
+    double turns;
+  };
+  const Overlap overlaps[] = {
+      {"overlapping turns joined", BooleanOp::Join, ring_body(17, 23, 0, 15), 17, 15.1, 2.194, 2, 8},
+      {"overlapping turns cut", BooleanOp::Cut, rod, 5, 4.4, 1.65, 1.5, 6},
+  };
+  for (const Overlap& o : overlaps) {
+    HelixSweepSpec spec;
+    spec.feature = "F2";
+    spec.frame = xz;
+    spec.regions = {polygon({{o.base_radius, 4}, {o.apex_radius, 4 + o.base / 2}, {o.base_radius, 4 + o.base}})};
+    spec.axis = gp_Ax1(gp_Pnt(0, 0, 0), gp_Dir(0, 0, 1));
+    spec.pitch = o.pitch;
+    spec.revolutions = o.turns;
+    spec.bodies = {o.body};
+    double tool = 0;
+    constexpr int kSteps = 100000;
+    const double depth = o.base_radius - o.apex_radius;
+    for (int i = 0; i < kSteps; ++i) {
+      const double t = (i + 0.5) / kSteps;
+      const double r = o.apex_radius + depth * t;
+      const double w = o.base * t;
+      const double covered = w <= o.pitch ? o.turns * w : (o.turns - 1) * o.pitch + w;
+      tool += 2 * kPi * r * covered * std::abs(depth) / kSteps;
+    }
+    const double body = precise_volume(*o.body);
+    const double expected = o.op == BooleanOp::Cut ? body - tool : body + tool;
+    try {
+      const BooleanResult result = boolean(o.op, {o.body.get()}, *helix_sweep(spec));
+      const bool one = result.pieces.size() == 1;
+      const bool valid = one && detail::is_valid(result.pieces.front().shape->occt());
+      const double volume = one ? precise_volume(*result.pieces.front().shape) : 0.0;
+      if (!valid || !near(volume, expected, 1e-5)) {
+        std::fprintf(stderr, "helix on a cylinder, %s: %zu pieces, %s, volume %.9g, expected %.9g\n", o.what,
+                     result.pieces.size(), valid ? "valid" : "invalid", volume, expected);
+        ++failures;
+      }
+    } catch (const std::exception& error) {
+      std::fprintf(stderr, "helix on a cylinder, %s: %s\n", o.what, error.what());
       ++failures;
     }
   }
@@ -915,7 +996,10 @@ void test_lofts() {
   CHECK(closed->face_count() == 16 && edge_names_unique(*closed));
   ring.ruled = false;
   const ShapePtr round_ring = loft(ring);
-  CHECK_NEAR_TOL(precise_volume(*round_ring), 19200, 1e-6);
+  // Periodic piecewise cubic through four squares a quarter turn apart (the
+  // corners follow Catmull-Rom curves, the sections matched corner for
+  // corner): 16400 against 19200 for a C2 interpolation and 12000 ruled.
+  CHECK_NEAR_TOL(precise_volume(*round_ring), 16400, 1e-6);
   {
     // Smooth where it closes: the surface's v derivatives at its two ends.
     const BRepAdaptor_Surface surface(round_ring->face(0));
@@ -928,9 +1012,9 @@ void test_lofts() {
   }
   CHECK(round_ring->face_count() == 4 && faces_named(*round_ring, side("F5", 1, 2)) == 1);
   CHECK(edge_names_unique(*round_ring));
-  // Four circles round a ring: a tube a little fuller than the torus (the
-  // periodic interpolation of points a quarter turn apart bulges out by
-  // about 2 %, as for the squares: 19200 against 100 * 2 pi 30).
+  // Four circles round a ring: the stored closed loft of four circles of 10 mm
+  // 30 mm from the axis has the volume 12880.53 (the sections' points follow
+  // the periodic Catmull-Rom curves; the torus through them is 14804.41).
   LoftSpec tube;
   tube.feature = "F5";
   tube.closed = true;
@@ -940,9 +1024,27 @@ void test_lofts() {
     tube.sections.push_back(section);
   }
   const ShapePtr torus_like = loft(tube);
-  const double torus = 25 * kPi * 2 * kPi * 30;
-  CHECK(precise_volume(*torus_like) > torus && precise_volume(*torus_like) < 1.03 * torus);
+  CHECK_NEAR_TOL(precise_volume(*torus_like), 12880.53, 1e-6);
   CHECK(torus_like->face_count() == 1 && faces_named(*torus_like, "F5:side(c1)") == 1);
+  // The same circles, open: three quarters of the ring, 9503.3178 (the first
+  // and last pieces are the parabolas that arrive with the inner tangents).
+  LoftSpec arc = tube;
+  arc.closed = false;
+  const ShapePtr open_ring = loft(arc);
+  CHECK_NEAR_TOL(precise_volume(*open_ring), 9503.3178, 1e-6);
+  CHECK(faces_named(*open_ring, "F5:side(c1)") == 1 && faces_named(*open_ring, "F5:start(r{c1})") == 1 && faces_named(*open_ring, "F5:end(r{c1})") == 1);
+
+  // A surface loft: the side faces of a cylinder between two circles, a
+  // shell without caps.
+  LoftSpec sheet = cylinder;
+  sheet.centerline.clear();
+  sheet.solid = false;
+  const ShapePtr surface = loft(sheet);
+  GProp_GProps skin;
+  BRepGProp::SurfaceProperties(surface->occt(), skin);
+  CHECK_NEAR_TOL(skin.Mass(), 2 * kPi * 10 * 40, 1e-6);
+  CHECK(surface->face_count() == 1 && faces_named(*surface, "F5:side(c1)") == 1);
+  CHECK(surface->find_faces("F5:start(r{c1})").empty() && !TopExp_Explorer(surface->occt(), TopAbs_SOLID).More());
 
   // A section with holes is not lofted.
   LoftSpec holed = frustum;

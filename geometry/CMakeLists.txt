@@ -222,6 +222,9 @@ if(BUILD_TESTING)
   # The faces a run of features made, copied by a pattern's optimized
   # compute option.
   target_sources(test_geometry PRIVATE tests/test_face_copy.cpp)
+  # Operations on bodies of thousands of faces, with the port's patch 0110
+  # (mitcad#121).
+  target_sources(test_geometry PRIVATE tests/test_large_bodies.cpp)
   target_link_libraries(test_geometry PRIVATE mitcad_geometry_analysis)
   target_link_libraries(test_geometry PRIVATE mitcad_geometry mitcad_warnings)
   add_test(NAME geometry COMMAND test_geometry)

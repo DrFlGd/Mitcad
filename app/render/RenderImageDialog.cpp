@@ -327,13 +327,12 @@ RenderImageDialog::RenderImageDialog(DocumentHost& host, OcctViewer& viewer, QWi
     m_status->setText(tr("Cancelled."));
     qInfo().noquote() << "Render image cancelled";
   });
-  m_viewer.installEventFilter(this);
+  m_viewerFilter.install(&m_viewer);
   setRendering(false);
   refresh();
 }
 
 RenderImageDialog::~RenderImageDialog() {
-  m_viewer.removeEventFilter(this);
   if (m_frame) {
     m_frame->deleteLater();
   }

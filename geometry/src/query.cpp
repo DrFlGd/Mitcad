@@ -3,6 +3,9 @@
 
 #include <algorithm>
 #include <cmath>
+#include <exception>
+#include <memory>
+#include <vector>
 
 #include <BRepAdaptor_Curve.hxx>
 #include <BRepAdaptor_Surface.hxx>
@@ -10,15 +13,18 @@
 #include <BRepGProp.hxx>
 #include <BRepTools.hxx>
 #include <BRepTopAdaptor_FClass2d.hxx>
+#include <BRep_Builder.hxx>
 #include <BRep_Tool.hxx>
 #include <Bnd_Box.hxx>
 #include <GCPnts_AbscissaPoint.hxx>
 #include <GProp_GProps.hxx>
 #include <NCollection_Map.hxx>
+#include <OSD_Parallel.hxx>
 #include <Precision.hxx>
 #include <TopExp_Explorer.hxx>
 #include <TopTools_ShapeMapHasher.hxx>
 #include <TopoDS.hxx>
+#include <TopoDS_Compound.hxx>
 #include <TopoDS_Edge.hxx>
 #include <gp.hxx>
 #include <gp_Pnt2d.hxx>
@@ -30,7 +36,8 @@ namespace mitcad::geometry {
 namespace {
 
 const char* surface_type(const TopoDS_Face& face) {
-  switch (BRepAdaptor_Surface(face).GetType()) {
+  // (The surface's type needs no parameter bounds of the face.)
+  switch (BRepAdaptor_Surface(face, false).GetType()) {
   case GeomAbs_Plane:
     return "plane";
   case GeomAbs_Cylinder:
@@ -82,6 +89,59 @@ const char* curve_type(const TopoDS_Edge& edge) {
   }
 }
 
+// BRepBndLib::AddOptimal(shape, box, false, false) with the faces on all
+// cores: the optimal box of a spline face is a search over its surface,
+// seconds for a body of thousands of faces (through-all extrusions ask for
+// the box of each new body). The same box: AddOptimal takes the union of
+// its faces' boxes, then adds the edges not in faces and the vertices not
+// in edges, which are added here as it adds them.
+Bnd_Box optimal_box(const TopoDS_Shape& shape) {
+  std::vector<TopoDS_Shape> faces;
+  for (TopExp_Explorer it(shape, TopAbs_FACE); it.More(); it.Next()) {
+    faces.push_back(it.Current());
+  }
+  std::vector<Bnd_Box> boxes(faces.size());
+  std::vector<std::exception_ptr> errors(faces.size());
+  OSD_Parallel::For(
+      0, static_cast<int>(faces.size()),
+      [&](int i) {
+        const auto k = static_cast<std::size_t>(i);
+        try {
+          BRepBndLib::AddOptimal(faces[k], boxes[k], false, false);
+        } catch (...) {
+          errors[k] = std::current_exception();
+        }
+      },
+      faces.size() < 8);
+  Bnd_Box box;
+  for (std::size_t k = 0; k < faces.size(); ++k) {
+    if (errors[k]) {
+      std::rethrow_exception(errors[k]);
+    }
+    if (!boxes[k].IsVoid()) {
+      double xmin = 0, ymin = 0, zmin = 0, xmax = 0, ymax = 0, zmax = 0;
+      boxes[k].Get(xmin, ymin, zmin, xmax, ymax, zmax);
+      box.Update(xmin, ymin, zmin, xmax, ymax, zmax);
+    }
+  }
+  BRep_Builder builder;
+  TopoDS_Compound rest;
+  builder.MakeCompound(rest);
+  bool any = false;
+  for (TopExp_Explorer it(shape, TopAbs_EDGE, TopAbs_FACE); it.More(); it.Next()) {
+    builder.Add(rest, it.Current());
+    any = true;
+  }
+  for (TopExp_Explorer it(shape, TopAbs_VERTEX, TopAbs_EDGE); it.More(); it.Next()) {
+    builder.Add(rest, it.Current());
+    any = true;
+  }
+  if (any) {
+    BRepBndLib::AddOptimal(rest, box, false, false);
+  }
+  return box;
+}
+
 } // namespace
 
 MassProperties mass_properties(const Shape& shape) {
@@ -98,7 +158,17 @@ MassProperties mass_properties(const Shape& shape) {
       return result;
     }
     // The analysis library's integrals, as every reported volume.
-    const GProp_GProps volume = analysis::volume_properties(shape.occt());
+    // A sheet (open shells, no solid) encloses nothing: only closed shells count
+    // when there is no solid.
+    bool sheet = !TopExp_Explorer(shape.occt(), TopAbs_SOLID).More();
+    if (sheet) {
+      bool open = false;
+      for (TopExp_Explorer it(shape.occt(), TopAbs_SHELL); it.More() && !open; it.Next()) {
+        open = !BRep_Tool::IsClosed(it.Current());
+      }
+      sheet = open;
+    }
+    const GProp_GProps volume = analysis::volume_properties(shape.occt(), sheet);
     const GProp_GProps surface = analysis::surface_properties(shape.occt());
     result.volume = volume.Mass();
     result.area = surface.Mass();
@@ -150,8 +220,7 @@ BoundingBox bounding_box(const Shape& shape) {
       result.max = gp_Pnt(b[3], b[4], b[5]);
       return result;
     }
-    Bnd_Box box;
-    BRepBndLib::AddOptimal(shape.occt(), box, false, false);
+    Bnd_Box box = optimal_box(shape.occt());
     if (box.IsVoid()) {
       // A mesh body has only triangulations.
       BRepBndLib::Add(shape.occt(), box, true);
@@ -202,10 +271,44 @@ BoundingBox enclosing_box(const Shape& shape) {
 
 std::vector<FaceInfo> face_infos(const Shape& shape) {
   return detail::run("faces", [&] {
+    // The faces' kinds and areas are measured once per shape (it never
+    // changes), on all cores: the area integrals of a body of thousands of
+    // faces took seconds a call, and the .f3d import asks for them again
+    // and again.
+    std::shared_ptr<const Shape::FaceMeasures> measures = shape.face_measures();
+    if (!measures) {
+      // (The faces read here: the input check's bookkeeping is the
+      // calling thread's.)
+      std::vector<TopoDS_Face> each;
+      for (int i = 0; i < shape.face_count(); ++i) {
+        each.push_back(shape.face(i));
+      }
+      auto measured = std::make_shared<Shape::FaceMeasures>(each.size());
+      std::vector<std::exception_ptr> errors(each.size());
+      OSD_Parallel::For(
+          0, static_cast<int>(each.size()),
+          [&](int i) {
+            const auto k = static_cast<std::size_t>(i);
+            try {
+              (*measured)[k] = {surface_type(each[k]), analysis::surface_properties(each[k]).Mass()};
+            } catch (...) {
+              errors[k] = std::current_exception();
+            }
+          },
+          each.size() < 8);
+      for (const std::exception_ptr& error : errors) {
+        if (error) {
+          std::rethrow_exception(error);
+        }
+      }
+      shape.set_face_measures(measured);
+      measures = std::move(measured);
+    }
     std::vector<FaceInfo> faces;
+    faces.reserve(measures->size());
     for (int i = 0; i < shape.face_count(); ++i) {
-      faces.push_back({shape.face_names(i), surface_type(shape.face(i)),
-                       analysis::surface_properties(shape.face(i)).Mass()});
+      const Shape::FaceMeasure& measure = (*measures)[static_cast<std::size_t>(i)];
+      faces.push_back({shape.face_names(i), measure.surface, measure.area});
     }
     return faces;
   });

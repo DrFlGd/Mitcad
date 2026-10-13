@@ -162,15 +162,17 @@ ui_step "drag the free end"              ui_sketch_drag 80 -10 90 0
 expect_near "Dragged p[0-9]* to (\([-0-9.]*\), \([-0-9.]*\))" 90 0 "the free end followed the cursor"
 
 echo "--- Trim"
+# Left of the origin: the view shows about 100 mm on either side, and a
+# click beyond its right edge lands on the sketch palette.
 ui_step "line tool (L)"                  ui_key l
-ui_step "line A: start"                  ui_sketch_click 100 -30
-ui_step "line A: end"                    ui_sketch_click 100 10
+ui_step "line A: start"                  ui_sketch_click -60 -30
+ui_step "line A: end"                    ui_sketch_click -60 10
 ui_step "end the chain (Esc)"            ui_key Escape
-ui_step "line B: start"                  ui_sketch_click 90 0
-ui_step "line B: end"                    ui_sketch_click 120 0
+ui_step "line B: start"                  ui_sketch_click -80 0
+ui_step "line B: end"                    ui_sketch_click -40 0
 ui_step "end the tool (Esc Esc)"         ui_key Escape Escape
 ui_step "trim (T)"                       ui_key t
-ui_step "click B beyond A"               ui_sketch_click 112 0
+ui_step "click B beyond A"               ui_sketch_click -48 0
 ui_expect_log "Trimmed c" "the piece beyond A was trimmed"
 ui_step "end the tool (Esc)"             ui_key Escape
 ui_step "finish sketch (Ctrl+Enter)"     ui_key ctrl+Return

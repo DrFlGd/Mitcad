@@ -38,6 +38,9 @@
 
   {"comment": "A root sketch observes an actual OCCT face of a generated copy. Its plane must disappear with that occurrence and recover after Undo."},
   {"cmd": "activate_component", "component": "C0"},
+  {"comment": "The design policy (mitcad#220) lets the root sketch on the faces of Part."},
+  {"cmd": "set_policy", "component": "C0", "policy": {"attach_to_others": true}},
+  {"cmd": "set_policy", "component": "Part", "policy": {"attachments_from_others": true}},
   {"cmd": "sketch.create", "plane": {"body": "F1.b0", "face": "F1:top"}, "occurrence": "O1/O5"},
   {"expect": {"feature": "F5", "status": "ok"}},
   {"expect": {"query": {"query": "sketch", "uid": "F5"}, "result": {"frame": {"origin": [-15, 0, 0], "normal": [1, 0, 0]}}}},

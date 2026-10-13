@@ -80,6 +80,7 @@ const char* const kUsage = R"(usage:
                         [--design <name>] [--dump <dump.json>] [--no-verify] [--no-fallback]
                         [--no-compare] [--time-limit <seconds>] [--hang-limit <seconds>]
                         [--threads N] [--learn <dir>] [--references <dir>]... [--no-references]
+                        [--geometric-tolerance <mm>]
       Imports an .f3d or .f3z design with its timeline: parameters,
       sketches and features replayed as Mitcad features, checked against
       the file's ASM history; an item that cannot be replayed becomes a
@@ -91,6 +92,11 @@ const char* const kUsage = R"(usage:
       after --time-limit seconds the remaining items take the file's bodies;
       with --hang-limit the import runs again when the geometry kernel does
       not return for that long, the item it hung on taking the file's bodies.
+      --geometric-tolerance is how far (mm, default 0.01) the replay's
+      geometry may be from the file's where it is not exact: the decoded
+      edges, faces and vertices are looked for in the replay within it
+      when nothing is within 0.001 mm, and an item's new faces must lie
+      on the file's within it.
       --threads is how many threads the import uses at once: to evaluate
       an item's definitions, to read the file's bodies and to build the
       history's bodies ahead of the replay (default: the logical cores, at

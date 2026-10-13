@@ -18,6 +18,10 @@ namespace mitcad {
 //   opening a large design would measure every body (seconds).
 // - MITCAD_LOG_TIMING=1: how long the application's steps take,
 //   "Timing <step>: <ms> ms[, <detail>]", for tools/perf-measure.sh.
+// - MITCAD_LOG_EDGE_PLACES=1: in sketch mode, once the camera rests, where
+//   a click hits each body edge in sight and behind faces, "Sketch pick
+//   edge F1.b0/<edge> visible at x,y" (mitcad#217,
+//   tools/ui-sketch-select-test.sh); every edge is tried in the view.
 //
 // And for background computation (P7, MainWindow::runJob):
 //

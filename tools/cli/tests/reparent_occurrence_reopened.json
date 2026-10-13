@@ -1,0 +1,10 @@
+[
+  {"comment":"SPDX-License-Identifier: MIT"},
+  {"comment":"The new hierarchy, the followed link and the world geometry survive save/reopen (#219)."},
+  {"expect":{"instances":3,"world_volume":1264}},
+  {"expect":{"body":"F2.b0","occurrence":"O3/O2","volume":1000,"center":[28,-7,18.5],"bbox":{"min":[23,-17,16],"max":[33,3,21]}}},
+  {"expect":{"body":"F4.b0","occurrence":"O3","volume":224,"bbox":{"min":[-30,60,5.490476189336163],"max":[-19.492363191107053,64,16.11873749827591]}}},
+  {"expect":{"body":"F6.b0","occurrence":"O4","volume":40,"bbox":{"min":[1,52,21],"max":[6,56,23]}}},
+  {"expect":{"query":{"query":"document"},"result":{"features":6,"components":4,"occurrences":4}}},
+  {"expect":{"query":{"query":"sketch","uid":"F5"},"result":{"plane_link":{"source":"O3/O2","target":"O4"}}}}
+]

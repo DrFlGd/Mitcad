@@ -709,12 +709,14 @@ ui_type_in() {
 }
 
 # ui_choose "Panel <command> input <id>" downs: picks the entry that many
-# below the current one in a panel's drop-down.
+# below the current one in a panel's drop-down (negative: above it).
 ui_choose() {
   ui_click_logged "$1"
   ui_sync
   if [ "$2" -gt 0 ]; then
     xdotool key --delay 80 --repeat "$2" Down
+  elif [ "$2" -lt 0 ]; then
+    xdotool key --delay 80 --repeat $((-$2)) Up
   fi
   ui_key Return
 }

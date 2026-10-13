@@ -111,9 +111,14 @@ ui_expect_new "Preview Extrude: ok" "the cut previewed"
 ui_mark
 ui_step "OK (Enter)"                     ui_key Return
 ui_expect_new "Added extrude (Cut), distance -25" "cut added"
-# 10 mm of the block under the ring a (60^2 - 40^2) and the square c (20^2).
+# 10 mm of the block under the ring a (60^2 - 40^2) and the square c (20^2)
+# go. The cut goes through the block, so the column under the ring b
+# (40^2 - 20^2) is cut off from the rest: a piece a cut splits off is a
+# body of its own (Extrude's `creates_bodies`).
 ui_expect_volume "Body Body1 (F2.b0): volume 64000.000 -> \([0-9.]*\) mm3" \
-  "$(awk 'BEGIN { printf "%.6f", 64000 - 10 * (3600 - 1600 + 400) }')" "the odd/even area cut"
+  "$(awk 'BEGIN { printf "%.6f", 64000 - 10 * 3600 }')" "the odd/even area cut: the block's frame"
+ui_expect_volume "New body Body2 (F4.b0): volume \([0-9.]*\) mm3" \
+  "$(awk 'BEGIN { printf "%.6f", 10 * (1600 - 400) }')" "the column under the ring b, a body of its own"
 ui_mark
 ui_key ctrl+s
 ui_expect_new "Saved $FILE" "saved"

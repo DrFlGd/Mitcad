@@ -405,6 +405,68 @@ pub fn constraint_body(dc: &Definitions, record: usize) -> dc::Result<(Option<us
     Ok((parameter, rest))
 }
 
+/// A sketch block's definition (`c4aaa486…`): laid out as a sketch (an
+/// i32, a u32, the list of its entities, constraints and dimensions), with
+/// no transform of its own *(seen)*.
+pub const BLOCK_DEFINITION: [u8; 16] = type_id("c4aaa4865f4a916625d4ae83c3122a26");
+/// A sketch block placed in a sketch (`4c12f14c…`): an entity of the
+/// sketch that refers to its definition, and ends with the placement, two
+/// rows of three f64 (x' = a x + b y + c, y' = d x + e y + f, cm) and a
+/// u32 *(seen: one in each of six parts)*.
+pub const BLOCK_INSTANCE: [u8; 16] = type_id("4c12f14c1d4f0fb4d3f80f8244528fcb");
+/// A point of a placed block as the sketch sees it (`7e71a918…`): it
+/// refers to the instance and to the definition's point *(seen)*.
+pub const BLOCK_POINT: [u8; 16] = type_id("7e71a918ee49612a268c549c6584f7fe");
+/// The instance's points and the instance, grouped (`cf8d56f2…`); it
+/// holds nothing more *(seen)*.
+pub const BLOCK_GROUP: [u8; 16] = type_id("cf8d56f2324a27ddb666f1894a9d1617");
+
+/// The references in a record's bytes after its header, wherever they lie.
+fn references_in(dc: &Definitions, record: usize) -> Vec<usize> {
+    let b = dc.bytes(record);
+    let mut out = Vec::new();
+    let mut at = dc.header_len().min(b.len());
+    while at + 4 <= b.len() {
+        let v = u32::from_le_bytes([b[at], b[at + 1], b[at + 2], b[at + 3]]);
+        match dc::reference(v) {
+            Some(r) if v & 0x8000_0000 != 0 && r < dc.len() => {
+                out.push(r);
+                at += 4;
+            }
+            _ => at += 1,
+        }
+    }
+    out
+}
+
+/// A placed block: its definition's entities and the placement, a rigid
+/// motion of the plane.
+fn block(dc: &Definitions, record: usize) -> Option<(Vec<usize>, [[f64; 3]; 2])> {
+    let definition = references_in(dc, record)
+        .into_iter()
+        .find(|&r| dc.is(r, &BLOCK_DEFINITION))?;
+    let bytes = dc.bytes(record);
+    let mut r = Reader::at(bytes, bytes.len().checked_sub(52)?);
+    let mut v = [0.0; 6];
+    for x in &mut v {
+        *x = r.f64().ok()?;
+    }
+    let [a, b, c, d, e, f] = v;
+    let rigid = v.iter().all(|x| x.is_finite())
+        && (a * a + d * d - 1.0).abs() < 1e-9
+        && (b * b + e * e - 1.0).abs() < 1e-9
+        && (a * b + d * e).abs() < 1e-9
+        && (a * e - b * d - 1.0).abs() < 1e-9;
+    if !rigid {
+        return None;
+    }
+    let mut body = dc.body(definition);
+    body.i32().ok()?;
+    body.u32().ok()?;
+    let entities = body.references().ok()?;
+    Some((entities, [[a, b, c], [d, e, f]]))
+}
+
 /// A decoded sketch.
 #[derive(Clone, Debug)]
 pub struct Sketch {
@@ -448,6 +510,40 @@ pub fn sketch(
     if !(unit(x) && unit(y) && unit(z)) {
         return Err("its transform is not a rotation".to_owned());
     }
+    // Placed sketch blocks: their definitions' points and curves (each
+    // definition once), moved by the placement and fixed where they are.
+    let mut entities = entities;
+    let mut placed: HashMap<usize, [[f64; 3]; 2]> = HashMap::new();
+    let mut instances: Vec<usize> = Vec::new();
+    for e in entities.clone() {
+        if !dc.is(e, &BLOCK_INSTANCE) {
+            continue;
+        }
+        let Some((members, m)) = block(dc, e) else {
+            continue;
+        };
+        if members.iter().any(|d| placed.contains_key(d)) {
+            continue;
+        }
+        instances.push(e);
+        for d in members {
+            if [POINT, LINE, CIRCLE, SEGMENT, ELLIPSE]
+                .iter()
+                .any(|t| dc.is(d, t))
+                && !entities.contains(&d)
+            {
+                placed.insert(d, m);
+                entities.push(d);
+            }
+        }
+    }
+    let place = |e: usize, p: [f64; 2]| match placed.get(&e) {
+        Some(m) => [
+            m[0][0] * p[0] + m[0][1] * p[1] + m[0][2],
+            m[1][0] * p[0] + m[1][1] * p[1] + m[1][2],
+        ],
+        None => p,
+    };
     let mut ids: HashMap<usize, String> = HashMap::new();
     let mut points = Vec::new();
     let mut at: HashMap<usize, [f64; 2]> = HashMap::new();
@@ -459,6 +555,7 @@ pub fn sketch(
         }
         match entity(dc, e).and_then(|(flags, mut r)| Ok((flags, r.f64()?, r.f64()?))) {
             Ok((flags, px, py)) if px.is_finite() && py.is_finite() => {
+                let [px, py] = place(e, [px, py]);
                 let id = format!("p{}", points.len());
                 let mut p = json!({"id": id, "xyz": [px, py, 0.0]});
                 if flags & PROJECTED != 0 {
@@ -625,6 +722,11 @@ pub fn sketch(
                 }
                 let full = tail.u8().map_err(|err| err.to_string())? == 1;
                 let [dx, dy, major, minor] = v;
+                // (A placed block's turned with it.)
+                let [dx, dy] = match placed.get(&e) {
+                    Some(m) => [m[0][0] * dx + m[0][1] * dy, m[1][0] * dx + m[1][1] * dy],
+                    None => [dx, dy],
+                };
                 let center = center.ok_or("an ellipse without its centre")?;
                 let c_at = *at.get(&center).ok_or("its centre was not read")?;
                 if !(major.is_finite() && minor.is_finite() && minor > 0.0 && major >= minor)
@@ -744,6 +846,23 @@ pub fn sketch(
             curves[i]["isConstruction"] = json!(true);
         }
     }
+    // A placed block's points as the sketch sees them: the placed points.
+    for &e in &entities {
+        if !dc.is(e, &BLOCK_POINT) {
+            continue;
+        }
+        let refs = references_in(dc, e);
+        if refs.iter().any(|r| instances.contains(r))
+            && let Some(id) = refs.iter().find_map(|r| {
+                placed
+                    .contains_key(r)
+                    .then(|| ids.get(r).cloned())
+                    .flatten()
+            })
+        {
+            ids.insert(e, id);
+        }
+    }
     let mut constraints = Vec::new();
     let mut dimensions = Vec::new();
     let mut used = Vec::new();
@@ -795,6 +914,13 @@ pub fn sketch(
             || dc.is(e, &SPLINE)
             || dc.is(e, &TRANSFORM)
             || done.contains(&e)
+            || instances.contains(&e)
+            || (dc.is(e, &BLOCK_POINT) && ids.contains_key(&e))
+            || (dc.is(e, &BLOCK_GROUP)
+                && references_in(dc, e)
+                    .iter()
+                    .filter(|r| dc.is(**r, &BLOCK_INSTANCE) || dc.is(**r, &BLOCK_POINT))
+                    .all(|r| instances.contains(r) || ids.contains_key(r)))
         {
             continue;
         }
@@ -1115,6 +1241,7 @@ pub fn sketch(
         constraints.push(c);
     }
     dropped.extend(offset_dropped);
+    fixed.extend(placed.keys().filter_map(|e| ids.get(e).cloned()));
     for e in points.iter_mut().chain(curves.iter_mut()) {
         if e["id"]
             .as_str()

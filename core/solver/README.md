@@ -89,6 +89,8 @@ they do not change the DOF count.
 | `HorizontalDistance`, `VerticalDistance` | `dx - side * d`, `dy - side * d` |
 | `Angle(a, b)` | oriented angle from `a` to `flip * b` minus `sigma * value` (wrapped) |
 | `Radius`, `Diameter`, `MinorRadius`, `ArcLength` | `r - d`, `2r - d`, `b - d`, `r * sweep - d` |
+| `EqualSpacing { anchors, mode }` (mitcad#221) | `I(a[i], a[i+1]) - I(a[i+1], a[i+2])` for successive anchors (n - 2); an anchor is a point or the middle of two points (a line's midpoint); `I` is `dx`, `dy`, the offset projected on a line's unit direction (`Along`; the line is a reference: its direction counts as a constant in the Jacobian, so a spacing moves its anchors along the line and never turns it, while a line turned by other constraints carries the anchors along), or the distance (`PointToPoint`) |
+| `Spacing { a, b, mode }` (its common spacing) | `I(a, b) - side * d` (`side` 1 for `PointToPoint`) |
 
 `side`, `flip` and `sigma` (and internal vs external tangency) are chosen from
 the geometry when the constraint is added and stored, so later dimension

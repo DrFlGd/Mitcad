@@ -420,6 +420,17 @@ fn lofts_check_sections_conditions_and_rails() {
             ),
             "a closed loft has no end conditions",
         ),
+        (
+            loft(json!([profile, face]), json!({"closed": true})),
+            "a smooth closed loft needs three or more sections",
+        ),
+        (
+            loft(
+                json!([profile, face]),
+                json!({"surface": true, "operation": "join"}),
+            ),
+            "a surface loft is a new body or a new component",
+        ),
     ] {
         match add(&mut b.doc, value) {
             Err(e) => assert!(e.to_string().contains(expected), "{e}"),
@@ -508,6 +519,14 @@ fn lofts_check_sections_conditions_and_rails() {
     .unwrap();
     assert_eq!(status(&b.doc, uid), FeatureStatus::Ok);
     assert!(last_spec(&b.doc).ends_with("centerline c1"));
+    // A surface loft reaches the kernel as one.
+    let uid = add(
+        &mut b.doc,
+        loft(json!([profile, face]), json!({"surface": true})),
+    )
+    .unwrap();
+    assert_eq!(status(&b.doc, uid), FeatureStatus::Ok);
+    assert!(last_spec(&b.doc).ends_with(" surface"));
 }
 
 #[test]

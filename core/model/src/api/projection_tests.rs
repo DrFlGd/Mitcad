@@ -178,7 +178,7 @@ fn a_projection_of_some_of_a_faces_edges_follows() {
                    {"id": "p3", "type": "point", "at": [60.0, 40.0], "fixed": true, "reference": true},
                    {"id": "c4", "type": "line", "start": "p1", "end": "p2", "fixed": true, "reference": true},
                    {"id": "c5", "type": "line", "start": "p2", "end": "p3", "fixed": true, "reference": true}],
-               "projections": [{"source": FACE, "body": "F2.b0",
+               "projections": [{"source": FACE, "body": "F2.b0", "by_geometry": true,
                                 "entities": ["p1", "p2", "p3", "c4", "c5"]}]}}),
     );
     widen(&mut d, square(80.0, 0));
@@ -298,7 +298,7 @@ fn a_projection_that_cannot_follow_warns_on_the_sketch() {
                    {"id": "p1", "type": "point", "at": [30.0, 20.0], "fixed": true, "reference": true},
                    {"id": "c2", "type": "circle", "center": "p1", "radius": 5.0,
                     "fixed": true, "reference": true}],
-               "projections": [{"source": FACE, "body": "F2.b0", "entities": ["p1", "c2"]}]}}),
+               "projections": [{"source": FACE, "body": "F2.b0", "by_geometry": true, "entities": ["p1", "c2"]}]}}),
     );
     assert_eq!(feature(&d, "F3")["status"], "ok");
     // The source no longer has a circle: the circle keeps its geometry and
@@ -391,7 +391,7 @@ fn with_a_repeat() -> Document<MockKernel> {
                    {"id": "c13", "type": "line", "start": "p9", "end": "p12"}],
                "constraints": [{"id": "k14", "type": "perpendicular", "a": "c13", "b": "c11"}],
                "dimensions": [{"id": "k15", "type": "length", "line": "c11", "driven": true}],
-               "projections": [{"source": FACE, "body": "F2.b0",
+               "projections": [{"source": FACE, "body": "F2.b0", "by_geometry": true,
                                 "entities": ["p1", "p2", "p3", "p4", "c5", "c6", "c7", "c8",
                                              "p9", "p10", "c11"]}]}}),
     );
@@ -540,4 +540,130 @@ fn the_clean_up_merges_a_line_on_another_and_says_what_changes() {
     assert!(!has(&s, &short));
     assert_eq!(s["projections"].as_array().unwrap().len(), 1, "{s}");
     assert_area(&d, 2400.0);
+}
+
+#[test]
+fn a_projection_whose_curves_would_no_longer_meet_keeps_its_geometry() {
+    // A rounded corner: a line, an arc and a line sharing their ends.
+    let mut d = block();
+    let arc = Curve3::Conic {
+        center: [58.0, 2.0, 20.0],
+        normal: [0.0, 0.0, 1.0],
+        x_axis: [1.0, 0.0, 0.0],
+        major: 2.0,
+        minor: 2.0,
+        start: -std::f64::consts::FRAC_PI_2,
+        end: 0.0,
+        closed: false,
+    };
+    *d.kernel().curves.borrow_mut() = vec![
+        line([0.0, 0.0], [58.0, 0.0]),
+        arc,
+        line([60.0, 2.0], [60.0, 40.0]),
+    ];
+    command(
+        &mut d,
+        json!({"cmd": "add_feature", "def": {"type": "sketch", "plane": {"face": FACE},
+               "entities": [
+                   {"id": "p1", "type": "point", "at": [0.0, 0.0], "fixed": true, "reference": true},
+                   {"id": "p2", "type": "point", "at": [58.0, 0.0], "fixed": true, "reference": true},
+                   {"id": "c3", "type": "line", "start": "p1", "end": "p2", "fixed": true, "reference": true},
+                   {"id": "p4", "type": "point", "at": [58.0, 2.0], "fixed": true, "reference": true},
+                   {"id": "p5", "type": "point", "at": [60.0, 2.0], "fixed": true, "reference": true},
+                   {"id": "c6", "type": "arc", "center": "p4", "start": "p2", "end": "p5",
+                    "fixed": true, "reference": true},
+                   {"id": "p7", "type": "point", "at": [60.0, 40.0], "fixed": true, "reference": true},
+                   {"id": "c8", "type": "line", "start": "p5", "end": "p7", "fixed": true, "reference": true}],
+               "projections": [{"source": FACE, "body": "F2.b0", "by_geometry": true,
+                                "entities": ["p1", "p2", "c3", "p4", "p5", "c6", "p7", "c8"]}]}}),
+    );
+    assert_eq!(feature(&d, "F3")["status"], "ok");
+    // The corner is square now: the lines would follow and the arc not,
+    // its ends torn from its centre (mitcad#249). Nothing moves, the
+    // sketch warns and still solves.
+    widen(&mut d, square(80.0, 0));
+    let s = sketch(&d, "F3");
+    at_close(&s, "p2", [58.0, 0.0]);
+    at_close(&s, "p4", [58.0, 2.0]);
+    at_close(&s, "p5", [60.0, 2.0]);
+    assert_eq!(s["error"], Value::Null, "{s}");
+    assert_eq!(s["projections"][0]["kept"], true, "{s}");
+    let warnings = s["warnings"].as_array().unwrap();
+    assert_eq!(warnings.len(), 1, "{s}");
+    assert!(
+        warnings[0].as_str().unwrap().contains("no longer match"),
+        "{s}"
+    );
+    assert_eq!(feature(&d, "F3")["status"], "warning");
+}
+
+#[test]
+fn a_projection_of_an_earlier_version_follows_only_the_same_shape() {
+    // As files of earlier versions and imports record it: no
+    // `by_geometry`. Two of the face's edges, as the face lists them.
+    let mut d = block();
+    *d.kernel().curves.borrow_mut() = square(60.0, 0);
+    let def = |entities: Value| {
+        json!({"cmd": "add_feature", "def": {"type": "sketch", "plane": {"face": FACE},
+               "entities": entities,
+               "projections": [{"source": FACE, "body": "F2.b0",
+                                "entities": ["p1", "p2", "c3", "p4", "c5", "p6", "c7", "c8"]}]}})
+    };
+    let corner = |p: [f64; 2], id: &str| json!({"id": id, "type": "point", "at": p, "fixed": true, "reference": true});
+    let edge = |id: &str, a: &str, b: &str| json!({"id": id, "type": "line", "start": a, "end": b, "fixed": true, "reference": true});
+    command(
+        &mut d,
+        def(json!([
+            corner([0.0, 0.0], "p1"),
+            corner([60.0, 0.0], "p2"),
+            edge("c3", "p1", "p2"),
+            corner([60.0, 40.0], "p4"),
+            edge("c5", "p2", "p4"),
+            corner([0.0, 40.0], "p6"),
+            edge("c7", "p4", "p6"),
+            edge("c8", "p6", "p1")
+        ])),
+    );
+    assert!(
+        sketch(&d, "F3")["projections"][0]
+            .get("by_geometry")
+            .is_none()
+    );
+    // The same shape wider: it follows, as in earlier versions.
+    widen(&mut d, square(80.0, 0));
+    let s = sketch(&d, "F3");
+    at_close(&s, "p2", [80.0, 0.0]);
+    at_close(&s, "p4", [80.0, 40.0]);
+    assert_eq!(s["warnings"], json!([]), "{s}");
+    // A chamfer on a corner: another shape. Following by geometry would
+    // move it; a projection of an earlier version keeps the geometry the
+    // file stores and warns (mitcad#249).
+    *d.kernel().curves.borrow_mut() = vec![
+        line([0.0, 0.0], [90.0, 0.0]),
+        line([90.0, 0.0], [90.0, 38.0]),
+        line([90.0, 38.0], [88.0, 40.0]),
+        line([88.0, 40.0], [0.0, 40.0]),
+        line([0.0, 40.0], [0.0, 0.0]),
+    ];
+    command(
+        &mut d,
+        json!({"cmd": "set_parameter", "name": "d1", "value": 90}),
+    );
+    let s = sketch(&d, "F3");
+    at_close(&s, "p2", [60.0, 0.0]);
+    at_close(&s, "p4", [60.0, 40.0]);
+    assert_eq!(s["projections"][0]["kept"], true, "{s}");
+    assert!(
+        s["warnings"][0]
+            .as_str()
+            .unwrap()
+            .contains("no longer match"),
+        "{s}"
+    );
+    // Project makes projections that follow by geometry.
+    command(
+        &mut d,
+        json!({"cmd": "sketch.project", "sketch": "F3", "source": FACE, "body": "F2.b0", "linked": true}),
+    );
+    assert_eq!(sketch(&d, "F3")["projections"][1]["by_geometry"], true);
 }

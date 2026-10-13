@@ -1001,6 +1001,13 @@ pub struct Projection {
     /// (mitcad#100, `links.rs`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub link: Option<crate::links::OccurrenceLink>,
+    /// Its entities follow the source by geometry, each the fresh curve of
+    /// its kind most like it (mitcad#232): projections made with Project
+    /// since 0.4.1. Without it (files of earlier versions, imports) they
+    /// follow only a source whose curves come back of the same kinds, in
+    /// the same order and joined the same way (mitcad#249).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub by_geometry: bool,
 }
 
 /// Text: the outlines of its characters' glyphs

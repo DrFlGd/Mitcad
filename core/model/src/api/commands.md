@@ -2387,7 +2387,7 @@ made, in order) and `status` (as the `sketch` query: `dof`,
 | `sketch.circular_pattern` | `entities`, `center` (point input; a new point is fixed), `count` (originals included), `angle` (value, default a full turn) | a `patterns` record; result `constraints` [the pattern's id] |
 | `sketch.rectangular_pattern` | `entities`, `direction` (default [1, 0]), `count` [n1, n2], `spacing` [s1, s2] (values), `symmetric` ([bool, bool], default none: per direction the originals are the middle instance, an odd count, and the copies lie on both sides) | as above |
 | `sketch.edit_pattern` | `pattern` (`k5`), and any of `count` (n, or [n1, n2]), `angle`, `spacing`, `direction`, `center`, `entities` (the originals) | the copies follow |
-| `sketch.project` | `source`: an edge, a face (its boundary) or a vertex of the bodies before the sketch, `body` (optional), `linked` (default false), `occurrence` and `context` (optional: geometry of another component, see [Geometry of other components](#geometry-of-other-components)) | fixed reference entities, a curve or point the same as another of the source once; a linked projection follows its source when the model changes |
+| `sketch.project` | `source`: an edge, a face (its boundary) or a vertex of the bodies before the sketch, `body` (optional), `linked` (default false), `occurrence` and `context` (optional: geometry of another component, see [Geometry of other components](#geometry-of-other-components)) | fixed reference entities, a curve or point the same as another of the source once; a linked projection follows its source when the model changes, each entity the fresh curve of its kind most like it (`by_geometry` in its record, since 0.4.1); a projection without it (files of earlier versions, imports) follows only a source whose curves come back of the same kinds, in the same order and joined the same way, and otherwise keeps its geometry and warns (mitcad#249) |
 | `sketch.import_dxf` | `path` (.dxf), `unit` (of a drawing that names none: `mm` default, `cm`, `m`, `in`, `ft`), `at` (the sketch point the drawing's origin goes to, default [0, 0]), `layers` (only the entities on these layers; all when left out; a layer with nothing on it is refused) | as other edits, and `curves`, `points` (shared points made), `text_count`, `warnings`; undo step `Insert DXF into Sketch1`; see [DXF](#dxf-into-sketches) |
 | `sketch.clean_up_projections` | `merge` (default true: also lines on or overlapping a collinear one) | as other edits, and `cleaned` (`[{"curve", "kept", "how", "link"}]`; `how`: `same`, `on` or `joined`; `link`: the source the removed curve followed when the kept one does not) and `warnings` (what it removed, links lost, regions later features use that change their names); undo step `Clean Up Projections in Sketch1`; see [Clean Up Projections](#clean-up-projections) |
 
@@ -2410,7 +2410,10 @@ The `sketch` query (`{"query": "sketch", "uid": "F1"}`) returns:
   `expression`), `projections` (each also, after an evaluation where it did
   not follow all the way: `unfollowed`, its entities that found nothing
   like them in the source; `unmatched`, how many of the source's curves and
-  points none of its entities follows; `lost`: the source is gone);
+  points none of its entities follows; `lost`: the source is gone; `kept`:
+  its curves no longer match the source's, so it kept its last geometry:
+  following by geometry would tear an arc from the curves it shares points
+  with, or one without `by_geometry` found them changed, mitcad#249);
 - `texts`, also `family` (the font used), `fallback` (the bundled font
   instead of the one asked for) and `outline`: `[{"id": "t9.g0.c0",
   "curves": [geometry, …]}]`;

@@ -1795,6 +1795,9 @@ impl<K: Kernel> Document<K> {
                     if report.lost {
                         value["lost"] = json!(true);
                     }
+                    if report.kept {
+                        value["kept"] = json!(true);
+                    }
                     if !report.unfollowed.is_empty() {
                         let ids: Vec<String> = report
                             .unfollowed

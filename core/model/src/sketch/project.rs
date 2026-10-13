@@ -10,7 +10,12 @@
 //! projection is recorded ([`Projection`]) and its entities follow the
 //! source at every evaluation, each the fresh curve of its kind most like
 //! it (mitcad#232); an entity that finds none, and the entities of a lost
-//! source, keep their last geometry, and the sketch warns about them.
+//! source, keep their last geometry, and the sketch warns about them. A
+//! pairing that would tear an arc from the curves it shares points with
+//! (the source changed shape) moves nothing: the whole projection keeps
+//! its last geometry and warns (mitcad#249). Projections of earlier
+//! versions and imports (no [`Projection::by_geometry`]) follow only a
+//! source whose curves come back as they were listed, as there.
 
 use std::collections::BTreeMap;
 
@@ -414,6 +419,11 @@ pub struct ProjectionFollow {
     pub unmatched: usize,
     /// The source has no curves (it is gone): everything kept.
     pub lost: bool,
+    /// Its curves no longer match the source's (mitcad#249): following by
+    /// geometry would tear its arcs from the curves they share points with,
+    /// or a projection that follows by position finds the source's curves
+    /// changed in kind, order or joints. Everything kept.
+    pub kept: bool,
 }
 
 impl ProjectionFollow {
@@ -425,6 +435,13 @@ impl ProjectionFollow {
             return Some(format!(
                 "the projection of {} does not follow it: it is gone, and its entities keep \
                  their last geometry",
+                projection.source
+            ));
+        }
+        if self.kept {
+            return Some(format!(
+                "the projection of {} does not follow it: its curves no longer match the \
+                 source's, and they keep their last geometry",
                 projection.source
             ));
         }
@@ -499,12 +516,62 @@ pub fn follow_links<K: Kernel>(
         // Fresh ids above the sketch's: the old ids replace them one at a
         // time, so no old id may also be a fresh one still to replace.
         let mut counter = def.entities.iter().map(|e| e.id.0).max().unwrap_or(0);
-        let fresh = entities(&distinct(project(&curves, frame)), &mut || {
+        let mut fresh_id = || {
             counter += 1;
             EntityUid(counter)
-        });
+        };
         let old: Vec<Entity> = linked_entities(def, projection);
+        if !projection.by_geometry {
+            // A projection of an earlier version or an import follows as
+            // there: only a source whose curves come back as they were
+            // listed, of the same kinds and joined the same way, entity by
+            // entity (mitcad#249).
+            let fresh = entities(&project(&curves, frame), &mut fresh_id);
+            if shape_of(&fresh) != shape_of(&old) {
+                out.reports.push(ProjectionFollow {
+                    projection: k,
+                    kept: true,
+                    ..ProjectionFollow::default()
+                });
+                continue;
+            }
+            for (new, old) in fresh.iter().zip(&old) {
+                if let Some(target) = updated.entity_mut(old.id) {
+                    let mut kind = new.kind.clone();
+                    // Keep the old point ids.
+                    for (from, to) in new.kind.points().iter().zip(old.kind.points()) {
+                        kind.replace_point(*from, to);
+                    }
+                    // Where a circle starts is no geometry of its source.
+                    if let (
+                        EntityKind::Circle { start, .. },
+                        EntityKind::Circle {
+                            start: old_start, ..
+                        },
+                    ) = (&mut kind, &old.kind)
+                    {
+                        *start = *old_start;
+                    }
+                    if target.kind != kind {
+                        target.kind = kind;
+                        changed = true;
+                    }
+                }
+            }
+            continue;
+        }
+        let fresh = entities(&distinct(project(&curves, frame)), &mut fresh_id);
         let pairing = pair(&old, &old_at, &fresh);
+        if pairing.kept {
+            // A pairing that tears the projection's joints moves nothing
+            // (mitcad#249).
+            out.reports.push(ProjectionFollow {
+                projection: k,
+                kept: true,
+                ..ProjectionFollow::default()
+            });
+            continue;
+        }
         for (id, kind) in pairing.kinds {
             if let Some(target) = updated.entity_mut(id)
                 && target.kind != kind
@@ -518,7 +585,7 @@ pub fn follow_links<K: Kernel>(
                 projection: k,
                 unfollowed: pairing.unfollowed,
                 unmatched: pairing.unmatched,
-                lost: false,
+                ..ProjectionFollow::default()
             });
         }
     }
@@ -689,6 +756,9 @@ struct Pairing {
     kinds: Vec<(EntityUid, EntityKind)>,
     unfollowed: Vec<EntityUid>,
     unmatched: usize,
+    /// The pairs would tear points the projection's curves share: nothing
+    /// follows (mitcad#249).
+    kept: bool,
 }
 
 /// A pair of an old and a fresh entity (indices), how unlike they are and
@@ -787,6 +857,22 @@ fn pair(old: &[Entity], old_at: &dyn Fn(EntityUid) -> Option<P2>, fresh: &[Entit
     }
     let mut out = Pairing::default();
     let mut moved: BTreeMap<EntityUid, P2> = BTreeMap::new();
+    // A point of an arc the pairs would put in two places tears the
+    // projection's joints: the arc's centre and ends would no longer fit
+    // (mitcad#249). Lines take either place and stay lines.
+    let tol = SAME * size;
+    let bound = |kind: &EntityKind| {
+        matches!(
+            kind,
+            EntityKind::Arc { .. } | EntityKind::EllipticalArc { .. }
+        )
+    };
+    let arc_points: std::collections::BTreeSet<EntityUid> = olds
+        .iter()
+        .filter(|e| bound(&e.kind))
+        .flat_map(|e| e.kind.points())
+        .collect();
+    let mut torn = false;
     for &(i, j, _, back) in &pairs {
         let (o, f) = (&olds[i], &news[j]);
         if let (EntityKind::Point { .. }, EntityKind::Point { at }) = (&o.kind, &f.kind) {
@@ -798,7 +884,8 @@ fn pair(old: &[Entity], old_at: &dyn Fn(EntityUid) -> Option<P2>, fresh: &[Entit
         for (k, id) in op.iter().enumerate() {
             let from = if back { fp[n - 1 - k] } else { fp[k] };
             if let Some(at) = fresh_at(from) {
-                moved.entry(*id).or_insert(at);
+                let to = *moved.entry(*id).or_insert(at);
+                torn |= arc_points.contains(id) && dist(to, at) > tol;
             }
         }
         let kind = match (&o.kind, &f.kind) {
@@ -846,13 +933,31 @@ fn pair(old: &[Entity], old_at: &dyn Fn(EntityUid) -> Option<P2>, fresh: &[Entit
         };
         out.kinds.push((o.id, kind));
     }
-    for (id, at) in moved {
-        out.kinds.push((id, EntityKind::Point { at }));
-    }
     out.unfollowed = (0..olds.len())
         .filter(|i| !pairs.iter().any(|p| p.0 == *i))
         .map(|i| olds[i].id)
         .collect();
+    // An arc that keeps its geometry while a point of it moves with
+    // another curve tears too.
+    torn |= olds
+        .iter()
+        .filter(|e| bound(&e.kind) && out.unfollowed.contains(&e.id))
+        .flat_map(|e| e.kind.points())
+        .any(|id| {
+            moved
+                .get(&id)
+                .zip(old_at(id))
+                .is_some_and(|(to, from)| dist(*to, from) > tol)
+        });
+    if torn {
+        return Pairing {
+            kept: true,
+            ..Pairing::default()
+        };
+    }
+    for (id, at) in moved {
+        out.kinds.push((id, EntityKind::Point { at }));
+    }
     out.unmatched = (0..news.len())
         .filter(|j| !pairs.iter().any(|p| p.1 == *j))
         .count();

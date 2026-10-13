@@ -411,6 +411,13 @@ if(BUILD_TESTING)
             "-DWORK=${CMAKE_CURRENT_BINARY_DIR}/fcstd-corpus" -P "${CMAKE_CURRENT_SOURCE_DIR}/fcstd-corpus.cmake")
   set_tests_properties(freecad.corpus PROPERTIES SKIP_REGULAR_EXPRESSION "FreeCAD corpus: skipped")
 
+  # Designs saved by earlier versions under MITCAD_DESIGN_CORPUS (project
+  # folders): every one opens with no sketch failing (mitcad#249); skipped
+  # without the corpus.
+  add_test(NAME designs.corpus
+    COMMAND "${CMAKE_COMMAND}" "-DCLI=$<TARGET_FILE:mitcad-cli>" -P "${CMAKE_CURRENT_SOURCE_DIR}/designs-corpus.cmake")
+  set_tests_properties(designs.corpus PROPERTIES SKIP_REGULAR_EXPRESSION "design corpus: skipped")
+
   # Recompute speed (P10): a generated model with the joins, patterns and
   # fillets that slowed down imported designs, saved, then opened with the
   # time of each feature reported (ctest -V, or Testing/Temporary/

@@ -2188,6 +2188,7 @@ impl<K: Kernel> Document<K> {
                     body,
                     entities: refs,
                     link,
+                    by_geometry: true,
                 });
             }
             Ok(())

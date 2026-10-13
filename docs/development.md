@@ -624,6 +624,15 @@ in the distro only:
   sketch with FreeCAD's reading. Example:
   `MITCAD_FCSTD_CORPUS=~/fcstd-models:~/fcstd-examples ctest -R freecad`.
 
+### Designs of earlier versions
+
+`MITCAD_DESIGN_CORPUS` (a `PATH`-like list) names folders of Mitcad
+projects saved by earlier versions (each design with its project's
+`.mitcad/brep` store), never committed. ctest `designs.corpus`
+(`tools/cli/designs-corpus.cmake`) opens every `.mitcad` with `mitcad-cli
+info` and fails when a sketch of one fails, such as a linked projection
+whose source changed shape since (mitcad#249); skipped without the corpus.
+
 ### USDZ files
 
 USDZ export (mitcad#123, [commands.md](../core/model/src/api/commands.md#usdz))

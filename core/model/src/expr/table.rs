@@ -28,13 +28,16 @@ impl ParamId {
     }
 }
 
-/// The two kinds of parameters.
+/// The kinds of parameters.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ParamKind {
     /// Created by the user in the parameters dialog.
     User,
     /// Created by a feature or a sketch dimension, such as `d1`.
     Model,
+    /// The read-only value a driven sketch dimension measures (mitcad#231):
+    /// it can be renamed and used in expressions, never set.
+    Reference,
 }
 
 impl ParamKind {
@@ -42,6 +45,7 @@ impl ParamKind {
         match self {
             Self::User => "user",
             Self::Model => "model",
+            Self::Reference => "reference",
         }
     }
 }

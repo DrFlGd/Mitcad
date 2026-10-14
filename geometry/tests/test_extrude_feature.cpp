@@ -144,7 +144,8 @@ void test_taper() {
   // extrusion ends in the apex of the cone: a circle of radius 5 leaning in
   // by 20 degrees over 20 mm (OCCT's draft would intersect the cone past
   // its apex, endlessly at times). A hole of radius 5 that a widening taper
-  // closes is not a solid's outline, and stays an error.
+  // closes ends in its cone's apex (mitcad#235): the square's frustum less
+  // the cone.
   const double twenty = 20.0 * kPi / 180.0;
   spec = spec_of({circle(1, 0, 0, 5)}, 20);
   spec.side1.taper = -twenty;
@@ -160,7 +161,45 @@ void test_taper() {
   ring.loops.push_back(circle(5, 0, 0, 5).loops[0]);
   spec = spec_of({ring}, 20);
   spec.side1.taper = twenty;
-  CHECK(throws_with([&] { extrude_feature(spec); }, "closes the profile"));
+  const ShapePtr closed_hole = extrude_feature(spec);
+  const double grown = 40.0 + 40.0 * std::tan(twenty);
+  CHECK(near(volume(*closed_hole), frustum(40, grown, 20) - kPi * 25 * apex / 3.0, 1e-6));
+  CHECK(BRepCheck_Analyzer(closed_hole->occt()).IsValid());
+  CHECK(faces_named(*closed_hole, "F2:side(c5)") == 1 && edge_names_unique(*closed_hole));
+}
+
+void test_taper_closing_ring() {
+  // A ring whose walls a taper leans into each other (mitcad#235): radii
+  // 1.5 and 2.5, leaning in by 50 degrees over 2 mm. The outline narrows and
+  // the hole widens until they meet at (2.5 - 1.5) / (2 tan 50) from the
+  // start, in a ridge at the middle radius: the ring of a triangle's
+  // section, a cone less a cone.
+  const double fifty = 50.0 * kPi / 180.0;
+  const double t = std::tan(fifty);
+  Region ring = circle(1, 0, 0, 2.5);
+  ring.loops.push_back(circle(2, 0, 0, 1.5).loops[0]);
+  ExtrudeFeatureSpec spec = spec_of({ring}, 2);
+  spec.side1.taper = -fifty;
+  const ShapePtr ridge = extrude_feature(spec);
+  CHECK(BRepCheck_Analyzer(ridge->occt()).IsValid());
+  const double meet = 1.0 / (2.0 * t);
+  // Pappus: the triangle's area times the path of its centroid.
+  const double triangle = 0.5 * 1.0 * meet;
+  CHECK(near(volume(*ridge), 2.0 * kPi * 2.0 * triangle, 1e-6));
+  CHECK(near(bounding_box(*ridge).max.Z(), meet, 1e-6));
+  CHECK(faces_named(*ridge, "F2:side(c1)") == 1 && faces_named(*ridge, "F2:side(c2)") == 1);
+  CHECK(faces_named(*ridge, start_cap("F2", 1)) <= 1 && edge_names_unique(*ridge));
+  // Not closing within the length: the draft, as before.
+  spec.side1.distance = 0.2;
+  const ShapePtr open = extrude_feature(spec);
+  const double r1 = 2.5 - 0.2 * t;
+  const double r2 = 1.5 + 0.2 * t;
+  const double frustum_volume = [](double a, double b, double h) {
+    return kPi * h / 3.0 * (a * a + a * b + b * b);
+  }(2.5, r1, 0.2) - [](double a, double b, double h) {
+    return kPi * h / 3.0 * (a * a + a * b + b * b);
+  }(1.5, r2, 0.2);
+  CHECK(near(volume(*open), frustum_volume, 1e-6));
 }
 
 // A regular hexagon of circumradius r about (0, 0), lines c1..c6.
@@ -490,6 +529,7 @@ void extrude_feature_tests() {
   guarded("test_start", test_start);
   guarded("test_taper", test_taper);
   guarded("test_taper_closing_profile", test_taper_closing_profile);
+  guarded("test_taper_closing_ring", test_taper_closing_ring);
   guarded("test_thin", test_thin);
   guarded("test_to_planes", test_to_planes);
   guarded("test_to_faces_and_bodies", test_to_faces_and_bodies);

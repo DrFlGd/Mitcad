@@ -1,0 +1,200 @@
+Mitcad's patch to OCCT 8.0.1, under OCCT's licence:
+SPDX-License-Identifier: LGPL-2.1-only WITH OCCT-exception-1.0
+
+Fillets: the corner where a rounding ends against a face (OnSame), when the
+opposite face is split along an edge at the corner's vertex into two faces
+of one surface (mitcad#239). Example: a slot cut into the side of a
+cylinder whose side is two faces split at the slot's back wall; the slot's
+top edges rounded. The rounding's contact on the side face ends on that
+split edge, which lies in the face at the end. The missing end of the
+prolonged edge (the edge between the face at the end and the face beyond
+the split) was put on the opposite face, which does not hold that edge,
+and the split edge was left whole: the topological build kept the split
+edge's pieces under the rounding and gave an unorientable shell.
+
+- PerformOneCorner, OnSame: where the opposite contact ends on an edge of
+  the opposite face at the corner's vertex (before it is moved onto the
+  face at the end), the opposite face does not hold the prolonged edge,
+  and the other face of the prolonged edge holds that edge too, the
+  missing end is computed on that other face (its p-curve there, the
+  prolonged edge's orientation in it), and the edge is cut where the
+  contact ends: its part from the vertex, under the rounding, is dropped.
+  Elsewhere nothing changes.
+diff --git a/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_C1.cxx b/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_C1.cxx
+index b6526905..52ba975d 100644
+--- a/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_C1.cxx
++++ b/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_C1.cxx
+@@ -61,6 +61,8 @@
+ #include <GeomAbs_Shape.hxx>
+ #include <GeomAdaptor_Curve.hxx>
+ #include <GeomAdaptor_Surface.hxx>
++#include <GeomAPI_ProjectPointOnCurve.hxx>
++#include <GeomAPI_ProjectPointOnSurf.hxx>
+ #include <GeomInt_IntSS.hxx>
+ #include <GeomLib.hxx>
+ #include <GeomProjLib.hxx>
+@@ -1444,11 +1446,18 @@ void ChFi3d_Builder::PerformOneCorner(const int Index, const bool thePrepareOnSa
+   occ::handle<GeomAdaptor_Surface> HGs =
+     new GeomAdaptor_Surface(DStr.Surface(Fd->Surf()).Surface());
+   gp_Pnt2d p2dbout;
++  // (OnSame: the arc the opposite contact ends on, before that point is
++  // moved onto the face at the end.)
++  TopoDS_Edge ArcopEnd;
+ 
+   if (onsame)
+   {
+ 
+     ChFiDS_CommonPoint saveCPopArc = CPopArc;
++    if (CPopArc.IsOnArc())
++    {
++      ArcopEnd = CPopArc.Arc();
++    }
+     c3df                           = DStr.Curve(FiopArc.LineIndex()).Curve();
+ 
+     inters = IntersUpdateOnSame(HGs,
+@@ -2075,15 +2084,80 @@ void ChFi3d_Builder::PerformOneCorner(const int Index, const bool thePrepareOnSa
+     }
+     else
+     {
+-    // (On Fop the p-curve of the prolonged edge as Fop uses it: an edge
++    // The face the prolonged edge's missing end lies on: the opposite face,
++    // or, where the opposite contact ended on an edge of the opposite face
++    // at the vertex (ArcopEnd) beyond which a face Fprol0 holding the
++    // prolonged edge continues the opposite face (a face split from it
++    // along that edge), Fprol0: the end runs along ArcopEnd on Fprol0's
++    // side, and ArcopEnd is cut where the contact ends.
++    TopoDS_Face Fzob     = Fop;
++    bool        cutArcop = false;
++    auto        hasEdge  = [](const TopoDS_Face& F, const TopoDS_Edge& E) {
++      for (TopExp_Explorer exE(F, TopAbs_EDGE); exE.More(); exE.Next())
++      {
++        if (exE.Current().IsSame(E))
++        {
++          return true;
++        }
++      }
++      return false;
++    };
++    if (!ArcopEnd.IsNull() && !hasEdge(Fop, Arcprol) && hasEdge(Fop, ArcopEnd)
++        && !ArcopEnd.IsSame(Arcprol))
++    {
++      bool atVtx = false;
++      for (ex.Init(ArcopEnd, TopAbs_VERTEX); ex.More() && !atVtx; ex.Next())
++      {
++        atVtx = ex.Current().IsSame(Vtx);
++      }
++      for (NCollection_List<TopoDS_Shape>::Iterator It(myEFMap(Arcprol)); It.More() && atVtx;
++           It.Next())
++      {
++        const TopoDS_Face& Fp = TopoDS::Face(It.Value());
++        if (!Fp.IsSame(Fv) && !Fp.IsSame(Fop) && hasEdge(Fp, ArcopEnd))
++        {
++          Fzob = Fp;
++          Fzob.Orientation(TopAbs_FORWARD);
++          cutArcop = true;
++          break;
++        }
++      }
++      if (cutArcop)
++      {
++        OArcprolop = TopAbs_FORWARD;
++        for (ex.Init(Fzob, TopAbs_EDGE); ex.More(); ex.Next())
++        {
++          if (Arcprol.IsSame(ex.Current()))
++          {
++            OArcprolop = ex.Current().Orientation();
++            break;
++          }
++        }
++        Bop.Initialize(Fzob);
++      }
++    }
++    // (On Fzob the p-curve of the prolonged edge as Fzob uses it: an edge
+     // left from a seam, used once, keeps both its p-curves.)
+-    Hc = BRep_Tool::CurveOnSurface(TopoDS::Edge(Arcprol.Oriented(OArcprolop)), Fop, Ubid, Ubid);
++    Hc = BRep_Tool::CurveOnSurface(TopoDS::Edge(Arcprol.Oriented(OArcprolop)), Fzob, Ubid, Ubid);
+     if (Hc.IsNull())
+     {
+       throw Standard_ConstructionError("Failed to get p-curve of edge");
+     }
+     pop1 = Hc->Value(parVtx);
+     pop2 = Fiop.PCurveOnFace()->Value(Fiop.Parameter(isfirst));
++    if (cutArcop)
++    {
++      // The end of the contact on Fprol0's surface.
++      GeomAPI_ProjectPointOnSurf aProj(Fd->Vertex(isfirst, IFopArc).Point(),
++                                       BRep_Tool::Surface(Fzob));
++      if (aProj.NbPoints() == 0)
++      {
++        throw Standard_Failure("OneCorner : end of the contact not on the face beside it");
++      }
++      double aU = 0., aV = 0.;
++      aProj.LowerDistanceParameters(aU, aV);
++      pop2.SetCoord(aU, aV);
++    }
+     Hc   = BRep_Tool::CurveOnSurface(Arcprol, Fv, Ubid, Ubid);
+     if (Hc.IsNull())
+     {
+@@ -2134,7 +2208,7 @@ void ChFi3d_Builder::PerformOneCorner(const int Index, const bool thePrepareOnSa
+ 
+     // TopoDS_Edge edgecouture;
+     // bool couture;
+-    ChFi3d_Couture(Fop, couture, edgecouture);
++    ChFi3d_Couture(Fzob, couture, edgecouture);
+ 
+     if (couture && !BRep_Tool::Degenerated(edgecouture))
+     {
+@@ -2198,13 +2272,13 @@ void ChFi3d_Builder::PerformOneCorner(const int Index, const bool thePrepareOnSa
+       DStr.ChangeShapeInterferences(Iarc).Append(Interfedge);
+ 
+       //  interference of curv1 and curv2 on Iop
+-      int Iop = DStr.AddShape(Fop);
++      int Iop = DStr.AddShape(Fzob);
+       Et      = TopAbs::Reverse(TopAbs::Compose(OVtx, OArcprolop));
+       occ::handle<TopOpeBRepDS_SurfaceCurveInterference> Interfop;
+-      ComputeCurve2d(curv1, Fop, c2d1);
++      ComputeCurve2d(curv1, Fzob, c2d1);
+       Interfop = ChFi3d_FilCurveInDS(Icurv1, Iop, c2d1, Et);
+       DStr.ChangeShapeInterferences(Iop).Append(Interfop);
+-      ComputeCurve2d(curv2, Fop, c2d2);
++      ComputeCurve2d(curv2, Fzob, c2d2);
+       Interfop = ChFi3d_FilCurveInDS(Icurv2, Iop, c2d2, Et);
+       DStr.ChangeShapeInterferences(Iop).Append(Interfop);
+       occ::handle<TopOpeBRepDS_CurvePointInterference> interfprol =
+@@ -2225,10 +2299,35 @@ void ChFi3d_Builder::PerformOneCorner(const int Index, const bool thePrepareOnSa
+         ChFi3d_FilCurveInDS(IZob, IShape, zob2dv, Et);
+       DStr.ChangeShapeInterferences(IShape).Append(InterFv);
+       Et = TopAbs::Reverse(TopAbs::Compose(OVtx, OArcprolop));
+-      int                                                Iop = DStr.AddShape(Fop);
++      int                                                Iop = DStr.AddShape(Fzob);
+       occ::handle<TopOpeBRepDS_SurfaceCurveInterference> Interfop =
+         ChFi3d_FilCurveInDS(IZob, Iop, zob2dop, Et);
+       DStr.ChangeShapeInterferences(Iop).Append(Interfop);
++      if (cutArcop)
++      {
++        // ArcopEnd is cut where the contact ends: its part from Vtx lies
++        // under the blend (on Fop's side) and is replaced by the curve on
++        // Fprol0's side.
++        const int                     iArc = DStr.AddShape(ArcopEnd);
++        double                        f = 0., l = 0.;
++        const occ::handle<Geom_Curve> aC = BRep_Tool::Curve(ArcopEnd, f, l);
++        if (aC.IsNull())
++        {
++          throw Standard_Failure("OneCorner : end of the contact not on its edge");
++        }
++        GeomAPI_ProjectPointOnCurve aProjC(zob3d->Value(Ufin), aC, f, l);
++        if (aProjC.NbPoints() == 0)
++        {
++          throw Standard_Failure("OneCorner : end of the contact not on its edge");
++        }
++        const double aW       = aProjC.LowerDistanceParameter();
++        const bool   VtxFirst = TopExp::FirstVertex(ArcopEnd).IsSame(Vtx);
++        DStr.ChangeShapeInterferences(iArc).Append(ChFi3d_FilPointInDS(
++          VtxFirst ? TopAbs_FORWARD : TopAbs_REVERSED,
++          iArc,
++          stripe->IndexPoint(isfirst, IFopArc),
++          aW));
++      }
+       occ::handle<TopOpeBRepDS_CurvePointInterference> interfprol;
+ #ifdef VARIANT1
+       interfprol = ChFi3d_FilVertexInDS(TopAbs_FORWARD, IZob, IVtx, Udeb);

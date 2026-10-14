@@ -37,6 +37,13 @@ pub mod face_mesh;
 pub mod sheet;
 // The faces a run of features made, copied by a pattern.
 pub mod face_copy;
+// Tangent chains of edges and faces, for the hover (mitcad#290).
+pub mod tangent_chain;
+// Bodies from their boundaries and from triangles (the IFC import,
+// mitcad#273).
+pub mod boundary;
+// Contacts of a new Extrude's tool (mitcad#289).
+pub mod contact;
 
 use std::sync::Arc;
 
@@ -1397,6 +1404,97 @@ impl Kernel for OcctKernel {
                 (!part.is_null()).then_some(part)
             })
             .collect())
+    }
+
+    // Face boxes (the `.f3d` import's face lookups through a point,
+    // mitcad#119; analysis.rs).
+
+    fn face_boxes(&self, shape: &Self::Shape) -> Result<Vec<[Vec3; 2]>, KernelError> {
+        let flat = analysis::ffi::analysis_face_boxes(occt(shape)?).map_err(failed)?;
+        Ok(flat
+            .as_chunks::<6>()
+            .0
+            .iter()
+            .map(|b| [[b[0], b[1], b[2]], [b[3], b[4], b[5]]])
+            .collect())
+    }
+
+    // Base features that adopt the shapes their data was written from
+    // (mitcad#244; exchange.rs).
+
+    fn adopt_shape(
+        &self,
+        feature: FeatureUid,
+        shape: &Self::Shape,
+        first_face: u32,
+    ) -> Result<(Self::Shape, u32), KernelError> {
+        let adopted = exchange::ffi::adopt_body(&feature.to_string(), occt(shape)?, first_face)
+            .map_err(failed)?;
+        let faces = u32::try_from(exchange::ffi::face_count(occt(&adopted)?))
+            .map_err(|_| KernelError::failed("the body has too many faces"))?;
+        Ok((adopted, faces))
+    }
+
+    // Tangent chains, for the hover (mitcad#290; tangent_chain.rs).
+
+    fn tangent_chains(
+        &self,
+        shape: &Self::Shape,
+        faces: bool,
+    ) -> Result<Vec<Vec<String>>, KernelError> {
+        let chains = tangent_chain::ffi::tangent_chains(occt(shape)?, faces).map_err(failed)?;
+        Ok(chains.into_iter().map(|chain| chain.names).collect())
+    }
+
+    // Bodies from their boundaries and from triangles (the IFC import,
+    // mitcad#273).
+
+    fn boundary_body(
+        &self,
+        body: &mitcad_model::boundary::BoundaryBody,
+    ) -> Result<(Self::Shape, mitcad_model::boundary::BoundaryReport), KernelError> {
+        boundary::boundary_body(body)
+    }
+
+    fn triangle_body(
+        &self,
+        points: &[[f64; 3]],
+        triangles: &[[u32; 3]],
+    ) -> Result<Self::Shape, KernelError> {
+        boundary::triangle_body(points, triangles)
+    }
+
+    // Contacts of a new Extrude's tool (mitcad#289; contact.rs).
+
+    fn tool_contacts(
+        &self,
+        tool: &Self::Shape,
+        bodies: &[&Self::Shape],
+    ) -> Result<Vec<mitcad_model::ToolContact>, KernelError> {
+        let list = shape_list(bodies)?;
+        let contacts = contact::ffi::tool_contacts(occt(tool)?, &list).map_err(failed)?;
+        Ok(contacts
+            .into_iter()
+            .map(|c| match c {
+                2 => mitcad_model::ToolContact::Inside,
+                1 => mitcad_model::ToolContact::Touches,
+                _ => mitcad_model::ToolContact::Apart,
+            })
+            .collect())
+    }
+
+    // The volume a change makes from the faces it changed (the .ipt
+    // import's change check, mitcad#235; analysis.rs).
+
+    fn changed_volume(
+        &self,
+        before: &[&Self::Shape],
+        after: &[&Self::Shape],
+    ) -> Result<(f64, f64), KernelError> {
+        let values =
+            analysis::ffi::analysis_changed_volume(&*shape_list(before)?, &*shape_list(after)?)
+                .map_err(failed)?;
+        Ok((values[0], values[1]))
     }
 }
 

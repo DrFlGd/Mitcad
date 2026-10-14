@@ -50,6 +50,18 @@ pub struct RecomputeMonitor {
     parents: Vec<Arc<RecomputeMonitor>>,
     /// Cancelled once this passes.
     deadline: Option<Instant>,
+    /// A question the job puts to its user, and the user's answer
+    /// ([`RecomputeMonitor::ask`]).
+    question: Mutex<Question>,
+}
+
+/// A job's question to its user ([`RecomputeMonitor::ask`]).
+#[derive(Debug, Default)]
+struct Question {
+    /// Asked and not answered yet.
+    asked: Option<String>,
+    /// Given and not taken yet.
+    answer: Option<String>,
 }
 
 /// A recompute stopped on request; nothing it was part of took effect.
@@ -99,6 +111,7 @@ impl Default for RecomputeMonitor {
             cancel_after: AtomicUsize::new(usize::MAX),
             parents: Vec::new(),
             deadline: None,
+            question: Mutex::new(Question::default()),
         }
     }
 }
@@ -205,6 +218,44 @@ impl RecomputeMonitor {
             slept += step;
         }
         self.check()
+    }
+
+    /// Puts `question` to the job's user (the `.f3d` import asks what to do
+    /// with the bodies it already imported, mitcad#283): the thread that
+    /// shows the progress finds it with [`RecomputeMonitor::question`] and
+    /// gives the user's answer with [`RecomputeMonitor::answer`], which the
+    /// job takes with [`RecomputeMonitor::take_answer`]. A new question
+    /// replaces one not answered and drops an answer not taken.
+    pub fn ask(&self, question: &str) {
+        let mut q = self.question.lock().unwrap_or_else(PoisonError::into_inner);
+        q.asked = Some(question.to_owned());
+        q.answer = None;
+    }
+
+    /// The question asked and not answered yet ([`RecomputeMonitor::ask`]).
+    pub fn question(&self) -> Option<String> {
+        self.question
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .asked
+            .clone()
+    }
+
+    /// Answers the question asked; without one it does nothing.
+    pub fn answer(&self, answer: &str) {
+        let mut q = self.question.lock().unwrap_or_else(PoisonError::into_inner);
+        if q.asked.take().is_some() {
+            q.answer = Some(answer.to_owned());
+        }
+    }
+
+    /// The answer given to the question, once (None before it is given).
+    pub fn take_answer(&self) -> Option<String> {
+        self.question
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .answer
+            .take()
     }
 
     /// An evaluation went into the cache.

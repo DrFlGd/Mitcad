@@ -1,0 +1,352 @@
+Mitcad's patch to OCCT 8.0.1, under OCCT's licence:
+SPDX-License-Identifier: LGPL-2.1-only WITH OCCT-exception-1.0
+
+Fillets: a closed rounding whose start overflowed a face of its edges all
+round (the face lies wholly between the blend's contacts and vanishes),
+and whose contact on the face beyond crosses a hole with a rounded rim:
+0160's walk over the rim for such stripes, and the ends of the walked
+pieces where the other contact crosses a seam (mitcad#261). E.g. a disc
+whose bottom edge was rounded with 1 and which was then turned down by 0.1,
+the edge between the turned cylinder and that rounding rounded with 1: the
+ball touches the cylinder and the bottom, the earlier rounding lies wholly
+between the contacts, and the contact on the bottom crosses a hole whose
+rim is rounded with 0.5.
+
+- ChFi3d_ConsumedSpineFaces (new): the faces of the edges of a closed
+  spine on which no surface data of the stripe lies; the contacts left
+  them all round, so the blend consumes them. The topological build drops
+  them once their neighbours are cut (no face kept holds their edges).
+- ChFi3d_Builder::WalkedBridgeOverGap: the walk over the gap is also taken
+  where the face the contact runs on is not a face of the spine's edges but,
+  on a closed spine, a face beyond such a consumed face. Before, it was
+  refused (the result kept the consumed face) and the fillet failed with
+  "Chaining is impossible". The edges of the rim's face with a consumed
+  face vanish with it: a vertex of the rim under the blend at such an edge
+  needs no edge grown (ChFi3d_KPartCutPiece's CutEdges).
+- WalkedBridgeOverGap: a stretch ends where the other contact reaches an
+  edge of its face (a seam); its cut piece ended at the section through the
+  spine's point there (as for analytic blends), not at the walked piece's
+  own end section (the rolling ball's sections are not in the guide's
+  normal planes: 0.011 off on the case), and its point on the seam was
+  looked up on the seam's first occurrence in the face. The cylinder's
+  seam then kept its piece under the blend, and with it the part of the
+  cylinder and the consumed face. ChFi3d_KPartCutPiece (AtFullEnds) ends a
+  piece at an end of the walked piece at that piece's own section
+  (ChFi3d_KPartSectionCutAt) with its common point on the arc, as the walk
+  found it; the next stretch starts on the arc (RecOnS, as a walk goes on
+  across a seam).
+diff --git a/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_0.cxx b/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_0.cxx
+index 8335900..8aca3b1 100644
+--- a/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_0.cxx
++++ b/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_0.cxx
+@@ -2906,6 +2906,62 @@ void ChFi3d_CutConsumedFaces(TopOpeBRepDS_DataStructure&       DStr,
+   }
+ }
+ 
++//=======================================================================
++// function : ChFi3d_ConsumedSpineFaces
++// purpose  : The faces of the edges of a closed spine on which no surface
++//            data of the stripe lies (nor Extra): round a closed spine the
++//            blend's contacts left them everywhere for the faces beyond
++//            (an overflow start), so they lie wholly between the contacts.
++//=======================================================================
++
++NCollection_List<TopoDS_Shape> ChFi3d_ConsumedSpineFaces(const TopOpeBRepDS_DataStructure&   DStr,
++                                                         const occ::handle<ChFiDS_Stripe>&   CorDat,
++                                                         const occ::handle<ChFiDS_SurfData>& Extra,
++                                                         const ChFiDS_Map&                   EFMap)
++{
++  NCollection_List<TopoDS_Shape>   aConsumed;
++  const occ::handle<ChFiDS_Spine>& aSpine = CorDat->Spine();
++  if (aSpine.IsNull() || !aSpine->IsPeriodic())
++  {
++    return aConsumed;
++  }
++  NCollection_List<TopoDS_Shape> aUsed;
++  const auto                     use = [&](const occ::handle<ChFiDS_SurfData>& Fd) {
++    for (int s = 1; s <= 2; s++)
++    {
++      if (!Fd.IsNull() && Fd->Index(s) > 0)
++      {
++        aUsed.Append(DStr.Shape(Fd->Index(s)));
++      }
++    }
++  };
++  use(Extra);
++  if (!CorDat->SetOfSurfData().IsNull())
++  {
++    const NCollection_Sequence<occ::handle<ChFiDS_SurfData>>& aSeq = CorDat->SetOfSurfData()->Sequence();
++    for (int j = 1; j <= aSeq.Length(); j++)
++    {
++      use(aSeq(j));
++    }
++  }
++  for (int ie = 1; ie <= aSpine->NbEdges(); ie++)
++  {
++    const TopoDS_Edge& anE = aSpine->Edges(ie);
++    if (!EFMap.Contains(anE))
++    {
++      continue;
++    }
++    for (NCollection_List<TopoDS_Shape>::Iterator it(EFMap(anE)); it.More(); it.Next())
++    {
++      if (!containsSame(aUsed, it.Value()) && !containsSame(aConsumed, it.Value()))
++      {
++        aConsumed.Append(it.Value());
++      }
++    }
++  }
++  return aConsumed;
++}
++
+ // Whether the contact curve C on [T1, T2] runs along the whole edge E: its
+ // ends at the vertices of E and its points on E, within Tol.
+ static bool runsAlongEdge(const occ::handle<Geom_Curve>& C,
+diff --git a/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_0.hxx b/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_0.hxx
+index 3d36c9d..4b23fe5 100644
+--- a/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_0.hxx
++++ b/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_0.hxx
+@@ -549,6 +549,15 @@ void ChFi3d_CutConsumedFaces(TopOpeBRepDS_DataStructure&       DStr,
+                              const occ::handle<ChFiDS_Stripe>& CorDat,
+                              const ChFiDS_Map&                 EFMap);
+ 
++//! The faces of the edges of a closed spine that no surface data of the
++//! stripe (nor Extra, when given) lies on: the blend's contacts left them
++//! all round (an overflow onto the faces beyond), so they lie wholly between
++//! the contacts and the blend consumes them. Empty for an open spine.
++NCollection_List<TopoDS_Shape> ChFi3d_ConsumedSpineFaces(const TopOpeBRepDS_DataStructure&   DStr,
++                                                         const occ::handle<ChFiDS_Stripe>&   CorDat,
++                                                         const occ::handle<ChFiDS_SurfData>& Extra,
++                                                         const ChFiDS_Map&                   EFMap);
++
+ //! A blend between two faces whose contact line on a face runs along a whole
+ //! edge of that face (a face exactly as wide as the blend's contact distance)
+ //! is stored as a blend on that edge: its side takes the face beyond the
+diff --git a/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_2.cxx b/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_2.cxx
+index f9dfd41..06cb6a7 100644
+--- a/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_2.cxx
++++ b/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_2.cxx
+@@ -4923,6 +4923,16 @@ static bool ChFi3d_KPartCutJunction(const TopOpeBRepDS_DataStructure&   DStr,
+   return false;
+ }
+ 
++static bool ChFi3d_KPartSectionCutAt(const TopOpeBRepDS_DataStructure&   DStr,
++                                     const occ::handle<ChFiDS_SurfData>& SD,
++                                     const int                           ons,
++                                     const double                        tO,
++                                     const double                        tN,
++                                     const TopoDS_Face&                  B,
++                                     gp_Pnt2d&                           uvS,
++                                     gp_Pnt2d&                           uvB,
++                                     gp_Pnt&                             Pcut);
++
+ // The point where the face beyond B cuts the section of the analytic blend
+ // SD at spine point P: on the blend's surface between its contacts (an
+ // isoline of its parameters); its parameters on the blend and on B.
+@@ -4940,6 +4950,21 @@ static bool ChFi3d_KPartSectionCut(const TopOpeBRepDS_DataStructure&   DStr,
+   {
+     return false;
+   }
++  return ChFi3d_KPartSectionCutAt(DStr, SD, ons, tO, tN, B, uvS, uvB, Pcut);
++}
++
++// As ChFi3d_KPartSectionCut for the section between the points of the
++// contact lines at their parameters tO (side 3 - ons) and tN (side ons).
++static bool ChFi3d_KPartSectionCutAt(const TopOpeBRepDS_DataStructure&   DStr,
++                                     const occ::handle<ChFiDS_SurfData>& SD,
++                                     const int                           ons,
++                                     const double                        tO,
++                                     const double                        tN,
++                                     const TopoDS_Face&                  B,
++                                     gp_Pnt2d&                           uvS,
++                                     gp_Pnt2d&                           uvB,
++                                     gp_Pnt&                             Pcut)
++{
+   const ChFiDS_FaceInterference& FO = SD->Interference(3 - ons);
+   const ChFiDS_FaceInterference& FN = SD->Interference(ons);
+   if (FO.PCurveOnSurf().IsNull() || FN.PCurveOnSurf().IsNull())
+@@ -5005,7 +5030,9 @@ struct ChFi3d_KPartCutEnd
+ // side ons is cut by the face beyond B: from Start (a point on an arc where
+ // the contact leaves its face, or null: the cut of the section at W1) to
+ // End (likewise at W2). An end given as such (GivenStart, GivenEnd) is a
+-// point where the cut meets the other contact.
++// point where the cut meets the other contact. With AtFullEnds (Full a
++// walked blend), an end at an end of Full is Full's own end section, its
++// other contact Full's common point there.
+ static occ::handle<ChFiDS_SurfData> ChFi3d_KPartCutPiece(TopOpeBRepDS_DataStructure&         DStr,
+                                                          const occ::handle<ChFiDS_Spine>&    Spine,
+                                                          const occ::handle<ChFiDS_SurfData>& Full,
+@@ -5019,9 +5046,20 @@ static occ::handle<ChFiDS_SurfData> ChFi3d_KPartCutPiece(TopOpeBRepDS_DataStruct
+                                                          const double                        tol3d,
+                                                          const ChFi3d_KPartCutEnd* GivenStart = nullptr,
+                                                          const ChFi3d_KPartCutEnd* GivenEnd   = nullptr,
+-                                                         const NCollection_List<TopoDS_Shape>* CutEdges = nullptr)
++                                                         const NCollection_List<TopoDS_Shape>* CutEdges = nullptr,
++                                                         const bool AtFullEnds = false)
+ {
+   const int opp = 3 - ons;
++  // (A walked Full's sections are not those through the spine's points: an
++  // end of the piece at an end of Full is Full's end section, AtFullEnds.)
++  const auto fullEnd = [&](const double W, bool& isFirst) {
++    if (!AtFullEnds)
++    {
++      return false;
++    }
++    isFirst = std::abs(W - Full->FirstSpineParam()) <= std::abs(W - Full->LastSpineParam());
++    return std::abs(W - (isFirst ? Full->FirstSpineParam() : Full->LastSpineParam())) <= Precision::PConfusion();
++  };
+   if (Full.IsNull() || W2 - W1 <= Precision::PConfusion())
+   {
+     return occ::handle<ChFiDS_SurfData>();
+@@ -5061,16 +5099,29 @@ static occ::handle<ChFiDS_SurfData> ChFi3d_KPartCutPiece(TopOpeBRepDS_DataStruct
+       Par[k](4) = Given->uvB.Y();
+       continue;
+     }
++    bool aFullFirst = false;
++    const bool atFullEnd = Adj.IsNull() && CP == nullptr && fullEnd(W, aFullFirst);
+     if (!Adj.IsNull())
+     {
+       tO[k] = Adj->Interference(opp).Parameter(k != 0);
+     }
++    else if (atFullEnd)
++    {
++      tO[k] = Full->Interference(opp).Parameter(aFullFirst);
++    }
+     else if (!ChFi3d_KPartLineParam(DStr, Full, opp, P, tO[k]))
+     {
+       return occ::handle<ChFiDS_SurfData>();
+     }
+     gp_Pnt2d uvS, uvB;
+-    if (CP != nullptr)
++    if (atFullEnd)
++    {
++      if (!ChFi3d_KPartSectionCutAt(DStr, Full, ons, tO[k], Full->Interference(ons).Parameter(aFullFirst), B, uvS, uvB, Pend[k]))
++      {
++        return occ::handle<ChFiDS_SurfData>();
++      }
++    }
++    else if (CP != nullptr)
+     {
+       const ChFiDS_FaceInterference& FAdj = Adj->Interference(ons);
+       if (FAdj.PCurveOnSurf().IsNull())
+@@ -5340,6 +5391,18 @@ static occ::handle<ChFiDS_SurfData> ChFi3d_KPartCutPiece(TopOpeBRepDS_DataStruct
+         continue;
+       }
+     }
++    else if (CP == nullptr && (k == 0 ? Prev : Next).IsNull())
++    {
++      // At an end of Full where its other contact ends on an arc (a walked
++      // piece whose other contact reached a seam or an edge of its face):
++      // that common point, with the arc and the transition the walk found.
++      bool aFullFirst = false;
++      if (fullEnd(k == 0 ? W1 : W2, aFullFirst) && Full->Vertex(aFullFirst, opp).IsOnArc())
++      {
++        CPO = Full->Vertex(aFullFirst, opp);
++        continue;
++      }
++    }
+     if ((CP == nullptr || Given != nullptr) && Full->Index(opp) > 0)
+     {
+       // At an end of the spine's edge, the other contact ends on the edge
+@@ -6838,9 +6901,23 @@ bool ChFi3d_Builder::WalkedBridgeOverGap(const occ::handle<ChFiDS_Stripe>&
+   {
+     aSpineFace = myEFMap.Contains(Spine->Edges(ie)) && containsSameShape(myEFMap(Spine->Edges(ie)), N);
+   }
++  NCollection_List<TopoDS_Shape> aConsumed;
+   if (!aSpineFace)
+   {
+-    return false;
++    if (!Spine->IsPeriodic())
++    {
++      return false;
++    }
++    aConsumed = ChFi3d_ConsumedSpineFaces(DStr, Stripe, Ref, myEFMap);
++    bool aBeside = false;
++    for (TopExp_Explorer ex(N, TopAbs_EDGE); ex.More() && !aBeside; ex.Next())
++    {
++      aBeside = containsSameShape(aConsumed, otherFace(myEFMap, TopoDS::Edge(ex.Current()), N));
++    }
++    if (!aBeside)
++    {
++      return false;
++    }
+   }
+   B                   = otherFace(myEFMap, E, N);
+   if (B.IsNull() || B.IsSame(N) || HSo->Face().IsSame(B) || HSo->Face().IsSame(N)
+@@ -6848,6 +6925,15 @@ bool ChFi3d_Builder::WalkedBridgeOverGap(const occ::handle<ChFiDS_Stripe>&
+   {
+     return false;
+   }
++  // (B's edges with a consumed face go with it.)
++  NCollection_List<TopoDS_Shape> aConsumedEdges;
++  for (TopExp_Explorer ex(B, TopAbs_EDGE); ex.More(); ex.Next())
++  {
++    if (containsSameShape(aConsumed, otherFace(myEFMap, TopoDS::Edge(ex.Current()), B)))
++    {
++      aConsumedEdges.Append(ex.Current());
++    }
++  }
+   TopoDS_Face BF = B, NFw = N;
+   BF.Orientation(TopAbs_FORWARD);
+   NFw.Orientation(TopAbs_FORWARD);
+@@ -6888,6 +6974,9 @@ bool ChFi3d_Builder::WalkedBridgeOverGap(const occ::handle<ChFiDS_Stripe>&
+   gp_Pnt2d                         uvN   = pcNE->Value(CPn.ParameterOnArc());
+   double                           Wcur  = Start;
+   bool                             first = true;
++  // (A stretch after one whose other contact reached an arc starts on that
++  // arc, as a walk goes on across it.)
++  bool                             recO  = false;
+   for (int stretch = 0; stretch < 4; stretch++)
+   {
+     const TopoDS_Face Fo = HSO->Face();
+@@ -6919,7 +7008,7 @@ bool ChFi3d_Builder::WalkedBridgeOverGap(const occ::handle<ChFiDS_Stripe>&
+     {
+       OCC_CATCH_SIGNALS
+       walked = PerformSurf(SeqSD, HGuide, Spine, Choix, HS1, It1, HS2, It2, MaxStep, Fleche, tolesp, First,
+-                           Last, false, false, Forward, false, false, Soldep, intf, intl);
++                           Last, false, false, Forward, ons != 1 && recO, ons != 2 && recO, Soldep, intf, intl);
+     }
+     catch (Standard_Failure const&)
+     {
+@@ -7089,7 +7178,7 @@ bool ChFi3d_Builder::WalkedBridgeOverGap(const occ::handle<ChFiDS_Stripe>&
+       try
+       {
+         OCC_CATCH_SIGNALS
+-        G = ChFi3d_KPartCutPiece(DStr, Spine, X, ons, N, B, Wa, Wb, aNone, aNone, tolapp3d, Ga, Gb);
++        G = ChFi3d_KPartCutPiece(DStr, Spine, X, ons, N, B, Wa, Wb, aNone, aNone, tolapp3d, Ga, Gb, &aConsumedEdges, true);
+       }
+       catch (Standard_Failure const&)
+       {
+@@ -7118,7 +7207,7 @@ bool ChFi3d_Builder::WalkedBridgeOverGap(const occ::handle<ChFiDS_Stripe>&
+       {
+         continue;
+       }
+-      NCollection_List<TopoDS_Shape> aCutEdges;
++      NCollection_List<TopoDS_Shape> aCutEdges = aConsumedEdges;
+       aCutEdges.Append(Es);
+       // The seam is kept on one side of the crossing, the side away from
+       // the spine's edge (the blend takes the rest): the side of the blend's
+@@ -7188,13 +7277,13 @@ bool ChFi3d_Builder::WalkedBridgeOverGap(const occ::handle<ChFiDS_Stripe>&
+       try
+       {
+         OCC_CATCH_SIGNALS
+-        Ga = ChFi3d_KPartCutPiece(DStr, Spine, X, ons, N, B, W1, Xc.W, aNone, aNone, tolapp3d, G1, &aMid[0], &aCutEdges);
++        Ga = ChFi3d_KPartCutPiece(DStr, Spine, X, ons, N, B, W1, Xc.W, aNone, aNone, tolapp3d, G1, &aMid[0], &aCutEdges, true);
+         if (!Ga.IsNull())
+         {
+           const ChFiDS_FaceInterference& GaB  = Ga->Interference(ons);
+           const gp_Pnt2d                 aEnd = GaB.PCurveOnFace()->Value(GaB.LastParameter());
+           const int after = aEnd.Distance(aMid[0].uvB) <= aEnd.Distance(aMid[1].uvB) ? 1 : 0;
+-          Gb = ChFi3d_KPartCutPiece(DStr, Spine, X, ons, N, B, Xc.W, W2, aNone, aNone, tolapp3d, &aMid[after], G2, &aCutEdges);
++          Gb = ChFi3d_KPartCutPiece(DStr, Spine, X, ons, N, B, Xc.W, W2, aNone, aNone, tolapp3d, &aMid[after], G2, &aCutEdges, true);
+         }
+       }
+       catch (Standard_Failure const&)
+@@ -7292,6 +7381,7 @@ bool ChFi3d_Builder::WalkedBridgeOverGap(const occ::handle<ChFiDS_Stripe>&
+       return false;
+     }
+     HSO  = HSn;
++    recO = RecS;
+     uvO  = pons;
+     uvN  = FiN.PCurveOnFace()->Value(tB);
+     Wcur = WE;

@@ -167,10 +167,35 @@ public:
     m_faceMeasures.set(std::move(measures));
   }
 
+  // Each named edge's middle (query.hpp's edge_middles) and each edge's
+  // curve (datum.hpp's edge_geometries), once worked out: the .f3d import
+  // asks for the edges of the same large bodies before every rounding and
+  // sketch (mitcad#119: bodies of 60 000 edges measured edge by edge each
+  // time). Null until then; the types are those of query.hpp and
+  // datum.hpp, which name this header.
+  std::shared_ptr<const void> kept_edge_middles() const { return m_edgeMiddles.get().value_or(nullptr); }
+  void keep_edge_middles(std::shared_ptr<const void> middles) const { m_edgeMiddles.set(std::move(middles)); }
+  std::shared_ptr<const void> kept_edge_curves() const { return m_edgeCurves.get().value_or(nullptr); }
+  void keep_edge_curves(std::shared_ptr<const void> curves) const { m_edgeCurves.set(std::move(curves)); }
+
+  // Boxes {xmin, ymin, zmin, xmax, ymax, zmax} that hold each face, in face
+  // order (query.hpp's face_boxes), once worked out; null until then.
+  using FaceBoxes = std::vector<std::array<double, 6>>;
+  std::shared_ptr<const FaceBoxes> kept_face_boxes() const { return m_faceBoxes.get().value_or(nullptr); }
+  void keep_face_boxes(std::shared_ptr<const FaceBoxes> boxes) const { m_faceBoxes.set(std::move(boxes)); }
+
   // Whether OCCT's checker finds the shape valid, once something asked
   // (transforms check their input once instead of every copy they make).
   std::optional<bool> checked_valid() const { return m_valid.get(); }
   void set_checked_valid(bool valid) const { m_valid.set(valid); }
+
+  // Takes what was worked out of `other`, a Shape of the same B-rep (the
+  // same TopoDS_Shape, with other face names), that does not depend on
+  // face names: the measures, the box, the face measures and boxes, the
+  // edges' curves, the boundary index and the checker's verdict
+  // (mitcad#244). Edge middles and the face index carry names; they are
+  // worked out anew.
+  void keep_measures_of(const Shape& other) const;
 
   // Whether the shape is a boolean's result with its coplanar faces and
   // collinear edges merged (OCCT's ShapeUpgrade_UnifySameDomain): what is
@@ -205,6 +230,9 @@ private:
   LazyValue<std::array<double, 6>> m_bounds;
   LazyValue<std::shared_ptr<void>> m_boundaryIndex;
   LazyValue<std::shared_ptr<const FaceMeasures>> m_faceMeasures;
+  LazyValue<std::shared_ptr<const void>> m_edgeMiddles;
+  LazyValue<std::shared_ptr<const void>> m_edgeCurves;
+  LazyValue<std::shared_ptr<const FaceBoxes>> m_faceBoxes;
   LazyValue<bool> m_valid;
   // A large shape's faces by each reference that matches one of their
   // names (naming.hpp: the name, or the name before a "#k"), made the

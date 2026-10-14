@@ -20,7 +20,7 @@ use crate::kernel::Kernel;
 use crate::parameters::ParamId;
 use crate::sweeps::{PathCurve, ProfileScaling, SweepGuide, SweepOrientation, SweepSpec};
 // Sweeps along guide surfaces (mitcad#157).
-use super::face_refs::{kernel_error, require_faces};
+use super::face_refs::kernel_error;
 use super::reference::FaceRef;
 use crate::sweeps::GuideSurface;
 use crate::topo::FaceName;
@@ -362,11 +362,11 @@ impl<K: Kernel> Evaluate<K> for SweepDef {
             None => None,
         };
         // The guide surfaces' bodies, each face checked.
-        let mut surfaces: Vec<(K::Shape, &FaceName)> = Vec::new();
+        let mut surfaces: Vec<(K::Shape, FaceName)> = Vec::new();
         for face in &self.guide_surfaces {
             let shape = self.input_body(ctx, face.body)?;
-            require_faces(ctx, face.body, &shape, std::slice::from_ref(&face.face))?;
-            surfaces.push((shape, &face.face));
+            let found = ctx.face_on(face.body, &shape, &face.face)?;
+            surfaces.push((shape, found));
         }
         // A guide rail or guide surfaces override twist and taper.
         let (mut twist, mut taper) = (0.0, 0.0);

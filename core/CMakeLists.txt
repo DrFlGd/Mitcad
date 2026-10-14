@@ -53,7 +53,11 @@ corrosion_add_cxxbridge(mitcad_bridge CRATE mitcad_ffi FILES
   # Sheet material construction (mitcad#206).
   kernel/sheet.rs
   # The faces a run of features made, copied by a pattern.
-  kernel/face_copy.rs)
+  kernel/face_copy.rs
+  # The tangent chains of a body's edges and faces, for the hover (mitcad#290).
+  kernel/tangent_chain.rs
+  # Contacts of a new Extrude's tool (mitcad#289).
+  kernel/contact.rs)
 target_sources(mitcad_bridge PRIVATE
   cpp/bridge/boolean.cpp
   cpp/bridge/boolean.hpp
@@ -123,6 +127,14 @@ target_sources(mitcad_bridge PRIVATE
 target_sources(mitcad_bridge PRIVATE
   cpp/bridge/face_copy.cpp
   cpp/bridge/face_copy.hpp)
+# The tangent chains of a body's edges and faces, for the hover (mitcad#290).
+target_sources(mitcad_bridge PRIVATE
+  cpp/bridge/tangent_chain.cpp
+  cpp/bridge/tangent_chain.hpp)
+# Contacts of a new Extrude's tool (mitcad#289).
+target_sources(mitcad_bridge PRIVATE
+  cpp/bridge/contact.cpp
+  cpp/bridge/contact.hpp)
 target_include_directories(mitcad_bridge PUBLIC cpp)
 target_link_libraries(mitcad_bridge PUBLIC mitcad_geometry)
 # The bridge and the Rust library call each other, and a single-pass
@@ -312,6 +324,15 @@ if(BUILD_TESTING)
 
   # The USDZ writer and its checking reader (mitcad#123; no OCCT).
   mitcad_cargo_test(core.usdz mitcad-usdz)
+
+  # The IFC reader (mitcad#273) on files written in the tests (no OCCT);
+  # its corpus test reads MITCAD_IFC_CORPUS and skips without it.
+  mitcad_cargo_test(core.ifc mitcad-ifc RELEASE)
+  # The compound file container (shared by the .ipt and .rvt readers) and
+  # the .rvt/.rfa reader (mitcad#274) on files made in the tests; its
+  # corpus test reads MITCAD_RVT_CORPUS and skips without it.
+  mitcad_cargo_test(core.cfb mitcad-cfb)
+  mitcad_cargo_test(core.rvt mitcad-rvt RELEASE)
 
   # The fixtures that build the test binaries, and the documentation tests
   # (cargo with the fixture's packages, so that it builds nothing again).

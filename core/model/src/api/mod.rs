@@ -26,6 +26,11 @@ mod libraries;
 mod move_features;
 // Design policy (mitcad#220).
 mod policy;
+// The class of each command and query: what external clients may run
+// (mitcad#265).
+pub mod classes;
+// Tangent chains of edges and faces, for the hover (mitcad#290).
+mod tangent_chains;
 
 use std::fmt;
 
@@ -344,6 +349,10 @@ enum PreviewCommand {
         def: FeatureDef<ValueInput>,
         #[serde(default)]
         name: Option<String>,
+        /// Choose the operation of a new extrusion (mitcad#289): the
+        /// report gets `auto_operation`.
+        #[serde(default)]
+        auto_operation: bool,
     },
     EditFeature {
         uid: FeatureUid,
@@ -510,6 +519,12 @@ enum Query {
     SketchSupports(policy::SketchSupportsQuery),
     // Moving an occurrence to another parent (mitcad#219, `components.rs`).
     ReparentOccurrence(components::ReparentQuery),
+    // Body edges and vertices in a sketch's plane (mitcad#256, `sketch.rs`).
+    PlaneGeometry {
+        sketch: FeatureUid,
+    },
+    // Tangent chains of edges and faces (mitcad#290, `tangent_chains.rs`).
+    TangentChains(tangent_chains::TangentChainsQuery),
 }
 
 fn names(names: &[String]) -> Value {
@@ -622,12 +637,29 @@ impl<K: Kernel> Document<K> {
                     .as_deref()
                     .map(|c| self.component_ref(c))
                     .transpose()?;
+                let requested = component.unwrap_or(self.active_component());
                 let added = self.add_feature_to(&def, name.as_deref(), component)?;
-                json!({"uid": added.uid, "name": added.name, "parameters": names(&added.parameters)})
+                let mut reply = json!({"uid": added.uid, "name": added.name,
+                                       "parameters": names(&added.parameters)});
+                // A new component placed beside a part (mitcad#292).
+                if let Some(made) = self.assembly().created_by(added.uid) {
+                    let what = format!("{}'s new component", added.name);
+                    self.note_placed_beside(&mut reply, requested, made, &what);
+                }
+                reply
             }
             Command::EditFeature { uid, def } => {
+                let before = self.assembly().created_by(uid);
                 let created = self.edit_feature(uid, &def)?;
-                json!({"parameters": names(&created)})
+                let mut reply = json!({"parameters": names(&created)});
+                // A new component the edit made, placed beside a part (mitcad#292).
+                if let (None, Some(made), Some(entry)) =
+                    (before, self.assembly().created_by(uid), self.feature(uid))
+                {
+                    let what = format!("{}'s new component", entry.name);
+                    self.note_placed_beside(&mut reply, entry.component, made, &what);
+                }
+                reply
             }
             Command::DeleteFeature { uid, dependents } => {
                 let deleted = self.delete_feature(uid, dependents)?;
@@ -947,13 +979,22 @@ impl<K: Kernel> Document<K> {
 
     fn checked_preview(&mut self, json: &str) -> Result<String, ApiError> {
         let value = read_json(json)?;
+        // Extrude's automatic operation (mitcad#289).
+        let mut auto = None;
         let report = if let Some(rules) = inline_face_rules(&value) {
             let (rules, face, name) = face_with_rules(rules, &value)?;
             self.preview_face_with_rules(&rules, &face, name.as_deref())?
         } else {
             match parse::<PreviewCommand>(value, "preview command")? {
-                PreviewCommand::AddFeature { def, name } => {
-                    self.preview_add(&def, name.as_deref())?
+                PreviewCommand::AddFeature {
+                    def,
+                    name,
+                    auto_operation: false,
+                } => self.preview_add(&def, name.as_deref())?,
+                PreviewCommand::AddFeature { def, name, .. } => {
+                    let (report, choice) = self.preview_add_auto(&def, name.as_deref())?;
+                    auto = choice;
+                    report
                 }
                 PreviewCommand::EditFeature { uid, def } => self.preview_edit(uid, &def)?,
             }
@@ -961,6 +1002,10 @@ impl<K: Kernel> Document<K> {
         let mut value = preview_json(&report);
         if let Some(datum) = self.preview_datum() {
             value["datum"] = analysis::datum_json(&datum);
+        }
+        if let Some(choice) = auto {
+            value["auto_operation"] =
+                json!({"operation": choice.operation, "objects": choice.objects});
         }
         Ok(value.to_string())
     }
@@ -1223,6 +1268,10 @@ impl<K: Kernel> Document<K> {
             Query::SketchSupports(query) => self.sketch_supports_json(&query)?,
             // Moving an occurrence to another parent (mitcad#219).
             Query::ReparentOccurrence(query) => self.reparent_json(&query)?,
+            // Body edges and vertices in a sketch's plane (mitcad#256).
+            Query::PlaneGeometry { sketch } => self.plane_geometry_json(sketch)?,
+            // Tangent chains of edges and faces (mitcad#290).
+            Query::TangentChains(query) => self.tangent_chains_json(&query)?,
         };
         Ok(result.to_string())
     }
@@ -1545,6 +1594,21 @@ mod equal_spacing_tests;
 // Linked projections that follow by geometry, and their clean-up (mitcad#232).
 #[cfg(test)]
 mod projection_tests;
+// Dimension names: `name = expression` in value slots (mitcad#231).
+#[cfg(test)]
+mod dimension_names_tests;
+// Driven dimensions as read-only reference parameters (mitcad#231).
+#[cfg(test)]
+mod driven_references_tests;
+// Body edges and vertices in a sketch's plane (mitcad#256).
+#[cfg(test)]
+mod plane_geometry_tests;
+// Points that become one: Extend and Coincident (mitcad#259, mitcad#260).
+#[cfg(test)]
+mod sketch_points_tests;
+// Convert to Sketch Geometry (mitcad#257).
+#[cfg(test)]
+mod convert_projected_tests;
 
 // A Face with new rules of its own (mitcad#210): `add_feature` (and its
 // preview) of a `sheet_face` whose `rules` is the rules' definition adds a

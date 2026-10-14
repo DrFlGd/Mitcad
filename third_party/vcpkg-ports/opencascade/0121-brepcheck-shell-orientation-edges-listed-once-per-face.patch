@@ -1,0 +1,234 @@
+Mitcad's patch to OCCT 8.0.1, under OCCT's licence:
+SPDX-License-Identifier: LGPL-2.1-only WITH OCCT-exception-1.0
+
+BRepCheck_Shell: the orientation check (Orientation) searched each face at
+an edge for the edge with an explorer of all the face's edges, once per
+edge of the shell: quadratic in the edges of a face (a shell of 23 430
+faces whose two plates hold 23 428 edges each took 9.6 s). For a face of 64
+edges or more, the orientations of its edges as its explorer meets them
+(the face oriented as in the shell) are now listed once, and the first or
+second occurrence of an edge is read from the list; faces of fewer edges,
+and an edge a list does not hold, are searched as before. The statuses are
+unchanged.
+--- a/src/ModelingAlgorithms/TKTopAlgo/BRepCheck/BRepCheck_Shell.cxx
++++ b/src/ModelingAlgorithms/TKTopAlgo/BRepCheck/BRepCheck_Shell.cxx
+@@ -36,10 +36,78 @@
+ #include <NCollection_IndexedDataMap.hxx>
+ #include <NCollection_Map.hxx>
+ 
++#include <memory>
++#include <vector>
++
+ IMPLEMENT_STANDARD_RTTIEXT(BRepCheck_Shell, BRepCheck_Result)
+ 
+ //=================================================================================================
+ 
++namespace
++{
++// The orientations of the edges of a shell's faces, in the order an explorer of each face
++// (oriented as in the shell) meets them, found once for a face of many edges: searching such a
++// face for each of its edges made the orientation check quadratic in the edges of a face (a
++// face of 23 000 edges, a plate with thousands of holes, took seconds). Faces of few edges are
++// searched as before.
++class EdgeOrientationsOfFaces
++{
++public:
++  //! The orientation of the occurrence theRank (0 for the first) of theEdge in theFace, oriented
++  //! as in the shell; false when there is none or theFace has few edges (the caller then
++  //! searches the face as before).
++  bool Find(const TopoDS_Face&  theFace,
++            const TopoDS_Shape& theEdge,
++            const int           theRank,
++            TopAbs_Orientation& theOrientation)
++  {
++    const std::shared_ptr<Edges>* aKept = myFaces.Seek(theFace);
++    if (aKept == nullptr)
++    {
++      std::shared_ptr<Edges> aNew;
++      int                    aCount = 0;
++      for (TopExp_Explorer anExp(theFace, TopAbs_EDGE); anExp.More(); anExp.Next())
++      {
++        ++aCount;
++      }
++      if (aCount >= THE_MANY_EDGES)
++      {
++        aNew = std::make_shared<Edges>();
++        for (TopExp_Explorer anExp(theFace, TopAbs_EDGE); anExp.More(); anExp.Next())
++        {
++          std::vector<TopAbs_Orientation>* aList = aNew->ChangeSeek(anExp.Current());
++          if (aList == nullptr)
++          {
++            aList = aNew->Bound(anExp.Current(), std::vector<TopAbs_Orientation>());
++          }
++          aList->push_back(anExp.Current().Orientation());
++        }
++      }
++      aKept = myFaces.Bound(theFace, aNew);
++    }
++    if (!*aKept)
++    {
++      return false;
++    }
++    const std::vector<TopAbs_Orientation>* aList = (*aKept)->Seek(theEdge);
++    if (aList == nullptr || theRank >= static_cast<int>(aList->size()))
++    {
++      return false;
++    }
++    theOrientation = (*aList)[static_cast<size_t>(theRank)];
++    return true;
++  }
++
++private:
++  static constexpr int THE_MANY_EDGES = 64;
++  using Edges =
++    NCollection_DataMap<TopoDS_Shape, std::vector<TopAbs_Orientation>, TopTools_ShapeMapHasher>;
++  NCollection_DataMap<TopoDS_Shape, std::shared_ptr<Edges>, TopTools_ShapeMapHasher> myFaces;
++};
++} // namespace
++
++//=================================================================================================
++
+ static void Propagate(const NCollection_IndexedDataMap<TopoDS_Shape,
+                                                        NCollection_List<TopoDS_Shape>,
+                                                        TopTools_ShapeMapHasher>&     mapEF,
+@@ -521,9 +589,10 @@
+   // BRepCheck_BadOrientationOfSubshape and
+   //         BRepCheck_SubshapeNotInShape are checked;
+ 
+-  int                Nbedges = myMapEF.Extent();
+-  TopoDS_Face        Fref;
+-  TopAbs_Orientation orf;
++  int                     Nbedges = myMapEF.Extent();
++  TopoDS_Face             Fref;
++  TopAbs_Orientation      orf;
++  EdgeOrientationsOfFaces anEdgeOrientations;
+ 
+   for (int i = 1; i <= Nbedges; i++)
+   {
+@@ -564,15 +633,19 @@
+         // edge is examined
+         if (!lite.Value().IsSame(Fref)) // edge non "closed"
+         {
+-          for (ede.Init(Fref, TopAbs_EDGE); ede.More(); ede.Next())
++          TopAbs_Orientation orient;
++          if (!anEdgeOrientations.Find(Fref, edg, 0, orient))
+           {
+-            if (ede.Current().IsSame(edg))
++            for (ede.Init(Fref, TopAbs_EDGE); ede.More(); ede.Next())
+             {
+-              break;
++              if (ede.Current().IsSame(edg))
++              {
++                break;
++              }
+             }
++            orient = ede.Current().Orientation();
+           }
+-          TopAbs_Orientation orient = ede.Current().Orientation();
+-          TopoDS_Face        Fcur   = TopoDS::Face(lite.Value());
++          TopoDS_Face Fcur = TopoDS::Face(lite.Value());
+           if (!MapOfShapeOrientation.IsBound(Fcur))
+           {
+             myOstat = BRepCheck_SubshapeNotInShape;
+@@ -590,33 +663,48 @@
+           //	orf = (TopAbs_Orientation)MapOfShapeOrientation.Find(Fcur);
+           Fcur.Orientation(orf);
+ 
+-          for (ede.Init(Fcur, TopAbs_EDGE); ede.More(); ede.Next())
++          TopAbs_Orientation aCurOrient;
++          const bool         isKept = anEdgeOrientations.Find(Fcur, edg, 0, aCurOrient);
++          if (!isKept)
+           {
+-            if (ede.Current().IsSame(edg))
++            for (ede.Init(Fcur, TopAbs_EDGE); ede.More(); ede.Next())
+             {
+-              break;
++              if (ede.Current().IsSame(edg))
++              {
++                break;
++              }
+             }
++            aCurOrient = ede.Current().Orientation();
+           }
+-          if (ede.Current().Orientation() == orient)
++          if (aCurOrient == orient)
+           {
+             // The loop is continued on the edges as many times
+             // as the same edge is present in the wire
+ 
+             // modified by NIZHNY-MKK  Tue Sep 30 11:11:42 2003
+-            bool bfound = false;
+-            ede.Next();
+-            for (; ede.More(); ede.Next())
++            bool               bfound = false;
++            TopAbs_Orientation aNextOrient = orient;
++            if (isKept)
+             {
+-              if (ede.Current().IsSame(edg))
++              bfound = anEdgeOrientations.Find(Fcur, edg, 1, aNextOrient);
++            }
++            else
++            {
++              ede.Next();
++              for (; ede.More(); ede.Next())
+               {
+-                // modified by NIZHNY-MKK  Tue Sep 30 11:12:03 2003
+-                bfound = true;
+-                break;
++                if (ede.Current().IsSame(edg))
++                {
++                  // modified by NIZHNY-MKK  Tue Sep 30 11:12:03 2003
++                  bfound      = true;
++                  aNextOrient = ede.Current().Orientation();
++                  break;
++                }
+               }
+             }
+             // if (ede.Current().Orientation() == orient) {
+             // modified by NIZHNY-MKK  Thu Oct  2 17:56:47 2003
+-            if (!bfound || (ede.Current().Orientation() == orient))
++            if (!bfound || (aNextOrient == orient))
+             {
+               myOstat = BRepCheck_BadOrientationOfSubshape;
+               if (Update)
+@@ -654,25 +742,29 @@
+         // orf = (TopAbs_Orientation)MapOfShapeOrientation.Find(Fcur);
+         Fcur.Orientation(orf);
+ 
+-        for (ede.Init(Fcur, TopAbs_EDGE); ede.More(); ede.Next())
++        TopAbs_Orientation orient;
++        if (!anEdgeOrientations.Find(Fcur, edg, Fmap.Contains(Fcur) ? 1 : 0, orient))
+         {
+-          if (ede.Current().IsSame(edg))
+-          {
+-            break;
+-          }
+-        }
+-        if (Fmap.Contains(Fcur)) // edge is "closed" on Fcur, we meet Fcur twice
+-        {
+-          ede.Next();
+-          for (; ede.More(); ede.Next())
++          for (ede.Init(Fcur, TopAbs_EDGE); ede.More(); ede.Next())
+           {
+             if (ede.Current().IsSame(edg))
+             {
+               break;
+             }
+           }
++          if (Fmap.Contains(Fcur)) // edge is "closed" on Fcur, we meet Fcur twice
++          {
++            ede.Next();
++            for (; ede.More(); ede.Next())
++            {
++              if (ede.Current().IsSame(edg))
++              {
++                break;
++              }
++            }
++          }
++          orient = ede.Current().Orientation();
+         }
+-        TopAbs_Orientation orient = ede.Current().Orientation();
+         if (orient == TopAbs_FORWARD)
+         {
+           numF++;

@@ -5,8 +5,11 @@
 #include <QDialog>
 #include <QDoubleSpinBox>
 #include <QFileDialog>
+#include <QKeyEvent>
+#include <QKeySequence>
 #include <QLineEdit>
 #include <QSpinBox>
+#include <QStringList>
 #include <QWidget>
 #include <QtLogging>
 
@@ -113,7 +116,78 @@ void focusChanged(QWidget* now) {
   }
 }
 
+// Logs each key press once: a shortcut's ShortcutOverride and the key press
+// that follows when no shortcut takes the key reach the event filter for
+// every widget they pass, so the same key (its time, codes and modifiers)
+// is logged only the first time.
+class KeyLog : public QObject {
+public:
+  explicit KeyLog(QObject* parent) : QObject(parent) {}
+
+protected:
+  bool eventFilter(QObject* watched, QEvent* event) override {
+    if (event->type() == QEvent::ShortcutOverride || event->type() == QEvent::KeyPress) {
+      log(*static_cast<const QKeyEvent*>(event));
+    }
+    return QObject::eventFilter(watched, event);
+  }
+
+private:
+  struct Press {
+    quint64 time = 0;
+    int key = 0;
+    quint32 native = 0;
+    quint32 scanCode = 0;
+    int modifiers = 0;
+    bool operator==(const Press& other) const {
+      return time == other.time && key == other.key && native == other.native && scanCode == other.scanCode &&
+             modifiers == other.modifiers;
+    }
+  };
+
+  void log(const QKeyEvent& event) {
+    if (event.isAutoRepeat()) {
+      return;
+    }
+    const Qt::KeyboardModifiers modifiers = event.modifiers();
+    const Press press{event.timestamp(), event.key(), event.nativeVirtualKey(), event.nativeScanCode(),
+                      static_cast<int>(modifiers.toInt())};
+    if (press == m_last) {
+      return;
+    }
+    m_last = press;
+    QStringList held;
+    const std::pair<Qt::KeyboardModifier, const char*> names[] = {{Qt::ControlModifier, "ctrl"},
+                                                                  {Qt::AltModifier, "alt"},
+                                                                  {Qt::ShiftModifier, "shift"},
+                                                                  {Qt::MetaModifier, "meta"}};
+    for (const auto& [modifier, name] : names) {
+      if (modifiers.testFlag(modifier)) {
+        held << QString::fromLatin1(name);
+      }
+    }
+    // A character the window got without a key (WM_CHAR) has no key code:
+    // its text instead.
+    const QString key = event.key() != 0 ? QKeySequence(event.key()).toString(QKeySequence::PortableText)
+                                         : QStringLiteral("'%1'").arg(event.text());
+    qInfo().noquote() << QStringLiteral("Key press: %1%2 (native %3)")
+                             .arg(key.isEmpty() ? QString::number(event.key()) : key,
+                                  held.isEmpty() ? QString() : QStringLiteral(" with ") + held.join(QLatin1Char('+')))
+                             .arg(event.nativeVirtualKey());
+  }
+
+  Press m_last;
+};
+
 } // namespace
+
+void installKeyLogIfRequested() {
+  if (qEnvironmentVariableIntValue("MITCAD_LOG_KEYS") == 0 || qApp == nullptr) {
+    return;
+  }
+  qApp->installEventFilter(new KeyLog(qApp));
+  qInfo().noquote() << QStringLiteral("Key log on");
+}
 
 void installTypedTextLogIfRequested() {
   if (qEnvironmentVariableIntValue("MITCAD_LOG_TYPED_TEXT") == 0 || qApp == nullptr) {

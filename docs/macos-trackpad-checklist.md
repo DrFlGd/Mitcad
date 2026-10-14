@@ -55,6 +55,21 @@ off.
 - [ ] The Keyboard and Mouse Overview (Help) lists the Trackpad rows with
       the Option and Command glyphs.
 
+## MacBook trackpad, Shift orbit scheme
+
+- [ ] Choose "Trackpad (two-finger scroll pans, pinch zooms, Shift orbits)"
+      in Navigation, close Settings and reopen it: the choice is retained,
+      including after restarting the app.
+- [ ] Shift + two-finger scroll orbits in both directions; releasing Shift
+      during momentum keeps orbiting. Repeat with constrained orbit on.
+- [ ] Option or Command + scroll zooms; plain scroll pans and pinch zooms.
+      Mouse button shortcuts and Shift + click selection still work as in
+      the default Trackpad scheme.
+- [ ] The Keyboard and Mouse Overview lists Shift for scroll orbit and
+      Option or Command for scroll zoom.
+- [ ] Switching to the default Trackpad scheme restores Option orbit and
+      Shift zoom, including when switching during momentum.
+
 ## MacBook trackpad, the other schemes
 
 - [ ] Choose "Middle pans, Shift + middle orbits": pinch zooms, rotation

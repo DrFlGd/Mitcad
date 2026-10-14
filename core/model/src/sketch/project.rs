@@ -350,10 +350,23 @@ fn source_curves<K: Kernel>(
         None => ctx.bodies_in(component),
     };
     for (_, shape) in shapes {
-        let curves = ctx
+        let mut curves = ctx
             .kernel
             .curves_of(&shape, source)
             .map_err(|e| format!("projection of {source}: {e}"))?;
+        // A source a sketch change renamed is found again (mitcad#272).
+        if curves.is_empty()
+            && let Ok(Some((found, what, maker))) =
+                crate::features::renamed::find_name(ctx.kernel, &shape, source)
+        {
+            curves = ctx
+                .kernel
+                .curves_of(&shape, &found)
+                .map_err(|e| format!("projection of {source}: {e}"))?;
+            if !curves.is_empty() {
+                ctx.found_renamed(what, source, &found, maker);
+            }
+        }
         if !curves.is_empty() {
             return Ok(match moved {
                 Some(t) => curves.iter().map(|c| transform_curve(&t, c)).collect(),
@@ -424,6 +437,10 @@ pub struct ProjectionFollow {
     /// or a projection that follows by position finds the source's curves
     /// changed in kind, order or joints. Everything kept.
     pub kept: bool,
+    /// Its curves that, where they are now, match none of the source's
+    /// current curves (all of them for a lost source): stale curves Clean
+    /// Up Stale Projections tidies (mitcad#252).
+    pub stale: Vec<EntityUid>,
 }
 
 impl ProjectionFollow {
@@ -509,6 +526,11 @@ pub fn follow_links<K: Kernel>(
             out.reports.push(ProjectionFollow {
                 projection: k,
                 lost: true,
+                stale: linked_entities(def, projection)
+                    .iter()
+                    .filter(|e| !e.is_point())
+                    .map(|e| e.id)
+                    .collect(),
                 ..ProjectionFollow::default()
             });
             continue;
@@ -531,6 +553,7 @@ pub fn follow_links<K: Kernel>(
                 out.reports.push(ProjectionFollow {
                     projection: k,
                     kept: true,
+                    stale: stale_curves(&updated, projection, &fresh),
                     ..ProjectionFollow::default()
                 });
                 continue;
@@ -568,6 +591,7 @@ pub fn follow_links<K: Kernel>(
             out.reports.push(ProjectionFollow {
                 projection: k,
                 kept: true,
+                stale: stale_curves(&updated, projection, &fresh),
                 ..ProjectionFollow::default()
             });
             continue;
@@ -581,10 +605,17 @@ pub fn follow_links<K: Kernel>(
             }
         }
         if !pairing.unfollowed.is_empty() || pairing.unmatched > 0 {
+            // Where its entities are now: those that followed match.
+            let stale = if pairing.unfollowed.is_empty() {
+                Vec::new()
+            } else {
+                stale_curves(&updated, projection, &fresh)
+            };
             out.reports.push(ProjectionFollow {
                 projection: k,
                 unfollowed: pairing.unfollowed,
                 unmatched: pairing.unmatched,
+                stale,
                 ..ProjectionFollow::default()
             });
         }
@@ -596,6 +627,47 @@ pub fn follow_links<K: Kernel>(
 /// How far apart, relative to the size of the geometry, two curves or
 /// points may be and still be the same.
 pub(crate) const SAME: f64 = 1e-7;
+
+/// How far apart, relative to the size of the geometry, a projected curve
+/// and a curve of its source may be and still match: looser than [`SAME`],
+/// as an imported projection's numbers come from the file.
+const MATCH: f64 = 1e-6;
+
+/// The curves of a projection that match none of `fresh` (entities made
+/// from its source's current curves), where `def` has them (mitcad#252).
+fn stale_curves(def: &SketchDef, projection: &Projection, fresh: &[Entity]) -> Vec<EntityUid> {
+    let index = super::EntityIndex::new(&def.entities);
+    let at = |id: EntityUid| index.point(id);
+    let fresh_points: BTreeMap<EntityUid, P2> = fresh
+        .iter()
+        .filter_map(|e| match e.kind {
+            EntityKind::Point { at } => Some((e.id, at)),
+            _ => None,
+        })
+        .collect();
+    let fresh_at = |id: EntityUid| fresh_points.get(&id).copied();
+    let old = linked_entities(def, projection);
+    let mut size = 1.0_f64;
+    for p in fresh_points.values() {
+        size = size.max(norm(*p));
+    }
+    for e in &old {
+        if let EntityKind::Point { at } = e.kind {
+            size = size.max(norm(at));
+        }
+    }
+    let tol = MATCH * size;
+    old.iter()
+        .filter(|e| !e.is_point())
+        .filter(|e| {
+            !fresh.iter().any(|f| {
+                !f.is_point()
+                    && unlikeness(&e.kind, &at, &f.kind, &fresh_at).is_some_and(|(c, _)| c <= tol)
+            })
+        })
+        .map(|e| e.id)
+        .collect()
+}
 
 /// The projected primitives without repeats: a curve or point the same as
 /// an earlier one (a seam edge a face lists twice, edges seen edge on that

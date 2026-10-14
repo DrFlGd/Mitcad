@@ -185,11 +185,26 @@ fn boundary(
     {
         reference["piece"] = json!(edge.piece.piece);
     }
-    Ok(json!({
+    let mut answer = json!({
         "boundary": reference,
         "pieces": pieces.len(),
         "straight": chosen.is_some_and(is_line),
-    }))
+    });
+    // Where a flange's offsets and widths are measured from (mitcad#242):
+    // the boundary's ends on the front surface along the canonical axial
+    // direction `e` (`e x outward = material normal`), start first.
+    if let Some(edge) = chosen.filter(|e| is_line(e))
+        && let Ok((front, parity)) = super::folded::plane(patch)
+        && let Ok((a, b)) = edge.curve.ends()
+    {
+        let (first, last) = if parity == MaterialParity::Positive {
+            (b, a)
+        } else {
+            (a, b)
+        };
+        answer["axial"] = json!({"start": front.point(first), "end": front.point(last)});
+    }
+    Ok(answer)
 }
 
 /// The corner where the walls along two curves of a panel meet: the
@@ -245,6 +260,51 @@ fn corner(
         corner["outgoing_piece"] = json!(outgoing.piece.piece);
     }
     Ok(json!({"corner": corner, "straight": is_line(incoming) && is_line(outgoing)}))
+}
+
+/// The corner whose thickness edge runs from `start` to `end` (mitcad#242:
+/// an edge named after an ordinary feature, of a body whose domains the
+/// sheet-domain adapter re-derived): the panel contour vertex where one
+/// end lies on the front surface and the other on the back, over it.
+pub fn corner_at(
+    state: &SheetState,
+    thickness: f64,
+    start: [f64; 3],
+    end: [f64; 3],
+) -> Result<Value, String> {
+    let mut found = Vec::new();
+    for patch in &state.charts {
+        let SheetDomainRef::Panel(panel) = patch.domain else {
+            continue;
+        };
+        let (Some((a, da)), Some((b, db))) = (
+            chart_coordinates(&patch.embedding, start, thickness),
+            chart_coordinates(&patch.embedding, end, thickness),
+        ) else {
+            continue;
+        };
+        let through = (da.abs() <= 1e-6 && (db - thickness).abs() <= 1e-6)
+            || (db.abs() <= 1e-6 && (da - thickness).abs() <= 1e-6);
+        if !through || (a[0] - b[0]).hypot(a[1] - b[1]) > 1e-6 {
+            continue;
+        }
+        for (contour, i, edge) in edges(patch) {
+            let Ok(vertex) = edge.curve.point(edge.curve.range.last) else {
+                continue;
+            };
+            if (vertex[0] - a[0]).hypot(vertex[1] - a[1]) <= 1e-6 {
+                let next = &contour.edges[(i + 1) % contour.edges.len()];
+                found.push((panel, edge.piece.curve.clone(), next.piece.curve.clone()));
+            }
+        }
+    }
+    let [(panel, a, b)] = found.as_slice() else {
+        return Err(format!(
+            "the edge is the thickness edge of {} panel corners",
+            found.len()
+        ));
+    };
+    corner(state, thickness, *panel, a, b, Some(start))
 }
 
 /// The panel a picked panel surface stands for at the point picked. The

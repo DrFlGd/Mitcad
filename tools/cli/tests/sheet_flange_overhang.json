@@ -1,0 +1,16 @@
+[
+  {"comment":"SPDX-License-Identifier: MIT. A flange wider than its boundary whose overhangs start at the bend's moving tangent line (width root 0, the .ipt flanges' overhang, mitcad#242). t=2, r=3, K=0.3, back reference; the 35 x 20 panel spans x=-30..5. A 90-degree flange at side_tangent, outer-tangent length 15 (straight wall 10), 2 past each end of its 20 boundary: the full overhangs add 2 x 2 x 10 x 2 = 80 to the flange of the boundary's width; cut back by the relief depth 3 they add 56; a negative root fails."},
+  {"cmd":"add_feature","def":{"type":"sheet_rules","thickness":2,"bend_radius":3,"allowance":{"type":"k_factor","k":0.3},"reference_side":"back","bend_relief":{"type":"rectangular","width":2,"depth":3},"corner_relief":{"type":"round","width":2,"depth":3}}},
+  {"cmd":"sketch.create"},
+  {"cmd":"sketch.add_rectangle","sketch":"F2","corner":[-30,0],"width":35,"height":20},
+  {"cmd":"add_feature","def":{"type":"sheet_face","rules":"F1","profiles":[{"sketch":"F2","region":"r{c1[c4,c2],c2[c1,c3],c3[c2,c4],c4[c3,c1]}"}]}},
+  {"cmd":"add_feature","def":{"type":"sheet_flange","body":"F3.b0","boundary":{"panel":{"feature":"F3","slot":0},"curve":{"type":"sketch","sketch":"F2","segment":"c2[c1,c3]"}},"angle":1.5707963267948966,"length":{"mode":"outer_tangent","value":15},"position":"side_tangent"}},
+  {"expect":{"feature":"F4","status":"ok","body":"F3.b0","volume":1851.3274122871834}},
+  {"cmd":"edit_feature","uid":"F4","def":{"type":"sheet_flange","body":"F3.b0","boundary":{"panel":{"feature":"F3","slot":0},"curve":{"type":"sketch","sketch":"F2","segment":"c2[c1,c3]"}},"angle":1.5707963267948966,"length":{"mode":"outer_tangent","value":15},"position":"side_tangent","width":{"type":"middle","before":12,"after":12,"root":0}}},
+  {"expect":{"feature":"F4","status":"ok","body":"F3.b0","volume":1931.3274122871834,"min":[-30,-2,-2],"max":[5,22,13]}},
+  {"expect":{"query":{"query":"sheet_state","body":"F3.b0"},"result":{"status":"valid"}}},
+  {"cmd":"edit_feature","uid":"F4","def":{"type":"sheet_flange","body":"F3.b0","boundary":{"panel":{"feature":"F3","slot":0},"curve":{"type":"sketch","sketch":"F2","segment":"c2[c1,c3]"}},"angle":1.5707963267948966,"length":{"mode":"outer_tangent","value":15},"position":"side_tangent","width":{"type":"middle","before":12,"after":12,"root":3}}},
+  {"expect":{"feature":"F4","status":"ok","body":"F3.b0","volume":1907.3274122871834}},
+  {"cmd":"edit_feature","uid":"F4","def":{"type":"sheet_flange","body":"F3.b0","boundary":{"panel":{"feature":"F3","slot":0},"curve":{"type":"sketch","sketch":"F2","segment":"c2[c1,c3]"}},"angle":1.5707963267948966,"length":{"mode":"outer_tangent","value":15},"position":"side_tangent","width":{"type":"middle","before":12,"after":12,"root":-1}}},
+  {"expect":{"feature":"F4","status":"error","error_contains":"root must not be negative"}}
+]

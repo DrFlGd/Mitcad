@@ -953,15 +953,20 @@ impl System {
                 self.line(a)?;
                 self.line(b)?;
             }
-            Angle { a, b, value } => {
+            Angle {
+                a,
+                b,
+                value,
+                supplement,
+            } => {
                 let (a1, a2) = self.line(a)?;
                 let (b1, b2) = self.line(b)?;
                 let da = self.xy(a2).sub(self.xy(a1));
                 let db = self.xy(b2).sub(self.xy(b1));
                 let phi = da.cross(db).atan2(da.dot(db));
                 let alt = wrap_angle(phi + PI);
-                let (flip, theta) = if (alt.abs() - value).abs() < (phi.abs() - value).abs() - 1e-12
-                {
+                let closer = (alt.abs() - value).abs() < (phi.abs() - value).abs() - 1e-12;
+                let (flip, theta) = if supplement.unwrap_or(closer) {
                     (-1.0, alt)
                 } else {
                     (1.0, phi)

@@ -63,6 +63,11 @@ public:
   bool focusFirstValue() override;
   // Puts the keyboard into a value field by its key; false if not shown.
   bool focusValue(const QString& key) override;
+  // A parameter's name picked in the view, at the field's cursor (mitcad#250).
+  bool insertIntoValue(const QString& key, const QString& text) override;
+  // The message, the result, OK and the notes as shown (live MCP, mitcad#265;
+  // CommandPanelState.cpp).
+  QJsonObject shownState() const override;
   // Logs where the inputs are, for UI tests.
   void logLayout() const override;
 
@@ -85,6 +90,8 @@ signals:
 protected:
   // The accent-coloured controls follow the palette.
   void changeEvent(QEvent* event) override;
+  // A value field taking the keyboard or losing it (mitcad#250).
+  bool eventFilter(QObject* watched, QEvent* event) override;
 
 private:
   void applyControlStyles();

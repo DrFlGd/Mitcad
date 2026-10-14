@@ -185,3 +185,15 @@ mod policy_tests;
 // Moving an occurrence to another parent (mitcad#219).
 #[cfg(test)]
 mod reparent_tests;
+// A preview's bodies in placed, hidden and linked components (mitcad#266).
+#[cfg(test)]
+mod preview_placement_tests;
+// Bodies from their boundaries and from triangles (the IFC import,
+// mitcad#273).
+pub mod boundary;
+pub use document::FeatureBatch;
+// Extrude's automatic operation: the contacts of its tool (mitcad#289).
+pub use document::AutoOperation;
+pub use kernel::ToolContact;
+#[cfg(test)]
+mod auto_operation_tests;

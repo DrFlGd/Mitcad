@@ -43,6 +43,10 @@ public:
 
   // After the model or the origin's visibility changed.
   void refresh(const DocumentSnapshot& snapshot);
+  // Whether the row's light bulb works in every mode, during commands and
+  // while Create Sketch asks for a plane too (mitcad#295); the others only
+  // when the model can change.
+  static bool visibilityInEveryMode(const BrowserNode& node);
   // The selection outside commands changed (in the view or here).
   void showSelection(const Selection& items);
   // Closes an open rename editor; false when none was open.

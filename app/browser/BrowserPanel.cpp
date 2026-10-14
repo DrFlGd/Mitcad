@@ -27,8 +27,10 @@
 #include "../framework/ChromeStyle.hpp"
 #include "../framework/GlassCard.hpp"
 #include "../framework/Icons.hpp"
+#include "../framework/PlaceWatcher.hpp"
 #include "../framework/TestSync.hpp"
 #include "../framework/Theme.hpp"
+#include "../framework/WindowStyle.hpp"
 
 namespace mitcad {
 namespace {
@@ -282,6 +284,35 @@ protected:
   }
 };
 
+// The rows of the tree in a Docked panel (mitcad#251): at least the panels'
+// row height, a selected row a rounded band of the accent colour behind the
+// whole row (WindowStyle) instead of the style's highlight.
+class PanelDelegate : public BrowserDelegate {
+public:
+  using BrowserDelegate::BrowserDelegate;
+
+  void paint(QPainter* painter, const QStyleOptionViewItem& option, const QModelIndex& index) const override {
+    paintPanelRowBand(painter, option, index);
+    BrowserDelegate::paint(painter, panelRowOption(option), index);
+  }
+
+  QSize sizeHint(const QStyleOptionViewItem& option, const QModelIndex& index) const override {
+    QSize size = BrowserDelegate::sizeHint(option, index);
+    size.setHeight(std::max(size.height(), panel::kRowHeight));
+    return size;
+  }
+
+  QWidget* createEditor(QWidget* parent, const QStyleOptionViewItem& option, const QModelIndex& index) const override {
+    // The tree's base colour is transparent; an editor needs its own.
+    QWidget* editor = BrowserDelegate::createEditor(parent, option, index);
+    if (editor != nullptr) {
+      editor->setPalette(QApplication::palette());
+      editor->setAutoFillBackground(true);
+    }
+    return editor;
+  }
+};
+
 struct OriginDatum {
   const char* uid;
   const char* name;
@@ -402,8 +433,9 @@ SelectionItem BrowserNode::item() const {
 class BrowserTree : public QTreeWidget {
 public:
   explicit BrowserTree(BrowserPanel& panel)
-      : QTreeWidget(&panel), m_panel(panel), m_delegate(chromeStyle() == ChromeStyle::Floating ? new SidebarDelegate(this)
-                                                                            : new BrowserDelegate(this)) {
+      : QTreeWidget(&panel), m_panel(panel),
+        m_delegate(chromeStyle() == ChromeStyle::Floating ? static_cast<BrowserDelegate*>(new SidebarDelegate(this))
+                                                          : static_cast<BrowserDelegate*>(new PanelDelegate(this))) {
     setItemDelegate(m_delegate);
     m_renameTimer.setSingleShot(true);
     QObject::connect(&m_renameTimer, &QTimer::timeout, this, [this] { emit m_panel.renameClicked(m_renameNode); });
@@ -564,6 +596,10 @@ BrowserPanel::BrowserPanel(QWidget* parent) : QWidget(parent), m_tree(new Browse
     }
     m_tree->setPalette(palette);
     m_tree->viewport()->setAutoFillBackground(false);
+  } else {
+    // On the Docked panel's surface, rows as PanelDelegate paints them
+    // (mitcad#251).
+    stylePanelTree(m_tree);
   }
 
   connect(m_tree, &QTreeWidget::itemSelectionChanged, this, &BrowserPanel::selectionChanged);
@@ -587,6 +623,12 @@ BrowserPanel::BrowserPanel(QWidget* parent) : QWidget(parent), m_tree(new Browse
       QTimer::singleShot(0, this, &BrowserPanel::logLayout);
     }
   };
+  // The places are logged again when the rows scroll (they scroll to a
+  // selected row, with the wheel, with the keys), and when the panel moves in
+  // the window (a banner or another panel makes room above or beside it).
+  connect(m_tree->verticalScrollBar(), &QScrollBar::valueChanged, this,
+          [this] { TestSync::singleShot(0, this, [this] { logLayout(); }); });
+  new PlaceWatcher(this, [this] { logLayout(); });
   connect(m_tree, &QTreeWidget::itemExpanded, this,
           [remember](QTreeWidgetItem* item) { remember(item, true); });
   connect(m_tree, &QTreeWidget::itemCollapsed, this,
@@ -1356,30 +1398,34 @@ void BrowserPanel::logLayout() {
     return;
   }
   QStringList lines;
+  QSet<QString> places;
   // The panel's width, and whether the rows need a horizontal scroll bar.
   lines << QStringLiteral("Browser width %1%2")
                .arg(width())
                .arg(m_tree->horizontalScrollBar()->isVisible() ? QStringLiteral(", scrolls sideways")
                                                                : QString());
   const QRect viewport = m_tree->viewport()->rect();
-  const auto at = [this](const QRect& rect) {
+  const auto place = [this, &lines, &places](const QString& what, const QRect& rect) {
     const QPoint point = GlassCard::mapToHost(m_tree->viewport(), rect.center());
-    return QStringLiteral("%1,%2").arg(point.x()).arg(point.y());
+    lines << QStringLiteral("%1 at %2,%3").arg(what).arg(point.x()).arg(point.y());
+    places.insert(what);
   };
   for (QTreeWidgetItemIterator it(m_tree); *it != nullptr; ++it) {
     QTreeWidgetItem* item = *it;
     const QRect row = m_tree->visualItemRect(item);
-    if (row.isEmpty() || !viewport.intersects(row)) {
-      continue; // in a collapsed folder or scrolled away
+    // A row in a folded folder, scrolled away, or cut by the view's edge so
+    // that its middle is not in the view: no place to click.
+    if (row.isEmpty() || !viewport.contains(row.center())) {
+      continue;
     }
     const BrowserNode node = nodeOf(item);
     const BrowserDelegate::Parts parts = m_tree->partsOf(item);
-    lines << QStringLiteral("Browser %1 at %2").arg(node.path, at(parts.name));
+    place(QStringLiteral("Browser %1").arg(node.path), parts.name);
     if (!parts.eye.isEmpty()) {
-      lines << QStringLiteral("Browser eye %1 at %2").arg(node.path, at(parts.eye));
+      place(QStringLiteral("Browser eye %1").arg(node.path), parts.eye);
     }
     if (!parts.radio.isEmpty()) {
-      lines << QStringLiteral("Browser radio %1 at %2").arg(node.path, at(parts.radio));
+      place(QStringLiteral("Browser radio %1").arg(node.path), parts.radio);
     }
     // A feature row whose result is in another component (mitcad#177).
     if (const QString linked = item->data(kName, kLinkedRole).toString(); !linked.isEmpty()) {
@@ -1387,12 +1433,24 @@ void BrowserPanel::logLayout() {
     }
   }
   const QString logged = lines.join(QLatin1Char('\n'));
-  if (logged != m_logged) {
+  // The places that were valid and are not: logged once, in a fixed order.
+  QStringList gone;
+  for (const QString& was : std::as_const(m_loggedPlaces)) {
+    if (!places.contains(was)) {
+      gone << was;
+    }
+  }
+  gone.sort();
+  if (logged != m_logged || !gone.isEmpty()) {
     m_logged = logged;
     for (const QString& line : std::as_const(lines)) {
       qDebug().noquote() << line;
     }
+    for (const QString& was : std::as_const(gone)) {
+      qDebug().noquote() << QStringLiteral("%1 out of sight").arg(was);
+    }
   }
+  m_loggedPlaces = places;
 }
 
 } // namespace mitcad

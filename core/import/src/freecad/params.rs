@@ -1431,6 +1431,35 @@ impl<K: Kernel> Importer<'_, '_, K> {
         adopt
     }
 
+    /// The references of a sketch's driven dimensions (mitcad#250): the
+    /// parameter made of a FreeCAD reference constraint (a named one, or
+    /// one an expression refers to) becomes its dimension's reference
+    /// instead of a parameter of its own, where the dimension measures what
+    /// the constraint does.
+    pub(super) fn reference_values(&self, sketch: &Object, t: &mut super::sketch::Translated) {
+        for s in &t.references {
+            let source = Source::Constraint {
+                sketch: sketch.name.clone(),
+                index: s.index,
+            };
+            let Some(name) = self.params.names.get(&source) else {
+                continue;
+            };
+            if !close(s.value, s.mitcad) {
+                continue;
+            }
+            for d in t
+                .dimensions
+                .iter_mut()
+                .chain(t.driven_dimensions.iter_mut())
+            {
+                if d["id"].as_str() == Some(s.dimension.as_str()) {
+                    d["reference"] = json!(name);
+                }
+            }
+        }
+    }
+
     /// Adopts the parameters made of an object's properties that its
     /// Mitcad features use as they are.
     pub(super) fn adopt_properties(&mut self, object: &str, features: &[FeatureUid]) {

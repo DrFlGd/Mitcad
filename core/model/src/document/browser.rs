@@ -149,6 +149,11 @@ impl DocState {
                 .check_feature(i, entry)
                 .map_err(|e| invalid(format!("{name} cannot move there: {}: {e}", entry.name)))?;
         }
+        // Driven dimensions' references stay after their sketches
+        // (mitcad#231).
+        state
+            .check_reference_order()
+            .map_err(|e| invalid(format!("{name} cannot move there: {e}")))?;
         Ok(state)
     }
 }

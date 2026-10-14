@@ -12,6 +12,12 @@
 //!   parameter plane), on the surface. On a ruled surface the point lies
 //!   on one of the rulings the surface was built from, where the surface
 //!   is exact.
+//!   Extruded curves the same way (u along the curve, v along the
+//!   direction as far as the edges reach; mitcad#228).
+//! - Surfaces of revolution of a curve: half way along the curve between
+//!   the edge points (each at the curve's point nearest it in the plane
+//!   through the axis), on the far side of the widest gap round the axis
+//!   (mitcad#228).
 //! - Cones, spheres and tori: as for cylinders, half way between the
 //!   lowest and highest edge points (along the axis, in latitude, round
 //!   the tube) on the far side of the widest gap between the edges' angles
@@ -45,7 +51,14 @@ pub fn point_inside_face(
         return Err("the face has no edges".to_owned());
     }
     let inside = match surface {
-        Surface::BSpline(_) | Surface::Ruled { .. } => free_form(surface, edges)?,
+        Surface::BSpline(_) | Surface::Ruled { .. } | Surface::Extrusion { .. } => {
+            free_form(surface, edges)?
+        }
+        Surface::Revolution {
+            curve,
+            origin,
+            axis,
+        } => revolution(surface, curve, *origin, *axis, edges)?,
         Surface::Cone {
             origin,
             axis,
@@ -223,6 +236,93 @@ fn revolved(
     }
 }
 
+/// The parameters of a surface's curve a face can use: a bounded curve's
+/// own, a whole turn of an ellipse, and of a line those of the edge points
+/// projected onto it, widened by the edges' extent.
+fn curve_range(curve: &Curve, edges: &[&[P3]]) -> Option<(f64, f64)> {
+    match curve {
+        Curve::Ellipse { .. } => Some((0.0, std::f64::consts::TAU)),
+        Curve::Line { origin, dir } => {
+            let d2 = brep::dot(*dir, *dir);
+            if d2 <= 0.0 {
+                return None;
+            }
+            let points: Vec<P3> = edges.iter().flat_map(|e| e.iter().copied()).collect();
+            let ts: Vec<f64> = points
+                .iter()
+                .map(|&p| brep::dot(brep::sub(p, *origin), *dir) / d2)
+                .collect();
+            let (lo, hi) = span(&ts);
+            let extent = (0..3)
+                .map(|k| {
+                    let (a, b) = span(&points.iter().map(|p| p[k]).collect::<Vec<_>>());
+                    b - a
+                })
+                .fold(0.0, f64::max);
+            let pad = extent / d2.sqrt();
+            (lo.is_finite() && hi.is_finite()).then_some((lo - pad, hi + pad))
+        }
+        _ => curve.range(),
+    }
+}
+
+/// A face of a surface of revolution of a curve (mitcad#228): half way
+/// along the curve between the edge points (each at the curve's point
+/// nearest it in the plane through the axis), at [`far_angle`].
+fn revolution(
+    surface: &Surface,
+    curve: &Curve,
+    origin: P3,
+    axis: P3,
+    edges: &[&[P3]],
+) -> Result<Inside, String> {
+    let range = curve_range(curve, edges).ok_or("a revolution of an unbounded curve")?;
+    let k = brep::normalize(axis);
+    // (distance from the axis, height along it)
+    let meridian = |p: P3| {
+        let d = brep::sub(p, origin);
+        let h = brep::dot(d, k);
+        (brep::norm(brep::sub(d, brep::scale(k, h))), h)
+    };
+    let n = 512;
+    let vs: Vec<f64> = (0..=n)
+        .map(|i| range.0 + (range.1 - range.0) * i as f64 / n as f64)
+        .collect();
+    let on_curve: Vec<(f64, f64)> = vs.iter().map(|&v| meridian(curve.eval(v))).collect();
+    let at: Vec<f64> = edges
+        .iter()
+        .flat_map(|e| e.iter())
+        .map(|&p| {
+            let (r, h) = meridian(p);
+            let d = |i: usize| (on_curve[i].0 - r).hypot(on_curve[i].1 - h);
+            vs[(0..vs.len())
+                .min_by(|&a, &b| d(a).total_cmp(&d(b)))
+                .unwrap_or(0)]
+        })
+        .collect();
+    let (low, high) = span(&at);
+    let v = 0.5 * (low + high);
+    let d = brep::sub(curve.eval(v), origin);
+    let radial = brep::sub(d, brep::scale(k, brep::dot(d, k)));
+    if brep::norm(radial) < 1e-12 {
+        return Err("the face's middle lies on the axis of revolution".to_owned());
+    }
+    let ref_dir = brep::normalize(radial);
+    let angle = far_angle(origin, k, ref_dir, edges).rem_euclid(std::f64::consts::TAU);
+    let patch = Patch::new(surface, edges)?;
+    let point = patch.eval(angle, v);
+    let (du, dv) = patch.derivatives(angle, v);
+    let normal = brep::normalize(brep::cross(du, dv));
+    if !point.iter().chain(&normal).all(|x| x.is_finite()) {
+        return Err("no point inside the face found".to_owned());
+    }
+    Ok(Inside {
+        point,
+        normal,
+        spread: Vec::new(),
+    })
+}
+
 /// A free-form surface's parameters: its domain, the grid of parameters
 /// edge points are first matched to, and its points.
 struct Patch<'a> {
@@ -236,7 +336,7 @@ struct Patch<'a> {
 }
 
 impl<'a> Patch<'a> {
-    fn new(surface: &'a Surface) -> Result<Self, String> {
+    fn new(surface: &'a Surface, edges: &[&[P3]]) -> Result<Self, String> {
         let even = |(a, b): (f64, f64), n: usize| -> Vec<f64> {
             (0..=n).map(|i| a + (b - a) * i as f64 / n as f64).collect()
         };
@@ -276,6 +376,54 @@ impl<'a> Patch<'a> {
                     periodic: [false, false],
                 })
             }
+            // Extrusions and revolutions (mitcad#228: faces with appearances
+            // of their own): u along the curve or round the axis, v along
+            // the direction (as far as the edges reach) or the curve.
+            Surface::Extrusion { curve, dir } => {
+                let u = curve_range(curve, edges).ok_or("an extrusion of an unbounded curve")?;
+                let us = even(u, 256);
+                let d2 = brep::dot(*dir, *dir);
+                if d2 <= 0.0 {
+                    return Err("an extrusion without a direction".to_owned());
+                }
+                let along: Vec<f64> = us
+                    .iter()
+                    .map(|&t| brep::dot(curve.eval(t), *dir) / d2)
+                    .collect();
+                let at: Vec<f64> = edges
+                    .iter()
+                    .flat_map(|e| e.iter())
+                    .map(|&p| brep::dot(p, *dir) / d2)
+                    .collect();
+                let (cl, ch) = span(&along);
+                let (pl, ph) = span(&at);
+                let v = (pl - ch, ph - cl);
+                if v.1.partial_cmp(&v.0) != Some(std::cmp::Ordering::Greater) {
+                    return Err("the face's edges do not reach along the extrusion".to_owned());
+                }
+                let closed = brep::dist(curve.eval(u.0), curve.eval(u.1))
+                    <= 1e-9 * (1.0 + brep::norm(curve.eval(u.0)));
+                Ok(Patch {
+                    surface,
+                    u,
+                    v,
+                    us,
+                    vs: even(v, 64),
+                    periodic: [closed, false],
+                })
+            }
+            Surface::Revolution { curve, .. } => {
+                let v = curve_range(curve, edges).ok_or("a revolution of an unbounded curve")?;
+                let u = (0.0, std::f64::consts::TAU);
+                Ok(Patch {
+                    surface,
+                    u,
+                    v,
+                    us: even(u, 128),
+                    vs: even(v, 128),
+                    periodic: [true, false],
+                })
+            }
             other => Err(format!("{} is not a free-form surface", other.kind())),
         }
     }
@@ -287,6 +435,22 @@ impl<'a> Patch<'a> {
                 brep::scale(from.eval(v), 1.0 - u),
                 brep::scale(to.eval(v), u),
             ),
+            Surface::Extrusion { curve, dir } => brep::add(curve.eval(u), brep::scale(*dir, v)),
+            Surface::Revolution {
+                curve,
+                origin,
+                axis,
+            } => {
+                // The curve's point turned by u round the axis (Rodrigues).
+                let k = brep::normalize(*axis);
+                let p = brep::sub(curve.eval(v), *origin);
+                let (s, c) = u.sin_cos();
+                let turned = brep::add(
+                    brep::add(brep::scale(p, c), brep::scale(brep::cross(k, p), s)),
+                    brep::scale(k, brep::dot(k, p) * (1.0 - c)),
+                );
+                brep::add(*origin, turned)
+            }
             _ => [f64::NAN; 3],
         }
     }
@@ -346,7 +510,7 @@ impl<'a> Patch<'a> {
 /// [`point_inside_face`] of a free-form surface: the point inside the
 /// face's outline in the surface's parameters farthest from it.
 fn free_form(surface: &Surface, edges: &[&[P3]]) -> Result<Inside, String> {
-    let patch = Patch::new(surface)?;
+    let patch = Patch::new(surface, edges)?;
     let grid: Vec<P3> = patch
         .us
         .iter()
@@ -534,6 +698,62 @@ mod tests {
 
     /// A cone's face from a quarter turn: the point lies in it, half way
     /// up, with the cone's outward normal.
+    /// A face of an extruded wave (u 1 to 3 along the curve, 0 to 5 along
+    /// z) and a band of a revolved slanted line (a full turn): the points
+    /// lie inside them, on the surfaces (mitcad#228).
+    #[test]
+    fn points_inside_extruded_and_revolved_faces() {
+        let params: Vec<f64> = (0..=40).map(|i| i as f64 / 10.0).collect();
+        let wave = Curve::Interpolated {
+            params: params.clone(),
+            points: params.iter().map(|&t| [t, t.sin(), 0.0]).collect(),
+        };
+        let surface = Surface::Extrusion {
+            curve: wave,
+            dir: [0.0, 0.0, 1.0],
+        };
+        let along = |z: f64| -> Vec<P3> {
+            (0..=20)
+                .map(|i| 1.0 + 2.0 * i as f64 / 20.0)
+                .map(|t| [t, t.sin(), z])
+                .collect()
+        };
+        let side = |t: f64| -> Vec<P3> { (0..=10).map(|i| [t, t.sin(), i as f64 / 2.0]).collect() };
+        let edges = [along(0.0), side(3.0), along(5.0), side(1.0)];
+        let refs: Vec<&[P3]> = edges.iter().map(Vec::as_slice).collect();
+        let inside = point_inside_face(&surface, false, &refs).unwrap();
+        let [x, y, z] = inside.point;
+        assert!((y - x.sin()).abs() < 1e-6, "{:?}", inside.point);
+        assert!(
+            (1.2..2.8).contains(&x) && (0.5..4.5).contains(&z),
+            "{:?}",
+            inside.point
+        );
+
+        let line = Curve::Interpolated {
+            params: vec![0.0, 1.0, 2.0],
+            points: vec![[5.0, 0.0, 0.0], [6.0, 0.0, 1.0], [7.0, 0.0, 2.0]],
+        };
+        let surface = Surface::Revolution {
+            curve: line,
+            origin: [0.0; 3],
+            axis: [0.0, 0.0, 1.0],
+        };
+        let circle = |r: f64, z: f64| -> Vec<P3> {
+            (0..=36)
+                .map(|i| i as f64 * std::f64::consts::TAU / 36.0)
+                .map(|a| [r * a.cos(), r * a.sin(), z])
+                .collect()
+        };
+        let edges = [circle(5.0, 0.0), circle(7.0, 2.0)];
+        let refs: Vec<&[P3]> = edges.iter().map(Vec::as_slice).collect();
+        let inside = point_inside_face(&surface, false, &refs).unwrap();
+        let [x, y, z] = inside.point;
+        let r = x.hypot(y);
+        assert!((r - (5.0 + z)).abs() < 1e-6, "{:?}", inside.point);
+        assert!((0.2..1.8).contains(&z), "{:?}", inside.point);
+    }
+
     #[test]
     fn a_point_inside_a_conical_face() {
         let half: f64 = 0.3;

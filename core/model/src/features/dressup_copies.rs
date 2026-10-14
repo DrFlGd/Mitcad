@@ -285,22 +285,41 @@ impl CopyNames<'_> {
 
 /// The part of a copy's definition `shape` has: the sets' edges and faces
 /// it has, the sets whose reference face it has; None when nothing is
-/// left. True when something was left out.
+/// left. True when something was left out. A face or edge a sketch change
+/// renamed is found again (`renamed.rs`, mitcad#272).
 fn present<K: Kernel>(
     kernel: &K,
     shape: &K::Shape,
     def: &FeatureDef,
 ) -> Option<(FeatureDef, bool)> {
-    let has_edge = |e: &EdgeName| kernel.count_edges(shape, e) > 0;
+    use super::renamed::{find_edge, find_face};
+    let edge_now = |e: &EdgeName| match find_edge(kernel, shape, e) {
+        Ok(None) => Some(e.clone()),
+        Ok(Some(found)) => Some(found),
+        Err(_) => None,
+    };
     // A kernel that cannot tell leaves the face to the operation.
-    let has_face = |f: &FaceName| !matches!(kernel.count_faces(shape, f), Ok(0));
+    let face_now = |f: &FaceName| match find_face(kernel, shape, f) {
+        Ok(None) => Some(f.clone()),
+        Ok(Some(found)) => Some(found),
+        Err(_) => None,
+    };
     let mut lost = false;
     let mut keep =
-        |edges: &mut Vec<EdgeName>, faces: &mut Vec<FaceName>, reference: Option<&FaceName>| {
+        |edges: &mut Vec<EdgeName>, faces: &mut Vec<FaceName>, reference: &mut Option<FaceName>| {
             let before = edges.len() + faces.len();
-            edges.retain(|e| has_edge(e));
-            faces.retain(|f| has_face(f));
-            let reference = reference.is_none_or(has_face);
+            *edges = edges.iter().filter_map(&edge_now).collect();
+            *faces = faces.iter().filter_map(&face_now).collect();
+            let reference = match reference {
+                None => true,
+                Some(face) => match face_now(face) {
+                    Some(found) => {
+                        *face = found;
+                        true
+                    }
+                    None => false,
+                },
+            };
             let kept = reference && !(edges.is_empty() && faces.is_empty());
             lost |= !kept || edges.len() + faces.len() < before;
             kept
@@ -308,18 +327,14 @@ fn present<K: Kernel>(
     let def = match def {
         FeatureDef::Fillet(fillet) => {
             let mut copy = fillet.clone();
-            copy.sets.retain_mut(|s| {
-                let reference = s.reference_face.clone();
-                keep(&mut s.edges, &mut s.faces, reference.as_ref())
-            });
+            copy.sets
+                .retain_mut(|s| keep(&mut s.edges, &mut s.faces, &mut s.reference_face));
             (!copy.sets.is_empty()).then_some(FeatureDef::Fillet(copy))
         }
         FeatureDef::Chamfer(chamfer) => {
             let mut copy = chamfer.clone();
-            copy.sets.retain_mut(|s| {
-                let reference = s.reference_face.clone();
-                keep(&mut s.edges, &mut s.faces, reference.as_ref())
-            });
+            copy.sets
+                .retain_mut(|s| keep(&mut s.edges, &mut s.faces, &mut s.reference_face));
             (!copy.sets.is_empty()).then_some(FeatureDef::Chamfer(copy))
         }
         _ => None,

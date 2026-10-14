@@ -1,0 +1,30 @@
+Mitcad's patch to OCCT 8.0.1, under OCCT's licence:
+SPDX-License-Identifier: LGPL-2.1-only WITH OCCT-exception-1.0
+
+Fillets and chamfers: an open contact replacing a face boundary stays in
+the adjacent face's parametric period.
+
+When a blend consumes a face, ChFi3d_ContactsAlongFaceEdges projects its
+contact onto the adjacent face. On a cylinder, projection can return the
+whole arc one period beyond that face's bounds. The arc still follows its
+3D edge, but the resulting wire is not closed in 2D. A chamfer or fillet
+as wide as a lug inside a bore then produces an unorientable face.
+
+Apply the existing ChFi3d_PCurveInFacePeriod adjustment immediately after
+assigning the projected contact. It translates only curves wholly outside
+the face bounds that fit wholly inside after a whole-period shift. Closed
+contacts crossing a seam retain the existing split-at-vertex handling.
+
+--- a/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_0.cxx
++++ b/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_0.cxx
+@@ -3423,6 +3423,10 @@
+       const TopAbs_Orientation aTraOnF = FI.Transition();
+       ChFiDS_FaceInterference& aFI = Fd->ChangeInterference(ons);
+       aFI.ChangePCurveOnFace()     = PCv;
++      // Projection onto a periodic surface may place the whole contact
++      // one period beyond the adjacent face. Keep its wire closed in 2D;
++      // contacts crossing a seam are still split below.
++      ChFi3d_PCurveInFacePeriod(aFI, Fv);
+       aFI.SetTransition(aTra);
+       if (ons == 1)
+       {

@@ -1,0 +1,11 @@
+[
+  {"comment":"SPDX-License-Identifier: MIT. A flange whose stationary tangent line is the selected boundary (position edge, mitcad#211): the 35 x 20 x 2 panel keeps its material, the r=3 90-degree bend starts at x=5 and the 15 mm tangent wall rises beyond it."},
+  {"cmd":"add_feature","def":{"type":"sheet_rules","thickness":2,"bend_radius":3,"allowance":{"type":"k_factor","k":0.3},"reference_side":"back","bend_relief":{"type":"rectangular","width":2,"depth":3},"corner_relief":{"type":"round","width":2,"depth":3}}},
+  {"cmd":"sketch.create"},
+  {"cmd":"sketch.add_rectangle","sketch":"F2","corner":[-30,0],"width":35,"height":20},
+  {"cmd":"add_feature","def":{"type":"sheet_face","rules":"F1","profiles":[{"sketch":"F2","region":"r{c1[c4,c2],c2[c1,c3],c3[c2,c4],c4[c3,c1]}"}]}},
+  {"cmd":"add_feature","def":{"type":"sheet_flange","body":"F3.b0","boundary":{"panel":{"feature":"F3","slot":0},"curve":{"type":"sketch","sketch":"F2","segment":"c2[c1,c3]"}},"angle":1.5707963267948966,"length":{"mode":"tangent","value":15},"position":"edge"}},
+  {"expect":{"feature":"F4","status":"ok","bodies":1}},
+  {"expect":{"body":"F3.b0","volume":2251.3274122871835,"min":[-30,0,-2],"max":[10,20,18]}},
+  {"expect":{"query":{"query":"sheet_state","body":"F3.b0"},"result":{"body":"F3.b0","status":"valid"}}}
+]

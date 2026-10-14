@@ -152,6 +152,9 @@ CommandDef extrudeCommand(const CommandContext& context) {
   def.keywords = {QStringLiteral("pad"), QStringLiteral("boss"), QStringLiteral("pocket"),
                   QStringLiteral("thin")};
   def.featureType = QStringLiteral("extrude");
+  // Join where the tool touches a body, Cut where it goes into one, New
+  // Body otherwise, until the user picks the operation (mitcad#289).
+  def.autoOperation = true;
   const auto always = [](const CommandState&) { return true; };
   const auto thin = choiceIs(QStringLiteral("type"), QStringLiteral("thin"));
   const auto twoSides = choiceIs(QStringLiteral("direction"), kTwoSides);

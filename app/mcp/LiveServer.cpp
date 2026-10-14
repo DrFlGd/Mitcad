@@ -18,7 +18,9 @@
 #include <QUuid>
 
 #include "MainWindow.hpp"
+#include "LiveErrors.hpp"
 #include "LocalEndpoint.hpp"
+#include "LogRing.hpp"
 #include "mitcad_bridge/lib.h"
 
 namespace mitcad::mcp {
@@ -49,6 +51,8 @@ struct LiveServer::State {
     QPointer<QTcpSocket> socket;
     QByteArray input;
     bool authenticated = false;
+    // Initialized an MCP session: an agent is connected (mitcad#265).
+    bool initialized = false;
     rust::Box<LiveMcpSession> session = new_live_mcp_session();
   };
 
@@ -61,6 +65,29 @@ struct LiveServer::State {
   std::vector<std::shared_ptr<Client>> clients;
 
   State(LiveServer* object, MainWindow* documentWindow) : owner(object), window(documentWindow) {}
+
+  // The window shows whether agents are connected and can disconnect them
+  // (mitcad#265).
+  void updateAgents() {
+    int count = 0;
+    for (const auto& client : clients) {
+      if (client->initialized && client->socket && client->socket->state() == QAbstractSocket::ConnectedState) {
+        ++count;
+      }
+    }
+    if (window) {
+      window->setMcpAgents(count, [this] { disconnectAll(); });
+    }
+  }
+
+  void disconnectAll() {
+    for (const auto& client : clients) {
+      if (client->initialized && client->socket) {
+        client->socket->abort();
+      }
+    }
+    updateAgents();
+  }
 
   void write(Client& client, const QByteArray& response) {
     if (client.socket && client.socket->state() == QAbstractSocket::ConnectedState) {
@@ -97,6 +124,13 @@ struct LiveServer::State {
         if (!response.isNull()) {
           // The Rust dispatcher serializes IDs losslessly, including u64.
           write(client, response.toString().toUtf8() + '\n');
+          if (!client.initialized &&
+              QJsonDocument::fromJson(message).object().value(QStringLiteral("method")).toString() ==
+                  QStringLiteral("initialize") &&
+              QJsonDocument::fromJson(response.toString().toUtf8()).object().contains(QStringLiteral("result"))) {
+            client.initialized = true;
+            updateAgents();
+          }
         }
         return;
       }
@@ -108,22 +142,17 @@ struct LiveServer::State {
         }
         const QString tool = plan.value(QStringLiteral("tool")).toString();
         const auto arguments = plan.value(QStringLiteral("arguments")).toObject();
-        if (tool == QStringLiteral("document_list")) {
-          value = {{QStringLiteral("documents"), QJsonArray{window->mcpDocumentInfo()}}};
-        } else {
-          if (arguments.value(QStringLiteral("document")).toString() != window->mcpDocumentId()) {
-            throw std::runtime_error("No open document with this handle; call document_list after New or Open");
-          }
-          if (tool == QStringLiteral("model_query")) {
-            value = window->mcpQuery(arguments.value(QStringLiteral("query")).toObject());
-          } else if (tool == QStringLiteral("model_command")) {
-            value = window->mcpCommand(arguments.value(QStringLiteral("command")).toObject());
-            const auto nativeError = value.value(QStringLiteral("result")).toObject().value(QStringLiteral("error"));
-            error = geometryFailed(value) || (!nativeError.isUndefined() && !nativeError.isNull());
-          } else {
-            throw std::runtime_error("Unknown live document tool");
-          }
+        // The live catalog (mitcad#265): MainWindowMcp.cpp, MainWindowMcpUi.cpp.
+        value = window->mcpTool(tool, arguments);
+        if (tool == QStringLiteral("model_command")) {
+          const auto nativeError = value.value(QStringLiteral("result")).toObject().value(QStringLiteral("error"));
+          error = geometryFailed(value) || (!nativeError.isUndefined() && !nativeError.isNull());
         }
+      } catch (const Refusal& refusal) {
+        // Busy (when to retry), a panel's state.
+        error = true;
+        value = refusal.fields();
+        value.insert(QStringLiteral("error"), QString::fromUtf8(refusal.what()));
       } catch (const std::exception& failure) {
         error = true;
         value = {{QStringLiteral("error"), QString::fromUtf8(failure.what())}};
@@ -207,7 +236,11 @@ struct LiveServer::State {
       client->socket = socket;
       clients.push_back(client);
       QObject::connect(socket, &QTcpSocket::readyRead, owner, [this, client] { drain(client); });
-      QObject::connect(socket, &QTcpSocket::disconnected, owner, [socket] { socket->deleteLater(); });
+      QObject::connect(socket, &QTcpSocket::disconnected, owner, [this, socket] {
+        socket->deleteLater();
+        // Once the socket's QPointer has cleared.
+        QTimer::singleShot(0, owner, [this] { updateAgents(); });
+      });
       QTimer::singleShot(5000, socket, [client] {
         if (!client->authenticated && client->socket) {
           client->socket->abort();
@@ -222,6 +255,9 @@ LiveServer::LiveServer(MainWindow* window, QObject* parent)
 
 LiveServer::~LiveServer() {
   m_state->listener.close();
+  if (m_state->window) {
+    m_state->window->setMcpAgents(0, {});
+  }
   for (const auto& client : m_state->clients) {
     if (client->socket) {
       client->socket->disconnect(this);
@@ -234,6 +270,9 @@ LiveServer::~LiveServer() {
 }
 
 bool LiveServer::start(QString* error) {
+  // ui_log's lines (mitcad#265): main() installs the ring for the whole run
+  // (mcp/LogRing.hpp); this keeps it for a server started without it.
+  installLogRing();
   if (!prepareDiscoveryDirectory(error)) {
     return false;
   }

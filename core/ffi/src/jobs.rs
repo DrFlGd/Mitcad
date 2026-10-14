@@ -56,6 +56,18 @@ impl JobControl {
     pub fn set_test_delay(&self, ms: u32) {
         self.0.set_test_delay(ms);
     }
+
+    /// The job's question to the user waiting for an answer, empty when
+    /// none waits (`RecomputeMonitor::ask`; the `.f3d` import asks what to
+    /// do with the bodies it imported, mitcad#283).
+    pub fn question(&self) -> String {
+        self.0.question().unwrap_or_default()
+    }
+
+    /// Answers the question waiting.
+    pub fn answer(&self, answer: &str) {
+        self.0.answer(answer);
+    }
 }
 
 impl Document {

@@ -136,6 +136,7 @@ fn state(charts: Vec<SheetPatch>, bends: Vec<BendDomain>) -> SheetState {
         joins,
         opened: Vec::new(),
         lineage: Vec::new(),
+        overlays: Vec::new(),
         invalidated: None,
         blockers: Vec::new(),
     }
@@ -516,4 +517,42 @@ fn pieces_keep_their_own_ports_bends_and_open_state() {
     assert_eq!(piece.opened.len(), 1);
     let rest = partition(&z, &[m(base, 0)].into()).unwrap();
     assert!(rest.opened.is_empty() && rest.bends.is_empty());
+}
+
+#[test]
+fn the_first_operation_that_took_the_sheet_meaning_away_stays_named() {
+    use crate::sheet::{SheetChange, SheetStates, publish};
+    let body = BodyUid::new(FeatureUid(3), 0);
+    let mut states = SheetStates::new();
+    let set = SheetChange::Set(l_sheet());
+    publish(
+        &mut states,
+        body,
+        ComponentUid::ROOT,
+        1,
+        FeatureUid(5),
+        Some(&set),
+    );
+    assert!(states[&body].value.invalidated.is_none());
+    // An ordinary operation without a sheet adapter, then an explicit one.
+    publish(
+        &mut states,
+        body,
+        ComponentUid::ROOT,
+        2,
+        FeatureUid(6),
+        None,
+    );
+    let later = SheetChange::Invalidate("a later cut".into());
+    publish(
+        &mut states,
+        body,
+        ComponentUid::ROOT,
+        3,
+        FeatureUid(7),
+        Some(&later),
+    );
+    let first = states[&body].value.invalidated.clone().unwrap();
+    assert_eq!(first.feature, FeatureUid(6));
+    assert!(first.message.contains("sheet-domain adapter"), "{first:?}");
 }

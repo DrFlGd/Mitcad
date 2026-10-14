@@ -1,0 +1,26 @@
+# SPDX-License-Identifier: MIT
+[package]
+name = "mitcad-rvt"
+description = "Reader for .rvt project and .rfa family files: the compound file, the paged gzip streams, the metadata, the file's own serialisation schema and the element records walked by it"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[lib]
+name = "mitcad_rvt"
+
+[[bin]]
+name = "mitcad-rvt-inspect"
+path = "src/bin/mitcad-rvt-inspect.rs"
+
+[dependencies]
+# The compound file container (MS-CFB), shared with the .ipt reader.
+mitcad-cfb = { path = "../cfb" }
+# DEFLATE of the gzip members (the .ipt reader's inflater); deflate too for
+# the test files.
+miniz_oxide = { version = "0.8.9", default-features = false, features = ["with-alloc"] }
+# The element lists and reports as JSON.
+serde = { workspace = true }
+serde_json = { workspace = true }

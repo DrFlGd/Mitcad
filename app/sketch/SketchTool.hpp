@@ -42,6 +42,9 @@ struct ToolPreview {
   QString glyph;                                // a constraint inferred at the cursor
   std::optional<V2> glyphAt;                    // where it is shown (else by the cursor)
   std::optional<DimensionData> dimension;       // a dimension being placed
+  // The sketch `dimension` refers to: a tool's own view of it with the body
+  // edges and vertices it picks (mitcad#256); the sketch's when null.
+  const SketchModel* model = nullptr;
   // The auto constraints the next click adds (mitcad#189), shown in a row
   // beside `marksAt`.
   QStringList marks;
@@ -83,6 +86,9 @@ public:
   virtual void paint(ToolPreview& preview) const { (void)preview; }
   // Drawing tools snap the cursor; picking tools do not.
   virtual bool snaps() const { return true; }
+  // Snapping also to body vertices and edge midpoints in the sketch plane
+  // (mitcad#258): the Point tool's; other drawing tools may opt in later.
+  virtual bool bodySnaps() const { return false; }
   // What the tool makes, for the sketch palette's Auto constraint section
   // (mitcad#189); None: the tool takes no auto constraints.
   virtual AutoKind autoKind() const { return AutoKind::None; }

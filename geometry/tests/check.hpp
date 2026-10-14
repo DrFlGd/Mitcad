@@ -162,5 +162,19 @@ void face_copy_tests();
 // Operations on bodies of thousands of faces, with the port's patch 0110
 // (mitcad#121).
 void large_body_tests();
+// Corners where a rounding ends, with the port's patches 0130 and later
+// (mitcad#236).
+void fillet_corner_tests();
+// Chamfers wider than a face beside them, with the port's patches 0140 and
+// later (mitcad#240).
+void chamfer_overflow_tests();
+// Roundings whose results were invalid or whose computation failed, with
+// the port's patches 0150 and later (mitcad#239).
+void fillet_result_tests();
+// Fillet contours that stop where their edges turn, with the port's patch
+// 0180 (mitcad#241).
+void fillet_chain_tests();
+// The tangent chains of a body's edges and faces (mitcad#290).
+void tangent_chain_tests();
 
 } // namespace test

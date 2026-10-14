@@ -613,24 +613,111 @@ fn live_catalog_has_only_supported_tools_and_live_handles() {
         .iter()
         .map(|tool| tool["name"].as_str().unwrap())
         .collect();
-    assert_eq!(names, ["document_list", "model_query", "model_command"]);
-    for tool in tools.iter().filter(|tool| tool["name"] != "document_list") {
+    assert_eq!(
+        names,
+        [
+            "document_list",
+            "model_query",
+            "model_command",
+            "document_save",
+            "ui_state",
+            "ui_log",
+            "ui_screenshot",
+            "ui_select",
+            "ui_command"
+        ]
+    );
+    for tool in tools
+        .iter()
+        .filter(|tool| tool["inputSchema"]["properties"].get("document").is_some())
+    {
         let description = tool["inputSchema"]["properties"]["document"]["description"]
             .as_str()
             .unwrap();
         assert!(description.contains("document_list"));
         assert!(!description.contains("document_create"));
     }
+    // The live save writes only to the document's own path (mitcad#265).
+    let save = tools
+        .iter()
+        .find(|tool| tool["name"] == "document_save")
+        .unwrap();
+    assert_eq!(
+        save["inputSchema"]["properties"]
+            .as_object()
+            .unwrap()
+            .keys()
+            .collect::<Vec<_>>(),
+        ["document"]
+    );
     for name in [
         "document_create",
         "document_open",
         "document_close",
-        "document_save",
         "model_export",
     ] {
         let response = live_response(session.prepare(call(name, json!({}))).unwrap()).unwrap();
         assert_eq!(response["error"]["code"], -32602);
         assert!(session.finish(json!({}), false).is_err());
+    }
+}
+
+#[test]
+fn live_ui_tools_validate_their_arguments_before_the_application_runs_them() {
+    let mut session = ready_live();
+    for (name, arguments) in [
+        ("ui_log", json!({"since": -1})),
+        ("ui_log", json!({"limit": "10"})),
+        ("ui_screenshot", json!({"max_size": 10})),
+        ("ui_screenshot", json!({"window": "yes"})),
+        ("ui_select", json!({"document": "live-1"})),
+        (
+            "ui_select",
+            json!({"document": "live-1", "items": [{"kind": "solid", "owner": "F2.b0"}]}),
+        ),
+        (
+            "ui_select",
+            json!({"document": "live-1", "items": [{"kind": "face", "owner": "F2.b0", "x": 1}]}),
+        ),
+        (
+            "ui_select",
+            json!({"document": "live-1", "items": [], "reveal": "spin"}),
+        ),
+        ("ui_command", json!({"id": "sketch.finish"})),
+        (
+            "ui_command",
+            json!({"document": "live-1", "finish": "later"}),
+        ),
+        (
+            "document_save",
+            json!({"document": "live-1", "path": "x.mitcad"}),
+        ),
+    ] {
+        let response =
+            live_response(session.prepare(call(name, arguments.clone())).unwrap()).unwrap();
+        assert_eq!(response["error"]["code"], -32602, "{name} {arguments}");
+    }
+    for (name, arguments) in [
+        ("ui_state", json!({})),
+        ("ui_log", json!({"since": 12, "limit": 50})),
+        ("ui_screenshot", json!({"window": true, "max_size": 800})),
+        (
+            "ui_select",
+            json!({"document": "live-1", "items": [{"kind": "sketch_curve", "owner": "F4", "name": "c3"}],
+                   "reveal": "fit"}),
+        ),
+        (
+            "ui_command",
+            json!({"document": "live-1", "id": "sketch.clean_up_stale_projections",
+                   "inputs": {}, "finish": "ok"}),
+        ),
+        ("document_save", json!({"document": "live-1"})),
+    ] {
+        assert!(matches!(
+            session.prepare(call(name, arguments.clone())).unwrap(),
+            PreparedMessage::Tool { name: tool, arguments: given } if tool == name && given == arguments
+        ));
+        session.finish(json!({}), false).unwrap();
     }
 }
 

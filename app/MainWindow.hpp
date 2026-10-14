@@ -110,6 +110,16 @@ public:
   QJsonObject mcpDocumentInfo() const;
   QJsonObject mcpQuery(const QJsonObject& request) const;
   QJsonObject mcpCommand(const QJsonObject& request);
+  // One call of the live catalog's tools on this window and its document
+  // (mitcad#265; MainWindowMcp.cpp, MainWindowMcpUi.cpp): document_list,
+  // model_query, model_command, document_save and the ui_* tools. Throws
+  // mcp::Refusal (busy, with when to retry) or another std::exception with
+  // the reason when it is refused.
+  QJsonObject mcpTool(const QString& name, const QJsonObject& arguments);
+  // The agents connected through MCP (initialized sessions): the project
+  // indicator says "Agent connected" and its menu offers Disconnect Agent,
+  // which calls `disconnectAll`.
+  void setMcpAgents(int count, std::function<void()> disconnectAll);
 
   // Sets a parameter's value (mm or rad, written in its unit), as typed in
   // the parameters dialog (--set).
@@ -170,6 +180,10 @@ public:
   void editInstead(const QString& uid, const QString& input) override;
   QString profileOccurrence(const QString& sketch) const override { return placingOccurrence(sketch); }
   const SelectionScope* commandScope() const override; // mitcad#217
+  // Parameter names picked from the view (mitcad#250;
+  // MainWindowParameterPicks.cpp).
+  std::vector<ShownSketch> shownSketches() const override;
+  const CommandDef* featureEditor(const QJsonObject& def) const override;
 
   // SketchHost
   const Selection& selection() const override { return m_selection; }
@@ -204,6 +218,9 @@ public:
   bool originShown() const override { return m_originShown; }
   QString documentFolder() const override;
   void exportFlatPattern(const QString& body) override;
+  // Light bulbs in every mode (mitcad#295; MainWindowVisibility.cpp).
+  bool runVisibilityCommands(const QJsonArray& commands, const QString& label) override;
+  QString activeCommandName() const override;
 
 protected:
   void closeEvent(QCloseEvent* event) override;
@@ -236,6 +253,17 @@ private:
 #endif
   using Mode = DocumentSession::Mode;
   QString mcpBlockedReason(bool editing) const;
+  // Live MCP (mitcad#265): busy refusals, a sketch's commands through its
+  // session, the agent's undo labels, Save, and the ui_* tools.
+  void mcpRefuseBusy() const;
+  QJsonObject mcpSketchCommand(const QJsonObject& request);
+  void mcpLabelAgentChange(int depthBefore);
+  QJsonObject mcpSave();
+  QJsonObject mcpUiState();
+  QJsonObject mcpLog(const QJsonObject& arguments) const;
+  QJsonObject mcpScreenshot(const QJsonObject& arguments);
+  QJsonObject mcpSelect(const QJsonObject& arguments);
+  QJsonObject mcpUiCommand(const QJsonObject& arguments);
 
   void registerCommands();
   void createMenus();
@@ -307,6 +335,9 @@ private:
   void showDiagnostics();
   // Shows what the command's recompute did; true when nothing failed.
   bool reportRecompute(const QJsonObject& result, double milliseconds);
+  // A new component placed beside a component that takes none (mitcad#292):
+  // the reply's warning shown as a hint, also when its command finishes.
+  void notePlacement(const QJsonObject& result);
   int undoDepth() const;
 
   void recompute();
@@ -374,6 +405,13 @@ private:
   QString refreshSketchSupports();
   // Why a sketch cannot be made on this plane or face; empty when it can.
   QString sketchSupportRefusal(const SelectionItem& item) const;
+  // Create Sketch's plane pick (MainWindowVisibility.cpp): whether the
+  // origin planes are shown for it by themselves (mitcad#294: while the
+  // design has no component but the active one and a root without bodies),
+  // and with MITCAD_LOG_PICKS the faces a click picks, logged again after a
+  // light bulb changed what is shown (mitcad#295).
+  bool sketchShowsOrigin() const;
+  void logSketchPicks();
   // The occurrence paths ("O1/O4", "" the root) whose geometry the active
   // component's sketches may not lie on, with the reason.
   QHash<QString, QString> m_sketchDenied;
@@ -749,6 +787,10 @@ private:
   DocumentSession* m_documentSession = nullptr;
   QString m_mcpDocumentId;
   bool m_mcpRequestActive = false;
+  int m_mcpAgents = 0;                     // connected MCP clients (mitcad#265)
+  QAction* m_mcpDisconnect = nullptr;      // the indicator's Disconnect Agent
+  std::function<void()> m_mcpDisconnectAll;
+  bool m_mcpSketchEdited = false;          // an agent changed the sketch being edited
   rust::Box<Document>& m_document = m_documentSession->state().document;
   ModelWorker* m_worker = &m_documentSession->worker();
   bool m_closePending = false; // the window closes when the job is back
@@ -829,6 +871,7 @@ private:
   QString m_loggedThreads = QStringLiteral("Cosmetic threads shown: 0"); // as last logged
   QString& m_lastError = m_documentSession->state().lastError;
   bool& m_lastCancelled = m_documentSession->state().lastCancelled;
+  QString m_placementNote; // the last command's placement warning (mitcad#292)
   QStackedWidget* m_commandPages = nullptr;
   QPointer<QWidget> m_panelScroll; // the running command's panel page
   QLabel* m_idleInfo = nullptr;
@@ -929,6 +972,23 @@ private:
   std::optional<SelectionScope> m_commandScope;
   QAction* m_sketchFilterAction = nullptr;
   SelectionFilterPanel* m_selectionFilterPanel = nullptr;
+
+  // The debug log (mitcad#269, MainWindowDebugLog.cpp): Help > Open Log
+  // Folder; the header's facts (the open design, the graphics); "Debug log
+  // on" in the project indicator, whose menu then has Open Log Folder and
+  // Turn Off Debug Log.
+  void registerDebugLogCommands();
+  void createDebugLog();
+  void debugLogChanged(bool running);
+  void openLogFolder();
+  QAction* m_debugLogOff = nullptr;
+
+  // The wait cursor (mitcad#268, MainWindowJobs.cpp): its idle recovery
+  // after each job and every second; with MITCAD_TEST_WAIT_CURSOR the test
+  // commands Leave Wait Cursor On (Test) and Nested Wait (Test).
+  void createWaitCursorRecovery();
+  void registerWaitCursorTestCommands();
+  void nestedWaitForTest();
 };
 
 } // namespace mitcad

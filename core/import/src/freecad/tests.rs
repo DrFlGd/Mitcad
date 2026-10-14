@@ -2208,3 +2208,53 @@ fn a_suppressed_feature_becomes_a_placeholder() {
     assert!(at(&named(&pad.features[0])) < at("Gear"), "{names:?}");
     assert!(at("Gear") < at(&named(&pad2.features[0])), "{names:?}");
 }
+
+/// A named reference constraint's parameter (`height`) becomes its driven
+/// dimension's reference (mitcad#250), owned by the sketch with the value
+/// the sketch measures, instead of a user parameter beside a reference of
+/// the dimension's own; the named driving length keeps its parameter.
+#[test]
+fn a_reference_constraints_parameter_is_its_dimensions_reference() {
+    use mitcad_model::expr::ParamKind;
+    let profile = format!(
+        "{}{}",
+        geometry(&[
+            segment([0.0, 0.0], [40.0, 0.0], false),
+            segment([40.0, 0.0], [40.0, 20.0], false),
+        ]),
+        constraints(&[
+            constrain(1, 0.0, &[(0, 1), (-1, 1)], "", true),
+            constrain(1, 0.0, &[(0, 2), (1, 1)], "", true),
+            constrain(2, 0.0, &[(0, 0)], "", true),
+            constrain(3, 0.0, &[(1, 0)], "", true),
+            constrain(6, 40.0, &[(0, 0)], "width", true),
+            constrain(8, 20.0, &[(1, 0)], "height", false),
+        ])
+    );
+    let xml = document(&[("Sketcher::SketchObject", "Profile", profile)]);
+    let (doc, report) = import_with(
+        fcstd(&xml, None, &[]),
+        Vec::new(),
+        MockKernel::default(),
+        false,
+    );
+    let s = &report.sketches[0];
+    assert!(s.feature.is_some(), "{s:?}");
+    assert!(s.dropped.is_empty(), "{s:?}");
+    let def = sketch_def(&doc, &report, "Profile");
+    let dims = def["dimensions"].as_array().unwrap();
+    let driven = dims.iter().find(|d| d["driven"] == true).unwrap();
+    assert_eq!(driven["reference"], "height", "{def}");
+    let params = doc.parameters();
+    let height = params.find("height").unwrap();
+    assert_eq!(params.get(height).unwrap().kind(), ParamKind::Reference);
+    assert_eq!(params.owner(height).map(|o| o.to_string()), s.feature);
+    assert!((params.value(height).unwrap() - 20.0).abs() < 1e-9);
+    let references = params
+        .iter()
+        .filter(|p| p.kind() == ParamKind::Reference)
+        .count();
+    assert_eq!(references, 1);
+    let width = params.find("width").unwrap();
+    assert_eq!(params.get(width).unwrap().kind(), ParamKind::Model);
+}

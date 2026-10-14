@@ -7,7 +7,7 @@ use std::collections::BTreeMap;
 
 use super::{DocState, Document, ModelError, invalid};
 use crate::features::FeatureDef;
-use crate::ids::ComponentUid;
+use crate::ids::{ComponentUid, FeatureUid};
 use crate::kernel::Kernel;
 use crate::policy::{self, Policy, PolicyObject, Setting, Violation};
 use crate::transform::Transform;
@@ -56,6 +56,32 @@ impl DocState {
         state
     }
 
+    /// Places the component `feature` made, when it made one that `before`
+    /// was not, in `beside` instead of the feature's own component
+    /// ([`Document::component_parent_beside`], mitcad#292).
+    pub(crate) fn place_made_beside(
+        &mut self,
+        feature: FeatureUid,
+        before: Option<ComponentUid>,
+        beside: Option<(ComponentUid, Transform)>,
+    ) {
+        let Some((parent, transform)) = beside else {
+            return;
+        };
+        let Some(made) = self
+            .assembly
+            .created_by(feature)
+            .filter(|m| Some(*m) != before)
+        else {
+            return;
+        };
+        let occurrence = self.assembly.occurrences_of(made).next().map(|o| o.uid);
+        if let Some(o) = occurrence.and_then(|uid| self.assembly.occurrence_mut(uid)) {
+            o.parent = parent;
+            o.transform = transform;
+        }
+    }
+
     fn object_name(&self, object: PolicyObject) -> String {
         match object {
             PolicyObject::Feature(uid) => self
@@ -82,13 +108,13 @@ impl DocState {
             Setting::Sketches | Setting::Features | Setting::Components => {
                 format!("{object}: {}", creation_refusal(&owner, v.setting))
             }
-            Setting::AttachToOthers => format!(
-                "{object} in {owner} cannot be attached to a face or plane of {other}: \
-                 {owner}'s policy does not allow its sketches to attach to other components"
+            Setting::AttachToOthers | Setting::FirstSketchAttaches => format!(
+                "{object} in {owner} cannot be attached to a face or plane of {other}: {}",
+                attachment_reason(&owner, v.setting)
             ),
-            Setting::AttachmentsFromOthers => format!(
-                "{object} in {other} cannot be attached to a face or plane of {owner}: \
-                 {owner}'s policy does not allow sketches of other components to attach to it"
+            Setting::AttachmentsFromOthers | Setting::FirstSketchAttachmentsFromOthers => format!(
+                "{object} in {other} cannot be attached to a face or plane of {owner}: {}",
+                attachment_reason(&owner, v.setting)
             ),
             Setting::ReferenceOthers => format!(
                 "{object} in {owner} cannot reference geometry of {other}: {owner}'s policy \
@@ -98,6 +124,27 @@ impl DocState {
                 "{object} in {other} cannot reference geometry of {owner}: {owner}'s policy \
                  does not allow references from other components.{unlinked}"
             ),
+        }
+    }
+}
+
+/// Why `owner`'s policy refuses one side of a sketch attachment: its own
+/// sketches attaching to other components (`AttachToOthers`, or for a
+/// first sketch `FirstSketchAttaches`), or other components' sketches
+/// attaching to it (mitcad#293).
+fn attachment_reason(owner: &str, setting: Setting) -> String {
+    match setting {
+        Setting::AttachToOthers => {
+            format!("{owner}'s policy does not allow its sketches to attach to other components")
+        }
+        Setting::FirstSketchAttaches => format!(
+            "{owner}'s policy does not allow its first sketch to attach to other components"
+        ),
+        Setting::FirstSketchAttachmentsFromOthers => format!(
+            "{owner}'s policy does not allow first sketches of other components to attach to it"
+        ),
+        _ => {
+            format!("{owner}'s policy does not allow sketches of other components to attach to it")
         }
     }
 }
@@ -250,32 +297,77 @@ impl<K: Kernel> Document<K> {
             .then(|| creation_refusal(&self.state.assembly.name(component), setting))
     }
 
-    /// The owners whose faces and planes sketches of `component` cannot
-    /// be attached to, each with the reason (sketch-support picking leaves
-    /// their geometry out).
+    /// The owners whose faces and planes the next sketch of `component`
+    /// (made at the marker) cannot be attached to, each with the reason
+    /// (sketch-support picking leaves their geometry out). While no sketch
+    /// or modelling feature of the component precedes the marker, that
+    /// sketch is its first and the first-sketch settings apply too
+    /// (mitcad#293).
     pub fn attachment_denials(&self, component: ComponentUid) -> Vec<(ComponentUid, String)> {
         let a = &self.state.assembly;
         let own = a.policy(component);
         let name = a.name(component);
+        let first = !self.state.features[..self.state.marker]
+            .iter()
+            .any(|f| f.component == component && policy::starts_owner(&f.def));
         std::iter::once(ComponentUid::ROOT)
             .chain(a.components.iter().map(|c| c.uid))
             .filter(|c| *c != component)
             .filter_map(|other| {
-                let reason = if !own.attach_to_others {
-                    format!(
-                        "{name}'s policy does not allow its sketches to attach to other components"
-                    )
-                } else if !a.policy(other).attachments_from_others {
-                    format!(
-                        "{}'s policy does not allow sketches of other components to attach to it",
-                        a.name(other)
-                    )
+                let reason = if let Some(setting) =
+                    policy::refused(&own, Setting::AttachToOthers, first)
+                {
+                    attachment_reason(&name, setting)
                 } else {
-                    return None;
+                    let setting =
+                        policy::refused(&a.policy(other), Setting::AttachmentsFromOthers, first)?;
+                    attachment_reason(&a.name(other), setting)
                 };
                 Some((other, reason))
             })
             .collect()
+    }
+
+    /// Where a new component that would be placed under `owner` goes
+    /// instead (mitcad#292): while checks are on and `owner`'s policy
+    /// refuses components, the nearest owner above it (along its first
+    /// path from the root) that takes them, with the placement of `owner`
+    /// in it, so that nothing moves. None when `owner` takes components,
+    /// and when no owner above it does (the command is then refused).
+    pub(crate) fn component_parent_beside(
+        &self,
+        owner: ComponentUid,
+    ) -> Option<(ComponentUid, Transform)> {
+        let a = &self.state.assembly;
+        if !self.policy_checks || a.policy(owner).components {
+            return None;
+        }
+        let path = crate::links::first_path(a, owner, None).ok()?;
+        (0..path.len()).rev().find_map(|i| {
+            let parent = a.occurrence(path[i])?.parent;
+            let takes = a.policy(parent).components && self.state.editable(parent).is_ok();
+            takes.then(|| {
+                let placement = path[i..].iter().fold(Transform::IDENTITY, |t, o| {
+                    t.after(&self.placement(*o).unwrap_or(Transform::IDENTITY))
+                });
+                (parent, placement)
+            })
+        })
+    }
+
+    /// For an edit of `feature`: the component it made before, and where a
+    /// component the edit makes goes instead of its own component
+    /// ([`Document::component_parent_beside`]).
+    pub(crate) fn made_and_beside(
+        &self,
+        feature: FeatureUid,
+    ) -> (Option<ComponentUid>, Option<(ComponentUid, Transform)>) {
+        let made = self.state.assembly.created_by(feature);
+        let beside = self
+            .state
+            .entry(feature)
+            .and_then(|e| self.component_parent_beside(e.component));
+        (made, beside)
     }
 
     /// Refuses a next state that adds a violation of the design policy

@@ -1,12 +1,14 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: MIT
-# check-all sources: app/framework app/commands
+# check-all sources: app/framework app/commands app/MainWindow.cpp
 # The command framework through the real UI (app/COMMANDS.md): a panel
 # generated from a definition, a group menu of the toolbar, a shortcut from
-# the settings, selection with Ctrl and Shift and with windows, the context
-# menu, an expression input (d1*2) whose preview fails and OK that refuses
-# it, Cancel, editing a feature with its inputs filled in, one undo step per
-# edit, and the command search refusing a command that cannot run.
+# the settings, Create Sketch by its default Alt+S with no default shortcut
+# in conflict (mitcad#267), selection with Ctrl and Shift and with windows,
+# the context menu, an expression input (d1*2) whose preview fails and OK
+# that refuses it, Cancel, editing a feature with its inputs filled in, one
+# undo step per edit, and the command search refusing a command that cannot
+# run.
 #
 # Runs headless on Xvfb (see ui-test-lib.sh).
 # Usage: tools/ui-command-test.sh [screenshot.png]
@@ -50,6 +52,15 @@ ui_expect_log "Command Chamfer cancelled" "cancelled"
 echo "--- Shortcut from the settings"
 ui_step "Shift+C"                          ui_key shift+c
 expect_count "Command Chamfer started" 2 "Shift+C starts Chamfer"
+ui_step "cancel (Esc)"                     ui_key Escape
+
+echo "--- Create Sketch by its default shortcut (Alt+S, mitcad#267)"
+# The registry's defaults with this test's own Shift+C: a conflict would
+# have been logged at the start and the binding disabled.
+grep -qF "Conflicting saved shortcuts" "$UI_LOG" && ui_fail "shortcuts conflict: $(grep -F -A3 "Conflicting saved shortcuts" "$UI_LOG")"
+echo "ok   no default shortcut in conflict"
+ui_step "Alt+S"                            ui_key alt+s
+expect_count "Create Sketch: select a plane" 1 "Alt+S starts Create Sketch"
 ui_step "cancel (Esc)"                     ui_key Escape
 
 echo "--- Selection outside commands: click, Ctrl, Shift"

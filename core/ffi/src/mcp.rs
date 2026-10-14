@@ -9,6 +9,7 @@ use std::path::{Component, Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use mitcad_mcp::{Backend, LiveSession, ToolResult};
+use mitcad_model::api::classes::{self, ApiClass};
 use mitcad_model::{BlobStore, Sha256};
 use serde_json::{Value, json};
 
@@ -70,15 +71,21 @@ fn validate_command(request: &Value) -> Result<(), String> {
         return Err("MCP commands must be single JSON objects".to_owned());
     }
     let kind = string(request, "cmd")?;
-    if !safe_command(kind) {
-        return Err(format!(
-            "command '{kind}' is not available through MCP; use document_save or model_export for output"
-        ));
+    // By the command's class (mitcad#265): the model's own commands only.
+    match classes::command_class(kind) {
+        Some(ApiClass::Model) => {}
+        Some(class) => {
+            return Err(format!(
+                "command '{kind}' is not available through MCP: it is a {} command; use document_save or model_export for output",
+                class.name()
+            ));
+        }
+        None => return Err(format!("unknown command '{kind}'")),
     }
     if matches!(kind, "add_feature" | "edit_feature") {
         let definition = object(request, "def")?;
         let feature = string(definition, "type")?;
-        if !safe_feature(feature) {
+        if classes::feature_class(feature) != ApiClass::Model {
             return Err(format!(
                 "feature type '{feature}' is not available through MCP"
             ));
@@ -92,7 +99,11 @@ fn validate_query(request: &Value) -> Result<(), String> {
         return Err("MCP queries must be single JSON objects".to_owned());
     }
     let kind = string(request, "query")?;
-    if !safe_query(kind) || (kind == "cache" && request["disk"].as_bool() == Some(true)) {
+    // By the query's class (mitcad#265); the result store's files are not
+    // read either.
+    if !classes::external_query_allowed(kind)
+        || (kind == "cache" && request["disk"].as_bool() == Some(true))
+    {
         return Err(format!("query '{kind}' is not available through MCP"));
     }
     Ok(())
@@ -199,7 +210,7 @@ impl CadBackend {
         // added definitions. Existing links remain stored metadata and
         // their embedded base bodies; none are refreshed here.
         for feature in model.features() {
-            if !safe_feature(feature.def.type_name()) {
+            if classes::feature_class(feature.def.type_name()) != ApiClass::Model {
                 return Err(format!(
                     "feature type '{}' is not available through MCP",
                     feature.def.type_name()
@@ -446,252 +457,6 @@ fn geometry_failed(value: &Value) -> bool {
                 .iter()
                 .any(|feature| feature["status"].as_str() == Some("error"))
         })
-}
-
-// Audited against model/api/{mod,sketch,components,joints,libraries}.rs.
-// Never extend these by prefix: imports, links and output need separate
-// path validation, including the auxiliary paths of foreign importers.
-fn safe_command(command: &str) -> bool {
-    matches!(
-        command,
-        "add_feature"
-            | "edit_feature"
-            | "delete_feature"
-            | "suppress_feature"
-            | "reorder_feature"
-            | "rename_feature"
-            | "rename_body"
-            | "set_marker"
-            | "add_parameter"
-            | "set_parameter"
-            | "set_units"
-            | "rename_parameter"
-            | "delete_parameter"
-            | "undo"
-            | "redo"
-            | "recompute"
-            | "merge_undo"
-            | "set_body_visible"
-            | "set_body_material"
-            | "set_body_appearance"
-            | "set_face_appearance"
-            | "clear_face_appearances"
-            | "set_feature_visible"
-            | "add_named_view"
-            | "delete_named_view"
-            | "rename_named_view"
-            | "set_origin_visible"
-            | "set_isolation"
-            | "group_features"
-            | "ungroup"
-            | "rename_group"
-            | "add_analysis"
-            | "edit_analysis"
-            | "set_analysis_visible"
-            | "rename_analysis"
-            | "delete_analysis"
-            | "create_component"
-            | "components_from_bodies"
-            | "activate_component"
-            | "rename_component"
-            | "ground_occurrence"
-            | "set_occurrence_visible"
-            | "set_occurrence_transform"
-            | "copy_occurrence"
-            | "paste_new"
-            | "delete_occurrence"
-            | "add_joint"
-            | "add_as_built_joint"
-            | "add_rigid_group"
-            | "drive_joint"
-            | "drag_occurrence"
-            | "set_configurations"
-            | "apply_configuration"
-            | "sketch.create"
-            | "sketch.add_rectangle"
-            | "sketch.add_circle"
-            | "sketch.add_point"
-            | "sketch.add_line"
-            | "sketch.rectangle"
-            | "sketch.circle"
-            | "sketch.arc"
-            | "sketch.polygon"
-            | "sketch.slot"
-            | "sketch.ellipse"
-            | "sketch.spline"
-            | "sketch.add_text"
-            | "sketch.edit_text"
-            | "sketch.add_constraint"
-            | "sketch.add_dimension"
-            | "sketch.set_dimension"
-            | "sketch.set_driven"
-            | "sketch.remove"
-            | "sketch.set_construction"
-            | "sketch.set_centerline"
-            | "sketch.set_fixed"
-            | "sketch.drag"
-            | "sketch.move"
-            | "sketch.trim"
-            | "sketch.extend"
-            | "sketch.fillet"
-            | "sketch.chamfer"
-            | "sketch.offset"
-            | "sketch.mirror"
-            | "sketch.circular_pattern"
-            | "sketch.rectangular_pattern"
-            | "sketch.edit_pattern"
-            | "sketch.edit_offset"
-            | "sketch.project"
-            | "sketch.set_dimension_text"
-            // Move Features into a Component (mitcad#171).
-            | "move_to_component"
-            | "move_history_into_component"
-            | "set_hybrid_assembly"
-            // Sheet-metal Flat Pattern items (mitcad#208, mitcad#210).
-            | "set_flat_pattern"
-            | "remove_flat_pattern"
-            // Design policy (mitcad#220).
-            | "set_policy"
-            // Moving an occurrence to another parent (mitcad#219).
-            | "reparent_occurrence"
-            // Equal spacing in sketches (mitcad#221).
-            | "sketch.add_equal_spacing"
-            | "sketch.edit_equal_spacing"
-    )
-}
-
-fn safe_feature(feature: &str) -> bool {
-    // All current feature evaluators operate on document geometry or
-    // embedded B-rep bytes. Text resolves installed font families; a
-    // feature has no external import or component-refresh operation.
-    matches!(
-        feature,
-        "sketch"
-            | "extrude"
-            | "fillet"
-            | "chamfer"
-            | "shell"
-            | "draft"
-            | "offset_face"
-            | "delete_face"
-            | "replace_face"
-            | "split_body"
-            | "split_face"
-            | "construction_plane"
-            | "construction_axis"
-            | "construction_point"
-            | "base"
-            | "revolve"
-            | "hole"
-            | "thread"
-            | "rectangular_pattern"
-            | "circular_pattern"
-            | "path_pattern"
-            | "pattern_at_points"
-            | "mirror"
-            | "combine"
-            | "move"
-            | "align"
-            | "scale"
-            | "box"
-            | "cylinder"
-            | "sphere"
-            | "torus"
-            | "sweep"
-            | "loft"
-            | "pipe"
-            | "coil"
-            | "rib"
-            | "web"
-            | "component_from_bodies"
-            | "move_occurrence"
-            | "capture_position"
-            | "helix"
-            | "joint"
-            | "as_built_joint"
-            | "joint_origin"
-            | "rigid_group"
-            | "remove_body"
-            // Sheet metal (mitcad#206-mitcad#210).
-            | "sheet_rules"
-            | "sheet_face"
-            | "sheet_flange"
-            | "sheet_bend"
-            | "sheet_fold"
-            | "sheet_corner_round"
-            | "sheet_corner_chamfer"
-            | "sheet_unfold"
-            | "sheet_refold"
-            | "sheet_cut"
-            | "sheet_corner_relief"
-    )
-}
-
-fn safe_query(query: &str) -> bool {
-    matches!(
-        query,
-        "document"
-            | "timeline"
-            | "evaluate"
-            | "parameters"
-            | "bodies"
-            | "profiles"
-            | "sheet_state"
-            | "sheet_rules"
-            | "feature"
-            | "faces"
-            | "edges"
-            | "report"
-            | "datums"
-            | "datum"
-            | "properties"
-            | "measure"
-            | "interference"
-            | "section"
-            | "section_plane"
-            | "threads"
-            | "sketch"
-            | "components"
-            | "instances"
-            | "dependents"
-            | "can_reorder"
-            | "named_views"
-            | "recompute_times"
-            | "thread_sizes"
-            | "cache"
-            | "changes_since_saved"
-            | "analyses"
-            | "appearances"
-            | "appearance_image"
-            | "render_settings"
-            | "joints"
-            | "joint_dof"
-            | "joint_drag"
-            | "joint_frame"
-            | "configurations"
-            | "library_parts"
-            | "parts_list"
-            // Move Features into a Component (mitcad#171).
-            | "move_to_component"
-            | "feature_references"
-            // The region a profile reference means (mitcad#199).
-            | "profile"
-            // Current origin groups of the final unused sketch (mitcad#193).
-            | "autoselect_profiles"
-            // Sheet-metal Flat Patterns (mitcad#208).
-            | "flat_pattern"
-            | "flat_point"
-            // The sheet-metal command UI's picks and browser (mitcad#210).
-            | "sheet_reference"
-            | "sheet_seam"
-            | "sheet_bodies"
-            // Design policy (mitcad#220).
-            | "policy"
-            | "policies"
-            | "sketch_supports"
-            // Moving an occurrence to another parent (mitcad#219).
-            | "reparent_occurrence"
-    )
 }
 
 struct Workspace {

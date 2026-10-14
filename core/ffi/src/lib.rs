@@ -46,6 +46,12 @@ mod projects;
 mod live;
 // Local headless MCP tools (mitcad#124).
 mod mcp;
+// The IFC import (mitcad#273).
+mod ifc_import;
+use ifc_import::ifc_test_building;
+// The .rvt and .rfa import, phase 1 (mitcad#274).
+mod rvt_import;
+use rvt_import::rvt_write_test_file;
 
 use cxx::SharedPtr;
 use mitcad_model::api::ApiError;
@@ -181,6 +187,22 @@ mod ffi {
         /// commands.md, `import_iam`); returns the import report as JSON,
         /// or text with `{"text": true}`.
         fn import_iam(self: &mut Document, path: &str, json: &str) -> Result<String>;
+        /// Imports an IFC file (.ifc, .ifczip): its spatial structure as
+        /// components and its elements' shapes as features and bodies
+        /// (options in commands.md, `import_ifc`); returns the import report
+        /// as JSON, or text with `{"text": true}`.
+        fn import_ifc(self: &mut Document, path: &str, json: &str) -> Result<String>;
+        /// The IFC reader's test building (`mitcad_ifc::testdata`), for
+        /// `mitcad-cli import-ifc --write-test`.
+        fn ifc_test_building() -> String;
+        /// Imports an .rvt project's elements, one component per level,
+        /// or reads an .rfa family's metadata (options in commands.md,
+        /// `import_rvt`); returns the import report as JSON, or text with
+        /// `{"text": true}`.
+        fn import_rvt(self: &mut Document, path: &str, json: &str) -> Result<String>;
+        /// Writes the .rvt reader's small test project (or family) file
+        /// (tests).
+        fn rvt_write_test_file(path: &str, family: bool) -> Result<()>;
     }
 
     // Background computation (P7, jobs.rs): the application computes a
@@ -214,6 +236,12 @@ mod ffi {
         fn progress(self: &JobControl) -> JobProgress;
         /// For tests: every evaluation of the job takes `ms` longer.
         fn set_test_delay(self: &JobControl, ms: u32);
+        /// The job's question to the user waiting for an answer (one
+        /// line), empty when none waits: the .f3d import asks what to do
+        /// with the bodies it imported (mitcad#283).
+        fn question(self: &JobControl) -> String;
+        /// Answers the question waiting ("keep" or "replace").
+        fn answer(self: &JobControl, answer: &str);
         /// The document's recomputes report to `control` (and stop when it
         /// is cancelled) until detach_job.
         fn attach_job(self: &mut Document, control: &JobControl);
@@ -566,7 +594,14 @@ impl Document {
         let is_import = |v: &serde_json::Value| {
             matches!(
                 v.get("cmd").and_then(|c| c.as_str()),
-                Some("import_f3d" | "import_fcstd" | "import_ipt" | "import_iam")
+                Some(
+                    "import_f3d"
+                        | "import_fcstd"
+                        | "import_ipt"
+                        | "import_iam"
+                        | "import_ifc"
+                        | "import_rvt"
+                )
             )
         };
         match value {
@@ -603,6 +638,8 @@ impl Document {
             Some("import_fcstd") => self.import_fcstd_command(command),
             Some("import_ipt") => self.import_ipt_command(command),
             Some("import_iam") => self.import_iam_command(command),
+            Some("import_ifc") => self.import_ifc_command(command),
+            Some("import_rvt") => self.import_rvt_command(command),
             _ => self.import_f3d_command(command),
         }
     }

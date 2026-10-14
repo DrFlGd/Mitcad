@@ -333,4 +333,8 @@ pub struct HelixSpec<'a, S> {
     /// the result is built so that booleans with them work (mitcad#60; see
     /// `geometry::HelixSweepSpec`).
     pub bodies: &'a [S],
+    /// The ends' angles (radians, 0 for none; mitcad#235): the start's
+    /// flat and transition, the end's transition and flat (see
+    /// [`crate::features::helix::HelixEnd`]).
+    pub ends: [f64; 4],
 }

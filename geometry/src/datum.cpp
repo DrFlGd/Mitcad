@@ -3,6 +3,7 @@
 
 #include <cmath>
 #include <limits>
+#include <memory>
 #include <optional>
 #include <stdexcept>
 #include <utility>
@@ -369,7 +370,12 @@ std::vector<SurfaceDescription> face_geometries(const Shape& shape) {
 }
 
 std::vector<CurveDescription> edge_geometries(const Shape& shape) {
-  return detail::run("edge geometries", [&] {
+  // Kept by the shape once worked out (Shape::kept_edge_curves); kept only
+  // when the run did not fail.
+  if (const auto kept = std::static_pointer_cast<const std::vector<CurveDescription>>(shape.kept_edge_curves())) {
+    return *kept;
+  }
+  auto curves = std::make_shared<const std::vector<CurveDescription>>(detail::run("edge geometries", [&] {
     std::vector<CurveDescription> result;
     result.reserve(static_cast<std::size_t>(shape.edge_count()));
     for (int i = 0; i < shape.edge_count(); ++i) {
@@ -383,7 +389,9 @@ std::vector<CurveDescription> edge_geometries(const Shape& shape) {
       }
     }
     return result;
-  });
+  }));
+  shape.keep_edge_curves(curves);
+  return *curves;
 }
 
 gp_Pnt vertex_point(const Shape& shape, const std::string& vertex) {

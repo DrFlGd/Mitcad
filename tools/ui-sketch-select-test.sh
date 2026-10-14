@@ -3,7 +3,7 @@
 # check-all sources: app/framework/SelectionScope.cpp app/framework/SelectionScope.hpp app/framework/SelectionFilterPanel.cpp app/framework/SelectionFilterPanel.hpp app/MainWindowSelection.cpp
 # check-all sources: app/OcctViewer.cpp app/OcctViewer.hpp app/PickContext.cpp app/sketch app/framework/CommandSession.cpp app/framework/Selection.cpp
 # Sketch selection filters (mitcad#217) through the real UI, on a small
-# synthetic design: Box1 (F1.b0, 30 x 20 x 10 on XY), Box2 (F2.b0) standing
+# synthetic design: Box1 (F1.b0, 40 x 20 x 10 on XY), Box2 (F2.b0) standing
 # in front of the middle of Box1's front bottom edge as the default
 # isometric view sees it, Box3 (F3.b0) further off, Sketch1 (F4) with a
 # circle on XY, Plane1 (F5) 20 above XY and Sketch2 (F6) on it: a
@@ -46,12 +46,15 @@ trap 'ui_cleanup; rm -rf -- "${WORK:?}"' EXIT
 export MITCAD_LOG_EDGE_PLACES=1
 
 # Seen from the front, right and above (the isometric view), a point of
-# Box1's front bottom edge between x = 6 and 24 lies behind Box2.
+# Box1's front bottom edge between x = 11 and 29 lies behind Box2. Box1 is
+# long enough that the edge has a stretch in sight at each end (about 28 px
+# at the view's fit) with room for a place that a click hits it alone, clear
+# of the corner's edge and of Box2's, whatever the view's size.
 cat > "$WORK/model.json" << 'EOF'
 [
   {"cmd": "add_feature", "def": {"type": "box", "plane": "xy", "corner": [0, 0],
-    "length": 30, "width": 20, "height": 10, "operation": "new_body"}},
-  {"cmd": "add_feature", "def": {"type": "box", "plane": "xy", "corner": [18, -12],
+    "length": 40, "width": 20, "height": 10, "operation": "new_body"}},
+  {"cmd": "add_feature", "def": {"type": "box", "plane": "xy", "corner": [23, -12],
     "length": 10, "width": 8, "height": 13, "operation": "new_body"}},
   {"cmd": "add_feature", "def": {"type": "box", "plane": "xy", "corner": [70, 0],
     "length": 10, "width": 10, "height": 5, "operation": "new_body"}},

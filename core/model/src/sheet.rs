@@ -11,7 +11,12 @@ use std::fmt;
 
 mod adapter;
 mod charts;
+// The sheet-domain adapter of ordinary features (mitcad#242).
+mod rederive;
+// Patterns and mirrors of sheet features (mitcad#242).
+pub(crate) mod replay;
 pub(crate) use adapter::planar_joins;
+pub(crate) use rederive::adapt;
 pub(crate) mod folded;
 // The derived whole-body Flat Pattern (mitcad#208).
 pub mod flat;
@@ -95,6 +100,37 @@ pub struct SheetDiagnostic {
     pub message: String,
 }
 
+/// A change of a sheet's material its domains cannot hold (mitcad#242),
+/// made again on the solid every sheet feature after it rebuilds.
+/// `removed` is the volume it removed when it was made; a rebuild in which
+/// it would remove more (material added later in its way) is refused.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SheetOverlay {
+    pub feature: FeatureUid,
+    #[serde(flatten)]
+    pub kind: SheetOverlayKind,
+    pub removed: f64,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum SheetOverlayKind {
+    /// A straight cut (`sheet_cut` mode `straight`) whose walls are not
+    /// normal to the material where it crosses a bend or an inclined panel:
+    /// its profiles swept along `direction` from `start` to `end`.
+    Straight {
+        frame: SketchFrame,
+        profiles: Vec<(crate::topo::RegionKey, SheetRegion)>,
+        direction: [f64; 3],
+        start: f64,
+        end: f64,
+    },
+    /// An ordinary fillet or chamfer on the sheet (a countersink at a hole's
+    /// edge, a rounded surface edge): the material it removed and added (its
+    /// body before it against its result), moved by `placement` since.
+    Change { placement: Transform },
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SheetState {
     pub schema: u32,
@@ -116,6 +152,9 @@ pub struct SheetState {
     pub opened: Vec<OpenedBend>,
     #[serde(default)]
     pub lineage: Vec<CurveLineage>,
+    /// Straight cuts the domains cannot hold (mitcad#242), in order.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub overlays: Vec<SheetOverlay>,
     pub invalidated: Option<SheetDiagnostic>,
     pub blockers: Vec<SheetDiagnostic>,
 }
@@ -146,12 +185,46 @@ impl SheetState {
                 bend.folded_embedding = cylinder;
             }
         }
+        for overlay in &mut next.overlays {
+            match &mut overlay.kind {
+                SheetOverlayKind::Straight {
+                    frame, direction, ..
+                } => {
+                    *frame = transform.apply_frame(frame);
+                    *direction = transform.apply_vector(*direction);
+                }
+                SheetOverlayKind::Change { placement } => {
+                    *placement = transform.after(placement);
+                }
+            }
+        }
         next
+    }
+
+    /// Why the sheet has no developed form: a change it keeps as an overlay
+    /// (mitcad#242).
+    pub(crate) fn overlay_refusal(&self, what: &str) -> Result<(), String> {
+        match self.overlays.first() {
+            Some(o) => Err(format!(
+                "{what} needs the sheet's developed form, which {} does not have ({})",
+                o.feature,
+                match o.kind {
+                    SheetOverlayKind::Straight { .. } =>
+                        "a straight cut through a bend or an inclined panel",
+                    SheetOverlayKind::Change { .. } =>
+                        "a fillet or chamfer the material domains do not hold",
+                }
+            )),
+            None => Ok(()),
+        }
     }
 }
 
 /// Every replacement either supplies domains, deliberately transforms them,
 /// or invalidates them. Absence also invalidates an existing sheet entry.
+// (One change per changed body and feature: the size of a set state is not
+// worth a box at every construction site.)
+#[allow(clippy::large_enum_variant)]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", content = "value", rename_all = "snake_case")]
 pub enum SheetChange {
@@ -171,6 +244,9 @@ fn version(state: &SheetState) -> u128 {
     fp.finish()
 }
 
+const ORDINARY_MODELLING: &str =
+    "ordinary modelling replaced this body without a sheet-domain adapter";
+
 pub(crate) fn publish(
     states: &mut SheetStates,
     body: BodyUid,
@@ -180,21 +256,23 @@ pub(crate) fn publish(
     change: Option<&SheetChange>,
 ) {
     let previous = states.get(&body).map(|v| v.value.clone());
-    let next =
-        match change {
-            Some(SheetChange::Set(state)) => Some(state.clone()),
-            Some(SheetChange::Transform(t)) if t.is_rigid() => previous.map(|s| s.transformed(t)),
-            Some(SheetChange::Remove) => None,
-            _ => {
-                previous.map(|mut s| {
-                    s.invalidated = Some(SheetDiagnostic { feature, message: match change {
-                Some(SheetChange::Invalidate(message)) => message.clone(),
-                _ => "ordinary modelling replaced this body without a sheet-domain adapter".into(),
-            }});
-                    s
-                })
+    let next = match change {
+        Some(SheetChange::Set(state)) => Some(state.clone()),
+        Some(SheetChange::Transform(t)) if t.is_rigid() => previous.map(|s| s.transformed(t)),
+        Some(SheetChange::Remove) => None,
+        _ => previous.map(|mut s| {
+            // The operation that first took the sheet meaning away stays
+            // named (mitcad#211: the imports' notes name it).
+            if s.invalidated.is_none() {
+                let message = match change {
+                    Some(SheetChange::Invalidate(message)) => message.clone(),
+                    _ => ORDINARY_MODELLING.into(),
+                };
+                s.invalidated = Some(SheetDiagnostic { feature, message });
             }
-        };
+            s
+        }),
+    };
     if let Some(mut state) = next {
         state.body = body;
         state.owner = owner;
@@ -315,6 +393,7 @@ pub(crate) fn complete_changes<K: crate::kernel::Kernel>(
             state.joins.clear();
             state.opened.clear();
             state.lineage.clear();
+            state.overlays.clear();
             state.invalidated = Some(SheetDiagnostic {
                 feature: ctx.uid,
                 message: "a generic copy or split has no sheet-domain adapter".into(),
@@ -342,6 +421,10 @@ pub(crate) fn footprint<K: crate::kernel::Kernel>(
         bodies.extend(tool.participants);
     }
     let objects = match def {
+        F::SheetFace(d) => {
+            bodies.extend(d.body);
+            None
+        }
         F::SheetFlange(d) => {
             bodies.push(d.body);
             None

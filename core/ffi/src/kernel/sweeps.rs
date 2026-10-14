@@ -108,6 +108,9 @@ pub mod ffi {
         growth: f64,
         flip: bool,
         freecad: bool,
+        /// The start's flat and transition, the end's transition and flat
+        /// (radians; mitcad#235).
+        ends: [f64; 4],
     }
 
     /// The chains' curves one after another, `chains` holding how many each
@@ -423,6 +426,7 @@ pub fn helix(
         growth: spec.growth,
         flip: spec.flip,
         freecad: spec.freecad,
+        ends: spec.ends,
     };
     ffi::helix_solid(
         &spec.feature.to_string(),

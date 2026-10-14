@@ -137,6 +137,11 @@ rust::Vec<std::uint8_t> brep_data(const geometry::Shape& shape) {
   return out;
 }
 
+std::shared_ptr<geometry::Shape> adopt_body(rust::Str feature, const geometry::Shape& shape,
+                                            std::uint32_t first_face) {
+  return geometry::adopt_body(shape, std::string(feature), static_cast<int>(first_face));
+}
+
 std::shared_ptr<geometry::Shape> compound(const ShapeList& shapes) {
   std::vector<const geometry::Shape*> items;
   for (const auto& shape : shapes.items()) {
@@ -323,11 +328,11 @@ void f3d_bases_add(F3dBases& bases, const std::shared_ptr<F3dBuilt>& built) {
   }
 }
 
-std::shared_ptr<F3dBuilt> f3d_build_body_from(const f3d::BrepBodyData& data, const F3dBases& bases) {
+std::shared_ptr<F3dBuilt> f3d_build_body_from(const f3d::BrepBodyData& data, const F3dBases& bases, bool keep) {
   brep::BuildOptions options;
   options.measure = false;
   options.progress = [] { f3d_build_progress(); };
-  options.keep = true;
+  options.keep = keep;
   options.bases = bases.bases;
   const brep::BuildResult result = brep::build_body(to_body(data), options);
   if (result.report.out_of_memory) {

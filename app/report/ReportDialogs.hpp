@@ -110,12 +110,16 @@ class ReportPreviewDialog : public QDialog {
   Q_OBJECT
 
 public:
-  ReportPreviewDialog(const Report& report, const QImage& screenshot, const QString& destination, QWidget* parent);
+  // `logFile`: the latest debug log (mitcad#269), offered unchecked; "" none.
+  ReportPreviewDialog(const Report& report, const QImage& screenshot, const QString& destination, QWidget* parent,
+                      const QString& logFile = QString());
 
   // The report as edited, with the sections left out unchecked.
   Report report() const;
   // The screenshot when it is still included, else a null image.
   QImage screenshot() const;
+  // The debug log's file when the user checked it, else "".
+  QString logFile() const;
 
 protected:
   void showEvent(QShowEvent* event) override;
@@ -129,6 +133,8 @@ private:
   QList<QGroupBox*> m_boxes;
   QList<QPlainTextEdit*> m_texts;
   QGroupBox* m_screenshotBox = nullptr;
+  QString m_logFile;
+  QGroupBox* m_logFileBox = nullptr;
 };
 
 // Logs "<what> at x,y" for UI tests, in the main window's coordinates (the

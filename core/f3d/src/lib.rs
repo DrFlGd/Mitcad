@@ -11,6 +11,7 @@
 //! - [`convert`]: ASM bodies to the neutral model.
 //! - [`ogs`]: the display meshes saved with a document, an
 //!   independent check of the bodies.
+//! - [`protein`]: the appearance and material asset packages (mitcad#228).
 //! - [`design`]: the design segment's object streams (timeline, parameters,
 //!   sketches, features, components) decoded into the dump IR of
 //!   `core/import/SCHEMA.md`.
@@ -24,8 +25,10 @@ pub mod container;
 pub mod convert;
 pub mod design;
 pub mod flat;
+pub mod ids;
 pub mod names;
 pub mod ogs;
+pub mod protein;
 #[doc(hidden)]
 pub mod testdata;
 #[doc(hidden)]

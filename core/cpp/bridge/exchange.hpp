@@ -36,6 +36,8 @@ std::shared_ptr<geometry::Shape> import_brep(rust::Str feature, rust::Slice<cons
                                              std::uint32_t first_face);
 std::size_t face_count(const geometry::Shape& shape);
 rust::Vec<std::uint8_t> brep_data(const geometry::Shape& shape);
+std::shared_ptr<geometry::Shape> adopt_body(rust::Str feature, const geometry::Shape& shape,
+                                            std::uint32_t first_face);
 std::shared_ptr<geometry::Shape> compound(const ShapeList& shapes);
 BodyKind body_kind(const geometry::Shape& shape);
 
@@ -68,7 +70,7 @@ struct F3dBases {
 
 std::unique_ptr<F3dBases> f3d_bases();
 void f3d_bases_add(F3dBases& bases, const std::shared_ptr<F3dBuilt>& built);
-std::shared_ptr<F3dBuilt> f3d_build_body_from(const f3d::BrepBodyData& data, const F3dBases& bases);
+std::shared_ptr<F3dBuilt> f3d_build_body_from(const f3d::BrepBodyData& data, const F3dBases& bases, bool keep);
 std::shared_ptr<geometry::Shape> f3d_built_shape(const F3dBuilt& built);
 std::uint32_t f3d_built_reused(const F3dBuilt& built);
 bool f3d_built_kept(const F3dBuilt& built);

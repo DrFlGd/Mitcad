@@ -24,4 +24,17 @@ namespace mitcad {
 // fields are never logged. Without the variable nothing is installed.
 void installTypedTextLogIfRequested();
 
+// Key presses in the log, for the UI tests (MITCAD_LOG_KEYS=1; the Windows
+// UI test library sets it): "Key press: F9 with shift (native 120)", once
+// for each key press the application takes from the window system (a
+// shortcut it triggers included), with the modifiers it saw then (ctrl,
+// alt, shift, meta, in this order; "Key press: Return (native 13)" without
+// any) and the platform's key code. "Key log on" says it is installed.
+//
+// The Windows tests hold a key's modifiers in the keyboard state until
+// the key is logged: the application reads them when it handles the key,
+// which a model job's wait puts off (its event loop keeps the input for
+// later), so a fixed wait could release them too early (mitcad#271).
+void installKeyLogIfRequested();
+
 } // namespace mitcad

@@ -1529,6 +1529,9 @@ record! {
         "parameter_failures" => parameter_failures: u64,
         /// Paths of values that were not finite (written as `null`).
         "non_finite" => non_finite: Vec<String>,
+        /// The appearances and physical materials of the bodies, faces and
+        /// occurrences (mitcad#228).
+        "appearance" => appearance: AppearanceData,
     }
 }
 
@@ -1593,5 +1596,116 @@ record! {
         "decoded_bytes" => decoded_bytes: u64,
         /// Framing plus validated references and plausible strings.
         "token_bytes" => token_bytes: u64,
+    }
+}
+
+// Appearances and physical materials (mitcad#228, `super::appearance`).
+
+record! {
+    /// The appearances and physical materials the design gives its bodies,
+    /// faces and occurrences, with the assets they name.
+    pub struct AppearanceData {
+        /// The assets the bodies, faces and occurrences name, their
+        /// textures and their materials' aspects.
+        "assets" => assets: Vec<AssetDef>,
+        "bodies" => bodies: Vec<BodyLook>,
+        /// Face appearances kept as face references (class `BFB592FE`)
+        /// rather than in their body's record; [`super::appearance::resolve`]
+        /// moves those it finds to their bodies' `faces`.
+        "faces" => faces: Vec<FaceLook>,
+        /// Occurrences whose appearance overrides their bodies'.
+        "occurrences" => occurrences: Vec<OccurrenceLook>,
+        /// What did not decode or join.
+        "warnings" => warnings: Vec<String>,
+    }
+}
+
+record! {
+    /// An asset of the document's packages (`crate::protein`).
+    pub struct AssetDef {
+        /// The asset's GUID.
+        "id" => id: String,
+        /// `PrismOpaqueSchema`, `PhysMatSchema`, `UnifiedBitmapSchema`, ...
+        "schema" => schema: String,
+        /// The asset's name: a library preset (`Prism-093`) or its own id.
+        "name" => name: String,
+        "library" => library: String,
+        /// From the package's descriptions.
+        "ui_name" => ui_name: String,
+        "category" => category: String,
+        "description" => description: String,
+        /// Every property: booleans, numbers, strings, colours (RGBA
+        /// arrays), quantities (`{"unit": tag, "value": v}`), texture
+        /// paths (`{"kind", "paths"}`), references (null), lists.
+        "properties" => properties: BTreeMap<String, Value>,
+        /// The assets connected to properties (texture GUIDs).
+        "connections" => connections: BTreeMap<String, Vec<String>>,
+    }
+}
+
+record! {
+    /// A body's appearance and material.
+    pub struct BodyLook {
+        /// The body's design entity (its record's object id).
+        "entity" => entity: u64,
+        "name" => name: String,
+        /// The blob that holds the body (`BREP.<guid>.smbh`) and the body's
+        /// selector in it (the body map's).
+        "blob" => blob: String,
+        "selector" => selector: u64,
+        /// The body's ASM record in the blob (the selector resolved).
+        "record" => record: u64,
+        /// The appearance: the asset GUID the design names (its token), the
+        /// asset found for it, the library and preset named with it.
+        "appearance" => appearance: AssetRef,
+        /// The physical material.
+        "material" => material: AssetRef,
+        /// Faces with an appearance of their own.
+        "faces" => faces: Vec<FaceLook>,
+    }
+}
+
+record! {
+    /// How the design names an asset.
+    pub struct AssetRef {
+        /// The token: the asset GUID as written.
+        "token" => token: String,
+        "library" => library: String,
+        "preset" => preset: String,
+        /// The display name stored with it.
+        "display" => display: String,
+        /// The asset of the package it names (`assets[].id`).
+        "asset" => asset: String,
+    }
+}
+
+record! {
+    /// A face's own appearance.
+    pub struct FaceLook {
+        /// The GUID the face's B-rep attribute carries.
+        "guid" => guid: String,
+        "appearance" => appearance: AssetRef,
+        /// The colour stored with the assignment (RGBA).
+        "color" => color: [f64; 4],
+        /// The faces of the body that carry the GUID in the stored design
+        /// (a face split by later operations, each piece; their geometry
+        /// as for a feature's input, cm, in the component's coordinates).
+        "faces" => faces: Vec<Fingerprint>,
+        /// Why the face was not found.
+        "why" => why: String,
+        /// The face reference object it came from (none: its body's
+        /// record).
+        "object_id" => object_id: u64,
+    }
+}
+
+record! {
+    /// An occurrence's appearance override, or a component's own (no
+    /// occurrence: the root component's covers the whole design).
+    pub struct OccurrenceLook {
+        /// The occurrence object (`occurrences[]._f3d.object_id`).
+        "object_id" => object_id: u64,
+        "component" => component: u64,
+        "appearance" => appearance: AssetRef,
     }
 }

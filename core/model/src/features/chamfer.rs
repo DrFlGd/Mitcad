@@ -305,13 +305,18 @@ impl<K: Kernel> Evaluate<K> for ChamferDef {
     fn evaluate(&self, ctx: &mut EvalContext<'_, K>) -> Result<FeatureOutput<K::Shape>, String> {
         let sizes = self.sizes(ctx)?;
         let shape = ctx.body(self.body)?;
-        for set in &self.sets {
-            ctx.require_edges(self.body, &shape, &set.edges)?;
-            require_faces(ctx, self.body, &shape, &set.faces)?;
-            require_faces(ctx, self.body, &shape, set.reference_face.as_slice())?;
+        // The names the kernel gets: a face or edge a sketch change renamed
+        // is found again (mitcad#272); the definition keeps its names.
+        let mut found = self.clone();
+        for set in &mut found.sets {
+            set.edges = ctx.require_edges(self.body, &shape, &set.edges)?;
+            set.faces = require_faces(ctx, self.body, &shape, &set.faces)?;
+            if let Some(face) = &set.reference_face {
+                set.reference_face = Some(ctx.face_on(self.body, &shape, face)?);
+            }
         }
         let uid = ctx.uid;
-        let bevelled = self.apply(ctx, uid, &shape, sizes)?;
+        let bevelled = found.apply(ctx, uid, &shape, sizes)?;
         Ok(FeatureOutput {
             changes: vec![BodyChange::Set(self.body, bevelled)],
             ..FeatureOutput::default()

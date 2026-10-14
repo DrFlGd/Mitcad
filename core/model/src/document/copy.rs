@@ -501,9 +501,14 @@ impl DocState {
             let context = p
                 .expression_context()
                 .or_else(|| (!same_document).then_some(source.parameters.context()));
-            let spec = ParamSpec::user(&name, &expression, p.unit())
+            let mut spec = ParamSpec::user(&name, &expression, p.unit())
                 .with_comment(p.comment())
                 .with_expression_context(context);
+            // A copied sketch's driven dimensions keep read-only references
+            // (mitcad#231).
+            if owner.is_some() && p.kind() == crate::expr::ParamKind::Reference {
+                spec.kind = crate::expr::ParamKind::Reference;
+            }
             let new = self
                 .parameters
                 .add(spec, owner)

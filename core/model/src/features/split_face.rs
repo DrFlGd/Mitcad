@@ -98,11 +98,11 @@ impl FeatureInfo for SplitFaceDef {
 impl<K: Kernel> Evaluate<K> for SplitFaceDef {
     fn evaluate(&self, ctx: &mut EvalContext<'_, K>) -> Result<FeatureOutput<K::Shape>, String> {
         let shape = ctx.body(self.body)?;
-        require_faces(ctx, self.body, &shape, &self.faces)?;
+        let faces = require_faces(ctx, self.body, &shape, &self.faces)?;
         let tool = resolve_tool(ctx, &self.tool, self.offset, self.direction)?;
         let split = ctx
             .kernel
-            .split_faces(ctx.uid, &shape, &self.faces, &tool.input(), self.extend)
+            .split_faces(ctx.uid, &shape, &faces, &tool.input(), self.extend)
             .map_err(kernel_error)?;
         Ok(FeatureOutput {
             changes: vec![BodyChange::Set(self.body, split)],

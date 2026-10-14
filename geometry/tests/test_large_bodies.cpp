@@ -2,22 +2,33 @@
 // Operations on bodies of thousands of faces (mitcad#121): a boolean whose
 // targets OCCT's checker found valid checks only what it changed
 // (util.hpp, is_valid_where_changed) and gives the checker's answer on the
-// whole shape; a shape keeps its faces' kinds and areas; the optimal box
+// whole shape; a shape keeps its faces' kinds and areas and its edges'
+// middles and curves (mitcad#119); the optimal box
 // is its faces' boxes, found on all cores; and OCCT's face merge keeps a
-// chain of B-spline edges it cannot concatenate (the port's patch 0110).
+// chain of B-spline edges it cannot concatenate (the port's patch 0110);
+// the checker's statuses on faces of many wires and edges stay OCCT's
+// (patches 0120 and 0121, mitcad#119).
 
+#include <algorithm>
 #include <exception>
 #include <memory>
 #include <string>
 #include <vector>
 
+#include <BRepAdaptor_Surface.hxx>
 #include <BRepAlgoAPI_Fuse.hxx>
 #include <BRepBndLib.hxx>
 #include <BRepBuilderAPI_MakeEdge.hxx>
 #include <BRepBuilderAPI_MakeFace.hxx>
+#include <BRepBuilderAPI_MakePolygon.hxx>
+#include <BRepBuilderAPI_MakeWire.hxx>
 #include <BRepCheck_Analyzer.hxx>
+#include <BRepCheck_Face.hxx>
+#include <BRepCheck_Shell.hxx>
 #include <BRepPrimAPI_MakeCylinder.hxx>
 #include <BRepPrimAPI_MakeSphere.hxx>
+#include <BRepTools.hxx>
+#include <BRepTopAdaptor_FClass2d.hxx>
 #include <BRep_Builder.hxx>
 #include <BRep_Tool.hxx>
 #include <Bnd_Box.hxx>
@@ -46,6 +57,8 @@
 
 #include "../src/util.hpp"
 #include "check.hpp"
+#include "mitcad/geometry/datum.hpp"
+#include "mitcad/geometry/query.hpp"
 
 namespace test {
 namespace {
@@ -191,6 +204,154 @@ void test_faces_measured_once() {
   }
   // 2 x (100 x 100 - 64 holes) + 4 sides of 100 x 5 + 64 walls of 2 pi 2 x 5.
   CHECK_NEAR(area, 2.0 * (10000.0 - 64.0 * kPi * 4.0) + 2000.0 + 64.0 * 2.0 * kPi * 2.0 * 5.0);
+}
+
+// The edges' middles and curves are worked out once per shape (mitcad#119)
+// and the kept ones are the same as those worked out.
+void test_edges_measured_once() {
+  const ShapePtr plate = perforated_plate();
+  CHECK(plate->kept_edge_middles() == nullptr && plate->kept_edge_curves() == nullptr);
+  const std::vector<EdgeMiddle> middles = edge_middles(*plate);
+  const std::vector<CurveDescription> curves = edge_geometries(*plate);
+  CHECK(plate->kept_edge_middles() != nullptr && plate->kept_edge_curves() != nullptr);
+  CHECK(static_cast<int>(curves.size()) == plate->edge_count());
+  CHECK(!middles.empty());
+  const std::vector<EdgeMiddle> middles_again = edge_middles(*plate);
+  const std::vector<CurveDescription> curves_again = edge_geometries(*plate);
+  CHECK(middles.size() == middles_again.size() && curves.size() == curves_again.size());
+  for (std::size_t i = 0; i < middles.size() && i < middles_again.size(); ++i) {
+    CHECK(middles[i].name == middles_again[i].name && middles[i].length == middles_again[i].length);
+    CHECK(middles[i].point.Distance(middles_again[i].point) == 0.0);
+  }
+  for (std::size_t i = 0; i < curves.size() && i < curves_again.size(); ++i) {
+    CHECK(curves[i].type == curves_again[i].type && curves[i].radius == curves_again[i].radius);
+    CHECK(curves[i].start.Distance(curves_again[i].start) == 0.0);
+  }
+  // A copy of the shape keeps them; another shape works out its own.
+  const Shape copy = *plate;
+  CHECK(copy.kept_edge_middles() == plate->kept_edge_middles());
+  const ShapePtr other = perforated_plate();
+  CHECK(other->kept_edge_middles() == nullptr);
+}
+
+// Each face's box holds the face (its vertices and the points of a grid over
+// it), and is kept by the shape (mitcad#119).
+void test_face_boxes_hold_their_faces() {
+  const ShapePtr plate = perforated_plate();
+  const TopoDS_Shape ball = BRepPrimAPI_MakeSphere(gp_Pnt(50, 50, 5), 7.0).Shape();
+  const auto shape = std::make_shared<Shape>(fused(plate->occt(), ball));
+  CHECK(shape->kept_face_boxes() == nullptr);
+  const std::vector<std::array<double, 6>> boxes = face_boxes(*shape);
+  CHECK(shape->kept_face_boxes() != nullptr);
+  CHECK(static_cast<int>(boxes.size()) == shape->face_count());
+  const auto inside = [](const std::array<double, 6>& box, const gp_Pnt& p) {
+    return p.X() >= box[0] && p.Y() >= box[1] && p.Z() >= box[2] && p.X() <= box[3] && p.Y() <= box[4] &&
+           p.Z() <= box[5];
+  };
+  int bounded = 0;
+  for (int i = 0; i < shape->face_count() && i < static_cast<int>(boxes.size()); ++i) {
+    const std::array<double, 6>& box = boxes[static_cast<std::size_t>(i)];
+    bounded += box[3] - box[0] < 1e6 ? 1 : 0;
+    for (TopExp_Explorer it(shape->face(i), TopAbs_VERTEX); it.More(); it.Next()) {
+      CHECK(inside(box, BRep_Tool::Pnt(TopoDS::Vertex(it.Current()))));
+    }
+    const TopoDS_Face& face = shape->face(i);
+    double u0 = 0, u1 = 0, v0 = 0, v1 = 0;
+    BRepTools::UVBounds(face, u0, u1, v0, v1);
+    const BRepAdaptor_Surface surface(face);
+    const BRepTopAdaptor_FClass2d classifier(face, 1e-9);
+    for (int a = 0; a <= 12; ++a) {
+      for (int b = 0; b <= 12; ++b) {
+        const gp_Pnt2d uv(u0 + (u1 - u0) * a / 12.0, v0 + (v1 - v0) * b / 12.0);
+        if (classifier.Perform(uv) != TopAbs_OUT) {
+          CHECK(inside(box, surface.Value(uv.X(), uv.Y())));
+        }
+      }
+    }
+  }
+  // Planes, cylinders and the sphere all have boxes of their own.
+  CHECK(bounded == shape->face_count());
+}
+
+// A plane face of a 100 x 100 square with holes of radius 2 at the given
+// centres, each hole two arcs, the second one's range ending a rounding
+// error past 2 pi as edges of stored bodies do (the port's patch 0120).
+TopoDS_Face face_with_holes(const std::vector<gp_Pnt>& centres) {
+  BRepBuilderAPI_MakePolygon square;
+  square.Add(gp_Pnt(0, 0, 0));
+  square.Add(gp_Pnt(100, 0, 0));
+  square.Add(gp_Pnt(100, 100, 0));
+  square.Add(gp_Pnt(0, 100, 0));
+  square.Close();
+  BRepBuilderAPI_MakeFace face(gp_Pln(gp::XOY()), square.Wire());
+  BRep_Builder builder;
+  for (const gp_Pnt& centre : centres) {
+    const occ::handle<Geom_Circle> circle = new Geom_Circle(gp_Ax2(centre, gp::DZ()), 2.0);
+    const TopoDS_Edge first = BRepBuilderAPI_MakeEdge(circle, 0.0, kPi);
+    TopoDS_Edge second = BRepBuilderAPI_MakeEdge(circle, kPi, 2.0 * kPi);
+    builder.Range(second, kPi, 2.0 * kPi + 4e-15);
+    BRepBuilderAPI_MakeWire wire(first, second);
+    CHECK(wire.IsDone());
+    face.Add(TopoDS::Wire(wire.Wire().Reversed()));
+  }
+  CHECK(face.IsDone());
+  return face.Face();
+}
+
+// The check of how a face's wires lie inside one another gives OCCT's
+// statuses with the boxes of arcs whose ranges pass their circle's
+// parameters (patch 0120): holes inside the outline are fine, a hole outside
+// it is not.
+void test_wires_of_arcs_past_their_range_are_classified() {
+  std::vector<gp_Pnt> inside;
+  for (int i = 0; i < 9; ++i) {
+    for (int j = 0; j < 9; ++j) {
+      inside.emplace_back(10.0 + 10.0 * i, 10.0 + 10.0 * j, 0.0);
+    }
+  }
+  const occ::handle<BRepCheck_Face> good = new BRepCheck_Face(face_with_holes(inside));
+  CHECK(good->ClassifyWires() == BRepCheck_NoError);
+  std::vector<gp_Pnt> outside = inside;
+  outside.emplace_back(150.0, 50.0, 0.0);
+  const occ::handle<BRepCheck_Face> bad = new BRepCheck_Face(face_with_holes(outside));
+  CHECK(bad->ClassifyWires() == BRepCheck_InvalidImbricationOfWires);
+}
+
+// The shell's orientation check gives OCCT's statuses on a face of many
+// edges, whose edges' orientations it lists once (patch 0121): the
+// perforated plate's shell is well oriented; with a hole's wall or the top
+// face turned over, it is not.
+void test_the_orientation_of_a_shell_with_a_face_of_many_edges() {
+  const ShapePtr plate = perforated_plate();
+  TopoDS_Shape shell;
+  for (TopExp_Explorer it(plate->occt(), TopAbs_SHELL); it.More(); it.Next()) {
+    shell = it.Current();
+  }
+  CHECK(!shell.IsNull());
+  int most = 0;
+  for (TopExp_Explorer it(shell, TopAbs_FACE); it.More(); it.Next()) {
+    most = std::max(most, count(it.Current(), TopAbs_EDGE));
+  }
+  CHECK(most >= 64);
+  const occ::handle<BRepCheck_Shell> whole = new BRepCheck_Shell(TopoDS::Shell(shell));
+  CHECK(whole->Orientation() == BRepCheck_NoError);
+  // The same faces with one of them turned over: a hole's wall (few edges)
+  // or the face of most edges.
+  for (const bool large : {false, true}) {
+    BRep_Builder builder;
+    TopoDS_Shell turned;
+    builder.MakeShell(turned);
+    bool done = false;
+    for (TopExp_Explorer it(shell, TopAbs_FACE); it.More(); it.Next()) {
+      const int edges = count(it.Current(), TopAbs_EDGE);
+      const bool turn = !done && (large ? edges == most : edges < 8);
+      builder.Add(turned, turn ? it.Current().Reversed() : it.Current());
+      done = done || turn;
+    }
+    CHECK(done);
+    const occ::handle<BRepCheck_Shell> check = new BRepCheck_Shell(turned);
+    CHECK(check->Orientation() == BRepCheck_BadOrientationOfSubshape);
+  }
 }
 
 void test_optimal_box_is_occts() {
@@ -346,6 +507,12 @@ void large_body_tests() {
           test_the_check_where_changed_gives_the_whole_checks_answer);
   guarded("test_faces_measured_once", test_faces_measured_once);
   guarded("test_optimal_box_is_occts", test_optimal_box_is_occts);
+  guarded("test_edges_measured_once", test_edges_measured_once);
+  guarded("test_face_boxes_hold_their_faces", test_face_boxes_hold_their_faces);
+  guarded("test_wires_of_arcs_past_their_range_are_classified",
+          test_wires_of_arcs_past_their_range_are_classified);
+  guarded("test_the_orientation_of_a_shell_with_a_face_of_many_edges",
+          test_the_orientation_of_a_shell_with_a_face_of_many_edges);
   guarded("test_merge_keeps_a_chain_it_cannot_concatenate", test_merge_keeps_a_chain_it_cannot_concatenate);
   guarded("test_merge_keeps_lines_whose_pcurves_do_not_meet", test_merge_keeps_lines_whose_pcurves_do_not_meet);
 }

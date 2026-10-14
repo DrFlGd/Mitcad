@@ -324,7 +324,10 @@ ui_stop_app
 
 echo "--- Scene updates and overlays in depth"
 # The block, a smaller box beside it, and a sketch no feature uses (shown):
-# a circle on the ground under the block and one in front of it.
+# a circle on the ground under the block and one in front of it. The
+# circles are free (no fixed centre, no dimension): shown sketches keep
+# their constraint colours (mitcad#286), and only unconstrained geometry is
+# the blue the shots count.
 cat > "$WORK/two.json" << EOF
 [
   {"cmd": "sketch.create"},
@@ -337,8 +340,8 @@ cat > "$WORK/two.json" << EOF
     "extent": {"type": "distance", "distance": 15}, "operation": "new_body"}},
   {"cmd": "set_body_appearance", "uid": "F2.b0", "appearance": "paint_red"},
   {"cmd": "sketch.create"},
-  {"cmd": "sketch.add_circle", "sketch": "F5", "center": [30, 20], "diameter": 30},
-  {"cmd": "sketch.add_circle", "sketch": "F5", "center": [30, -25], "diameter": 14}
+  {"cmd": "sketch.circle", "sketch": "F5", "mode": "center", "center": [30, 20], "radius": 15},
+  {"cmd": "sketch.circle", "sketch": "F5", "mode": "center", "center": [30, -25], "radius": 7}
 ]
 EOF
 "$CLI" run "$WORK/two.json" --save "$WORK/two.mitcad" > "$WORK/cli.log" 2>&1 ||
@@ -368,7 +371,17 @@ expect_scene() {
 
 ui_start_app --open "$WORK/two.mitcad" --no-native-dialogs
 ui_expect_log "Opened $WORK/two.mitcad" "the two bodies opened"
-ui_step "hide the layout grid" ui_command "Layout Grid"
+ui_expect_log "Sketch colours: F5 0 fully constrained, 4 unconstrained" "the sketch's circles and centres are drawn unconstrained"
+# The view settings persist: the grid hidden by the first start stays
+# hidden; toggled on by a stale setting, it is toggled off again.
+ui_mark
+ui_step "toggle the layout grid" ui_command "Layout Grid"
+ui_expect_new "Layout grid " "the layout grid toggled"
+if tail -n +$((UI_MARK + 1)) "$UI_LOG" | grep -qF "Layout grid on"; then
+  ui_mark
+  ui_step "hide the layout grid" ui_command "Layout Grid"
+  ui_expect_new "Layout grid off" "the layout grid is hidden"
+fi
 shot shaded-sketch
 blue_shaded=$(blue_pixels shaded-sketch)
 [ "$blue_shaded" -gt 50 ] || ui_fail "the sketch is not drawn in the shaded view ($blue_shaded blue pixels)"

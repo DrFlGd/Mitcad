@@ -68,6 +68,8 @@
 //   wheel <x%> <y%> <notches> [mods]                 positive: away from you
 //   wheel-burst <x%> <y%> <notches> <count> [mods]   <count> wheel events of
 //                           <notches>, one per tick (a quick burst)
+//   trackpad-scroll <x%> <y%> <dx> <dy> <mods> [momentum]
+//                           pixel scroll through the viewer's wheel handler
 //   click-logged <regex> [button]       the last log line matching regex that
 //                           has "at <x>,<y>" ("Datum xy at ...", "Ribbon ...
 //                           at ...", "Panel <command> input <id> at ...")
@@ -107,6 +109,9 @@
 //   native-click-on-job <job> <id> arm one native button action on the next
 //                           matching actual jobStarted while modelBusy is
 //                           true, before progress-sheet/animation timing;
+//                           fails if the armed job never starts
+//   expect-picking-on-job <job> probe a visible body during the next actual
+//                           job: MoveTo must reject it without model reads;
 //                           fails if the armed job never starts
 //   native-type-now <id> <text> native edit without waiting for idleness;
 //                           these exercise preview cancellation and races
@@ -342,6 +347,9 @@ private:
   QMetaObject::Connection m_nativeJobClickConnection;
   QString m_nativeJobClickLabel;
   int m_nativeJobClickLine = 0;
+  QMetaObject::Connection m_jobPickConnection;
+  QString m_jobPickLabel;
+  int m_jobPickLine = 0;
 
   QPointer<QWidget> m_main;
   QPointer<QWidget> m_dialog; // the target of key, type and button; else the main window

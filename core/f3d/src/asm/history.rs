@@ -18,7 +18,7 @@
 //! - Bulletin pointers use the numbering of the entities, in which the
 //!   history section takes no numbers (see [`AsmFile::record_of`]).
 
-use std::collections::HashMap;
+use crate::ids::View;
 
 use super::file::AsmFile;
 use super::geom::{Cursor, GeomError, Result};
@@ -155,8 +155,8 @@ impl History {
     /// Entity -> record holding its data after rolling back the newest
     /// `steps` states (`None`: the entity did not exist yet). Entities not
     /// in the map are unchanged.
-    pub fn view(&self, steps: usize) -> HashMap<usize, Option<usize>> {
-        let mut view = HashMap::new();
+    pub fn view(&self, steps: usize) -> View {
+        let mut view = View::default();
         for state in self.states.iter().take(steps) {
             // A deleted entity (no `after`) needs nothing: its copy stands
             // for it.

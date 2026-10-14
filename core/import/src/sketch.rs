@@ -247,7 +247,7 @@ pub fn translate(detail: &SketchDetail, params: &ParamMap) -> SketchParts {
                 .and_then(|v| groups::concentric_dimension(d, &mut sk, v))
                 .map(|g| added.append(g))
                 .map_err(|e| format!("{kind}: {e}")),
-            _ => dimension(d, &ids, params, &sk.entities).map(|pair| dimensions.push(pair)),
+            _ => dimension(d, &ids, params, &sk.entities, sk.at).map(|pair| dimensions.push(pair)),
         };
         if let Err(reason) = result {
             dropped.push(format!("{}: {reason}", d.id.as_deref().unwrap_or("?")));
@@ -834,6 +834,7 @@ fn dimension(
     ids: &Ids,
     params: &ParamMap,
     entities: &HashMap<String, &Value>,
+    at: &HashMap<u32, [f64; 2]>,
 ) -> Result<(Value, Value), String> {
     let Some(kind) = d.dimension_type.as_deref() else {
         return Err("dimension type not decoded".to_owned());
@@ -886,7 +887,14 @@ fn dimension(
             _ => return Err("an offset dimension of unexpected entities".to_owned()),
         },
         "SketchAngularDimension" => match curves[..] {
-            [a, b] => json!({"type": "angle", "a": a, "b": b}),
+            [a, b] => {
+                let mut angle = json!({"type": "angle", "a": a, "b": b});
+                if let Some([reverse_a, reverse_b]) = angle_side(d, a, b, entities, at) {
+                    angle["reverse_a"] = json!(reverse_a);
+                    angle["reverse_b"] = json!(reverse_b);
+                }
+                angle
+            }
             _ => return Err("an angle needs two lines".to_owned()),
         },
         "SketchRadialDimension" | "SketchDiameterDimension" => match curves[..] {
@@ -954,6 +962,11 @@ fn dimension(
     }
     let mut driven = value.clone();
     driven["driven"] = json!(true);
+    // The file's parameter of a driven dimension is its reference
+    // (mitcad#250), not a parameter of its own.
+    if let Some(name) = driven_parameter(d, params) {
+        driven["reference"] = json!(name);
+    }
     match driving_value(d, kind, params)? {
         Some(v) => {
             // An ellipse's dimension that holds the whole axis: its radius
@@ -968,6 +981,43 @@ fn dimension(
         None => value = driven.clone(),
     }
     Ok((value, driven))
+}
+
+/// The side of an angle dimension between the lines `a` and `b`
+/// (mitcad#296): of the four sectors the lines' extensions make, the one
+/// the file shows its value in when that sector's angle is the file's
+/// value, else the neighbouring one nearer to it when the supplement is
+/// (the file's points are where its value holds). None when the file gives
+/// no value or neither angle is it (the model then takes the angle closer
+/// to the value, as for sketches stored without a side).
+fn angle_side(
+    d: &SketchDimension,
+    a: &str,
+    b: &str,
+    entities: &HashMap<String, &Value>,
+    at: &HashMap<u32, [f64; 2]>,
+) -> Option<[bool; 2]> {
+    let ends = |line: &str| {
+        let e = entities.get(line)?;
+        let point = |key: &str| {
+            let n = e[key].as_str()?.strip_prefix('p')?.parse::<u32>().ok()?;
+            at.get(&n).copied()
+        };
+        Some((point("start")?, point("end")?))
+    };
+    let parameter = d.parameter.clone().flatten();
+    let value = parameter
+        .as_ref()
+        .and_then(Reference::parameter)
+        .and_then(|p| p.value)
+        .or(d.value)?;
+    mitcad_model::sketch::geometry::angle_side_for(
+        ends(a)?,
+        ends(b)?,
+        value,
+        d.text_position.map(xy),
+        1e-3,
+    )
 }
 
 /// The value of a driving dimension: its parameter by its Mitcad name
@@ -998,6 +1048,42 @@ fn driving_value(
             json!(if angle { v } else { mm(v) })
         }
     }))
+}
+
+/// The Mitcad name of the parameter the file has for a dimension it keeps
+/// driven (mitcad#250); None for a driving one or one without a parameter
+/// that was created.
+fn driven_parameter(d: &SketchDimension, params: &ParamMap) -> Option<String> {
+    if d.is_driving != Some(false) {
+        return None;
+    }
+    let parameter = d.parameter.clone().flatten()?;
+    let name = parameter.parameter()?.name.clone()?;
+    params.get(&name).map(str::to_owned)
+}
+
+/// Whether a sketch definition names references of driven dimensions
+/// (mitcad#250).
+pub(crate) fn has_references(def: &Value) -> bool {
+    def["dimensions"]
+        .as_array()
+        .is_some_and(|list| list.iter().any(|d| d.get("reference").is_some()))
+}
+
+/// A sketch definition without its driven dimensions' references: the
+/// model gives them parameters of their own. An import falls back on it
+/// when the model refuses a file's parameter as a reference (one that a
+/// feature before the sketch uses).
+pub(crate) fn without_references(def: &Value) -> Value {
+    let mut def = def.clone();
+    if let Some(list) = def["dimensions"].as_array_mut() {
+        for d in list {
+            if let Some(map) = d.as_object_mut() {
+                map.remove("reference");
+            }
+        }
+    }
+    def
 }
 
 /// A sketch text (SCHEMA.md `Text`): content, height, position, angle,

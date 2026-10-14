@@ -12,7 +12,8 @@
 # They go through Qt's Windows platform plugin like real input: Qt
 # translates them into mouse and key events, and modifiers come from the
 # keyboard state the helpers set while attached to the app's input queue
-# (AttachThreadInput, SetKeyboardState).
+# (AttachThreadInput, SetKeyboardState), held until the app logs that it
+# took the key (MITCAD_LOG_KEYS).
 #
 # Limits in session 0: Qt cannot grab the mouse for a popup in a window
 # station without a visible desktop, so popups close as soon as they open:
@@ -30,6 +31,7 @@ $ErrorActionPreference = 'Stop'
 Add-Type -TypeDefinition @'
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using System.Runtime.InteropServices;
 using System.Text;
 using System.Text.RegularExpressions;
@@ -44,7 +46,7 @@ public static class UiInput {
     [DllImport("user32.dll")] static extern bool PostMessage(IntPtr hwnd, uint msg, IntPtr wparam, IntPtr lparam);
     [DllImport("user32.dll")] static extern uint MapVirtualKey(uint code, uint type);
     [DllImport("user32.dll")] static extern short VkKeyScan(char ch);
-    [DllImport("user32.dll")] static extern bool AttachThreadInput(uint attach, uint to, bool on);
+    [DllImport("user32.dll", SetLastError = true)] static extern bool AttachThreadInput(uint attach, uint to, bool on);
     [DllImport("user32.dll")] static extern bool GetKeyboardState(byte[] state);
     [DllImport("user32.dll")] static extern bool SetKeyboardState(byte[] state);
     [DllImport("kernel32.dll")] static extern uint GetCurrentThreadId();
@@ -88,22 +90,81 @@ public static class UiInput {
         return GetWindowThreadProcessId(hwnd, out pid);
     }
 
-    // The modifiers Qt reads with GetKeyState while it handles the next
-    // messages: the keyboard state of the input queue this thread shares
-    // with the app's GUI thread.
-    static void SetModifiers(IntPtr hwnd, bool ctrl, bool shift, bool alt) {
-        AttachThreadInput(GetCurrentThreadId(), ThreadOf(hwnd), true);
+    // What the last key's modifiers needed besides setting them once (an
+    // attach that failed, the state set again), for the test's output.
+    public static string Note = "";
+
+    static uint attachedFrom, attachedTo;
+
+    // This thread shares the input queue, and so the keyboard state, of the
+    // app's GUI thread while a key's modifiers are held: only then, as a
+    // thread that reads no messages of its own, attached for long, can stall
+    // the app's input (a whole key lost, mitcad#271). An attach that fails
+    // is tried once more and noted.
+    static void Attach(IntPtr hwnd) {
+        uint self = GetCurrentThreadId(), target = ThreadOf(hwnd);
+        if (attachedFrom == self && attachedTo == target) return;
+        Detach();
+        for (int attempt = 0; attempt < 2; attempt++) {
+            if (AttachThreadInput(self, target, true)) {
+                attachedFrom = self;
+                attachedTo = target;
+                return;
+            }
+            Note += "attaching thread " + self + " to the app's thread " + target + " failed (error " +
+                    Marshal.GetLastWin32Error() + "); ";
+            Sync(hwnd);
+        }
+    }
+
+    public static void Detach() {
+        if (attachedTo != 0) AttachThreadInput(attachedFrom, attachedTo, false);
+        attachedFrom = attachedTo = 0;
+    }
+
+    static byte[] Modified(bool ctrl, bool shift, bool alt) {
         var state = new byte[256];
         GetKeyboardState(state);
         state[VK_CONTROL] = state[VK_LCONTROL] = (byte)(ctrl ? 0x80 : 0);
         state[VK_SHIFT] = state[VK_LSHIFT] = (byte)(shift ? 0x80 : 0);
         state[VK_MENU] = state[VK_LMENU] = (byte)(alt ? 0x80 : 0);
-        SetKeyboardState(state);
+        return state;
+    }
+
+    // The modifiers held in the shared keyboard state now, as the app's key
+    // log names them ("ctrl+shift").
+    public static string Held() {
+        var state = new byte[256];
+        GetKeyboardState(state);
+        var held = new List<string>();
+        if ((state[VK_CONTROL] & 0x80) != 0) held.Add("ctrl");
+        if ((state[VK_MENU] & 0x80) != 0) held.Add("alt");
+        if ((state[VK_SHIFT] & 0x80) != 0) held.Add("shift");
+        return string.Join("+", held);
+    }
+
+    // The modifiers Qt reads with GetKeyState while it handles the next
+    // messages: the keyboard state of the input queue this thread shares
+    // with the app's GUI thread. Set, then the app's thread waited for
+    // (whatever it applies when it reads its messages is applied), and set
+    // again if it did not hold.
+    static void SetModifiers(IntPtr hwnd, bool ctrl, bool shift, bool alt) {
+        Attach(hwnd);
+        string wanted = string.Join("+", new[] { ctrl ? "ctrl" : null, alt ? "alt" : null, shift ? "shift" : null }
+                                         .Where(name => name != null));
+        for (int attempt = 0; attempt < 5; attempt++) {
+            SetKeyboardState(Modified(ctrl, shift, alt));
+            if (wanted.Length == 0) return;
+            Sync(hwnd);
+            string held = Held();
+            if (held == wanted) return;
+            Note += "the keyboard state lost " + wanted + " (held '" + held + "') before the key; set again; ";
+        }
     }
 
     static void ReleaseModifiers(IntPtr hwnd) {
         SetModifiers(hwnd, false, false, false);
-        AttachThreadInput(GetCurrentThreadId(), ThreadOf(hwnd), false);
+        Detach();
     }
 
     static bool Extended(int vk) {
@@ -123,16 +184,34 @@ public static class UiInput {
     // event loop makes the character of the key down.
     public static void Key(IntPtr hwnd, int vk, bool ctrl, bool shift, bool alt) {
         bool modified = ctrl || shift || alt;
-        if (modified) SetModifiers(hwnd, ctrl, shift, alt);
-        PostKey(hwnd, vk, alt);
+        Press(hwnd, vk, ctrl, shift, alt);
         if (modified) {
             // The state must hold until the app has taken the messages: a
             // busy app (a build beside the test) may take longer than the
-            // pause, so its thread is waited for too.
+            // pause, so its thread is waited for too. Not enough while the
+            // app waits for a model job (see Ui-Key): an app that logs its
+            // keys is waited for by the log.
             Thread.Sleep(120);
-            Sync(hwnd);
-            ReleaseModifiers(hwnd);
         }
+        Release(hwnd, modified);
+    }
+
+    // The first half of Key: the modifiers set in the keyboard state the app
+    // reads, and the key posted. Release, once the app has taken the key.
+    public static void Press(IntPtr hwnd, int vk, bool ctrl, bool shift, bool alt) {
+        Note = "";
+        if (ctrl || shift || alt) SetModifiers(hwnd, ctrl, shift, alt);
+        PostKey(hwnd, vk, alt);
+    }
+
+    public static void Release(IntPtr hwnd, bool modified) {
+        // Also without modifiers, the app takes the key before the test
+        // goes on: Qt takes the WM_CHAR that follows a key down as that
+        // key's text, so characters typed after a key the app had not yet
+        // handled (Tab, then 25, under load) would lose their first one
+        // (mitcad#255).
+        Sync(hwnd);
+        if (modified) ReleaseModifiers(hwnd);
     }
 
     const uint WM_NULL = 0, SMTO_NORMAL = 0;
@@ -146,6 +225,14 @@ public static class UiInput {
         SendMessageTimeout(hwnd, WM_NULL, IntPtr.Zero, IntPtr.Zero, SMTO_NORMAL, 10000, out result);
         Thread.Sleep(30);
         SendMessageTimeout(hwnd, WM_NULL, IntPtr.Zero, IntPtr.Zero, SMTO_NORMAL, 10000, out result);
+    }
+
+    const int VK_PAUSE = 0x13;
+
+    // The sync key (Ui-Sync): Pause down and up, which the app takes before
+    // its widgets do (framework/TestSync.hpp).
+    public static void SyncKey(IntPtr hwnd) {
+        PostKey(hwnd, VK_PAUSE, false);
     }
 
     const uint WM_CHAR = 0x102;
@@ -272,6 +359,13 @@ function Ui-StartApp([string]$Name, [string[]]$Arguments = @(), [switch]$Recover
   # What typed-in text fields hold ("File dialog Save As: <path>"), so a
   # failed run shows what a typed path or value became (mitcad#102).
   $env:MITCAD_LOG_TYPED_TEXT = '1'
+  # The keys the app takes, with the modifiers it saw ("Key press: F9 with
+  # shift (native 120)"): Ui-Key holds the modifiers until then (mitcad#271).
+  $env:MITCAD_LOG_KEYS = '1'
+  $script:UiKeyLog = $null
+  # The sync key's answers ("Sync <n>", Ui-Sync).
+  $env:MITCAD_TEST_SYNC = '1'
+  $script:UiSyncOn = $null
   # Settings in an INI file of the test's own, not the user's registry.
   $env:MITCAD_SETTINGS_DIR = $script:UiSettings
   # No update checks (mitcad#9): the tests make no network requests.
@@ -306,6 +400,7 @@ function Ui-StartApp([string]$Name, [string[]]$Arguments = @(), [switch]$Recover
 }
 
 function Ui-StopApp {
+  [UiInput]::Detach()
   if ($script:UiProcess) {
     if (-not $script:UiProcess.HasExited) {
       $script:UiProcess.Kill()
@@ -339,23 +434,56 @@ function Ui-Crashed { return $script:UiProcess.HasExited }
 # Ui-WaitIdle: waits (up to 60 s) until the app computes nothing: every job
 # that logged "Computing <label> started" (one that took over 50 ms; P7)
 # has logged its end. While a job's progress dialog shows, the window takes
-# no input, so UI steps wait first, as tools/ui-test-lib.sh does.
+# no input, so UI steps wait first, as tools/ui-test-lib.sh does. Idle is
+# confirmed by a sync (Ui-Sync): a job in its first 50 ms, or one a watched
+# timer is about to start (a preview after a change), has not logged its
+# start yet; input posted then waited in Qt's queue and went to the window
+# the job's progress dialog blocked, which dropped it (a click lost under
+# load, mitcad#271).
 function Ui-WaitIdle {
   for ($i = 0; $i -lt 300; $i++) {
-    $lines = Ui-LogLines
-    $started = @($lines | Where-Object { $_ -match 'Computing .* started$' }).Count
-    $ended = @($lines | Where-Object { $_ -match 'Computing .* (done in|cancelled after) [0-9]+ ms' }).Count
-    if ($started -le $ended) { return }
-    Start-Sleep -Milliseconds 200
+    if (Ui-Computing) { Start-Sleep -Milliseconds 200; continue }
+    Ui-Sync
+    if (-not (Ui-Computing)) { return }
   }
   Write-Host 'note: the app was still computing after 60 s'
 }
 
+function Ui-Computing {
+  $lines = Ui-LogLines
+  $started = @($lines | Where-Object { $_ -match 'Computing .* started$' }).Count
+  $ended = @($lines | Where-Object { $_ -match 'Computing .* (done in|cancelled after) [0-9]+ ms' }).Count
+  return $started -gt $ended
+}
+
+# Ui-Sync: posts the sync key (Pause) to the app and waits (up to 20 s) for
+# its answer "Sync <n>", which the app logs once the input before it is
+# handled and no watched timer runs (framework/TestSync.hpp, as ui_sync in
+# tools/ui-test-lib.sh). Nothing with an app that has no sync ("Test sync
+# on" not logged, as an earlier release in an update test).
+function Ui-Sync {
+  if (-not $script:UiProcess -or $script:UiProcess.HasExited) { return }
+  if ($null -eq $script:UiSyncOn) {
+    $script:UiSyncOn = [bool]((Ui-LogLines) | Where-Object { $_.Contains('Test sync on') })
+  }
+  if (-not $script:UiSyncOn) { return }
+  $before = @(Ui-LogLines | Where-Object { $_ -match '^Sync [0-9]+$' }).Count
+  [UiInput]::SyncKey($script:UiWindow)
+  for ($i = 1; $i -le 400; $i++) {
+    if (@(Ui-LogLines | Where-Object { $_ -match '^Sync [0-9]+$' }).Count -gt $before) { return }
+    if ($script:UiProcess.HasExited) { return }
+    Start-Sleep -Milliseconds 50
+  }
+  Write-Host 'note: no answer to the sync key in 20 s'
+}
+
 # Ui-Step "description" { action }: runs a UI action (once the app computes
-# nothing) and checks for crashes.
+# nothing), waits until the app has handled it (Ui-Sync) and checks for
+# crashes.
 function Ui-Step([string]$Name, [scriptblock]$Action) {
   Ui-WaitIdle
   & $Action
+  Ui-Sync
   Start-Sleep -Milliseconds 700
   if (Ui-Crashed) { Ui-Fail "crashed during '$Name' (exit code $($script:UiProcess.ExitCode))" }
   Write-Host "ok   $Name"
@@ -406,9 +534,65 @@ function Ui-Key([string[]]$Keys) {
     if ($script:UiKeys.ContainsKey($name)) { $vk = $script:UiKeys[$name] }
     elseif ($name.Length -eq 1) { $vk = [int][char]$name.ToUpperInvariant() }
     else { throw "unknown key '$name'" }
-    [UiInput]::Key($script:UiTarget, $vk, ($mods -contains 'ctrl'), ($mods -contains 'shift'), ($mods -contains 'alt'))
+    $ctrl = $mods -contains 'ctrl'
+    $shift = $mods -contains 'shift'
+    $alt = $mods -contains 'alt'
+    if (($ctrl -or $shift -or $alt) -and (Ui-KeyLogOn)) {
+      # The modifiers stay in the keyboard state until the app has taken the
+      # key: Qt reads them when it handles the key down, and while the app
+      # waits for a model job (MainWindow::waitForJob), its event loop keeps
+      # the input for later but answers Sync, so the modifiers went up
+      # before the key was handled, and Shift+F9 became F9 under load
+      # (mitcad#271).
+      $from = @(Ui-LogLines).Count - 1
+      [UiInput]::Press($script:UiTarget, $vk, $ctrl, $shift, $alt)
+      if ([UiInput]::Note) { Write-Host "note: '$spec': $([UiInput]::Note)" }
+      Ui-WaitKeyLogged $vk (@(@('ctrl', 'alt', 'shift') | Where-Object { $mods -contains $_ }) -join '+') $spec $from
+      [UiInput]::Release($script:UiTarget, $true)
+    } else {
+      [UiInput]::Key($script:UiTarget, $vk, $ctrl, $shift, $alt)
+      if ([UiInput]::Note) { Write-Host "note: '$spec': $([UiInput]::Note)" }
+    }
     Start-Sleep -Milliseconds 60
   }
+}
+
+# Ui-KeyLogOn: whether the app logs the keys it takes (MITCAD_LOG_KEYS; an
+# app before mitcad#271 does not, as an earlier release in an update test).
+function Ui-KeyLogOn {
+  if ($null -eq $script:UiKeyLog) {
+    $script:UiKeyLog = [bool]((Ui-LogLines) | Where-Object { $_.Contains('Key log on') })
+  }
+  return $script:UiKeyLog
+}
+
+# Ui-WaitKeyLogged vk modifiers spec from: waits (up to 60 s) for the app's
+# "Key press: <key> with <modifiers> (native <vk>)" after line <from>. The
+# same key with other modifiers fails the test unless the right line follows
+# within 5 s (the line of a key without modifiers sent just before, which
+# the app took late). A key the app never takes (one for a window a modal
+# dialog blocks, which Qt drops) ends the wait with a note.
+function Ui-WaitKeyLogged([int]$Vk, [string]$Modifiers, [string]$Spec, [int]$From) {
+  $pattern = "Key press: \S+(?: with ([a-z+]+))? \(native $Vk\)$"
+  $other = $null
+  $clock = [Diagnostics.Stopwatch]::StartNew()
+  while ($clock.ElapsedMilliseconds -lt 60000) {
+    $lines = @(Ui-LogLines)
+    for ($n = [Math]::Max(0, $From); $n -lt $lines.Count; $n++) {
+      $match = [regex]::Match($lines[$n], $pattern)
+      if (-not $match.Success) { continue }
+      if ($match.Groups[1].Value -eq $Modifiers) { return }
+      if ($null -eq $other) { $other = $lines[$n]; $seen = $clock.ElapsedMilliseconds }
+    }
+    if ($null -ne $other -and $clock.ElapsedMilliseconds - $seen -gt 5000) {
+      Ui-Fail ("'$Spec': the app took the key without the modifiers $Modifiers held: $other " +
+               "(the keyboard state holds '$([UiInput]::Held())' now)")
+    }
+    # A job keeps the key for later; without one, 10 s are enough.
+    if ($clock.ElapsedMilliseconds -gt 10000 -and -not (Ui-Computing)) { break }
+    Start-Sleep -Milliseconds 100
+  }
+  Write-Host "note: '$Spec': the app did not log the key within $([int]($clock.ElapsedMilliseconds / 1000)) s"
 }
 
 function Ui-Type([string]$Text) { [UiInput]::Type($script:UiTarget, $Text, 40) }
@@ -462,11 +646,21 @@ function Ui-ViewClick([double]$Px, [double]$Py, [int]$Button = 1) {
   Ui-Click $at[0] $at[1] $Button
 }
 
-# Ui-LoggedAt "text": the last "<text> at x,y" place.
+# Ui-LoggedAt "text": the last "<text> at x,y" place, waited for (up to
+# 6 s): a busy app (other tests beside it) may log it a moment after the
+# line the test waited for (mitcad#255).
 function Ui-LoggedAt([string]$Text) {
-  $line = Ui-LogLines | Where-Object { $_.Contains("$Text at ") } | Select-Object -Last 1
-  if ($line -notmatch ' at (\d+),(\d+)') { Ui-Fail "no place logged for '$Text'" }
-  return @([int]$Matches[1], [int]$Matches[2])
+  for ($i = 0; $i -lt 30; $i++) {
+    $line = Ui-LogLines | Where-Object { $_.Contains("$Text at ") } | Select-Object -Last 1
+    # "$line", not [string]$line: the .NET method gets null for the latter
+    # while nothing is logged yet, and the exception ended the script (the
+    # app, left running with ctest's output pipe, kept ctest waiting until
+    # its time-out).
+    $match = [regex]::Match("$line", ' at (\d+),(\d+)')
+    if ($match.Success) { return @([int]$match.Groups[1].Value, [int]$match.Groups[2].Value) }
+    Start-Sleep -Milliseconds 200
+  }
+  Ui-Fail "no place logged for '$Text'"
 }
 
 function Ui-ClickLogged([string]$Text, [int]$Button = 1) {

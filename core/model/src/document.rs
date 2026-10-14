@@ -60,6 +60,15 @@ mod policy;
 pub use policy::{PolicyItem, PolicyReport};
 // Moving an occurrence to another parent (mitcad#219).
 mod reparent;
+// Body edges and vertices in a sketch's plane (mitcad#256).
+mod plane_geometry;
+pub use plane_geometry::PlaneShape;
+// Features added many at once (the IFC import, mitcad#273).
+mod feature_batch;
+pub use feature_batch::FeatureBatch;
+// Extrude's automatic operation (mitcad#289).
+mod auto_operation;
+pub use auto_operation::AutoOperation;
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fmt;
@@ -357,6 +366,19 @@ impl DocState {
             created.extend(new);
             Ok(id)
         })?;
+        // Driven dimensions get their reference parameters (mitcad#231).
+        if let FeatureDef::Sketch(sketch) = &mut resolved {
+            let new = crate::sketch::edit::settle_references(
+                sketch,
+                params,
+                owner,
+                owner_name,
+                &|slot| old_slots.get(slot).copied(),
+                None,
+            )
+            .map_err(invalid)?;
+            created.extend(new);
+        }
         // A growing helix without a construction keeps the one it had, else
         // it is Mitcad's (mitcad#83).
         if let FeatureDef::Helix(helix) = &mut resolved {
@@ -429,6 +451,139 @@ impl DocState {
         let exists = self.position(owner).is_some();
         self.parameters
             .release(owner, exists, &|id| used.contains(&id));
+        // A reference whose driven dimension is gone keeps its last value
+        // as a user parameter (mitcad#231).
+        if exists {
+            let kept: BTreeSet<ParamId> = match self.entry(owner).map(|e| &e.def) {
+                Some(FeatureDef::Sketch(def)) => {
+                    def.dimensions.iter().filter_map(|d| d.reference).collect()
+                }
+                _ => BTreeSet::new(),
+            };
+            for id in self.parameters.owned_by(owner) {
+                if self.parameters.is_reference(id) && !kept.contains(&id) {
+                    self.parameters.set_owner(id, None);
+                }
+            }
+        }
+    }
+
+    /// Refuses uses of reference parameters (mitcad#231) the timeline gives
+    /// no value: a reference is known only after its sketch, so only the
+    /// features after it may use it, directly or through other parameters'
+    /// expressions.
+    pub(crate) fn check_reference_order(&self) -> Result<(), ModelError> {
+        // Each reference: its sketch's position and name, and its dimension.
+        let mut refs: HashMap<ParamId, (usize, &str, crate::sketch::ConstraintUid)> =
+            HashMap::new();
+        for (position, entry) in self.features.iter().enumerate() {
+            if let FeatureDef::Sketch(def) = &entry.def {
+                for d in &def.dimensions {
+                    if let Some(id) = d.reference {
+                        refs.insert(id, (position, entry.name.as_str(), d.id));
+                    }
+                }
+            }
+        }
+        if refs.is_empty() {
+            return Ok(());
+        }
+        let table = self.parameters.table();
+        // The references each parameter's value depends on, itself included.
+        let mut memo: HashMap<ParamId, BTreeSet<ParamId>> = HashMap::new();
+        let mut uses = |id: ParamId| -> BTreeSet<ParamId> {
+            if let Some(found) = memo.get(&id) {
+                return found.clone();
+            }
+            let mut found = BTreeSet::new();
+            let mut seen = BTreeSet::from([id]);
+            let mut todo = vec![id];
+            while let Some(p) = todo.pop() {
+                if refs.contains_key(&p) {
+                    found.insert(p);
+                }
+                for d in table.get(p).map(|p| p.dependencies()).unwrap_or_default() {
+                    if seen.insert(*d) {
+                        todo.push(*d);
+                    }
+                }
+            }
+            memo.insert(id, found.clone());
+            found
+        };
+        for (position, entry) in self.features.iter().enumerate() {
+            // What the feature uses: a sketch's own references are not uses.
+            let mut used = entry.def.params();
+            if let FeatureDef::Sketch(def) = &entry.def {
+                for r in def.dimensions.iter().filter_map(|d| d.reference) {
+                    if let Some(i) = used.iter().position(|p| *p == r) {
+                        used.swap_remove(i);
+                    }
+                }
+            }
+            for id in used {
+                for r in uses(id) {
+                    let (at, sketch, dimension) = refs[&r];
+                    if position <= at {
+                        let through = if id == r {
+                            String::new()
+                        } else {
+                            format!(" (through parameter '{}')", self.parameters.name(id))
+                        };
+                        let user = if position == at {
+                            format!("{sketch} itself")
+                        } else {
+                            format!("{}, before {sketch} in the timeline,", entry.name)
+                        };
+                        return Err(invalid(format!(
+                            "'{}' is what the driven dimension {dimension} of {sketch} measures: \
+                             {user} cannot use it{through}; only features after {sketch} can",
+                            self.parameters.name(r)
+                        )));
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Takes the values driven dimensions measured in a recompute into
+    /// their reference parameters (mitcad#231).
+    pub(crate) fn take_measured(&mut self, measured: &[(ParamId, f64)]) {
+        for (id, value) in measured {
+            let _ = self.parameters.set_measured(*id, *value);
+        }
+    }
+
+    /// Gives every sketch's driven dimensions their reference parameters,
+    /// as a design file read without them needs (mitcad#231).
+    pub(crate) fn settle_references(&mut self) -> Result<(), ModelError> {
+        for i in 0..self.features.len() {
+            let entry = &self.features[i];
+            let FeatureDef::Sketch(def) = &entry.def else {
+                continue;
+            };
+            let mut def = def.clone();
+            let (uid, name) = (entry.uid, entry.name.clone());
+            crate::sketch::edit::settle_references(
+                &mut def,
+                &mut self.parameters,
+                uid,
+                &name,
+                &|_| None,
+                None,
+            )
+            .map_err(invalid)?;
+            let FeatureDef::Sketch(old) = &self.features[i].def else {
+                continue;
+            };
+            if *old != def {
+                let mut entry = (*self.features[i]).clone();
+                entry.def = FeatureDef::Sketch(def);
+                self.features[i] = Arc::new(entry);
+            }
+        }
+        Ok(())
     }
 
     /// Refuses a unit for a parameter that a feature uses as another kind
@@ -731,6 +886,9 @@ pub(crate) fn resolve_value(
             value_to_expression(*number, unit)
         }
         ValueInput::Name(text) => {
+            if let Some((name, rest)) = split_named(text) {
+                return resolve_named(params, slot, unit, (name, rest), owner, comment, old);
+            }
             if let Some(id) = params.find(text.trim()) {
                 let param = params.get(id).expect("found");
                 if !fits_slot(param.unit(), unit) {
@@ -759,6 +917,62 @@ pub(crate) fn resolve_value(
     let id = params
         .add_dimension(&expression, unit, comment, Some(owner))
         .map_err(in_slot)?;
+    Ok((id, Some(params.name(id))))
+}
+
+/// The parameters an edit renamed, as (old name, new name): the same id
+/// under a new name, where the old name is gone and the new one was free.
+fn renamed_parameters(before: &Parameters, after: &Parameters) -> Vec<(String, String)> {
+    after
+        .table()
+        .iter()
+        .filter_map(|(id, p)| {
+            let old = before.get(id)?.name();
+            (old != p.name() && after.find(old).is_none() && before.find(p.name()).is_none())
+                .then(|| (old.to_owned(), p.name().to_owned()))
+        })
+        .collect()
+}
+
+/// Splits `name = expression` (mitcad#231): a single `=` after a word.
+/// Expressions compare with `==`, so a single `=` is never one of theirs.
+pub(crate) fn split_named(text: &str) -> Option<(&str, &str)> {
+    let at = text.find('=')?;
+    if text[at + 1..].starts_with('=') {
+        return None;
+    }
+    let name = text[..at].trim();
+    let word = !name.is_empty() && name.chars().all(|c| c.is_alphanumeric() || c == '_');
+    word.then_some((name, text[at + 1..].trim()))
+}
+
+/// `name = expression` in a slot: the slot's own parameter (or the one it
+/// uses, when that has the name) is renamed and takes the expression, or a
+/// new dimension parameter of that name is made. A name another parameter
+/// has, or an invalid one, is refused.
+fn resolve_named(
+    params: &mut Parameters,
+    slot: &str,
+    unit: Unit,
+    (name, expression): (&str, &str),
+    owner: FeatureUid,
+    comment: &str,
+    old: Option<&ParamId>,
+) -> Result<(ParamId, Option<String>), ModelError> {
+    let in_slot = |e: ParameterError| invalid(format!("{slot}: {e}"));
+    if expression.is_empty() {
+        return Err(invalid(format!("{slot}: '{name} =' needs a value")));
+    }
+    let target = old
+        .copied()
+        .filter(|id| params.owner(*id) == Some(owner) || params.name(*id) == name);
+    if let Some(id) = target {
+        params.rename(id, name).map_err(in_slot)?;
+        params.set_expression(id, expression).map_err(in_slot)?;
+        return Ok((id, None));
+    }
+    let spec = ParamSpec::model(name, expression, unit).with_comment(comment);
+    let id = params.add(spec, Some(owner)).map_err(in_slot)?;
     Ok((id, Some(params.name(id))))
 }
 
@@ -1068,6 +1282,7 @@ impl<K: Kernel> Document<K> {
     pub fn try_recompute(&mut self) -> Result<RecomputeStats, ModelError> {
         let monitor = self.monitor.as_ref();
         let result = recompute(&self.kernel, &self.state, &mut self.cache, monitor)?;
+        self.state.take_measured(&result.measured);
         self.set_result(result);
         Ok(self.stats())
     }
@@ -1239,6 +1454,21 @@ impl<K: Kernel> Document<K> {
     /// The cache and the last recompute, for diagnostics (`api/cache.rs`).
     pub(crate) fn cache(&self) -> &Cache<K::Shape> {
         &self.cache
+    }
+
+    /// Runs `apply` with base features' B-rep data known as written from
+    /// the shapes beside it, which their evaluations then adopt
+    /// (mitcad#244, [`crate::kernel::Kernel::adopt_shape`]); forgotten
+    /// after it, so later evaluations read the data.
+    pub(crate) fn with_written_from<T>(
+        &mut self,
+        written_from: Vec<(crate::features::Brep, K::Shape)>,
+        apply: impl FnOnce(&mut Self) -> T,
+    ) -> T {
+        self.cache.written_from = written_from;
+        let result = apply(self);
+        self.cache.written_from = Vec::new();
+        result
     }
 
     pub(crate) fn last_result(&self) -> &Recomputed<K::Shape> {
@@ -1551,8 +1781,20 @@ impl<K: Kernel> Document<K> {
     ) -> Result<T, ModelError> {
         let mut next = self.state.clone();
         let (label, value, recompute) = edit(&mut next)?;
+        // Configurations follow renames, also those a value slot's
+        // `name = expression` made (mitcad#231).
+        if next.parameters != self.state.parameters {
+            for (old, new) in renamed_parameters(&self.state.parameters, &next.parameters) {
+                next.configurations
+                    .rename_parameter(&old, &new)
+                    .map_err(invalid)?;
+            }
+        }
         // Nothing that breaks the design policy is added (mitcad#220).
         self.check_policy(&next)?;
+        // Driven dimensions' references are used only after their sketches
+        // (mitcad#231).
+        next.check_reference_order()?;
         // Parameters can disappear with their owning features or
         // components, or change units or dependencies. Keep every saved
         // configuration applicable before committing any such edit.
@@ -1574,6 +1816,7 @@ impl<K: Kernel> Document<K> {
         };
         if let Some(result) = &result {
             check(&next, result)?;
+            next.take_measured(&result.measured);
         }
         // An edited definition that builds clears its import note
         // (mitcad#170).
@@ -1651,8 +1894,12 @@ impl<K: Kernel> Document<K> {
         let component = component.unwrap_or(self.state.assembly.active);
         self.state.editable(component)?;
         self.check_profiles(def)?;
+        // A new component of a component that takes none goes beside it
+        // (mitcad#292).
+        let beside = self.component_parent_beside(component);
         self.apply(|state| {
             let added = state.add_feature_in(def, name, component)?;
+            state.place_made_beside(added.uid, None, beside);
             Ok((format!("Add {}", added.name), added))
         })
     }
@@ -1668,8 +1915,10 @@ impl<K: Kernel> Document<K> {
             self.state.editable(entry.component)?;
         }
         self.check_profiles(def)?;
+        let (made, beside) = self.made_and_beside(uid);
         self.apply(|state| {
             let created = state.edit_feature(uid, def)?;
+            state.place_made_beside(uid, made, beside);
             let name = state.entry(uid).expect("edited").name.clone();
             Ok((format!("Edit {name}"), created))
         })
@@ -1905,11 +2154,8 @@ impl<K: Kernel> Document<K> {
     pub fn rename_parameter(&mut self, name: &str, new_name: &str) -> Result<(), ModelError> {
         let id = self.param_id(name)?;
         self.apply_with(|state| {
+            // Configurations follow in `apply_inner`.
             state.parameters.rename(id, new_name)?;
-            state
-                .configurations
-                .rename_parameter(name, new_name)
-                .map_err(invalid)?;
             Ok((format!("Rename {name} to {new_name}"), (), false))
         })
     }
@@ -2508,8 +2754,10 @@ impl<K: Kernel> Document<K> {
         name: Option<&str>,
     ) -> Result<PreviewReport, ModelError> {
         self.check_profiles(def)?;
+        let beside = self.component_parent_beside(self.state.assembly.active);
         let mut state = self.state.clone();
         let added = state.add_feature(def, name)?;
+        state.place_made_beside(added.uid, None, beside);
         self.preview_state(state, added.uid)
     }
 
@@ -2520,8 +2768,10 @@ impl<K: Kernel> Document<K> {
         def: &FeatureDef<ValueInput>,
     ) -> Result<PreviewReport, ModelError> {
         self.check_profiles(def)?;
+        let (made, beside) = self.made_and_beside(uid);
         let mut state = self.state.clone();
         state.edit_feature(uid, def)?;
+        state.place_made_beside(uid, made, beside);
         self.preview_state(state, uid)
     }
 

@@ -65,6 +65,14 @@ public:
   void setLockText(const QString& text);
   void setLiveText(const QString& text);
   void setLockActions(const QList<QAction*>& actions);
+  // Agents connected through live MCP (mitcad#265): "Agent connected" ("" none)
+  // and its entries at the end of the menu (Disconnect Agent).
+  void setAgentText(const QString& text);
+  void setAgentActions(const QList<QAction*>& actions);
+  // The debug log (mitcad#269): "Debug log on" ("" off) with its tooltip, and
+  // its entries at the end of the menu (Open Log Folder, Turn Off Debug Log).
+  void setDebugLog(const QString& text, const QString& tip);
+  void setDebugLogActions(const QList<QAction*>& actions);
 
   const ProjectState& project() const { return m_project; }
   // The text shown, and the one logged ("bracket, cloud, synced").
@@ -91,6 +99,11 @@ private:
   QString m_lockText;
   QString m_liveText;
   QList<QPointer<QAction>> m_lockActions;
+  QString m_agentText;
+  QList<QPointer<QAction>> m_agentActions;
+  QString m_debugLogText;
+  QString m_debugLogTip;
+  QList<QPointer<QAction>> m_debugLogActions;
   QMenu* m_menu = nullptr;
   QString m_logged;
   QString m_loggedPlace;

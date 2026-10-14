@@ -28,6 +28,9 @@ public:
     std::function<void()> accepted;
     std::function<void()> rejected;
     std::function<void()> detached;
+    // A value field took the keyboard or lost it (mitcad#250: the view's
+    // labels then put parameter names into it).
+    std::function<void(const QString&, bool)> valueFocused;
   };
 
   virtual ~CommandPresenter() {
@@ -55,6 +58,14 @@ public:
   virtual QColor colorOf(const QString& key) const = 0;
   virtual bool focusFirstValue() = 0;
   virtual bool focusValue(const QString& key) = 0;
+  // Inserts text (a parameter's name) at a value field's cursor, gives the
+  // field the keyboard again and reports the edit as typed text
+  // (textEdited); false when the field is not shown (mitcad#250).
+  virtual bool insertIntoValue(const QString& /*key*/, const QString& /*text*/) { return false; }
+  // What the controls show, for live MCP (mitcad#265): `message` (the status
+  // line), `result` (an inspection's answer), `ok_enabled` and `notes` (by
+  // input key: `error` or `hint`). Empty when the frontend cannot tell.
+  virtual QJsonObject shownState() const { return {}; }
   virtual void logLayout() const = 0;
 
 private:

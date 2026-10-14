@@ -40,6 +40,8 @@ pub use parts::item_parts;
 mod patterns;
 // Box, cylinder, sphere, torus and coil primitives (mitcad#25).
 mod primitives;
+// Sheet-metal flanges and the sheet-metal rule (mitcad#211).
+mod sheet;
 
 /// Helpers for the decoder's tests.
 #[cfg(test)]
@@ -2954,6 +2956,8 @@ impl Builder<'_> {
             })),
             // The choices, plane and placement (mitcad#25).
             Some("CoilFeature") => self.coil(it),
+            // Base and edge flanges (mitcad#211).
+            None if it.class == sheet::FLANGE => self.flange(it, &rl),
             Some("PipeFeature") => {
                 let mut x = PipeDetail {
                     section_size: pr("SectionSize"),

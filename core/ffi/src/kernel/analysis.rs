@@ -186,6 +186,12 @@ pub mod ffi {
             after: &Shape,
             count: usize,
         ) -> Result<Vec<AnalysisNewFace>>;
+        /// The volume a change makes from the faces it changed and its
+        /// slack from their edges (mitcad#235).
+        fn analysis_changed_volume(before: &ShapeList, after: &ShapeList) -> Result<Vec<f64>>;
+        /// A box that holds each face (x, y, z minimum, then maximum), in
+        /// the shape's face order (mitcad#119).
+        fn analysis_face_boxes(shape: &Shape) -> Result<Vec<f64>>;
     }
 }
 

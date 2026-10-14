@@ -6,7 +6,7 @@
 //! and the solution is stored. A sketch that no longer solves rejects the
 //! edit, as an over-constraining constraint is refused.
 
-use super::solve::{SketchStatus, Solved, measure_in};
+use super::solve::{SketchStatus, Solved, SolverItem, measure_in};
 use super::{
     Constraint, ConstraintKind, ConstraintUid, Dimension, DimensionKind, Entity, EntityKind, Ref,
 };
@@ -197,6 +197,7 @@ impl<'a> SketchEdit<'a> {
             id,
             kind,
             value: None,
+            reference: None,
             text: None,
         };
         if !driven {
@@ -245,6 +246,95 @@ impl<'a> SketchEdit<'a> {
         Ok(())
     }
 
+    /// Makes room for a new constraint `new` that is only partly implied
+    /// (mitcad#287): when it raised the redundant count above `before`'s
+    /// (the status before the command) and removing older geometric
+    /// constraints of the new redundant sets brings the count back while
+    /// the new one still takes a degree of freedom away, those are removed
+    /// as the user's last intent replaces them, and returned. Never a
+    /// dimension, a fixed entity, an equal spacing or a constraint on
+    /// projected geometry (the link that holds the sketch to the model).
+    /// Otherwise nothing changes and the result is empty: a contradiction
+    /// fails the solve, and a constraint the others imply in full is
+    /// refused by [`SketchEdit::require_needed`] as before.
+    pub fn drop_implied(&mut self, new: ConstraintUid, before: &SketchStatus) -> Vec<Constraint> {
+        let limit = before.redundant.len();
+        let Ok(solved) = self.solved() else {
+            return Vec::new();
+        };
+        let mut status = solved.status;
+        // (index in the list when taken, constraint), in order.
+        let mut taken: Vec<(usize, Constraint)> = Vec::new();
+        while status.redundant.len() > limit {
+            let mut progress = None;
+            for k in self.implied_candidates(new, &status, before) {
+                let Some(i) = self.def.constraints.iter().position(|c| c.id == k) else {
+                    continue;
+                };
+                let c = self.def.constraints.remove(i);
+                match self.solved() {
+                    Ok(s) if s.status.redundant.len() < status.redundant.len() => {
+                        progress = Some((i, c, s.status));
+                        break;
+                    }
+                    _ => self.def.constraints.insert(i, c),
+                }
+            }
+            let Some((i, c, next)) = progress else {
+                break;
+            };
+            taken.push((i, c));
+            status = next;
+        }
+        if taken.is_empty() || status.redundant.len() > limit || status.dof >= before.dof {
+            for (i, c) in taken.into_iter().rev() {
+                self.def.constraints.insert(i, c);
+            }
+            return Vec::new();
+        }
+        let removed: Vec<Constraint> = taken.into_iter().map(|(_, c)| c).collect();
+        for c in &removed {
+            self.report.removed.push(c.id.to_string());
+        }
+        removed
+    }
+
+    /// The constraints [`SketchEdit::drop_implied`] may remove: the older
+    /// geometric constraints in the redundant sets that were not there
+    /// before, in id order.
+    fn implied_candidates(
+        &self,
+        new: ConstraintUid,
+        status: &SketchStatus,
+        before: &SketchStatus,
+    ) -> Vec<ConstraintUid> {
+        let mut found = std::collections::BTreeSet::new();
+        for set in status
+            .redundant_sets
+            .iter()
+            .filter(|set| !before.redundant_sets.contains(set))
+        {
+            for item in set {
+                let SolverItem::Constraint(k) = *item else {
+                    continue;
+                };
+                if k == new {
+                    continue;
+                }
+                // Dimensions are not in the constraint list.
+                let Some(c) = self.def.constraints.iter().find(|c| c.id == k) else {
+                    continue;
+                };
+                let removable = !matches!(c.kind, ConstraintKind::EqualSpacing { .. })
+                    && !c.kind.refs().iter().any(|r| self.projected(r.uid()));
+                if removable {
+                    found.insert(k);
+                }
+            }
+        }
+        found.into_iter().collect()
+    }
+
     /// Checks the values, solves from the edited positions and stores the
     /// solution.
     pub fn finish(mut self) -> Result<(SketchDef, EditReport), String> {
@@ -270,6 +360,16 @@ impl<'a> SketchEdit<'a> {
             }
             self.report.status = solved.status;
         }
+        let status = self.solve.then_some(&self.report.status);
+        let created = settle_references(
+            &mut self.def,
+            self.params,
+            self.owner,
+            &self.owner_name,
+            &|_| None,
+            status,
+        )?;
+        self.report.parameters.extend(created);
         Ok((self.def, self.report))
     }
 
@@ -369,4 +469,103 @@ impl<'a> SketchEdit<'a> {
         )?;
         Ok(ids[0])
     }
+}
+
+/// What a reference parameter's comment ends in: `Sketch1 length (driven)`.
+pub(crate) const DRIVEN_SUFFIX: &str = " (driven)";
+
+/// Gives every driven dimension its read-only reference parameter
+/// (mitcad#231) and takes it from driving ones: a reference the sketch
+/// owns is kept (`old` gives the one a slot had before an edit that left
+/// it out), a user parameter the definition names as the reference becomes
+/// the sketch's (mitcad#250: an importer's parameter of a driven dimension
+/// of the file), else the next free `d<n>` is made, commented `Sketch1
+/// length (driven)`. With `measured` (the solved status), references take
+/// the values their dimensions measure. Returns the names of new
+/// parameters.
+pub(crate) fn settle_references(
+    def: &mut SketchDef,
+    params: &mut Parameters,
+    owner: FeatureUid,
+    owner_name: &str,
+    old: &dyn Fn(&str) -> Option<ParamId>,
+    measured: Option<&SketchStatus>,
+) -> Result<Vec<String>, String> {
+    let mut taken = std::collections::BTreeSet::new();
+    let mut created = Vec::new();
+    for d in &mut def.dimensions {
+        if d.value.is_some() {
+            d.reference = None;
+            continue;
+        }
+        let slot = d.slot();
+        if let Some(id) = d.reference.filter(|id| {
+            params.get(*id).is_some() && params.owner(*id).is_none() && !taken.contains(id)
+        }) {
+            let comment = format!("{owner_name} {}{DRIVEN_SUFFIX}", d.kind.type_name());
+            adopt_reference(params, id, owner, &comment).map_err(|e| format!("{slot}: {e}"))?;
+        }
+        let usable = |id: ParamId| {
+            params.get(id).is_some() && params.owner(id) == Some(owner) && !taken.contains(&id)
+        };
+        let id = match d
+            .reference
+            .filter(|id| usable(*id))
+            .or_else(|| old(&slot).filter(|id| usable(*id) && params.is_reference(*id)))
+        {
+            Some(id) => {
+                params.set_kind(id, crate::expr::ParamKind::Reference);
+                id
+            }
+            None => {
+                let unit = match crate::parameters::slot_unit(&slot) {
+                    crate::expr::Unit::MM => {
+                        crate::expr::Unit::of_length(params.context().default_length_unit)
+                    }
+                    unit => unit,
+                };
+                let value = measured
+                    .and_then(|s| s.driven.get(&d.id).copied())
+                    .unwrap_or(0.0);
+                let comment = format!("{owner_name} {}{DRIVEN_SUFFIX}", d.kind.type_name());
+                let id = params
+                    .add_reference(value, unit, &comment, owner)
+                    .map_err(|e| format!("{slot}: {e}"))?;
+                created.push(params.name(id));
+                id
+            }
+        };
+        taken.insert(id);
+        d.reference = Some(id);
+        if let Some(value) = measured.and_then(|s| s.driven.get(&d.id)) {
+            let differs = params
+                .value(id)
+                .is_none_or(|v| v.to_bits() != value.to_bits());
+            if differs {
+                params
+                    .set_measured(id, *value)
+                    .map_err(|e| format!("{slot}: {e}"))?;
+            }
+        }
+    }
+    Ok(created)
+}
+
+/// Makes a user parameter a sketch's reference (mitcad#250): owned by the
+/// sketch, read-only, its expression its value as a number until the sketch
+/// measures it; a parameter without a comment gets the reference's.
+fn adopt_reference(
+    params: &mut Parameters,
+    id: ParamId,
+    owner: FeatureUid,
+    comment: &str,
+) -> Result<(), crate::parameters::ParameterError> {
+    let value = params.value(id).unwrap_or(0.0);
+    params.set_owner(id, Some(owner));
+    params.set_kind(id, crate::expr::ParamKind::Reference);
+    params.set_measured(id, value)?;
+    if params.get(id).is_some_and(|p| p.comment().is_empty()) {
+        params.set_comment(id, comment)?;
+    }
+    Ok(())
 }

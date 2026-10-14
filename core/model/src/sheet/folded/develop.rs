@@ -820,6 +820,7 @@ pub(crate) fn unfold<K: Kernel>(
     ctx: &mut EvalContext<'_, K>,
 ) -> Result<FeatureOutput<K::Shape>, String> {
     let (mut state, rules) = read(ctx, d.body)?;
+    state.overlay_refusal("sheet Unfold")?;
     if d.bends.is_empty() {
         return Err("sheet Unfold needs an explicit nonempty set of bends".into());
     }
@@ -858,6 +859,7 @@ pub(crate) fn refold<K: Kernel>(
     ctx: &mut EvalContext<'_, K>,
 ) -> Result<FeatureOutput<K::Shape>, String> {
     let (mut state, rules) = read(ctx, d.body)?;
+    state.overlay_refusal("sheet Refold")?;
     let owned: Vec<OpenedBend> = state
         .opened
         .iter()

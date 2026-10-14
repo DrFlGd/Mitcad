@@ -3,6 +3,7 @@
 
 // Measurements and descriptions of shapes.
 
+#include <array>
 #include <string>
 #include <vector>
 
@@ -74,6 +75,15 @@ struct EdgeMiddle {
 // gives for each edge alone, in one pass (.f3d import, T1d).
 std::vector<EdgeMiddle> edge_middles(const Shape& shape);
 
+// A box {xmin, ymin, zmin, xmax, ymax, zmax} that holds each face, in the
+// shape's face order, worked out once per shape on all cores: no point of
+// a face lies outside its box, so a point farther than a distance from the
+// box is farther from the face (the .f3d import's face lookups through a
+// point, which measured the point's distance from every face of a body of
+// 23 000 faces, mitcad#119). Faces whose surfaces bound no such box (offset,
+// swept and other surfaces) get an unbounded one.
+std::vector<std::array<double, 6>> face_boxes(const Shape& shape);
+
 // Points inside a face, spread over it: the middles of the cells of a grid
 // over its parameters that lie inside it, at most `count`.
 struct FacePoints {
@@ -99,5 +109,19 @@ struct NewFace {
 // mitcad#138.)
 std::vector<NewFace> new_faces(const std::vector<TopoDS_Shape>& before, const TopoDS_Shape& after,
                                int count);
+
+// The volume a change makes as the faces it changed bound it (mm³): the
+// faces of `after` that `before` does not have, as new_faces tells them,
+// less those of `before` that `after` does not have, integrated about the
+// centre of their boxes; and how uncertain that is from those faces'
+// edges (a third of each edge's length times its tolerance beyond 1e-7 mm
+// times its distance from that centre). (.ipt import: the check of an
+// item's change, mitcad#235.)
+struct ChangedVolume {
+  double volume = 0.0;
+  double slack = 0.0;
+};
+
+ChangedVolume changed_volume(const std::vector<TopoDS_Shape>& before, const std::vector<TopoDS_Shape>& after);
 
 } // namespace mitcad::geometry

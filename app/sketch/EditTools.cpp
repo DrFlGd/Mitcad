@@ -4,8 +4,12 @@
 // is placed) and the geometric constraints.
 #include <algorithm>
 #include <cmath>
+#include <limits>
+#include <tuple>
+#include <utility>
 #include <vector>
 
+#include <QHash>
 #include <QObject>
 #include <QtLogging>
 
@@ -118,7 +122,8 @@ public:
     QJsonObject cmd = op.command(m_extend ? QStringLiteral("sketch.extend") : QStringLiteral("sketch.trim"));
     cmd.insert(QStringLiteral("curve"), curve);
     cmd.insert(QStringLiteral("at"), xy(on));
-    if (!op.run(cmd)) {
+    QJsonObject result;
+    if (!op.run(cmd, &result)) {
       const QString reason = op.error();
       op.rollback();
       m_c.error(QObject::tr("%1: %2").arg(name(), reason));
@@ -127,9 +132,12 @@ public:
     op.commit();
     m_curve.clear();
     m_c.setHover(QString());
-    qDebug().noquote() << QStringLiteral("%1 %2 at %3")
+    // An end that reached an existing point joined it (mitcad#259).
+    const QString joined = result.value(QStringLiteral("joined")).toString();
+    qDebug().noquote() << QStringLiteral("%1 %2 at %3%4")
                               .arg(m_extend ? QStringLiteral("Extended") : QStringLiteral("Trimmed"), curve,
-                                   text(on));
+                                   text(on),
+                                   joined.isEmpty() ? QString() : QStringLiteral(" (joined %1)").arg(joined));
   }
 
   void paint(ToolPreview& preview) const override {
@@ -163,7 +171,7 @@ public:
     if (m_state == State::Edit) {
       return;
     }
-    QString hover = m_c.entityAt(snap.screen);
+    QString hover = entityAt(snap.screen);
     if (m_picks.contains(hover) || (m_state == State::Place && !secondPick(hover))) {
       hover.clear();
     }
@@ -172,14 +180,14 @@ public:
 
   void press(const Snap& snap) override {
     m_cursor = snap.at;
-    const QString entity = m_c.entityAt(snap.screen);
+    const QString entity = entityAt(snap.screen);
     switch (m_state) {
     case State::Pick:
       if (entity.isEmpty()) {
         return;
       }
       m_picks = {entity};
-      m_state = isPoint(m_c.model(), entity) ? State::Pick2 : State::Place;
+      m_state = isPoint(view(), entity) ? State::Pick2 : State::Place;
       if (m_state == State::Place && !decide()) {
         // A spline: nothing to measure alone.
         m_state = State::Pick2;
@@ -210,6 +218,7 @@ public:
     case State::Edit:
       return;
     }
+    logBodyPick(entity);
     m_c.setPicked(m_picks);
     m_c.setHover(QString());
     prompt();
@@ -228,12 +237,89 @@ public:
       if (auto d = decide()) {
         d->text = m_state == State::Edit ? m_placed : m_cursor;
         preview.dimension = *d;
+        preview.model = &view();
       }
     }
   }
 
 private:
   enum class State { Pick, Pick2, Place, Edit };
+
+  // The point or curve under the cursor: the sketch's, or a body edge or
+  // vertex in the sketch plane (mitcad#256), read again after the document
+  // changed.
+  QString entityAt(const QPointF& screen) {
+    m_c.bodyGeometry();
+    return m_c.entityAt(screen, PickAll | PickBody);
+  }
+
+  // The sketch with the body edges and vertices as the fixed entities they
+  // project to, so that a body pick makes the dimensions a sketch line,
+  // circle, arc or point would.
+  const SketchModel& view() const {
+    const std::pair<int, int> key{m_c.modelRevision(), m_c.bodyGeometryShown().revision()};
+    if (key != m_viewKey) {
+      m_view = m_c.model();
+      m_c.bodyGeometryShown().addTo(m_view);
+      m_viewKey = key;
+    }
+    return m_view;
+  }
+
+  // For UI tests: a body edge or vertex taken as a pick.
+  void logBodyPick(const QString& entity) const {
+    const BodyItem* item = m_c.bodyGeometryShown().item(entity);
+    if (item != nullptr && m_picks.contains(entity)) {
+      qDebug().noquote() << QStringLiteral("Sketch Dimension picked %1 of %2 (%3)")
+                                .arg(item->describe(), item->body, entity);
+    }
+  }
+
+  // Projects the body edges and vertices a dimension names into the sketch
+  // (linked), or takes an existing projection of the same source, and names
+  // the projected entities instead: a line, circle or arc, its end or centre,
+  // a vertex's point (mitcad#256). False when a projection is refused.
+  bool projectPicks(SketchOp& op, QJsonObject& dimension) const {
+    // The items as they are now: projecting reads the sketch again.
+    std::vector<std::tuple<QString, BodyItem, QString>> refs; // field, item, part
+    for (auto it = dimension.constBegin(); it != dimension.constEnd(); ++it) {
+      QString part;
+      if (const BodyItem* item = m_c.bodyGeometryShown().item(it.value().toString(), &part)) {
+        refs.emplace_back(it.key(), *item, part);
+      }
+    }
+    for (const auto& [field, item, part] : refs) {
+      const ProjectedItem projected = op.projectBody(item);
+      if (projected.empty()) {
+        return false;
+      }
+      const SketchModel& model = op.model();
+      QString entity = item.isVertex() ? projected.point : projected.curve;
+      if (!part.isEmpty()) {
+        const CurveData* curve = model.curve(projected.curve);
+        entity.clear();
+        if (curve != nullptr && part == QStringLiteral("center")) {
+          entity = curve->center;
+        } else if (curve != nullptr) {
+          // The projected curve's end where the edge's is.
+          const V2 want = part == QStringLiteral("start") ? item.curve.startPoint() : item.curve.endPoint();
+          double nearest = std::numeric_limits<double>::max();
+          for (const QString& end : {curve->start, curve->end}) {
+            const auto at = model.pointAt(end);
+            if (at && dist(*at, want) < nearest) {
+              nearest = dist(*at, want);
+              entity = end;
+            }
+          }
+        }
+      }
+      if (entity.isEmpty()) {
+        return false;
+      }
+      dimension.insert(field, entity);
+    }
+    return true;
+  }
 
   void reset() {
     m_state = State::Pick;
@@ -246,7 +332,8 @@ private:
   void prompt() const {
     switch (m_state) {
     case State::Pick:
-      m_c.hint(QObject::tr("Sketch Dimension: pick a line, circle, arc or point."));
+      m_c.hint(QObject::tr("Sketch Dimension: pick a line, circle, arc or point, of the sketch or a body edge or "
+                           "vertex in its plane."));
       break;
     case State::Pick2:
       m_c.hint(QObject::tr("Sketch Dimension: pick another point or curve."));
@@ -265,7 +352,7 @@ private:
     if (entity.isEmpty() || m_picks.size() != 1 || m_picks.contains(entity)) {
       return false;
     }
-    const SketchModel& model = m_c.model();
+    const SketchModel& model = view();
     const CurveData* first = model.curve(m_picks.first());
     const CurveData* second = model.curve(entity);
     if (first == nullptr) {
@@ -280,9 +367,11 @@ private:
     return false;
   }
 
-  // The dimension the picks and the cursor make (without its value).
+  // The dimension the picks and the cursor make (without its value); while
+  // the value is typed, the place it was put at.
   std::optional<DimensionData> decide() const {
-    const SketchModel& model = m_c.model();
+    const SketchModel& model = view();
+    const V2 cursor = m_state == State::Edit ? m_placed : m_cursor;
     DimensionData d;
     const auto set = [&d](const QString& type, std::initializer_list<std::pair<const char*, QString>> fields) {
       d.type = type;
@@ -297,7 +386,7 @@ private:
     const auto pointDistance = [&](const QString& a, const QString& b) {
       const V2 pa = *model.pointAt(a);
       const V2 pb = *model.pointAt(b);
-      const V2 c = m_cursor;
+      const V2 c = cursor;
       const bool insideX = c.x > std::min(pa.x, pb.x) && c.x < std::max(pa.x, pb.x);
       const bool insideY = c.y > std::min(pa.y, pb.y) && c.y < std::max(pa.y, pb.y);
       const bool alongX = std::abs(pa.y - pb.y) < 1e-9;
@@ -318,7 +407,7 @@ private:
       if (c->isLine()) {
         const V2 a = c->curve.a;
         const V2 b = c->curve.b;
-        const V2 cur = m_cursor;
+        const V2 cur = cursor;
         const bool insideX = cur.x > std::min(a.x, b.x) && cur.x < std::max(a.x, b.x);
         const bool insideY = cur.y > std::min(a.y, b.y) && cur.y < std::max(a.y, b.y);
         const bool slanted = std::abs(a.x - b.x) > 1e-9 && std::abs(a.y - b.y) > 1e-9;
@@ -335,7 +424,7 @@ private:
         set(QStringLiteral("radius"), {{"curve", c->id}});
       } else if (c->isEllipse()) {
         const V2 major = polar(c->curve.rotation);
-        const bool minor = std::abs(dot(unit(m_cursor - c->curve.center), major)) < std::sqrt(0.5);
+        const bool minor = std::abs(dot(unit(cursor - c->curve.center), major)) < std::sqrt(0.5);
         set(minor ? QStringLiteral("minor_radius") : QStringLiteral("major_radius"), {{"ellipse", c->id}});
       } else {
         return std::nullopt;
@@ -374,7 +463,16 @@ private:
             set(QStringLiteral("line_distance"), {{"a", ca->id}, {"b", cb->id}});
           }
         } else {
+          // The sector of the four the lines' extensions make that the
+          // cursor is in, by the rays that bound it (mitcad#296): cursor -
+          // corner = s da + t db, a ray reversed where its factor is
+          // negative.
           set(QStringLiteral("angle"), {{"a", ca->id}, {"b", cb->id}});
+          const double c = cross(da, db);
+          const V2 corner = ca->curve.a + da * (cross(cb->curve.a - ca->curve.a, db) / c);
+          const V2 v = cursor - corner;
+          d.json.insert(QStringLiteral("reverse_a"), cross(v, db) / c < 0.0);
+          d.json.insert(QStringLiteral("reverse_b"), cross(da, v) / c < 0.0);
         }
       } else {
         const CurveData* line = ca != nullptr ? ca : cb;
@@ -420,8 +518,18 @@ private:
 
   void add(const QJsonObject& definition, const V2& at, const QString& expression) {
     SketchOp op(m_c);
+    // Body picks are projected now, in the same undo step (mitcad#256).
+    QJsonObject dimension = definition;
+    if (!projectPicks(op, dimension)) {
+      const QString reason =
+          op.error().isEmpty() ? QObject::tr("the body geometry could not be projected") : op.error();
+      op.rollback();
+      m_c.error(QObject::tr("Dimension not added: %1").arg(reason));
+      reset();
+      return;
+    }
     QJsonObject cmd = op.command(QStringLiteral("sketch.add_dimension"));
-    cmd.insert(QStringLiteral("dimension"), definition);
+    cmd.insert(QStringLiteral("dimension"), dimension);
     cmd.insert(QStringLiteral("value"), expression);
     cmd.insert(QStringLiteral("text"), xy(at));
     QJsonObject result;
@@ -457,6 +565,19 @@ private:
                                 .arg(id, definition.value(QStringLiteral("type")).toString(),
                                      d != nullptr ? d->parameter : QString(), expression);
     }
+    // For UI tests: the sector an angle measures, as drawn (mitcad#296).
+    if (d != nullptr && d->type == QStringLiteral("angle")) {
+      if (const auto rays = angleRays(*d, m_c.model())) {
+        const auto degrees = [](const V2& v) {
+          return QString::number(std::fmod(angleOf(v) * 180.0 / kPi + 360.0, 360.0), 'f', 1);
+        };
+        // Rounded first, so that no "-0.00".
+        const auto twoPlaces = [](double x) { return QString::number(std::round(x * 100.0) / 100.0 + 0.0, 'f', 2); };
+        qDebug().noquote() << QStringLiteral("Angle dimension %1: %2 deg, the arc from %3 to %4 deg about %5,%6")
+                                  .arg(id, QString::number(d->measured * 180.0 / kPi, 'f', 2), degrees(rays->da),
+                                       degrees(rays->db), twoPlaces(rays->corner.x), twoPlaces(rays->corner.y));
+      }
+    }
     reset();
   }
 
@@ -464,6 +585,9 @@ private:
   QStringList m_picks;
   V2 m_cursor;
   V2 m_placed;
+  // view(): the sketch with the body geometry, and when it was made.
+  mutable SketchModel m_view;
+  mutable std::pair<int, int> m_viewKey{-1, -1};
 };
 
 // ---------------------------------------------------------------------------
@@ -582,7 +706,19 @@ bool applyEach(SketchController& c, const QString& type, const QVector<QStringLi
   SketchOp op(c);
   int added = 0;
   QString reason;
-  for (const QStringList& picks : sets) {
+  // Points a coincident merged away (mitcad#260): removed -> kept, for the
+  // later picks and the selection.
+  QHash<QString, QString> merged;
+  const auto current = [&merged](QString id) {
+    for (int guard = 0; guard < 64 && merged.contains(id); ++guard) {
+      id = merged.value(id);
+    }
+    return id;
+  };
+  for (QStringList picks : sets) {
+    for (QString& pick : picks) {
+      pick = current(pick);
+    }
     const QJsonObject constraint = build(type, picks, op.model());
     QJsonObject cmd = op.command(QStringLiteral("sketch.add_constraint"));
     cmd.insert(QStringLiteral("constraint"), constraint);
@@ -594,15 +730,42 @@ bool applyEach(SketchController& c, const QString& type, const QVector<QStringLi
       continue;
     }
     ++added;
+    const QJsonObject merge = result.value(QStringLiteral("merged")).toObject();
+    if (!merge.isEmpty()) {
+      // Two curve ends became one point.
+      const QString kept = merge.value(QStringLiteral("kept")).toString();
+      const QString removed = merge.value(QStringLiteral("removed")).toString();
+      merged.insert(removed, kept);
+      qDebug().noquote() << QStringLiteral("Merged points %1 into %2 (coincident on %3)")
+                                .arg(removed, kept, picks.join(QStringLiteral(", ")));
+      continue;
+    }
+    const QJsonArray made = result.value(QStringLiteral("constraints")).toArray();
     qDebug().noquote() << QStringLiteral("Added constraint %1 %2 on %3")
                               .arg(constraint.value(QStringLiteral("type")).toString(),
-                                   result.value(QStringLiteral("constraints")).toArray().first().toString(),
+                                   made.isEmpty() ? QString() : made.first().toString(),
                                    picks.join(QStringLiteral(", ")));
   }
   if (added == 0) {
     op.rollback();
     c.error(QObject::tr("%1 not added: %2").arg(constraintName(type), reason));
     return false;
+  }
+  if (!merged.isEmpty()) {
+    // The selection holds the kept point instead of a removed one.
+    Selection selection;
+    for (SelectionItem item : c.host().selection()) {
+      if (item.owner == c.uid() && item.kind == SelectKind::SketchPoint && merged.contains(item.name)) {
+        item.name = current(item.name);
+        if (selection.contains(item)) {
+          continue;
+        }
+      }
+      selection.append(item);
+    }
+    if (selection != c.host().selection()) {
+      c.host().setSelection(selection);
+    }
   }
   op.commit();
   if (added < static_cast<int>(sets.size())) {
@@ -730,7 +893,8 @@ public:
 
 private:
   void prompt() const {
-    const QString what = m_type == QStringLiteral("coincident")     ? QObject::tr("a point and a point or curve")
+    const QString what = m_type == QStringLiteral("coincident")
+                             ? QObject::tr("a point and a point or curve; two curve ends become one point")
                          : m_type == QStringLiteral("horizontal_vertical") ? QObject::tr("a line or two points")
                          : m_type == QStringLiteral("midpoint")     ? QObject::tr("a point and a line or arc")
                          : m_type == QStringLiteral("symmetric")    ? QObject::tr("two entities and a line")
@@ -785,6 +949,16 @@ QString constraintName(const QString& type) {
   }
   if (type == QStringLiteral("fix")) {
     return QObject::tr("Fix/Unfix");
+  }
+  // Types the model names (a constraint a new one replaced, mitcad#287).
+  if (type == QStringLiteral("horizontal") || type == QStringLiteral("horizontal_points")) {
+    return QObject::tr("Horizontal");
+  }
+  if (type == QStringLiteral("vertical") || type == QStringLiteral("vertical_points")) {
+    return QObject::tr("Vertical");
+  }
+  if (type == QStringLiteral("equal_spacing")) {
+    return QObject::tr("Equal Spacing");
   }
   return type;
 }

@@ -42,6 +42,17 @@ public:
   // Whether the model can change now: no command panel open and no sketch
   // being edited. Visibility can also change while sketching.
   virtual bool canChangeModel(bool visibilityOnly = false) const = 0;
+  // The light bulbs of every mode (mitcad#295; BrowserController::
+  // visibilityInEveryMode): runs visibility commands as one undo step
+  // `label` (one command as its own step) in any mode, outside a running
+  // command's undo range; false when they were refused.
+  virtual bool runVisibilityCommands(const QJsonArray& commands, const QString& label) {
+    return commands.size() == 1 ? runModelCommand(commands.first().toObject()) : runModelCommands(commands, label);
+  }
+  // What runs while the visibility changes, for the log: the command's name
+  // ("Extrude", "Create Sketch" while it asks for a plane) or the name of
+  // the sketch edited; empty outside them.
+  virtual QString activeCommandName() const { return {}; }
   // Why the design cannot be changed at all (a read-only window whose edit
   // lock someone else holds, mitcad#89); empty when it can.
   virtual QString readOnlyReason() const { return {}; }

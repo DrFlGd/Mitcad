@@ -2,11 +2,13 @@
 #include "mitcad/geometry/guard.hpp"
 
 #include <atomic>
+#include <chrono>
 #include <csignal>
 #include <cstdlib>
 #include <mutex>
 #include <new>
 #include <string>
+#include <thread>
 #ifndef _WIN32
 #include <signal.h>
 #endif
@@ -265,6 +267,11 @@ void fail_occt_allocation_if_asked(const char* operation) {
     huge.ChangeFirst().values[0] = 1.0;
   } catch (const Standard_Failure&) {
   }
+  // An operation goes on for a while after its allocation failed (a
+  // healing of minutes): the import's memory guard, which polls the count
+  // on its own thread, sees it before the operation reports the failure,
+  // as it did on a loaded machine.
+  std::this_thread::sleep_for(std::chrono::milliseconds(300));
 }
 
 void throw_if_allocation_failed(std::size_t before) {

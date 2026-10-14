@@ -902,6 +902,124 @@ pub trait Kernel {
     ) -> Result<Vec<Option<Self::Shape>>, KernelError> {
         Err(KernelError::Unsupported("copies standing on a body"))
     }
+
+    // Face boxes (the `.f3d` import's face lookups through a point,
+    // mitcad#119).
+
+    /// A box (minimum and maximum corner, mm) that holds each face of the
+    /// shape, in the order of [`Kernel::faces`]: a point farther than a
+    /// distance from a face's box is farther from the face. A face may get
+    /// an unbounded box.
+    fn face_boxes(&self, _shape: &Self::Shape) -> Result<Vec<[Vec3; 2]>, KernelError> {
+        Err(KernelError::Unsupported("face boxes"))
+    }
+
+    // Base features that adopt the shapes their data was written from
+    // (mitcad#244).
+
+    /// The body [`Kernel::import_brep`] reads from `shape`'s B-rep data
+    /// ([`Kernel::brep_data`]), made of `shape` itself without writing and
+    /// reading the data: the same faces in the same order, face i named
+    /// `<feature>:import(<first_face + i>)`, and its number of faces. It
+    /// may share `shape`'s sub-shapes and keep what was measured of it that
+    /// does not depend on face names.
+    fn adopt_shape(
+        &self,
+        _feature: FeatureUid,
+        _shape: &Self::Shape,
+        _first_face: u32,
+    ) -> Result<(Self::Shape, u32), KernelError> {
+        Err(KernelError::Unsupported("adopted bodies"))
+    }
+
+    // Tangent chains (the application's hover of Fillet, Chamfer and the
+    // face tools, mitcad#290).
+
+    /// The tangent chains of the shape: with `faces` false the groups of
+    /// two or more named edges that a fillet or chamfer with a tangent
+    /// chain rounds together when one of them is selected (the edges that
+    /// meet end to end in the same direction, within 0.01 rad, between
+    /// faces at an angle); with `faces` the groups of faces connected
+    /// through smooth edges, which a shell, draft or replace face with a
+    /// tangent chain takes together (each face by its first name). Every
+    /// edge or face is in at most one group; one in none stands alone.
+    fn tangent_chains(
+        &self,
+        _shape: &Self::Shape,
+        _faces: bool,
+    ) -> Result<Vec<Vec<String>>, KernelError> {
+        Err(KernelError::Unsupported("tangent chains"))
+    }
+
+    // Bodies from their boundaries and from triangles (the IFC import's
+    // breps and face sets, mitcad#273; the inputs in `crate::boundary`).
+
+    /// The body a boundary bounds: a solid of each closed shell, a sheet
+    /// body of the others; faces that do not build are left out and
+    /// reported (an error when none builds).
+    fn boundary_body(
+        &self,
+        _body: &crate::boundary::BoundaryBody,
+    ) -> Result<(Self::Shape, crate::boundary::BoundaryReport), KernelError> {
+        Err(KernelError::Unsupported("bodies from boundaries"))
+    }
+
+    /// A mesh body of triangles (indices into `points`, counter-clockwise
+    /// seen from outside), as an STL file gives one.
+    fn triangle_body(
+        &self,
+        _points: &[[f64; 3]],
+        _triangles: &[[u32; 3]],
+    ) -> Result<Self::Shape, KernelError> {
+        Err(KernelError::Unsupported("mesh bodies from triangles"))
+    }
+
+    // Contacts of a new Extrude's tool: the operation it chooses until the
+    // user picks one (mitcad#289).
+
+    /// How the tool lies against each body ([`ToolContact`]), with the
+    /// contact test of Join. Cheap enough to follow a dragged distance: the
+    /// caller leaves out bodies whose boxes the tool's does not reach.
+    fn tool_contacts(
+        &self,
+        _tool: &Self::Shape,
+        _bodies: &[&Self::Shape],
+    ) -> Result<Vec<ToolContact>, KernelError> {
+        Err(KernelError::Unsupported("tool contacts"))
+    }
+
+    // The volume a change makes, from the faces it changed (the `.ipt`
+    // import's check of an item's change, mitcad#235).
+
+    /// The volume an operation added (negative: removed) as its changed
+    /// faces bound it, mm³: the faces of `after` that `before` does not
+    /// have (as [`Kernel::new_faces`] tells them) less those of `before`
+    /// that `after` does not have, integrated about one point. The faces
+    /// both have cancel exactly, so a large face the change left alone
+    /// adds none of its integration's noise. Also how uncertain that is
+    /// from the changed faces' edges: a third of each edge's length times
+    /// its tolerance beyond 1e-7 mm times its distance from the point
+    /// (stored faces trimmed by approximated curves, mitcad#235).
+    fn changed_volume(
+        &self,
+        _before: &[&Self::Shape],
+        _after: &[&Self::Shape],
+    ) -> Result<(f64, f64), KernelError> {
+        Err(KernelError::Unsupported("changed volume"))
+    }
+}
+
+/// How a tool lies against a body ([`Kernel::tool_contacts`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ToolContact {
+    /// Farther from the body than Join's contact distance.
+    Apart,
+    /// Touching or overlapping it, its inside outside the body (a profile
+    /// on a face of the body extruded away from it).
+    Touches,
+    /// The inside of a solid of the tool lies inside the body (extruded
+    /// into it).
+    Inside,
 }
 
 /// The material features added to and removed from a body

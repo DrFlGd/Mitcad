@@ -121,6 +121,7 @@ fn large_angle_changes_rotate_the_same_way() {
             a: base,
             b: arm,
             value: PI / 4.0,
+            supplement: None,
         })
         .unwrap();
     for v in [3.0, 0.01, 2.0, PI - 0.01, 0.5] {
@@ -266,6 +267,7 @@ fn random_under_constrained_sketches_satisfy_all_constraints() {
                         a: lines[i - 1],
                         b: l,
                         value: 0.2 + rng.next() * 0.5,
+                        supplement: None,
                     })
                     .unwrap(),
                 ),

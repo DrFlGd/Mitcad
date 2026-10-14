@@ -1,0 +1,22 @@
+[
+  {"comment":"SPDX-License-Identifier: MIT. A mirror of sheet features (mitcad#242): t=1, r=1, K=0.4. On the 40 x 20 panel, a joined 10 x 4 strip (x=0..10, y=20..24) and a developed cut of a radius-2 hole at (5, 10) are mirrored about x=20: the copies add the strip at x=30..40 and the hole at (35, 10), 800 + 2 x 40 - 2 x 4 pi; the sheet stays valid (the adapter unites the copied strip with the panel), so a flange on the edge y=0 follows it (+ 30 pi + 400). A thickness edit (t=0.5) rebuilds the copies: 440 - 4 pi + (pi/4)(2.25 - 1) 40 + 200."},
+  {"cmd":"add_feature","def":{"type":"sheet_rules","thickness":1,"bend_radius":1,"allowance":{"type":"k_factor","k":0.4},"reference_side":"front","bend_relief":{"type":"rectangular","width":1,"depth":1},"corner_relief":{"type":"round","width":2,"depth":2}}},
+  {"cmd":"sketch.create"},
+  {"cmd":"sketch.add_rectangle","sketch":"F2","corner":[0,0],"width":40,"height":20},
+  {"cmd":"add_feature","def":{"type":"sheet_face","rules":"F1","profiles":[{"sketch":"F2","region":"r{c1[c4,c2],c2[c1,c3],c3[c2,c4],c4[c3,c1]}"}]}},
+  {"cmd":"sketch.create"},
+  {"cmd":"sketch.add_rectangle","sketch":"F4","corner":[0,20],"width":10,"height":4},
+  {"cmd":"add_feature","def":{"type":"sheet_face","rules":"F1","body":"F3.b0","profiles":[{"sketch":"F4","region":"r{c1[c4,c2],c2[c1,c3],c3[c2,c4],c4[c3,c1]}"}]}},
+  {"cmd":"sketch.create"},
+  {"cmd":"sketch.add_circle","sketch":"F6","center":[5,10],"diameter":4},
+  {"cmd":"add_feature","def":{"type":"sheet_cut","body":"F3.b0","stationary":{"feature":"F3","slot":0},"profiles":[{"sketch":"F6","region":"r{c1}"}]}},
+  {"expect":{"feature":"F7","status":"ok","body":"F3.b0","volume":827.4336293856408}},
+  {"cmd":"add_feature","def":{"type":"mirror","objects":{"type":"features","features":["F5","F7"]},"plane":{"origin":[20,0,0],"normal":[1,0,0],"x_axis":[0,1,0]},"combine":false,"compute":"adjust","original_bodies":true}},
+  {"expect":{"feature":"F8","status":"ok","body":"F3.b0","volume":854.8672587712817,"min":[0,0,0],"max":[40,24,1]}},
+  {"expect":{"query":{"query":"sheet_state","body":"F3.b0"},"result":{"status":"valid","charts":[{"domain":{"kind":"panel","id":{"feature":"F3","slot":0}},"regions":[{"loops":[{},{},{}]}]}]}}},
+  {"cmd":"add_feature","def":{"type":"sheet_flange","body":"F3.b0","boundary":{"panel":{"feature":"F3","slot":0},"curve":{"type":"sketch","sketch":"F2","segment":"c1[c4,c2]"}},"angle":-1.5707963267948966,"length":{"mode":"tangent","value":10},"position":"edge"}},
+  {"expect":{"feature":"F9","status":"ok","body":"F3.b0","volume":1349.115008019665}},
+  {"cmd":"edit_feature","uid":"F1","def":{"type":"sheet_rules","thickness":0.5,"bend_radius":1,"allowance":{"type":"k_factor","k":0.4},"reference_side":"front","bend_relief":{"type":"rectangular","width":1,"depth":1},"corner_relief":{"type":"round","width":2,"depth":2}}},
+  {"expect":{"feature":"F9","status":"ok","body":"F3.b0","volume":666.7035375555132}},
+  {"expect":{"query":{"query":"sheet_state","body":"F3.b0"},"result":{"status":"valid"}}}
+]

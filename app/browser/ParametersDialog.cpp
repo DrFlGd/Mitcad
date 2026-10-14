@@ -36,7 +36,7 @@ namespace {
 const QColor kRefusedText(0xb0, 0x00, 0x20);
 const QColor kRefusedFill(0xfb, 0xe3, 0xe3);
 constexpr int kNameRole = Qt::UserRole;     // the parameter's name (rows of parameters)
-constexpr int kKindRole = Qt::UserRole + 1; // user or model
+constexpr int kKindRole = Qt::UserRole + 1; // user, model or reference
 
 QString refusedKey(const QString& name, int column) {
   return QStringLiteral("%1|%2").arg(name).arg(column);
@@ -214,12 +214,18 @@ QTreeWidgetItem* ParametersDialog::addRow(QTreeWidgetItem* parent, const QJsonOb
   row->setText(kValue, parameter.value(QStringLiteral("text")).toString());
   row->setText(kComment, parameter.value(QStringLiteral("comment")).toString());
   row->setData(kName, kNameRole, name);
-  row->setData(kName, kKindRole, user ? QStringLiteral("user") : QStringLiteral("model"));
   row->setFlags(row->flags() | Qt::ItemIsEditable | Qt::ItemIsUserCheckable);
+  // What a driven dimension measures: renamed, never set (mitcad#231).
+  const bool reference = parameter.value(QStringLiteral("kind")).toString() == QStringLiteral("reference");
+  row->setData(kName, kKindRole,
+               user ? QStringLiteral("user") : reference ? QStringLiteral("reference") : QStringLiteral("model"));
   for (const int column : {kName, kUnit, kExpression, kValue, kComment, kFavorite}) {
-    const bool editable = column == kName || column == kExpression || column == kComment ||
+    const bool editable = column == kName || (column == kExpression && !reference) || column == kComment ||
                           (column == kUnit && user);
     row->setData(column, NativeEditableRole, editable);
+  }
+  if (reference) {
+    row->setToolTip(kExpression, tr("Measured by a driven dimension; make it driving to set it"));
   }
   row->setCheckState(kFavorite, parameter.value(QStringLiteral("favorite")).toBool() ? Qt::Checked : Qt::Unchecked);
   row->setToolTip(kFavorite, tr("Favorite"));
@@ -342,6 +348,10 @@ void ParametersDialog::edit(QTreeWidgetItem* item, int column) {
   }
   // A model parameter's unit is its feature's.
   if (column == kUnit && item->data(kName, kKindRole).toString() != QStringLiteral("user")) {
+    return;
+  }
+  // A reference's expression is what its dimension measures (mitcad#231).
+  if (column == kExpression && item->data(kName, kKindRole).toString() == QStringLiteral("reference")) {
     return;
   }
   m_table->editItem(item, column);

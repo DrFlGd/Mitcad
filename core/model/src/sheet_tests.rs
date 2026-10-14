@@ -490,11 +490,13 @@ fn folded_endpoint_clearance_and_depth_are_explicit_parameters() {
     assert!(
         matches!(doc.status(failed),Some(FeatureStatus::Failed(message)) if message.contains("positive"))
     );
+    // Any positive depth separates the material (mitcad#242: the imports'
+    // rules use half a thickness); none is refused.
     flange["relief"]["width"] = json!(2);
-    flange["relief"]["depth"] = json!(0.5);
+    flange["relief"]["depth"] = json!(0);
     doc.edit_feature(failed, &def(flange.clone())).unwrap();
     assert!(
-        matches!(doc.status(failed),Some(FeatureStatus::Failed(message)) if message.contains("thickness"))
+        matches!(doc.status(failed),Some(FeatureStatus::Failed(message)) if message.contains("positive"))
     );
     assert_eq!(state(&doc, body)["status"], "blocked");
     doc.set_suppressed(failed, true).unwrap();
@@ -524,10 +526,10 @@ fn interior_fold_checks_relief_before_any_geometry_and_tracks_line_dependencies(
     )
     .unwrap();
     let fold = json!({"type":"sheet_fold","body":body,"panel":{"feature":body.feature,"slot":0},"line":{"sketch":sketch,"curve":"c1"},
-        "stationary_side":"left","angle":std::f64::consts::FRAC_PI_2,"relief":{"type":"round","width":2,"depth":0.5}});
+        "stationary_side":"left","angle":std::f64::consts::FRAC_PI_2,"relief":{"type":"round","width":2,"depth":0}});
     let failed = doc.add_feature(&def(fold), None).unwrap().uid;
     assert!(
-        matches!(doc.status(failed),Some(FeatureStatus::Failed(message)) if message.contains("thickness"))
+        matches!(doc.status(failed),Some(FeatureStatus::Failed(message)) if message.contains("behind the tangent"))
     );
     assert_eq!(doc.kernel().calls.borrow().get("sheet_trim_domain"), None);
     assert!(

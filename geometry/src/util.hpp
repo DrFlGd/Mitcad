@@ -65,7 +65,8 @@ public:
 // operation is one too: OCC_CATCH_SIGNALS gives the handlers somewhere to
 // return to where OCCT has no handler of its own (on Linux; on Windows the
 // handlers throw). An operation asked to stop does not start, and one that
-// fails after the request was cancelled (cancel.hpp). An allocation that
+// fails after the request was cancelled (cancel.hpp), unless an allocation
+// failed in it (the import stops on that). An allocation that
 // fails (OCCT's Standard_OutOfMemory, std::bad_alloc) is an error
 // "<operation>: out of memory" (mitcad#80; the model's
 // KernelError::OUT_OF_MEMORY): the operation's memory is freed as it
@@ -93,16 +94,25 @@ auto run(const char* operation, Operation&& op) -> decltype(op()) {
       throw_if_allocation_failed(failed);
       return result;
     }
+  } catch (const Cancelled&) {
+    // Stopped after an allocation it caught inside failed: the import's
+    // memory guard saw the count and asked it to stop (mitcad#132). The
+    // operation ran out of memory.
+    if (failed_allocations_in_thread() != failed) {
+      throw std::runtime_error(std::string(operation) + ": out of memory");
+    }
+    throw;
   } catch (const Standard_OutOfMemory&) {
     throw std::runtime_error(std::string(operation) + ": out of memory");
   } catch (const std::bad_alloc&) {
     throw std::runtime_error(std::string(operation) + ": out of memory");
   } catch (const Standard_Failure& failure) {
-    throw_if_cancelled();
     if (failed_allocations_in_thread() != failed) {
-      // (A failure OCCT made of the allocation it caught.)
+      // (A failure OCCT made of the allocation it caught, also one that
+      // stopped as asked after it.)
       throw std::runtime_error(std::string(operation) + ": out of memory");
     }
+    throw_if_cancelled();
     throw std::runtime_error(std::string(operation) + ": " + failure.what());
   }
 }

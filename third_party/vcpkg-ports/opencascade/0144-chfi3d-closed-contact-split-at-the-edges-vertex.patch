@@ -1,0 +1,269 @@
+Mitcad's patch to OCCT 8.0.1, under OCCT's licence:
+SPDX-License-Identifier: LGPL-2.1-only WITH OCCT-exception-1.0
+
+Fillets and chamfers: a closed contact along a closed edge of its face that
+passes the edge's vertex inside the stripe (mitcad#263).
+
+The case: the inner rim of a step ring (a hole above a counterbore)
+chamfered or rounded by the ring's width, the counterbore's seam turned
+away from the rim's vertex. 0140 stores the contact on the ring's outer
+circle, a closed edge of the counterbore's wall, and cuts the contact's
+line at the circle's vertex where that lies inside the stripe. That vertex
+is on the counterbore's seam, so the line's p-curve on the wall runs past
+the seam: the part after it lay a period beyond the face (the wall's wire
+did not close in 2d), and the topological build translated the shared
+p-curve on the blend in place by the vertex's parameter for the part after
+it, which moved the part before it too (their p-curves missed their edges
+by the chord of the angle; an unorientable face, or for the rim in two arcs
+a valid shape with p-curves off their edges).
+
+- ChFi3d_ContactsAlongFaceEdges splits the SurfData at that vertex instead
+  (ChFi3d_SplitAtVertexOnLine): the part after it is a SurfData of its own
+  on the same blend surface (one face, with no section between the two,
+  as 0073's pieces), with lines of its own; the other line is split at the
+  section through the vertex. Each part's p-curve on the face beyond is
+  taken into that face's period.
+- ChFi3d_PCurveInFacePeriod moves the p-curve on its face of a face
+  interference by whole periods where it lies wholly outside the face's
+  parametric bounds and so comes wholly inside them.
+
+Before, the stripe of the case gave an unorientable face.
+
+diff --git a/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_0.cxx b/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_0.cxx
+index 12310284..536d0144 100644
+--- a/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_0.cxx
++++ b/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_0.cxx
+@@ -45,6 +45,7 @@
+ #include <GeomAbs_Shape.hxx>
+ #include <GeomAPI_PointsToBSpline.hxx>
+ #include <GeomAPI_ProjectPointOnCurve.hxx>
++#include <Geom2dAPI_ProjectPointOnCurve.hxx>
+ #include <GeomAPI_ProjectPointOnSurf.hxx>
+ #include <GeomConvert.hxx>
+ #include <GeomConvert_CompCurveToBSplineCurve.hxx>
+@@ -3044,6 +3045,172 @@ static bool faceNormalAt(const TopoDS_Face& F, const gp_Pnt& P, gp_Dir& N)
+   return true;
+ }
+ 
++//=======================================================================
++// function : ChFi3d_PCurveInFacePeriod
++// purpose  : Moves the p-curve on its face of FI by whole periods of the
++//            face's surface where it lies wholly outside the face's
++//            parametric bounds and so comes wholly inside them (a piece of
++//            a blend along a closed spine, its contact's parameters taken on
++//            past the period's end). Returns whether it moved.
++//=======================================================================
++
++bool ChFi3d_PCurveInFacePeriod(ChFiDS_FaceInterference& FI, const TopoDS_Face& F)
++{
++  const occ::handle<Geom2d_Curve>& PC = FI.PCurveOnFace();
++  if (PC.IsNull() || F.IsNull())
++  {
++    return false;
++  }
++  const occ::handle<Geom_Surface> S = BRep_Tool::Surface(F);
++  if (S.IsNull() || (!S->IsUPeriodic() && !S->IsVPeriodic()))
++  {
++    return false;
++  }
++  double umin = 0., umax = 0., vmin = 0., vmax = 0.;
++  BRepTools::UVBounds(F, umin, umax, vmin, vmax);
++  const double t1 = std::min(FI.FirstParameter(), FI.LastParameter());
++  const double t2 = std::max(FI.FirstParameter(), FI.LastParameter());
++  // The p-curve's box over its range.
++  double cmin[2] = {RealLast(), RealLast()}, cmax[2] = {-RealLast(), -RealLast()};
++  for (int i = 0; i <= 8; i++)
++  {
++    const gp_Pnt2d p = PC->Value(t1 + (t2 - t1) * i / 8.);
++    cmin[0] = std::min(cmin[0], p.X());
++    cmax[0] = std::max(cmax[0], p.X());
++    cmin[1] = std::min(cmin[1], p.Y());
++    cmax[1] = std::max(cmax[1], p.Y());
++  }
++  const double tol      = Precision::PConfusion();
++  double       shift[2] = {0., 0.};
++  for (int k = 0; k < 2; k++)
++  {
++    const bool   periodic = k == 0 ? S->IsUPeriodic() : S->IsVPeriodic();
++    const double lo = k == 0 ? umin : vmin, hi = k == 0 ? umax : vmax;
++    if (!periodic || (cmin[k] >= lo - tol && cmax[k] <= hi + tol))
++    {
++      continue;
++    }
++    if (cmin[k] < hi - tol && cmax[k] > lo + tol)
++    {
++      return false; // (partly inside: across the bounds)
++    }
++    const double T = k == 0 ? S->UPeriod() : S->VPeriod();
++    const double n = std::round((0.5 * (lo + hi) - 0.5 * (cmin[k] + cmax[k])) / T);
++    if (n == 0. || cmin[k] + n * T < lo - tol || cmax[k] + n * T > hi + tol)
++    {
++      return false;
++    }
++    shift[k] = n * T;
++  }
++  if (shift[0] == 0. && shift[1] == 0.)
++  {
++    return false;
++  }
++  occ::handle<Geom2d_Curve> aMoved = occ::down_cast<Geom2d_Curve>(PC->Copy());
++  aMoved->Translate(gp_Vec2d(shift[0], shift[1]));
++  FI.ChangePCurveOnFace() = aMoved;
++  return true;
++}
++
++//=======================================================================
++// function : ChFi3d_SplitAtVertexOnLine
++// purpose  : Splits SurfData Fd of an analytic blend where its line on side
++//            ons, along a closed edge of face Fv, passes the edge's vertex
++//            V (at parameter tV): Fd keeps the part before, the SurfData
++//            returned (to be inserted after Fd) the part after. Both are on
++//            the same blend surface, so that they make one face with no
++//            section between them (ChFi3d_FilDS), and each has lines of its
++//            own, its p-curve on Fv in Fv's period (on a periodic Fv the
++//            vertex is on its seam). The other line is split at the section
++//            through V. Null where that section is not found.
++//=======================================================================
++
++static occ::handle<ChFiDS_SurfData> ChFi3d_SplitAtVertexOnLine(TopOpeBRepDS_DataStructure&         DStr,
++                                                               const occ::handle<ChFiDS_Spine>&    Spine,
++                                                               const occ::handle<ChFiDS_SurfData>& Fd,
++                                                               const int                           ons,
++                                                               const double                        tV,
++                                                               const TopoDS_Vertex&                V,
++                                                               const TopoDS_Face&                  Fv)
++{
++  const int                      opp = 3 - ons;
++  const ChFiDS_FaceInterference& FN  = Fd->Interference(ons);
++  const ChFiDS_FaceInterference& FO  = Fd->Interference(opp);
++  if (FO.LineIndex() <= 0 || DStr.Curve(FO.LineIndex()).Curve().IsNull() || FN.PCurveOnSurf().IsNull()
++      || FO.PCurveOnSurf().IsNull())
++  {
++    return occ::handle<ChFiDS_SurfData>();
++  }
++  // The other line's parameter at the section through V: where its p-curve
++  // on the blend reaches V's coordinate along the spine.
++  const gp_Pnt2d uvV = FN.PCurveOnSurf()->Value(tV);
++  const double   o1 = std::min(FO.FirstParameter(), FO.LastParameter());
++  const double   o2 = std::max(FO.FirstParameter(), FO.LastParameter());
++  const gp_Pnt2d a = FO.PCurveOnSurf()->Value(o1), b = FO.PCurveOnSurf()->Value(o2);
++  const bool     alongU = std::abs(b.X() - a.X()) >= std::abs(b.Y() - a.Y());
++  Geom2dAPI_ProjectPointOnCurve aPr(alongU ? gp_Pnt2d(uvV.X(), a.Y()) : gp_Pnt2d(a.X(), uvV.Y()),
++                                    FO.PCurveOnSurf(),
++                                    o1,
++                                    o2);
++  if (aPr.NbPoints() == 0)
++  {
++    return occ::handle<ChFiDS_SurfData>();
++  }
++  const double tO = aPr.LowerDistanceParameter();
++  if (tO <= o1 + Precision::PConfusion() || tO >= o2 - Precision::PConfusion())
++  {
++    return occ::handle<ChFiDS_SurfData>();
++  }
++  const double t[3] = {0., ons == 1 ? tV : tO, ons == 2 ? tV : tO};
++  // The spine parameter of the section, in proportion along the line.
++  const double T1 = FN.FirstParameter(), T2 = FN.LastParameter();
++  const double W1 = Fd->FirstSpineParam(), W2 = Fd->LastSpineParam();
++  const double Ws = W1 + (W2 - W1) * (tV - T1) / (T2 - T1);
++  if (Ws <= W1 + Precision::PConfusion() || Ws >= W2 - Precision::PConfusion() || Spine.IsNull())
++  {
++    return occ::handle<ChFiDS_SurfData>();
++  }
++  occ::handle<ChFiDS_SurfData> aNext = new ChFiDS_SurfData();
++  aNext->Copy(Fd);
++  // (Copy leaves out the edges the lines run along.)
++  aNext->SetIndexOfC1(Fd->IsOnCurve1() ? Fd->IndexOfC1() : 0);
++  aNext->SetIndexOfC2(Fd->IsOnCurve2() ? Fd->IndexOfC2() : 0);
++  for (int s = 1; s <= 2; s++)
++  {
++    ChFiDS_FaceInterference&      FI   = Fd->ChangeInterference(s);
++    ChFiDS_FaceInterference&      FI2  = aNext->ChangeInterference(s);
++    const occ::handle<Geom_Curve> aCrv = DStr.Curve(FI.LineIndex()).Curve();
++    const double                  aTol = DStr.Curve(FI.LineIndex()).Tolerance();
++    FI2.SetLineIndex(DStr.AddCurve(TopOpeBRepDS_Curve(occ::down_cast<Geom_Curve>(aCrv->Copy()), aTol)));
++    if (!FI.PCurveOnFace().IsNull())
++    {
++      FI2.ChangePCurveOnFace() = occ::down_cast<Geom2d_Curve>(FI.PCurveOnFace()->Copy());
++    }
++    FI2.ChangePCurveOnSurf() = occ::down_cast<Geom2d_Curve>(FI.PCurveOnSurf()->Copy());
++    // (The lines run with the spine, or both against it.)
++    const bool forward = FI.FirstParameter() <= FI.LastParameter();
++    FI.SetParameter(t[s], !forward);
++    FI2.SetParameter(t[s], forward);
++    ChFiDS_CommonPoint& CPl = Fd->ChangeVertex(false, s);
++    ChFiDS_CommonPoint& CPf = aNext->ChangeVertex(true, s);
++    CPl.Reset();
++    CPl.SetPoint(aCrv->Value(t[s]));
++    if (s == ons)
++    {
++      CPl.SetPoint(BRep_Tool::Pnt(V));
++      CPl.SetVertex(V);
++    }
++    CPf = CPl;
++  }
++  Fd->LastSpineParam(Ws);
++  aNext->FirstSpineParam(Ws);
++  for (const occ::handle<ChFiDS_SurfData>& aPart : {Fd, aNext})
++  {
++    ChFi3d_PCurveInFacePeriod(aPart->ChangeInterference(ons), Fv);
++  }
++  return aNext;
++}
++
+ void ChFi3d_ContactsAlongFaceEdges(TopOpeBRepDS_DataStructure&       DStr,
+                                    const occ::handle<ChFiDS_Stripe>& CorDat,
+                                    const ChFiDS_Map&                 EFMap,
+@@ -3225,18 +3392,30 @@ void ChFi3d_ContactsAlongFaceEdges(TopOpeBRepDS_DataStructure&       DStr,
+             }
+           }
+         }
+-        // The vertex inside the contact: the contact's edge is split there.
++        // The vertex inside the contact: the contact is split there, the
++        // SurfData in two on one surface, each part with lines of its own
++        // (on a periodic face beyond, the vertex is on its seam, and the two
++        // parts' p-curves on it lie in different periods).
+         GeomAPI_ProjectPointOnCurve aProj(BRep_Tool::Pnt(aV), C, T1, T2);
+         if (aProj.NbPoints() > 0 && aProj.LowerDistance() <= Tol3d + BRep_Tool::Tolerance(aV))
+         {
+           const double tV = aProj.LowerDistanceParameter();
+           if (tV > T1 + Precision::PConfusion() && tV < T2 - Precision::PConfusion())
+           {
+-            const int IV = DStr.AddShape(aV);
+-            NCollection_List<occ::handle<TopOpeBRepDS_Interference>>& Li =
+-              DStr.ChangeCurveInterferences(FI.LineIndex());
+-            Li.Append(ChFi3d_FilPointInDS(TopAbs_REVERSED, FI.LineIndex(), IV, tV, true));
+-            Li.Append(ChFi3d_FilPointInDS(TopAbs_FORWARD, FI.LineIndex(), IV, tV, true));
++            const occ::handle<ChFiDS_SurfData> aNext =
++              ChFi3d_SplitAtVertexOnLine(DStr, aSpine, Fd, ons, tV, aV, Fv);
++            if (!aNext.IsNull())
++            {
++              CorDat->ChangeSetOfSurfData()->ChangeSequence().InsertAfter(j, aNext);
++            }
++            else
++            {
++              const int IV = DStr.AddShape(aV);
++              NCollection_List<occ::handle<TopOpeBRepDS_Interference>>& Li =
++                DStr.ChangeCurveInterferences(FI.LineIndex());
++              Li.Append(ChFi3d_FilPointInDS(TopAbs_REVERSED, FI.LineIndex(), IV, tV, true));
++              Li.Append(ChFi3d_FilPointInDS(TopAbs_FORWARD, FI.LineIndex(), IV, tV, true));
++            }
+           }
+         }
+       }
+diff --git a/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_0.hxx b/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_0.hxx
+index 3d36c9d9..98c9c970 100644
+--- a/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_0.hxx
++++ b/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_0.hxx
+@@ -560,4 +560,11 @@ void ChFi3d_ContactsAlongFaceEdges(TopOpeBRepDS_DataStructure&       DStr,
+                                    const ChFiDS_Map&                 EFMap,
+                                    const double                      Tol3d);
+ 
++//! Moves the p-curve on its face of FI by whole periods of the face's
++//! surface where it lies wholly outside the face's parametric bounds and so
++//! comes wholly inside them (a piece of a blend along a closed spine whose
++//! contact's parameters run on past the period's end). Returns whether it
++//! moved.
++bool ChFi3d_PCurveInFacePeriod(ChFiDS_FaceInterference& FI, const TopoDS_Face& F);
++
+ #endif

@@ -2,19 +2,25 @@
 # Windows UI test for the build VM: runs mitcad.exe with Mesa's software
 # OpenGL (llvmpipe, see tools/dev-env/setup-mesa-windows.ps1 and
 # MITCAD_MESA_DIR) and checks its screenshots:
-#   1. --demo: the demo block is drawn with the body colours.
+#   1. --demo: the demo block is drawn with the body colours; the Docked
+#      window got the Windows 11 frame (caption colour, Mica, rounded
+#      corners) or skipped it on an older Windows, never refused, and gets
+#      it again when the theme switches while it shows (mitcad#251).
 #   2. --open of a project file with a fillet: recomputed and drawn.
 #   3. the same file with --set d3=35: the block is drawn taller.
-#   4. MITCAD_TEST_CRASH=app and model-worker: the crash report's stack
+#   4. a design (mitcad-cli) whose fillet's edges a sketch change renamed
+#      (mitcad#272): opened, the timeline and the warnings badge show the
+#      fillet's warning that it found them under their new names.
+#   5. MITCAD_TEST_CRASH=app and model-worker: the crash report's stack
 #      starts at the crashing function, named from the PDB file (mitcad#76).
-#   5. View > Rendered, with the render worker: its frames refine and show
+#   6. View > Rendered, with the render worker: its frames refine and show
 #      the block (mitcad#51); an orbit sends the worker no view while the
 #      button is held and one after the release, a burst of wheel steps one
 #      view (mitcad#214); the rendered image stays over the view while the
 #      camera keeps still, after the first render, an orbit, wheel steps
 #      and a click on the orientation cube, and differs from the shaded
 #      view (mitcad#216).
-#   6. The app ends with Render Image and Render Environment open: no crash
+#   7. The app ends with Render Image and Render Environment open: no crash
 #      at the close (mitcad#226).
 # The app renders into an offscreen framebuffer and --screenshot reads it
 # back, so this works over SSH, in session 0 without a desktop.
@@ -263,6 +269,34 @@ if ($log -match 'OpenGL renderer: (.*)') { $renderer = $Matches[1].Trim() } else
 if ($renderer -like 'llvmpipe*') { Pass "OpenGL renderer: $renderer" }
 else { Fail "OpenGL renderer is '$renderer', expected Mesa's llvmpipe" }
 $null = Check-Shot 'demo'
+# mitcad#251: the Docked window's Windows 11 frame through DWM when it
+# shows, or skipped before Windows 11; never refused, also not while the
+# window goes at the end. Then the other theme while the window shows: the
+# frame is applied again in the new theme's colours.
+$applied = '^Window frame: (Windows 11 caption colour, Mica, rounded corners|skipped \(Windows build [0-9]+\))$'
+function Frame-Lines([string]$Log) {
+  return @($Log -split "`r?`n" | ForEach-Object { $_.Trim() } | Where-Object { $_ -like 'Window frame: *' })
+}
+# @(...) at every assignment: PowerShell returns a one-line array as the
+# line itself, whose [0] is its first character.
+$frames = @(Frame-Lines $log)
+if ($frames.Count -ge 1 -and $frames[0] -match $applied) { Pass "when the window shows: $($frames[0])" }
+else { Fail "the window frame was not applied when the window showed: '$($frames -join ' | ')'" }
+$refused = @($frames | Where-Object { $_ -notmatch $applied })
+if ($refused.Count -eq 0) { Pass 'the window frame was never refused' }
+else { Fail "the window frame was refused: '$($refused -join ' | ')'" }
+$theme = if ($log -match 'Window style: dark,') { 'light' } else { 'dark' }
+$log = Invoke-Mitcad "frame-$theme" @('--demo', '--screenshot', (Join-Path $Out "frame-$theme.png")) @{
+  'MITCAD_TEST_COLOR_SCHEME' = $theme }
+$lines = @($log -split "`r?`n" | ForEach-Object { $_.Trim() })
+$switched = [Array]::IndexOf($lines, ($lines | Where-Object { $_ -like "Window style: $theme,*" } | Select-Object -First 1))
+$after = @(if ($switched -ge 0) { $lines[$switched..($lines.Count - 1)] | Where-Object { $_ -like 'Window frame: *' } })
+if ($switched -lt 0) { Fail "the window's style did not turn $theme (MITCAD_TEST_COLOR_SCHEME)" }
+elseif ($after.Count -ge 1 -and $after[0] -match $applied) { Pass "after the switch to ${theme}: $($after[0])" }
+else { Fail "the window frame was not applied again after the switch to ${theme}: '$($after -join ' | ')'" }
+$refused = @(Frame-Lines $log | Where-Object { $_ -notmatch $applied })
+if ($refused.Count -eq 0) { Pass "the window frame was never refused ($theme)" }
+else { Fail "the window frame was refused ($theme): '$($refused -join ' | ')'" }
 
 Write-Host '--- Open a project file, then change a parameter'
 $file = Join-Path $Out 'block.mitcad'
@@ -317,6 +351,66 @@ Expect-Log $log 'Recomputed 1 feature\(s\)' 'only the sketch computed'
 $stored = Check-Shot 'store2'
 if ($low -and $stored -and $stored.Shades.Count -eq $low.Shades.Count) {
   Pass 'the stored block is drawn as the computed one'
+}
+
+Write-Host '--- A fillet whose edges a sketch change renamed (mitcad#272)'
+# mitcad-cli builds it (as tools/cli/tests/renamed_face_refs.json): an
+# outline whose corner at (0, 40) is the arc c11, circles at the three other
+# corners, extruded; Fillet1 rounds the edges where the circles meet the
+# lines next to the arc; then the arc goes and the circle c15 takes its
+# place, which renames the lines' faces. Opened, the fillet finds its edges
+# under their new names and the timeline and the warnings badge show its
+# warning.
+$cli = @('mitcad-cli.exe', '..\tools\cli\mitcad-cli.exe', 'tools\cli\mitcad-cli.exe') |
+  ForEach-Object { Join-Path (Split-Path $App) $_ } | Where-Object { Test-Path $_ } | Select-Object -First 1
+if (-not $cli) { Fail "no mitcad-cli.exe beside $App" }
+else {
+  $commands = Join-Path $Out 'renamed.json'
+  $renamed = Join-Path $Out 'renamed.mitcad'
+  Remove-Item -Force $renamed -ErrorAction SilentlyContinue
+  @'
+[
+  {"cmd": "add_feature", "def": {"type": "sketch", "plane": "xy", "entities": [
+    {"id": "p1", "type": "point", "at": [0, 0]},
+    {"id": "p2", "type": "point", "at": [60, 0]},
+    {"id": "p3", "type": "point", "at": [60, 40]},
+    {"id": "p4", "type": "point", "at": [5, 40]},
+    {"id": "p5", "type": "point", "at": [0, 35]},
+    {"id": "p6", "type": "point", "at": [5, 35]},
+    {"id": "c7", "type": "line", "start": "p1", "end": "p2"},
+    {"id": "c8", "type": "line", "start": "p2", "end": "p3"},
+    {"id": "c9", "type": "line", "start": "p3", "end": "p4"},
+    {"id": "c10", "type": "line", "start": "p5", "end": "p1"},
+    {"id": "c11", "type": "arc", "center": "p6", "start": "p4", "end": "p5"},
+    {"id": "c12", "type": "circle", "center": "p1", "radius": 5},
+    {"id": "c13", "type": "circle", "center": "p2", "radius": 5},
+    {"id": "c14", "type": "circle", "center": "p3", "radius": 5}]}},
+  {"cmd": "add_feature", "def": {"type": "extrude",
+    "profiles": [{"sketch": "F1", "region": "r{c7[c12,c13],c8[c13,c14],c9[c14,c11],c10[c11,c12],c11[c9,c10],c12[c7,c10],c13[c8,c7],c14[c9,c8]}"}],
+    "extent": {"type": "distance", "distance": 10}, "operation": "new_body"}},
+  {"cmd": "add_feature", "def": {"type": "fillet", "body": "F2.b0", "radius": 1, "edges": [
+    "E{F2:side(c14[c9,c8])|F2:side(c9[c14,c11])}",
+    "E{F2:side(c10[c11,c12])|F2:side(c12[c7,c10])}"]}},
+  {"expect": {"feature": "Fillet1", "status": "ok"}},
+  {"cmd": "sketch.remove", "sketch": "F1", "items": ["c11"]},
+  {"cmd": "sketch.add_circle", "sketch": "F1", "center": [0, 40], "diameter": 12},
+  {"expect": {"feature": "Fillet1", "status": "warning"}}
+]
+'@ | Set-Content -Encoding ascii $commands
+  $made = & $cli run $commands --save $renamed
+  if ($LASTEXITCODE -ne 0 -or -not (Test-Path $renamed)) { Fail "mitcad-cli: $($made -join ' / ')" }
+  else {
+    $driver = Join-Path $Out 'renamed.script'
+    @'
+expect-log 'Feature warnings: Fillet1: edge E\{F2:side\(c14\[c9,c8\]\)\|F2:side\(c9\[c14,c11\]\)\} found as E\{F2:side\(c14\[c9,c8\]\)\|F2:side\(c9\[c14,c15\]\)\} after a change in Sketch1' 30
+expect-log 'Warnings badge: Fillet1: edge E\{F2:side\(c14\[c9,c8\]\)\|F2:side\(c9\[c14,c11\]\)\} found as ' 30
+expect-log 'found as E\{F2:side\(c10\[c15,c12\]\)\|F2:side\(c12\[c7,c10\]\)\} after a change in Sketch1' 30
+'@ | Set-Content -Encoding ascii $driver
+    $log = Invoke-Mitcad 'renamed' @('--no-recovery', '--open', $renamed) @{ 'MITCAD_TEST_INPUT' = $driver }
+    Expect-Log $log 'Opened .*renamed\.mitcad' 'the design with the renamed faces opened'
+    if ($log.Contains('Recompute failed')) { Fail 'a recompute of the design with the renamed faces failed' }
+    Expect-Log $log 'TestDriver: done' 'the timeline and the warnings badge show the fillet that found its renamed edges'
+  }
 }
 
 # A crash (mitcad#76), of the window's thread and of the model's worker

@@ -12,7 +12,8 @@
 //! ```text
 //! u32 1 | u32 3 | u32 n
 //! n × entity: u32 m, m × name
-//!   name: str8 tag | u32 kind | u32 c | c × i32 op | u32 0
+//!   name: str8 tag | u32 kind | u32 c | c × i32 op | u32 word
+//!   (word: 0, or flags in some sheet-metal flanges' edges; not read)
 //! u32 n2 | n2 × entity (mostly none)
 //! str8 "<type>_recipe_data" | ... (more data, not read)
 //! ```
@@ -85,9 +86,11 @@ fn name_at(d: &[u8], p: usize) -> Option<(EntityName, usize)> {
         ops.push(i64::from(i32_at(d, q)?));
         q += 4;
     }
-    if u32_at(d, q)? != 0 {
-        return None;
-    }
+    // A word after the operations: 0 in most names; flags such as
+    // `0x04000102` in the edge recipes of some sheet-metal flanges
+    // (mitcad#211), as the blobs' own names have a word there that is read
+    // over (`crate::names::attribute_names`).
+    u32_at(d, q)?;
     let name = EntityName {
         tag,
         kind: i64::from(kind),
@@ -423,10 +426,12 @@ mod tests {
     #[test]
     fn refuses_other_layouts() {
         let mut d = recipe_data(7, "face", &[&[("1", &[301])]]);
-        // A name whose closing word is not 0.
+        // A name whose closing word is not 0 (flags, as in some
+        // sheet-metal flanges' edges, mitcad#211) reads as the same name.
         let at = d.len() - 8 - 16 - 4 - 4 - 4;
         d[at] = 5;
-        assert_eq!(parse_after(&d, 21), None);
+        let r = parse_after(&d, 21).unwrap();
+        assert_eq!(r.entities[0][0].ops, vec![301]);
         let d = recipe_data(7, "face", &[]);
         assert_eq!(parse_after(&d, 21).unwrap().entities.len(), 0);
         let mut d = recipe_data(7, "face", &[]);

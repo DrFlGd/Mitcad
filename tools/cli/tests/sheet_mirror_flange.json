@@ -1,0 +1,14 @@
+[
+  {"comment":"SPDX-License-Identifier: MIT. A mirror of a flange (mitcad#242): t=1, r=1, K=0.4, rectangular reliefs 1 x 1. A flange at the edge x=0 of the 40 x 20 panel, 10 wide (offsets 5 and 5), 10 long: 800 - 2 (reliefs) + 7.5 pi + 100. Mirrored about x=20 the copy is a flange built on the edge x=40, turning the other way round the panel: 996 + 15 pi in all, two bends; the copy follows a length edit of the original."},
+  {"cmd":"add_feature","def":{"type":"sheet_rules","thickness":1,"bend_radius":1,"allowance":{"type":"k_factor","k":0.4},"reference_side":"front","bend_relief":{"type":"rectangular","width":1,"depth":1},"corner_relief":{"type":"round","width":2,"depth":2}}},
+  {"cmd":"sketch.create"},
+  {"cmd":"sketch.add_rectangle","sketch":"F2","corner":[0,0],"width":40,"height":20},
+  {"cmd":"add_feature","def":{"type":"sheet_face","rules":"F1","profiles":[{"sketch":"F2","region":"r{c1[c4,c2],c2[c1,c3],c3[c2,c4],c4[c3,c1]}"}]}},
+  {"cmd":"add_feature","def":{"type":"sheet_flange","body":"F3.b0","boundary":{"panel":{"feature":"F3","slot":0},"curve":{"type":"sketch","sketch":"F2","segment":"c4[c3,c1]"}},"angle":1.5707963267948966,"length":{"mode":"tangent","value":10},"position":"edge","offsets":{"start":5,"end":5}}},
+  {"expect":{"feature":"F4","status":"ok","body":"F3.b0","volume":921.5619449019234}},
+  {"cmd":"add_feature","def":{"type":"mirror","objects":{"type":"features","features":["F4"]},"plane":{"origin":[20,0,0],"normal":[1,0,0],"x_axis":[0,1,0]},"combine":false,"compute":"adjust","original_bodies":true}},
+  {"expect":{"feature":"F5","status":"ok","body":"F3.b0","volume":1043.1238898038469,"min":[-2,0,0],"max":[42,20,12]}},
+  {"expect":{"query":{"query":"sheet_state","body":"F3.b0"},"result":{"status":"valid","bends":[{},{}]}}},
+  {"cmd":"edit_feature","uid":"F4","def":{"type":"sheet_flange","body":"F3.b0","boundary":{"panel":{"feature":"F3","slot":0},"curve":{"type":"sketch","sketch":"F2","segment":"c4[c3,c1]"}},"angle":1.5707963267948966,"length":{"mode":"tangent","value":15},"position":"edge","offsets":{"start":5,"end":5}}},
+  {"expect":{"feature":"F5","status":"ok","body":"F3.b0","volume":1143.1238898038469}}
+]

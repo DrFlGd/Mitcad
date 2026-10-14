@@ -305,9 +305,12 @@ fn edge_curves_of<K: Kernel>(
 ) -> Result<Vec<PathCurve>, String> {
     let mut pieces = Vec::new();
     for edge in edges {
+        // An edge a sketch change renamed is found again (mitcad#272); the
+        // piece keeps the stored name.
+        let found = super::renamed::edge_for(ctx, shape, edge).map_err(|e| format!("path: {e}"))?;
         let curves = ctx
             .kernel
-            .curves_of(shape, &TopoName::Edge(edge.clone()))
+            .curves_of(shape, &TopoName::Edge(found))
             .map_err(|e| format!("path: {e}"))?;
         let mut curves = curves.into_iter();
         match (curves.next(), curves.next()) {

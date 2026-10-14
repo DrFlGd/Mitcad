@@ -1111,3 +1111,324 @@ fn a_tangent_distance_is_the_gap_between_a_circle_and_a_line() {
     );
     assert!(!error.is_empty());
 }
+
+/// A trapezoid's lower left corner (mitcad#296): the fixed bottom line c1
+/// from (0, 0) to (40, 0) and the side c4 from a free point at (10, 20)
+/// down to the corner, 22.36 long. Their directions make 116.57 degrees,
+/// the inner corner 63.43. Returns the document and the side's free point.
+fn trapezoid_corner() -> (Document<MockKernel>, String) {
+    let mut d = with_sketch();
+    command(
+        &mut d,
+        json!({"cmd": "sketch.add_line", "sketch": "F1", "start": [0, 0], "end": [40, 0]}),
+    );
+    let side = command(
+        &mut d,
+        json!({"cmd": "sketch.add_line", "sketch": "F1", "start": [10, 20], "end": "p2"}),
+    );
+    assert_eq!(side["entities"], json!(["p5", "c4"]), "{side}");
+    command(
+        &mut d,
+        json!({"cmd": "sketch.set_fixed", "sketch": "F1", "entities": ["c1"]}),
+    );
+    command(
+        &mut d,
+        json!({"cmd": "sketch.add_dimension", "sketch": "F1",
+               "dimension": {"type": "length", "line": "c4"}, "value": 500f64.sqrt()}),
+    );
+    (d, "p5".to_owned())
+}
+
+fn angle(reverse: Option<[bool; 2]>) -> Value {
+    let mut dimension = json!({"type": "angle", "a": "c1", "b": "c4"});
+    if let Some([a, b]) = reverse {
+        dimension["reverse_a"] = json!(a);
+        dimension["reverse_b"] = json!(b);
+    }
+    dimension
+}
+
+#[test]
+fn an_angle_dimension_measures_on_its_side() {
+    let (mut d, _) = trapezoid_corner();
+    let inner = (2.0f64).atan();
+    let mut ids = Vec::new();
+    for reverse in [
+        None,
+        Some([false, false]),
+        Some([false, true]),
+        Some([true, false]),
+        Some([true, true]),
+    ] {
+        let added = command(
+            &mut d,
+            json!({"cmd": "sketch.add_dimension", "sketch": "F1",
+                   "dimension": angle(reverse), "driven": true}),
+        );
+        ids.push(added["dimensions"][0].as_str().unwrap().to_owned());
+    }
+    let s = sketch(&d, "F1");
+    // Without a side (as stored before): between the directions, as before.
+    let expected = [PI - inner, PI - inner, inner, inner, PI - inner];
+    for (id, expected) in ids.iter().zip(expected) {
+        assert!(close(measured(&s, id), expected), "{id}: {s}");
+    }
+    // The query gives the side as it was given.
+    let dimension = |id: &str| {
+        s["dimensions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|x| x["id"] == id)
+            .unwrap()
+            .clone()
+    };
+    let none = dimension(&ids[0]);
+    assert!(
+        none.get("reverse_a").is_none() && none.get("reverse_b").is_none(),
+        "{none}"
+    );
+    let given = dimension(&ids[2]);
+    assert_eq!(
+        (&given["reverse_a"], &given["reverse_b"]),
+        (&json!(false), &json!(true))
+    );
+}
+
+#[test]
+fn an_angle_dimension_keeps_its_side_when_solved_and_edited() {
+    let length = 500f64.sqrt();
+    let polar = |degrees: f64| {
+        let r = degrees.to_radians();
+        [length * r.cos(), length * r.sin()]
+    };
+    let near = |p: [f64; 2], q: [f64; 2]| {
+        assert!(close(p[0], q[0]) && close(p[1], q[1]), "{p:?} != {q:?}");
+    };
+    // The inner corner at 100 degrees: the side opens beyond the vertical,
+    // although 100 is closer to the directions' 116.57.
+    let (mut d, free) = trapezoid_corner();
+    let added = command(
+        &mut d,
+        json!({"cmd": "sketch.add_dimension", "sketch": "F1",
+               "dimension": angle(Some([false, true])), "value": "100 deg"}),
+    );
+    near(point_at(&sketch(&d, "F1"), &free), polar(100.0));
+    // A new value keeps the side, also one closer to the other angle.
+    let name = added["parameters"][0].as_str().unwrap().to_owned();
+    for degrees in [30.0, 150.0, 63.0] {
+        command(
+            &mut d,
+            json!({"cmd": "set_parameter", "name": name, "value": format!("{degrees} deg")}),
+        );
+        near(point_at(&sketch(&d, "F1"), &free), polar(degrees));
+    }
+    // The other side of the side line: from the bottom line's extension.
+    let (mut d, free) = trapezoid_corner();
+    command(
+        &mut d,
+        json!({"cmd": "sketch.add_dimension", "sketch": "F1",
+               "dimension": angle(Some([true, true])), "value": "100 deg"}),
+    );
+    near(point_at(&sketch(&d, "F1"), &free), polar(80.0));
+    // Without a side, as before: the angle closer to the value where the
+    // lines are, here the directions' (the side at 80 degrees).
+    let (mut d, free) = trapezoid_corner();
+    command(
+        &mut d,
+        json!({"cmd": "sketch.add_dimension", "sketch": "F1",
+               "dimension": angle(None), "value": "100 deg"}),
+    );
+    near(point_at(&sketch(&d, "F1"), &free), polar(80.0));
+}
+
+// --- A partly implied constraint replaces the one it makes redundant (mitcad#287)
+
+/// A projected line along the x axis from (0, 0) to (100, 0) (p1, p2 and
+/// c3, fixed reference geometry) and a rectangle from (0, 0) to (100, 30)
+/// standing on it, its left corner coincident with the line's left end.
+/// With the rectangle's bottom line, its Horizontal and its two bottom
+/// corners.
+fn rectangle_on_projected_line() -> (Document<MockKernel>, String, String, String, String) {
+    let mut d = doc();
+    command(
+        &mut d,
+        json!({"cmd": "add_feature", "def": {"type": "sketch", "plane": "xy", "entities": [
+            {"id": "p1", "type": "point", "at": [0.0, 0.0], "fixed": true, "reference": true},
+            {"id": "p2", "type": "point", "at": [100.0, 0.0], "fixed": true, "reference": true},
+            {"id": "c3", "type": "line", "start": "p1", "end": "p2", "fixed": true,
+             "reference": true}]}}),
+    );
+    // The projected line's own fixed ends and fixed curve: what the solver
+    // reports as redundant before anything is drawn.
+    let base = sketch(&d, "F1")["redundant"].clone();
+    let r = command(
+        &mut d,
+        json!({"cmd": "sketch.rectangle", "sketch": "F1", "mode": "two_point",
+               "a": [0, 0], "b": [100, 30]}),
+    );
+    let bottom = made(&r)[0].clone();
+    let horizontal = r["constraints"][0].as_str().unwrap().to_owned();
+    let s = sketch(&d, "F1");
+    let left = point_id_of(&s, [0.0, 0.0], false);
+    let right = point_id_of(&s, [100.0, 0.0], false);
+    assert_eq!(constraint(&s, &horizontal)["type"], "horizontal", "{s}");
+    assert_eq!(constraint(&s, &horizontal)["line"], bottom.as_str(), "{s}");
+    command(
+        &mut d,
+        json!({"cmd": "sketch.add_constraint", "sketch": "F1",
+               "constraint": {"type": "coincident", "point": left, "entity": "p1"}}),
+    );
+    let s = sketch(&d, "F1");
+    assert_eq!(s["redundant"], base, "{s}");
+    (d, bottom, horizontal, left, right)
+}
+
+/// The id of the point at a position: a projected one or one of the
+/// sketch's own.
+fn point_id_of(s: &Value, at: [f64; 2], reference: bool) -> String {
+    s["entities"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|e| {
+            e["type"] == "point"
+                && e["reference"].as_bool().unwrap_or(false) == reference
+                && close(e["at"][0].as_f64().unwrap(), at[0])
+                && close(e["at"][1].as_f64().unwrap(), at[1])
+        })
+        .unwrap_or_else(|| panic!("no point at {at:?} in {s}"))["id"]
+        .as_str()
+        .unwrap()
+        .to_owned()
+}
+
+fn constraint(s: &Value, id: &str) -> Value {
+    s["constraints"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|k| k["id"] == id)
+        .cloned()
+        .unwrap_or(Value::Null)
+}
+
+#[test]
+fn a_partly_implied_coincident_replaces_the_constraint_it_makes_redundant() {
+    let (mut d, _, horizontal, _, right) = rectangle_on_projected_line();
+    let before = sketch(&d, "F1");
+    let dof = before["dof"].as_u64().unwrap();
+    // The right corner onto the line's right end: its height already
+    // follows from the left corner and the Horizontal, its x does not.
+    let result = command(
+        &mut d,
+        json!({"cmd": "sketch.add_constraint", "sketch": "F1",
+               "constraint": {"type": "coincident", "point": right, "entity": "p2"}}),
+    );
+    let k = result["constraints"][0].as_str().unwrap().to_owned();
+    assert_eq!(
+        result["implied_removed"],
+        json!([{"constraint": horizontal, "type": "horizontal"}]),
+        "{result}"
+    );
+    assert_eq!(result["removed"], json!([horizontal]), "{result}");
+    let s = sketch(&d, "F1");
+    assert_eq!(constraint(&s, &horizontal), Value::Null, "{s}");
+    assert_eq!(constraint(&s, &k)["type"], "coincident", "{s}");
+    assert_eq!(
+        s["redundant"], before["redundant"],
+        "nothing more redundant: {s}"
+    );
+    assert_eq!(s["conflicts"], json!([]), "{s}");
+    assert_eq!(s["dof"].as_u64().unwrap(), dof - 1, "{s}");
+    assert!(s["error"].is_null(), "{s}");
+    let at = point_at(&s, &right);
+    assert!(close(at[0], 100.0) && close(at[1], 0.0), "{at:?}");
+    // One undo takes both back.
+    command(&mut d, json!({"cmd": "undo"}));
+    let s = sketch(&d, "F1");
+    assert_eq!(constraint(&s, &horizontal)["type"], "horizontal", "{s}");
+    assert_eq!(constraint(&s, &k), Value::Null, "{s}");
+    assert_eq!(s["dof"], before["dof"], "{s}");
+    assert_eq!(s["constraints"], before["constraints"], "{s}");
+}
+
+#[test]
+fn a_coincident_against_a_dimension_is_still_refused() {
+    // A width that contradicts the line's length: refused, nothing removed.
+    let (mut d, bottom, horizontal, _, right) = rectangle_on_projected_line();
+    command(
+        &mut d,
+        json!({"cmd": "sketch.add_dimension", "sketch": "F1",
+               "dimension": {"type": "length", "line": bottom}, "value": 80}),
+    );
+    let before = sketch(&d, "F1");
+    let error = rejected(
+        &mut d,
+        json!({"cmd": "sketch.add_constraint", "sketch": "F1",
+               "constraint": {"type": "coincident", "point": right, "entity": "p2"}}),
+    );
+    assert!(
+        error.contains("over-constrain") || error.contains("cannot be solved"),
+        "{error}"
+    );
+    let s = sketch(&d, "F1");
+    assert_eq!(s["constraints"], before["constraints"], "{s}");
+    assert_eq!(constraint(&s, &horizontal)["type"], "horizontal", "{s}");
+
+    // A width that agrees with it: the coincident then follows from the
+    // dimension too, which is never removed, so it is refused as well and
+    // the Horizontal stays.
+    let (mut d, bottom, horizontal, _, right) = rectangle_on_projected_line();
+    command(
+        &mut d,
+        json!({"cmd": "sketch.add_dimension", "sketch": "F1",
+               "dimension": {"type": "length", "line": bottom}, "value": 100}),
+    );
+    let before = sketch(&d, "F1");
+    let error = rejected(
+        &mut d,
+        json!({"cmd": "sketch.add_constraint", "sketch": "F1",
+               "constraint": {"type": "coincident", "point": right, "entity": "p2"}}),
+    );
+    assert!(error.contains("would over-constrain"), "{error}");
+    let s = sketch(&d, "F1");
+    assert_eq!(s["constraints"], before["constraints"], "{s}");
+    assert_eq!(constraint(&s, &horizontal)["type"], "horizontal", "{s}");
+}
+
+#[test]
+fn a_constraint_the_others_imply_in_full_is_still_refused() {
+    // Parallel bottom and top lines follow from their Horizontals and take
+    // nothing away: no Horizontal is traded for it.
+    let (mut d, bottom, _, _, _) = rectangle_on_projected_line();
+    let before = sketch(&d, "F1");
+    let top = before["entities"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|e| {
+            e["type"] == "line"
+                && e["id"] != bottom.as_str()
+                && before["constraints"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|k| k["type"] == "horizontal" && k["line"] == e["id"])
+        })
+        .unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let error = rejected(
+        &mut d,
+        json!({"cmd": "sketch.add_constraint", "sketch": "F1",
+               "constraint": {"type": "parallel", "a": bottom, "b": top}}),
+    );
+    assert!(error.contains("would over-constrain"), "{error}");
+    assert_eq!(
+        sketch(&d, "F1")["constraints"],
+        before["constraints"],
+        "nothing removed"
+    );
+}

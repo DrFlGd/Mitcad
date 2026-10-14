@@ -4,6 +4,9 @@
 #include <thread>
 
 #include <BRepBuilderAPI_Copy.hxx>
+#include <BRep_Builder.hxx>
+#include <TopExp_Explorer.hxx>
+#include <TopoDS.hxx>
 #include <BRepBuilderAPI_MakeVertex.hxx>
 #include <BRepExtrema_DistShapeShape.hxx>
 
@@ -155,6 +158,35 @@ void test_new_faces() {
   CHECK(new_faces({}, rounded->occt(), 4).size() == 7);
 }
 
+// The volume a change makes from the faces it changed (mitcad#235): the
+// rounding takes r^2 (1 - pi / 4) along the 60 mm edge; against a copy of
+// the block (its faces rebuilt from the same data) the same, as the faces
+// the copies share cancel; nothing against itself; without edges looser
+// than 1e-7 mm little slack, and with every edge loosened to 0.01 mm
+// a slack of a third of their length times that times their distance from
+// the box's centre.
+void test_changed_volume() {
+  const ShapePtr block = extrude("F2", {rectangle(1, 0, 0, 60, 40)}, 0, 20);
+  const double r = 5;
+  const ShapePtr rounded = fillet("F5", *block, {edge(end_cap("F2", 1), side("F2", 1, 0))}, r);
+  const double taken = r * r * (1.0 - kPi / 4.0) * 60.0;
+  const ChangedVolume changed = changed_volume({block->occt()}, {rounded->occt()});
+  CHECK_NEAR(changed.volume, -taken);
+  CHECK(changed.slack < 1e-2);
+  const TopoDS_Shape copy = BRepBuilderAPI_Copy(block->occt()).Shape();
+  CHECK_NEAR(changed_volume({copy}, {rounded->occt()}).volume, -taken);
+  CHECK_NEAR(changed_volume({rounded->occt()}, {rounded->occt()}).volume, 0.0);
+  CHECK_NEAR(changed_volume({rounded->occt()}, {block->occt()}).volume, taken);
+  const TopoDS_Shape loose = BRepBuilderAPI_Copy(rounded->occt()).Shape();
+  BRep_Builder builder;
+  for (TopExp_Explorer e(loose, TopAbs_EDGE); e.More(); e.Next()) {
+    builder.UpdateEdge(TopoDS::Edge(e.Current()), 0.01);
+  }
+  const ChangedVolume slack = changed_volume({block->occt()}, {loose});
+  CHECK_NEAR(slack.volume, -taken);
+  CHECK(slack.slack > 1.0 && slack.slack > 100.0 * changed.slack);
+}
+
 } // namespace
 
 void query_tests() {
@@ -163,6 +195,7 @@ void query_tests() {
   test_face_and_edge_infos();
   test_measured_from_threads();
   test_new_faces();
+  test_changed_volume();
 }
 
 } // namespace test

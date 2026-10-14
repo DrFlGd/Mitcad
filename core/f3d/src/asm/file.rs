@@ -42,12 +42,15 @@ pub struct Record {
     /// The record lies in the history section (after
     /// `Begin-of-ASM-History-Data`).
     pub in_history: bool,
+    /// Where the last part of the type name starts ([`Record::base_type`],
+    /// asked for every entity a reader walks, mitcad#119).
+    base: usize,
 }
 
 impl Record {
     /// The last part of the type name: `surface` for `plane-surface`.
     pub fn base_type(&self) -> &str {
-        self.type_name.rsplit('-').next().unwrap_or(&self.type_name)
+        &self.type_name[self.base..]
     }
 
     /// The first part of the type name: `plane` for `plane-surface`.
@@ -254,6 +257,7 @@ impl AsmFile {
             }
             let end = tokens.len();
             records.push(Record {
+                base: name.rfind('-').map_or(0, |i| i + 1),
                 type_name: name,
                 fields: start..end,
                 offset,

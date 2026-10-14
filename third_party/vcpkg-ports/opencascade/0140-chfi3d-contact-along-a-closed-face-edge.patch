@@ -1,0 +1,313 @@
+Mitcad's patch to OCCT 8.0.1, under OCCT's licence:
+SPDX-License-Identifier: LGPL-2.1-only WITH OCCT-exception-1.0
+
+Fillets and chamfers: a contact along a closed or circular edge of its
+face, the face exactly as wide as the blend (mitcad#240).
+
+The cases: the inner rim of a step ring (a hole above a counterbore)
+chamfered by the ring's width, the rim a whole circle or two arcs; the
+top of a lug inside a bore, a ring sector as wide as the chamfer of its
+edge with the bore's wall. 0014 splits an analytic blend whose contact
+line lies on its face's boundary by the domains of the same line moved a
+little into the face, and stores a blend whose contact covers a whole edge
+of its face as a blend on that edge (the face is dropped). That handled
+lines and open edges only:
+
+- A circular contact (on a plane, a blend along a circular edge) is moved
+  into the face by changing its radius; translating it crossed the
+  boundary (HatchOnBoundary). A whole circle is hatched from a point
+  outside the face, so that no domain runs across its start (the
+  hatcher's domain there had no first point), and a domain across the
+  start of a closed line is sampled across it. A closed line inside the
+  face all round, on the boundary at every sample, is one domain.
+- A line on the boundary that the hatcher did split, but into partial
+  domains (inside along some of it, on the boundary along the rest), is
+  hatched on the boundary as well (LineOnBoundary: on the boundary at two
+  of 15 samples or more); a line partly along an edge keeps the hatcher's
+  domains, as the line moved inside has domains off the boundary.
+- On a closed spine, a piece reaching once round from before the start
+  of the spine's first edge (the contact on a cylinder whose seam is not
+  at the spine's vertex) had both ends at the same point of the spine and
+  was dropped; its start is now taken a period earlier (SplitKPart), as
+  for a piece whose ends came in reverse order.
+- A closed contact along a closed edge (or the pieces of one) counts as
+  along the edge (runsAlongEdge accepted open edges only). Its ends at the
+  edge's vertex are that vertex (in the stripe's points too), the
+  contact's curve is cut at the vertex where the vertex lies inside it,
+  and where a closed spine starts elsewhere on the edge, the edge is cut
+  there with none of it kept (ChFi3d_ContactsAlongFaceEdges).
+
+Before, the chamfers of the cases failed (the blend was walked along the
+boundary: "Path failed", or not implemented for chamfers) or gave an
+invalid shape (the face beyond the edge reduced to the contact's edge).
+Still open: a whole closed contact along a closed edge whose stripe
+starts away from the edge's vertex and away from the seam of the face
+beyond gave an unorientable face; 0144 builds it.
+
+diff --git a/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_0.cxx b/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_0.cxx
+index d867df2..e97ac50 100644
+--- a/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_0.cxx
++++ b/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_0.cxx
+@@ -2875,15 +2875,24 @@ static bool runsAlongEdge(const occ::handle<Geom_Curve>& C,
+ {
+   TopoDS_Vertex V1, V2;
+   TopExp::Vertices(E, V1, V2);
+-  if (V1.IsNull() || V2.IsNull() || V1.IsSame(V2))
++  if (V1.IsNull() || V2.IsNull())
+   {
+     return false;
+   }
+   const gp_Pnt A = BRep_Tool::Pnt(V1), B = BRep_Tool::Pnt(V2);
+   const gp_Pnt P1 = C->Value(T1), P2 = C->Value(T2);
+   const double aTol = Tol + std::max(BRep_Tool::Tolerance(V1), BRep_Tool::Tolerance(V2));
+-  if (!((P1.Distance(A) <= aTol && P2.Distance(B) <= aTol)
+-        || (P1.Distance(B) <= aTol && P2.Distance(A) <= aTol)))
++  if (V1.IsSame(V2))
++  {
++    // A closed edge: a closed contact of a closed spine runs along it all
++    // round, wherever it starts.
++    if (P1.Distance(P2) > aTol)
++    {
++      return false;
++    }
++  }
++  else if (!((P1.Distance(A) <= aTol && P2.Distance(B) <= aTol)
++             || (P1.Distance(B) <= aTol && P2.Distance(A) <= aTol)))
+   {
+     return false;
+   }
+@@ -3129,6 +3138,55 @@ void ChFi3d_ContactsAlongFaceEdges(TopOpeBRepDS_DataStructure&       DStr,
+         Fd->ChangeIndexOfS2(DStr.AddShape(Fv));
+         Fd->SetIndexOfC2(DStr.AddShape(E));
+       }
++      if (TopExp::FirstVertex(E).IsSame(TopExp::LastVertex(E)))
++      {
++        // A contact along a closed edge: its ends at the edge's vertex (where
++        // a closed spine starts) are that vertex.
++        const TopoDS_Vertex aV = TopExp::FirstVertex(E);
++        for (const bool isFirst : {true, false})
++        {
++          ChFiDS_CommonPoint& CP = Fd->ChangeVertex(isFirst, ons);
++          if (!CP.IsOnArc() && CP.Point().Distance(BRep_Tool::Pnt(aV)) <= Tol3d + BRep_Tool::Tolerance(aV))
++          {
++            CP.SetVertex(aV);
++            if ((isFirst && j == 1) || (!isFirst && j == SeqFil.Length()))
++            {
++              CorDat->SetIndexPoint(DStr.AddShape(aV), isFirst, ons);
++            }
++          }
++          else if (!CP.IsOnArc() && isFirst && j == 1 && aSpine->IsPeriodic())
++          {
++            // The start of a closed spine elsewhere on the edge: the edge is
++            // cut there, none of it kept beside the blend.
++            double                        fe = 0., le = 0.;
++            const occ::handle<Geom_Curve> aCE = BRep_Tool::Curve(E, fe, le);
++            GeomAPI_ProjectPointOnCurve   aPr(CP.Point(), aCE, fe, le);
++            if (aPr.NbPoints() > 0 && aPr.LowerDistance() <= Tol3d)
++            {
++              const int anIE = DStr.AddShape(E);
++              DStr.ChangeShapeInterferences(anIE).Append(ChFi3d_FilPointInDS(TopAbs_EXTERNAL,
++                                                                             anIE,
++                                                                             CorDat->IndexPoint(true, ons),
++                                                                             aPr.LowerDistanceParameter(),
++                                                                             false));
++            }
++          }
++        }
++        // The vertex inside the contact: the contact's edge is split there.
++        GeomAPI_ProjectPointOnCurve aProj(BRep_Tool::Pnt(aV), C, T1, T2);
++        if (aProj.NbPoints() > 0 && aProj.LowerDistance() <= Tol3d + BRep_Tool::Tolerance(aV))
++        {
++          const double tV = aProj.LowerDistanceParameter();
++          if (tV > T1 + Precision::PConfusion() && tV < T2 - Precision::PConfusion())
++          {
++            const int IV = DStr.AddShape(aV);
++            NCollection_List<occ::handle<TopOpeBRepDS_Interference>>& Li =
++              DStr.ChangeCurveInterferences(FI.LineIndex());
++            Li.Append(ChFi3d_FilPointInDS(TopAbs_REVERSED, FI.LineIndex(), IV, tV, true));
++            Li.Append(ChFi3d_FilPointInDS(TopAbs_FORWARD, FI.LineIndex(), IV, tV, true));
++          }
++        }
++      }
+       if (isPart)
+       {
+         // An inner end is a point on the edge, shared with the neighbour
+diff --git a/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_SpKP.cxx b/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_SpKP.cxx
+index 13ccb0a..d2139e2 100644
+--- a/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_SpKP.cxx
++++ b/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_SpKP.cxx
+@@ -29,8 +29,11 @@
+ #include <ElCLib.hxx>
+ #include <ElSLib.hxx>
+ #include <BRep_Tool.hxx>
++#include <Geom2d_Circle.hxx>
+ #include <Geom2d_Curve.hxx>
++#include <Geom2d_TrimmedCurve.hxx>
+ #include <Geom2dAPI_ProjectPointOnCurve.hxx>
++#include <gp_Circ2d.hxx>
+ #include <Geom2dAdaptor_Curve.hxx>
+ #include <Geom2dHatch_Hatcher.hxx>
+ #include <Geom2dHatch_Intersector.hxx>
+@@ -684,10 +687,48 @@ static int HatchOnBoundary(Geom2dHatch_Hatcher&                    H,
+     return 0;
+   }
+   const gp_Vec2d aN = gp_Vec2d(-aT.Y(), aT.X()) / aT.Magnitude();
++  // A circle (the contact of a blend along a circular edge on a plane) is
++  // moved into the face by changing its radius, a line by translating it.
++  occ::handle<Geom2d_Curve> aBasis = C;
++  if (const occ::handle<Geom2d_TrimmedCurve> aTrim = occ::down_cast<Geom2d_TrimmedCurve>(C))
++  {
++    aBasis = aTrim->BasisCurve();
++  }
++  const occ::handle<Geom2d_Circle> aCircle = occ::down_cast<Geom2d_Circle>(aBasis);
+   for (const double aSide : {1., -1.})
+   {
+-    const occ::handle<Geom2d_Curve> aCs =
+-      occ::down_cast<Geom2d_Curve>(C->Translated(aN * (aSide * Shift)));
++    occ::handle<Geom2d_Curve> aCs;
++    if (!aCircle.IsNull())
++    {
++      const double aR = aCircle->Radius() + aSide * Shift;
++      if (aR <= Shift)
++      {
++        continue;
++      }
++      aCs = new Geom2d_Circle(gp_Circ2d(aCircle->Position(), aR));
++      if (aBasis != C)
++      {
++        aCs = new Geom2d_TrimmedCurve(aCs, f, l);
++      }
++      else
++      {
++        // A whole circle is hatched from a point outside the face, so that
++        // no domain runs across its start.
++        for (int k = 0; k < 32; k++)
++        {
++          const double u = aCs->FirstParameter() + aCs->Period() * k / 32.;
++          if (I->Classify(aCs->Value(u), Precision::Confusion(), false) == TopAbs_OUT)
++          {
++            aCs = new Geom2d_TrimmedCurve(aCs, u, u + aCs->Period());
++            break;
++          }
++        }
++      }
++    }
++    else
++    {
++      aCs = occ::down_cast<Geom2d_Curve>(C->Translated(aN * (aSide * Shift)));
++    }
+     if (aCs.IsNull())
+     {
+       continue;
+@@ -700,12 +741,27 @@ static int HatchOnBoundary(Geom2dHatch_Hatcher&                    H,
+     for (int i = 1; i <= aNb && onBoundary; i++)
+     {
+       const HatchGen_Domain& aDom = H.Domain(iHs, i);
++      if (aNb == 1 && !aDom.HasFirstPoint() && !aDom.HasSecondPoint() && C->IsPeriodic())
++      {
++        // A closed line inside the face all round.
++        for (int k = 0; k < 8 && onBoundary; k++)
++        {
++          onBoundary =
++            I->Classify(C->Value(f + (l - f) * k / 8.), Precision::Confusion(), false) == TopAbs_ON;
++        }
++        break;
++      }
+       if (!aDom.HasFirstPoint() || !aDom.HasSecondPoint())
+       {
+         onBoundary = false;
+         break;
+       }
+-      const double a = aDom.FirstPoint().Parameter(), b = aDom.SecondPoint().Parameter();
++      const double a = aDom.FirstPoint().Parameter();
++      double       b = aDom.SecondPoint().Parameter();
++      if (b < a && C->IsPeriodic())
++      {
++        b += C->Period(); // (a domain across the start of a closed line)
++      }
+       for (int k = 1; k < 8 && onBoundary; k++)
+       {
+         onBoundary =
+@@ -723,6 +779,31 @@ static int HatchOnBoundary(Geom2dHatch_Hatcher&                    H,
+   return 0;
+ }
+ 
++//=======================================================================
++// function : LineOnBoundary
++// purpose  : Whether a bounded tangency line lies on the boundary of its
++//            face at several of its points.
++//=======================================================================
++
++static bool LineOnBoundary(const occ::handle<Geom2d_Curve>&        C,
++                           const occ::handle<Adaptor3d_TopolTool>& I)
++{
++  const double f = C->FirstParameter(), l = C->LastParameter();
++  if (Precision::IsInfinite(f) || Precision::IsInfinite(l))
++  {
++    return false;
++  }
++  int aNbOn = 0;
++  for (int k = 1; k < 16; k++)
++  {
++    if (I->Classify(C->Value(f + (l - f) * k / 16.), Precision::Confusion(), false) == TopAbs_ON)
++    {
++      aNbOn++;
++    }
++  }
++  return aNbOn >= 2;
++}
++
+ //=======================================================================
+ // function : SnapToVertex
+ // purpose  : The end of a tangency line on the boundary of face F (see
+@@ -967,6 +1048,17 @@ bool ChFi3d_Builder::SplitKPart(const occ::handle<ChFiDS_SurfData>&
+       return false;
+     }
+     Nb1 = H1.NbDomains(iH1);
++    if (Nb1 > 0 && snap1 == 0. && LineOnBoundary(C1, I1))
++    {
++      // Domains found on a line lying on the boundary are partial (the
++      // hatcher sees it inside along some of it, on along the rest).
++      const int aNb = HatchOnBoundary(H1, iH1, C1, I1, aShift);
++      if (aNb > 0)
++      {
++        Nb1   = aNb;
++        snap1 = 100. * aShift;
++      }
++    }
+     if (Nb1 == 0)
+     {
+       Nb1   = HatchOnBoundary(H1, iH1, C1, I1, aShift);
+@@ -1012,6 +1104,15 @@ bool ChFi3d_Builder::SplitKPart(const occ::handle<ChFiDS_SurfData>&
+       return false;
+     }
+     Nb2 = H2.NbDomains(iH2);
++    if (Nb2 > 0 && snap2 == 0. && LineOnBoundary(C2, I2))
++    {
++      const int aNb = HatchOnBoundary(H2, iH2, C2, I2, aShift);
++      if (aNb > 0)
++      {
++        Nb2   = aNb;
++        snap2 = 100. * aShift;
++      }
++    }
+     if (Nb2 == 0)
+     {
+       Nb2   = HatchOnBoundary(H2, iH2, C2, I2, aShift);
+@@ -1626,11 +1727,14 @@ bool ChFi3d_Builder::SplitKPart(const occ::handle<ChFiDS_SurfData>&
+     {
+       lsp = ResetProl(DStr, CD7, Spine, Iedge, false);
+     }
+-    if (Spine->IsPeriodic() && Iedge == Spine->NbEdges() && lsp < fsp)
++    // (A piece reaching once round a closed spine from before the start of
++    // its first edge has its ends at the same point of the spine.)
++    const bool aReversed = lsp < fsp || (lsp < fsp + tolesp && ltg - ftg > tolesp);
++    if (Spine->IsPeriodic() && Iedge == Spine->NbEdges() && aReversed)
+     {
+       lsp += Spine->Period();
+     }
+-    else if (Spine->IsPeriodic() && Iedge == 1 && lsp < fsp)
++    else if (Spine->IsPeriodic() && Iedge == 1 && aReversed)
+     {
+       fsp -= Spine->Period();
+     }

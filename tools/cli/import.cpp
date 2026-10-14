@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: MIT
-// mitcad-cli import, import-f3d, import-fcstd and import-ipt: files of
-// other formats imported into a new or opened document, and the helpers
-// mitcad-cli's other commands share with them (import.hpp).
+// mitcad-cli import, import-f3d, import-fcstd, import-ipt, import-iam and
+// import-ifc: files of other formats imported into a new or opened
+// document, and the helpers mitcad-cli's other commands share with them
+// (import.hpp).
 #include "import.hpp"
 
 #include <algorithm>
@@ -9,6 +10,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <filesystem>
+#include <fstream>
 #include <iostream>
 #include <locale>
 #include <sstream>
@@ -196,6 +198,14 @@ int import_f3d_timeline(const Arguments& a) {
     text << tolerance;
     add(R"("geometric_tolerance": )" + text.str());
   }
+  // What a retry on the file's exact state does with the imported bodies
+  // that match it (mitcad#283): keep (the default) or replace.
+  if (const std::string* bodies = a.option("--retry-bodies")) {
+    if (*bodies != "keep" && *bodies != "replace") {
+      return usage("--retry-bodies needs keep or replace");
+    }
+    add(R"("retry_bodies": )" + json_string(*bodies));
+  }
   if (const std::string* path = a.option("--report")) {
     add(R"("report_path": )" + json_string(*path));
   }
@@ -252,7 +262,7 @@ int import_f3d(const std::vector<std::string>& args) {
   std::string problem;
   if (!parse_arguments(args,
                        {"--save", "--report", "--dump", "--design", "--time-limit", "--hang-limit", "--threads",
-                        "--learn", "--references", "--geometric-tolerance"},
+                        "--learn", "--references", "--geometric-tolerance", "--retry-bodies"},
                        {"--bodies-only", "--history", "--owners", "--json", "--no-verify", "--no-fallback",
                         "--no-compare", "--no-references"},
                        a, problem)) {
@@ -468,6 +478,90 @@ int import_iam(const std::vector<std::string>& args) {
   const bool differs = report.find("check failed") != std::string::npos ||
                        report.find("\"pass\": false") != std::string::npos;
   return differs ? 1 : 0;
+}
+
+// An IFC building model (mitcad#273): its spatial structure as components,
+// its elements' shapes as features, bodies and occurrences.
+int import_ifc(const std::vector<std::string>& args) {
+  Arguments a;
+  std::string problem;
+  if (!parse_arguments(args, {"--save", "--report", "--memory-limit", "--write-test"},
+                       {"--json", "--no-openings", "--no-occurrences"}, a, problem)) {
+    return usage(problem);
+  }
+  // The reader's test building, for the tests.
+  if (const std::string* path = a.option("--write-test")) {
+    std::ofstream out(*path, std::ios::binary);
+    out << std::string(mitcad::ifc_test_building());
+    return out.good() ? 0 : 1;
+  }
+  if (a.positional.size() != 1) {
+    return usage(a.positional.empty() ? "no .ifc file" : "more than one .ifc file");
+  }
+  const bool json = a.flag("--json");
+  std::string options = std::string(R"({"text": )") + (json ? "false" : "true");
+  if (a.flag("--no-openings")) {
+    options += R"(, "openings": false)";
+  }
+  if (a.flag("--no-occurrences")) {
+    options += R"(, "occurrences": false)";
+  }
+  if (const std::string* limit = a.option("--memory-limit")) {
+    if (!is_number(*limit)) {
+      return usage("--memory-limit needs a number");
+    }
+    options += R"(, "memory_limit": )" + *limit;
+  }
+  if (const std::string* path = a.option("--report")) {
+    options += R"(, "report_path": )" + json_string(*path);
+  }
+  options += "}";
+  rust::Box<mitcad::Document> document = mitcad::new_document();
+  const std::string report(document->import_ifc(a.positional[0], options));
+  if (const std::string* save = a.option("--save")) {
+    save_document(*document, *save);
+  }
+  if (json) {
+    std::cout << R"({"import": )" << report << R"(, "document": )"
+              << std::string(document->query(R"({"query": "report"})")) << "}\n";
+  } else {
+    std::cout << report << std::string(document->report(false));
+  }
+  return 0;
+}
+
+// An .rvt project's elements, one component per level, or an .rfa
+// family's metadata (mitcad#274).
+int import_rvt(const std::vector<std::string>& args) {
+  Arguments a;
+  std::string problem;
+  if (!parse_arguments(args, {"--save", "--report"}, {"--json", "--report-only"}, a, problem)) {
+    return usage(problem);
+  }
+  if (a.positional.size() != 1) {
+    return usage(a.positional.empty() ? "no .rvt or .rfa file" : "more than one .rvt or .rfa file");
+  }
+  const bool json = a.flag("--json");
+  std::string options = std::string(R"({"text": )") + (json ? "false" : "true");
+  if (a.flag("--report-only")) {
+    options += R"(, "report_only": true)";
+  }
+  if (const std::string* path = a.option("--report")) {
+    options += R"(, "report_path": )" + json_string(*path);
+  }
+  options += "}";
+  rust::Box<mitcad::Document> document = mitcad::new_document();
+  const std::string report(document->import_rvt(a.positional[0], options));
+  if (const std::string* save = a.option("--save")) {
+    save_document(*document, *save);
+  }
+  if (json) {
+    std::cout << R"({"import": )" << report << R"(, "document": )"
+              << std::string(document->query(R"({"query": "report"})")) << "}\n";
+  } else {
+    std::cout << report << std::string(document->report(false));
+  }
+  return 0;
 }
 
 } // namespace mitcad::cli

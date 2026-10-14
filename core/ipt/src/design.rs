@@ -615,9 +615,14 @@ fn bounding_curves(
             // line across profiles that all lie on its sides.
             let step = SAMPLES as usize / if g["type"] == "Line3D" { 2 } else { 4 };
             let coarse = along.iter().step_by(step).all(|&a| a);
-            // A line along part of a loop where another curve of the
-            // sketch already bounds it (along the same line) stays
-            // construction geometry: the two would overlap.
+            // A line along part of a loop where other lines of the sketch
+            // already bound it (along the same line), wherever it lies on
+            // the selected loops, stays construction geometry: it adds
+            // nothing. One that alone bounds a part of a loop comes in
+            // though other lines lie along it elsewhere (a long flagged line
+            // that closes a profile's corner, along the sides of profiles
+            // and regions further on, mitcad#235): the sketch's pieces
+            // where they overlap are the same and kept once.
             let overlapped = || {
                 let line = |v: &Value| -> Option<([f64; 2], [f64; 2])> {
                     let g = &v["geometry"];
@@ -639,15 +644,31 @@ fn bounding_curves(
                         (p[0] - a[0]) * uy - (p[1] - a[1]) * ux,
                     )
                 };
-                curves.iter().enumerate().any(|(j, other)| {
-                    let Some((p, q)) =
-                        line(other).filter(|_| j != k && other["isConstruction"] != true)
-                    else {
-                        return false;
-                    };
-                    let ((s, h1), (t, h2)) = (at(p), at(q));
-                    h1.abs() < 1e-6 && h2.abs() < 1e-6 && s.max(t).min(l) - s.min(t).max(0.0) > 1e-6
-                })
+                // The other lines along it: their spans along it.
+                let spans: Vec<(f64, f64)> = curves
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(j, other)| {
+                        let (p, q) =
+                            line(other).filter(|_| j != k && other["isConstruction"] != true)?;
+                        let ((s, h1), (t, h2)) = (at(p), at(q));
+                        (h1.abs() < 1e-6 && h2.abs() < 1e-6 && s.max(t) - s.min(t) > 1e-6)
+                            .then_some((s.min(t) - 1e-6, s.max(t) + 1e-6))
+                    })
+                    .collect();
+                // Its samples on the selected loops, each along another
+                // line.
+                let on_loops: Vec<f64> = points
+                    .iter()
+                    .zip(&along)
+                    .filter(|&(_, &on)| on)
+                    .map(|(&p, _)| at(p).0)
+                    .collect();
+                !spans.is_empty()
+                    && !on_loops.is_empty()
+                    && on_loops
+                        .iter()
+                        .all(|&s| spans.iter().any(|&(lo, hi)| (lo..=hi).contains(&s)))
             };
             // Along a part of loops only where two profiles of one
             // selection meet (a line through a circle whose two halves one
@@ -770,20 +791,50 @@ pub fn read(file: &IptFile, label: &str) -> Result<Option<Design>, IptError> {
         .length_unit
         .and_then(DisplayUnit::length)
         .unwrap_or(DisplayUnit::Mm);
-    Ok(Some(design(
+    // The sheet-metal style of the application segment (mitcad#211).
+    let style = crate::sheet::Style::read(file);
+    Ok(Some(design_of_file(
         &dc,
         length,
         label,
         info.part_number.as_deref(),
+        &style,
+        Some(file),
     )))
 }
 
 /// The design of a definitions segment.
 pub fn design(dc: &Definitions, length: DisplayUnit, label: &str, part: Option<&str>) -> Design {
+    design_with(dc, length, label, part, &crate::sheet::Style::default())
+}
+
+/// The design of a definitions segment with the part's sheet-metal style.
+pub fn design_with(
+    dc: &Definitions,
+    length: DisplayUnit,
+    label: &str,
+    part: Option<&str>,
+    style: &crate::sheet::Style,
+) -> Design {
+    design_of_file(dc, length, label, part, style, None)
+}
+
+/// The design of a part's definitions segment; the part's file, where
+/// given, has the B-rep record the edges features name are found in
+/// (mitcad#242, [`crate::naming`]).
+pub fn design_of_file(
+    dc: &Definitions,
+    length: DisplayUnit,
+    label: &str,
+    part: Option<&str>,
+    style: &crate::sheet::Style,
+    file: Option<&crate::IptFile>,
+) -> Design {
     let params = Parameters::read(dc);
     let mut owners: HashMap<usize, Value> = HashMap::new();
     let labels = dc.labels();
     let states = history_states(dc);
+    let resolver = crate::naming::Resolver::new(dc, &states, file);
     let mut items: Vec<Value> = Vec::new();
     let mut infos = Vec::new();
     let mut results = BTreeMap::new();
@@ -1004,6 +1055,32 @@ pub fn design(dc: &Definitions, length: DisplayUnit, label: &str, part: Option<&
             "CombineFeature" => Some(crate::features::combine(&cx, record)),
             "ShellFeature" => Some(crate::features::shell(&cx, record)),
             "SweepFeature" => Some(crate::features::sweep(&cx, record, &child_sketches)),
+            // Sheet metal (mitcad#211).
+            "SheetMetalFaceFeature" => Some(crate::sheet::face(
+                &cx,
+                label,
+                sketch.clone(),
+                sketch_record,
+                style,
+                &resolver,
+            )),
+            "SheetMetalFlangeFeature" => Some(crate::sheet::flange(&cx, label, style, &resolver)),
+            "SheetMetalCornerRoundFeature" => {
+                Some(crate::sheet::corner(&cx, record, true, &resolver))
+            }
+            "SheetMetalCornerChamferFeature" => {
+                Some(crate::sheet::corner(&cx, record, false, &resolver))
+            }
+            "CutFeature" => Some(crate::sheet::cut(
+                &cx,
+                record,
+                sketch.clone(),
+                sketch_record,
+                &item_of,
+            )),
+            // Bends and folds (mitcad#242).
+            "BendFeature" => Some(crate::sheet::bend(&cx, record, &resolver)),
+            "FoldFeature" => Some(crate::sheet::fold(&cx, record, sketch.clone())),
             // Its label shows its sections (`7ca882b3…`), not always their
             // sketches: the sketches before it, the latest first.
             "LoftFeature" => {
@@ -1028,7 +1105,11 @@ pub fn design(dc: &Definitions, length: DisplayUnit, label: &str, part: Option<&
             _ => None,
         };
         let kind = as_kind.map_or(kind, str::to_owned);
-        let referred = cx.feature_bodies(record);
+        let mut referred = cx.feature_bodies(record);
+        // A sheet-metal group's bodies are its plates' (mitcad#211).
+        if referred.is_empty() {
+            referred = crate::sheet::group_bodies(&cx, label);
+        }
         let (detail, raw, made) = match translated {
             Some(Ok(t)) => {
                 if !t.notes.is_empty() {
@@ -1693,6 +1774,76 @@ mod tests {
     }
 
     #[test]
+    fn a_flagged_line_overlapped_only_beside_the_profiles_bounds_them() {
+        // Two selected squares (y 4..6 and -6..-4) with a region between
+        // them (y -4..4) that no feature takes: c0 is the right side of all
+        // three, flagged; c1, a line of the sketch, is the middle region's
+        // right side along it. c0 bounds the squares (mitcad#235), c2, a
+        // flagged line along c1 only, stays construction.
+        let line = |id: &str, a: [f64; 2], b: [f64; 2], flagged: bool| {
+            json!({"id": id, "type": "SketchLine", "isConstruction": flagged,
+                   "geometry": {"type": "Line3D", "startPoint": [a[0], a[1], 0.0],
+                                "endPoint": [b[0], b[1], 0.0]}})
+        };
+        let mut items = vec![
+            json!({"index": 0, "objectType": "Sketch", "detail": {"curves": [
+                line("c0", [3.0, 6.0], [3.0, -6.0], true),
+                line("c1", [3.0, 4.0], [3.0, -4.0], false),
+                line("c2", [3.0, 3.0], [3.0, -3.0], true),
+            ]}}),
+        ];
+        let sketches = HashMap::from([(7, (0, "Sketch1".to_owned()))]);
+        let flagged = HashMap::from([(7, vec!["c0".into(), "c2".into()])]);
+        let outlines = vec![
+            (7, 1, vec![[0.0, 4.0], [3.0, 4.0], [3.0, 6.0], [0.0, 6.0]]),
+            (
+                7,
+                1,
+                vec![[0.0, -6.0], [3.0, -6.0], [3.0, -4.0], [0.0, -4.0]],
+            ),
+        ];
+        bounding_curves(&mut items, &sketches, &flagged, &outlines);
+        let construction: Vec<bool> = items[0]["detail"]["curves"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|c| c["isConstruction"] == true)
+            .collect();
+        assert_eq!(construction, [false, false, true]);
+        // A flagged line (c0) along the bottom of a selected square
+        // (0..3 x 0..3) and of the corner region left of it (-1..0), where
+        // only it bounds the corner: it comes in though a line of the
+        // sketch (c1) lies along the square's bottom.
+        let mut items = vec![
+            json!({"index": 0, "objectType": "Sketch", "detail": {"curves": [
+                line("c0", [-1.0, 0.0], [6.0, 0.0], true),
+                line("c1", [0.0, 0.0], [3.0, 0.0], false),
+            ]}}),
+        ];
+        let flagged = HashMap::from([(7, vec!["c0".into()])]);
+        let outlines = vec![(
+            7,
+            1,
+            vec![
+                [-1.0, 0.0],
+                [3.0, 0.0],
+                [3.0, 3.0],
+                [0.0, 3.0],
+                [0.0, 1.0],
+                [-1.0, 1.0],
+            ],
+        )];
+        bounding_curves(&mut items, &sketches, &flagged, &outlines);
+        let construction: Vec<bool> = items[0]["detail"]["curves"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|c| c["isConstruction"] == true)
+            .collect();
+        assert_eq!(construction, [false, false]);
+    }
+
+    #[test]
     fn a_flagged_line_that_closes_a_corner_bounds_it_though_it_crosses_a_profile() {
         // c0 is the top side of a corner square (outside above it) and
         // runs on through a square across it; c1 only crosses that square.
@@ -2078,6 +2229,27 @@ mod tests {
         let dc = Definitions::from_records(24, &crate::testdesign::coil_design(24, 3));
         let d = design(&dc, DisplayUnit::Mm, "coil.ipt", None);
         assert!(d.notes[0].contains("coil type Some(3)"), "{:?}", d.notes);
+        // In a part of two bodies, the bodies its list names (mitcad#235).
+        let dc = Definitions::from_records(24, &crate::testdesign::coil_design_on(24, 0, true));
+        let d = design(&dc, DisplayUnit::Mm, "coil.ipt", None);
+        let json = serde_json::to_value(&d.dump).unwrap();
+        let detail = &json["timeline"]["items"][1]["detail"];
+        let bodies = detail["participantBodies"].as_array().expect("its bodies");
+        assert_eq!(bodies.len(), 1, "{detail}");
+        assert_eq!(bodies[0]["kind"], "body");
+        // Its flat end, and no start (a natural one) (mitcad#235).
+        assert!(detail.get("startEnd").is_none(), "{detail}");
+        assert_eq!(detail["endEnd"]["transition"]["name"], "d6");
+        assert_eq!(detail["endEnd"]["flat"]["name"], "d7");
+        // In a part of one body it names none.
+        let dc = Definitions::from_records(24, &crate::testdesign::coil_design(24, 0));
+        let d = design(&dc, DisplayUnit::Mm, "coil.ipt", None);
+        let json = serde_json::to_value(&d.dump).unwrap();
+        assert!(
+            json["timeline"]["items"][1]["detail"]
+                .get("participantBodies")
+                .is_none()
+        );
         // An axis along y through (2, 0, 0): on no line of the sketch and
         // no origin axis, it is given by its geometry.
         let mut records = crate::testdesign::coil_design(24, 0);

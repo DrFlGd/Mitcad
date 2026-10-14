@@ -7,6 +7,7 @@
 #include <QApplication>
 #include <QCheckBox>
 #include <QComboBox>
+#include <QDir>
 #include <QDialogButtonBox>
 #include <QFontDatabase>
 #include <QFormLayout>
@@ -309,8 +310,8 @@ void FeedbackDialog::preview() {
 // The preview
 
 ReportPreviewDialog::ReportPreviewDialog(const Report& report, const QImage& screenshot, const QString& destination,
-                                         QWidget* parent)
-    : QDialog(parent), m_report(report), m_screenshot(screenshot) {
+                                         QWidget* parent, const QString& logFile)
+    : QDialog(parent), m_report(report), m_screenshot(screenshot), m_logFile(logFile) {
   setObjectName(QStringLiteral("reportPreview"));
   setWindowTitle(tr("Review Report"));
   auto* layout = new QVBoxLayout(this);
@@ -370,6 +371,27 @@ ReportPreviewDialog::ReportPreviewDialog(const Report& report, const QImage& scr
     });
     sections->addWidget(m_screenshotBox);
   }
+  if (!logFile.isEmpty()) {
+    // The debug log (mitcad#269): only when the user checks it.
+    m_logFileBox = new QGroupBox(tr("Debug log (attached by you in the issue form)"), content);
+    m_logFileBox->setObjectName(QStringLiteral("reportSection_logfile"));
+    m_logFileBox->setCheckable(true);
+    m_logFileBox->setChecked(false);
+    auto* boxLayout = new QVBoxLayout(m_logFileBox);
+    auto* note = new QLabel(tr("The latest debug log, %1. It stays on this computer unless you check this: Send "
+                               "then tells you where it is, to drag it into the form. A log may contain file "
+                               "paths, design names and entity names.")
+                                .arg(QDir::toNativeSeparators(logFile).toHtmlEscaped()),
+                            m_logFileBox);
+    note->setWordWrap(true);
+    note->setTextInteractionFlags(Qt::TextSelectableByMouse);
+    boxLayout->addWidget(note);
+    connect(m_logFileBox, &QGroupBox::toggled, this, [](bool on) {
+      qInfo().noquote() << QStringLiteral("Report section logfile %1")
+                               .arg(on ? QStringLiteral("included") : QStringLiteral("left out"));
+    });
+    sections->addWidget(m_logFileBox);
+  }
   sections->addStretch(1);
   scroll->setWidget(content);
   layout->addWidget(scroll, 1);
@@ -414,6 +436,10 @@ QImage ReportPreviewDialog::screenshot() const {
   return m_screenshotBox != nullptr && m_screenshotBox->isChecked() ? m_screenshot : QImage();
 }
 
+QString ReportPreviewDialog::logFile() const {
+  return m_logFileBox != nullptr && m_logFileBox->isChecked() ? m_logFile : QString();
+}
+
 void ReportPreviewDialog::showEvent(QShowEvent* event) {
   QDialog::showEvent(event);
   TestSync::singleShot(100, this, [this] { logContent(); });
@@ -423,7 +449,12 @@ void ReportPreviewDialog::logContent() const {
   qInfo().noquote() << QStringLiteral("Report preview: %1").arg(m_title->text());
   for (qsizetype i = 0; i < m_boxes.size(); ++i) {
     const QString id = m_report.sections[i].id;
-    qInfo().noquote() << QStringLiteral("Report section %1: %2").arg(id, oneLine(m_texts[i]->toPlainText()));
+    // The recent log by its length: its lines are in the log already.
+    const QString text = m_texts[i]->toPlainText();
+    qInfo().noquote() << QStringLiteral("Report section %1: %2")
+                             .arg(id, id == QStringLiteral("log")
+                                          ? QStringLiteral("%1 lines").arg(text.count(QLatin1Char('\n')) + 1)
+                                          : oneLine(text));
     logPlace(QStringLiteral("Report section %1").arg(id), m_boxes[i], checkBoxRect(m_boxes[i]));
     logPlace(QStringLiteral("Report text %1").arg(id), m_texts[i], m_texts[i]->rect());
   }
@@ -432,6 +463,10 @@ void ReportPreviewDialog::logContent() const {
                              .arg(m_screenshot.width())
                              .arg(m_screenshot.height());
     logPlace(QStringLiteral("Report section screenshot"), m_screenshotBox, checkBoxRect(m_screenshotBox));
+  }
+  if (m_logFileBox != nullptr) {
+    qInfo().noquote() << QStringLiteral("Report section logfile: %1").arg(m_logFile);
+    logPlace(QStringLiteral("Report section logfile"), m_logFileBox, checkBoxRect(m_logFileBox));
   }
   if (!m_report.key.isEmpty()) {
     qInfo().noquote() << QStringLiteral("Report key: mitcad-%1").arg(m_report.key);

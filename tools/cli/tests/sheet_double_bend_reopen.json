@@ -1,0 +1,9 @@
+[
+  {"comment":"SPDX-License-Identifier: MIT. The reopened double bend (mitcad#280) keeps its fixed boundary, both bends and the consumed moving body; the Unfold after it still develops them."},
+  {"expect":{"feature":"F7","status":"ok"}},
+  {"expect":{"feature":"F8","status":"ok","bodies":1,"body":"F3.b0","volume":1233.9768674488455,"min":[-30,0,0],"max":[31.698843372442286,20,1]}},
+  {"expect":{"query":{"query":"sheet_state","body":"F3.b0"},"result":{"body":"F3.b0","status":"valid","bends":[{"id":{"feature":"F7","slot":0},"signed_angle":-0.7853981633974483},{"id":{"feature":"F7","slot":1},"signed_angle":0.7853981633974483}]}}},
+  {"expect":{"query":{"query":"sheet_state","body":"F5.b0"},"result":{"status":"unavailable"}}},
+  {"cmd":"suppress_feature","uid":"F8","suppressed":true},
+  {"expect":{"body":"F3.b0","volume":1237.1184601024353,"min":[-30,0,0],"max":[30,20,6]}}
+]

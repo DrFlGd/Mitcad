@@ -13,6 +13,9 @@ pub(crate) use develop::{refold, unfold};
 // Corner relief at bend junctions (mitcad#209).
 mod relief;
 pub(crate) use relief::corner_relief;
+// A face joined coplanar to a sheet's panel (mitcad#242).
+mod join;
+pub(crate) use join::join_face;
 
 use super::*;
 use crate::features::sheet::SheetRulesDef;
@@ -71,7 +74,9 @@ pub(super) fn publish<K: Kernel>(
         return Err("sheet kernel returned incomplete material membership".into());
     }
     let mut output = FeatureOutput::default();
-    finish(&mut output, state, rules, solid.shape)?;
+    // Straight cuts the domains cannot hold (mitcad#242).
+    let shape = cut::with_overlays(ctx, &state, solid.shape)?;
+    finish(&mut output, state, rules, shape)?;
     if let Some(body) = removed {
         output.changes.push(BodyChange::Remove(body));
         output.sheets.insert(body, SheetChange::Remove);
@@ -95,7 +100,7 @@ fn memberships(state: &SheetState) -> BTreeSet<RegionMembership> {
         .collect()
 }
 
-fn finish<S>(
+pub(super) fn finish<S>(
     output: &mut FeatureOutput<S>,
     mut state: SheetState,
     rules: &SheetRulesDef<f64>,
@@ -199,7 +204,8 @@ pub(super) fn publish_pieces<K: Kernel>(
         if index > 0 {
             output.owners.insert(body, state.owner);
         }
-        finish(&mut output, piece, rules, solid.shape)?;
+        let shape = cut::with_overlays(ctx, &piece, solid.shape)?;
+        finish(&mut output, piece, rules, shape)?;
     }
     for diagnostic in geometry.diagnostics {
         ctx.warn(diagnostic);
@@ -356,26 +362,41 @@ pub(super) fn boundary<'a>(
     reference: &BoundaryRef,
 ) -> Result<&'a MaterialEdge, String> {
     let patch = chart(state, reference.panel)?;
-    let mut edges = patch
+    let matches = |piece: &CurvePieceRef| {
+        piece.curve == reference.curve && reference.piece.is_none_or(|p| p == piece.piece)
+    };
+    let candidates: Vec<(&MaterialEdge, bool)> = patch
         .regions
         .iter()
         .flat_map(|r| &r.loops)
         .flat_map(|l| &l.edges)
         .filter(|e| {
-            let matches = |piece: &CurvePieceRef| {
-                piece.curve == reference.curve && reference.piece.is_none_or(|p| p == piece.piece)
-            };
+            reference
+                .range
+                .is_none_or(|span| span == e.curve.range || span == e.curve.range.reversed())
+        })
+        .filter_map(|e| {
             let direct = matches(&e.piece);
             let alias = state
                 .lineage
                 .iter()
                 .filter(|l| l.applies_to(patch.domain, e))
                 .any(|l| l.aliases.iter().any(matches));
-            (direct || alias)
-                && reference
-                    .range
-                    .is_none_or(|span| span == e.curve.range || span == e.curve.range.reversed())
-        });
+            (direct || alias).then_some((e, direct))
+        })
+        .collect();
+    // The piece itself before a piece that inherited its alias when it was
+    // split off (mitcad#280).
+    let direct: Vec<&MaterialEdge> = candidates
+        .iter()
+        .filter(|(_, d)| *d)
+        .map(|(e, _)| *e)
+        .collect();
+    let mut edges: Box<dyn Iterator<Item = &MaterialEdge>> = if direct.len() == 1 {
+        Box::new(direct.into_iter())
+    } else {
+        Box::new(candidates.into_iter().map(|(e, _)| e))
+    };
     let found = edges
         .next()
         .ok_or("sheet boundary reference is unavailable")?;

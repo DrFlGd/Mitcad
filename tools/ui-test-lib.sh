@@ -420,10 +420,59 @@ ui_view_drag() {
   xdotool mouseup "$1"
 }
 
-# ui_logged_at "text": screen position of the last "<text> at x,y" line.
+# ui_place_valid "text": whether the last line about "<text>" gives its place
+# ("<text> at x,y") and not that the thing left it ("<text> out of sight":
+# a row of the browser scrolled away, folded, or gone).
+ui_place_valid() {
+  local last
+  last=$(grep -F -e "$1 at " -e "$1 out of sight" "$UI_LOG" | tail -1)
+  [ -n "$last" ] && [[ $last != *" out of sight" ]]
+}
+
+# ui_browser_wheel down|up: four notches of the mouse wheel over the browser's
+# rows (over the last row place the app logged), then the sync. Nothing when
+# no row is in sight.
+ui_browser_wheel() {
+  local where px py
+  where=$(grep -E '^Browser (eye |radio )?Root.* at [0-9]+,[0-9]+$' "$UI_LOG" | tail -1 |
+    sed -n 's/.* at \([0-9]*\),\([0-9]*\)$/\1 \2/p')
+  [ -n "$where" ] || return 0
+  read -r px py <<< "$where"
+  xdotool mousemove $((X + px * UI_SCALE)) $((Y + py * UI_SCALE)) click --repeat 4 --delay 30 \
+    "$([ "$1" = up ] && echo 4 || echo 5)"
+  ui_sync
+}
+
+# ui_browser_reveal "Browser <path>" (or "Browser eye|radio <path>"): scrolls
+# the browser's rows with the wheel until that row is in sight, that is,
+# until the app logs its place (it logs "... out of sight" for a row that
+# scrolls away: BrowserPanel::logLayout). Down first, then up: the row may be
+# on either side, and one never logged is below.
+ui_browser_reveal() {
+  local direction round
+  ui_place_valid "$1" && return 0
+  for direction in down up; do
+    for round in 1 2 3 4 5 6 7 8; do
+      ui_browser_wheel "$direction"
+      ui_place_valid "$1" && return 0
+    done
+  done
+  return 0
+}
+
+# ui_logged_at "text": screen position of the last "<text> at x,y" line. A
+# row of the browser that is not in sight is scrolled into sight first
+# (ui_browser_reveal); the place of anything else that "<text> out of sight"
+# says has gone is not given: the test fails instead of clicking where it
+# was.
 ui_logged_at() {
-  local at px py
-  at=$(grep -F -- "$1 at " "$UI_LOG" | tail -1 | sed -n 's/.* at \([0-9]*\),\([0-9]*\).*/\1 \2/p')
+  local last at px py
+  case $1 in
+    "Browser "*) ui_browser_reveal "$1" ;;
+  esac
+  last=$(grep -F -e "$1 at " -e "$1 out of sight" "$UI_LOG" | tail -1)
+  [[ $last != *" out of sight" ]] || ui_fail "'$1' is out of sight (scrolled away, folded or gone)"
+  at=$(sed -n 's/.* at \([0-9]*\),\([0-9]*\).*/\1 \2/p' <<< "$last")
   [ -n "$at" ] || ui_fail "no position logged for '$1'"
   read -r px py <<< "$at"
   echo $((X + px * UI_SCALE)) $((Y + py * UI_SCALE))

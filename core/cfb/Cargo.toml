@@ -1,0 +1,12 @@
+# SPDX-License-Identifier: MIT
+[package]
+name = "mitcad-cfb"
+description = "Compound files (MS-CFB, versions 3 and 4): the container of .ipt, .iam, .rvt and .rfa files, with a writer for tests"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[lib]
+name = "mitcad_cfb"

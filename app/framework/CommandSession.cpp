@@ -3,6 +3,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstddef>
 #include <limits>
 #include <utility>
 
@@ -20,6 +21,7 @@
 #include "ModelShapes.hpp"
 #include "ModelWorker.hpp"
 #include "Numbers.hpp"
+#include "PreviewBodies.hpp"
 #include "TestSync.hpp"
 
 namespace mitcad {
@@ -131,6 +133,8 @@ CommandSession::CommandSession(const CommandDef& def, CommandHost& host, const Q
   m_previewTimer.setInterval(kPreviewDelayMs);
   connect(&m_previewTimer, &QTimer::timeout, this, &CommandSession::runPreview);
   TestSync::watch(&m_previewTimer);
+  // The hover of a tangent chain (mitcad#290); emitted while the view paints.
+  connect(&m_host.viewer(), &OcctViewer::hovered, this, &CommandSession::hovered, Qt::QueuedConnection);
 }
 
 CommandSession::~CommandSession() {
@@ -282,6 +286,7 @@ bool CommandSession::start(const Selection& preselection, QString& error) {
         m_startRollback = rollback;
         m_startRollback.insert(QStringLiteral("temporary"), true);
       } else {
+        m_startDepth = undoDepth(); // visibility changes are run again from here (mitcad#295)
         if (!m_host.runCommand(rollback)) {
           error = tr("Could not roll the timeline back to %1.")
                       .arg(feature.value(QStringLiteral("name")).toString());
@@ -330,6 +335,7 @@ bool CommandSession::start(const Selection& preselection, QString& error) {
     setRowDefaults();
   }
   canonicalizeSelections();
+  startAutoOperation();
   return true;
 }
 
@@ -484,6 +490,7 @@ void CommandSession::setPresenter(CommandPresenter& presenter) {
   };
   actions.choiceChanged = [this](const QString& key, const QString& value) {
     m_state.setChoice(key, value);
+    autoOperationOverruled(key);
     if (const auto slot = slotOf(key)) {
       for (const auto& [choice, label] : slot->def->choicesIn(scopeOf(*slot))) {
         if (choice == value) {
@@ -657,6 +664,7 @@ void CommandSession::setPresenter(CommandPresenter& presenter) {
       structuralInputAction(key, [action, key, index] { action(key, index); });
     };
   }
+  actions.valueFocused = [this](const QString& key, bool focused) { valueFocused(key, focused); };
   actions.detached = [this] { presenterDetached(); };
   presenter.setActions(std::move(actions));
 
@@ -775,6 +783,7 @@ void CommandSession::activate(const QString& key) {
   }
   m_host.inputActivated(input->showsOrigin ? input->filter : input->filter & ~kConstructionGeometry);
   m_host.showHint(tr("%1: select %2.").arg(m_def.name, input->label.toLower()));
+  updateHoverChain();
 }
 
 void CommandSession::applyPickFilter(const InputDef* input) {
@@ -918,6 +927,7 @@ void CommandSession::advanceIfFull() {
 }
 
 void CommandSession::selectionChanged(const QString& key) {
+  autoOperationOverruled(key);
   logSelection(key);
   updateHighlights();
   inputsChanged();
@@ -953,6 +963,9 @@ void CommandSession::updateHighlights() {
     const QColor color =
         m_failed ? kFailedColor : (m_presenter ? m_presenter->colorOf(slot.key) : QColor(Qt::blue));
     for (const SelectionItem& item : m_state.items(slot.key)) {
+      if (!onShownBody(item)) {
+        continue; // selected still, on a body hidden meanwhile (mitcad#295)
+      }
       highlights.push_back({item, m_host.itemShape(item), color});
     }
   }
@@ -1008,7 +1021,19 @@ void CommandSession::evaluate(const QString& key) {
     return;
   }
   const InputDef& input = *slot->def;
-  const QString text = m_state.text(key).trimmed();
+  QString text = m_state.text(key).trimmed();
+  // `name = value` names the slot's parameter (mitcad#231): the value is
+  // evaluated here, the name checked by the model.
+  QString rename;
+  {
+    static const QRegularExpression named(QStringLiteral(R"(^(\w+)\s*=(?!=)\s*(.*)$)"),
+                                          QRegularExpression::UseUnicodePropertiesOption);
+    const QRegularExpressionMatch match = named.match(text);
+    if (match.hasMatch()) {
+      rename = match.captured(1);
+      text = match.captured(2).trimmed();
+    }
+  }
   m_state.setValue(key, std::numeric_limits<double>::quiet_NaN());
   QString problem;
   QString hint;
@@ -1026,9 +1051,9 @@ void CommandSession::evaluate(const QString& key) {
       const QString expression = answer.value(QStringLiteral("expression")).toString(text);
       const bool isNumber = parsePlainNumber(text).has_value();
       const int space = static_cast<int>(shown.lastIndexOf(QLatin1Char(' ')));
-      m_state.setExpression(key, isNumber && space > 0
-                                     ? expression + shown.mid(space) // "20" -> "20 mm"
-                                     : expression);
+      const QString normalized = isNumber && space > 0 ? expression + shown.mid(space) // "20" -> "20 mm"
+                                                       : expression;
+      m_state.setExpression(key, rename.isEmpty() ? normalized : QStringLiteral("%1 = %2").arg(rename, normalized));
       // Only worth showing when the expression is more than the value.
       if (!isNumber && (!answer.value(QStringLiteral("references")).toArray().isEmpty() ||
                         text.contains(QRegularExpression(QStringLiteral("[-+*/^()]"))))) {
@@ -1038,6 +1063,7 @@ void CommandSession::evaluate(const QString& key) {
       problem = errorText(e);
     }
   }
+  describeParameter(key, rename, text, problem.isEmpty() ? shown : QString());
   if (m_presenter) {
     m_presenter->setInputError(key, problem);
     m_presenter->setValueHint(key, hint);
@@ -1081,6 +1107,7 @@ void CommandSession::inputsChanged() {
   }
   updateManipulators();
   schedulePreview();
+  updateHoverChain(); // Tangent Chain turned on or off (mitcad#290)
 }
 
 void CommandSession::updateManipulators() {
@@ -1381,8 +1408,8 @@ void CommandSession::runPreview() {
     return;
   }
 
-  const QJsonObject command{{QStringLiteral("cmd"), QStringLiteral("add_feature")},
-                            {QStringLiteral("def"), built.def}};
+  QJsonObject command{{QStringLiteral("cmd"), QStringLiteral("add_feature")}, {QStringLiteral("def"), built.def}};
+  addAutoOperation(command);
   const QByteArray key = compactJson(command);
   const auto cached = m_cache.constFind(key);
   if (key == m_shownKey && !m_previewCancelled && cached != m_cache.cend()) {
@@ -1444,94 +1471,39 @@ void CommandSession::runPreview() {
   acceptFeaturePreview(key, built, previewFromReport(report), true);
 }
 
-CommandSession::Preview CommandSession::previewFromReport(const QJsonObject& report) {
+CommandSession::Preview CommandSession::previewFromReport(
+    const QJsonObject& report, const std::function<std::shared_ptr<geometry::Shape>(const std::string&)>& shapeOf) {
   Preview preview;
   preview.report = report;
   if (preview.report.value(QStringLiteral("status")).toString() == QStringLiteral("ok")) {
-    // The bodies as shown now (placed by their occurrences), changed ones
-    // replaced by the preview's, removed ones left out, new ones added.
-    QHash<QString, bool> after; // uid: changed
-    for (const QJsonValue& value : preview.report.value(QStringLiteral("bodies")).toArray()) {
-      const QJsonObject body = value.toObject();
-      after.insert(body.value(QStringLiteral("uid")).toString(),
-                   body.value(QStringLiteral("changed")).toBool());
-    }
-    const QJsonArray instances = preview.report.value(QStringLiteral("instances")).toArray();
-    const QJsonArray removed = preview.report.value(QStringLiteral("removed_instances")).toArray();
-    QSet<QString> placedBodies;
-    for (const QJsonValue& value : instances) {
-      placedBodies.insert(value.toObject().value(QStringLiteral("body")).toString());
-    }
-    QSet<QString> removedBodies;
-    for (const QJsonValue& value : removed) {
-      removedBodies.insert(value.toObject().value(QStringLiteral("body")).toString());
-    }
-    QSet<QString> shown;
-    for (BodyDisplay display : m_host.modelBodies()) {
-      const QString uid = QString::fromStdString(display.uid);
-      const QString occurrence = QString::fromStdString(display.occurrence);
-      const bool gone = std::any_of(removed.begin(), removed.end(), [&uid, &occurrence](const QJsonValue& value) {
-        const QJsonObject instance = value.toObject();
-        return instance.value(QStringLiteral("body")).toString() == uid &&
-               instance.value(QStringLiteral("occurrence")).toString() == occurrence;
-      });
-      if (!after.contains(uid) || gone) {
-        continue;
+    // The design as the view shows it, with the command's result, each body
+    // where its occurrence places it (PreviewBodies.hpp, mitcad#266).
+    const std::vector<BodyDisplay> displays = m_host.modelBodies();
+    std::vector<ShownBody> shown;
+    shown.reserve(displays.size());
+    for (const BodyDisplay& display : displays) {
+      QJsonArray rows;
+      if (!display.placement.IsIdentity()) {
+        const gp_Trsf trsf = display.placement.Transformation();
+        for (int row = 1; row <= 3; ++row) {
+          rows.append(QJsonArray{trsf.Value(row, 1), trsf.Value(row, 2), trsf.Value(row, 3), trsf.Value(row, 4)});
+        }
       }
-      if (after.value(uid)) {
-        display.shape = m_host.previewBodyShape(display.uid);
-      }
-      shown.insert(uid);
-      preview.bodies.push_back(display);
+      shown.push_back({QString::fromStdString(display.uid), QString::fromStdString(display.occurrence), rows});
     }
-    for (auto it = after.cbegin(); it != after.cend(); ++it) {
-      // New placed bodies are supplied by the instance report below. Adding
-      // an identity fallback too would leave an extra copy at the root origin.
-      if (!shown.contains(it.key()) && !placedBodies.contains(it.key()) && !removedBodies.contains(it.key())) {
-        BodyDisplay display;
-        display.uid = it.key().toStdString();
-        display.shape = m_host.previewBodyShape(display.uid);
+    for (const PreviewBody& body : previewBodies(preview.report, shown)) {
+      BodyDisplay display = body.shown >= 0 ? displays[static_cast<std::size_t>(body.shown)] : BodyDisplay();
+      display.uid = body.uid.toStdString();
+      display.occurrence = body.occurrence.toStdString();
+      if (body.previewShape) {
+        display.shape = shapeOf ? shapeOf(display.uid) : m_host.previewBodyShape(display.uid);
+      }
+      if (body.placed) {
+        display.placement = isIdentity(body.transform) ? TopLoc_Location() : TopLoc_Location(trsfOf(body.transform));
+      }
+      if (body.made) {
         display.style = BodyDisplay::Style::New;
-        preview.bodies.push_back(display);
       }
-    }
-    // Occurrences the command places elsewhere (joints, moves of
-    // occurrences; mitcad#55): their bodies where it puts them.
-    QHash<QString, QJsonArray> placed;
-    for (const QJsonValue& value : preview.report.value(QStringLiteral("placements")).toArray()) {
-      const QJsonObject placement = value.toObject();
-      placed.insert(placement.value(QStringLiteral("path")).toString(),
-                    placement.value(QStringLiteral("transform")).toArray());
-    }
-    for (BodyDisplay& display : preview.bodies) {
-      const auto moved = placed.constFind(QString::fromStdString(display.occurrence));
-      if (moved != placed.cend()) {
-        display.placement = isIdentity(moved.value()) ? TopLoc_Location() : TopLoc_Location(trsfOf(moved.value()));
-      }
-    }
-    // New body placements and component occurrences have exact (path, body)
-    // identities. Component occurrences reuse the source body definition.
-    for (const QJsonValue& value : instances) {
-      const QJsonObject instance = value.toObject();
-      if (!instance.value(QStringLiteral("visible")).toBool(true)) {
-        continue;
-      }
-      const std::string body = instance.value(QStringLiteral("body")).toString().toStdString();
-      const std::string occurrence = instance.value(QStringLiteral("occurrence")).toString().toStdString();
-      if (std::any_of(preview.bodies.begin(), preview.bodies.end(), [&body, &occurrence](const BodyDisplay& display) {
-            return display.uid == body && display.occurrence == occurrence;
-          })) {
-        continue;
-      }
-      const auto source = std::find_if(preview.bodies.begin(), preview.bodies.end(), [&body](const BodyDisplay& display) {
-        return display.uid == body;
-      });
-      BodyDisplay display = source == preview.bodies.end() ? BodyDisplay() : *source;
-      display.uid = body;
-      display.occurrence = occurrence;
-      display.shape = m_host.previewBodyShape(body);
-      display.placement = TopLoc_Location(trsfOf(instance.value(QStringLiteral("transform")).toArray()));
-      display.style = BodyDisplay::Style::New;
       preview.bodies.push_back(std::move(display));
     }
     if (const auto tool = m_host.previewToolShape()) {
@@ -1553,6 +1525,11 @@ void CommandSession::acceptFeaturePreview(const QByteArray& key, const Built& bu
     }
     m_cache.insert(key, preview);
     m_cacheOrder.append(key);
+  }
+  if (takeAutoOperation(preview.report)) {
+    // The model chose another operation (mitcad#289): its preview instead.
+    runPreview();
+    return;
   }
   m_shownKey = key;
   const QString status = preview.report.value(QStringLiteral("status")).toString();
@@ -1600,6 +1577,30 @@ void CommandSession::acceptFeaturePreview(const QByteArray& key, const Built& bu
 void CommandSession::showPreview(const Preview& preview, const QString& operation) {
   OcctViewer& viewer = m_host.viewer();
   viewer.setBodies(preview.bodies);
+  // What the preview draws (mitcad#266), for UI tests: each body with its
+  // occurrence, its placement's translation into the design and "new" for
+  // what the command makes, as "Bodies shown" lists the normal view's.
+  QStringList drawn;
+  for (const BodyDisplay& body : preview.bodies) {
+    if (!body.shape) {
+      continue;
+    }
+    const gp_XYZ at = body.placement.Transformation().TranslationPart();
+    const auto coordinate = [](double value) {
+      return QString::number(std::abs(value) < 1e-9 ? 0.0 : value, 'g', 10);
+    };
+    const QString occurrence = QString::fromStdString(body.occurrence);
+    drawn << QStringLiteral("%1%2 at %3,%4,%5%6")
+                 .arg(QString::fromStdString(body.uid),
+                      occurrence.isEmpty() ? QString() : QStringLiteral(" in ") + occurrence,
+                      coordinate(at.X()), coordinate(at.Y()), coordinate(at.Z()),
+                      body.style == BodyDisplay::Style::New ? QStringLiteral(" new") : QString());
+  }
+  const QString logged = drawn.isEmpty() ? QStringLiteral("none") : drawn.join(QStringLiteral("; "));
+  if (logged != m_loggedPreviewBodies) {
+    m_loggedPreviewBodies = logged;
+    qDebug().noquote() << QStringLiteral("Preview bodies: %1").arg(logged);
+  }
   // New bodies show as see-through bodies; a tool that joins, cuts or
   // intersects shows over the result, red for a cut; so does
   // a construction feature's datum.
@@ -1685,6 +1686,9 @@ void CommandSession::showSketchPreview(const Built& built) {
   m_previewOk = problem.isEmpty();
   m_failed = !m_previewOk;
   m_host.refreshScene();
+  if (m_def.sketchPreviewShown) {
+    m_def.sketchPreviewShown(m_previewOk ? answer : QJsonObject());
+  }
   if (m_previewOk) {
     // What the command says the user is to know before keeping it
     // (Clean Up Projections, mitcad#232), not in red.
@@ -1701,6 +1705,9 @@ void CommandSession::showSketchPreview(const Built& built) {
 }
 
 void CommandSession::takeBackSketchPreview() {
+  if (m_appliedDepth >= 0 && m_def.sketchPreviewShown) {
+    m_def.sketchPreviewShown(QJsonObject());
+  }
   if (m_host.asynchronousCommands() && m_appliedDepth >= 0) {
     const int depth = m_appliedDepth;
     m_appliedDepth = -1;
@@ -1963,6 +1970,11 @@ void CommandSession::restoreCheckpointAsync(CommandHost::AsyncCompletion complet
           m_markerMoved = false;
           m_appliedDepth = -1;
           m_shownKey.clear();
+          if (!m_visibility.isEmpty()) {
+            // The light bulbs as the user set them meanwhile (mitcad#295).
+            reapplyVisibilityAsync(0, [completion, result](const CommandHost::AsyncResult&) { completion(result); });
+            return;
+          }
         }
         completion(result);
       });
@@ -2052,6 +2064,9 @@ void CommandSession::showSketchPreviewAsync(const Built& built) {
         m_previewOk = result.succeeded() || result.cancelled;
         m_failed = !m_previewOk;
         m_host.refreshScene();
+        if (m_def.sketchPreviewShown) {
+          m_def.sketchPreviewShown(result.succeeded() ? result.answer : QJsonObject());
+        }
         // A sketch command's warnings (mitcad#232), not in red.
         const QStringList warnings = result.succeeded() ? answerWarnings(result.answer) : QStringList();
         m_presenter->setMessage(result.cancelled ? tr("Preview cancelled; change an input to preview again.")
@@ -2474,6 +2489,7 @@ bool CommandSession::commit() {
   const Built built = m_def.build(m_state, m_host);
   const QString description =
       m_def.describe && m_def.describeBefore && !isEditing() ? m_def.describe(m_state, m_host) : QString();
+  settleVisibility(); // the edit stays one undo step after them (mitcad#295)
   if (!rollForward()) {
     qDebug().noquote() << QStringLiteral("%1: OK not done").arg(m_def.name);
     return false;
@@ -2629,6 +2645,7 @@ void CommandSession::cancel() {
   if (m_done) {
     return;
   }
+  settleVisibility(); // they stay as the user set them (mitcad#295)
   if (!rollForward()) {
     // Its computation was cancelled (or failed): the panel closes all the
     // same, and the roll-back is the last undo step.
@@ -2736,6 +2753,7 @@ void CommandSession::finish(bool committed) {
   viewer.setPreview(TopoDS_Shape());
   viewer.setHighlights({});
   viewer.setGhosts({});
+  viewer.setHoverChain(TopoDS_Shape());
   m_host.inputActivated(SelectFilter());
   emit finished(committed);
 }

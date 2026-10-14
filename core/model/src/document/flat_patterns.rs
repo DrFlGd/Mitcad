@@ -287,7 +287,27 @@ impl<K: Kernel> Document<K> {
         at: Option<[f64; 3]>,
     ) -> Result<Value, String> {
         let (state, thickness) = self.sheet_at(body)?;
-        crate::sheet::pick::reference(state, thickness, face, edge, at)
+        let answer = crate::sheet::pick::reference(state, thickness, face, edge, at);
+        // An edge named after an ordinary feature on a sheet (mitcad#242):
+        // a corner found by where the edge runs.
+        if answer.is_err()
+            && face.is_none()
+            && let Some(name) = edge
+            && let Ok(name) = name.parse::<crate::topo::EdgeName>()
+            && let Some(shape) = self.last_result().bodies.get(&body)
+            && let Ok(curve) = self.kernel().edge_geometry(&shape.value, &name)
+        {
+            let (start, end) = match curve {
+                crate::datum::CurveGeometry::Line { start, end }
+                | crate::datum::CurveGeometry::Other { start, end, .. } => (start, end),
+                crate::datum::CurveGeometry::Circle { .. } => return answer,
+            };
+            if let Ok(mut corner) = crate::sheet::pick::corner_at(state, thickness, start, end) {
+                corner["body"] = serde_json::json!(body);
+                return Ok(corner);
+            }
+        }
+        answer
     }
 
     /// The `sheet_seam` query (mitcad#210): the boundaries of the seam two

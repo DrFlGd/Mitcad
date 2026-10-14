@@ -10,7 +10,11 @@
 // therefore also takes Mitcad's own chain first: every edge that meets one
 // of its edges end to end in the same direction (within 0.01 rad) and lies
 // between faces at an angle, and so on from those (mitcad#224); where OCCT
-// cannot build that, the set takes OCCT's chain alone, with a note. A set with
+// cannot build that, the set takes OCCT's chain alone, with a note. OCCT's
+// chain of a fillet stops where its edges turn although the faces go on
+// tangentially across a shallow crease, unless the next edge is selected
+// (port patch 0180, mitcad#241); the rounding then ends at that vertex, cut
+// by the face beyond the crease. A set with
 // `tangent_chain` false whose chain
 // reaches an edge that no set selects therefore fails with an "unsupported:"
 // message, as do options OCCT lacks (see the model's fillet and

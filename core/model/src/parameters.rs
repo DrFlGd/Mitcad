@@ -37,6 +37,8 @@ pub enum ParameterError {
         /// The unit of the user's slot.
         expected: Unit,
     },
+    /// A driven dimension's reference parameter: read-only (mitcad#231).
+    ReadOnly(String),
 }
 
 impl fmt::Display for ParameterError {
@@ -49,6 +51,11 @@ impl fmt::Display for ParameterError {
             Self::InUse { name, users } => {
                 write!(f, "parameter '{name}' is used by {}", users.join(", "))
             }
+            Self::ReadOnly(name) => write!(
+                f,
+                "parameter '{name}' is the value a driven dimension measures: it cannot be set \
+                 (make the dimension driving to set it)"
+            ),
             Self::Table(error) => error.fmt(f),
             Self::UnitInUse {
                 name,
@@ -186,13 +193,65 @@ impl Parameters {
             .ok_or_else(|| ParameterError::Unknown(format!("<parameter {}>", id.raw())))
     }
 
+    /// [`Parameters::require`] of a parameter whose value may be set: not a
+    /// driven dimension's reference.
+    fn require_settable(&self, id: ParamId) -> Result<&Parameter, ParameterError> {
+        let param = self.require(id)?;
+        if param.kind() == ParamKind::Reference {
+            return Err(ParameterError::ReadOnly(param.name().to_owned()));
+        }
+        Ok(param)
+    }
+
+    /// Whether a parameter is a driven dimension's reference.
+    pub fn is_reference(&self, id: ParamId) -> bool {
+        self.get(id)
+            .is_some_and(|p| p.kind() == ParamKind::Reference)
+    }
+
+    /// Adds a driven dimension's reference parameter with the next free
+    /// name (`d<n>`), owned by its sketch (mitcad#231). Its value is what
+    /// the dimension measures, set by the recompute.
+    pub(crate) fn add_reference(
+        &mut self,
+        value: f64,
+        unit: Unit,
+        comment: &str,
+        owner: FeatureUid,
+    ) -> Result<ParamId, ParameterError> {
+        let name = self.table.unused_name("d");
+        let spec =
+            ParamSpec::from_value(ParamKind::Reference, &name, value, unit).with_comment(comment);
+        self.add(spec, Some(owner))
+    }
+
+    /// Sets a reference parameter to the value its dimension measures;
+    /// returns the parameters whose values changed.
+    pub(crate) fn set_measured(
+        &mut self,
+        id: ParamId,
+        value: f64,
+    ) -> Result<ChangeSet, ParameterError> {
+        let name = self.require(id)?.name().to_owned();
+        if !value.is_finite() {
+            return Err(ParameterError::NotFinite { name, value });
+        }
+        Ok(self.table.set_value(id, value)?)
+    }
+
+    /// Makes a parameter a reference or a model parameter again; its owner
+    /// stays.
+    pub(crate) fn set_kind(&mut self, id: ParamId, kind: ParamKind) {
+        let _ = self.table.set_kind(id, kind);
+    }
+
     /// Adds a parameter; a parameter with an owner is a model parameter.
     pub fn add(
         &mut self,
         mut spec: ParamSpec,
         owner: Option<FeatureUid>,
     ) -> Result<ParamId, ParameterError> {
-        if owner.is_some() {
+        if owner.is_some() && spec.kind != ParamKind::Reference {
             spec.kind = ParamKind::Model;
         }
         let id = self.table.add(spec)?;
@@ -222,7 +281,7 @@ impl Parameters {
         id: ParamId,
         expression: &str,
     ) -> Result<ChangeSet, ParameterError> {
-        self.require(id)?;
+        self.require_settable(id)?;
         Ok(self.table.set_expression(id, expression)?)
     }
 
@@ -233,7 +292,7 @@ impl Parameters {
         expressions: &[(ParamId, &str)],
     ) -> Result<ChangeSet, ParameterError> {
         for &(id, _) in expressions {
-            self.require(id)?;
+            self.require_settable(id)?;
         }
         Ok(self.table.set_expressions(expressions)?)
     }
@@ -241,7 +300,7 @@ impl Parameters {
     /// Sets the expression to a plain value in millimetres or radians,
     /// written in the parameter's unit.
     pub fn set_value(&mut self, id: ParamId, value: f64) -> Result<ChangeSet, ParameterError> {
-        let name = self.require(id)?.name().to_owned();
+        let name = self.require_settable(id)?.name().to_owned();
         if !value.is_finite() {
             return Err(ParameterError::NotFinite { name, value });
         }
@@ -255,7 +314,7 @@ impl Parameters {
         expression: &str,
         unit: Unit,
     ) -> Result<ChangeSet, ParameterError> {
-        self.require(id)?;
+        self.require_settable(id)?;
         Ok(self.table.update(id, expression, unit)?)
     }
 

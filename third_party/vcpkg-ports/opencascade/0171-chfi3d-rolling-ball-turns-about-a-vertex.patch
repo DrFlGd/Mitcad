@@ -1,0 +1,197 @@
+Mitcad's patch to OCCT 8.0.1, under OCCT's licence:
+SPDX-License-Identifier: LGPL-2.1-only WITH OCCT-exception-1.0
+
+Fillets: a blend rolling on an edge that reaches a vertex of the edge
+where the next edge turns away from the ball goes on as the ball's turn
+about that vertex, and a side of a blend reduced to a point becomes a
+degenerated edge (mitcad#237, with 0170).
+
+- ChFi3d_Builder::StartSol, where a blend rolling on an edge (the obstacle)
+  ends at a vertex: (a) where the blend's contact stayed at the vertex and
+  the same edge runs on from it in the walking direction (the ball turned
+  about the vertex, or stood while its other contact swept round it), the
+  next blend rolls on along that edge from the vertex; (b) where no edge of
+  the reference face continues tangentially and the ball's centre at the
+  blend's end (ChFi3d_BallCentreAtEnd, the circle of its end section) lies
+  behind the new edge's start, the next blend starts at the vertex on the
+  old edge, so that the walk turns the ball about the vertex (0170) until
+  it can roll on. Before, the next blend started on the new edge, whose
+  solutions there do not touch the ball before it.
+- ChFi3d_FilDS: the contact curve of a side whose 3d curve is a point (the
+  side of a blend turning about a vertex) is nullified like a degenerated
+  side, spanning the blend's surface as the other side does: the blend's
+  face gets a degenerated edge and the face beyond no edge. Before, it got
+  an edge of no length (BRepCheck_InvalidRange, or the corner failed).
+diff --git a/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_0.cxx b/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_0.cxx
+index 1231028..c104c2d 100644
+--- a/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_0.cxx
++++ b/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_0.cxx
+@@ -3522,6 +3522,33 @@ void ChFi3d_FilDS(const int                         SolidIndex,
+         double FiLen = std::abs(Fi.FirstParameter() - Fi.LastParameter());
+         if (FiLen > Precision::PConfusion())
+         {
++          // A side reduced to a point (a ball turning about the end of the
++          // edge it rolls on): a degenerated edge of the blend's face, no edge
++          // of the face beyond.
++          TopOpeBRepDS_Curve&            cd = DStr.ChangeCurve(IcFil1);
++          const occ::handle<Geom_Curve>& gc = cd.Curve();
++          if (gc.IsNull())
++          {
++            continue;
++          }
++          const gp_Pnt p0    = gc->Value(Fi.FirstParameter());
++          const double tolcd = std::max(cd.Tolerance(), tol3d);
++          bool         onpoint = true;
++          for (int k = 1; k <= 8 && onpoint; k++)
++          {
++            const double w = Fi.FirstParameter() + (Fi.LastParameter() - Fi.FirstParameter()) * k / 8.;
++            onpoint        = gc->Value(w).Distance(p0) <= tolcd;
++          }
++          if (onpoint)
++          {
++            cd.ChangeCurve().Nullify();
++            // It spans the blend's surface as the other side does (where the
++            // ends of the blend were cut, by the faces at the ends).
++            const ChFiDS_FaceInterference& Fo = Fd->Interference(3 - onS);
++            ChFiDS_FaceInterference&       Fc = Fd->ChangeInterference(onS);
++            Fc.SetFirstParameter(Fo.FirstParameter());
++            Fc.SetLastParameter(Fo.LastParameter());
++          }
+           continue;
+         }
+         TopOpeBRepDS_Curve& cc = DStr.ChangeCurve(IcFil1);
+diff --git a/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_2.cxx b/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_2.cxx
+index bf71319..d3b0d64 100644
+--- a/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_2.cxx
++++ b/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_2.cxx
+@@ -52,6 +52,7 @@
+ #include <Geom_BSplineSurface.hxx>
+ #include <Geom_Plane.hxx>
+ #include <Geom_Surface.hxx>
++#include <gce_MakeCirc.hxx>
+ #include <GeomAdaptor_Surface.hxx>
+ #include <GeomAPI_ExtremaCurveCurve.hxx>
+ #include <GeomAPI_ProjectPointOnCurve.hxx>
+@@ -65,6 +66,8 @@
+ #include <IntCurveSurface_HInter.hxx>
+ #include <Adaptor3d_CurveOnSurface.hxx>
+ #include <BRep_Tool.hxx>
++#include <BRepAdaptor_Curve.hxx>
++#include <gp.hxx>
+ #include <BRepAdaptor_Surface.hxx>
+ #include <Geom2d_BSplineCurve.hxx>
+ #include <Geom2d_Line.hxx>
+@@ -2018,6 +2021,38 @@ static void ChFi3d_BuildPlane(TopOpeBRepDS_DataStructure&         DStr,
+ //                         otherwise this is an obstacle and HC is updated.
+ //=======================================================================
+ 
++//=======================================================================
++// function : ChFi3d_BallCentreAtEnd
++// purpose  : The centre of the arc of the section at an end of a SurfData
++//            (the ball's centre of a rolling-ball blend there).
++//=======================================================================
++
++static bool ChFi3d_BallCentreAtEnd(const TopOpeBRepDS_DataStructure&   DStr,
++                                   const occ::handle<ChFiDS_SurfData>& SD,
++                                   const bool                          isFirst,
++                                   gp_Pnt&                             C)
++{
++  if (SD.IsNull() || SD->Surf() <= 0)
++  {
++    return false;
++  }
++  const occ::handle<Geom_Surface>& S = DStr.Surface(SD->Surf()).Surface();
++  if (S.IsNull())
++  {
++    return false;
++  }
++  double u1 = 0., u2 = 0., v1 = 0., v2 = 0.;
++  S->Bounds(u1, u2, v1, v2);
++  const double v = SD->InterferenceOnS1().Parameter(isFirst);
++  gce_MakeCirc mk(S->Value(u1, v), S->Value(0.5 * (u1 + u2), v), S->Value(u2, v));
++  if (!mk.IsDone())
++  {
++    return false;
++  }
++  C = mk.Value().Location();
++  return true;
++}
++
+ bool ChFi3d_Builder::StartSol(
+   const occ::handle<ChFiDS_Spine>&    Spine,
+   occ::handle<BRepAdaptor_Surface>&   HS,   // New face
+@@ -2096,6 +2131,37 @@ bool ChFi3d_Builder::StartSol(
+     {
+       return false;
+     }
++    {
++      // A blend whose contact stayed at the vertex where the edge starts ahead
++      // (the ball turned about it, or stood while its other contact swept round
++      // it): the next blend rolls on along the same edge.
++      const double     wv = BRep_Tool::Parameter(VCP, EHC);
++      BRepAdaptor_Curve aCur(EHC);
++      gp_Pnt           pv, ps;
++      gp_Vec           tv, ts;
++      aCur.D1(wv, pv, tv);
++      const double sp = isfirst ? SD->FirstSpineParam() : SD->LastSpineParam();
++      Spine->D1(sp, ps, ts);
++      if (std::abs(wv - aCur.LastParameter()) < std::abs(wv - aCur.FirstParameter()))
++      {
++        tv.Reverse();
++      }
++      if (isfirst)
++      {
++        ts.Reverse();
++      }
++      const ChFiDS_CommonPoint& aStart = SD->Vertex(!isfirst, ons);
++      if (tv.Magnitude() > gp::Resolution() && ts.Magnitude() > gp::Resolution()
++          && tv.Dot(ts) > 0.5 * tv.Magnitude() * ts.Magnitude()
++          && aStart.Point().Distance(BRep_Tool::Pnt(VCP)) <= std::max(aStart.Tolerance(), tolesp))
++      {
++        W          = wv;
++        pons       = HC->Value(W);
++        RecP       = true;
++        c1obstacle = true;
++        return true;
++      }
++    }
+     // One starts by searching in Fref another edge referencing VCP.
+     TopoDS_Edge newedge;
+     TopoDS_Edge edgereg;
+@@ -2207,6 +2273,36 @@ bool ChFi3d_Builder::StartSol(
+         return false;
+       }
+ 
++      // Where the new edge runs away from the ball (it turns from the old
++      // edge towards the ball's far side), the ball first turns about the
++      // vertex, its contact held at the old edge's end, until it is tangent
++      // to the new edge there: the next blend is that turn, on the old edge.
++      gp_Pnt aCentre;
++      if (edgereg.IsNull() && ChFi3d_BallCentreAtEnd(DStr, SD, isfirst, aCentre))
++      {
++        BRepAdaptor_Curve aNew(newedge);
++        const double      wn = BRep_Tool::Parameter(VCP, newedge);
++        gp_Pnt            pn;
++        gp_Vec            tn;
++        aNew.D1(wn, pn, tn);
++        if (tn.Magnitude() > gp::Resolution())
++        {
++          tn.Normalize();
++          if (std::abs(wn - aNew.LastParameter()) < std::abs(wn - aNew.FirstParameter()))
++          {
++            tn.Reverse();
++          }
++          if (gp_Vec(BRep_Tool::Pnt(VCP), aCentre).Dot(tn) < -tolapp3d)
++          {
++            W          = BRep_Tool::Parameter(VCP, EHC);
++            pons       = HC->Value(W);
++            RecP       = true;
++            c1obstacle = true;
++            return true;
++          }
++        }
++      }
++
+       TopoDS_Face newface = Fv;
+       newface.Orientation(TopAbs_FORWARD);
+       for (TopExp_Explorer ex(newface, TopAbs_EDGE); ex.More(); ex.Next())

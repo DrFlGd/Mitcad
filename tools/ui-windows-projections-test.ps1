@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: MIT
 # check-all sources: app/commands/SketchCommands.cpp app/framework/CommandSession.cpp app/sketch
-# check-all sources: core/model/src/sketch core/model/src/api/sketch.rs
+# check-all sources: core/model/src/sketch core/model/src/api/sketch.rs tools/cli
 # Input-driven Windows UI test of Clean Up Projections (mitcad#232) in the
 # build VM (tools/ui-windows-lib.ps1 says how the input is posted):
 #   1. A 40 x 25 block 20 high; a sketch on its front face.
@@ -9,6 +9,22 @@
 #   3. Clean Up Projections (a shortcut of the test's): the panel's preview
 #      lists the repeated curves it removes; OK keeps it, and running it
 #      again has nothing to clean up.
+#   4. Clean Up Stale Projections (mitcad#252, a shortcut of the test's): both
+#      projections follow the face, so nothing is stale.
+#   5. A design (mitcad-cli) whose sketch holds a projection of an earlier
+#      shape of a face (stale): the Sketch Palette offers Clean Up Stale
+#      Projections under its warning, which is a link: a click selects the
+#      projection's 8 curves and points (mitcad#264), again the same, Esc
+#      clears them. Clean Up Stale Projections started from there, the preview
+#      highlights the curve it removes and the lines it trims, Esc takes the
+#      highlights away; again (F9) and OK keeps it, the highlights gone.
+#   6. A design (mitcad-cli, mitcad#287): a rectangle standing on a projected
+#      line, its bottom Horizontal and its left corner on the line's left
+#      end. Coincident (a shortcut of the test's) on its right corner and
+#      the line's right end is added, the Horizontal it implies removed, and
+#      the hint says so; one undo takes both back. The Point tool (a
+#      shortcut of the test's) on a derived offset curve: the point is
+#      added, the coincident of its snap is refused, and the hint shows why.
 #
 # Usage: powershell -ExecutionPolicy Bypass -File tools\ui-windows-projections-test.ps1 [-App build\dev\mitcad.exe] [-Out dir] [-QtBin dir]
 param(
@@ -18,7 +34,8 @@ param(
 
 . (Join-Path $PSScriptRoot 'ui-windows-lib.ps1')
 
-Ui-Init $App $Out $QtBin @{ 'sketch.create' = 'F7'; 'sketch.clean_up_projections' = 'F8' }
+Ui-Init $App $Out $QtBin @{ 'sketch.create' = 'F7'; 'sketch.clean_up_projections' = 'F8'
+  'sketch.clean_up_stale_projections' = 'F9'; 'sketch.constraint.coincident' = 'Shift+F5'; 'sketch.point' = 'Shift+F6' }
 
 Write-Host '--- A block and a sketch on its front face'
 Ui-StartApp 'projections'
@@ -70,4 +87,194 @@ Ui-Step 'clean up projections again (F8)' { Ui-Key 'F8' }
 Ui-ExpectNew 'nothing to clean up' 'nothing left to clean up'
 Ui-Step 'cancel (Esc)'                   { Ui-Key 'Escape' }
 
+Write-Host '--- Clean Up Stale Projections'
+Ui-Mark
+Ui-Step 'clean up stale projections (F9)' { Ui-Key 'F9' }
+Ui-ExpectNew 'nothing to clean up: every linked projection matches its source' 'nothing stale'
+Ui-Step 'cancel (Esc)'                   { Ui-Key 'Escape' }
+
+Write-Host '--- A sketch whose projection no longer matches its source (mitcad#252)'
+# mitcad-cli builds it: a 60 x 40 block 20 high with a fillet of 5 on its
+# vertical edge at (60, 0); a sketch on XY holds the block's bottom face as
+# an earlier version recorded it (no by_geometry): 70 wide from x = -10,
+# sharp corners. A line of the user's at x = 20 ends on its bottom and top
+# edges, and an extrude uses the region right of it. The face has an arc
+# now, so the projection keeps its geometry, warns, and all its curves are
+# stale.
+$cli = @('mitcad-cli.exe', '..\tools\cli\mitcad-cli.exe', 'tools\cli\mitcad-cli.exe') |
+  ForEach-Object { Join-Path (Split-Path $script:UiApp) $_ } | Where-Object { Test-Path $_ } | Select-Object -First 1
+if (-not $cli) { Ui-Fail "no mitcad-cli.exe beside $($script:UiApp)" }
+$work = Join-Path $script:UiOut 'files'
+Remove-Item -Recurse -Force $work -ErrorAction SilentlyContinue
+New-Item -ItemType Directory -Force $work | Out-Null
+$script = Join-Path $work 'stale.json'
+$design = Join-Path $work 'stale.mitcad'
+Set-Content -Encoding ascii $script (@'
+[
+  {"cmd": "sketch.create"},
+  {"cmd": "sketch.add_rectangle", "sketch": "F1", "corner": [0, 0], "width": 60, "height": 40},
+  {"cmd": "add_feature", "def": {"type": "extrude", "profiles": [{"sketch": "F1", "region": "RECT"}],
+    "extent": {"type": "distance", "distance": 20}, "operation": "new_body"}},
+  {"cmd": "add_feature", "def": {"type": "fillet", "body": "F2.b0",
+    "edges": ["E{F2:side(c1[c4,c2])|F2:side(c2[c1,c3])}"], "radius": 5}},
+  {"cmd": "add_feature", "def": {"type": "sketch", "plane": "xy",
+    "entities": [
+      {"id": "p1", "type": "point", "at": [-10, 0], "fixed": true, "reference": true},
+      {"id": "p2", "type": "point", "at": [60, 0], "fixed": true, "reference": true},
+      {"id": "c3", "type": "line", "start": "p1", "end": "p2", "fixed": true, "reference": true},
+      {"id": "p4", "type": "point", "at": [60, 40], "fixed": true, "reference": true},
+      {"id": "c5", "type": "line", "start": "p2", "end": "p4", "fixed": true, "reference": true},
+      {"id": "p6", "type": "point", "at": [-10, 40], "fixed": true, "reference": true},
+      {"id": "c7", "type": "line", "start": "p4", "end": "p6", "fixed": true, "reference": true},
+      {"id": "c8", "type": "line", "start": "p6", "end": "p1", "fixed": true, "reference": true},
+      {"id": "p9", "type": "point", "at": [20, 0]},
+      {"id": "p10", "type": "point", "at": [20, 40]},
+      {"id": "c11", "type": "line", "start": "p9", "end": "p10"}],
+    "constraints": [
+      {"id": "k12", "type": "coincident", "point": "p9", "entity": "c3"},
+      {"id": "k13", "type": "coincident", "point": "p10", "entity": "c7"}],
+    "projections": [{"source": "F2:start(RECT)",
+                     "entities": ["p1", "p2", "c3", "p4", "c5", "p6", "c7", "c8"]}]}},
+  {"cmd": "add_feature", "def": {"type": "extrude",
+    "profiles": [{"sketch": "F4", "region": "r{c3[c11,c5],c5[c3,c7],c7[c5,c11],c11[c3,c7]}"}],
+    "extent": {"type": "distance", "distance": 5}, "operation": "new_body"}}
+]
+'@ -creplace 'RECT', 'r{c1[c4,c2],c2[c1,c3],c3[c2,c4],c4[c3,c1]}')
+$made = & $cli run $script --save $design
+if ($LASTEXITCODE -ne 0 -or -not (Test-Path $design)) { Ui-Fail "mitcad-cli: $($made -join ' / ')" }
+
+Ui-StartApp 'stale' @('--open', $design)
+Ui-ExpectLog 'stale.mitcad' 'the design opened'
+Ui-Mark
+Ui-Step 'edit Sketch2 (double-click)'    { Ui-DoubleClickLogged 'Timeline Sketch2' }
+Ui-ExpectNew 'Editing sketch F4 (Sketch2)' 'the sketch is edited' 30
+Ui-ExpectNew 'Palette paletteCleanUpStale at' 'the palette offers the clean-up under the warning'
+
+Write-Host '--- The warning selects the curves it is about (mitcad#264)'
+Ui-ExpectLog 'Palette warning 0 at' 'the palette shows the warning'
+$look = @(Ui-LogLines | Where-Object { $_.Contains('Palette warning 0 at ') }) | Select-Object -Last 1
+if (-not $look.EndsWith(': a link (pointing hand), tooltip "Click to select the curves this is about"')) {
+  Ui-Fail "the warning does not look like a link: $look"
+}
+Write-Host 'ok   the warning looks like a link'
+Ui-Mark
+Ui-Step 'click the warning'              { Ui-ClickLogged 'Palette warning 0' }
+Ui-ExpectNew 'Palette: warning 0 selects 8 entities: p1, p2, c3, p4, c5, p6, c7, c8' `
+  'the click selects the projection''s curves and points'
+Ui-ExpectNew 'Selected: 4 sketch curves, 4 sketch points' 'the selection holds the 8 of them'
+Ui-Mark
+Ui-Step 'click the warning again'        { Ui-ClickLogged 'Palette warning 0' }
+Ui-ExpectNew 'Palette: warning 0 selects 8 entities' 'a second click selects them again'
+Ui-Mark
+Ui-Step 'clear the selection (Esc)'      { Ui-Key 'Escape' }
+Ui-ExpectNew 'Selected: nothing' 'the selection is cleared'
+
+Write-Host '--- Clean Up Stale Projections from the warning'
+Ui-Mark
+Ui-Step 'clean up from the palette'      { Ui-ClickLogged 'Palette paletteCleanUpStale' }
+Ui-ExpectNew 'Palette: Clean Up Stale Projections from the warning' 'the warning started the command'
+Ui-ExpectNew 'Preview highlights: removed c8; trimmed c3, c7' 'the preview highlights what goes and what is trimmed'
+Ui-ExpectNew 'Preview Clean Up Stale Projections: ok, warning: 1 stale curve removed: c8' 'the preview lists it'
+Ui-Step 'cancel (Esc)'                   { Ui-Key 'Escape' }
+Ui-ExpectNew 'Preview highlights: none' 'cancel takes the highlights away'
+
+Write-Host '--- Clean Up Stale Projections kept'
+Ui-Mark
+Ui-Step 'clean up stale projections (F9)' { Ui-Key 'F9' }
+Ui-ExpectNew 'Preview highlights: removed c8; trimmed c3, c7' 'the preview highlights them again'
+Ui-Step 'OK (Enter)'                     { Ui-Key 'Return' }
+Ui-ExpectNew 'Cleaned up stale projections' 'kept'
+Ui-ExpectNew 'Preview highlights: none' 'OK takes the highlights away'
+
+Write-Host '--- A partly implied coincident replaces the Horizontal (mitcad#287)'
+# Sketch1 (F1) on XY: a projected line (c3, fixed reference geometry, from
+# p1 at (0, 0) to p2 at (60, 0)); a rectangle on it (c8 its bottom from p4
+# at (0, 0) to p5 at (40, 0), Horizontal k12), its left corner coincident
+# with p1 (k16); and above it a closed outline of three lines and a spline
+# offset out by 2 (derived: its lower line at y = 58 cannot be constrained).
+$script = Join-Path $work 'implied.json'
+$design = Join-Path $work 'implied.mitcad'
+Set-Content -Encoding ascii $script @'
+[
+  {"cmd": "add_feature", "def": {"type": "sketch", "plane": "xy", "entities": [
+    {"id": "p1", "type": "point", "at": [0, 0], "fixed": true, "reference": true},
+    {"id": "p2", "type": "point", "at": [60, 0], "fixed": true, "reference": true},
+    {"id": "c3", "type": "line", "start": "p1", "end": "p2", "fixed": true, "reference": true},
+    {"id": "p4", "type": "point", "at": [0, 0]},
+    {"id": "p5", "type": "point", "at": [40, 0]},
+    {"id": "p6", "type": "point", "at": [40, 25]},
+    {"id": "p7", "type": "point", "at": [0, 25]},
+    {"id": "c8", "type": "line", "start": "p4", "end": "p5"},
+    {"id": "c9", "type": "line", "start": "p5", "end": "p6"},
+    {"id": "c10", "type": "line", "start": "p6", "end": "p7"},
+    {"id": "c11", "type": "line", "start": "p7", "end": "p4"},
+    {"id": "p17", "type": "point", "at": [0, 60]},
+    {"id": "p18", "type": "point", "at": [40, 60]},
+    {"id": "c19", "type": "line", "start": "p17", "end": "p18"},
+    {"id": "p20", "type": "point", "at": [40, 80]},
+    {"id": "c21", "type": "line", "start": "p18", "end": "p20"},
+    {"id": "p22", "type": "point", "at": [20, 88]},
+    {"id": "p23", "type": "point", "at": [0, 80]},
+    {"id": "c24", "type": "fitted_spline", "points": ["p20", "p22", "p23"]},
+    {"id": "c25", "type": "line", "start": "p23", "end": "p17"}],
+    "constraints": [
+      {"id": "k12", "type": "horizontal", "line": "c8"},
+      {"id": "k13", "type": "vertical", "line": "c9"},
+      {"id": "k14", "type": "horizontal", "line": "c10"},
+      {"id": "k15", "type": "vertical", "line": "c11"},
+      {"id": "k16", "type": "coincident", "point": "p4", "entity": "p1"}]}},
+  {"cmd": "sketch.offset", "sketch": "F1", "curves": ["c19", "c21", "c24", "c25"], "distance": 2}
+]
+'@
+$made = & $cli run $script --save $design
+if ($LASTEXITCODE -ne 0 -or -not (Test-Path $design)) { Ui-Fail "mitcad-cli: $($made -join ' / ')" }
+
+# The sketch's degrees of freedom the app logged last.
+function Sketch-Dof {
+  $dof = Ui-LastMatch 'Sketch Sketch1: (\d+) DOF'
+  if (-not $dof) { Ui-Fail 'the app did not log the sketch''s degrees of freedom' }
+  return [int]$dof
+}
+
+Ui-StartApp 'implied' @('--open', $design)
+Ui-ExpectLog 'implied.mitcad' 'the design opened'
+Ui-Mark
+Ui-Step 'edit Sketch1 (double-click)'    { Ui-DoubleClickLogged 'Timeline Sketch1' }
+Ui-ExpectNew 'Editing sketch F1 (Sketch1)' 'the sketch is edited' 30
+Ui-Mark
+Ui-Step 'fit (F6)'                       { Ui-Key 'F6' }
+Start-Sleep -Milliseconds 800
+$before = Sketch-Dof
+Ui-Mark
+Ui-Step 'coincident (Shift+F5)'          { Ui-Key 'shift+F5' }
+Ui-ExpectNew 'Sketch tool Coincident' 'Coincident active'
+Ui-Step 'pick the right bottom corner'   { Ui-SketchClick 40 0 }
+Ui-Step 'pick the projected line''s end' { Ui-SketchClick 60 0 }
+Ui-ExpectNew 'Removed constraint horizontal k12: implied by the new coincident k' `
+  'the Horizontal the coincident implies is removed'
+Ui-ExpectNew ' on p5, p2' 'the coincident is added'
+Ui-ExpectNew 'Sketch notice: Horizontal removed: implied by the new Coincident.' 'the hint says so'
+Start-Sleep -Milliseconds 500
+if ((Sketch-Dof) -ne $before - 1) { Ui-Fail "$(Sketch-Dof) DOF, expected $($before - 1)" }
+Write-Host 'ok   the corner on the line''s end, one degree of freedom fewer'
+Ui-Step 'end the tool (Esc)'             { Ui-Key 'Escape' }
+Ui-Mark
+Ui-Step 'undo (Ctrl+Z)'                  { Ui-Key 'ctrl+z' }
+Ui-ExpectNew 'Undo: ' 'undone'
+Start-Sleep -Milliseconds 500
+if ((Sketch-Dof) -ne $before) { Ui-Fail "$(Sketch-Dof) DOF after the undo, expected $before" }
+Write-Host 'ok   one undo takes both back'
+
+Write-Host '--- A snapped coincident that is refused says why (mitcad#287)'
+Ui-Mark
+Ui-Step 'point (Shift+F6)'               { Ui-Key 'shift+F6' }
+Ui-ExpectNew 'Sketch tool Point' 'Point active'
+Ui-Step 'click on the derived offset'    { Ui-SketchClick 10 58 }
+Ui-ExpectNew 'Added point ' 'the point is added'
+Ui-ExpectNew 'Constraint coincident on ' 'the snap''s coincident is logged'
+Ui-ExpectNew ' not added: ' 'refused, with the reason'
+Ui-ExpectNew 'Sketch notice: Coincident not added: ' 'the hint shows the reason'
+Ui-Step 'end the tool (Esc)'             { Ui-Key 'Escape' }
+Ui-Step 'finish sketch (Ctrl+Enter)'     { Ui-Key 'ctrl+Return' }
+Ui-ExpectLog 'Sketch finished' 'sketch finished'
 Ui-Finish 'UI Windows projections test'

@@ -148,6 +148,12 @@ struct InputDef {
   // the active input change: a command can stop naming them (Joint: once
   // origin B is picked, the preview shows A where the joint puts it).
   std::function<QStringList(const SelectionItem&, const CommandState&, const CommandContext&)> ghosts;
+  // The hover shows the whole tangent chain of an edge or face of a body
+  // of these kinds (mitcad#290; the model's `tangent_chains` query) while
+  // the command's check input `chainCheck` is on: what the operation will
+  // take with the pick. Picks stay the item clicked.
+  SelectFilter chainKinds;
+  QString chainCheck;
 
   // Value: an expression with units, as text.
   ValueKind valueKind = ValueKind::Length;
@@ -237,6 +243,11 @@ struct InputDef {
     ghosts = std::move(named);
     return *this;
   }
+  InputDef& withHoverChain(SelectFilter kinds, const QString& check) {
+    chainKinds = kinds;
+    chainCheck = check;
+    return *this;
+  }
   InputDef& withChoices(std::function<QVector<QPair<QString, QString>>(const CommandState&)> options) {
     choicesFor = std::move(options);
     return *this;
@@ -295,6 +306,14 @@ public:
     return m_values.value(key(id), std::numeric_limits<double>::quiet_NaN());
   }
   void setValue(const QString& id, double number) { m_values[key(id)] = number; }
+  // The parameter a value input edits, when the feature owns one (d5):
+  // shown with its label (mitcad#231).
+  QString parameterName(const QString& id) const { return m_parameters.value(key(id)); }
+  void setParameterName(const QString& id, const QString& name) { m_parameters[key(id)] = name; }
+  // That parameter as a sketch dimension's tooltip tells of it: "d5 = d1 / 2
+  // → 20 mm (Extrude1 distance)" (mitcad#250); empty while invalid.
+  QString parameterTooltip(const QString& id) const { return m_parameterTips.value(key(id)); }
+  void setParameterTooltip(const QString& id, const QString& text) { m_parameterTips[key(id)] = text; }
 
   QString choice(const QString& id) const { return m_choices.value(key(id)); }
   void setChoice(const QString& id, const QString& option) { m_choices[key(id)] = option; }
@@ -323,6 +342,8 @@ private:
   QHash<QString, QJsonObject> m_objects;
   QHash<QString, QString> m_expressions;
   QHash<QString, double> m_values;
+  QHash<QString, QString> m_parameters;
+  QHash<QString, QString> m_parameterTips;
   QHash<QString, QString> m_choices;
   QHash<QString, bool> m_checks;
   QHash<QString, int> m_rows;
@@ -391,10 +412,19 @@ struct CommandDef {
   // Feature commands.
   QString featureType; // the type of definition it adds and edits
   QStringList editsAlso; // other types it edits (Move/Copy: moves of occurrences)
+  // A new feature's inputs "operation" and "objects" (operationInputs)
+  // follow what the model chooses from each preview's tool until the user
+  // changes either (mitcad#289: Extrude joins the bodies its tool touches
+  // and cuts those it goes into); editing keeps the stored operation.
+  bool autoOperation = false;
   // Sketch commands (U2): `build` gives a `sketch.*` command (or
   // {"commands": [...]}) instead of a feature definition; the preview runs
   // it and takes it back, OK keeps it as one undo step.
   bool sketchCommand = false;
+  // Sketch commands: the preview's answer once it applied, and an empty
+  // object when it is taken back or failed, e.g. to draw what the command
+  // removes (Clean Up Stale Projections, mitcad#252).
+  std::function<void(const QJsonObject&)> sketchPreviewShown;
   // Model commands (U4: materials, New Component): `build` gives
   // {"commands": [...]}, run on OK as one undo step named after the
   // command; nothing is previewed.

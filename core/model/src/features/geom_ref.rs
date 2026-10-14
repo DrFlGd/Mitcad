@@ -519,6 +519,10 @@ pub(crate) trait Resolver {
     fn datum(&mut self, uid: FeatureUid) -> Result<Datum, String>;
     fn shape(&mut self, body: BodyUid) -> Result<<Self::Kernel as Kernel>::Shape, String>;
     fn sketch(&mut self, uid: FeatureUid) -> Result<Arc<SketchOutput>, String>;
+    /// A face, edge or vertex was found under another name after a sketch
+    /// change (`renamed.rs`, mitcad#272): a feature warns; `maker` made
+    /// the renamed face.
+    fn renamed(&mut self, _what: &str, _stored: &str, _found: &str, _maker: FeatureUid) {}
 }
 
 fn not_a(resolver: &impl Resolver, uid: FeatureUid, datum: &Datum, wanted: &str) -> String {
@@ -536,8 +540,9 @@ fn surface_of(
     face: &FaceName,
 ) -> Result<SurfaceGeometry, String> {
     let shape = r.shape(body)?;
+    let found = super::renamed::face_for(r, &shape, face)?;
     r.kernel()
-        .face_geometry(&shape, face)
+        .face_geometry(&shape, &found)
         .map_err(|e| format!("face {face}: {e}"))
 }
 
@@ -547,8 +552,9 @@ fn curve_of(
     edge: &EdgeName,
 ) -> Result<CurveGeometry, String> {
     let shape = r.shape(body)?;
+    let found = super::renamed::edge_for(r, &shape, edge)?;
     r.kernel()
-        .edge_geometry(&shape, edge)
+        .edge_geometry(&shape, &found)
         .map_err(|e| format!("edge {edge}: {e}"))
 }
 
@@ -681,9 +687,10 @@ pub(crate) fn resolve_point(r: &mut impl Resolver, reference: &GeomRef) -> Resul
         GeomRef::Datum(uid) => r.datum(*uid)?,
         GeomRef::Vertex { body, vertex } => {
             let shape = r.shape(*body)?;
+            let found = super::renamed::vertex_for(r, &shape, vertex)?;
             return r
                 .kernel()
-                .vertex_point(&shape, vertex)
+                .vertex_point(&shape, &found)
                 .map_err(|e| format!("vertex {vertex}: {e}"));
         }
         GeomRef::Edge { body, edge } => {
@@ -751,6 +758,8 @@ pub(crate) fn resolve_face_point(
         });
     };
     let shape = r.shape(*body)?;
+    let found = super::renamed::face_for(r, &shape, face)?;
+    let face = &found;
     // A planar face is its whole plane (mitcad#186: the reference model of an
     // axis perpendicular to a face at a point outside it goes through the
     // point's projection onto the plane).
@@ -776,8 +785,14 @@ pub(crate) fn resolve_path(
     match path {
         PathRef::Edges { body, edges } => {
             let shape = r.shape(*body)?;
+            let mut found = Vec::with_capacity(edges.len());
+            for edge in edges {
+                found.push(
+                    super::renamed::edge_for(r, &shape, edge).map_err(|e| format!("path: {e}"))?,
+                );
+            }
             r.kernel()
-                .path_point(&shape, edges, at)
+                .path_point(&shape, &found, at)
                 .map_err(|e| format!("path: {e}"))
         }
         PathRef::SketchCurves { sketch, curves } => {
@@ -1083,6 +1098,10 @@ impl<K: Kernel> Resolver for EvalContext<'_, K> {
 
     fn sketch(&mut self, uid: FeatureUid) -> Result<Arc<SketchOutput>, String> {
         EvalContext::sketch(self, uid)
+    }
+
+    fn renamed(&mut self, what: &str, stored: &str, found: &str, maker: FeatureUid) {
+        self.found_renamed(what, &stored, &found, maker);
     }
 }
 

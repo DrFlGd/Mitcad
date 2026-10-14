@@ -107,6 +107,7 @@ impl AlignRef {
                 let mut frame = ctx.plane(plane)?.frame();
                 if let GeomRef::Face { body, face } = plane {
                     let shape = ctx.body(*body)?;
+                    let face = &super::renamed::face_for(ctx, &shape, face)?;
                     frame.origin = ctx
                         .kernel
                         .face_plane(&shape, face)

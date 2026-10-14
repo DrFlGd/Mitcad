@@ -50,6 +50,7 @@
 #include "../framework/AppSettings.hpp"
 #include "../framework/CachePreferences.hpp"
 #include "../framework/CommandRegistry.hpp"
+#include "../framework/DebugLog.hpp"
 #include "../framework/Icons.hpp"
 #include "../framework/SettingsWindow.hpp"
 #include "../framework/Theme.hpp"
@@ -143,6 +144,8 @@ const SchemeEntry kSchemes[] = {
     {NavigationScheme::RightOrbit, "right-orbit", QT_TRANSLATE_NOOP("View", "Right orbits, middle or Shift + right pans")},
     {NavigationScheme::Trackpad, "trackpad",
      QT_TRANSLATE_NOOP("View", "Trackpad (two-finger scroll pans, pinch zooms, Alt orbits)")},
+    {NavigationScheme::TrackpadShift, "trackpad-shift",
+     QT_TRANSLATE_NOOP("View", "Trackpad (two-finger scroll pans, pinch zooms, Shift orbits)")},
 };
 
 const SchemeEntry& schemeEntry(NavigationScheme scheme) {
@@ -200,6 +203,8 @@ const PreferencePage kPreferencePages[] = {
      "git remote sync push fetch version control author email name mqtt live broker"},
     {"updates", QT_TRANSLATE_NOOP("View", "Updates"), "release channel pre-release"},
     {"print", QT_TRANSLATE_NOOP("View", "3D Print"), "slicer printing"},
+    // The debug log (mitcad#269).
+    {"diagnostics", QT_TRANSLATE_NOOP("View", "Diagnostics"), "debug log logging trace problem report"},
 };
 
 QString onOff(bool on) { return on ? QStringLiteral("on") : QStringLiteral("off"); }
@@ -215,12 +220,14 @@ gp_XYZ xyzOf(const QJsonValue& value) {
 QVector<QPair<QString, QString>> mouseRows(NavigationScheme scheme) {
   const QString wheel = QObject::tr("Mouse wheel");
   switch (scheme) {
-  case NavigationScheme::Trackpad: {
+  case NavigationScheme::Trackpad:
+  case NavigationScheme::TrackpadShift: {
     const QString alt = altKey();
     const QString shift = QStringLiteral("Shift");
+    const bool shiftOrbit = scheme == NavigationScheme::TrackpadShift;
     return {{QObject::tr("Two-finger scroll"), QObject::tr("Pan")},
-            {QObject::tr("%1 + two-finger scroll").arg(alt), QObject::tr("Orbit")},
-            {QObject::tr("%1 or %2 + two-finger scroll").arg(shift, ctrlKey()), QObject::tr("Zoom")},
+            {QObject::tr("%1 + two-finger scroll").arg(shiftOrbit ? shift : alt), QObject::tr("Orbit")},
+            {QObject::tr("%1 or %2 + two-finger scroll").arg(shiftOrbit ? alt : shift, ctrlKey()), QObject::tr("Zoom")},
             {QObject::tr("%1 + left drag").arg(alt), QObject::tr("Orbit")},
             {QObject::tr("%1 + %2 + left drag, middle drag").arg(shift, alt), QObject::tr("Pan")},
             {QObject::tr("Right drag"), QObject::tr("Orbit")},
@@ -503,7 +510,7 @@ void ViewController::registerCommands() {
   preferences.mode = CommandDef::Mode::Any;
   preferences.tab.clear();
   preferences.keywords = {QStringLiteral("options"), QStringLiteral("settings")};
-  preferences.tooltip = tr("General settings, navigation, display, cache, cloud, updates and 3D print");
+  preferences.tooltip = tr("General settings, navigation, display, cache, cloud, updates, 3D print and diagnostics");
   preferences.run = [this] { showPreferences(); };
   preferences.duringCommands = true;
 #ifdef Q_OS_MACOS
@@ -1001,10 +1008,47 @@ void ViewController::showPreferences(const QString& page) {
   // live updates (P12 remote, mitcad#89).
   auto* remoteBox = new RemotePreferencesBox;
   groups.insert(QStringLiteral("cloud"), remoteBox);
+  // Diagnostics (mitcad#269): the debug log, switched on or off at once.
+  QWidget* diagnosticsBox = section(tr("Diagnostics"));
+  auto* diagnosticsForm = new QFormLayout(diagnosticsBox);
+  auto* debugLog = new QCheckBox(tr("&Write a debug log"));
+  debugLog->setObjectName(QStringLiteral("debugLog"));
+  debugLog->setChecked(DebugLog::instance().running());
+  debugLog->setToolTip(tr("Writes what Mitcad does (commands, sketch operations, computations, warnings) to a file "
+                          "in the log folder, so that a problem can be traced; on until turned off, also after a "
+                          "restart. A file rolls over at 20 MB; the folder keeps the newest 10 files, 200 MB at "
+                          "most."));
+  control(diagnosticsForm, debugLog);
+  auto* logFolderPath = new QLineEdit(QDir::toNativeSeparators(DebugLog::instance().folder()));
+  logFolderPath->setReadOnly(true);
+  if (window != nullptr) {
+    logFolderPath->setMinimumWidth(240);
+  }
+  auto* openLogFolder = new QPushButton(tr("Open Log Folder"));
+  connect(openLogFolder, &QPushButton::clicked, host, [this] {
+    if (QAction* open = m_registry.action(QStringLiteral("help.open_log_folder"))) {
+      open->trigger();
+    }
+  });
+  auto* logFolderRow = new QHBoxLayout;
+  logFolderRow->addWidget(logFolderPath, 1);
+  logFolderRow->addWidget(openLogFolder);
+  diagnosticsForm->addRow(tr("Log folder:"), logFolderRow);
+  auto* logPrivacy = new QLabel(tr("Logs stay on this computer: a problem report offers the latest one, attached only "
+                                   "if you choose. A log may contain file paths, design names and entity names; "
+                                   "not what you type."));
+  logPrivacy->setWordWrap(true);
+  control(diagnosticsForm, logPrivacy);
+  groups.insert(QStringLiteral("diagnostics"), diagnosticsBox);
+  // What the switch was when the window opened or last applied: a change
+  // starts or stops the log and is saved; the log of a run started with
+  // --debug-log stays a run's unless the switch is changed.
+  const auto debugLogApplied = std::make_shared<bool>(debugLog->isChecked());
 
   QWidget* navigationBox = section(tr("Navigation"));
   auto* navigation = new QFormLayout(navigationBox);
   auto* scheme = new QComboBox;
+  scheme->setObjectName(QStringLiteral("navigationScheme"));
   for (const SchemeEntry& entry : kSchemes) {
     scheme->addItem(schemeName(entry.scheme), int(entry.scheme));
   }
@@ -1111,7 +1155,22 @@ void ViewController::showPreferences(const QString& page) {
   groups.insert(QStringLiteral("display"), displayBox);
 
   *commit = [this, general, top, bottom, scheme, zoomToCursor, reverseZoom, constrained, animate, camera, background,
-             autosave, minutes, importTolerance, cacheBox, updatesBox, slicerBox, remoteBox, renderDevice] {
+             autosave, minutes, importTolerance, cacheBox, updatesBox, slicerBox, remoteBox, renderDevice, debugLog,
+             debugLogApplied] {
+    // The debug log (mitcad#269), at once.
+    if (debugLog->isChecked() != *debugLogApplied) {
+      *debugLogApplied = debugLog->isChecked();
+      DebugLog::setSettingOn(*debugLogApplied);
+      qDebug().noquote() << QStringLiteral("Preferences: debug log %1").arg(onOff(*debugLogApplied));
+      if (!*debugLogApplied) {
+        DebugLog::instance().stop();
+      } else if (!DebugLog::instance().running()) {
+        QString error;
+        if (!DebugLog::instance().start(QString(), QStringLiteral("Preferences"), &error)) {
+          qWarning().noquote() << QStringLiteral("Debug log not started: %1").arg(error);
+        }
+      }
+    }
     m_settings.navigation.scheme = static_cast<NavigationScheme>(scheme->currentData().toInt());
     m_settings.navigation.zoomToCursor = zoomToCursor->isChecked();
     m_settings.navigation.reverseZoom = reverseZoom->isChecked();
@@ -1199,6 +1258,7 @@ void ViewController::showPreferences(const QString& page) {
         {"cloud", "cloud", ""},
         {"updates", "arrow.down.circle", ""},
         {"print", "printer", ""},
+        {"diagnostics", "ladybug", "wrench"},
     };
     for (const PreferencePage& entry : kPreferencePages) {
       QWidget* group = groups.value(QLatin1String(entry.id));
@@ -1231,7 +1291,7 @@ void ViewController::showPreferences(const QString& page) {
     if (renderDevice != nullptr) {
       connect(renderDevice, &QComboBox::currentIndexChanged, host, changed);
     }
-    for (QCheckBox* box : {zoomToCursor, reverseZoom, constrained, animate, autosave}) {
+    for (QCheckBox* box : {zoomToCursor, reverseZoom, constrained, animate, autosave, debugLog}) {
       connect(box, &QCheckBox::toggled, host, changed);
     }
     connect(minutes, &QSpinBox::valueChanged, host, changed);

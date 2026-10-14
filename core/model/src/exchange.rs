@@ -456,10 +456,17 @@ impl<K: Kernel> Document<K> {
             return Err(invalid("nothing to import"));
         }
         let mut defs = Vec::with_capacity(features.len());
+        // Each body's data with the shape it was written from: the
+        // evaluation adopts the shape rather than reading the data back
+        // (mitcad#244).
+        let mut written_from = Vec::new();
         for base in &features {
             let component = base.component.unwrap_or(self.active_component());
             self.state().editable(component)?;
             let bodies = self.base_bodies(&base.bodies)?;
+            for (body, input) in bodies.iter().zip(&base.bodies) {
+                written_from.push((body.brep.clone(), input.shape.clone()));
+            }
             let def = FeatureDef::<ValueInput>::Base(BaseDef {
                 operation: base.operation,
                 participants: base.participants.clone(),
@@ -470,26 +477,28 @@ impl<K: Kernel> Document<K> {
             defs.push((def, base.name.clone(), component));
         }
         let mut taken: BTreeSet<String> = self.bodies().into_iter().map(|b| b.name).collect();
-        let added = self.apply(|state| {
-            taken.extend(state.body_names.values().cloned());
-            let mut added = Vec::with_capacity(defs.len());
-            for (def, name, component) in &defs {
-                let feature = state.add_feature_in(def, name.as_deref(), *component)?;
-                if let FeatureDef::Base(base) = def
-                    && base.operation == Operation::NewBody
-                {
-                    // Bodies that replace others keep those bodies' names.
-                    let replacing = base.replaces.len();
-                    for (i, body) in (0..).zip(&base.bodies).skip(replacing) {
-                        if let Some(name) = &body.name {
-                            let name = unique_name(name, &mut taken);
-                            state.body_names.insert(BodyUid::new(feature.uid, i), name);
+        let added = self.with_written_from(written_from, |doc| {
+            doc.apply(|state| {
+                taken.extend(state.body_names.values().cloned());
+                let mut added = Vec::with_capacity(defs.len());
+                for (def, name, component) in &defs {
+                    let feature = state.add_feature_in(def, name.as_deref(), *component)?;
+                    if let FeatureDef::Base(base) = def
+                        && base.operation == Operation::NewBody
+                    {
+                        // Bodies that replace others keep those bodies' names.
+                        let replacing = base.replaces.len();
+                        for (i, body) in (0..).zip(&base.bodies).skip(replacing) {
+                            if let Some(name) = &body.name {
+                                let name = unique_name(name, &mut taken);
+                                state.body_names.insert(BodyUid::new(feature.uid, i), name);
+                            }
                         }
                     }
+                    added.push(feature);
                 }
-                added.push(feature);
-            }
-            Ok((label.to_owned(), added))
+                Ok((label.to_owned(), added))
+            })
         })?;
         let all = self.bodies();
         let mut result = Vec::with_capacity(added.len());

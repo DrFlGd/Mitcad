@@ -2,11 +2,15 @@
 #include "mitcad/geometry/boolean.hpp"
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <cstddef>
+#include <cstdio>
+#include <cstdlib>
 #include <memory>
 #include <optional>
 #include <stdexcept>
+#include <string>
 #include <utility>
 #include <vector>
 
@@ -30,6 +34,7 @@
 #include "far_features.hpp"
 #include "history.hpp"
 #include "mitcad/analysis/common.hpp"
+#include "mitcad/geometry/contact.hpp"
 #include "mitcad/geometry/query.hpp"
 #include "util.hpp"
 
@@ -56,6 +61,64 @@ public:
 
 private:
   double m_before;
+};
+
+// Whether MITCAD_BOOLEAN_TRACE asks for a line per operation on standard
+// error: the operands' face counts and the time of each phase (the copy,
+// taking far features out, OCCT's boolean, the face merge, naming, the
+// checker, putting the features back). It shows where a design's booleans
+// spend their time (mitcad#247) without a profiler.
+bool tracing() {
+  static const bool on = [] {
+#ifdef _MSC_VER
+    char* value = nullptr;
+    std::size_t length = 0;
+    if (_dupenv_s(&value, &length, "MITCAD_BOOLEAN_TRACE") != 0 || value == nullptr) {
+      return false;
+    }
+    std::free(value);
+    return true;
+#else
+    return std::getenv("MITCAD_BOOLEAN_TRACE") != nullptr;
+#endif
+  }();
+  return on;
+}
+
+// The phases of one operation, traced when it ends (tracing()).
+class PhaseTrace {
+public:
+  explicit PhaseTrace(std::string what)
+      : m_what(std::move(what)), m_start(std::chrono::steady_clock::now()), m_last(m_start) {}
+  void mark(const char* phase) {
+    if (!tracing()) {
+      return;
+    }
+    const auto now = std::chrono::steady_clock::now();
+    m_line += " " + std::string(phase) + "=" +
+              std::to_string(std::chrono::duration<double>(now - m_last).count());
+    m_last = now;
+  }
+  void note(const std::string& text) {
+    if (tracing()) {
+      m_line += " " + text;
+    }
+  }
+  ~PhaseTrace() {
+    if (tracing()) {
+      mark("rest");
+      const double total = std::chrono::duration<double>(std::chrono::steady_clock::now() - m_start).count();
+      std::fprintf(stderr, "boolean-trace: %s total=%f%s\n", m_what.c_str(), total, m_line.c_str());
+    }
+  }
+  PhaseTrace(const PhaseTrace&) = delete;
+  PhaseTrace& operator=(const PhaseTrace&) = delete;
+
+private:
+  std::string m_what;
+  std::string m_line;
+  std::chrono::steady_clock::time_point m_start;
+  std::chrono::steady_clock::time_point m_last;
 };
 
 const char* operation_name(BooleanOp op) {
@@ -442,18 +505,32 @@ detail::FaceNamer run_operation(BooleanOp op, const std::vector<std::pair<const 
                                 const Shape& tool, int tool_tag, bool simplify = true,
                                 std::vector<TopoDS_Shape>* seen = nullptr, bool reduce = true,
                                 bool* split = nullptr, double fuzzy = 0.0) {
+  PhaseTrace trace(std::string(operation_name(op)));
+  if (tracing()) {
+    std::string faces;
+    for (const auto& target : targets) {
+      faces += std::to_string(target.first->face_count()) + ",";
+    }
+    trace.note("targets=" + faces + " tool=" + std::to_string(tool.face_count()) +
+               " simplify=" + std::to_string(simplify) + " reduce=" + std::to_string(reduce));
+  }
   std::vector<TopoDS_Shape> inputs;
   for (const auto& target : targets) {
     inputs.push_back(target.first->occt());
   }
   inputs.push_back(tool.occt());
   const detail::InputCopy copy(inputs);
+  trace.mark("copy");
   // A single target's holes away from the tool sit out the operation
   // (far_features.hpp): on a perforated body it then works on the faces
   // near the tool with only their nearby holes.
   std::optional<detail::FarFeatures> far;
   if (reduce && targets.size() == 1 && op != BooleanOp::Intersect) {
     far = detail::FarFeatures::split(copy.shape(0), box_of(tool), targets.front().first->unified());
+  }
+  trace.mark("far");
+  if (far) {
+    trace.note("holes=" + std::to_string(far->holes()));
   }
   const auto operation = make_operation(op);
   NCollection_List<TopoDS_Shape> arguments;
@@ -480,6 +557,7 @@ detail::FaceNamer run_operation(BooleanOp op, const std::vector<std::pair<const 
   // most of a pattern's cut, 30 s of it).
   operation->SetCheckInverted(false);
   detail::build(*operation);
+  trace.mark("bop");
   if (!operation->IsDone() || operation->HasErrors()) {
     throw std::runtime_error("the boolean operation failed");
   }
@@ -488,6 +566,7 @@ detail::FaceNamer run_operation(BooleanOp op, const std::vector<std::pair<const 
   if (simplify) {
     operation->SimplifyResult();
   }
+  trace.mark("unify");
   detail::FaceNamer namer(operation->Shape());
   for (const auto& [target, tag] : targets) {
     if (far) {
@@ -501,6 +580,7 @@ detail::FaceNamer run_operation(BooleanOp op, const std::vector<std::pair<const 
   if (!far) {
     namer.finish();
   }
+  trace.mark("names");
   // A cut that leaves its target as it was (no face of it modified or
   // removed, the merge included) is not checked: its result is the target's
   // faces as they were, which the caller finds unchanged (volume_changed)
@@ -530,7 +610,10 @@ detail::FaceNamer run_operation(BooleanOp op, const std::vector<std::pair<const 
       kept.Add(it.Current());
     }
   }
-  if (simplify && !untouched && !detail::is_valid_where_changed(namer.result(), kept)) {
+  trace.mark("kept");
+  const bool valid_after_merge = !simplify || untouched || detail::is_valid_where_changed(namer.result(), kept);
+  trace.mark("check");
+  if (!valid_after_merge) {
     // The merge can break a result the operation made valid (a join of a
     // corpus design: its merged faces made a shell that cannot be
     // oriented); then the result keeps the faces as the operation left
@@ -540,6 +623,7 @@ detail::FaceNamer run_operation(BooleanOp op, const std::vector<std::pair<const 
   if (!simplify && !untouched) {
     detail::require_valid_where_changed(namer.result(), kept, "the boolean operation");
   }
+  trace.mark("check2");
   // Checked, or the targets as they were (a cut that left them alone).
   namer.set_valid(!untouched || targets_valid);
   if (split != nullptr) {
@@ -565,6 +649,7 @@ detail::FaceNamer run_operation(BooleanOp op, const std::vector<std::pair<const 
     }
   }
   namer.set_unified(simplify);
+  trace.mark("split");
   if (!far) {
     return namer;
   }
@@ -572,6 +657,7 @@ detail::FaceNamer run_operation(BooleanOp op, const std::vector<std::pair<const 
   // saw the result without them, and they are as they were (apart from the
   // tool, and from the faces it changed).
   const std::optional<detail::FarFeatures::Restored> restored = far->restore(operation->Shape(), *operation);
+  trace.mark("restore");
   if (!restored) {
     return run_operation(op, targets, tool, tool_tag, simplify, seen, false, split, fuzzy);
   }
@@ -592,6 +678,7 @@ detail::FaceNamer run_operation(BooleanOp op, const std::vector<std::pair<const 
     }
   }
   whole.finish();
+  trace.mark("rename");
   whole.set_unified(simplify);
   // As valid as the result the checker saw: the holes are as they were.
   whole.set_valid(!untouched || targets_valid);
@@ -723,8 +810,12 @@ std::optional<std::vector<detail::FaceNamer::Piece>> tiled_cut(const Shape& targ
 
 } // namespace
 
+// The contacts of a new Extrude's tool (contact.cpp, mitcad#289).
+bool detail::shapes_touch(const Shape& a, const Shape& b) { return touches(a, b); }
+
 BooleanResult boolean(BooleanOp op, const std::vector<const Shape*>& targets, const Shape& tool) {
   return detail::run(operation_name(op), [&] {
+    PhaseTrace trace(std::string("whole-") + operation_name(op) + " targets=" + std::to_string(targets.size()));
     BooleanResult result;
     result.touched.assign(targets.size(), false);
     const Bnd_Box tool_box = box_of(tool);
@@ -797,6 +888,7 @@ BooleanResult boolean(BooleanOp op, const std::vector<const Shape*>& targets, co
           return result;
         }
       }
+      trace.mark("first");
       std::vector<std::pair<const Shape*, int>> joined;
       for (const auto& [target, i] : near) {
         if (touches(*target, tool)) {
@@ -804,6 +896,7 @@ BooleanResult boolean(BooleanOp op, const std::vector<const Shape*>& targets, co
           result.touched[static_cast<std::size_t>(i)] = true;
         }
       }
+      trace.mark("touches");
       if (joined.empty()) {
         // Geometry the file stores differs from the model's by a few
         // nanometres (a circle projected from an edge into a sketch is
@@ -879,9 +972,11 @@ BooleanResult boolean(BooleanOp op, const std::vector<const Shape*>& targets, co
       // all is a target cut away completely, or one the tool of an
       // intersection does not reach.
       bool changed = solids.empty() ? op == BooleanOp::Cut : solids.size() > 1;
+      trace.mark("op");
       if (solids.size() == 1) {
         changed = volume_changed(*targets[i], seen.front(), *solids.front().shape);
       }
+      trace.mark("volume");
       if (!changed) {
         continue;
       }

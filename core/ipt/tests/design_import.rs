@@ -204,3 +204,113 @@ fn a_combine_joins_the_bodies_its_record_names() {
         assert_eq!(doc.bodies().len(), 1, "{}", report.text());
     }
 }
+
+/// A sheet-metal face (mitcad#211): its style's rules and the face come in
+/// as Mitcad's sheet rules (named after the style, with the style's
+/// parameters and K-factor) and sheet face, at the face's place on the
+/// timeline, the material on the side the plate's direction gives; a
+/// second face of the style uses the same rules; a
+/// changed `Thickness` rebuilds the rules.
+#[test]
+fn a_sheet_metal_face_replays_as_sheet_rules_and_a_sheet_face() {
+    use mitcad_model::features::FeatureDef;
+    let style = mitcad_ipt::sheet::Style {
+        name: Some("Default_mm".to_owned()),
+        unfold: Some("Default_KFactor".to_owned()),
+        k_factor: Some((0.44, "0.440 ul".to_owned())),
+    };
+    for (major, direction, side) in [
+        (24, [0.0, 0.0, 1.0], "front"),
+        (28, [0.0, 0.0, -1.0], "back"),
+    ] {
+        let records = mitcad_ipt::testdesign::sheet_face_design(major, direction, 0, 2);
+        let dc = Definitions::from_records(major, &records);
+        let design =
+            mitcad_ipt::design::design_with(&dc, DisplayUnit::Mm, "sheet.ipt", None, &style);
+        let mut doc = Document::new(MockKernel::default());
+        let report = import_design(&mut doc, &design.dump, &mut NoGeometry, &Options::default());
+        let outcomes: Vec<Outcome> = report.items.iter().map(|i| i.outcome).collect();
+        assert_eq!(outcomes, [Outcome::Parametric; 3], "{}", report.text());
+        // The timeline: the sketch, the rules and the face, by name.
+        let timeline: Vec<(String, &str)> = doc
+            .features()
+            .map(|f| {
+                let kind = match &f.def {
+                    FeatureDef::Sketch(_) => "sketch",
+                    FeatureDef::SheetRules(_) => "sheet_rules",
+                    FeatureDef::SheetFace(_) => "sheet_face",
+                    _ => "other",
+                };
+                (f.name.clone(), kind)
+            })
+            .collect();
+        assert_eq!(
+            timeline,
+            [
+                ("Sketch1".to_owned(), "sketch"),
+                ("Sheet rules Default_mm".to_owned(), "sheet_rules"),
+                ("Face1".to_owned(), "sheet_face"),
+                ("Face2".to_owned(), "sheet_face"),
+            ]
+        );
+        let rules: serde_json::Value =
+            serde_json::from_str(&doc.query(r#"{"query": "sheet_rules"}"#).unwrap()).unwrap();
+        let r = &rules[0]["rules"];
+        assert_eq!(r["reference_side"], side, "{rules}");
+        assert!(
+            (r["thickness"].as_f64().unwrap() - 1.0).abs() < 1e-9,
+            "{rules}"
+        );
+        assert!((r["allowance"]["k"].as_f64().unwrap() - 0.44).abs() < 1e-12);
+        assert!((r["corner_relief"]["width"].as_f64().unwrap() - 4.0).abs() < 1e-9);
+        assert_eq!(doc.bodies().len(), 2);
+        // Both faces follow the one rule.
+        assert_eq!(rules.as_array().map(Vec::len), Some(1), "{rules}");
+        // The thickness follows the style's parameter.
+        doc.set_parameter_expression("Thickness", "2 mm", None)
+            .unwrap();
+        let rules: serde_json::Value =
+            serde_json::from_str(&doc.query(r#"{"query": "sheet_rules"}"#).unwrap()).unwrap();
+        assert!((rules[0]["rules"]["thickness"].as_f64().unwrap() - 2.0).abs() < 1e-9);
+        assert!((rules[0]["rules"]["bend_radius"].as_f64().unwrap() - 2.0).abs() < 1e-9);
+    }
+}
+
+/// A dimension between geometry projected from the model is driven while
+/// its parameter `d0` is in the part's table: the import makes `d0` the
+/// sketch's reference with the value the sketch measures (mitcad#250),
+/// not a user parameter beside a reference of the dimension's own; `Gap`
+/// = `d0` follows it.
+#[test]
+fn a_driven_dimensions_table_parameter_is_its_reference() {
+    use mitcad_model::expr::ParamKind;
+    for major in [21, 24, 28] {
+        let records = mitcad_ipt::testdesign::driven_reference_design(major);
+        let dc = Definitions::from_records(major, &records);
+        let design = mitcad_ipt::design::design(&dc, DisplayUnit::Mm, "driven.ipt", None);
+        let mut doc = Document::new(MockKernel::default());
+        let report = import_design(&mut doc, &design.dump, &mut NoGeometry, &Options::default());
+        assert_eq!(report.items.len(), 1, "{}", report.text());
+        let params = doc.parameters();
+        let d0 = params
+            .find("d0")
+            .unwrap_or_else(|| panic!("major {major}: no d0\n{}", report.text()));
+        let p = params.get(d0).unwrap();
+        assert_eq!(
+            p.kind(),
+            ParamKind::Reference,
+            "major {major}\n{}",
+            report.text()
+        );
+        assert!(params.owner(d0).is_some());
+        assert!((p.value() - 10.0).abs() < 1e-9, "{}", p.value());
+        let gap = params.get(params.find("Gap").unwrap()).unwrap();
+        assert!((gap.value() - 10.0).abs() < 1e-9, "{}", gap.value());
+        // No reference of the dimension's own beside it.
+        let references = params
+            .iter()
+            .filter(|p| p.kind() == ParamKind::Reference)
+            .count();
+        assert_eq!(references, 1, "major {major}");
+    }
+}

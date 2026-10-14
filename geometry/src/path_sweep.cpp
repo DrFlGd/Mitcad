@@ -923,6 +923,67 @@ ShapePtr frenet_pipe(const detail::SweepFace& face, const TopoDS_Wire& path, con
 // base + R(u angle) (X - base + u growth out) + u rise axis, R the turn
 // about the axis: a screw motion whose profiles also move out along `out`,
 // the direction from the axis towards them at the start.
+//
+// With ends (HelixSweepSpec, mitcad#235) the rise is not in proportion to
+// the turn: `ends` gives the rise at each angle, and the growth follows the
+// rise.
+struct RiseLaw {
+  double per_radian = 0.0; // the rise per radian at the full pitch
+  double start_flat = 0.0;
+  double start_transition = 0.0;
+  double middle = 0.0;
+  double end_transition = 0.0;
+  double end_flat = 0.0;
+
+  double total() const { return start_flat + start_transition + middle + end_transition + end_flat; }
+
+  // The angles where the pieces meet, from the start (inside the turn).
+  std::vector<double> breaks() const {
+    std::vector<double> out;
+    double at = 0.0;
+    for (const double piece : {start_flat, start_transition, middle, end_transition}) {
+      at += piece;
+      if (piece > 0.0 && at > 0.0 && at < total()) {
+        out.push_back(at);
+      }
+    }
+    return out;
+  }
+
+  // The rise at `phi` radians from the start and its first and second
+  // derivatives by the angle.
+  void at(double phi, double& z, double& dz, double& d2z) const {
+    const double k = per_radian;
+    double t = phi - start_flat;
+    z = dz = d2z = 0.0;
+    if (t <= 0.0) {
+      return;
+    }
+    if (t <= start_transition) {
+      z = k * t * t / (2.0 * start_transition);
+      dz = k * t / start_transition;
+      d2z = k / start_transition;
+      return;
+    }
+    double base = k * start_transition / 2.0;
+    t -= start_transition;
+    if (t <= middle) {
+      z = base + k * t;
+      dz = k;
+      return;
+    }
+    base += k * middle;
+    t -= middle;
+    if (t <= end_transition) {
+      z = base + k * (t - t * t / (2.0 * end_transition));
+      dz = k * (1.0 - t / end_transition);
+      d2z = -k / end_transition;
+      return;
+    }
+    z = base + k * end_transition / 2.0;
+  }
+};
+
 struct GrowingScrew {
   gp_Pnt base;
   gp_Dir axis;
@@ -930,6 +991,12 @@ struct GrowingScrew {
   double angle = 0.0;  // the whole turn, signed about `axis`
   double rise = 0.0;   // along the axis
   double growth = 0.0; // along `out`
+  // Ends: the rise by the angle; the growth is then `growth` per `rise`.
+  std::optional<RiseLaw> ends;
+  // The part of the motion a sweep covers (fractions of the whole): turns
+  // that pass through each other are swept in pieces.
+  double from = 0.0;
+  double to = 1.0;
 };
 
 // The cross product with `a` as a matrix (K x = a x x).
@@ -986,10 +1053,18 @@ public:
     return true;
   }
 
-  int NbIntervals(const GeomAbs_Shape) const override { return 1; }
-  void Intervals(NCollection_Array1<double>& t, const GeomAbs_Shape) const override {
+  // With ends the motion is C1 where its pieces meet (the rise's second
+  // derivative jumps there).
+  int NbIntervals(const GeomAbs_Shape shape) const override {
+    return static_cast<int>(inner_breaks(shape).size()) + 1;
+  }
+  void Intervals(NCollection_Array1<double>& t, const GeomAbs_Shape shape) const override {
     t(t.Lower()) = m_first;
-    t(t.Lower() + 1) = m_last;
+    int i = t.Lower() + 1;
+    for (const double at : inner_breaks(shape)) {
+      t(i++) = at;
+    }
+    t(i) = m_last;
   }
   void SetInterval(const double first, const double last) override {
     m_from = first;
@@ -1019,11 +1094,31 @@ public:
   }
 
 private:
+  // The curve's parameters inside its domain where the motion is only C1
+  // (the pieces of the rise law meet), for a continuity `shape` above that.
+  std::vector<double> inner_breaks(const GeomAbs_Shape shape) const {
+    std::vector<double> out;
+    if (!m_screw.ends || shape < GeomAbs_C2) {
+      return out;
+    }
+    const double total = m_screw.ends->total();
+    const double share = m_screw.to - m_screw.from;
+    for (const double at : m_screw.ends->breaks()) {
+      const double f = at / total;
+      if (f > m_screw.from && f < m_screw.to) {
+        out.push_back(m_first + (f - m_screw.from) / share * (m_last - m_first));
+      }
+    }
+    return out;
+  }
+
   // M, V and their derivatives by the curve's parameter up to `order`.
   void evaluate(double t, int order, gp_Mat& m, gp_Vec& v, gp_Mat& dm, gp_Vec& dv, gp_Mat& d2m,
                 gp_Vec& d2v) const {
-    const double span = m_last - m_first;
-    const double u = (t - m_first) / span;
+    // The curve's domain covers the fractions `from` to `to` of the motion:
+    // `span` is what the whole would take.
+    const double span = (m_last - m_first) / (m_screw.to - m_screw.from);
+    const double u = m_screw.from + (t - m_first) / span;
     const double phi = u * m_screw.angle;
     const double c = std::cos(phi);
     const double s = std::sin(phi);
@@ -1031,25 +1126,46 @@ private:
     identity.SetIdentity();
     // R = I + sin K + (1 - cos) K^2, R' = cos K + sin K^2, R'' = -sin K + cos K^2.
     const gp_Mat r = identity + m_k.Multiplied(s) + m_k2.Multiplied(1.0 - c);
-    // V = base + R w + u rise axis, w = u growth out - base.
-    const gp_XYZ out = m_screw.out.XYZ() * m_screw.growth;
-    const gp_XYZ w = out * u - m_screw.base.XYZ();
-    const gp_XYZ up = m_screw.axis.XYZ() * m_screw.rise;
+    // The rise z and the growth g along `out` and their derivatives by t:
+    // in proportion to the turn, or with ends by the rise law (the growth
+    // following the rise).
+    double z = u * m_screw.rise;
+    double dz = m_screw.rise / span;
+    double d2z = 0.0;
+    double g = u * m_screw.growth;
+    double dg = m_screw.growth / span;
+    double d2g = 0.0;
+    if (m_screw.ends) {
+      const double total = m_screw.ends->total();
+      const double per_t = total / span;
+      m_screw.ends->at(u * total, z, dz, d2z);
+      dz *= per_t;
+      d2z *= per_t * per_t;
+      const double ratio = m_screw.rise != 0.0 ? m_screw.growth / m_screw.rise : 0.0;
+      g = ratio * z;
+      dg = ratio * dz;
+      d2g = ratio * d2z;
+    }
+    // V = base + R w + z axis, w = g out - base.
+    const gp_XYZ out = m_screw.out.XYZ();
+    const gp_XYZ w = out * g - m_screw.base.XYZ();
+    const gp_XYZ up = m_screw.axis.XYZ();
     m = r * m_trans;
-    v = gp_Vec(m_screw.base.XYZ() + w.Multiplied(r) + up * u);
+    v = gp_Vec(m_screw.base.XYZ() + w.Multiplied(r) + up * z);
     if (order < 1) {
       return;
     }
     const double dphi = m_screw.angle / span; // dphi / dt
     const gp_Mat r1 = m_k.Multiplied(c) + m_k2.Multiplied(s);
     dm = r1.Multiplied(dphi) * m_trans;
-    dv = gp_Vec(w.Multiplied(r1) * dphi + out.Multiplied(r) / span + up / span);
+    dv = gp_Vec(w.Multiplied(r1) * dphi + (out * dg).Multiplied(r) + up * dz);
     if (order < 2) {
       return;
     }
     const gp_Mat r2 = m_k.Multiplied(-s) + m_k2.Multiplied(c);
     d2m = r2.Multiplied(dphi * dphi) * m_trans;
-    d2v = gp_Vec(w.Multiplied(r2) * (dphi * dphi) + out.Multiplied(r1) * (2.0 * dphi / span));
+    d2v = gp_Vec(w.Multiplied(r2) * (dphi * dphi) + (out * dg).Multiplied(r1) * (2.0 * dphi) +
+                 (out * d2g).Multiplied(r) + up * d2z);
   }
 
   GrowingScrew m_screw;
@@ -1167,6 +1283,11 @@ ShapePtr screwed_loop(const NamedWire& loop, const GrowingScrew& screw, double r
 // Mitcad's widening helix (mitcad#83): each region moved by the growing
 // screw motion; a profile that the narrowing would take across the axis
 // fails.
+// Whether the helix has ends (HelixSweepSpec, mitcad#235).
+bool has_ends(const HelixSweepSpec& spec) {
+  return spec.start_flat > 0.0 || spec.start_transition > 0.0 || spec.end_transition > 0.0 || spec.end_flat > 0.0;
+}
+
 ShapePtr growing_helix(const HelixSweepSpec& spec, const std::vector<detail::SweepFace>& faces) {
   GrowingScrew screw;
   screw.base = spec.axis.Location();
@@ -1174,6 +1295,25 @@ ShapePtr growing_helix(const HelixSweepSpec& spec, const std::vector<detail::Swe
   screw.angle = (spec.left_handed ? -1.0 : 1.0) * kTwoPi * spec.revolutions;
   screw.rise = spec.pitch * spec.revolutions;
   screw.growth = spec.growth * spec.revolutions;
+  double turns = spec.revolutions;
+  if (has_ends(spec)) {
+    RiseLaw law;
+    law.per_radian = spec.pitch / kTwoPi;
+    law.start_flat = spec.start_flat;
+    law.start_transition = spec.start_transition;
+    law.middle = kTwoPi * spec.revolutions;
+    law.end_transition = spec.end_transition;
+    law.end_flat = spec.end_flat;
+    double z = 0.0;
+    double dz = 0.0;
+    double d2z = 0.0;
+    law.at(law.total(), z, dz, d2z);
+    screw.angle = (spec.left_handed ? -1.0 : 1.0) * law.total();
+    screw.rise = z;
+    screw.growth = spec.growth * z / spec.pitch;
+    screw.ends = law;
+    turns = law.total() / kTwoPi;
+  }
   // Out: from the axis towards the profiles' centre, else across the
   // profile plane's normal (profiles centred on the axis).
   const gp_Vec offset(screw.base, center_of(box_of(faces)));
@@ -1200,17 +1340,52 @@ ShapePtr growing_helix(const HelixSweepSpec& spec, const std::vector<detail::Swe
       throw std::invalid_argument("the helix narrows into its axis; make it narrow less or turn less");
     }
   }
+  // Turns that pass through each other (a profile taller along the axis
+  // than the rise over a turn, as on a flat end, mitcad#235) make a tool
+  // that passes through itself, which the booleans cannot use: it is swept
+  // in pieces of at most a third of a turn, and they are fused.
+  int pieces = 1;
+  if (screw.ends) {
+    gp_Trsf local;
+    local.SetTransformation(gp_Ax3(screw.base, screw.axis, screw.out));
+    Bnd_Box box;
+    for (const detail::SweepFace& face : faces) {
+      BRepBndLib::AddOptimal(BRepBuilderAPI_Transform(face.face, local, true).Shape(), box, false, false);
+    }
+    double x0 = 0, y0 = 0, z0 = 0, x1 = 0, y1 = 0, z1 = 0;
+    box.Get(x0, y0, z0, x1, y1, z1);
+    const double tall = z1 - z0;
+    const RiseLaw& law = *screw.ends;
+    double least = std::numeric_limits<double>::infinity();
+    const int steps = 720;
+    for (int i = 0; i <= steps && law.total() > kTwoPi; ++i) {
+      const double phi = (law.total() - kTwoPi) * i / steps;
+      double a = 0, b = 0, da = 0, db = 0, d2a = 0, d2b = 0;
+      law.at(phi, a, da, d2a);
+      law.at(phi + kTwoPi, b, db, d2b);
+      least = std::min(least, b - a);
+    }
+    if (tall >= least - Precision::Confusion()) {
+      pieces = std::max(1, static_cast<int>(std::ceil(turns * 3.0 - 1.0e-9)));
+    }
+  }
   std::vector<ShapePtr> parts;
   for (const detail::SweepFace& face : faces) {
     const std::vector<NamedWire> loops = detail::face_loops(face.face, face.edges);
-    const ShapePtr outer = screwed_loop(loops.front(), screw, spec.revolutions,
-                                        detail::cap_names(spec.feature, "start", face),
-                                        detail::cap_names(spec.feature, "end", face));
-    std::vector<ShapePtr> holes;
-    for (std::size_t l = 1; l < loops.size(); ++l) {
-      holes.push_back(screwed_loop(loops[l], screw, spec.revolutions, {}, {}));
+    for (int p = 0; p < pieces; ++p) {
+      GrowingScrew piece = screw;
+      piece.from = static_cast<double>(p) / pieces;
+      piece.to = static_cast<double>(p + 1) / pieces;
+      const ShapePtr outer =
+          screwed_loop(loops.front(), piece, turns / pieces,
+                       p == 0 ? detail::cap_names(spec.feature, "start", face) : NameList{},
+                       p == pieces - 1 ? detail::cap_names(spec.feature, "end", face) : NameList{});
+      std::vector<ShapePtr> holes;
+      for (std::size_t l = 1; l < loops.size(); ++l) {
+        holes.push_back(screwed_loop(loops[l], piece, turns / pieces, {}, {}));
+      }
+      parts.push_back(detail::with_holes(outer, holes, "the helix"));
     }
-    parts.push_back(detail::with_holes(outer, holes, "the helix"));
   }
   return detail::finished(*detail::fused(parts, "the helix"), "the helix");
 }
@@ -1614,10 +1789,19 @@ ShapePtr helix_sweep(const HelixSweepSpec& spec) {
   detail::require_positive("helix pitch", spec.pitch);
   detail::require_positive("helix revolutions", spec.revolutions);
   detail::require_finite("helix growth", spec.growth);
+  for (const double end : {spec.start_flat, spec.start_transition, spec.end_transition, spec.end_flat}) {
+    detail::require_finite("helix end angle", end);
+    if (end < 0.0) {
+      throw std::invalid_argument("the helix's end angles must not be negative");
+    }
+  }
+  if (has_ends(spec) && spec.freecad) {
+    throw std::invalid_argument("a helix with flat ends is built by Mitcad's construction, not FreeCAD's");
+  }
   return detail::run("helix", [&] {
     const std::vector<detail::SweepFace> faces =
         detail::merged(detail::region_faces(spec.feature, spec.frame, spec.regions));
-    if (spec.growth != 0.0 && !spec.freecad) {
+    if ((spec.growth != 0.0 || has_ends(spec)) && !spec.freecad) {
       return growing_helix(spec, faces);
     }
     if (spec.growth != 0.0) {

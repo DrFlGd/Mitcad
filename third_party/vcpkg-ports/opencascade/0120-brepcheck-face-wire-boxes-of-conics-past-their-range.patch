@@ -1,0 +1,34 @@
+Mitcad's patch to OCCT 8.0.1, under OCCT's licence:
+SPDX-License-Identifier: LGPL-2.1-only WITH OCCT-exception-1.0
+
+BRepCheck_Face: the check of how a face's wires lie inside one another
+(ClassifyWires) skips a pair of wires whose UV boxes do not meet, but gave
+up the box of a wire (and so tested it against every other wire, a point
+classification each) when the range of one of its edges reached past its
+p-curve's own parameters. The edges of circles and ellipses of stored
+bodies do so by a rounding error (an arc ending at 2*PI + 4e-15, or starting
+at -1e-13), so a face with 2 929 circular holes classified 8.6 million
+pairs of wires (3.5 s a face). A circle's or an ellipse's box is now that of
+the conic over the edge's own range, whatever the range (the 2d box of a
+conic takes any range); other curves keep the condition. The boxes only
+skip pairs that cannot lie inside one another, so the statuses are
+unchanged.
+--- a/src/ModelingAlgorithms/TKTopAlgo/BRepCheck/BRepCheck_Face.cxx
++++ b/src/ModelingAlgorithms/TKTopAlgo/BRepCheck/BRepCheck_Face.cxx
+@@ -848,8 +848,15 @@
+ 
+     const Geom2dAdaptor_Curve aCurveAdaptor(aPCurve);
+     // IsInside() uses the original edge range, so a clamped box cannot safely reject the wire.
++    // A circle's or an ellipse's box is that of the conic over the edge's own range, whatever
++    // the range (an arc ending a rounding error past 2*PI, or starting just before 0, as
++    // edges of stored bodies do).
++    const GeomAbs_CurveType aType = aCurveAdaptor.GetType();
++    const bool              isConic = aType == GeomAbs_Circle || aType == GeomAbs_Ellipse;
+     if (Precision::IsInfinite(aFirst) || Precision::IsInfinite(aLast)
+-        || aFirst < aCurveAdaptor.FirstParameter() || aLast > aCurveAdaptor.LastParameter())
++        || (!isConic
++            && (aFirst < aCurveAdaptor.FirstParameter()
++                || aLast > aCurveAdaptor.LastParameter())))
+     {
+       return false;
+     }

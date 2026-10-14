@@ -13,6 +13,9 @@ constexpr double kSpecialPixels = 8.0; // midpoints, quadrants, intersections
 constexpr double kCurvePixels = 6.0;
 // Curves this near the cursor are tried for intersections.
 constexpr double kNearPixels = 40.0;
+// Body geometry is this much further than it is, so that the sketch's own
+// geometry wins ties (mitcad#258).
+constexpr double kBodyTiePixels = 1.0;
 
 double screenDistance(const QPointF& a, const QPointF& b) { return std::hypot(a.x() - b.x(), a.y() - b.y()); }
 
@@ -52,6 +55,10 @@ QString Snap::describe() const {
     return QStringLiteral("intersection of %1 and %2").arg(curve, curve2);
   case Kind::OnCurve:
     return QStringLiteral("on %1").arg(curve);
+  case Kind::BodyVertex:
+    return QStringLiteral("body vertex %1").arg(bodyItem.source);
+  case Kind::BodyMidpoint:
+    return QStringLiteral("midpoint of body edge %1").arg(bodyItem.source);
   }
   return QString();
 }
@@ -164,6 +171,34 @@ Snap snap(const SnapSettings& settings, const V2& raw, const QPointF& screen) {
         s.curve = nearby[i]->id;
         s.curve2 = nearby[j]->id;
         best.offer(1, d, s);
+      }
+    }
+  }
+
+  // Body vertices as points and the middles of body lines and arcs as
+  // midpoints (mitcad#258), a little further than they are: the sketch's
+  // own point or midpoint at the same place wins.
+  if (settings.body != nullptr) {
+    for (const BodyItem& item : settings.body->items()) {
+      if (item.isVertex()) {
+        const double d = screenDistance(toScreen(item.at), screen);
+        if (d <= kPointPixels) {
+          Snap s;
+          s.kind = Snap::Kind::BodyVertex;
+          s.at = item.at;
+          s.bodyItem = item;
+          best.offer(0, d + kBodyTiePixels, s);
+        }
+      } else if (item.hasMiddle()) {
+        const V2 middle = item.curve.middle();
+        const double d = screenDistance(toScreen(middle), screen);
+        if (d <= kSpecialPixels) {
+          Snap s;
+          s.kind = Snap::Kind::BodyMidpoint;
+          s.at = middle;
+          s.bodyItem = item;
+          best.offer(1, d + kBodyTiePixels, s);
+        }
       }
     }
   }

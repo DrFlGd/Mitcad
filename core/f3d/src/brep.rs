@@ -289,13 +289,30 @@ impl Curve {
             }
             Curve::BSpline(b) => b.eval(t),
             Curve::Interpolated { params, points } => {
-                // Piecewise linear, enough for checks.
-                let i = params
-                    .partition_point(|&p| p <= t)
-                    .clamp(1, params.len() - 1);
-                let (a, b) = (params[i - 1], params[i]);
-                let s = if b > a { (t - a) / (b - a) } else { 0.0 };
-                add(points[i - 1], scale(sub(points[i], points[i - 1]), s))
+                // Cubic through the four samples around `t` (Lagrange):
+                // piecewise linear between a helix's samples was 0.04 mm
+                // off a coil's edge end of 33 mm radius, which the checks
+                // took for a vertex off its edge (mitcad#235).
+                let n = params.len();
+                let i = params.partition_point(|&p| p <= t).clamp(1, n - 1);
+                if n < 4 {
+                    let (a, b) = (params[i - 1], params[i]);
+                    let s = if b > a { (t - a) / (b - a) } else { 0.0 };
+                    return add(points[i - 1], scale(sub(points[i], points[i - 1]), s));
+                }
+                let first = i.saturating_sub(2).min(n - 4);
+                let near = &params[first..first + 4];
+                let mut p = [0.0; 3];
+                for (j, (&pj, &point)) in near.iter().zip(&points[first..first + 4]).enumerate() {
+                    let mut w = 1.0;
+                    for (m, &pm) in near.iter().enumerate() {
+                        if m != j && pj != pm {
+                            w *= (t - pm) / (pj - pm);
+                        }
+                    }
+                    p = add(p, scale(point, w));
+                }
+                p
             }
         }
     }
@@ -781,6 +798,25 @@ impl Body {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A helix sampled 64 times a turn (radius 33 mm) evaluates between its
+    /// samples within a micrometre (mitcad#235: piecewise linear it was
+    /// 0.04 mm off, and a coil's state failed its check).
+    #[test]
+    fn interpolated_curves_evaluate_between_samples() {
+        let r = 33.0;
+        let helix = |t: f64| [r * t.cos(), r * t.sin(), 2.1 * t / std::f64::consts::TAU];
+        let n = 64;
+        let params: Vec<f64> = (0..=n)
+            .map(|i| std::f64::consts::TAU * f64::from(i) / f64::from(n))
+            .collect();
+        let points = params.iter().map(|&t| helix(t)).collect();
+        let curve = Curve::Interpolated { params, points };
+        for k in 0..=200 {
+            let t = std::f64::consts::TAU * f64::from(k) / 200.0;
+            assert!(dist(curve.eval(t), helix(t)) < 1e-3, "t {t}");
+        }
+    }
 
     /// One closed edge: two faces use it once each way, a third twice (its
     /// seam), as ASM stores a full cylinder touching a wall.

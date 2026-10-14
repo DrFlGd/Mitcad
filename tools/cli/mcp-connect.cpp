@@ -60,14 +60,14 @@ bool authenticate(QTcpSocket& socket, const mcp::Endpoint& endpoint, int timeout
   return answer.isObject() && answer.object().value(QStringLiteral("authenticated")) == QJsonValue(true);
 }
 
-QList<mcp::Endpoint> liveEndpoints(QString* error) {
+QList<mcp::Endpoint> liveEndpoints(QString* error, int timeoutMs = 500) {
   const QList<mcp::Endpoint> records = mcp::discover(error);
   QList<mcp::Endpoint> endpoints;
   for (const mcp::Endpoint& record : records) {
     QTcpSocket probe;
     // Private records can survive a crash. Only the instance owning the
     // record's token may authenticate it; a reused port is not sufficient.
-    if (authenticate(probe, record, 500)) {
+    if (authenticate(probe, record, timeoutMs)) {
       endpoints.append(record);
     }
   }
@@ -105,7 +105,17 @@ qint64 readStdin(char* bytes, std::size_t size) {
 
 void readInput(const std::shared_ptr<Input>& input) {
   QByteArray frame;
+  // A client's writer may start its stream with a UTF-8 byte order mark
+  // (Windows PowerShell's process input with a UTF-8 console code page,
+  // mitcad#265): not part of the first message, so it is dropped there.
+  bool first = true;
   const auto publish = [&] {
+    if (first) {
+      first = false;
+      if (frame.startsWith(QByteArrayLiteral("\xEF\xBB\xBF"))) {
+        frame.remove(0, 3);
+      }
+    }
     frame.append('\n');
     std::unique_lock<std::mutex> lock(input->mutex);
     input->room.wait(lock, [&] { return input->stop || input->bytes + frame.size() <= kMaxFrameBytes + 1; });
@@ -202,7 +212,9 @@ int mcpConnect(const std::string& instance) {
   char* argv[] = {name, nullptr};
   QCoreApplication app(argc, argv);
   QString error;
-  const QList<mcp::Endpoint> endpoints = liveEndpoints(&error);
+  // Connecting allows the GUI to finish a busy event-loop turn; a quick
+  // listing probe must not classify that live instance as absent.
+  const QList<mcp::Endpoint> endpoints = liveEndpoints(&error, kConnectTimeoutMs);
   if (!error.isEmpty()) {
     return connectionError(error);
   }

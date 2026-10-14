@@ -80,7 +80,7 @@ const char* const kUsage = R"(usage:
                         [--design <name>] [--dump <dump.json>] [--no-verify] [--no-fallback]
                         [--no-compare] [--time-limit <seconds>] [--hang-limit <seconds>]
                         [--threads N] [--learn <dir>] [--references <dir>]... [--no-references]
-                        [--geometric-tolerance <mm>]
+                        [--geometric-tolerance <mm>] [--retry-bodies keep|replace]
       Imports an .f3d or .f3z design with its timeline: parameters,
       sketches and features replayed as Mitcad features, checked against
       the file's ASM history; an item that cannot be replayed becomes a
@@ -97,6 +97,11 @@ const char* const kUsage = R"(usage:
       edges, faces and vertices are looked for in the replay within it
       when nothing is within 0.001 mm, and an item's new faces must lie
       on the file's within it.
+      --retry-bodies: an item that fails is tried again on the file's
+      stored bodies before it; keep (the default) keeps the imported
+      bodies that match them within the geometric tolerance, parametric,
+      and replaces only those that differ; replace replaces those too.
+      The report names the bodies each retry kept and replaced.
       --threads is how many threads the import uses at once: to evaluate
       an item's definitions, to read the file's bodies and to build the
       history's bodies ahead of the replay (default: the logical cores, at
@@ -177,6 +182,29 @@ const char* const kUsage = R"(usage:
       displays the occurrence with (where it keeps one), each placed part's
       bodies within the range box the file stores; exits with 1 when a
       check fails.
+  mitcad-cli import-ifc <file.ifc|file.ifczip> [--save <out.mitcad>] [--report <report.json>]
+                        [--json] [--no-openings] [--no-occurrences] [--memory-limit MiB]
+      Imports an IFC building model (IFC2X3, IFC4, IFC4X3): sites,
+      buildings, storeys and facilities as components (a storey's
+      elevation a construction plane, grids construction axes), each
+      element's swept solids and booleans as features, its breps as base
+      features and its face sets as mesh bodies, its openings cut from it;
+      a type's shape used by several elements is one component placed by
+      occurrences. Prints the import report: a line for every product of
+      the file (how it came in, or why it did not), and the bodies' volumes
+      against the file's element quantities. --no-openings leaves the
+      openings uncut, --no-occurrences copies the types' shapes into each
+      element.
+  mitcad-cli import-rvt <file.rvt|file.rfa> [--save <out.mitcad>] [--report <report.json>]
+                        [--report-only] [--json]
+      Imports an .rvt project's building elements as reference geometry: one
+      component per level, each element a body named Family:Type:Id, the
+      triangle mesh its record saves or else its box (a family type's box
+      at the instance's transform); an .rfa family file gives its metadata
+      only. Prints the import report (release, elements read, bodies per
+      level and category, what was left out and why) and the document
+      report; --report writes the import report as JSON, --report-only
+      reads and reports without importing.
   mitcad-cli export <file.mitcad> <out> [--bodies <b>,...] [--schema ap214|ap242]
                     [--unit mm|cm|m|in|ft] [--refinement low|medium|high]
                     [--deviation MM --angle DEG] [--ascii]
@@ -364,6 +392,8 @@ using mitcad::cli::import_f3d;
 using mitcad::cli::import_fcstd;
 using mitcad::cli::import_ipt;
 using mitcad::cli::import_iam;
+using mitcad::cli::import_ifc;
+using mitcad::cli::import_rvt;
 using mitcad::cli::is_number;
 using mitcad::cli::json_count;
 using mitcad::cli::json_string;
@@ -1246,6 +1276,12 @@ int run(int argc, char* argv[]) {
     }
     if (mode == "import-iam") {
       return import_iam(args);
+    }
+    if (mode == "import-ifc") {
+      return import_ifc(args);
+    }
+    if (mode == "import-rvt") {
+      return import_rvt(args);
     }
     if (mode == "export") {
       return export_bodies(args);

@@ -841,7 +841,7 @@ impl<P> SketchDef<P> {
                     vec![(p(*a), ANY), (p(*b), ANY)]
                 }
                 D::PointLineDistance { point, line } => vec![(p(*point), ANY), (cv(*line), LINE)],
-                D::LineDistance { a, b } | D::Angle { a, b } => {
+                D::LineDistance { a, b } | D::Angle { a, b, .. } => {
                     if a == b {
                         return Err(format!("{what}: two different lines"));
                     }
@@ -1126,10 +1126,13 @@ fn face_frame<K: Kernel>(
         Some(body) => vec![(*body, ctx.body(*body)?)],
         None => ctx.bodies(),
     };
-    let (body, _) = face_body(ctx.kernel, face, shapes)?;
+    let (body, _, found) = face_body(ctx.kernel, face, shapes)?;
+    if let Some(found) = &found {
+        ctx.found_renamed("face", face, found, face.feature);
+    }
     let face = GeomRef::Face {
         body,
-        face: (**face).clone(),
+        face: found.unwrap_or_else(|| (**face).clone()),
     };
     Ok(ctx
         .plane(&face)
@@ -1137,29 +1140,53 @@ fn face_frame<K: Kernel>(
         .frame())
 }
 
-/// The body among `shapes` that has the face: exactly one must.
+/// The body among `shapes` that has the face: exactly one must. A face a
+/// sketch change renamed is found again (`renamed.rs`, mitcad#272): then
+/// also the name it has now.
 fn face_body<K: Kernel>(
     kernel: &K,
     face: &FaceName,
     shapes: Vec<(BodyUid, K::Shape)>,
-) -> Result<(BodyUid, K::Shape), String> {
+) -> Result<(BodyUid, K::Shape, Option<FaceName>), String> {
+    let several = || format!("plane {face}: the face is on several bodies; name the body");
     let mut found = None;
+    let mut missing = Vec::new();
     for (uid, shape) in shapes {
         let count = kernel
             .count_faces(&shape, face)
             .map_err(|e| format!("plane {face}: {e}"))?;
         if count > 0 {
             if found.is_some() {
-                return Err(format!(
-                    "plane {face}: the face is on several bodies; name the body"
-                ));
+                return Err(several());
             }
-            found = Some((uid, shape));
+            found = Some((uid, shape, None));
+        } else {
+            missing.push((uid, shape));
         }
     }
-    found.ok_or_else(|| {
-        format!("plane {face}: the face does not exist at this point of the timeline")
-    })
+    if let Some(found) = found {
+        return Ok(found);
+    }
+    let mut ambiguous = None;
+    for (uid, shape) in missing {
+        match super::renamed::find_face(kernel, &shape, face) {
+            Ok(Some(renamed)) => {
+                if found.is_some() {
+                    return Err(several());
+                }
+                found = Some((uid, shape, Some(renamed)));
+            }
+            Err(super::renamed::Lost::Ambiguous(message)) => ambiguous = Some(message),
+            _ => {}
+        }
+    }
+    match (found, ambiguous) {
+        (Some(found), _) => Ok(found),
+        (None, Some(message)) => Err(format!("plane {message}")),
+        (None, None) => Err(format!(
+            "plane {face}: the face does not exist at this point of the timeline"
+        )),
+    }
 }
 
 /// The frame of a plane of another component (mitcad#100): found there and
@@ -1186,10 +1213,13 @@ fn linked_frame<K: Kernel>(
                 Some(body) => vec![(*body, ctx.body_in(component, *body)?)],
                 None => ctx.bodies_in(component),
             };
-            let (_, shape) = face_body(ctx.kernel, face, shapes)?;
+            let (_, shape, found) = face_body(ctx.kernel, face, shapes)?;
+            if let Some(found) = &found {
+                ctx.found_renamed("face", face, found, face.feature);
+            }
             match ctx
                 .kernel
-                .face_geometry(&shape, face)
+                .face_geometry(&shape, found.as_ref().unwrap_or(&**face))
                 .map_err(|e| format!("the sketch plane: face {face}: {e}"))?
             {
                 crate::datum::SurfaceGeometry::Plane { origin, normal } => {

@@ -122,11 +122,8 @@ pub(crate) fn resolve_tool<K: Kernel>(
     Ok(match tool {
         GeomRef::Face { body, face } => {
             let shape = ctx.body(*body)?;
-            require_faces(ctx, *body, &shape, std::slice::from_ref(face))?;
-            Resolved::Face {
-                shape,
-                face: face.clone(),
-            }
+            let face = ctx.face_on(*body, &shape, face)?;
+            Resolved::Face { shape, face }
         }
         GeomRef::Body(body) => Resolved::Body {
             shape: ctx.body(*body)?,
@@ -254,26 +251,25 @@ pub(crate) fn check_faces(
     Ok(())
 }
 
-/// Checks that every face resolves on the shape, explaining a missing one
-/// as [`EvalContext::missing_edge`] does for edges. Kernels without face
-/// lookup skip the check.
+/// Checks that every face resolves on the shape and gives the names the
+/// kernel gets: each face's own, or that of the face a sketch change
+/// renamed it to, with a warning (`renamed.rs`, mitcad#272). A missing
+/// face is explained as [`EvalContext::missing_edge`] does for edges.
+/// Kernels without face lookup skip the check.
 pub(crate) fn require_faces<K: Kernel>(
-    ctx: &EvalContext<'_, K>,
+    ctx: &mut EvalContext<'_, K>,
     body: BodyUid,
     shape: &K::Shape,
     faces: &[FaceName],
-) -> Result<(), String> {
-    for face in faces {
-        match ctx.kernel.count_faces(shape, face) {
-            Ok(0) => return Err(missing_face(ctx, body, face)),
-            Ok(_) | Err(KernelError::Unsupported(_)) => {}
-            Err(error) => return Err(error.to_string()),
-        }
-    }
-    Ok(())
+) -> Result<Vec<FaceName>, String> {
+    ctx.faces_on(body, shape, faces)
 }
 
-fn missing_face<K: Kernel>(ctx: &EvalContext<'_, K>, body: BodyUid, face: &FaceName) -> String {
+pub(crate) fn missing_face<K: Kernel>(
+    ctx: &EvalContext<'_, K>,
+    body: BodyUid,
+    face: &FaceName,
+) -> String {
     let count = |shape: &K::Shape| ctx.kernel.count_faces(shape, face).unwrap_or(0);
     let mut existed = false;
     let mut lost_after = None;

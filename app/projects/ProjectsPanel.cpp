@@ -32,6 +32,7 @@
 #include "../framework/GlassCard.hpp"
 #include "../framework/Icons.hpp"
 #include "../framework/TestSync.hpp"
+#include "../framework/WindowStyle.hpp"
 
 namespace mitcad {
 namespace {
@@ -415,6 +416,11 @@ ProjectsPanel::ProjectsPanel(Host host, QWidget* parent) : QWidget(parent), m_ho
     }
     m_tree->setPalette(palette);
     m_tree->viewport()->setAutoFillBackground(false);
+  } else {
+    // On the Docked panel's surface, rows with the panels' height and
+    // highlight (mitcad#251); before the editor's signal is connected below.
+    m_tree->setItemDelegate(new PanelRowDelegate(m_tree));
+    stylePanelTree(m_tree);
   }
 
   const auto action = [this](const char* icon, const QString& text, const QString& tip, auto run) {

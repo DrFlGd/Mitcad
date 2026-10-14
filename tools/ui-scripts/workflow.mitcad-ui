@@ -5,8 +5,9 @@
 # same assertions. tools/ui-macos-workflow-test.sh runs it, and then the
 # scripts workflow-recovery and workflow-versions that continue with the files
 # it leaves (one script cannot start the application again).
-#   1. Create Sketch on XY (a click on the plane), a 40 x 25 mm rectangle (a
-#      click at the origin, the sizes typed), Finish Sketch (Ctrl+Enter).
+#   1. Create Sketch by its default shortcut, Option+S (mitcad#267), on XY
+#      (a click on the plane), a 40 x 25 mm rectangle (a click at the origin,
+#      the sizes typed), Finish Sketch (Ctrl+Enter).
 #   2. Extrude (E) 20 mm: a 20000 mm3 body.
 #   3. Fillet (F) the edges of the top face (a click on it), 2 mm.
 #   4. Autosave, every 2 s for the test (MITCAD_TEST_AUTOSAVE_SECONDS): the
@@ -19,7 +20,8 @@ sleep 1500
 
 # --- Sketch, extrude, fillet
 mark
-command sketch.create
+# Option+S (Alt+S), the default shortcut of Create Sketch (mitcad#267).
+key alt+s
 expect-log 'Create Sketch: select a plane'
 sleep 500
 click-logged 'Datum xy'

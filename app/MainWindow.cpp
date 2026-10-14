@@ -82,6 +82,7 @@
 #include "framework/CommandRegistry.hpp"
 #include "framework/ChromeStyle.hpp"
 #include "framework/CommandSearch.hpp"
+#include "framework/DebugLog.hpp"
 #include "framework/FloatingLayout.hpp"
 #include "framework/GlassCard.hpp"
 #include "framework/Icons.hpp"
@@ -95,6 +96,7 @@
 #include "framework/Theme.hpp"
 #include "framework/Diagnostics.hpp"
 #include "framework/TestSync.hpp"
+#include "framework/WindowStyle.hpp"
 #include "platform/MacChrome.hpp"
 #ifdef MITCAD_MACOS_NATIVE_UI
 #include "platform/NativeMacWindow.hpp"
@@ -196,6 +198,7 @@ MainWindow::MainWindow(bool demo, QWidget* parent, bool nativeUi)
   m_documentSession->setWaitHandler([this](const QString& label, ModelJob& job, const QElapsedTimer& clock,
                                           bool& logged) { waitForJob(label, job, clock, logged); });
   connect(m_documentSession, &DocumentSession::busyChanged, this, [this](bool busy) {
+    m_viewer->setPickingSuspended(busy);
     if (!busy && m_closePending) {
       m_closePending = false;
       QTimer::singleShot(0, this, [this] {
@@ -237,6 +240,9 @@ MainWindow::MainWindow(bool demo, QWidget* parent, bool nativeUi)
   connect(m_viewer, &OcctViewer::glInitialized, this, [this](const QString& renderer) {
     m_rendererLabel->setText(tr("OpenGL: %1").arg(renderer));
     qInfo().noquote() << "OpenGL renderer:" << renderer;
+    // The debug log's header (mitcad#269): the GPU, as its driver names it.
+    DebugLog::instance().setFact(QStringLiteral("Graphics"),
+                                 QStringLiteral("%1, OpenGL %2").arg(renderer, m_viewer->glVersion()));
     if (m_reports != nullptr) {
       m_reports->setGraphics(renderer, m_viewer->glVersion());
     }
@@ -306,6 +312,9 @@ MainWindow::MainWindow(bool demo, QWidget* parent, bool nativeUi)
   if (!m_nativeUi && chromeStyle() == ChromeStyle::Docked) {
     statusBar()->insertPermanentWidget(0, m_controller->failures());
     statusBar()->insertPermanentWidget(1, m_controller->warnings());
+    // Raised panels, their titles, one accent colour, the Windows 11 frame
+    // (mitcad#251).
+    WindowStyle::install(this);
   } else if (auto* titleBar = findChild<TitleBar*>()) {
     // Beside the document's name in the title bar row.
     titleBar->setIndicator(m_indicator);
@@ -314,6 +323,10 @@ MainWindow::MainWindow(bool demo, QWidget* parent, bool nativeUi)
   connect(m_search, &CommandSearch::chosen, this, &MainWindow::trigger, Qt::QueuedConnection);
   createAutosave();
   createLive();
+  // The debug log in the project indicator (mitcad#269).
+  createDebugLog();
+  // A wait cursor left on is cleared once the window is idle (mitcad#268).
+  createWaitCursorRecovery();
 
 #ifdef MITCAD_MACOS_NATIVE_UI
   if (m_nativeUi) {
@@ -354,6 +367,15 @@ MainWindow::~MainWindow() {
   m_nativeWindow.reset();
   setNativeDialogWindow(nullptr);
 #endif
+  // The Selection Filter's menu ends while the window's members still live:
+  // left to the window's children, it ended after the sketch controller,
+  // and handing its panel back (QWidgetAction) changed the panel's palette,
+  // whose refresh asked the gone controller for the scope; an access
+  // violation at the exit when the freed memory was gone (mitcad#270).
+  if (m_sketchFilterAction != nullptr) {
+    delete m_sketchFilterAction->menu();
+  }
+  m_selectionFilterPanel = nullptr;
   // The session refers to the window as its host.
   delete m_session;
 }
@@ -393,6 +415,9 @@ void MainWindow::registerCommands() {
   sketch.group = QStringLiteral("CREATE");
   sketch.pinned = true;
   sketch.keywords = {QStringLiteral("new sketch"), QStringLiteral("draw")};
+  // Alt+S, Option+S on macOS (mitcad#267): no menu has S as its mnemonic,
+  // and S, Ctrl+S, Ctrl+Shift+S and Ctrl+Alt+S stay as they are.
+  sketch.shortcut = QKeySequence(Qt::ALT | Qt::Key_S);
 
   // The SOLID tab's families (U4), in menu order: Create Sketch goes
   // into CREATE after New Component.
@@ -541,7 +566,7 @@ void MainWindow::registerCommands() {
   CommandDef policy = action("assembly.policy", tr("Design Policy..."), "component", CommandDef::Mode::Model,
                              [this] { m_controller->openPolicy(m_snapshot.activeComponent); });
   policy.tooltip = tr("What the active component may hold, and which links to and from other components "
-                      "it allows: Assembly and Part presets and seven settings");
+                      "it allows: Assembly and Part presets and nine settings");
   policy.keywords = {QStringLiteral("policy"), QStringLiteral("permissions"), QStringLiteral("assembly"),
                      QStringLiteral("part"), QStringLiteral("attach")};
   m_registry->add(policy);
@@ -569,6 +594,10 @@ void MainWindow::registerCommands() {
   m_updates->registerCommands(*m_registry);
   // Help > Send Feedback (mitcad#61).
   m_reports->registerCommands(*m_registry);
+  // Help > Open Log Folder (mitcad#269).
+  registerDebugLogCommands();
+  // The wait cursor's test hooks (mitcad#268, MITCAD_TEST_WAIT_CURSOR).
+  registerWaitCursorTestCommands();
 }
 
 void MainWindow::showDiagnostics() {
@@ -614,6 +643,7 @@ void MainWindow::createMenus() {
   QMenu* help = menuBar()->addMenu(tr("&Help"));
   m_viewController->createMenus(view, tools, help);
   help->addAction(m_registry->action(QStringLiteral("help.diagnostics")));
+  help->addAction(m_registry->action(QStringLiteral("help.open_log_folder")));
   help->addAction(m_registry->action(QStringLiteral("help.check_updates")));
   help->addAction(m_registry->action(QStringLiteral("help.send_feedback")));
   // About and About Qt: on macOS Qt moves them to the application menu
@@ -1084,6 +1114,7 @@ void MainWindow::startFeatureCommand(const CommandDef& def, const QString& editU
   beginCommandScope(def);
   const Selection preselection = editUid.isEmpty() && analysis.isEmpty() ? m_selection : Selection();
   setSelection({});
+  m_placementNote.clear(); // what this command places, it says (mitcad#292)
   m_mode = Mode::Command;
   auto* session = new CommandSession(def, *this, editUid, m_documentSession);
   if (!analysis.isEmpty()) {
@@ -1290,7 +1321,11 @@ void MainWindow::onCommandFinished(bool committed) {
   }
   refreshScene();
   m_viewer->setFocus();
-  showHint(committed ? tr("Done.") : tr("Command cancelled."));
+  // A new component placed beside a part says so rather than "Done."
+  // (mitcad#292).
+  showHint(!committed ? tr("Command cancelled.")
+                      : m_placementNote.isEmpty() ? tr("Done.") : m_placementNote);
+  m_placementNote.clear();
   if (m_commandFinished) {
     std::exchange(m_commandFinished, nullptr)(committed);
   }
@@ -1421,11 +1456,23 @@ bool MainWindow::runCommand(const QJsonObject& cmd, QJsonObject* result) {
     return false;
   }
   reportRecompute(answer, static_cast<double>(timer.nsecsElapsed()) / 1.0e6);
+  notePlacement(answer);
   if (result != nullptr) {
     *result = answer;
   }
   m_locks->activity(); // an edit keeps the edit lock active (mitcad#89)
   return true;
+}
+
+void MainWindow::notePlacement(const QJsonObject& result) {
+  const QString warning = result.value(QStringLiteral("placement_warning")).toString();
+  if (warning.isEmpty()) {
+    return;
+  }
+  // Shown now, and again when the command's panel closes (onCommandFinished).
+  m_placementNote = warning;
+  showHint(warning);
+  qInfo().noquote() << QStringLiteral("Placement warning: %1").arg(warning);
 }
 
 bool MainWindow::runCommands(const QJsonArray& commands, const QString& label) {
@@ -2347,12 +2394,8 @@ void MainWindow::showSketches() {
     try {
       std::vector<SketchEntityDisplay> some = sketchEntities(queryObject(
           {{QStringLiteral("query"), QStringLiteral("sketch")}, {QStringLiteral("uid"), sketch}}));
-      if (!m_sketch->isActive() || sketch != m_sketch->uid()) {
-        // Only the sketch being edited shows how constrained it is.
-        for (SketchEntityDisplay& entity : some) {
-          entity.constrained = false;
-        }
-      }
+      // Every shown sketch tells how constrained it is, edited or not
+      // (mitcad#286): entering or leaving its edit keeps its colours.
       // A component's sketch where its occurrence places it.
       const QString occurrence = placingOccurrence(sketch);
       QString placed;
@@ -3045,6 +3088,10 @@ void MainWindow::showContextMenu(const QPoint& globalPosition, const SelectionIt
         add(m_registry->action(QStringLiteral("sketch.delete")));
         add(m_registry->action(QStringLiteral("sketch.construction")));
         add(m_registry->action(QStringLiteral("sketch.constraint.fix")));
+        // Projected geometry into ordinary sketch geometry (mitcad#257).
+        if (m_sketch->selectionHasProjected()) {
+          add(m_registry->action(QStringLiteral("sketch.convert_projected")));
+        }
         if (m_selection.size() == 1 && m_selection.first().kind == SelectKind::SketchDimension) {
           const QString id = m_selection.first().name;
           addCall(QStringLiteral("dimension"), tr("Edit Dimension"), [this, id] { m_sketch->editDimension(id); });
@@ -3178,33 +3225,29 @@ void MainWindow::startSketch() {
   }
   m_mode = Mode::PickPlane;
   setSelection({});
-  inputActivated(kConstructionGeometry); // shows the origin planes
+  // The origin planes only while the design has no other component
+  // (mitcad#294); the Origin folder's light bulb shows them anyway.
+  const bool origin = sketchShowsOrigin();
+  inputActivated(origin ? kConstructionGeometry : SelectFilter());
   updateIdleView();
   updateActions();
   // Faces and planes the policy leaves out are neither picked nor
   // highlighted: say whose they are.
   const QStringList& denied = m_sketchDeniedOwners;
-  showHint(denied.isEmpty()
-               ? tr("Create Sketch: select a plane or a planar face (Esc cancels).")
-               : tr("Create Sketch: select a plane or a planar face (Esc cancels). The design policy "
-                    "leaves out the faces and planes of %1.")
-                     .arg(denied.join(QStringLiteral(", "))));
+  QString hint = origin ? tr("Create Sketch: select a plane or a planar face (Esc cancels).")
+                        : tr("Create Sketch: select a planar face or a plane (Esc cancels). The origin planes are "
+                             "shown from the browser's Origin folder.");
+  if (!denied.isEmpty()) {
+    hint += tr(" The design policy leaves out the faces and planes of %1.").arg(denied.join(QStringLiteral(", ")));
+  }
+  showHint(hint);
   qDebug() << "Create Sketch: select a plane";
+  qDebug().noquote() << (origin ? QStringLiteral("Create Sketch: origin planes shown")
+                                : QStringLiteral("Create Sketch: origin planes not shown (the design has components)"));
   if (!denied.isEmpty()) {
     qDebug().noquote() << QStringLiteral("Create Sketch: policy leaves out %1").arg(denied.join(QStringLiteral(", ")));
   }
-  if (qEnvironmentVariableIsSet("MITCAD_LOG_PICKS")) {
-    // Where a click picks each face the policy lets the sketch lie on.
-    qDebug().noquote() << "Pick places:";
-    for (const auto& [item, at] : m_viewer->pickPoints(SelectKind::Face)) {
-      const QPoint point = m_viewer->mapTo(this, at);
-      qDebug().noquote() << QStringLiteral("Pick %1 %2/%3%4 at %5,%6")
-                                .arg(SelectionItem::kindName(item.kind), item.owner, item.name,
-                                     item.occurrence.isEmpty() ? QString() : QStringLiteral(" in ") + item.occurrence)
-                                .arg(point.x())
-                                .arg(point.y());
-    }
-  }
+  logSketchPicks();
 }
 
 QString MainWindow::refreshSketchSupports() {
@@ -3299,6 +3342,7 @@ QString MainWindow::featureError(const QString& uid) const {
 
 void MainWindow::enterSketch(const QString& uid, bool existing) {
   m_sketchExisting = existing;
+  m_mcpSketchEdited = false;
   m_mode = Mode::Sketch;
   m_selection.clear();
   inputActivated(SelectFilter()); // hides the origin planes
@@ -3406,7 +3450,8 @@ bool MainWindow::finishSketch() {
       rolled = true;
       runCommand({{QStringLiteral("cmd"), QStringLiteral("merge_undo")},
                   {QStringLiteral("depth"), m_sketchEnterDepth - 1},
-                  {QStringLiteral("label"), tr("Edit %1").arg(name)}});
+                  // An agent's changes in it say so (mitcad#265).
+                  {QStringLiteral("label"), m_mcpSketchEdited ? tr("Edit %1 (agent)").arg(name) : tr("Edit %1").arg(name)}});
     }
     if (!rolled && m_lastCancelled) {
       // The features after the sketch were not computed: the sketch stays

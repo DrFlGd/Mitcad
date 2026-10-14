@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: MIT
 #include "PickContext.hpp"
+#include "view/ViewTessellation.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -152,6 +153,7 @@ class PickContext : public AIS_InteractiveContext {
 
 public:
   explicit PickContext(const occ::handle<V3d_Viewer>& viewer) : AIS_InteractiveContext(viewer) {
+    setViewTessellation(DefaultDrawer());
     // Nothing is displayed yet: the selection manager can still change.
     mgrSelector = new SelectMgr_SelectionManager(new EdgeFirstSelector());
   }

@@ -113,8 +113,9 @@ struct SketchEntityDisplay {
   QString geometry; // line, circle, arc, ellipse, point, ...
   TopoDS_Shape shape;
   bool construction = false;
-  // How sketch mode draws it (U2): fully constrained geometry darker,
-  // centre lines dash-dotted, projected geometry purple.
+  // How sketch mode draws it (U2): fully constrained geometry darker (light
+  // on a dark background, mitcad#253), centre lines dash-dotted, projected
+  // geometry purple.
   bool constrained = false;
   bool centerline = false;
   bool reference = false;
@@ -160,11 +161,13 @@ enum class NavigationScheme {
   MiddlePanF4, // middle: pan; Shift + middle or F4 + left: orbit
   MiddleOrbit, // middle: orbit; Ctrl + middle: pan; Shift + middle: zoom
   RightOrbit,  // right: orbit; middle or Shift + right: pan
-  // For a trackpad (the default on macOS), appended last: two-finger scroll
+  // For a trackpad (the default on macOS): two-finger scroll
   // pans, Alt + scroll orbits, Shift or Ctrl + scroll zooms; Alt + left
   // orbits, Shift + Alt + left, middle: pan; right: orbit. A mouse wheel
   // zooms as in the other schemes.
   Trackpad,
+  // As Trackpad, but Shift + scroll orbits and Alt or Ctrl + scroll zooms.
+  TrackpadShift,
 };
 
 struct NavigationSettings {
@@ -351,6 +354,9 @@ public:
 
   // What can be picked: kinds, and optionally a finer test.
   void setPickFilter(SelectFilter filter, std::function<bool(const SelectionItem&)> test = {});
+  // A model job owns the document and its geometry. Keep drawing cached
+  // presentations, but do not resolve owners or call command predicates.
+  void setPickingSuspended(bool suspended);
   // A selection scope (mitcad#217, framework/SelectionScope.hpp): `kinds`
   // can be picked, `expanded` (which holds them) while Shift is held over a
   // click; `test` decides each item by how it is picked: a click or a
@@ -387,6 +393,10 @@ public:
   // the face's boundary, edges and vertices opaque, hidden by nearer
   // geometry (mitcad#149; as the selections of setHighlights()).
   void setHoverColor(const QColor& color);
+  // More of the hover (mitcad#290): the rest of the tangent chain of the
+  // edge or face under the mouse, drawn as the hover draws that one (edges
+  // in a compound) and not pickable; null takes it away.
+  void setHoverChain(const TopoDS_Shape& shape);
 
   // While a sketch tool draws, the left button is the tool's (sketch mode
   // handles it), not the view's: no picking or window selection. The
@@ -555,6 +565,20 @@ private:
   void placeHomeButton();
   // The buttons over the view take dark or light icons by the background.
   void updateOverlayIcons();
+  // What a shown sketch entity's colour and line follow (setSketchEntities):
+  // fully constrained geometry and centre lines are light on a dark
+  // background (mitcad#253).
+  struct SketchEntityLook {
+    bool point = false;
+    bool construction = false;
+    bool centerline = false;
+    bool constrained = false;
+    bool reference = false;
+  };
+  void styleSketchEntity(const occ::handle<AIS_Shape>& object, const SketchEntityLook& look) const;
+  // Recolours the sketch entities shown after the background turned dark
+  // or light.
+  void restyleSketchEntities();
   // The orientation cube and the pick tolerance are in device pixels; this
   // scales them by the widget's device pixel ratio (no change at 1).
   void applyDevicePixelRatio();
@@ -644,6 +668,11 @@ private:
   // The shown sketch entities by "<sketch>/<id>@<occurrence>", with their
   // signatures.
   std::map<QString, std::pair<QString, occ::handle<AIS_Shape>>> m_sketchEntityKeys;
+  // How each of them is drawn, for restyleSketchEntities().
+  std::map<const AIS_InteractiveObject*, SketchEntityLook> m_sketchEntityLooks;
+  // The shown sketches' colours as last logged ("Sketch colours:", for UI
+  // tests; mitcad#286).
+  QString m_loggedSketchColours;
   std::vector<occ::handle<AIS_Shape>> m_datums;
   std::vector<occ::handle<AIS_Shape>> m_highlights;
   // The whole bodies highlighted, as last logged ("View body highlights:",
@@ -657,6 +686,7 @@ private:
   SelectFilter m_filter;
   // setPickFilter's test, or setPickScope's (m_scoped).
   PickTest m_pickTest;
+  bool m_pickingSuspended = false;
   SelectFilter m_expandedFilter; // the kinds while Shift is held
   bool m_scoped = false;
   bool m_shiftHeld = false;
@@ -752,6 +782,10 @@ private:
   QString m_restingCamera; // the camera when the rest timer started
   // What the mouse was last over, for hovered().
   occ::handle<SelectMgr_EntityOwner> m_hoveredOwner;
+  // The hover's colour, and the rest of the hovered tangent chain
+  // (setHoverChain, mitcad#290).
+  QColor m_hoverColor = QColor(0x2f, 0x9b, 0xff);
+  occ::handle<AIS_Shape> m_hoverChain;
 };
 
 } // namespace mitcad

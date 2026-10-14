@@ -85,36 +85,132 @@ Configure an MCP client to launch the stdio bridge:
 The bridge authenticates the local socket before forwarding MCP messages.
 The listener binds only to `127.0.0.1` on an automatically selected port.
 Its discovery record and token are private to the current user, under
-`GenericCacheLocation/Mitcad/mcp` (`~/Library/Caches/Mitcad/mcp` on macOS).
+`GenericCacheLocation/Mitcad/mcp` (`~/Library/Caches/Mitcad/mcp` on macOS,
+`%LOCALAPPDATA%\cache\Mitcad\mcp` on Windows, `~/.cache/Mitcad/mcp` on
+Linux).
 `MITCAD_MCP_DISCOVERY_DIR` overrides that directory for isolated tests or a
 separate client environment; the app and bridge must use the same absolute
 directory. Public or symlinked discovery records are refused. This is a
 local stdio bridge, not an HTTP endpoint for remote clients.
 
-The live catalog contains only `document_list`, `model_query` and
-`model_command`, with the argument shapes below. `document_list` returns
-the GUI document's opaque handle, path, name, state, `busy` and `editable`.
-Commands modify that actual document through its normal computation and
-undo workflow, updating its viewport, browser and history. New or Open in
-the GUI invalidates the previous document handle; list again before editing
-the replacement. Busy computations, active commands, sketches, drags and
-dialogs refuse external model access; editing also respects the GUI's
-read-only state. Retry after the user finishes the active operation.
+### Windows
 
-The live tools do not create, open, close, save or export files. File and
-remote operations remain unavailable through model commands and queries.
-Save through the desktop UI or use the separate headless workspace mode
-when file tools are required. `--workspace` and `--read-only` belong to
-headless mode and cannot be combined with `--connect` or `--list-instances`.
+The installer puts the CLI beside the application: in
+`C:\Program Files\Mitcad\bin` when Mitcad is installed for all users, in
+`%LOCALAPPDATA%\Programs\Mitcad\bin` when just for the user. With Mitcad
+open:
+
+```powershell
+& "C:\Program Files\Mitcad\bin\mitcad-cli.exe" mcp --list-instances
+& "C:\Program Files\Mitcad\bin\mitcad-cli.exe" mcp --connect
+```
+
+The discovery directory is `%LOCALAPPDATA%\cache\Mitcad\mcp`, owned by the
+user and with an access control list of theirs only;
+`MITCAD_MCP_DISCOVERY_DIR` overrides it as on the other platforms. An MCP
+client's configuration, in JSON with forward slashes or doubled
+backslashes:
+
+```json
+{
+  "mcpServers": {
+    "mitcad-desktop": {
+      "command": "C:/Program Files/Mitcad/bin/mitcad-cli.exe",
+      "args": ["mcp", "--connect"]
+    }
+  }
+}
+```
+
+### Live tools
+
+The live catalog has `document_list`, `model_query`, `model_command`,
+`document_save` and the application's own tools `ui_state`, `ui_log`,
+`ui_screenshot`, `ui_select` and `ui_command` (mitcad#265). The rule of
+thumb: what the user can see and do in the window, an agent can read and do
+through them, with the same undo and the same refusals. `document_list`
+returns the GUI document's opaque handle, path, name, state, `busy` and
+`editable` (model commands run now). Commands modify that actual document
+through its normal computation and undo workflow, updating its viewport,
+browser and history. New or Open in the GUI invalidates the previous
+document handle; list again before editing the replacement. The tools that
+act on the document (`model_query`, `model_command`, `document_save`,
+`ui_select`, `ui_command`) take the handle; `ui_state`, `ui_log` and
+`ui_screenshot` read the window and take none.
+
+What blocks what:
+
+- **Queries** (`model_query`) are read-only and work at any time: with a
+  sketch or a command panel open, during drags and dialogs. They are refused
+  only while the model computes (or the view draws, or an import runs):
+  that result is an error with `busy: true`, `retry_after_ms` and the
+  reason in `error`; retry after that many milliseconds. `ui_state`,
+  `ui_log` and `ui_screenshot` are never refused for a sketch or command.
+- **Model commands** (`model_command`) are refused while busy (as queries
+  are), while a command panel is open or Create Sketch waits for its plane,
+  during drags, animations, imports and dialogs, and when the window is
+  read-only (with the reason). While a **sketch is being edited**, its own
+  commands go through the sketch session as if the user did them: a
+  `sketch.*` command whose `sketch` is the open sketch, `edit_feature` of
+  it, and `undo` and `redo` (which undo the sketch's steps; undoing past
+  its first step leaves it as the user's Undo does). The view, the Sketch
+  Palette and the sketch's undo follow, and the result is the command's
+  usual one, with `sketch`. Commands on other features are refused with the
+  reason until the sketch is finished (`ui_command` with `sketch.finish`).
+- **The ui tools** work in every mode: `ui_state` and `ui_log` at any time,
+  `ui_screenshot`, `ui_select` and `ui_command` but while busy (as above);
+  with a command panel open, `ui_select`'s entities go to the
+  panel's active input as clicks in the view would.
+
+Which commands and queries MCP allows follows their class in the model's
+API, not a list of names: every command, query and feature type carries
+one ([core/model/src/api/classes.rs](../core/model/src/api/classes.rs)),
+and a unit test fails for one without a class. MCP allows every **model**
+command (the document's data: features, sketches, parameters, attributes,
+components, joints, views, analyses, undo and redo), every feature type and
+every model query, and refuses **file IO** (imports, exports, other designs
+and links, images and drawings by path, the saved state), **remote** (the
+library resolver's repositories) and **internal** ones (a command panel's
+checkpoints, the result caches), and a `cache` query that reads the store's
+files (`disk`). A new model command therefore works through MCP without
+another edit.
+
+Each change an agent makes is labelled in the undo text and in the version
+history as `… (agent)` (`Add Line (agent)`, `Edit Sketch2 (agent)` when an
+agent changed the sketch being edited), and undoes with Ctrl+Z like the
+user's own. While an MCP client is connected (has initialized a session),
+the project indicator (in the status bar of the Docked layout, the title
+row of the Floating one, the toolbar of the native macOS window) says
+"Agent connected", and its menu's Disconnect Agent ends the connection.
+
 Closing the bridge's stdin ends that connection after forwarding its
 requested replies; the GUI and its unsaved work remain open. A new bridge
-can reconnect to the same document.
+can reconnect to the same document. `--workspace` and `--read-only` belong
+to headless mode and cannot be combined with `--connect` or
+`--list-instances`.
+
+| Tool | Arguments | Result |
+|---|---|---|
+| `document_list` | `{}` | `documents`: the window's one, with `document`, `path`, `name`, `state`, `busy`, `editable` |
+| `model_query` | `document`, `query` | `document`, native JSON in `result` |
+| `model_command` | `document`, `command` | `document`, `applied`, native `result`, `state`, `timeline`, `bodies`; in a sketch also `sketch` |
+| `document_save` | `document` | `document`, `path`, `saved`, `status` (the status bar's text, with the version recorded), `state`. Saves to the document's own path as File > Save does, with the project's version and commit message (`Save …: …`) in a project with versions. Refused for a document never saved (no path), a read-only one, while a command panel is open, and when saving would ask the user something (the question's dialog is closed and named) |
+| `ui_state` | `{}` | `document`, `name`, `path`, `modified`, `read_only` (and `read_only_reason`), `mode` (`idle`, `sketch`, `command`, `pick_plane`), `busy`, `editable`, `active_component`, `undo`, `redo`, `undo_depth`, `selection` (entities as `ui_select` takes them, with `geometry`, `reference` and `text`), `hint` and `hint_is_error` (the status line), `agents`, `sketch` (null, or `uid`, `name`, `dof`, `fully_constrained`, `existing`, `tool` and `palette`: `status`, `warnings` as `{"text", "entities"}` (the `sketch` query's `warning_entities`, mitcad#264), `clean_up_offered`), `command` (null, or the panel's `id`, `name`, `editing`, `in_sketch`, `inputs` by key with `label`, `type` and their values, `ready` or `message`, `preview_ok`, `preview_failed`, `preview_warnings`, `busy` and `panel`: `message`, `result`, `ok_enabled`, `notes` by key), `app` (`version`, `build`, `qt`, `platform`, `ui`, `chrome`) |
+| `ui_log` | `since` (a sequence number; lines after it), `limit` (default 200, at most 2000) | `lines`: `seq`, `level`, `text`, `time` (ms since the epoch), the newest last; `next` (the next line's number), `dropped` (lines after `since` no longer kept). The application's own log lines (the same as on stderr: what commands did, `Selected: …`, `Preview …`, refusals, `MCP refused: …`), the newest 5000 kept |
+| `ui_screenshot` | `window` (default false: the 3D view), `max_size` (default 1280, 64 to 4096) | `format` `png`, `of`, `width`, `height`, `full_width`, `full_height`, `bytes`, `png_base64`. The image the user sees, the sketch overlay included; the whole window with `window` (in the native macOS window as the window server composes it). Scaled to fit `max_size`, and further until the PNG is under 5 MiB, well within the 8 MiB frame |
+| `ui_select` | `document`, `items` (entities: `kind` of `face`, `edge`, `vertex`, `body`, `profile`, `sketch_curve`, `sketch_point`, `sketch_constraint`, `sketch_dimension`, `plane`, `axis`, `point`, `component`, `sketch`, `feature`; `owner`; `name`; `occurrence`), `reveal` (`none`, `pan` default, `fit`) | `document`, `selected`, `selection`, `view` (`none`, `pan`, `zoom`). Replaces the selection as clicks would, so the user can press Delete or run a command on it; with `pan` the view moves to them when none is in sight, keeping the zoom unless they do not fit; `fit` zooms to them. Entities the model lacks are refused. With a command panel open the entities go to its active input instead, each as a click (one already there goes out again): `picked`, `into_command`, `command` (the panel's state) |
+| `ui_command` | `document`; `id` (a command of the registry, [app/COMMANDS.md](../app/COMMANDS.md)) or `edit` (a feature's uid); `inputs` (by the panel's input keys: a number or text for values and texts, a choice's value, true or false for checks, an array of entities for selections); `finish` (`ok` default, `cancel`, `keep_open`) | `document`, `command`, `panel` (as `ui_state`'s `command`, after the preview), `committed`, `open`, `mode`, `sketch`, `undo`, `previews` (the `Preview …` log lines: validation, the preview's outcome and warnings), `log` (every line the command logged), `hint`. A command with a panel opens, takes the inputs as typing, choosing and picking would, previews, then OK, Cancel or stays open; OK refused leaves it open and returns an error with the panel's state. An action runs (Finish Sketch, Undo, Fit). `edit` opens a feature as a double-click in the timeline does (a sketch in sketch mode). Without `id` and `edit`, `finish` ends the open panel, or the sketch being edited: `ok` finishes it, `cancel` takes back every change made since it was opened and leaves it. Commands that open a file dialog or another window (`file.*`, `insert.*`, `tools.*`, `help.*`, 3D Print, DXF import and export, ...) are refused; any other modal dialog a command opens is closed at once and the call refused with the dialog's name |
+
+The UI-only flows this covers: Clean Up Stale Projections
+(`{"id": "sketch.clean_up_stale_projections"}` in an open sketch), Project
+(`sketch.project` with its `source` input), Finish Sketch (`sketch.finish`)
+or cancelling the sketch (`{"finish": "cancel"}`), editing a sketch
+(`{"edit": "F4"}`), and any feature panel.
 
 ## Tools and results
 
 `tools/list` supplies the full input schemas. The table lists the headless
-catalog; live connections expose its three document/model tools above.
-All arguments are JSON
+catalog; live connections have their own (above). All arguments are JSON
 objects; fields below without a default are required.
 
 | Tool | Arguments | Result |
@@ -149,12 +245,13 @@ The command reference is available through `resources/list` and
 `resources/read` at `mitcad://reference/commands`, as well as in
 [the native API reference](../core/model/src/api/commands.md). Use that
 reference for feature definitions, sketch entities, parameters and
-topological names. The server permits the modeling commands and queries
-that operate on document data; file imports, external component refresh,
-raw save/export commands, disk cache access and remote operations are
-refused. Files are accessed through the dedicated document and export
-tools. The allowlists are in
-[core/ffi/src/mcp.rs](../core/ffi/src/mcp.rs).
+topological names. The server permits the commands, feature types and
+queries of the model class, those that operate on document data, and
+refuses the file IO, remote and internal ones by their class
+([core/model/src/api/classes.rs](../core/model/src/api/classes.rs),
+"Live tools" above): file imports, external component refresh, raw
+save/export commands, disk cache access and remote operations. Files are
+accessed through the dedicated document and export tools.
 
 ## Create, edit, save and export a part
 
@@ -308,6 +405,18 @@ actual GUI and CLI bridge. It verifies live discovery, private records,
 authentication, model edits and undo, native history and viewport
 screenshots, reconnect and EOF retention, stale document handles,
 ambiguous instances, malformed and oversized input, full-width integer
-request IDs, and `--no-mcp`. Run these focused CTests only in the approved
-isolated environments, as described in
+request IDs, and `--no-mcp`; then the live debugging flow of
+[tools/ui-mcp-live.py](../tools/ui-mcp-live.py) (mitcad#265) on a design
+whose sketch holds a projection that no longer follows: queries and
+`sketch.add_line` with the sketch open and undo, `ui_state` with the
+Sketch Palette's warning and its entities, `ui_select`, `ui_screenshot`,
+`ui_command` Clean Up Stale Projections and Finish Sketch, `document_save`
+and `ui_log`. The same flow runs on Linux in
+[tools/ui-mcp-test.sh](../tools/ui-mcp-test.sh) (Xvfb), and on Windows in the
+ctest `app.ui-windows-mcp`
+([tools/ui-windows-mcp-test.ps1](../tools/ui-windows-mcp-test.ps1), session
+0 with Mesa, its own PowerShell client of the bridge). The classification's
+unit tests are in `core.model` (`api::classes`), the live catalog's in
+`core.mcp`. Run these focused CTests only in the approved isolated
+environments, as described in
 [development.md](development.md#mcp-validation).

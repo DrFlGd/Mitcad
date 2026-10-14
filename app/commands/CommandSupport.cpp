@@ -488,7 +488,13 @@ void loadValue(CommandState& state, const QString& key, const QJsonValue& slot,
   if (slot.isNull() || slot.isUndefined()) {
     return;
   }
-  state.setText(key, context.valueText(slot, def.value(QStringLiteral("uid")).toString()));
+  const QString text = context.valueText(slot, def.value(QStringLiteral("uid")).toString());
+  state.setText(key, text);
+  // The feature's own parameter shows its expression: its name goes with
+  // the label (mitcad#231).
+  if (slot.isString() && text != slot.toString()) {
+    state.setParameterName(key, slot.toString());
+  }
 }
 
 bool nonZero(const CommandState& state, const QString& key) {

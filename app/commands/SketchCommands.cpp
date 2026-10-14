@@ -345,6 +345,50 @@ void addCleanUpProjections(CommandRegistry& registry, SketchController& c) {
   registry.add(def);
 }
 
+// Clean Up Stale Projections (mitcad#252): projected curves that no longer
+// match their source removed when nothing uses them, stale lines trimmed to
+// the regions later features use, and the projections that still do not
+// follow unlinked. The preview shows the result with the removed curves and
+// the pieces trimmed off drawn dashed in the remove colour and the trimmed
+// lines highlighted, and lists what it removes, trims, unlinks and keeps
+// (the command's warnings); OK keeps it as one undo step. The Sketch
+// Palette offers it under a warning about such projections.
+void addCleanUpStaleProjections(CommandRegistry& registry, SketchController& c) {
+  CommandDef def = sketchCommand("sketch.clean_up_stale_projections", QObject::tr("Clean Up Stale Projections"),
+                                 "project", "CREATE/References", CommandDef::Kind::Feature);
+  def.sketchCommand = true;
+  def.tooltip = QObject::tr("Removes projected curves that no longer match their source and that nothing uses, "
+                            "trims the ones the profiles still use, and unlinks the projections that cannot "
+                            "follow");
+  def.keywords = {QStringLiteral("stale"), QStringLiteral("outdated"), QStringLiteral("unlink")};
+  def.build = [&c](const CommandState&, const CommandContext&) -> Built {
+    return Built::of(base(c, "sketch.clean_up_stale_projections"));
+  };
+  // The view shows what goes and what is trimmed while the preview lasts.
+  def.sketchPreviewShown = [&c](const QJsonObject& answer) { c.setStalePreview(answer); };
+  def.describe = [](const CommandState&, const CommandContext&) {
+    return QStringLiteral("Cleaned up stale projections");
+  };
+  registry.add(def);
+}
+
+// Convert to Sketch Geometry (mitcad#257): the selected projected curves and
+// points become ordinary free sketch geometry that no longer follows its
+// source, at once, as one undo step. Enabled while the selection holds
+// projected geometry (SketchController::selectionHasProjected); also in the
+// context menu of projected geometry.
+void addConvertProjected(CommandRegistry& registry, SketchController& c) {
+  CommandDef def = sketchCommand("sketch.convert_projected", QObject::tr("Convert to Sketch Geometry"),
+                                 "convert-projected", "MODIFY", CommandDef::Kind::Action);
+  def.run = [&c] { c.convertProjected(); };
+  def.enabled = [&c] { return c.selectionHasProjected(); };
+  def.tooltip = QObject::tr("Turns the selected projected geometry into ordinary sketch geometry: no link to its "
+                            "source, not fixed");
+  def.keywords = {QStringLiteral("projected"), QStringLiteral("unlink"), QStringLiteral("reference"),
+                  QStringLiteral("convert")};
+  registry.add(def);
+}
+
 void addFillet(CommandRegistry& registry, SketchController& c) {
   CommandDef def = sketchCommand("sketch.fillet", QObject::tr("Sketch Fillet"), "sketch-fillet", "MODIFY",
                                  CommandDef::Kind::Feature);
@@ -825,6 +869,7 @@ void registerSketchCommands(CommandRegistry& registry, SketchController& c) {
   addMirror(registry, c);
   addProject(registry, c);
   addCleanUpProjections(registry, c);
+  addCleanUpStaleProjections(registry, c);
   add({"sketch.dimension", QObject::tr("Sketch Dimension"), "dimension", "CREATE",
        [&c] {
          // Three or more objects selected: their equal spacing (mitcad#221).
@@ -855,6 +900,7 @@ void registerSketchCommands(CommandRegistry& registry, SketchController& c) {
   add({"sketch.centerline", QObject::tr("Centerline"), "centerline", "MODIFY", [&c] { c.toggleCenterline(); }, none,
        false, QObject::tr("Turns the selected lines into centre lines and back")},
       CommandDef::Kind::Action);
+  addConvertProjected(registry, c);
   add({"sketch.delete", QObject::tr("Delete"), "delete", "MODIFY", [&c] { c.deleteSelection(); },
        QKeySequence(Qt::Key_Delete), false,
        QObject::tr("Deletes the selected sketch geometry, constraints and dimensions")},
@@ -894,6 +940,9 @@ void registerSketchCommands(CommandRegistry& registry, SketchController& c) {
     };
     if (type == QStringLiteral("horizontal_vertical")) {
       def.tooltip = QObject::tr("A line horizontal or vertical (as it is nearer to), or two points level");
+    } else if (type == QStringLiteral("coincident")) {
+      def.tooltip = QObject::tr("A point on a curve or at another point; two curve ends become one point, "
+                                "as curves drawn from the same point share it");
     } else if (type == QStringLiteral("fix")) {
       def.tooltip = QObject::tr("Fixes geometry in place, or frees it");
     }

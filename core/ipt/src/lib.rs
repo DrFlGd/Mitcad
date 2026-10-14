@@ -19,17 +19,22 @@
 //! container and the property sets, and from inspecting files for the rest.
 
 pub mod assembly;
-pub mod cfb;
+// The container, a crate of its own shared with the `.rvt` reader (mitcad#274).
+pub use mitcad_cfb as cfb;
 pub mod dc;
 pub mod design;
 pub mod features;
 pub mod groups;
 pub mod mesh;
+// Topological names of B-rep entities (mitcad#242).
+pub mod naming;
 pub mod params;
 pub mod profile;
 pub mod props;
 pub mod result;
 pub mod rse;
+// Sheet-metal features (mitcad#211).
+pub mod sheet;
 pub mod sketch;
 pub mod states;
 #[doc(hidden)]

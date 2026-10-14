@@ -30,6 +30,7 @@
 #include <NCollection_HArray1.hxx>
 #include <NCollection_IndexedDataMap.hxx>
 #include <NCollection_List.hxx>
+#include <NCollection_Map.hxx>
 #include <Precision.hxx>
 #include <ShapeBuild_ReShape.hxx>
 #include <ShapeFix_Shape.hxx>
@@ -160,7 +161,7 @@ std::vector<int> check_contours(const BRepFilletAPI_LocalOperation& maker, const
           "unsupported: " + describe_edge(body, seed) + " continues tangentially into " +
           describe_edge(body, unselected) +
           "; without a tangent chain only the selected edges would be rounded, but the "
-          "geometry kernel always follows the whole chain");
+          "geometry kernel's chain goes on into it");
     }
     contour_sets.push_back(set);
   }
@@ -489,6 +490,53 @@ ShapePtr name_result(BRepFilletAPI_LocalOperation& maker, const std::string& fea
   return namer.shape();
 }
 
+// After a contour stopped where its edges turn (port patch 0180), the face
+// beyond the crease grows along its edge up to where it cuts the rounding,
+// and OCCT keeps the vertex where the contour stopped between the two
+// pieces of that edge. The roundings in the files have one edge there: the
+// pieces are joined (ShapeUpgrade_UnifySameDomain on edges, every other
+// vertex kept; it joins lines and circles, not two different splines along
+// one line), the faces keeping their names.
+ShapePtr join_at_turn_stops(const ShapePtr& rounded,
+                            const NCollection_Map<TopoDS_Shape, TopTools_ShapeMapHasher>& stops) {
+  if (stops.IsEmpty()) {
+    return rounded;
+  }
+  ShapeMap vertices;
+  TopExp::MapShapes(rounded->occt(), TopAbs_VERTEX, vertices);
+  NCollection_Map<TopoDS_Shape, TopTools_ShapeMapHasher> keep;
+  bool any = false;
+  for (int v = 1; v <= vertices.Extent(); ++v) {
+    if (stops.Contains(vertices(v))) {
+      any = true;
+    } else {
+      keep.Add(vertices(v));
+    }
+  }
+  if (!any) {
+    return rounded;
+  }
+  ShapeUpgrade_UnifySameDomain unify(rounded->occt(), true, false, false);
+  unify.KeepShapes(keep);
+  unify.Build();
+  ShapeMap edges;
+  TopExp::MapShapes(unify.Shape(), TopAbs_EDGE, edges);
+  if (edges.Extent() == rounded->edge_count()) {
+    return rounded;
+  }
+  detail::FaceNamer namer(unify.Shape());
+  namer.carry(*unify.History(), *rounded);
+  namer.finish();
+  if (const std::optional<bool> valid = rounded->checked_valid()) {
+    namer.set_valid(*valid);
+  }
+  ShapePtr joined = namer.shape();
+  for (const std::string& note : rounded->notes()) {
+    joined->add_note(note);
+  }
+  return joined;
+}
+
 // The two faces of a body edge; throws for a free edge.
 std::pair<int, int> edge_face_pair(const Shape& body, int edge) {
   const std::vector<int> faces = detail::faces_at_edge(body, edge);
@@ -704,6 +752,19 @@ ShapePtr round_edges(const std::string& feature, const Shape& body, const std::v
   if (tight) {
     maker.SetParams(kTight[0], kTight[1], kTight[2], kTight[3], kTight[4], kTight[5]);
   }
+  // OCCT's contours stop where their edges turn, although the faces go on
+  // tangentially across a shallow crease there (no other sharp edge at the
+  // vertex), unless the next edge is selected too (port patch 0180,
+  // mitcad#241): a tangent chain runs on only where the edges continue each
+  // other, and a rounding of exactly the selected edges ends there, cut by
+  // the face beyond the crease.
+  NCollection_Map<TopoDS_Shape, TopTools_ShapeMapHasher> selected;
+  for (int edge = 0; edge < body.edge_count(); ++edge) {
+    if (owner[static_cast<std::size_t>(edge)] >= 0) {
+      selected.Add(body.edge(edge));
+    }
+  }
+  maker.StopChainsAtTurns(selected);
   for (int edge = 0; edge < body.edge_count(); ++edge) {
     const int s = owner[static_cast<std::size_t>(edge)];
     if (s < 0 || maker.Contour(body.edge(edge)) != 0) {
@@ -776,7 +837,7 @@ ShapePtr round_edges(const std::string& feature, const Shape& body, const std::v
     }
     throw std::runtime_error("fillet failed; " + reason);
   }
-  const ShapePtr rounded = name_result(maker, feature, "fillet", body);
+  const ShapePtr rounded = join_at_turn_stops(name_result(maker, feature, "fillet", body), maker.ChainTurnStops());
   return setbacks.empty() ? rounded : detail::setback_corners(feature, "fillet", body, *rounded, setbacks);
 }
 

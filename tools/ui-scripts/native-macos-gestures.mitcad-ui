@@ -31,6 +31,56 @@ capture-view-height before_overlay
 native-pinch 5 20 0.25
 expect-view-zoom ${before_overlay} unchanged
 
+# Choose the alternate orbit key through the real Settings popup, then
+# inspect the camera after pixel scrolls through the shared viewer handler.
+command tools.preferences.navigation
+focus-dialog '^Settings$'
+native-choice navigationScheme 'Trackpad (two-finger scroll pans, pinch zooms, Shift orbits)'
+expect-log 'Preferences: navigation trackpad-shift,'
+key Ctrl+w
+expect-native-dialog-gone '^Settings$'
+focus-main
+capture-view-height shift_height
+capture-view-orientation shift_direction
+trackpad-scroll 55 45 45 30 shift
+expect-view-orientation ${shift_direction} changed
+expect-view-zoom ${shift_height} unchanged
+sleep 300
+expect-view-buttons none
+capture-view-orientation zoom_direction
+capture-view-height option_height
+trackpad-scroll 55 45 0 30 alt
+expect-view-zoom ${option_height} in
+expect-view-orientation ${zoom_direction} unchanged
+capture-view-height command_height
+trackpad-scroll 55 45 0 -30 ctrl
+expect-view-zoom ${command_height} out
+# An ordinary wheel still zooms with Shift held.
+capture-view-height wheel_height
+wheel 55 45 1 shift
+expect-view-zoom ${wheel_height} in
+
+# Reopening Settings retains the choice. Restoring the default scheme
+# restores Option orbit and Shift zoom without leaving a synthetic drag.
+command tools.preferences.navigation
+focus-dialog '^Settings$'
+expect-native-text navigationScheme 'Shift orbits'
+native-choice navigationScheme 'Trackpad (two-finger scroll pans, pinch zooms, ⌥ orbits)'
+expect-log 'Preferences: navigation trackpad,'
+key Ctrl+w
+expect-native-dialog-gone '^Settings$'
+focus-main
+capture-view-height default_height
+capture-view-orientation default_direction
+trackpad-scroll 55 45 45 30 alt
+expect-view-orientation ${default_direction} changed
+expect-view-zoom ${default_height} unchanged
+sleep 300
+expect-view-buttons none
+capture-view-height default_zoom
+trackpad-scroll 55 45 0 30 shift
+expect-view-zoom ${default_zoom} in
+
 # Pinching also works during sketching and leaves precision input intact.
 mark
 native-action sketch.create

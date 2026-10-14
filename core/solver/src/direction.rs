@@ -123,7 +123,7 @@ pub(crate) fn check(sys: &System, classes: &[usize]) -> (Vec<Dependency>, Vec<De
                 };
                 (la, Some(lb), c)
             }
-            Angle { a, b, value } => {
+            Angle { a, b, value, .. } => {
                 let (Some(la), Some(lb)) = (line(a), line(b)) else {
                     continue;
                 };

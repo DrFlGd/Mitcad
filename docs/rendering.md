@@ -1349,6 +1349,19 @@ the guest's interactive Metal benchmark waited for `shader_eval_background`
 and reached its 60-second deadline; cancellation then ended cleanly.
 The narrow `metal-pipeline-failure.patch` propagates failed or exhausted
 pipeline requests and ends cancelled waits instead of waiting indefinitely.
+A failed generic pipeline is reported only after pending frontend and backend
+compilations finish: a specialized pipeline may still provide the requested
+kernel. The cache scan and completion decision share the cache lock, so a
+pipeline that finishes during the check cannot be missed. Cancellation still
+ends the wait immediately.
+
+On Metal devices below the Apple6 family, the patch also preserves explicit
+`ccl_device_noinline` boundaries. In the macOS virtual GPU, aggressively
+inlined shaders can stall pipeline creation and trigger a driver command
+timeout even when a separate GPU comparison passes. The bounded functions
+keep rendering on Metal; Apple6 and later devices retain upstream inlining.
+Validation includes the rendering tests in parallel and a check that no new
+GPU command timeout or device-detach failure appears in the guest kernel log.
 
 ### AppImage
 

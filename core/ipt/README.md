@@ -29,7 +29,7 @@ but not understood further.
 
 | Module | Contents |
 |---|---|
-| `cfb` | Compound files (MS-CFB): versions 3 and 4, FAT, DIFAT, mini stream, the directory's red-black trees. Chains are checked against the file size and loops. A writer for tests. |
+| `cfb` | Compound files (MS-CFB): versions 3 and 4, FAT, DIFAT, mini stream, the directory's red-black trees. Chains are checked against the file size and loops. A writer for tests. The `mitcad-cfb` crate (`core/cfb`), shared with the `.rvt` reader and re-exported here as `cfb`. |
 | `props` | Property set streams (MS-OLEPS): one or two sets per stream, the dictionary, the code page, typed values (integers, reals, booleans, strings, file times, class ids). A writer for tests. |
 | `rse` | The segment database: meta stream headers, record tables, record splitting, zlib and zstd. A writer for tests. |
 | `lib.rs` | `IptFile`: segments, property sets, document properties, B-rep records, the definitions segment; `read_bodies` converts the bodies with the `.f3d` reader's ASM code. |
@@ -44,9 +44,11 @@ but not understood further.
 | `result` | The result segment's body list: which bodies the part shows, solids or surfaces, their range boxes (*The result segment* below). A writer for tests. |
 | `states` | The bodies of the B-rep records at the states of their ASM history, read once for all tries of the import: the distinct ones by the step they were converted at, converted again when asked for. |
 | `assembly` | Assemblies (`.iam`): the referenced files, the occurrences with their keys, flags, labels, documents, placements, range boxes and display transforms (*Assemblies* below). |
+| `sheet` | Sheet metal (mitcad#211): the sheet-metal style's K-factor, faces, flanges, cuts, corners, bends and folds as the dump's sheet items (*Sheet metal* below). |
+| `naming` | Topological names (mitcad#242): the items features name edges and faces by, the naming table's names, the naming attributes of the ASM entities at a history state, and the edge a name names there (*Topological names* below). |
 | `testdata`, `testdesign` | Small parts made by these writers: two bodies of Mitcad's own ASM writer (a cube and a cylinder), part number, material, inches; the cube with the records of a parameter, a sketch and an extrusion that make it; a part of a mesh feature's tetrahedron; an empty part; the cube and the cylinder with a result list that keeps the cylinder hidden. |
 | `testassembly` | Small assemblies made by these writers and a test project of them (a top assembly as saved on another machine, a sub-assembly, parts found relative to it and by name, a missing one; hidden, grounded and suppressed occurrences). |
-| `bin/mitcad-ipt-inspect` | `list`, `properties`, `segments`, `records`, `record [--raw]`, `data`, `dump`, `labels`, `stream [--raw]`, `asm`, `bodies [-v|-f]`, `result`, `history`, `parameters`, `typed`, `show`, `constraints`, `prefix`, `flags`, `design [--json]`, `profile`, `assembly`, `write-test`. |
+| `bin/mitcad-ipt-inspect` | `list`, `properties`, `segments`, `records`, `record [--raw]`, `data`, `dump`, `labels`, `stream [--raw]`, `asm`, `bodies [-v|-f]`, `result`, `history`, `parameters`, `typed`, `show`, `constraints`, `prefix`, `flags`, `design [--json]`, `profile [-v]`, `slots` (a sheet-metal group's parts too), `tree`, `find`, `assembly`, `write-test`; for the names (mitcad#242) `words` (a segment's records as u32 words), `nodes`, `names` (each feature's items with their names), `entry`, `brepnames <state>` (the faces and edges of a history state with their naming attributes), `study` (every item resolved in the state before its feature, checked against the file's own `matched` marks). |
 
 ## The container
 
@@ -568,7 +570,7 @@ value), booleans (`284d8790…`: the value is the last byte), directions
 | Extrusion | 0 operation, 1 profiles (`91739422…`), 2 direction, 3 reversed, 4 distance, 5 taper, 6 extent (1 distance, 2 symmetric, 5 through all, 7 up to a face or plane, 4 up to the next face), 7 symmetric (set in every symmetric extent, and in 9 of 279 through all: through all both ways); up to the next face, 24 the body it reaches (a list `83aadad5…`: all 48 such extrusions of the older parts); up to a face, 18 the face's surface (`f0801215…`: after the prefix 16 zero bytes, a byte 1 and a u32 kind; `0x19` a plane: a u32, its origin (cm) and x and y axes, both across the extrusion in all 130 such records; `0x49` a cone: two u32, the cosine and sine of its half angle, a point on its axis (cm), its two radii, its axis and a reference direction: 8 cylinders) and 13 a boolean (`fd24893d…`, not decoded), or 11 a work plane (4), or 25 a work point (2, not decoded: both suppressed in their files); two sides, 27 the second side's distance, 28 its taper and 29 its extent (1 a distance: both such extrusions) *(seen)* | all; two sides as Mitcad's two-sided extent; the next face as the first face of that body reached, the face as its plane or a cylindrical face on that cylinder, which the import looks for |
 | Revolution | 0 operation, 1 profiles, 2 axis (a work axis `896cf08e…`: a point and a direction before its last byte), 3 extent (1 an angle, 3 a full turn *(verified)*: its angle parameter keeps a value it does not use, 0 or the angle it was made with), 4 angle, 5 direction (an enumeration `c26aa0c7…`, not decoded) | the axis as a sketch line on it or an origin axis, else the work axis fixed where it is |
 | Thread | 0 its faces (named by the file's topological naming, not decoded), 1 full length (a boolean), 3 length and 4 offset of one that is not, 6 modelled (a boolean), 10 its ends (`9984474c…`: after the prefix two points, cm, on its cylinder's surface or axis, where it starts and ends); its size in a record of its own (`1f7e08a4…`, its header's context the thread: after the header a reference, then texts: the nominal size, the designation `M3x0.5`, the thread type, an empty text, a u32, four empty texts, the class `6g`, then its diameters' limits and pitch as texts in the saving machine's number format) *(seen)* | all; the face as the cylinder through both ends, which the import looks for |
-| Coil | 0 operation, 1 profiles, 2 axis (a work axis), 3 against the axis (a boolean: the coil runs against the work axis' stored direction), 5 its type (`b80cb14f…`: the prefix, u16 kind, u16 value: 0 pitch and turns, 1 turns and height, 2 pitch and height; 3, a spiral, not seen), 6 pitch, 7 height, 8 turns, 9 taper *(seen)*; the parameters its type does not use keep values | all but its hand (the import tries both, the direction slot 3 gives first), as Mitcad's helix; the axis a line of its sketch on the work axis, an origin axis, else the work axis fixed where it is (a cylinder's axis: 46 of the 85 coils of the older parts, all of which fell back before); tapered coils are not replayed |
+| Coil | 0 operation, 1 profiles, 2 axis (a work axis), 3 against the axis (a boolean: the coil runs against the work axis' stored direction), 5 its type (`b80cb14f…`: the prefix, u16 kind, u16 value: 0 pitch and turns, 1 turns and height, 2 pitch and height; 3, a spiral, not seen), 6 pitch, 7 height, 8 turns, 9 taper, 10 to 15 its ends (a boolean: flat, else natural; the transition angle; the flat angle; for the start, then the end: the one coil of the older parts with a flat end gives its history state so), 19 its bodies (`ae70680e…`, as an extrusion's) *(seen)*; the parameters its type does not use keep values, as do a natural end's angles | all but its hand (the import tries both, the direction slot 3 gives first), as Mitcad's helix; the axis a line of its sketch on the work axis, an origin axis, else the work axis fixed where it is (a cylinder's axis: 46 of the 85 coils of the older parts, all of which fell back before); a taper as the growth `pitch * tan(taper)` outwards (the one tapered coil of the older parts gives its state so; inwards is tried next), flat ends as the helix's ends, beyond the turns at the full pitch (mitcad#235) |
 | Hole | 0 form (`117ccd43…`: 0 drilled, 1 countersink, 2 and 3 counterbore), 1 diameter, 2 depth, 3 counterbore or countersink diameter, 4 counterbore depth, 5 countersink angle, 6 drill point angle (0: flat), 7 its sketch points (`b1226593…`), 8 placement (a transform), 9 extent (1, 5, 7), 16 direction | position: the sketch points in the sketch (label child) the feature is on, else the placement's origin; up to a face as through all |
 | Fillet | 0 edge sets (`dae9481b…` of `1641d6aa…`: edges, radius, selection, a boolean), 11 form (`2788f278…`, 0 edge fillet) | radii; the edges are named by the file's topological naming, not decoded: the import finds them from the history state. The boolean (not a boolean record in the parts of `ipt.corpus`) is false in every fillet of the older parts below, while their history states show whole tangent chains rounded from an edge inside them, so it is not the tangent chain option: the sets follow tangent chains |
 | Chamfer | 0 edges, 2 distance, 3 second distance, 4 form (`3200aa7d…`: 0 equal, 1 distance and angle, 2 two distances), 10 angle | sizes; edges as for fillets |
@@ -624,6 +626,254 @@ the selections tell; the regions taken are given with their area and
 centroid. Without selections inside one another, a boundary selected more
 than once (the regions of coincident curves, as a degenerate pattern's
 copies on their original *(seen)*) is given once.
+
+### Topological names
+
+`naming` (mitcad#242). A feature that selects edges (a flange's edges, a
+rounding's or chamfer's, a bend's) keeps them as **items** (`82695c37…`):
+after the header and the prefix a list (kind 2) of one value, then -1 and
+0. The value is the node number of a **reference** (`534d8790…`: the
+body, a list (kind 8) of feature nodes, the item, and at its end the
+naming table and an index) *(verified: every item of the sheet-metal
+parts)*. The **naming table** (`4220e9cc…`, one in the definitions
+segment: u32, u16, u32, the next free index, the count, then (index,
+reference) pairs) gives the index's **name record**. Name records start
+with u32, u16, u32 1 or 5, a list (kind 2, empty), five u32 0, u32 180 and
+u32 0; a name made of other names refers to them as table entries (the
+table's reference and an index, 8 bytes). The classes seen:
+
+| Class | Name of | Layout after the head |
+|---|---|---|
+| tags: `205fa956…` (generated), `a5c24506…` (swept), `341b896f…` (flange), `98415d8e…` (blend), `7a260eae…` (hole), `74ed6921…` (cut across a bend), `0a82f490…`, `08a2042e…` (vertices) | an entity a feature made, by the feature's own numbers | the feature nodes (a list, kind 2: count, capacity, `0x10000000`, then the numbers up to a -1; a pattern's copy is named by the pattern's node, the copy's number and the copied feature's node), the count of names it is made in the context of and those entries, then the class's numbers (below) |
+| `b619c605…` | a vertex | byte 1, u32 n, n entries: the faces that meet there, then more not read |
+| `a6e032bf…` | an edge | its two end vertices, byte 1, a list of feature nodes (when not empty: -1, a count and entries), a byte, u32 2 and the two faces it lies between |
+| `180d36f4…`, `1c28b49b…` (swept) | an edge a feature made | its two end vertices, byte 1, the feature nodes and -1, u32 n, n entries each with a byte (the faces it lies between), then its own tag: the feature nodes, -1, the face it was made from, and the numbers of a generated (swept) tag |
+
+The B-rep record's ASM entities carry the same names as **naming
+attributes**: `NMx_<class>-…-NamingMatching-attrib` (up to ASM 228), or
+`ATTRIB_CUSTOM-attrib` with the class as a text (`INV_NMX_GEN_TAG`,
+`INV_NMX_SWEEPGENERATED_TAG`, `INV_NMX_BLEND_TAG`, `INV_NMX_HOLE_TAG`,
+`INV_NMX_MATCHED_ATTRIB`; ASM 229) and a 1 before the rest: 43 (44), the
+count of feature nodes, the nodes up to a -1, then the class's numbers
+*(seen)*. A tag's numbers as the name record stores them and as the
+attribute holds them:
+
+| Tag | Record (after the context) | Attribute |
+|---|---|---|
+| generated | u32 0, u32 a (the feature's number of the entity: a sketch curve's), u32 c (its kind: 20 a side face, 12 and 4 the end caps, 10 and 2 the side faces' top and bottom edges, 18 the edges between side faces), u32 0 | a, 0, c |
+| swept | as generated, then seven u32 | a, 0, c and the seven |
+| flange | bytes a, b, c, u32 d, u32 f, u32 e, u32 g | a, b, c, d, e, f, g |
+| blend | byte a, u32 b, u32 c, zeros | a, b, c, four zeros |
+| hole | u32 a, u16 b | a, b |
+| cut across a bend | u32 0, u32 a, u32 c, a byte, u32 x, u16 | a, 0, c, 0, x, 0 |
+
+The second number of a generated or swept attribute is 0 in every one
+seen and is not compared; neither are the context names (no attribute of
+a tag with one holds anything of them).
+
+**Resolving a name** in the history state a feature starts from (the
+state table's first state of its node; the ASM history is rolled back to
+that state by the state's position in the history, not by its id: a
+part's newest state may have the id 0 *(seen)*): the faces of the state's
+bodies (the deleted bodies' copies too) whose attributes are the face
+names' tags; the edge of an edge's name is the edge those two faces share
+(an edge a feature made: the one edge with its own tag, where there is
+one), where they share several, the one whose ends are the vertices its
+name names (each the faces meeting there). The file marks the entity a
+reference last resolved to with an attribute `matched` whose feature node
+is the reference's node: a check of the decoding, not used by it.
+
+On the 18 sheet-metal parts of the test files (the items of every
+timeline feature and of the sheet-metal groups' plates): every edge name
+a flange, corner round, corner chamfer, bend, rounding or chamfer
+selects resolves to exactly one edge of the state before it, and each of
+the 213 edges the file marks as matched by the reference is the edge
+resolved (2 more have no mark; none is marked elsewhere). Not resolved:
+the names of earlier flanges' edges that later flanges' bend records keep
+(4), whose faces the later state no longer has; the import does not use
+them.
+
+### Sheet metal
+
+`sheet` (mitcad#211). A sheet-metal feature of the browser is a group
+record, a face (`904bc1c4…`) or a flange (`08dcddc3…`), whose label
+shows the sketch it uses and the feature records it is made of
+(`914d8790…`, labelled `Plate<n>`, `Bend<n>`, `Corner<n>`); the history
+state table names those parts, and the group takes its last part's state
+*(seen: every sheet-metal part of the corpora, majors 24 to 28)*. Sheet
+cuts (`CutFeature`), corner rounds and chamfers, bends and folds are
+feature records of their own. The import makes them the dump's sheet
+items (`core/import/SCHEMA.md`, *Sheet metal*), which it replays as
+Mitcad's native sheet features.
+
+- **The style** (the application segment `PmAppSegment`): the style
+  record (`6bc0d610…`: its name, `1:Default`, then its values as
+  expressions of `#Thickness#` and `#BendRadius#`, a few u32
+  enumerations and the thickness as text) and the unfold rule
+  (`3e0b6bda…`: its name, `1:<name>`, then the K-factor as a unitless
+  value, `0.440 ul`, twice) *(seen: one unfold rule in every sheet-metal
+  part)*. The part's sheet-metal parameters (`Thickness`, `BendRadius`,
+  `BendReliefWidth`, `BendReliefDepth`, `CornerReliefSize`, `SeamGap`,
+  `MinimumRemnant`, `TransitionRadius`, `JacobiRadiusSize`, `GapSize`) hold
+  the style's values with its expressions, in the style's order: the rules
+  take the bend radius and reliefs from them by their names, and the
+  K-factor from the unfold rule. Not decoded: the style's relief shapes
+  (the u32 values 2, 1, 4 after the transition radius and 4 after the
+  corner relief size in every style of the corpora: no file varies them),
+  and a style other than the K-factor's.
+- **A plate** (the face's part, and a flange's wall): slots 0 a path
+  selection (`473f20fc…`, the layout of a profile selection: an entity
+  link to a wire body of the definitions segment's ASM record), 1 a
+  direction, 2 a side enumeration (`69b9505e…`, 0 or 1; a boolean in the
+  major 16 part), 3 the thickness, 4 the bend's record (`92596ba9…`), 8 a
+  list of dimension records, 9 the corner settings (`83ce7786…`), 10 the
+  bend relief (`64880596…`: a boolean, the width, the depth, a shape
+  enumeration `720c3e2b…`, the remnant, `SeamGap`), 11 the transition
+  (`e9345026…`), 12 the edges (`ce2d9b29…` → `799c7cfa…` → a list of edge
+  items `82695c37…`, *Topological names*), 13 an enumeration `051772e5…`
+  (0 in every flange), 14 the width extents of the edges (`19dfdc53…`, a
+  list of `f922288f…`; below), 15 its bodies, 16 the operation (kind 5: 1
+  a new body, 3 joined to the sheet) *(seen)*. The older layout (the
+  major-16 part, 15 slots, mitcad#280) has no slots 15 and 16: slot 6
+  names its body directly, and the plate makes that body when it is the
+  first item to refer to it (as every feature does, the decoder's
+  producers), else joins it *(verified: its face and flange give their
+  states)*.
+- **A face**: its plate's path is the face's profile in its sketch,
+  measured as an extrusion's; the material lies along the plate's
+  direction from the sketch's plane for side 0, against it for side 1
+  (mitcad#242) *(verified: the 17 new-body faces of majors 24 to 28, side
+  0, each giving its history state; the two joined faces reached with a
+  valid sheet, side 1, lie in their panel's plane and give theirs)*. A path
+  of several separate loops (a face of separate regions) gives one profile
+  per loop. A face joined to the sheet (operation 3) has a bend part of its
+  own whose slot 1 is the bend radius and slot 0 the list of what its
+  bend joins (mitcad#280). Where its material lies in a panel's plane the
+  import joins it there (`sheet_face` with the body). An empty list: the
+  face is joined by no bend; where its material lies in no panel's plane it
+  touches no material of the sheet (the body holds it as separate lumps)
+  and the import makes its regions new sheet bodies *(verified: the joined
+  face of two strips of the corpora gives its state)*. The faces bent onto
+  the sheet list two items of another class (`3839a63b…`, the layout of an
+  edge item, both naming the face's own plate node), not decoded: those
+  faces are not reached with a valid sheet in the corpora.
+- **A flange**: its plate's path is a wire across the middle of the edge
+  from the stationary tangent line through the bend to the flange's end;
+  it runs on the back surface (the side away from the face's sketch) in
+  every flange of the corpora, inner or outer. Its dimension records
+  (`b1377779…`: after the header the two points measured between, cm,
+  then among the references the parameter) are the length (from the
+  outer or inner virtual sharp of the bend, or the tangent line, to the
+  flange's end) and the angle; the bend part's slot 1 is the bend radius.
+  Its edges are read by their names (mitcad#242, *Topological names*),
+  each found in the history state the plate starts from and given with
+  its ends: every one of the 44 edges of the 34 flanges of majors 24 to
+  28 *(verified: each the edge the file marks as matched)*; the 66 edges
+  of the 22 corner rounds and chamfers too, but for the 4 of two rounds
+  suppressed in their files, whose items have no reference record. The
+  path belongs
+  to one of them (the first): the import tells the position (the tangent
+  line's distance from that boundary: the outer setback inside, the inner
+  one outside) and the length's datum from the stored path and points
+  (`inferred`: no field of the flange's records varies with them, the
+  enumerations of slots 2 and 13 and the bend part's slot 8 included); a
+  tangent line on the boundary itself is the position `edge` *(verified:
+  the one such flange gives its state)*. A flange on several edges (7 of
+  the 35) is one flange per edge with the path's inputs. A **width
+  extent** (`f922288f…`: after the header and the prefix the edge's item,
+  then the two points the flange spans, cm) has a definition
+  (`fe193a84…`, its only other referrer the root collection): after the
+  header u32 its type, u32 2, then the body, the item, an internal
+  variable (the width), a direction, the thickness, 0, the extent, the
+  bodies, 0, two work points and two offsets *(seen: the 5 extents of 3
+  flanges, all of type 4)*. Type 4: each offset measured from its work
+  point, an end of the edge (on either surface); the import makes them the
+  flange's offsets. Two of the extents reach 0.5 mm beyond both ends
+  (offsets -0.5 mm): the import gives them as Mitcad's width from the
+  boundary's middle (half the boundary less each offset), the overhangs
+  starting at the bend's moving tangent line (`root` 0) as in the history
+  state *(verified: the flange and the later flanges on its overhanging
+  wall give their states)*.
+- **Corner settings** (plate slot 9, `83ce7786…`): after the header and
+  the prefix the references 0 a boolean (true: the style's settings, false:
+  the flange's own), 1 `GapSize`, 2 `CornerReliefSize`, 3 the corner
+  relief shape (`720c3e2b…`, kind 501: 102 or 103 with the style's
+  settings), 4 an enumeration (`e0a8d8af…`, kind 8: 3), 5 an enumeration
+  (`720c3e2b…`: 303), 6 `JacobiRadiusSize`, 7 none, 8 a boolean (true)
+  *(seen: all 35 flanges)*. With the style's settings, the corners of
+  flanges on adjacent edges are Mitcad's trim across the earlier bend
+  *(verified: the four-edge flange and the flanges on the sides of earlier
+  ones give their states)*. One three-edge flange has its own settings,
+  relief shape 5: its walls stop t + g/√2 from the outer corner (2.561 mm)
+  and each bend ends on a line from that point at the wall's tangent to a
+  point 1.5 mm further at the panel's tangent, the panel's corner cut
+  between the two bends' ends. Its gap, thickness and bend radius are all
+  1.5 mm, so which of them each dimension follows is not known; variant
+  files are needed (the private reference-data ticket). The import refuses
+  a flange on several edges with settings of its own, with that note.
+- **A cut**: a feature record of the extrusion's layout (slots 0
+  operation 2, 1 profiles, 2 direction, 3 reversed, 4 distance, 6 extent)
+  *(seen)*, and two booleans of its own in slots 31 and 33. Slot 31 true
+  (one cut of the corpora, mitcad#280) cuts the profile from the developed
+  sheet across the bends: the import makes it a developed `sheet_cut` with
+  every bend opened, the panel whose surface holds the sketch staying
+  *(verified: that cut gives its state, the side walls' ends removed with
+  the base panel's corners)*. Slot 33 is false in every cut of the corpora
+  (normal to the face by the defaults' order, not decoded). With neither
+  set the import makes it a straight `sheet_cut` (along the sketch's
+  normal, through a bend too) when it goes through the sheet; on a body that is no longer a valid sheet it falls
+  back, its note naming the item that took the sheet meaning away.
+- **Corner rounds and chamfers**: feature records of a fillet's and a
+  chamfer's layout (slot 0 the edge sets or edges, the radius or
+  distances, the chamfer's form `3200aa7d…`) *(seen: all 22 of the
+  corpora)*, read as fillets and chamfers. Each edge set's edges (a
+  round's sets are slot 0's `1641d6aa…` records, each's first reference
+  its edge list; a chamfer's one set is slot 0) are read by their names
+  (mitcad#242) in the state before the feature and given with the set;
+  where each is the thickness edge at a corner of a panel's contour, the
+  import makes them `sheet_corner_round` or `sheet_corner_chamfer` of
+  those corners; on a body that is no longer a valid sheet they fall back,
+  the note naming the item that took the sheet meaning away.
+- **Bends** (`BendFeature`, mitcad#242): a feature record of the layout
+  of a flange's bend part: slots 0 the list of its two edges (items), 1
+  the bend radius, 2 the thickness, 3 the bend record, 4 the relief, 7 the
+  transition, 9 its bodies *(seen: the 4 bends of the corpora, in one
+  part)*. Each joins a side edge of a strip of a joined face to the side
+  edge of a flange's wall beside it, parallel to it and 0.8 mm (the
+  thickness and 0.1 mm) away: a double bend (two 45-degree bends and the
+  straight between them, the wall cut back for it). The strips touch no
+  material before it (their face's bend part lists nothing; the history
+  state holds them as separate lumps), so the double bend closes no loop
+  (mitcad#280; #242 took them for loops). The bend record (`92596ba9…`,
+  mitcad#280): after the prefix the references 0 a boolean, 1 the
+  thickness, 2 an enumeration (`7267cc3b…`, kind 9), 3 and 4 two
+  directions, 5 the bend radius, 6 an enumeration (`7267cc3b…`), 7 and 8
+  two lengths, 9 and 10 booleans. The enumerations are 1 and 1 in a
+  flange's bend, 0 and 1 in a joined face's bend part, 3 and 5 in the
+  double bends; the directions are zero but in those: the bends' axis
+  `a` and the direction `d` from the fixed edge's panel towards the other
+  panel's plane, `a x d` pointing from the fixed edge (whose panel stays
+  whole) away from its panel's material *(verified: the four double bends
+  give their states; the fixed edge is also the first of the two in each,
+  so which of the two rules the file follows is not told apart)*. Kinds 3
+  and 5 are the double bend of two 45-degree bends; other kinds are not
+  decoded.
+- **Folds** (`FoldFeature`, mitcad#242) *(seen: one, in the major-16
+  part)*: slots 0 an enumeration (`c12c2606…`, 1), 1 and 2 booleans
+  (false), 3 the angle, 4 the bend radius, 5 the line (a list
+  `911b3d83…` of a work axis on the fold sketch's line), 6 the relief, 7
+  the body, 8 and 12 booleans, 10 the thickness, 13 the transition, 14 an
+  enumeration. Its line is a line of the sketch before it (the work axis
+  runs from its start to its end). With the enumeration 1 and both
+  booleans false the bend starts at the line and the material on the
+  line's right, seen along the sketch's normal, stays; the other side turns
+  against the sketch's normal (mitcad#280) *(seen: the one fold, its
+  history state; its sketch lies on the outside of a flange's wall, where
+  the sketch's normal and the side away from the material are one, so
+  which of them the turn follows is not told apart)*. The import makes it
+  `sheet_fold` (position `edge`); that fold's line crosses the windows of
+  the cuts before it, which Mitcad's fold does not take (one uninterrupted
+  line is needed), and it falls back with that reason.
 
 ### Results on the test files
 
@@ -752,6 +1002,20 @@ files. With placed sketch blocks read, the six parts whose one sketch is
 a block come in whole (sketch and extrusion parametric; before, the
 sketch partial without curves and the extrusion a fallback).
 
+With tapered profiles with holes built as their outline's taper less
+their holes', holes touching the outline tangentially sharing its vertex,
+coils naming their bodies, and coils' tapers and flat ends (release
+build, 2026-10-14, mitcad#235, each part run alone): the three parts of a
+ring cut with a 50° taper that closes it (`98292282`, `8c8d1f94`,
+`775c9cad`) and the part of the tapered coil with a flat end (`2ac732ee`)
+are fully parametric; two extrusions of profiles with a hole touching
+the outline (`d43fb190`, `ab53146d`) come in parametric; the part whose
+coil cut all bodies first and ran out of memory (`4e6624b5`) imports in
+8 minutes with the coil parametric. Left (mitcad#235): cuts along a
+hole's wall where OCCT finds no intersection at a point where three
+surfaces meet tangentially, two coils whose booleans fail on the stored
+bodies, sketch texts and splines through points.
+
 ### What the files do not tell (feasibility)
 
 Without files saved before and after one change by the authoring
@@ -759,9 +1023,11 @@ application, these are not settled; such features come in as the bodies
 of their history state:
 
 - **Edges and faces** that features name (fillets, chamfers, drafts,
-  shells, splits): the topological naming (the edge items `82695c37…`
-  refer to the B-rep segment's naming records) is not decoded. Fillets
-  and chamfers find their edges from the history state, and so do shells
+  shells, splits): the topological names are decoded for edges
+  (*Topological names*, mitcad#242) and used by the sheet-metal features;
+  ordinary fillets and chamfers still find their edges from the history
+  state (their names resolve on the sheet-metal parts, but the import of
+  ordinary features has not been switched to them), and so do shells
   (the faces of their body the next state no longer has, most of their
   points off its faces) and face splits (the faces of the body the next
   state changed that it no longer has whole, no face there of the same
@@ -769,9 +1035,15 @@ of their history state:
 - **Face splits along open sketch curves**: Mitcad's split takes the
   curves around a sketch's regions; a split whose curves bound no region
   of Mitcad's sketch falls back.
-- **Sheet metal** (faces, flanges, corner rounds and chamfers, cuts,
-  bends, folds): Mitcad's model has no sheet-metal features; they come in
-  as the bodies of their history states.
+- **Sheet metal** (mitcad#211, mitcad#242, *Sheet metal* above):
+  new-body faces, flanges (their edges read by their names), cuts through
+  the sheet and corner rounds and chamfers come in as Mitcad's sheet
+  features, and so do joined faces apart from the sheet, double bends,
+  cuts across the bends and the one decoded case of a fold (mitcad#280);
+  faces bent onto the sheet (their bend part's items not decoded), flanges
+  with corner settings of their own whose dimensions the files do not tell
+  apart, cuts with the slot-33 option, other bend kinds and fold options,
+  and folds across holes come in as the bodies of their history states.
 - **Mirrors of fillets and of patterns**: the copies Mitcad makes do not
   give the history state in 6 of the test files' 25 mirrors that are not
   skipped (Mitcad's mirror of features, not the decoding: the inputs and
@@ -928,7 +1200,11 @@ to 2023, sub-assemblies nested up to seven deep):
   selections inside one another by the even-odd rule; a spline with its
   control polygon; planes parallel to a plane through a point; a coil's
   axis by its geometry;
-  the extrusions' extents) read into the dump IR, and replayed by the
+  the extrusions' extents; a sheet-metal face with its style's rules,
+  front and back, mitcad#211; topological names, mitcad#242: an item's
+  reference and table entry, an edge by its two faces and by its own tag
+  in a state, the attribute classes in both spellings, a flange tag's
+  numbers) read into the dump IR, and replayed by the
   import on the model's mock kernel (`tests/design_import.rs`); the
   assemblies written by `testassembly` (files, occurrences, keys, flags,
   labels, placements, range boxes, display transforms, the occurrence

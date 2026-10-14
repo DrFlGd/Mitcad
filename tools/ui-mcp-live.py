@@ -1,0 +1,334 @@
+#!/usr/bin/env python3
+# SPDX-License-Identifier: MIT
+"""The live MCP debugging flow (mitcad#265) against a running Mitcad.
+
+Usage: ui-mcp-live.py <mitcad-cli> <design.mitcad>
+
+The application must have opened the design (tools/ui-mcp-test.sh makes it:
+a block, a fillet, and a sketch F4 whose projection of the block's bottom
+face no longer matches it) and publish its listener in
+MITCAD_MCP_DISCOVERY_DIR. Through `mitcad-cli mcp --connect`, the actual
+bridge:
+  - the sketch F4 opened for editing (ui_command edit);
+  - queries with the sketch open (sketch, timeline);
+  - ui_state: the sketch, its Sketch Palette's warning with the entities it
+    is about, the agent connected;
+  - sketch.add_line into the open sketch through its session, labelled
+    "(agent)" in the undo text; a command on another feature refused; undo;
+  - ui_select of a curve and a point, then ui_state's selection;
+  - ui_screenshot of the view and of the window: PNGs under the limit;
+  - ui_command Clean Up Stale Projections (its preview and warning), then
+    Finish Sketch;
+  - document_save to the design's own path;
+  - ui_log: the commands' lines, and since a sequence number.
+run_flow() is shared with the macOS test (tools/ui-macos-mcp-test.py).
+Only the standard library is used.
+"""
+
+import base64
+import json
+import os
+from pathlib import Path
+import queue
+import struct
+import subprocess
+import sys
+import threading
+import time
+
+
+PROTOCOL = "2025-11-25"
+TIMEOUT = 60
+FRAME_LIMIT = 8 * 1024 * 1024
+LIVE_TOOLS = {"document_list", "model_query", "model_command", "document_save", "ui_state", "ui_log",
+              "ui_screenshot", "ui_select", "ui_command"}
+# The projection of the block's bottom face in the sketch F4, as the
+# design's definition lists it.
+PROJECTED = ["p1", "p2", "c3", "p4", "c5", "p6", "c7", "c8"]
+RECT = "r{c1[c4,c2],c2[c1,c3],c3[c2,c4],c4[c3,c1]}"
+
+
+def check(condition, message):
+    if not condition:
+        raise AssertionError(message)
+
+
+def design_script():
+    """mitcad-cli run's commands for the design: a 60 x 40 block 20 high
+    with a fillet of 5 on its vertical edge at (60, 0); a sketch on XY holds
+    the block's bottom face as an earlier version recorded it (no
+    by_geometry), 70 wide from x = -10 with sharp corners, and a line of
+    the user's at x = 20; an extrude uses the region right of it. The face
+    has an arc now: the projection keeps its geometry and warns."""
+    return [
+        {"cmd": "sketch.create"},
+        {"cmd": "sketch.add_rectangle", "sketch": "F1", "corner": [0, 0], "width": 60, "height": 40},
+        {"cmd": "add_feature", "def": {"type": "extrude", "profiles": [{"sketch": "F1", "region": RECT}],
+                                       "extent": {"type": "distance", "distance": 20}, "operation": "new_body"}},
+        {"cmd": "add_feature", "def": {"type": "fillet", "body": "F2.b0",
+                                       "edges": ["E{F2:side(c1[c4,c2])|F2:side(c2[c1,c3])}"], "radius": 5}},
+        {"cmd": "add_feature", "def": {
+            "type": "sketch", "plane": "xy",
+            "entities": [
+                {"id": "p1", "type": "point", "at": [-10, 0], "fixed": True, "reference": True},
+                {"id": "p2", "type": "point", "at": [60, 0], "fixed": True, "reference": True},
+                {"id": "c3", "type": "line", "start": "p1", "end": "p2", "fixed": True, "reference": True},
+                {"id": "p4", "type": "point", "at": [60, 40], "fixed": True, "reference": True},
+                {"id": "c5", "type": "line", "start": "p2", "end": "p4", "fixed": True, "reference": True},
+                {"id": "p6", "type": "point", "at": [-10, 40], "fixed": True, "reference": True},
+                {"id": "c7", "type": "line", "start": "p4", "end": "p6", "fixed": True, "reference": True},
+                {"id": "c8", "type": "line", "start": "p6", "end": "p1", "fixed": True, "reference": True},
+                {"id": "p9", "type": "point", "at": [20, 0]},
+                {"id": "p10", "type": "point", "at": [20, 40]},
+                {"id": "c11", "type": "line", "start": "p9", "end": "p10"}],
+            "constraints": [
+                {"id": "k12", "type": "coincident", "point": "p9", "entity": "c3"},
+                {"id": "k13", "type": "coincident", "point": "p10", "entity": "c7"}],
+            "projections": [{"source": "F2:start(" + RECT + ")", "entities": PROJECTED}]}},
+        {"cmd": "add_feature", "def": {
+            "type": "extrude", "profiles": [{"sketch": "F4", "region": "r{c3[c11,c5],c5[c3,c7],c7[c5,c11],c11[c3,c7]}"}],
+            "extent": {"type": "distance", "distance": 5}, "operation": "new_body"}},
+    ]
+
+
+def make_design(cli, directory, env=None):
+    """Writes the design with mitcad-cli; returns its path."""
+    directory = Path(directory)
+    script = directory / "stale.json"
+    design = directory / "stale.mitcad"
+    script.write_text(json.dumps(design_script()), encoding="utf-8")
+    made = subprocess.run([cli, "run", str(script), "--save", str(design)], env=env, capture_output=True,
+                          timeout=TIMEOUT)
+    check(made.returncode == 0 and design.exists(),
+          "mitcad-cli: " + made.stdout.decode("utf-8", "replace") + made.stderr.decode("utf-8", "replace"))
+    return design
+
+
+class Bridge:
+    """`mitcad-cli mcp --connect` with JSON-RPC over its stdin and stdout."""
+
+    def __init__(self, cli, env, err_path):
+        self.err = open(err_path, "w+b")
+        self.process = subprocess.Popen([cli, "mcp", "--connect"], env=env, stdin=subprocess.PIPE,
+                                        stdout=subprocess.PIPE, stderr=self.err)
+        self.messages = queue.Queue()
+        self.reader = threading.Thread(target=self.read_output, daemon=True)
+        self.reader.start()
+        self.next_id = 0
+
+    def read_output(self):
+        while True:
+            line = self.process.stdout.readline()
+            self.messages.put(line)
+            if not line:
+                return
+
+    def stderr(self):
+        self.err.seek(0)
+        return self.err.read().decode("utf-8", "replace")
+
+    def send(self, message):
+        self.process.stdin.write(json.dumps(message, separators=(",", ":")).encode("utf-8") + b"\n")
+        self.process.stdin.flush()
+
+    def receive(self):
+        try:
+            line = self.messages.get(timeout=TIMEOUT)
+        except queue.Empty as error:
+            raise AssertionError("Bridge response timed out") from error
+        check(line, "Bridge stdout closed: " + self.stderr())
+        check(len(line) <= FRAME_LIMIT + 1, "Bridge frame over the limit")
+        try:
+            message = json.loads(line) if line.strip() else None
+        except ValueError as error:
+            raise AssertionError("Bridge stdout is not JSON: " + repr(line)) from error
+        check(message is None or (isinstance(message, dict) and message.get("jsonrpc") == "2.0"),
+              "Invalid bridge stdout: " + repr(line))
+        return message
+
+    def request(self, method, params=None):
+        self.next_id += 1
+        message = {"jsonrpc": "2.0", "id": self.next_id, "method": method}
+        if params is not None:
+            message["params"] = params
+        self.send(message)
+        # Empty lines and notifications (a method, no id) are skipped;
+        # anything else must be the answer with this id.
+        for _ in range(1000):
+            response = self.receive()
+            if response is None:
+                print("note: an empty line from the bridge", file=sys.stderr)
+                continue
+            if "id" not in response and "method" in response:
+                print("note: a notification from the bridge: " + json.dumps(response), file=sys.stderr)
+                continue
+            check(response.get("id") == self.next_id, "JSON-RPC request ID was changed: " + repr(response))
+            return response
+        raise AssertionError("No answer to request " + str(self.next_id))
+
+    def initialize(self):
+        response = self.request("initialize", {
+            "protocolVersion": PROTOCOL, "capabilities": {},
+            "clientInfo": {"name": "mitcad-live-debug", "version": "1"}})
+        check(response["result"]["protocolVersion"] == PROTOCOL, "Incorrect negotiated protocol")
+        self.send({"jsonrpc": "2.0", "method": "notifications/initialized"})
+
+    def tool(self, name, arguments, error=False):
+        response = self.request("tools/call", {"name": name, "arguments": arguments})
+        check("error" not in response, name + ": protocol failure: " + repr(response))
+        result = response["result"]
+        check(bool(result.get("isError", False)) == error, name + ": unexpected result: " + repr(result)[:2000])
+        value = result["structuredContent"]
+        check(json.loads(result["content"][0]["text"]) == value, "Tool text and JSON disagree")
+        return value
+
+    def finish(self):
+        self.process.stdin.close()
+        self.process.wait(timeout=TIMEOUT)
+        self.reader.join(timeout=TIMEOUT)
+        check(self.process.returncode == 0, self.stderr())
+
+    def stop(self):
+        if self.process.poll() is None:
+            self.process.kill()
+            self.process.wait(timeout=5)
+        if not self.process.stdin.closed:
+            self.process.stdin.close()
+        self.reader.join(timeout=5)
+        self.process.stdout.close()
+        self.err.close()
+
+
+def wait_for_listener(cli, env, seconds=30):
+    """Until the application answers an authenticated probe, as the bridge
+    will (under load it may take a while)."""
+    deadline = time.monotonic() + seconds
+    while time.monotonic() < deadline:
+        listed = subprocess.run([cli, "mcp", "--list-instances"], env=env, capture_output=True, timeout=TIMEOUT)
+        if listed.returncode == 0 and len(json.loads(listed.stdout)["instances"]) == 1:
+            return
+        time.sleep(0.2)
+    raise AssertionError("mitcad-cli mcp --list-instances did not list the application")
+
+
+def check_png(shot, limit):
+    png = base64.b64decode(shot["png_base64"])
+    check(png[:8] == b"\x89PNG\r\n\x1a\n", "ui_screenshot did not give a PNG")
+    width, height = struct.unpack(">II", png[16:24])
+    check((width, height) == (shot["width"], shot["height"]), "ui_screenshot's size disagrees with its PNG")
+    check(len(png) == shot["bytes"] and len(png) < FRAME_LIMIT, "ui_screenshot's PNG is not under the limit")
+    check(max(width, height) <= limit and min(width, height) >= 32, "ui_screenshot's PNG is not scaled to max_size")
+
+
+def run_flow(bridge, design, say=print):
+    """The live debugging flow on the open design (see the module's text)."""
+    names = {tool["name"] for tool in bridge.request("tools/list")["result"]["tools"]}
+    check(names == LIVE_TOOLS, "Live catalog: " + repr(sorted(names)))
+    document = bridge.tool("document_list", {})["documents"][0]["document"]
+
+    def sketch_query():
+        return bridge.tool("model_query", {"document": document,
+                                           "query": {"query": "sketch", "uid": "F4"}})["result"]
+
+    edited = bridge.tool("ui_command", {"document": document, "edit": "F4"})
+    check(edited["mode"] == "sketch" and edited["sketch"] == "F4", "Sketch F4 was not opened: " + repr(edited))
+    say("ok   ui_command edit opened the sketch F4")
+
+    # Queries with the sketch open.
+    sketch = sketch_query()
+    check(sketch["warning_entities"] == [PROJECTED], "The sketch query's warning entities: " + repr(sketch))
+    timeline = bridge.tool("model_query", {"document": document, "query": {"query": "timeline"}})["result"]
+    check(len(timeline["features"]) == 5, "The timeline with the sketch open: " + repr(timeline))
+    say("ok   queries with the sketch open")
+
+    state = bridge.tool("ui_state", {})
+    check(state["mode"] == "sketch" and state["sketch"]["uid"] == "F4", "ui_state's sketch: " + repr(state))
+    warnings = state["sketch"]["palette"]["warnings"]
+    check(len(warnings) == 1 and warnings[0]["entities"] == PROJECTED and "does not follow" in warnings[0]["text"],
+          "ui_state's palette warning: " + repr(warnings))
+    check(state["sketch"]["palette"]["clean_up_offered"] is True, "ui_state: no clean-up offered")
+    check(state["agents"] >= 1 and state["app"]["version"], "ui_state's agents and version: " + repr(state))
+    say("ok   ui_state reports the sketch and its palette's warning with its entities")
+
+    # A line into the open sketch through its session, then undo.
+    before = len(sketch["entities"])
+    added = bridge.tool("model_command", {"document": document, "command": {
+        "cmd": "sketch.add_line", "sketch": "F4", "start": [100, 100], "end": [130, 100]}})
+    check(added["applied"] is True and added["sketch"] == "F4", "sketch.add_line: " + repr(added)[:2000])
+    check(len(sketch_query()["entities"]) == before + 3, "sketch.add_line did not add a line and its points")
+    state = bridge.tool("ui_state", {})
+    check(state["undo"] and state["undo"].endswith(" (agent)"), "The agent's change in the undo text: " + repr(state["undo"]))
+    refused = bridge.tool("model_command", {"document": document, "command": {
+        "cmd": "add_parameter", "name": "agent_width", "value": 10}}, error=True)
+    check("being edited" in refused["error"], "Another feature's command in a sketch: " + repr(refused))
+    bridge.tool("model_command", {"document": document, "command": {"cmd": "undo"}})
+    check(len(sketch_query()["entities"]) == before, "Undo did not take the line back")
+    say("ok   sketch.add_line through the sketch session, labelled (agent), then undo")
+
+    # The selection, as an agent points at something.
+    selected = bridge.tool("ui_select", {"document": document, "items": [
+        {"kind": "sketch_curve", "owner": "F4", "name": "c3"},
+        {"kind": "sketch_point", "owner": "F4", "name": "p1"}]})
+    check(selected["selected"] == 2, "ui_select: " + repr(selected))
+    state = bridge.tool("ui_state", {})
+    shown = sorted((item["kind"], item["owner"], item["name"]) for item in state["selection"])
+    check(shown == [("sketch_curve", "F4", "c3"), ("sketch_point", "F4", "p1")], "ui_state's selection: " + repr(shown))
+    say("ok   ui_select, then ui_state shows the selection")
+
+    for window in (False, True):
+        shot = bridge.tool("ui_screenshot", {"window": window, "max_size": 640})
+        check_png(shot, 640)
+    say("ok   ui_screenshot of the view and the window: PNGs under the limit")
+
+    cleaned = bridge.tool("ui_command", {"document": document, "id": "sketch.clean_up_stale_projections"})
+    check(cleaned["committed"] is True, "Clean Up Stale Projections: " + repr(cleaned)[:3000])
+    check(any(line.startswith("Preview Clean Up Stale Projections: ok") for line in cleaned["previews"]),
+          "Clean Up Stale Projections' preview: " + repr(cleaned["previews"]))
+    check(any("Cleaned up stale projections" in line for line in cleaned["log"]), "Clean Up's log: " + repr(cleaned["log"]))
+    check(cleaned["undo"].endswith(" (agent)"), "Clean Up's undo text: " + repr(cleaned["undo"]))
+    say("ok   ui_command ran Clean Up Stale Projections")
+    finished = bridge.tool("ui_command", {"document": document, "id": "sketch.finish"})
+    check(finished["mode"] == "idle", "Finish Sketch: " + repr(finished))
+    say("ok   ui_command finished the sketch")
+
+    written = os.stat(design).st_mtime_ns
+    time.sleep(0.05)
+    saved = bridge.tool("document_save", {"document": document})
+    check(saved["saved"] is True and os.path.samefile(saved["path"], design), "document_save: " + repr(saved))
+    check(os.stat(design).st_mtime_ns != written, "document_save did not write the file")
+    check(bridge.tool("ui_state", {})["modified"] is False, "The document is still modified after document_save")
+    say("ok   document_save wrote the file")
+
+    log = bridge.tool("ui_log", {"limit": 2000})
+    texts = [line["text"] for line in log["lines"]]
+    for expected in ("MCP: an agent ran sketch.add_line in sketch F4", "Cleaned up stale projections",
+                     "MCP: an agent saved"):
+        check(any(expected in text for text in texts), "ui_log lacks " + expected)
+    last = log["lines"][-1]["seq"]
+    later = bridge.tool("ui_log", {"since": last})
+    check(all(line["seq"] > last for line in later["lines"]), "ui_log's since")
+    say("ok   ui_log shows the commands' lines")
+
+
+def main():
+    if len(sys.argv) != 3:
+        print(__doc__, file=sys.stderr)
+        return 2
+    cli, design = sys.argv[1], Path(sys.argv[2]).resolve()
+    wait_for_listener(cli, dict(os.environ))
+    bridge = Bridge(cli, dict(os.environ), design.parent / "bridge.stderr.log")
+    try:
+        bridge.initialize()
+        run_flow(bridge, design)
+        bridge.finish()
+        print("PASS: live MCP debugging flow")
+        return 0
+    except Exception as error:  # noqa: BLE001 - the test reports any failure
+        print("FAIL: live MCP: " + str(error), file=sys.stderr)
+        return 1
+    finally:
+        bridge.stop()
+
+
+if __name__ == "__main__":
+    sys.exit(main())

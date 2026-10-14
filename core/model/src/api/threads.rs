@@ -90,9 +90,14 @@ impl<K: Kernel> Document<K> {
     ) -> Option<Value> {
         let shape = self.body_shape(body)?;
         let kernel = self.kernel();
-        if kernel.count_faces(shape, face).ok()? == 0 {
-            return None;
-        }
+        // A face a sketch change renamed is found again, as the thread
+        // feature finds it (mitcad#272).
+        let found = if kernel.count_faces(shape, face).ok()? == 0 {
+            crate::features::renamed::find_face(kernel, shape, face).ok()??
+        } else {
+            face.clone()
+        };
+        let face = &found;
         let data = size.data().ok()?;
         let mut thread = json!({
             "feature": entry.uid,

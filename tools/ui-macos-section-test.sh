@@ -25,6 +25,7 @@ for phase in section-coordinates section-coordinates-reopen; do
     --ui=native --no-recovery --open "$MITCAD_TEST_WORK/section-coordinates.mitcad"
   ui_expect_no_log 'TestDriver: FAIL' "$phase: every geometry assertion passed"
   ui_expect_no_log 'OCCT view event failed' "$phase: no failed view operation"
+  ui_expect_no_log 'The document was read while a job computes it' "$phase: no concurrent document read"
   ui_expect_log 'TestDriver: done' "$phase: the script reached its end"
   if [ "$UI_FAILURES" -gt 0 ]; then
     echo "FAIL: section coordinates; evidence in $UI_OUT"

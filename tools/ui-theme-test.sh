@@ -1,14 +1,16 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: MIT
-# check-all sources: app/browser app/framework/ChromeStyle.cpp app/framework/ChromeStyle.hpp
+# check-all sources: app/browser app/framework/ChromeStyle.cpp app/framework/ChromeStyle.hpp app/framework/WindowStyle.cpp app/framework/WindowStyle.hpp app/framework/Theme.cpp
 # The timeline in a light and a dark theme (mitcad#14): the history marker
 # and the playback buttons' glyphs follow the palette, also when the theme
-# changes while Mitcad runs.
+# changes while Mitcad runs; so does the Docked window's style (mitcad#251),
+# whose one accent colour is the marker's handle.
 #   1. A light theme: the marker is dark (#2b3a4a), so are the buttons'
-#      glyphs.
+#      glyphs; the window's style is light, the handle #1a6ee0.
 #   2. The desktop switches to a dark colour scheme after the window shows
 #      (MITCAD_TEST_COLOR_SCHEME=dark, framework/Diagnostics.hpp): the
-#      marker turns light (#c8d0da) at once, the glyphs too.
+#      marker turns light (#c8d0da) at once, the glyphs too; the window's
+#      style turns dark, the handle #5aa2ff.
 # Qt's GTK platform theme gives the palettes (QT_QPA_PLATFORMTHEME=gtk3):
 # the generic one has no dark scheme.
 #
@@ -46,6 +48,16 @@ stats() {
 # more name a b: a > b, or fail.
 more() { [ "$2" -gt "$3" ] || ui_fail "$1: $2 is not more than $3"; echo "ok   $1 ($2 > $3)"; }
 
+# expect_line regex description: waits for a log line that matches the
+# extended regular expression.
+expect_line() {
+  for _ in $(seq 1 30); do
+    grep -qE -- "$1" "$UI_LOG" && { echo "ok   $2"; return; }
+    sleep 0.2
+  done
+  ui_fail "$2: no line matching '$1': $(grep -E 'Window style|Timeline colours' "$UI_LOG" | tail -4)"
+}
+
 # check shot: the marker's bar (2 pixels wide, below its handle) and the
 # Step Back button's glyph.
 check() {
@@ -61,6 +73,8 @@ echo "--- A light theme"
 ui_start_app --demo
 ui_expect_log "Timeline marker at" "the timeline is logged"
 ui_expect_log "Timeline colours: light, marker #2b3a4a, buttons the style's" "light: the marker is dark"
+ui_expect_log "Window style: light, " "the window's style is light (mitcad#251)"
+expect_line "Timeline colours: light, .*, handle #1a6ee0" "light: the marker's handle in the accent colour"
 shot light
 check light
 more "the marker's bar is dark" "$MARKER_dark" 20
@@ -75,6 +89,8 @@ ui_expect_log "Timeline colours: dark, marker #c8d0da" "dark: the marker is ligh
 grep -q "Timeline colours: dark, marker #c8d0da, buttons #" "$UI_LOG" ||
   ui_fail "the buttons' glyphs are not in the text colour: $(grep 'Timeline colours: dark' "$UI_LOG")"
 echo "ok   the buttons' glyphs take the text colour"
+ui_expect_log "Window style: dark, " "the window's style turns dark (mitcad#251)"
+expect_line "Timeline colours: dark, marker #c8d0da, .*, handle #5aa2ff" "dark: the handle in the dark theme's accent colour"
 shot dark
 check dark
 more "the marker's bar is light" "$MARKER_light" 20

@@ -104,6 +104,36 @@ bool SketchModel::load(const QJsonObject& sketch) {
   for (const QJsonValue& warning : sketch.value(QStringLiteral("warnings")).toArray()) {
     warnings << warning.toString();
   }
+  // What each warning is about (mitcad#264), one list per warning.
+  warningEntities.clear();
+  const QJsonArray about = sketch.value(QStringLiteral("warning_entities")).toArray();
+  for (int i = 0; i < warnings.size(); ++i) {
+    QStringList ids;
+    for (const QJsonValue& id : about.at(i).toArray()) {
+      ids << id.toString();
+    }
+    warningEntities.push_back(ids);
+  }
+  staleProjections = false;
+  projections.clear();
+  for (const QJsonValue& value : sketch.value(QStringLiteral("projections")).toArray()) {
+    const QJsonObject p = value.toObject();
+    const bool stale = flag(p, "kept") || flag(p, "lost") ||
+                       !p.value(QStringLiteral("unfollowed")).toArray().isEmpty() ||
+                       !p.value(QStringLiteral("stale")).toArray().isEmpty();
+    staleProjections = staleProjections || stale;
+    ProjectionData projection;
+    projection.source = p.value(QStringLiteral("source")).toString();
+    projection.body = p.value(QStringLiteral("body")).toString();
+    projection.linked = p.value(QStringLiteral("link")).isObject();
+    projection.occurrence =
+        p.value(QStringLiteral("link")).toObject().value(QStringLiteral("source")).toString();
+    for (const QJsonValue& id : p.value(QStringLiteral("entities")).toArray()) {
+      projection.entities << id.toString();
+    }
+    projection.stale = stale;
+    projections.push_back(projection);
+  }
   dof = sketch.value(QStringLiteral("dof")).toInt();
   points.clear();
   curves.clear();
@@ -196,8 +226,10 @@ bool SketchModel::load(const QJsonObject& sketch) {
     d.json = k;
     d.refs = refsOf(k);
     d.driven = flag(k, "driven");
-    d.parameter = k.value(QStringLiteral("value")).toString();
+    // A driving dimension's parameter, a driven one's reference (mitcad#231).
+    d.parameter = k.value(d.driven ? QStringLiteral("reference") : QStringLiteral("value")).toString();
     d.expression = k.value(QStringLiteral("expression")).toString();
+    d.comment = k.value(QStringLiteral("comment")).toString();
     d.measured = number(k, "measured");
     if (k.value(QStringLiteral("text")).isArray()) {
       d.text = v2(k.value(QStringLiteral("text")));
@@ -420,6 +452,10 @@ V2 toSketch(const geometry::Frame& frame, const gp_Pnt& point) {
 
 gp_Pnt toModel(const geometry::Frame& frame, const V2& point) {
   return frame.point(gp_Pnt2d(point.x, point.y));
+}
+
+Curve2 curveFromJson(const QString& type, const QJsonObject& geometry) {
+  return curveOf(type, geometry);
 }
 
 } // namespace mitcad::sketch

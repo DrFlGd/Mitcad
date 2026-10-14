@@ -844,11 +844,21 @@ impl<K: crate::ImportKernel> crate::Importer<'_, K> {
             }
             let mut bodies: Vec<BodyUid> = Vec::new();
             for sig in &moved {
-                let Some((uid, _)) = mine.iter().find(|(uid, s)| {
-                    !bodies.contains(uid)
-                        && !groups.iter().flatten().any(|g| g == uid)
-                        && s.same(sig)
-                }) else {
+                // The same solid, else the nearest within the matching
+                // tolerance: a body imported within the geometric tolerance
+                // stays as the replay made it (mitcad#285).
+                let free = |uid: &BodyUid| {
+                    !bodies.contains(uid) && !groups.iter().flatten().any(|g| g == uid)
+                };
+                let Some((uid, _)) = mine
+                    .iter()
+                    .find(|(uid, s)| free(uid) && s.same(sig))
+                    .or_else(|| {
+                        mine.iter()
+                            .filter(|(uid, s)| free(uid) && s.matches(sig))
+                            .min_by(|a, b| sig.distance(&a.1).total_cmp(&sig.distance(&b.1)))
+                    })
+                else {
                     return not("a body of the new component is none of its own component's");
                 };
                 bodies.push(*uid);

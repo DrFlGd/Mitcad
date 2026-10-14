@@ -1,0 +1,20 @@
+[
+  {"comment":"SPDX-License-Identifier: MIT. A fold line on the panel's back surface (mitcad#280): t=1, r=1, K=0.4. A 40 x 20 panel (z=0..1, front at 0) folded 90 degrees at x=20 with its tangent line on the line: 400 + (pi/4)(4 - 1) 20 + (20 - 0.7 pi) 20 = 800 + pi, whether the line is drawn on the back (z=1) or the front surface."},
+  {"cmd":"add_feature","def":{"type":"sheet_rules","thickness":1,"bend_radius":1,"allowance":{"type":"k_factor","k":0.4},"reference_side":"front","bend_relief":{"type":"rectangular","width":1,"depth":1},"corner_relief":{"type":"round","width":2,"depth":2}}},
+  {"cmd":"sketch.create"},
+  {"cmd":"sketch.add_rectangle","sketch":"F2","corner":[0,0],"width":40,"height":20},
+  {"cmd":"add_feature","def":{"type":"sheet_face","rules":"F1","profiles":[{"sketch":"F2","region":"r{c1[c4,c2],c2[c1,c3],c3[c2,c4],c4[c3,c1]}"}]}},
+  {"cmd":"add_feature","def":{"type":"construction_plane","definition":{"type":"offset","plane":"xy","distance":1}}},
+  {"cmd":"sketch.create","plane":"F4"},
+  {"cmd":"sketch.add_line","sketch":"F5","start":[20,0],"end":[20,20]},
+  {"cmd":"sketch.create"},
+  {"cmd":"sketch.add_line","sketch":"F6","start":[20,0],"end":[20,20]},
+  {"cmd":"add_feature","def":{"type":"sheet_fold","body":"F3.b0","panel":{"feature":"F3","slot":0},"line":{"sketch":"F5","curve":"c1"},"stationary_side":"left","angle":1.5707963267948966,"position":"edge"}},
+  {"expect":{"feature":"F7","status":"ok","body":"F3.b0","volume":803.14159265359}},
+  {"cmd":"edit_feature","uid":"F7","def":{"type":"sheet_fold","body":"F3.b0","panel":{"feature":"F3","slot":0},"line":{"sketch":"F6","curve":"c1"},"stationary_side":"left","angle":1.5707963267948966,"position":"edge"}},
+  {"expect":{"feature":"F7","status":"ok","body":"F3.b0","volume":803.14159265359}},
+  {"comment":"A line off both surfaces is refused."},
+  {"cmd":"edit_feature","uid":"F4","def":{"type":"construction_plane","definition":{"type":"offset","plane":"xy","distance":0.5}}},
+  {"cmd":"edit_feature","uid":"F7","def":{"type":"sheet_fold","body":"F3.b0","panel":{"feature":"F3","slot":0},"line":{"sketch":"F5","curve":"c1"},"stationary_side":"left","angle":1.5707963267948966,"position":"edge"}},
+  {"expect":{"feature":"F7","status":"error"}}
+]

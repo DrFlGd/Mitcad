@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-# Cycles 5.2.0: stop waiting on cancelled, failed or missing Metal pipelines.
+# Cycles 5.2.0: bound virtual GPU shader compilation and handle failed Metal pipelines.
 # Original: https://projects.blender.org/blender/cycles/src/tag/v5.2.0/src/device/metal/
 # Copyright 2021-2022 Blender Foundation. Modification by Mitcad contributors.
 --- a/src/device/metal/kernel.h
@@ -24,7 +24,7 @@
  
    /* Non-blocking request for a kernel, optionally specialized to the scene being rendered by
     * device. */
-@@ -364,23 +364,57 @@
+@@ -364,23 +364,61 @@
    cond_var.notify_one();
  }
  
@@ -71,9 +71,13 @@
 +                                  candidate->error_str;
          }
        }
-+      if (!best_match && compilation_error.empty() && incomplete_requests == 0 &&
-+          device->pending_frontend_requests->load() == 0)
-+      {
++      const bool compilation_pending = incomplete_requests != 0 ||
++                                       device->pending_frontend_requests->load() != 0;
++      if (compilation_pending) {
++        /* A failed generic pipeline can still be replaced by a pending specialized one. */
++        compilation_error.clear();
++      }
++      else if (!best_match && compilation_error.empty()) {
 +        /* Frontends are counted before dispatch and until every PSO request is queued.
 +         * Backends publish their result under this mutex before decrementing their count.
 +         * With both counts at zero, no requested pipeline can still make progress. */
@@ -87,7 +91,7 @@
      }
  
      if (best_match) {
-@@ -393,6 +427,11 @@
+@@ -393,6 +431,11 @@
        return best_match;
      }
  
@@ -99,7 +103,7 @@
      /* Spin until a matching kernel is loaded, or we're shutting down. */
      std::this_thread::sleep_for(std::chrono::milliseconds(100));
    }
-@@ -587,9 +626,11 @@
+@@ -587,9 +630,11 @@
    function = [mtlLibrary newFunctionWithDescriptor:func_desc error:&error];
  
    if (function == nil) {
@@ -114,7 +118,7 @@
      return;
    }
  
-@@ -781,6 +822,9 @@
+@@ -781,6 +826,9 @@
      }
  
      if (!pipeline) {
@@ -124,7 +128,7 @@
        metal_printf(
            "newComputePipelineStateWithDescriptor failed for \"%s\"%s. "
            "Error:\n%s\n",
-@@ -904,7 +948,7 @@
+@@ -904,7 +952,7 @@
    return get_loaded_kernel_count(device, pso_type) != DEVICE_KERNEL_NUM;
  }
  
@@ -159,7 +163,17 @@
  
 --- a/src/device/metal/device_impl.mm
 +++ b/src/device/metal/device_impl.mm
-@@ -473,8 +473,11 @@
+@@ -368,4 +368,9 @@
+   global_defines += "#define __KERNEL_METAL_APPLE__\n";
++  if (![mtlDevice supportsFamily:MTLGPUFamilyApple6]) {
++    /* Keep explicit noinline boundaries on lower-family devices, including virtual GPUs,
++     * to avoid driver timeouts while compiling large shader functions. */
++    global_defines += "#define __KERNEL_METAL_NO_INLINE__\n";
++  }
+   if (@available(macos 14.0, *)) {
+     /* Use Program Scope Global Built-ins, when available. */
+     global_defines += "#define __METAL_GLOBAL_BUILTINS__\n";
+@@ -473,8 +478,11 @@
        /* If needed, load them asynchronously in order to responsively message progress to the user.
         */
        int this_device_id = this->device_id;
@@ -171,7 +185,7 @@
        };
  
        dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0),
-@@ -974,10 +977,12 @@
+@@ -974,10 +982,12 @@
    /* For responsive rendering, specialize the kernels in the background, and only if there isn't an
     * existing "optimize_for_scene" request in flight. */
    int this_device_id = this->device_id;
@@ -184,7 +198,7 @@
    };
  
    /* In normal use, we always compile the specialized kernels in the background. */
-@@ -995,6 +1000,7 @@
+@@ -995,6 +1005,7 @@
  
    if (specialize_in_background) {
      if (MetalDeviceKernels::num_incomplete_specialization_requests() == 0) {
@@ -192,7 +206,7 @@
        dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0),
                       specialize_kernels_fn);
      }
-@@ -1003,6 +1009,7 @@
+@@ -1003,6 +1014,7 @@
      }
    }
    else {
@@ -200,3 +214,14 @@
      specialize_kernels_fn();
    }
  }
+--- a/src/kernel/device/metal/compat.h
++++ b/src/kernel/device/metal/compat.h
+@@ -35,7 +35,7 @@ using namespace metal::raytracing;
+ #define ccl_device
+ #define ccl_device_inline ccl_device __attribute__((always_inline))
+ #define ccl_device_forceinline ccl_device __attribute__((always_inline))
+-#if defined(__KERNEL_METAL_APPLE__)
++#if defined(__KERNEL_METAL_APPLE__) && !defined(__KERNEL_METAL_NO_INLINE__)
+ #  define ccl_device_noinline ccl_device
+ #else
+ #  define ccl_device_noinline ccl_device __attribute__((noinline))

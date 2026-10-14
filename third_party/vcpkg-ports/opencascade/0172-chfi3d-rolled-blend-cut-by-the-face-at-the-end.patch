@@ -1,0 +1,438 @@
+Mitcad's patch to OCCT 8.0.1, under OCCT's licence:
+SPDX-License-Identifier: LGPL-2.1-only WITH OCCT-exception-1.0
+
+Fillets: a blend rolling on an edge whose contact on its face leaves the
+face before the end of the spine is walked on, still rolling on the edge,
+and cut by the face at the end (mitcad#237, with 0170, as 0074 does for
+blends between two surfaces).
+
+The case: a round pocket cut into a post, its floor a lens between the
+pocket's wall and the post's rim narrower than the radius; rounding the
+floor's edge at the wall, the ball touches the wall and rolls on the rim.
+Near the lens's tips the ball's contact on the wall leaves the wall across
+the vertical edge where wall and post meet, while the ball still rolls on
+the rim. Before 0170 OCCT's sections lay in the guide's plane and reached
+the tips; with the rolling ball the stripe stops at that edge, short of
+the tip, and the corner at the tip intersected an extension of the blend
+with the post's side: invalid (a wire intersecting itself on the post's
+face, an edge whose range lies beyond its vertices).
+
+- ChFi3d_Builder::RolledCutToEnd, called by PerformSetOfSurf for an end of
+  an open spine where WalkedCutToEnd does not apply: where the stripe's
+  end blend rolls on an edge Er on one side and its contact on face N
+  leaves N across an edge E into the face B beyond Er, which holds the end
+  vertex V, the blend is walked on from the stripe's end section with N's
+  surface unbounded, still rolling on Er, until the ball reaches B (the
+  walk leaves Er for B, or stops where the ball is tangent to B). That
+  piece is cut by B (ChFi3d_KPartCutPiece): its side on N becomes the cut
+  of the blend by B, from the point on E to the point Q on Er where the
+  blend ends in a point; its other side rolls on Er. Er's point at Q has
+  the transition EXTERNAL: Er leaves B's boundary on both sides of Q (the
+  blend's contact on Er bounds B towards the stripe, the cut part of B
+  towards V). The end blend's contact curves no longer run past its end
+  (where it was extended for the face at the end to cut it). The spine's
+  end becomes a free boundary with a singular extremity: no corner at V.
+diff --git a/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder.hxx b/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder.hxx
+index 5b87977..7d264d0 100644
+--- a/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder.hxx
++++ b/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder.hxx
+@@ -929,6 +929,13 @@ private:
+   //! Returns true when the stripe was changed.
+   Standard_EXPORT bool WalkedCutToEnd(const occ::handle<ChFiDS_Stripe>& Stripe, const bool isFirst);
+ 
++  //! WalkedCutToEnd for a blend rolling on an edge, whose contact on the face
++  //! leaves it across an edge into the face beyond the edge it rolls on, which
++  //! holds the end of the spine: the blend is walked on over the face's surface
++  //! until the ball reaches the face beyond beside the edge it rolls on, and that
++  //! piece is cut by the face beyond; the stripe ends in a point there.
++  Standard_EXPORT bool RolledCutToEnd(const occ::handle<ChFiDS_Stripe>& Stripe, const bool isFirst);
++
+   Standard_EXPORT void ConexFaces(const occ::handle<ChFiDS_Spine>&  Sp,
+                                   const int                         IEdge,
+                                   occ::handle<BRepAdaptor_Surface>& HS1,
+diff --git a/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_2.cxx b/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_2.cxx
+index d3b0d64..5ce11b7 100644
+--- a/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_2.cxx
++++ b/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_2.cxx
+@@ -6769,6 +6769,364 @@ bool ChFi3d_Builder::WalkedCutToEnd(const occ::handle<ChFiDS_Stripe>& Stripe, co
+   return true;
+ }
+ 
++//=======================================================================
++// function : RolledCutToEnd
++// purpose  : WalkedCutToEnd for a blend rolling on an edge Er: where the
++//            stripe stops short of the end vertex V with the contact on face
++//            N on an edge E of N, and the face B across E is the face beyond
++//            Er and holds V, the blend is walked on from the stripe's end
++//            section with N's surface unbounded, still rolling on Er, until
++//            the ball reaches B beside Er (the point Q where it is tangent to
++//            B on Er); that piece is cut by B and the stripe ends in a point
++//            at Q, with no corner at V.
++//=======================================================================
++
++bool ChFi3d_Builder::RolledCutToEnd(const occ::handle<ChFiDS_Stripe>& Stripe, const bool isFirst)
++{
++  const occ::handle<ChFiDS_Spine>& Spine = Stripe->Spine();
++  if (Spine.IsNull() || Spine->IsPeriodic() || Stripe->SetOfSurfData().IsNull()
++      || Stripe->SetOfSurfData()->IsEmpty() || Spine->ChangeElSpines().IsEmpty())
++  {
++    return false;
++  }
++  if ((isFirst ? Spine->FirstStatus() : Spine->LastStatus()) > ChFiDS_BreakPoint)
++  {
++    return false;
++  }
++  const occ::handle<ChFiDS_FilSpine> fsp = occ::down_cast<ChFiDS_FilSpine>(Spine);
++  if (fsp.IsNull() || !fsp->IsConstant())
++  {
++    return false;
++  }
++  TopOpeBRepDS_DataStructure& DStr = myDS->ChangeDS();
++  const TopoDS_Vertex         V    = isFirst ? Spine->FirstVertex() : Spine->LastVertex();
++  if (V.IsNull() || !myVFMap.Contains(V))
++  {
++    return false;
++  }
++  const occ::handle<ChFiDS_SurfData> P  = isFirst ? Stripe->SetOfSurfData()->Sequence().First()
++                                                  : Stripe->SetOfSurfData()->Sequence().Last();
++  const double                       WP = isFirst ? P->FirstSpineParam() : P->LastSpineParam();
++  const double WEnd = isFirst ? Spine->FirstParameter(1) : Spine->LastParameter(Spine->NbEdges());
++  if ((isFirst ? WP - WEnd : WEnd - WP) <= 10. * tolesp)
++  {
++    return false;
++  }
++  // The side rolling on Er (opp) and the side whose contact leaves its face N (ons).
++  int ons = 0;
++  for (int s = 1; s <= 2 && ons == 0; s++)
++  {
++    if (P->IsOnCurve(3 - s) && !P->IsOnCurve(s))
++    {
++      ons = s;
++    }
++  }
++  if (ons == 0)
++  {
++    return false;
++  }
++  const int                 opp = 3 - ons;
++  const ChFiDS_CommonPoint& CPn = P->Vertex(isFirst, ons);
++  if (!CPn.IsOnArc() || CPn.IsVertex() || P->Index(ons) <= 0 || P->Index(opp) <= 0
++      || !myEFMap.Contains(CPn.Arc()))
++  {
++    return false;
++  }
++  const TopoDS_Edge E  = TopoDS::Edge(CPn.Arc());
++  const TopoDS_Face N  = TopoDS::Face(DStr.Shape(P->Index(ons)));
++  const TopoDS_Face B  = TopoDS::Face(DStr.Shape(P->Index(opp)));
++  const TopoDS_Edge Er = TopoDS::Edge(DStr.Shape(P->IndexOfC(opp)));
++  if (Er.IsNull() || !myEFMap.Contains(Er) || N.IsSame(B))
++  {
++    return false;
++  }
++  bool EonB = false, BatV = false;
++  for (NCollection_List<TopoDS_Shape>::Iterator it(myEFMap(E)); it.More(); it.Next())
++  {
++    EonB = EonB || it.Value().IsSame(B);
++  }
++  for (NCollection_List<TopoDS_Shape>::Iterator it(myVFMap(V)); it.More(); it.Next())
++  {
++    BatV = BatV || it.Value().IsSame(B);
++  }
++  if (!EonB || !BatV || ChFi3d::IsTangentFaces(E, N, B))
++  {
++    return false;
++  }
++  // The face across Er from B (the face the ball rolls over), for the side of the blend.
++  TopoDS_Face Fref;
++  for (NCollection_List<TopoDS_Shape>::Iterator it(myEFMap(Er)); it.More() && Fref.IsNull(); it.Next())
++  {
++    if (!it.Value().IsSame(B))
++    {
++      Fref = TopoDS::Face(it.Value());
++    }
++  }
++  if (Fref.IsNull())
++  {
++    return false;
++  }
++  occ::handle<ChFiDS_ElSpine> HGuide =
++    isFirst ? Spine->ChangeElSpines().First() : Spine->ChangeElSpines().Last();
++  if (HGuide.IsNull() || WP < HGuide->FirstParameter() || WP > HGuide->LastParameter())
++  {
++    return false;
++  }
++  const ChFiDS_FaceInterference& FIn = P->Interference(ons);
++  const ChFiDS_CommonPoint&      CPr = P->Vertex(isFirst, opp);
++  if (FIn.PCurveOnFace().IsNull() || !CPr.IsOnArc() || !CPr.Arc().IsSame(Er))
++  {
++    return false;
++  }
++  // The walk on from P's end section, N's surface unbounded, the ball still
++  // rolling on Er and leaving it where it reaches B.
++  const occ::handle<Geom_Surface> SN = BRep_Tool::Surface(N);
++  if (SN.IsNull())
++  {
++    return false;
++  }
++  TopoDS_Face NF = BRepLib_MakeFace(SN, Precision::Confusion());
++  if (NF.IsNull())
++  {
++    return false;
++  }
++  NF.Orientation(N.Orientation());
++  TopoDS_Face BF = B;
++  BF.Orientation(TopAbs_FORWARD);
++  const TopoDS_Edge ErB = edgeInFace(Er, BF);
++  if (ErB.IsNull())
++  {
++    return false;
++  }
++  occ::handle<BRepAdaptor_Surface>      HSN = new BRepAdaptor_Surface(NF);
++  occ::handle<BRepAdaptor_Surface>      HSB = new BRepAdaptor_Surface(B);
++  occ::handle<BRepAdaptor_Curve2d>      PCB = new BRepAdaptor_Curve2d(ErB, B);
++  occ::handle<BRepTopAdaptor_TopolTool> ItN = new BRepTopAdaptor_TopolTool(HSN);
++  occ::handle<BRepTopAdaptor_TopolTool> ItB = new BRepTopAdaptor_TopolTool(HSB);
++  // (As for the blends on an edge of PerformSetOfSurfOnElSpine.)
++  TopAbs_Orientation                    OrN = NF.Orientation();
++  TopAbs_Orientation                    OrR = Fref.Orientation();
++  int                                   Choix;
++  if (ons == 1)
++  {
++    Choix = ChFi3d::NextSide(OrN, OrR, Stripe->OrientationOnFace1(), Stripe->OrientationOnFace2(), Stripe->Choix());
++  }
++  else
++  {
++    Choix = ChFi3d::NextSide(OrR, OrN, Stripe->OrientationOnFace1(), Stripe->OrientationOnFace2(), -Stripe->Choix());
++    Choix = Choix % 2 == 1 ? Choix + 1 : Choix - 1;
++  }
++  math_Vector Soldep(1, 3);
++  gp_Pnt2d    uvN;
++  {
++    // (The point where the contact leaves N, on N's surface.)
++    GeomAPI_ProjectPointOnSurf aPr(CPn.Point(), SN);
++    if (aPr.NbPoints() == 0)
++    {
++      return false;
++    }
++    double u = 0., v = 0.;
++    aPr.LowerDistanceParameters(u, v);
++    uvN.SetCoord(u, v);
++  }
++  Soldep(1) = uvN.X();
++  Soldep(2) = uvN.Y();
++  Soldep(3) = CPr.ParameterOnArc();
++  NCollection_Sequence<occ::handle<ChFiDS_SurfData>> SeqSD;
++  SeqSD.Append(new ChFiDS_SurfData());
++  double       First = WP, Last = isFirst ? HGuide->FirstParameter() : HGuide->LastParameter();
++  const int    nbed    = Spine->NbEdges();
++  const double MaxStep = 0.05 * (Spine->LastParameter(nbed) - Spine->FirstParameter(1)) / nbed;
++  const double Fleche  = (HGuide->LastParameter() - HGuide->FirstParameter()) * fleche;
++  bool                     decroch  = false;
++  bool                     walked   = true;
++  const bool               doneSave = done;
++  const ChFiDS_ErrorStatus stSave   = Spine->ErrorStatus();
++  // (A walk towards the first end is completed up to the guide's last
++  // parameter: only from P's end on.)
++  const double             aGuideLast = HGuide->LastParameter();
++  if (isFirst)
++  {
++    HGuide->LastParameter(WP);
++  }
++  try
++  {
++    OCC_CATCH_SIGNALS
++    if (ons == 1)
++    {
++      PerformSurf(SeqSD, HGuide, Spine, Choix, HSN, ItN, OrN, HSB, ItB, PCB, HSB, PCB, decroch, MaxStep, Fleche,
++                  tolesp, First, Last, false, false, !isFirst, false, false, false, Soldep);
++    }
++    else
++    {
++      PerformSurf(SeqSD, HGuide, Spine, Choix, HSB, ItB, PCB, HSB, PCB, decroch, HSN, ItN, OrN, MaxStep, Fleche,
++                  tolesp, First, Last, false, false, !isFirst, false, false, false, Soldep);
++    }
++  }
++  catch (Standard_Failure const&)
++  {
++    walked = false;
++  }
++  // (The stripe's state is that of its own walk.)
++  done = doneSave;
++  Spine->SetErrorStatus(stSave);
++  HGuide->LastParameter(aGuideLast);
++  if (!walked || SeqSD.Length() != 1)
++  {
++    return false;
++  }
++  occ::handle<ChFiDS_SurfData> X = SeqSD.First();
++  if (!decroch)
++  {
++    // The walk stops where the ball touches B on Er (the solution rolling on
++    // Er does not go on into B): its last ball must be tangent to B there.
++    gp_Pnt aCentre;
++    const ChFiDS_CommonPoint& CPe = X->Vertex(isFirst, opp);
++    if (!ChFi3d_BallCentreAtEnd(DStr, X, isFirst, aCentre) || !CPe.IsOnArc() || !CPe.Arc().IsSame(Er))
++    {
++      return false;
++    }
++    gp_Pnt2d uvq;
++    {
++      double fq = 0., lq = 0.;
++      const occ::handle<Geom2d_Curve> pcq = BRep_Tool::CurveOnSurface(Er, BF, fq, lq);
++      if (pcq.IsNull())
++      {
++        return false;
++      }
++      uvq = pcq->Value(CPe.ParameterOnArc());
++    }
++    gp_Pnt pq;
++    gp_Vec du, dv;
++    HSB->D1(uvq.X(), uvq.Y(), pq, du, dv);
++    gp_Vec nB = du.Crossed(dv), cq(CPe.Point(), aCentre);
++    if (nB.Magnitude() < gp::Resolution() || cq.Magnitude() < gp::Resolution()
++        || nB.Crossed(cq).Magnitude() > 1.e-4 * nB.Magnitude() * cq.Magnitude())
++    {
++      return false;
++    }
++  }
++  X->ChangeIndexOfS1(DStr.AddShape(ons == 1 ? N : B));
++  X->ChangeIndexOfS2(DStr.AddShape(ons == 1 ? B : N));
++  if (opp == 1)
++  {
++    X->SetIndexOfC1(DStr.AddShape(Er));
++  }
++  else
++  {
++    X->SetIndexOfC2(DStr.AddShape(Er));
++  }
++  // The walk ends where the ball reaches B beside Er, at Q on Er.
++  const ChFiDS_CommonPoint& CPq = X->Vertex(isFirst, opp);
++  if (!CPq.IsOnArc() || !CPq.Arc().IsSame(Er) || X->Vertex(isFirst, ons).IsOnArc())
++  {
++    return false;
++  }
++  const double WQ = isFirst ? X->FirstSpineParam() : X->LastSpineParam();
++  const double WX = isFirst ? X->LastSpineParam() : X->FirstSpineParam();
++  if (std::abs(WX - WP) > 10. * tolesp || (isFirst ? WP - WQ : WQ - WP) <= 10. * tolesp)
++  {
++    return false;
++  }
++  const ChFiDS_FaceInterference& XO = X->Interference(opp);
++  const ChFiDS_FaceInterference& XN = X->Interference(ons);
++  if (XO.PCurveOnSurf().IsNull() || XN.PCurveOnSurf().IsNull() || XO.LineIndex() <= 0 || XN.LineIndex() <= 0)
++  {
++    return false;
++  }
++  double                          f = 0., l = 0.;
++  const occ::handle<Geom2d_Curve> pcB  = BRep_Tool::CurveOnSurface(Er, BF, f, l);
++  const occ::handle<Geom2d_Curve> pcBE = BRep_Tool::CurveOnSurface(E, BF, f, l);
++  if (pcB.IsNull() || pcBE.IsNull())
++  {
++    return false;
++  }
++  // The end in a point Q on Er, on both sides.
++  const double       tQ = XO.Parameter(isFirst);
++  const double       wQ = CPq.ParameterOnArc();
++  ChFi3d_KPartCutEnd anEnd;
++  anEnd.P   = CPq.Point();
++  anEnd.uvS = XO.PCurveOnSurf()->Value(tQ);
++  anEnd.uvB = pcB->Value(wQ);
++  anEnd.tO  = tQ;
++  anEnd.V   = V;
++  // Both contacts end at Q on Er, and Er leaves B's boundary on both sides
++  // of Q: towards the junction the blend's contact on Er bounds B, towards
++  // V the cut part of B.
++  anEnd.CPN = CPq;
++  anEnd.CPN.SetArc(CPq.Tolerance(), Er, wQ, TopAbs_EXTERNAL);
++  anEnd.CPO = anEnd.CPN;
++  // The other end: P's end section, where the contact on N leaves N.
++  ChFi3d_KPartCutEnd aJunction;
++  aJunction.P   = CPn.Point();
++  aJunction.uvS = XN.PCurveOnSurf()->Value(XN.Parameter(!isFirst));
++  aJunction.uvB = pcBE->Value(CPn.ParameterOnArc());
++  aJunction.tO  = XO.Parameter(!isFirst);
++  aJunction.CPN = CPn;
++  aJunction.CPO = CPr;
++  const occ::handle<ChFiDS_SurfData> aNone;
++  occ::handle<ChFiDS_SurfData>       G;
++  try
++  {
++    OCC_CATCH_SIGNALS
++    G = ChFi3d_KPartCutPiece(DStr,
++                             Spine,
++                             X,
++                             ons,
++                             N,
++                             B,
++                             isFirst ? WQ : WP,
++                             isFirst ? WP : WQ,
++                             aNone,
++                             aNone,
++                             tolapp3d,
++                             isFirst ? &anEnd : &aJunction,
++                             isFirst ? &aJunction : &anEnd);
++  }
++  catch (Standard_Failure const&)
++  {
++    G.Nullify();
++  }
++  if (G.IsNull())
++  {
++    return false;
++  }
++  // P ends at the junction: its contacts no longer run on past it (where it
++  // was extended for the face at the end to cut it).
++  for (int s = 1; s <= 2; s++)
++  {
++    ChFiDS_FaceInterference& FI = P->ChangeInterference(s);
++    if (isFirst)
++    {
++      FI.SetFirstParameter(P->Vertex(true, s).Parameter());
++    }
++    else
++    {
++      FI.SetLastParameter(P->Vertex(false, s).Parameter());
++    }
++  }
++  // The piece rolls on Er on its other side.
++  if (opp == 1)
++  {
++    G->SetIndexOfC1(DStr.AddShape(Er));
++  }
++  else
++  {
++    G->SetIndexOfC2(DStr.AddShape(Er));
++  }
++  if (isFirst)
++  {
++    Stripe->ChangeSetOfSurfData()->Prepend(G);
++    Spine->SetFirstStatus(ChFiDS_FreeBoundary);
++  }
++  else
++  {
++    Stripe->ChangeSetOfSurfData()->Append(G);
++    Spine->SetLastStatus(ChFiDS_FreeBoundary);
++  }
++  return true;
++}
++
+ // Whether two surfaces of analytic blends are one surface with one
+ // parametrization (copies, as the pieces of one blend have).
+ static bool ChFi3d_SameAnalyticSurface(const occ::handle<Geom_Surface>& S1, const occ::handle<Geom_Surface>& S2)
+@@ -7804,8 +8162,14 @@ void ChFi3d_Builder::PerformSetOfSurf(occ::handle<ChFiDS_Stripe>& Stripe, const
+   if (!Simul)
+   {
+     // Walked blends cut by the face at an end before that end.
+-    WalkedCutToEnd(Stripe, true);
+-    WalkedCutToEnd(Stripe, false);
++    if (!WalkedCutToEnd(Stripe, true))
++    {
++      RolledCutToEnd(Stripe, true);
++    }
++    if (!WalkedCutToEnd(Stripe, false))
++    {
++      RolledCutToEnd(Stripe, false);
++    }
+     ChFi3d_MakeExtremities(Stripe, DStr, myEFMap, tolapp3d, tol2d);
+   }
+ }

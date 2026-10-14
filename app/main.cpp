@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT
 #include <QApplication>
 #include <QCommandLineParser>
+#include <QFileInfo>
 #include <QIcon>
 #include <QImage>
 #include <QSettings>
@@ -19,6 +20,7 @@
 #include "files/F3dImport.hpp"
 #include "files/FileOpenFilter.hpp"
 #include "framework/ChromeStyle.hpp"
+#include "framework/DebugLog.hpp"
 #include "framework/DesktopEntry.hpp"
 #include "framework/Diagnostics.hpp"
 #include "framework/Numbers.hpp"
@@ -27,6 +29,7 @@
 #include "framework/TypedTextLog.hpp"
 #include "mitcad/geometry/guard.hpp"
 #include "mcp/LiveServer.hpp"
+#include "mcp/LogRing.hpp"
 #include "report/CrashHandler.hpp"
 #include "report/ReportCenter.hpp"
 
@@ -96,6 +99,9 @@ int main(int argc, char* argv[]) {
   mitcad::TestSync::installIfRequested();
   // What the UI tests type into text fields (MITCAD_LOG_TYPED_TEXT).
   mitcad::installTypedTextLogIfRequested();
+  // The key presses the Windows UI tests post, with their modifiers
+  // (MITCAD_LOG_KEYS, mitcad#271).
+  mitcad::installKeyLogIfRequested();
   QApplication::setOrganizationName(QStringLiteral("Mitcad"));
 #ifdef Q_OS_MACOS
   // macOS names the settings file after the reversed domain
@@ -134,6 +140,19 @@ int main(int argc, char* argv[]) {
   // synthesised events (framework/TestDriver.hpp); inert without it. Before
   // the window, so that it records the log of the start-up too.
   mitcad::TestDriver testDriver;
+  // The log ring (mcp/LogRing.hpp, mitcad#265, mitcad#269): one handler for
+  // the whole run, after the test driver's, which it passes every message
+  // on to; the debug log's file (framework/DebugLog.hpp) is its sink. The
+  // file is closed and the handler removed before the test driver's goes.
+  struct LogScope {
+    LogScope() { mitcad::mcp::installLogRing(); }
+    ~LogScope() {
+      mitcad::DebugLog::instance().stop();
+      mitcad::mcp::removeLogRing();
+    }
+    LogScope(const LogScope&) = delete;
+    LogScope& operator=(const LogScope&) = delete;
+  } logScope;
 
   QCommandLineParser parser;
   parser.addHelpOption();
@@ -155,8 +174,8 @@ int main(int argc, char* argv[]) {
   const QCommandLineOption openOption(
       QStringLiteral("open"),
       QStringLiteral("Open <file> at start-up: a Mitcad design (.mitcad), an .f3d or .f3z design, "
-                     "a FreeCAD document (.FCStd), an .ipt part, an .iam assembly, STEP, IGES, BRep, STL, OBJ or DXF as a "
-                     "new document."),
+                     "a FreeCAD document (.FCStd), an .ipt part, an .iam assembly, an IFC file (.ifc, .ifczip), an "
+                     ".rvt project or .rfa family, STEP, IGES, BRep, STL, OBJ or DXF as a new document."),
       QStringLiteral("file"));
   const QCommandLineOption qtDialogsOption(
       QStringLiteral("no-native-dialogs"),
@@ -185,11 +204,22 @@ int main(int argc, char* argv[]) {
   parser.addOption(qtDialogsOption);
   parser.addOption(noRecoveryOption);
   parser.addOption(chromeOption);
+  // --debug-log [FILE] (mitcad#269): its optional file is taken out of the
+  // arguments first (debugLogRequest), the parser sees a plain flag.
+  const QCommandLineOption debugLogOption(
+      QStringLiteral("debug-log"),
+      QStringLiteral("Write a debug log for this run: to FILE when the next argument is a .log file or with "
+                     "--debug-log=FILE, else to a new file in the log folder (Help > Open Log Folder). "
+                     "MITCAD_DEBUG_LOG=1|<file> does the same."));
+  parser.addOption(debugLogOption);
   parser.addPositionalArgument(
       QStringLiteral("file"),
       QStringLiteral("Open <file> at start-up, like --open (as a file association passes it)."),
       QStringLiteral("[file]"));
-  parser.process(app);
+  QStringList arguments = QCoreApplication::arguments();
+  const mitcad::DebugLogRequest debugLog =
+      mitcad::debugLogRequest(arguments, qEnvironmentVariable("MITCAD_DEBUG_LOG"));
+  parser.process(arguments);
 
   if (parser.isSet(uiOption)) {
     const QString ui = parser.value(uiOption);
@@ -241,6 +271,20 @@ int main(int argc, char* argv[]) {
   const bool hasStartFile = parser.isSet(openOption) || !positional.isEmpty();
   const QString startFile = parser.isSet(openOption) ? parser.value(openOption)
                                                      : (positional.isEmpty() ? QString() : positional.first());
+
+  // The debug log (mitcad#269): for this run (--debug-log, MITCAD_DEBUG_LOG) or
+  // by Preferences' switch; before the window, so that the start-up is in it.
+  mitcad::DebugLog& debugLogFile = mitcad::DebugLog::instance();
+  if (hasStartFile) {
+    debugLogFile.setFact(QStringLiteral("Design"), QFileInfo(startFile).absoluteFilePath());
+  }
+  if (debugLog.on || mitcad::DebugLog::settingOn()) {
+    QString error;
+    if (!debugLogFile.start(debugLog.on ? debugLog.file : QString(),
+                            debugLog.on ? debugLog.source : QStringLiteral("Preferences"), &error)) {
+      qWarning().noquote() << "Debug log not started:" << error;
+    }
+  }
 
   // Files the system asks to open (macOS: Finder, the Dock, `open -a`) can
   // arrive from the first event loop on, while the window and its start-up

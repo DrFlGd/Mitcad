@@ -1,0 +1,423 @@
+Mitcad's patch to OCCT 8.0.1, under OCCT's licence:
+SPDX-License-Identifier: LGPL-2.1-only WITH OCCT-exception-1.0
+
+Fillets: an option that stops a contour where its edges turn although the
+faces on both sides go on tangentially, and the end of the rounding there
+(mitcad#241).
+
+OCCT grows a contour from an edge into the next edge at a vertex wherever
+no other sharp edge meets that vertex (FaceTangency: the faces across the
+vertex are tangent, within 0.1 rad), as long as the edges turn by less than
+a right angle. Where two faces meet at a shallow crease (a wall drafted by
+3 degrees above a vertical one, a cylinder joining another at 0.7 degrees),
+the edges along the top of the crease therefore join one contour even
+though they turn there, and a rounding asked for on one of them runs on
+over the others. A rounding of exactly the selected edges stops at such a
+vertex, cut by the face beyond the crease.
+
+- ChFi3d_Builder::StopChainsAtTurns (and BRepFilletAPI_MakeFillet's): the
+  contours added afterwards stop at a vertex where their edge and the next
+  one turn by the angular tolerance (Tang of SetParams) or more, unless the
+  next edge is one of the edges given (the edges to be filleted, so that
+  selected edges still make one contour). PerformElement records the
+  vertices where it stopped a contour so (ChainTurnStops: in the result
+  such a vertex can stay between two pieces of the edge of the face beyond
+  the crease, which grew up to where it cuts the fillet; a caller may join
+  them). Without the call nothing changes.
+- ChFi3d_Builder::StartSol, for the extension of a stripe past its end
+  (Vref): at a vertex where a contour was stopped so and the face the
+  stripe runs on meets the face beyond across a concave crease
+  (ChFi3d_ConcaveCreaseAt), that face is the face at the end, although
+  tangent to it; the walk goes on as at an end before a face at an angle
+  (on the face's tangent plane), and the corner at the vertex cuts the
+  blend with that face (PerformOneCorner), its surface extended. Before,
+  the walk changed onto that face and failed at once (an empty line).
+- ChFi3d_Builder::SplitKPart: a contact of an analytic blend that ends on
+  such a concave crease (an edge at a vertex where a contour was stopped
+  so, EndsOnTurnCrease) ends there, though the face beyond is tangent: the
+  blend is kept and cut at the end like one ending on an edge at an angle,
+  instead of being dropped and walked. Elsewhere the face beyond stays the
+  next face to run on (SearchFace is unchanged).
+- PerformSetOfSurfOnElSpine: where the extension is purged on both sides
+  and the first purge already removed it from the stripe, the second no
+  longer removes the surface data that is then at that end (the stripe was
+  left without the blend it ended in).
+
+Where the crease is convex (the face beyond turns away from the rounding),
+the face beyond meets the rounding only past the vertex, in its extension;
+that corner is not built (the walk past the end fails, as before, and the
+fillet fails). Chamfers are not offered the option: their corner at such an
+end is not the face beyond's cut.
+diff --git a/src/ModelingAlgorithms/TKFillet/BRepFilletAPI/BRepFilletAPI_MakeFillet.cxx b/src/ModelingAlgorithms/TKFillet/BRepFilletAPI/BRepFilletAPI_MakeFillet.cxx
+index f192eb5f..b1af6fe6 100644
+--- a/src/ModelingAlgorithms/TKFillet/BRepFilletAPI/BRepFilletAPI_MakeFillet.cxx
++++ b/src/ModelingAlgorithms/TKFillet/BRepFilletAPI/BRepFilletAPI_MakeFillet.cxx
+@@ -57,6 +57,14 @@ void BRepFilletAPI_MakeFillet::SetContinuity(const GeomAbs_Shape InternalContinu
+ 
+ //=================================================================================================
+ 
++void BRepFilletAPI_MakeFillet::StopChainsAtTurns(
++  const NCollection_Map<TopoDS_Shape, TopTools_ShapeMapHasher>& theThrough)
++{
++  myBuilder.StopChainsAtTurns(theThrough);
++}
++
++//=================================================================================================
++
+ void BRepFilletAPI_MakeFillet::Add(const TopoDS_Edge& E)
+ {
+   myBuilder.Add(E);
+diff --git a/src/ModelingAlgorithms/TKFillet/BRepFilletAPI/BRepFilletAPI_MakeFillet.hxx b/src/ModelingAlgorithms/TKFillet/BRepFilletAPI/BRepFilletAPI_MakeFillet.hxx
+index c44880d8..ed1c29b6 100644
+--- a/src/ModelingAlgorithms/TKFillet/BRepFilletAPI/BRepFilletAPI_MakeFillet.hxx
++++ b/src/ModelingAlgorithms/TKFillet/BRepFilletAPI/BRepFilletAPI_MakeFillet.hxx
+@@ -81,6 +81,24 @@ public:
+   Standard_EXPORT void SetContinuity(const GeomAbs_Shape InternalContinuity,
+                                      const double        AngularTolerance);
+ 
++  //! Makes the contours added afterwards stop at a vertex where their edge
++  //! and the next one turn by the angular tolerance (Tang of SetParams) or
++  //! more, although the faces on both sides go on tangentially there, unless
++  //! the next edge is one of theThrough (for example the edges to be
++  //! filleted). By default a contour follows such edges wherever they turn
++  //! by less than a right angle. Where a contour stops so and the faces meet
++  //! across a concave crease, the face beyond the crease cuts the fillet.
++  Standard_EXPORT void StopChainsAtTurns(
++    const NCollection_Map<TopoDS_Shape, TopTools_ShapeMapHasher>& theThrough);
++
++  //! The vertices where StopChainsAtTurns stopped a contour. In the result
++  //! such a vertex can stay between two pieces of the edge of the face
++  //! beyond the crease, which grew up to where it cuts the fillet.
++  const NCollection_Map<TopoDS_Shape, TopTools_ShapeMapHasher>& ChainTurnStops() const
++  {
++    return myBuilder.ChainTurnStops();
++  }
++
+   //! Adds a fillet contour in the builder (builds a
+   //! contour of tangent edges).
+   //! The Radius must be set after.
+diff --git a/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder.hxx b/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder.hxx
+index 7d264d03..4f9d568a 100644
+--- a/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder.hxx
++++ b/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder.hxx
+@@ -33,6 +33,7 @@
+ #include <Standard_Integer.hxx>
+ #include <TopTools_ShapeMapHasher.hxx>
+ #include <NCollection_DataMap.hxx>
++#include <NCollection_Map.hxx>
+ #include <TopAbs_Orientation.hxx>
+ #include <TopAbs_State.hxx>
+ 
+@@ -80,6 +81,20 @@ public:
+   Standard_EXPORT void SetContinuity(const GeomAbs_Shape InternalContinuity,
+                                      const double        AngularTolerance);
+ 
++  //! Makes the contours added afterwards stop at a vertex where their edge
++  //! and the next one turn by the angular tolerance (Tang of SetParams) or
++  //! more, although the faces on both sides go on tangentially there, unless
++  //! the next edge is one of theThrough. By default a contour follows such
++  //! edges wherever they turn by less than a right angle.
++  Standard_EXPORT void StopChainsAtTurns(
++    const NCollection_Map<TopoDS_Shape, TopTools_ShapeMapHasher>& theThrough);
++
++  //! The vertices where StopChainsAtTurns stopped a contour.
++  const NCollection_Map<TopoDS_Shape, TopTools_ShapeMapHasher>& ChainTurnStops() const
++  {
++    return myTurnStops;
++  }
++
+   //! extracts from the list the contour containing edge E.
+   Standard_EXPORT void Remove(const TopoDS_Edge& E);
+ 
+@@ -785,6 +800,18 @@ private:
+                                     const TopoDS_Edge&   E1,
+                                     const TopoDS_Vertex& V) const;
+ 
++  //! Whether a contour stops before the next edge E1 (StopChainsAtTurns),
++  //! the edges' tangents at their vertex making the angle theAngle (of
++  //! opposite senses when theReversed).
++  Standard_EXPORT bool StopsAtTurn(const double       theAngle,
++                                   const bool         theReversed,
++                                   const TopoDS_Edge& E1) const;
++
++  //! Whether common point CP of face F lies on a concave crease between F
++  //! and a face tangent to it, at a vertex where a contour was stopped at a
++  //! turn: the face beyond is then the face at the end of the stripe.
++  Standard_EXPORT bool EndsOnTurnCrease(const ChFiDS_CommonPoint& CP, const TopoDS_Face& F) const;
++
+   Standard_EXPORT void PerformSetOfSurfOnElSpine(const occ::handle<ChFiDS_ElSpine>&     ES,
+                                                  occ::handle<ChFiDS_Stripe>&            St,
+                                                  occ::handle<BRepTopAdaptor_TopolTool>& It1,
+@@ -950,6 +977,11 @@ private:
+   NCollection_List<TopoDS_Shape> myGenerated;
+   TopoDS_Shape                   myShapeResult;
+   TopoDS_Shape                   badShape;
++  //! StopChainsAtTurns: whether it was called, its edges, and the vertices
++  //! where it stopped a contour.
++  bool                                                   myStopAtTurns = false;
++  NCollection_Map<TopoDS_Shape, TopTools_ShapeMapHasher> myTurnThrough;
++  NCollection_Map<TopoDS_Shape, TopTools_ShapeMapHasher> myTurnStops;
+ };
+ 
+ #endif // _ChFi3d_Builder_HeaderFile
+diff --git a/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_1.cxx b/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_1.cxx
+index 0411c217..23e6d927 100644
+--- a/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_1.cxx
++++ b/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_1.cxx
+@@ -434,6 +434,15 @@ void ChFi3d_Builder::SetContinuity(const GeomAbs_Shape InternalContinuity,
+ 
+ //=================================================================================================
+ 
++void ChFi3d_Builder::StopChainsAtTurns(
++  const NCollection_Map<TopoDS_Shape, TopTools_ShapeMapHasher>& theThrough)
++{
++  myStopAtTurns = true;
++  myTurnThrough = theThrough;
++}
++
++//=================================================================================================
++
+ bool ChFi3d_Builder::IsDone() const
+ {
+   return done;
+@@ -674,6 +683,20 @@ bool ChFi3d_Builder::FaceTangency(const TopoDS_Edge&   E0,
+   return true;
+ }
+ 
++//=================================================================================================
++
++bool ChFi3d_Builder::StopsAtTurn(const double       theAngle,
++                                 const bool         theReversed,
++                                 const TopoDS_Edge& E1) const
++{
++  if (!myStopAtTurns || myTurnThrough.Contains(E1))
++  {
++    return false;
++  }
++  const double aTurn = theReversed ? M_PI - theAngle : theAngle;
++  return aTurn >= angular;
++}
++
+ //=======================================================================
+ // function : TangentExtremity
+ // purpose  : Test if 2 faces are tangent at the end of an edge
+@@ -1077,6 +1100,11 @@ bool ChFi3d_Builder::PerformElement(const occ::handle<ChFiDS_Spine>& Spine,
+             {
+               OnAjoute = ((!rev && av1v2 < ta) || (rev && (M_PI - av1v2) < ta));
+             }
++            if (OnAjoute && StopsAtTurn(av1v2, rev, Ev))
++            {
++              OnAjoute = false;
++              myTurnStops.Add(LVEc);
++            }
+           }
+           if (OnAjoute)
+           {
+@@ -1184,6 +1212,11 @@ bool ChFi3d_Builder::PerformElement(const occ::handle<ChFiDS_Spine>& Spine,
+               {
+                 OnAjoute = ((!rev && av1v2 < ta) || (rev && (M_PI - av1v2) < ta));
+               }
++              if (OnAjoute && StopsAtTurn(av1v2, rev, Ev))
++              {
++                OnAjoute = false;
++                myTurnStops.Add(FVEc);
++              }
+             }
+             if (OnAjoute)
+             {
+diff --git a/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_2.cxx b/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_2.cxx
+index 5ce11b78..a1e2a393 100644
+--- a/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_2.cxx
++++ b/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_2.cxx
+@@ -2053,6 +2053,79 @@ static bool ChFi3d_BallCentreAtEnd(const TopOpeBRepDS_DataStructure&   DStr,
+   return true;
+ }
+ 
++//=======================================================================
++// function : ChFi3d_ConcaveCrease
++// purpose  : Whether edge E of face F is a concave crease between F and a
++//            face it is tangent to (within OCCT's tolerance), Other.
++//=======================================================================
++
++static bool ChFi3d_ConcaveCrease(const TopoDS_Edge& E,
++                                 const TopoDS_Face& F,
++                                 const ChFiDS_Map&  EFMap,
++                                 TopoDS_Face&       Other)
++{
++  if (BRep_Tool::Degenerated(E) || !EFMap.Contains(E))
++  {
++    return false;
++  }
++  bool onF = false;
++  Other.Nullify();
++  for (NCollection_List<TopoDS_Shape>::Iterator itF(EFMap(E)); itF.More(); itF.Next())
++  {
++    if (itF.Value().IsSame(F))
++    {
++      onF = true;
++    }
++    else
++    {
++      Other = TopoDS::Face(itF.Value());
++    }
++  }
++  return onF && !Other.IsNull() && ChFi3d::IsTangentFaces(E, F, Other)
++         && ChFi3d::DefineConnectType(E, F, Other, 1.e-5, true) == ChFiDS_Concave;
++}
++
++//=================================================================================================
++
++bool ChFi3d_Builder::EndsOnTurnCrease(const ChFiDS_CommonPoint& CP, const TopoDS_Face& F) const
++{
++  if (myTurnStops.IsEmpty() || !CP.IsOnArc() || CP.IsVertex())
++  {
++    return false;
++  }
++  TopoDS_Face other;
++  for (TopExp_Explorer ex(CP.Arc(), TopAbs_VERTEX); ex.More(); ex.Next())
++  {
++    if (myTurnStops.Contains(ex.Current()) && ChFi3d_ConcaveCrease(CP.Arc(), F, myEFMap, other))
++    {
++      return true;
++    }
++  }
++  return false;
++}
++
++//=======================================================================
++// function : ChFi3d_ConcaveCreaseAt
++// purpose  : Whether face F meets a face it is tangent to across a concave
++//            edge at vertex V (at a contour stopped at a turn).
++//=======================================================================
++
++static bool ChFi3d_ConcaveCreaseAt(const TopoDS_Vertex& V,
++                                   const TopoDS_Face&   F,
++                                   const ChFiDS_Map&    VEMap,
++                                   const ChFiDS_Map&    EFMap)
++{
++  TopoDS_Face other;
++  for (NCollection_List<TopoDS_Shape>::Iterator itE(VEMap(V)); itE.More(); itE.Next())
++  {
++    if (ChFi3d_ConcaveCrease(TopoDS::Edge(itE.Value()), F, EFMap, other))
++    {
++      return true;
++    }
++  }
++  return false;
++}
++
+ bool ChFi3d_Builder::StartSol(
+   const occ::handle<ChFiDS_Spine>&    Spine,
+   occ::handle<BRepAdaptor_Surface>&   HS,   // New face
+@@ -2380,6 +2453,23 @@ bool ChFi3d_Builder::StartSol(
+       return true;
+     }
+ 
++    // Past the vertex where the contour was stopped at a turn
++    // (StopChainsAtTurns), the face across the concave crease there is the
++    // face at the end, although tangent to this one: the walk goes on as at
++    // an end before a face at an angle, and that face cuts the blend.
++    if (!Vref.IsNull() && myTurnStops.Contains(Vref)
++        && ChFi3d_ConcaveCreaseAt(Vref, F, myVEMap, myEFMap))
++    {
++      for (TopExp_Explorer ex(anArcEdge, TopAbs_VERTEX); ex.More(); ex.Next())
++      {
++        if (ex.Current().IsSame(Vref))
++        {
++          prepareDefaultReturn();
++          return false;
++        }
++      }
++    }
++
+     if (SearchFace(Spine, aCommonPoint, F, Fv))
+     {
+       if (Fv.IsNull())
+@@ -3083,7 +3173,7 @@ static void ChFi3d_MakeExtremities(occ::handle<ChFiDS_Stripe>& Stripe,
+ 
+ //=================================================================================================
+ 
+-static void ChFi3d_Purge(occ::handle<ChFiDS_Stripe>&   Stripe,
++static bool ChFi3d_Purge(occ::handle<ChFiDS_Stripe>&   Stripe,
+                          occ::handle<ChFiDS_SurfData>& SD,
+                          const ChFiDS_CommonPoint&     VRef,
+                          const bool                    isfirst,
+@@ -3112,7 +3202,7 @@ static void ChFi3d_Purge(occ::handle<ChFiDS_Stripe>&   Stripe,
+     {
+       Seq.Remove(Seq.Length());
+     }
+-    return;
++    return true;
+   }
+   if (ons == 1)
+   {
+@@ -3136,6 +3226,7 @@ static void ChFi3d_Purge(occ::handle<ChFiDS_Stripe>&   Stripe,
+     fi.SetLastParameter(fi.FirstParameter());
+   }
+   fi.SetLineIndex(0);
++  return false;
+ }
+ 
+ //=======================================================================
+@@ -3987,13 +4078,17 @@ void ChFi3d_Builder::PerformSetOfSurfOnElSpine(const occ::handle<ChFiDS_ElSpine>
+         }
+       }
+ 
++      // (Where the extension is purged on the first side, it is no longer
++      // in the stripe: the second side must not remove the SurfData that is
++      // now at that end.)
++      bool purged = false;
+       if (!Ok1 && !obstacleon1)
+       {
+         // clean infos on the plane of extension.
+-        ChFi3d_Purge(Stripe, SD, ref->Vertex(!forward, 1), !forward, 1, intf, intl);
++        purged = ChFi3d_Purge(Stripe, SD, ref->Vertex(!forward, 1), !forward, 1, intf, intl);
+       }
+ 
+-      if (!Ok2 && !obstacleon2)
++      if (!Ok2 && !obstacleon2 && !purged)
+       {
+         // clean infos on the plane of extension.
+         ChFi3d_Purge(Stripe, SD, ref->Vertex(!forward, 2), !forward, 2, intf, intl);
+diff --git a/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_SpKP.cxx b/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_SpKP.cxx
+index d2139e2f..b1d9aa67 100644
+--- a/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_SpKP.cxx
++++ b/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_SpKP.cxx
+@@ -1391,7 +1391,9 @@ bool ChFi3d_Builder::SplitKPart(const occ::handle<ChFiDS_SurfData>&
+         occ::handle<ChFiDS_SurfData>& CD1 = SetData.ChangeValue(i1);
+         ChFiDS_CommonPoint&           CP1 = CD1->ChangeVertexFirstOnS1();
+         ChFiDS_CommonPoint&           CP2 = CD1->ChangeVertexFirstOnS2();
+-        if (CP1.IsOnArc() && !SearchFace(Spine, CP1, F1, FBID))
++        // (A contact ending on the concave crease where the contour was
++        // stopped at a turn ends there, though the faces are tangent.)
++        if (CP1.IsOnArc() && (!SearchFace(Spine, CP1, F1, FBID) || EndsOnTurnCrease(CP1, F1)))
+         {
+           ptg = CD1->InterferenceOnS1().FirstParameter();
+           dsp = ComputeAbscissa(ed, ptg);
+@@ -1401,7 +1403,7 @@ bool ChFi3d_Builder::SplitKPart(const occ::handle<ChFiDS_SurfData>&
+             dist   = std::abs(dsp);
+           }
+         }
+-        else if (CP2.IsOnArc() && !SearchFace(Spine, CP2, F2, FBID))
++        else if (CP2.IsOnArc() && (!SearchFace(Spine, CP2, F2, FBID) || EndsOnTurnCrease(CP2, F2)))
+         {
+           ptg = CD1->InterferenceOnS2().FirstParameter();
+           dsp = ComputeAbscissa(ed, ptg);
+@@ -1533,7 +1535,7 @@ bool ChFi3d_Builder::SplitKPart(const occ::handle<ChFiDS_SurfData>&
+         occ::handle<ChFiDS_SurfData>& CD3 = SetData.ChangeValue(i2);
+         ChFiDS_CommonPoint&           CP1 = CD3->ChangeVertexLastOnS1();
+         ChFiDS_CommonPoint&           CP2 = CD3->ChangeVertexLastOnS2();
+-        if (CP1.IsOnArc() && !SearchFace(Spine, CP1, F1, FBID))
++        if (CP1.IsOnArc() && (!SearchFace(Spine, CP1, F1, FBID) || EndsOnTurnCrease(CP1, F1)))
+         {
+           ptg = CD3->InterferenceOnS1().LastParameter();
+           dsp = -ComputeAbscissa(ed, ptg) - f + l;
+@@ -1543,7 +1545,7 @@ bool ChFi3d_Builder::SplitKPart(const occ::handle<ChFiDS_SurfData>&
+             dist  = std::abs(dsp);
+           }
+         }
+-        else if (CP2.IsOnArc() && !SearchFace(Spine, CP2, F2, FBID))
++        else if (CP2.IsOnArc() && (!SearchFace(Spine, CP2, F2, FBID) || EndsOnTurnCrease(CP2, F2)))
+         {
+           ptg = CD3->InterferenceOnS2().LastParameter();
+           dsp = -ComputeAbscissa(ed, ptg) - f + l;

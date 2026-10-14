@@ -18,6 +18,7 @@
 //! (mitcad#96). `_f3d.found` says where the entity was found or why not.
 
 use std::collections::HashMap;
+use std::sync::{Arc, Mutex, OnceLock};
 
 use crate::asm::AsmFile;
 use crate::asm::history::History;
@@ -27,9 +28,6 @@ use crate::names::{EdgeGeometry, NamedState};
 use serde_json::{Map, Value};
 
 use super::ir::{Detail, Dump, EntityName, Fingerprint, Geometry, Mat4, Reference, TimelineItem};
-
-/// A history state as [`History::view`] gives it.
-type View = HashMap<usize, Option<usize>>;
 
 /// A history blob of the document.
 struct Blob {
@@ -46,6 +44,167 @@ struct Blobs(std::sync::OnceLock<Vec<Blob>>);
 impl Blobs {
     fn get(&self, doc: &F3dFile) -> &[Blob] {
         self.0.get_or_init(|| history_blobs(doc))
+    }
+}
+
+// History states named once (mitcad#246).
+
+/// The history's blobs with their named states, each (blob, state) named
+/// once while it is kept and shared by every item (and thread) that looks
+/// in it: the items before and after one look in the same states (an item's
+/// earlier states are the states before the items before it), and an item
+/// looks in its own state for its bodies, its faces and its edges. A state
+/// is a function of the blob and the position alone, so what is found does
+/// not depend on what is kept. The states last used are kept within
+/// [`KEPT_STATES`] (naming every state at once ran a large design out of
+/// memory, mitcad#132).
+struct States<'a> {
+    blobs: &'a Blobs,
+    doc: &'a F3dFile,
+    kept: Mutex<Kept<'a>>,
+    /// [`KEPT_STATES`].
+    budget: usize,
+    /// The states whose whole circles [`circle_seams`] reads after the
+    /// items ([`seam_states`]), and those circles, taken when the state is
+    /// named (they are few; the state itself is not kept that long).
+    circle_states: OnceLock<std::collections::HashSet<(usize, usize)>>,
+    circles: Mutex<HashMap<(usize, usize), Circles>>,
+}
+
+/// A state's whole circles ([`closed_circles`]).
+type Circles = Arc<Vec<ClosedCircle>>;
+
+/// How large the named states [`States`] keeps may be in all
+/// ([`NamedState::size`]; with the one just named): two or three states of
+/// a design whose bodies have 38 000 faces (each counts about 160 000 to
+/// 220 000, some 30 MB), for an item's own state and the next items'.
+///
+/// More is not worth its memory: an item that does not find an input looks
+/// up to [`EARLIER`] states back, the states of the items before it, so
+/// naming each state of that design once took keeping about twelve (155
+/// namings of its 135 states instead of 184 with this budget, 234 before
+/// mitcad#246), and with threads finding the inputs runs beside the
+/// conversion of the bodies, where the import's memory peaks: twelve
+/// states raised that peak from 3.6 to 4.1 GB. Keeping all took 5.7 GB.
+const KEPT_STATES: usize = 500_000;
+
+/// A named state, built once by the first who asks for it (the others
+/// wait for it).
+type Shared<'a> = Arc<OnceLock<Arc<NamedState<'a>>>>;
+
+#[derive(Default)]
+struct Kept<'a> {
+    /// By (blob, `k` of `view(k)`): the state, when it was last asked for
+    /// (by `clock`), and its size once it is named (0 before).
+    states: HashMap<(usize, usize), (Shared<'a>, u64, usize)>,
+    clock: u64,
+    size: usize,
+}
+
+impl<'a> States<'a> {
+    fn new(blobs: &'a Blobs, doc: &'a F3dFile) -> Self {
+        States {
+            blobs,
+            doc,
+            kept: Mutex::new(Kept::default()),
+            budget: KEPT_STATES,
+            circle_states: OnceLock::new(),
+            circles: Mutex::new(HashMap::new()),
+        }
+    }
+
+    /// The whole circles among the edges of blob `b` with `k` states rolled
+    /// back ([`closed_circles`]).
+    fn closed_circles(&self, b: usize, k: usize) -> Circles {
+        let kept = || {
+            self.circles
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .get(&(b, k))
+                .cloned()
+        };
+        if let Some(circles) = kept() {
+            return circles;
+        }
+        let state = self.get(b, k);
+        // (Kept when it was named just now.)
+        kept().unwrap_or_else(|| Arc::new(closed_circles(&state)))
+    }
+
+    /// Keeps the whole circles of a state just named, when [`circle_seams`]
+    /// will read them.
+    fn keep_circles(&self, b: usize, k: usize, state: &NamedState) {
+        if !self
+            .circle_states
+            .get()
+            .is_some_and(|wanted| wanted.contains(&(b, k)))
+        {
+            return;
+        }
+        let circles = Arc::new(closed_circles(state));
+        self.circles
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert((b, k), circles);
+    }
+
+    fn blobs(&self) -> &'a [Blob] {
+        self.blobs.get(self.doc)
+    }
+
+    fn kept(&self) -> std::sync::MutexGuard<'_, Kept<'a>> {
+        self.kept
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    /// Blob `b` with its newest `k` states rolled back (`view(k)`), named.
+    fn get(&self, b: usize, k: usize) -> Arc<NamedState<'a>> {
+        let shared = {
+            let mut kept = self.kept();
+            kept.clock += 1;
+            let clock = kept.clock;
+            let entry = kept
+                .states
+                .entry((b, k))
+                .or_insert_with(|| (Shared::default(), 0, 0));
+            entry.1 = clock;
+            entry.0.clone()
+        };
+        let state = shared
+            .get_or_init(|| {
+                let blob = &self.blobs()[b];
+                let state = NamedState::new(&blob.file, Some(blob.history.view(k)));
+                self.keep_circles(b, k, &state);
+                Arc::new(state)
+            })
+            .clone();
+        let mut kept = self.kept();
+        let size = state.size();
+        let new = match kept.states.get_mut(&(b, k)) {
+            Some(entry) if entry.2 == 0 && Arc::ptr_eq(&entry.0, &shared) => {
+                entry.2 = size;
+                true
+            }
+            _ => false,
+        };
+        if new {
+            kept.size += size;
+        }
+        // The states used longest ago go first, until the rest fit.
+        while kept.size > self.budget {
+            let oldest = kept
+                .states
+                .iter()
+                .filter(|(key, entry)| **key != (b, k) && entry.2 > 0)
+                .min_by_key(|(_, entry)| entry.1)
+                .map(|(key, _)| *key);
+            let Some(key) = oldest else { break };
+            if let Some((_, _, size)) = kept.states.remove(&key) {
+                kept.size -= size;
+            }
+        }
+        state
     }
 }
 
@@ -305,7 +464,7 @@ fn named_entities(detail: &mut Detail) -> Vec<&mut Fingerprint> {
 
 /// Writes the geometry of face `i` of a history state into a face
 /// fingerprint (cm).
-fn fill_face(state: &NamedState, i: usize, fp: &mut Fingerprint) -> Result<(), String> {
+pub(crate) fn fill_face(state: &NamedState, i: usize, fp: &mut Fingerprint) -> Result<(), String> {
     let cm = |p: [f64; 3]| p.map(|x| x / 10.0);
     // A planar face (a mirror plane, a split tool; mitcad#67).
     if let (Err(_), Ok(p)) = (state.cylinder(i), state.plane(i)) {
@@ -522,6 +681,10 @@ fn face_edges(
         .collect()
 }
 
+/// A face selection of a fillet or chamfer ([`expand_faces`]): its edge set
+/// and place in it, the face and its names.
+type FaceSelection<'f> = ((usize, usize), &'f Fingerprint, Vec<Vec<EntityName>>);
+
 /// A fillet's or chamfer's face selections (face references in its edge
 /// sets, mitcad#96) replaced by the edges of the faces, found in the
 /// state before the item, else up to [`EARLIER`] states before it, as
@@ -555,10 +718,7 @@ fn expand_faces(
     }
     let mut found: HashMap<(usize, usize), Vec<Fingerprint>> = HashMap::new();
     let mut why: HashMap<(usize, usize), String> = HashMap::new();
-    let own: Vec<(&Blob, usize)> = starts(at, blobs, result)
-        .into_iter()
-        .map(|(b, k)| (&blobs[b], k))
-        .collect();
+    let own = starts(at, blobs, result);
     if own.is_empty() {
         let none = no_start(at, result);
         for &key in &left {
@@ -571,38 +731,53 @@ fn expand_faces(
         if left.is_empty() {
             break;
         }
-        let views: Vec<(&Blob, usize, View)> = earlier
-            .flat_map(|e| own.iter().map(move |&(b, k)| (b, e, k + e)))
-            .filter(|(b, _, k)| *k <= b.history.states.len())
-            .map(|(b, e, k)| (b, e, b.history.view(k)))
-            .collect();
-        let named: Vec<(&Blob, usize, NamedState)> = views
+        // The face selections, each with its names.
+        let open: Vec<FaceSelection> = left
             .iter()
-            .map(|(b, e, view)| (*b, *e, NamedState::new(&b.file, Some(view))))
+            .filter_map(|&(k, j)| {
+                let Some(Reference::Face(face)) = sets[k].edges.as_ref().and_then(|e| e.get(j))
+                else {
+                    return None;
+                };
+                let entities = face
+                    .f3d
+                    .as_ref()
+                    .and_then(|f| f.entities.clone())
+                    .unwrap_or_default();
+                Some(((k, j), &**face, entities))
+            })
             .collect();
-        let mut still = Vec::new();
-        for (k, j) in left {
-            let Some(Reference::Face(face)) = sets[k].edges.as_ref().and_then(|e| e.get(j)) else {
-                continue;
-            };
-            let entities = face
-                .f3d
-                .as_ref()
-                .and_then(|f| f.entities.clone())
-                .unwrap_or_default();
-            let mut hit = None;
-            for (b, e, state) in &named {
-                match face_edges(state, face, &entities) {
+        // Each takes the first state (in this order) it is found in, and the
+        // first reason it is not; the states are named one at a time, and
+        // none after all are found.
+        let mut hits: HashMap<(usize, usize), (Vec<Fingerprint>, &str, usize)> = HashMap::new();
+        let views = earlier
+            .flat_map(|e| own.iter().map(move |&(b, k)| (b, e, k + e)))
+            .filter(|&(b, _, k)| k <= blobs[b].history.states.len());
+        for (b, e, k) in views {
+            if open.iter().all(|(key, _, _)| hits.contains_key(key)) {
+                break;
+            }
+            let state = at.states.get(b, k);
+            for (key, face, entities) in &open {
+                if hits.contains_key(key) {
+                    continue;
+                }
+                match face_edges(&state, face, entities) {
                     Ok(edges) => {
-                        hit = Some((edges, b.entry.as_str(), *e));
-                        break;
+                        hits.insert(*key, (edges, blobs[b].entry.as_str(), e));
                     }
                     Err(err) => {
-                        why.entry((k, j)).or_insert(err);
+                        why.entry(*key).or_insert(err);
                     }
                 }
             }
-            match hit {
+        }
+        let keys: Vec<(usize, usize)> = open.iter().map(|(key, _, _)| *key).collect();
+        drop(open);
+        let mut still = Vec::new();
+        for (k, j) in keys {
+            match hits.remove(&(k, j)) {
                 Some((mut edges, entry, e)) => {
                     let text = match e {
                         0 => format!("{entry} before {label} (an edge of a face)"),
@@ -654,10 +829,15 @@ pub fn resolve(dump: &mut Dump, doc: &F3dFile) -> Resolved {
         return out;
     };
     let blobs = Blobs::default();
+    let states = States::new(&blobs, doc);
     let timeline = Timeline::new(items);
+    let _ = states
+        .circle_states
+        .set(seam_states(items, &states, &timeline));
     for (position, item) in items.iter_mut().enumerate() {
         let at = At {
             blobs: &blobs,
+            states: &states,
             doc,
             timeline: &timeline,
             position,
@@ -665,7 +845,7 @@ pub fn resolve(dump: &mut Dump, doc: &F3dFile) -> Resolved {
         };
         resolve_item(item, &at, &mut out);
     }
-    circle_seams(items, &blobs, doc, &timeline);
+    circle_seams(items, &states, &timeline, 1);
     out
 }
 
@@ -673,6 +853,8 @@ pub fn resolve(dump: &mut Dump, doc: &F3dFile) -> Resolved {
 /// one needs them), the timeline and the item's position in it.
 struct At<'a> {
     blobs: &'a Blobs,
+    /// The blobs' states, named once ([`States`]).
+    states: &'a States<'a>,
     doc: &'a F3dFile,
     timeline: &'a Timeline,
     position: usize,
@@ -871,7 +1053,11 @@ pub fn resolve_on(dump: &mut Dump, doc: &F3dFile, threads: usize) -> Resolved {
         return Resolved::default();
     };
     let blobs = Blobs::default();
+    let states = States::new(&blobs, doc);
     let timeline = Timeline::new(items);
+    let _ = states
+        .circle_states
+        .set(seam_states(items, &states, &timeline));
     let queue = std::sync::Mutex::new(items.iter_mut().enumerate());
     let found = std::sync::Mutex::new(Resolved::default());
     let work = || {
@@ -886,6 +1072,7 @@ pub fn resolve_on(dump: &mut Dump, doc: &F3dFile, threads: usize) -> Resolved {
             };
             let at = At {
                 blobs: &blobs,
+                states: &states,
                 doc,
                 timeline: &timeline,
                 position,
@@ -909,7 +1096,7 @@ pub fn resolve_on(dump: &mut Dump, doc: &F3dFile, threads: usize) -> Resolved {
         }
         work();
     });
-    circle_seams(items, &blobs, doc, &timeline);
+    circle_seams(items, &states, &timeline, threads);
     found
         .into_inner()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -999,7 +1186,7 @@ fn find_named(
             let views = earlier
                 .flat_map(|e| own.iter().map(move |&(b, k)| (b, e, k + e)))
                 .filter(|&(b, _, k)| k <= blobs[b].history.states.len());
-            left = search(blobs, left, views, out, surface, &|b, e| {
+            left = search(at.states, left, views, out, surface, &|b, e| {
                 let entry = &blobs[b].entry;
                 match e {
                     0 => format!("{entry} before {label}"),
@@ -1024,7 +1211,7 @@ fn find_named(
         .filter(|&(b, _, k)| k <= blobs[b].history.states.len());
     let position = at.position;
     let mut found = Vec::new();
-    left = search_marked(blobs, left, views, &mut found, surface, &|b, e| {
+    left = search_marked(at.states, left, views, &mut found, surface, &|b, e| {
         let entry = &blobs[b].entry;
         match e {
             0 => format!("{entry} (another component's history) at item {position}"),
@@ -1046,7 +1233,7 @@ fn find_named(
 /// first it is in; `found` says where. Returns the inputs not found,
 /// with the first reason.
 fn search<'f>(
-    blobs: &[Blob],
+    states: &States,
     left: Left<'f>,
     views: impl Iterator<Item = (usize, usize, usize)>,
     out: &mut Resolved,
@@ -1054,14 +1241,14 @@ fn search<'f>(
     found: &dyn Fn(usize, usize) -> String,
 ) -> Left<'f> {
     let mut hits = Vec::new();
-    let left = search_marked(blobs, left, views, &mut hits, surface, found);
+    let left = search_marked(states, left, views, &mut hits, surface, found);
     out.found += hits.len();
     left
 }
 
 /// [`search`], giving each input found with its blob.
 fn search_marked<'f>(
-    blobs: &[Blob],
+    states: &States,
     left: Left<'f>,
     views: impl Iterator<Item = (usize, usize, usize)>,
     hits: &mut Vec<(&'f mut Fingerprint, usize)>,
@@ -1095,9 +1282,7 @@ fn search_marked<'f>(
         if inputs.iter().all(|i| i.hit.is_some()) {
             break;
         }
-        let blob = &blobs[b];
-        let view: View = blob.history.view(k);
-        let state = NamedState::new(&blob.file, Some(&view));
+        let state = states.get(b, k);
         for input in inputs.iter_mut().filter(|i| i.hit.is_none()) {
             match locate(&state, input.fp, &input.entities, input.twin, surface) {
                 Ok((how, edge)) => {
@@ -1270,6 +1455,8 @@ fn resolve_path_edges(item: &mut TimelineItem, at: &At, out: &mut Resolved) {
                 | "MirrorFeature"
                 | "SplitBodyFeature"
                 | "DeleteFaceFeature"
+                // A flange's edge (mitcad#211).
+                | "FlangeFeature"
         )
     ) {
         return;
@@ -1360,14 +1547,10 @@ fn resolve_bodies(item: &mut TimelineItem, at: &At, result: Option<i32>, out: &m
         return;
     }
     let blobs = at.blobs.get(at.doc);
-    let views: Vec<(&Blob, View)> = starts(at, blobs, result)
+    let named: Vec<(&Blob, Arc<NamedState>)> = starts(at, blobs, result)
         .into_iter()
         .filter(|&(b, k)| k <= blobs[b].history.states.len())
-        .map(|(b, k)| (&blobs[b], blobs[b].history.view(k)))
-        .collect();
-    let named: Vec<(&Blob, NamedState)> = views
-        .iter()
-        .map(|(b, view)| (*b, NamedState::new(&b.file, Some(view))))
+        .map(|(b, k)| (&blobs[b], at.states.get(b, k)))
         .collect();
     let none = no_start(at, result);
     let label = start_label(at, result);
@@ -1621,7 +1804,7 @@ fn find_external(
         // document's later operations consumed.
         for back in 0..=blob.history.states.len() {
             let view = blob.history.view(blob.history.states.len() - back);
-            let state = NamedState::new(&blob.file, Some(&view));
+            let state = NamedState::new(&blob.file, Some(view));
             let back_note = if back == 0 {
                 String::new()
             } else {
@@ -1635,7 +1818,7 @@ fn find_external(
                         // names, not which body it is).
                         let record = state.bodies[i].record;
                         let last_view = blob.history.view(blob.history.states.len());
-                        let last = NamedState::new(&blob.file, Some(&last_view));
+                        let last = NamedState::new(&blob.file, Some(last_view));
                         let points = match last.bodies.iter().position(|b| b.record == record) {
                             Some(j) => last.body_points(j, 8),
                             None => state.body_points(i, 8),
@@ -1671,7 +1854,7 @@ fn find_external(
                     {
                         let entity = state.faces[i].entity;
                         let last_view = blob.history.view(blob.history.states.len());
-                        let last = NamedState::new(&blob.file, Some(&last_view));
+                        let last = NamedState::new(&blob.file, Some(last_view));
                         if let Some(j) = last.faces.iter().position(|f| f.entity == entity) {
                             let mut later = fp.clone();
                             if fill_face(&last, j, &mut later).is_ok() {
@@ -1730,7 +1913,154 @@ struct SeamSketch {
 /// (the file puts it at the x axis, the opposite side or at another angle,
 /// by how the circle was drawn), and the replay needs it to make its
 /// cylinders' seams, vertices and edges where the file has them.
-fn circle_seams(items: &mut [TimelineItem], blobs: &Blobs, doc: &F3dFile, timeline: &Timeline) {
+fn circle_seams<'a>(
+    items: &mut [TimelineItem],
+    states: &'a States<'a>,
+    timeline: &'a Timeline,
+    threads: usize,
+) {
+    let (blobs, doc) = (states.blobs, states.doc);
+    let sketches = seam_sketches(items);
+    if sketches.is_empty() {
+        return;
+    }
+    let jobs = seam_jobs(items, &sketches, states, timeline);
+    let wanted = |used: &[i64], found: &HashMap<(i64, usize), f64>| {
+        used.iter()
+            .flat_map(|s| sketches[s].circles.iter().map(move |c| (*s, c.curve)))
+            .any(|k| !found.contains_key(&k))
+    };
+    // What one extrusion's states settle for the circles not found yet:
+    // the closed edges on each circle's axis and in its plane (the distance
+    // along the axis from the sketch's plane and the angle), the one in the
+    // sketch's plane, else the circles at the other end if they agree.
+    let settle = |(position, result, used): &(usize, i32, Vec<i64>),
+                  found: &HashMap<(i64, usize), f64>|
+     -> Vec<((i64, usize), f64)> {
+        let item = &items[*position];
+        let at = At {
+            blobs,
+            states,
+            doc,
+            timeline,
+            position: *position,
+            suppressed: no_result_state(item),
+        };
+        let blobs = blobs.get(doc);
+        let mut cands: HashMap<(i64, usize), Vec<(f64, f64)>> = HashMap::new();
+        for (b, k) in starts(&at, blobs, Some(*result)) {
+            if k == 0 || k > blobs[b].history.states.len() {
+                continue;
+            }
+            // The bodies the extrusion made.
+            let closed = states.closed_circles(b, k - 1);
+            for s in used {
+                for (curve, along, angle) in seam_candidates(&closed, &sketches[s]) {
+                    if !found.contains_key(&(*s, curve)) {
+                        cands.entry((*s, curve)).or_default().push((along, angle));
+                    }
+                }
+            }
+        }
+        let mut settled = Vec::new();
+        for (key, list) in cands {
+            let same = |a: f64, b: f64| (a - b).abs() < 1e-6;
+            if let Some(&(_, angle)) = list.iter().find(|(t, _)| *t < 0.01) {
+                settled.push((key, angle));
+            } else if list.iter().all(|&(_, a)| same(a, list[0].1)) {
+                settled.push((key, list[0].1));
+            }
+        }
+        settled
+    };
+    // In the timeline's order, a circle taking what the first extrusion
+    // that settles it gives. With threads, `threads` extrusions at a time
+    // (mitcad#119: naming each extrusion's states one after another took
+    // seconds of a large design's reading): one may then also work out a
+    // circle an earlier one of its group settles, which is not taken.
+    let mut found: HashMap<(i64, usize), f64> = HashMap::new();
+    for group in jobs.chunks(threads.max(1)) {
+        let group: Vec<&(usize, i32, Vec<i64>)> =
+            group.iter().filter(|j| wanted(&j.2, &found)).collect();
+        let settled: Vec<Vec<((i64, usize), f64)>> = if group.len() > 1 {
+            std::thread::scope(|scope| {
+                let found = &found;
+                let running: Vec<_> = group
+                    .iter()
+                    .map(|job| {
+                        std::thread::Builder::new()
+                            .name("mitcad-import-inputs".to_owned())
+                            .stack_size(64 << 20)
+                            .spawn_scoped(scope, move || settle(job, found))
+                    })
+                    .collect();
+                running
+                    .into_iter()
+                    .zip(&group)
+                    .map(|(thread, job)| match thread {
+                        Ok(t) => t
+                            .join()
+                            .unwrap_or_else(|panic| std::panic::resume_unwind(panic)),
+                        // (Not started: here.)
+                        Err(_) => settle(job, found),
+                    })
+                    .collect()
+            })
+        } else {
+            group.iter().map(|job| settle(job, &found)).collect()
+        };
+        for (key, angle) in settled.into_iter().flatten() {
+            found.entry(key).or_insert(angle);
+        }
+    }
+    for item in items.iter_mut() {
+        let index = item.index.unwrap_or(-1);
+        if let Some(Detail::Sketch(sk)) = &mut item.detail
+            && let Some(curves) = sk.curves.as_mut()
+        {
+            for (i, c) in curves.iter_mut().enumerate() {
+                if let Some(&angle) = found.get(&(index, i)) {
+                    c.f3d_seam = Some(angle);
+                }
+            }
+        }
+    }
+}
+
+/// The states [`circle_seams`] looks in (each extrusion's of a sketch's
+/// whole circles: the state after it), so that their closed circles are
+/// taken while the items' inputs name them ([`States::closed_circles`]).
+fn seam_states<'a>(
+    items: &[TimelineItem],
+    states: &'a States<'a>,
+    timeline: &'a Timeline,
+) -> std::collections::HashSet<(usize, usize)> {
+    let mut out = std::collections::HashSet::new();
+    let sketches = seam_sketches(items);
+    if sketches.is_empty() {
+        return out;
+    }
+    let blobs = states.blobs();
+    for (position, result, _) in seam_jobs(items, &sketches, states, timeline) {
+        let at = At {
+            blobs: states.blobs,
+            states,
+            doc: states.doc,
+            timeline,
+            position,
+            suppressed: no_result_state(&items[position]),
+        };
+        for (b, k) in starts(&at, blobs, Some(result)) {
+            if k > 0 && k <= blobs[b].history.states.len() {
+                out.insert((b, k - 1));
+            }
+        }
+    }
+    out
+}
+
+/// The sketches with whole circles, by their timeline index.
+fn seam_sketches(items: &[TimelineItem]) -> HashMap<i64, SeamSketch> {
     let cm = |p: [f64; 3]| p.map(|v| v * 10.0);
     let mut sketches: HashMap<i64, SeamSketch> = HashMap::new();
     for item in items.iter() {
@@ -1766,16 +2096,26 @@ fn circle_seams(items: &mut [TimelineItem], blobs: &Blobs, doc: &F3dFile, timeli
             sketches.insert(item.index.unwrap_or(-1), SeamSketch { circles, x, y });
         }
     }
-    if sketches.is_empty() {
-        return;
-    }
-    let mut found: HashMap<(i64, usize), f64> = HashMap::new();
+    sketches
+}
+
+/// The extrusions of the sketches' profiles: (position, result, the
+/// sketches).
+fn seam_jobs<'a>(
+    items: &[TimelineItem],
+    sketches: &HashMap<i64, SeamSketch>,
+    states: &'a States<'a>,
+    timeline: &'a Timeline,
+) -> Vec<(usize, i32, Vec<i64>)> {
+    let (blobs, doc) = (states.blobs, states.doc);
+    let mut jobs: Vec<(usize, i32, Vec<i64>)> = Vec::new();
     for (position, item) in items.iter().enumerate() {
         let Some(Detail::Extrude(d)) = &item.detail else {
             continue;
         };
         let at = At {
             blobs,
+            states,
             doc,
             timeline,
             position,
@@ -1795,57 +2135,11 @@ fn circle_seams(items: &mut [TimelineItem], blobs: &Blobs, doc: &F3dFile, timeli
                 used.push(s);
             }
         }
-        let wanted = |found: &HashMap<(i64, usize), f64>| {
-            used.iter()
-                .flat_map(|s| sketches[s].circles.iter().map(move |c| (*s, c.curve)))
-                .any(|k| !found.contains_key(&k))
-        };
-        if used.is_empty() || !wanted(&found) {
-            continue;
-        }
-        let blobs = blobs.get(doc);
-        // The closed edges on each circle's axis and in its plane: the
-        // distance along the axis from the sketch's plane and the angle.
-        let mut cands: HashMap<(i64, usize), Vec<(f64, f64)>> = HashMap::new();
-        for (b, k) in starts(&at, blobs, Some(result)) {
-            if k == 0 || k > blobs[b].history.states.len() {
-                continue;
-            }
-            // The bodies the extrusion made.
-            let view = blobs[b].history.view(k - 1);
-            let state = NamedState::new(&blobs[b].file, Some(&view));
-            let closed = closed_circles(&state);
-            for s in &used {
-                for (curve, along, angle) in seam_candidates(&closed, &sketches[s]) {
-                    if !found.contains_key(&(*s, curve)) {
-                        cands.entry((*s, curve)).or_default().push((along, angle));
-                    }
-                }
-            }
-        }
-        // The edge in the sketch's plane, else the circles at the other
-        // end if they agree.
-        for (key, list) in cands {
-            let same = |a: f64, b: f64| (a - b).abs() < 1e-6;
-            if let Some(&(_, angle)) = list.iter().find(|(t, _)| *t < 0.01) {
-                found.insert(key, angle);
-            } else if list.iter().all(|&(_, a)| same(a, list[0].1)) {
-                found.insert(key, list[0].1);
-            }
+        if !used.is_empty() {
+            jobs.push((position, result, used));
         }
     }
-    for item in items.iter_mut() {
-        let index = item.index.unwrap_or(-1);
-        if let Some(Detail::Sketch(sk)) = &mut item.detail
-            && let Some(curves) = sk.curves.as_mut()
-        {
-            for (i, c) in curves.iter_mut().enumerate() {
-                if let Some(&angle) = found.get(&(index, i)) {
-                    c.f3d_seam = Some(angle);
-                }
-            }
-        }
-    }
+    jobs
 }
 
 /// A closed edge that is a whole circle (mm): its start, its centre, its
@@ -1955,6 +2249,49 @@ fn history_blobs(doc: &F3dFile) -> Vec<Blob> {
 mod tests {
     use super::*;
     use crate::testdata;
+
+    /// The entities of a named state, to compare namings.
+    fn entities(state: &NamedState) -> (Vec<usize>, Vec<usize>, Vec<usize>) {
+        (
+            state.bodies.iter().map(|b| b.record).collect(),
+            state.faces.iter().map(|f| f.entity).collect(),
+            state.edges.iter().map(|e| e.entity).collect(),
+        )
+    }
+
+    #[test]
+    fn a_state_is_named_once_while_it_is_kept() {
+        let blob = testdata::cube_with_history_blob();
+        let zip = crate::zip::stored_zip(&[(
+            "FusionAssetName[Active]/Breps.BlobParts/BREP.1.smbh",
+            &blob,
+        )]);
+        let doc = F3dFile::from_bytes(zip).unwrap();
+        let blobs = Blobs::default();
+        let mut states = States::new(&blobs, &doc);
+        let file = &states.blobs()[0];
+        let alone = |k: usize| NamedState::new(&file.file, Some(file.history.view(k)));
+        // Asked for twice: one naming, the same as the state named alone.
+        let one = states.get(0, 1);
+        assert!(Arc::ptr_eq(&one, &states.get(0, 1)));
+        assert_eq!(entities(&one), entities(&alone(1)));
+        assert_eq!(one.faces.len(), 6);
+        // Three states back there is no body.
+        assert!(states.get(0, 3).bodies.is_empty());
+        assert!(Arc::ptr_eq(&one, &states.get(0, 1)));
+        // Room for one state: the one used longest ago is named again,
+        // the same.
+        states = States {
+            budget: one.size(),
+            ..States::new(&blobs, &doc)
+        };
+        let first = states.get(0, 1);
+        let other = states.get(0, 2);
+        assert!(Arc::ptr_eq(&other, &states.get(0, 2)));
+        let again = states.get(0, 1);
+        assert!(!Arc::ptr_eq(&first, &again));
+        assert_eq!(entities(&first), entities(&again));
+    }
 
     fn n(tag: &str) -> EntityName {
         EntityName {

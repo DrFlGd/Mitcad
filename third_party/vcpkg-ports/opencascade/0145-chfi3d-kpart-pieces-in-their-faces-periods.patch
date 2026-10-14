@@ -1,0 +1,37 @@
+Mitcad's patch to OCCT 8.0.1, under OCCT's licence:
+SPDX-License-Identifier: LGPL-2.1-only WITH OCCT-exception-1.0
+
+Fillets and chamfers: on a closed spine, the p-curves of the pieces cut by
+the faces beyond over a gap (0055, 0071, 0142) in their faces' periods
+(mitcad#263).
+
+The case: a boss under a plate whose rounded corner the boss's foot
+chamfer runs past (0142), the boss's seam, the closed spine's start, in
+the gap. The pieces of the gap past the spine's start take the other
+contact's line and its p-curve on the boss from the whole blend, and their
+parameters a period on: their p-curves on the boss lay a period beyond its
+seam, and the boss's wire did not close in 2d. After the gaps are filled
+(ChFi3d_FillKPartGaps), each piece's p-curve on its face is taken into the
+face's period where it lies wholly outside it (ChFi3d_PCurveInFacePeriod,
+0144).
+
+Before, the chamfer of the case gave an unorientable face.
+
+diff --git a/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_2.cxx b/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_2.cxx
+index bf713193..610133a8 100644
+--- a/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_2.cxx
++++ b/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_2.cxx
+@@ -5823,6 +5823,13 @@ static void ChFi3d_FillKPartGaps(TopOpeBRepDS_DataStructure&
+         {
+           FI.SetLastParameter(FI.LastParameter() + Cl->Period());
+         }
++        // (Its p-curve on a periodic face then lies a period on, past the
++        // face's seam: it is taken back into the face's period.)
++        const int iF = LSD.Value(j)->Index(s);
++        if (iF > 0 && !LSD.Value(j)->IsOnCurve(s))
++        {
++          ChFi3d_PCurveInFacePeriod(FI, TopoDS::Face(DStr.Shape(iF)));
++        }
+       }
+     }
+   }

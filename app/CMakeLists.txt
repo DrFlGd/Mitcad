@@ -106,6 +106,8 @@ qt_add_executable(mitcad
   # Sketch mode (U2).
   sketch/AutoConstraint.cpp
   sketch/AutoConstraint.hpp
+  sketch/BodyGeometry.cpp
+  sketch/BodyGeometry.hpp
   sketch/DrawTools.cpp
   sketch/EditTools.cpp
   sketch/SketchController.cpp
@@ -188,6 +190,7 @@ qt_add_executable(mitcad
   # The UI tests' sync key (mitcad#15).
   framework/TestSync.cpp
   framework/TestSync.hpp
+  platform/WindowsTestSync.hpp
   # Typed text in the UI tests' log (mitcad#102).
   framework/TypedTextLog.cpp
   framework/TypedTextLog.hpp
@@ -296,6 +299,58 @@ target_sources(mitcad PRIVATE
   framework/SelectionFilterPanel.hpp
   MainWindowSelection.cpp)
 
+# Parameter names picked from the view into a feature panel's value field:
+# the visible sketches' dimensions and the earlier features' values as
+# labels while the field has the keyboard (mitcad#250).
+target_sources(mitcad PRIVATE
+  framework/CommandSessionPicks.cpp
+  framework/ParameterPicker.cpp
+  framework/ParameterPicker.hpp
+  MainWindowParameterPicks.cpp)
+
+# The Docked chrome's window style: raised panels, their titles, one accent
+# colour; on Windows 11 the frame through DWM (mitcad#251).
+target_sources(mitcad PRIVATE
+  framework/WindowStyle.cpp
+  framework/WindowStyle.hpp
+  platform/WindowsFrame.hpp)
+if(WIN32)
+  target_sources(mitcad PRIVATE platform/windows/WindowsFrame.cpp)
+  # The UI tests' sync key on Windows (mitcad#271).
+  target_sources(mitcad PRIVATE platform/windows/WindowsTestSync.cpp)
+  # DwmSetWindowAttribute: dwmapi.dll is in every Windows since Vista; the
+  # Windows 11 attributes are skipped at run time on older builds.
+  target_link_libraries(mitcad PRIVATE dwmapi)
+endif()
+
+# Which bodies a feature's preview draws and where: hidden ones stay
+# hidden, placed and linked components' bodies where their occurrences put
+# them (mitcad#266).
+target_sources(mitcad PRIVATE
+  framework/PreviewBodies.cpp
+  framework/PreviewBodies.hpp)
+
+# The Sketch Palette's warnings as links that select what they are about,
+# the view panned to them (mitcad#264).
+target_sources(mitcad PRIVATE
+  sketch/PaletteWarnings.cpp
+  sketch/PaletteWarnings.hpp
+  sketch/SketchReveal.cpp
+  view/ViewReveal.cpp
+  view/ViewReveal.hpp)
+
+# The debug log: Preferences' switch, --debug-log, its files with their
+# rotation, Help > Open Log Folder (mitcad#269).
+target_sources(mitcad PRIVATE
+  framework/DebugLog.cpp
+  framework/DebugLog.hpp
+  MainWindowDebugLog.cpp)
+# The scoped wait cursor of the jobs the window waits for, its log lines
+# and its idle recovery (mitcad#268).
+target_sources(mitcad PRIVATE
+  framework/WaitCursor.cpp
+  framework/WaitCursor.hpp)
+
 target_include_directories(mitcad PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
 target_compile_definitions(mitcad PRIVATE MITCAD_VERSION="${PROJECT_VERSION}")
 target_link_libraries(mitcad PRIVATE
@@ -361,6 +416,16 @@ target_sources(mitcad PRIVATE
   MainWindowMcp.cpp
   mcp/LocalEndpoint.cpp mcp/LocalEndpoint.hpp
   mcp/LiveServer.cpp mcp/LiveServer.hpp)
+# Live MCP for debugging (mitcad#265): queries and sketch commands while a
+# sketch is open, the UI's state, log and view, selections, UI commands by
+# id, Save.
+target_sources(mitcad PRIVATE
+  MainWindowMcpUi.cpp
+  framework/CommandPanelState.cpp
+  framework/CommandSessionScript.cpp
+  mcp/LiveErrors.hpp
+  mcp/LogRing.cpp mcp/LogRing.hpp
+  mcp/ModalGuard.cpp mcp/ModalGuard.hpp)
 if(WIN32)
   target_sources(mitcad PRIVATE mcp/WindowsEndpointSecurity.cpp mcp/WindowsEndpointSecurity.hpp)
   target_link_libraries(mitcad PRIVATE advapi32)
@@ -486,9 +551,28 @@ if(BUILD_TESTING)
                  framework/SelectionScope.hpp)
   # The icons' colour roles on both themes and the disabled rule (mitcad#230).
   target_sources(test_app PRIVATE tests/icon_colours.cpp)
+  # A feature preview's bodies in placed, linked and hidden components
+  # (mitcad#266): plain Qt Core.
+  target_sources(test_app PRIVATE tests/preview_bodies.cpp framework/PreviewBodies.cpp framework/PreviewBodies.hpp)
+  # The debug log's files: rotation, the folder's limits, the header, the
+  # command line (mitcad#269): plain Qt Core and the log ring.
+  target_sources(test_app PRIVATE tests/debug_log.cpp framework/DebugLog.cpp framework/DebugLog.hpp
+                 mcp/LogRing.cpp mcp/LogRing.hpp)
+  # The wait cursor: nested guards, the progress dialog's release, the
+  # log lines, the idle recovery (mitcad#268): plain Qt Widgets.
+  target_sources(test_app PRIVATE tests/wait_cursor.cpp framework/WaitCursor.cpp framework/WaitCursor.hpp)
+  # The sketch snapper's body vertices and edge midpoints (mitcad#258): the
+  # sketch model's data with OCCT's geometry types.
+  target_sources(test_app PRIVATE tests/sketch_snap.cpp sketch/SketchSnap.cpp sketch/BodyGeometry.cpp)
+  target_link_libraries(test_app PRIVATE mitcad_geometry)
   target_include_directories(test_app PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
   target_link_libraries(test_app PRIVATE Qt6::Widgets Qt6::Svg mitcad_warnings)
   add_test(NAME app.unit COMMAND test_app)
+  add_executable(test_view_tessellation tests/view_tessellation.cpp)
+  target_include_directories(test_view_tessellation PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
+  target_link_libraries(test_view_tessellation PRIVATE mitcad_geometry_io TKV3d TKPrim mitcad_warnings)
+  add_test(NAME app.view_tessellation COMMAND test_view_tessellation
+    "${CMAKE_CURRENT_BINARY_DIR}/view-tessellation-files")
   # Check renderer device policy and fallback independently of UI helpers.
   add_test(NAME app.render_devices COMMAND test_app --render-devices)
   set_tests_properties(app.unit app.render_devices PROPERTIES
@@ -530,6 +614,11 @@ target_sources(mitcad PRIVATE
   render/RenderBatch.hpp
   render/RenderImageDialog.cpp
   render/RenderImageDialog.hpp)
+# The browser's light bulbs in every mode, outside a command's undo range
+# (mitcad#295), and Create Sketch's origin planes (mitcad#294).
+target_sources(mitcad PRIVATE
+  framework/CommandSessionVisibility.cpp
+  MainWindowVisibility.cpp)
 
 # The worker: no windows, Qt Core and Gui (QImage for --bench --output),
 # OCCT for the test scene, the renderer.
@@ -674,3 +763,12 @@ if(APPLE)
   # install rules include the worker, denoiser module and their libraries.
   include(packaging/macos/Bundle.cmake)
 endif()
+
+# The browser's and the timeline's places logged again when they move (mitcad#262).
+target_sources(mitcad PRIVATE framework/PlaceWatcher.hpp)
+# The hover of a tangent chain in Fillet, Chamfer and the face tools (mitcad#290).
+target_sources(mitcad PRIVATE framework/CommandSessionHover.cpp)
+# A new feature's operation and objects follow what the model chooses from
+# the preview until the user picks them: Extrude's automatic operation
+# (mitcad#289).
+target_sources(mitcad PRIVATE framework/CommandSessionAuto.cpp)

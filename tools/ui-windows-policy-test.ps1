@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: MIT
 # check-all sources: app/browser/PolicyDialog.cpp app/browser/BrowserController.cpp app/MainWindow.cpp
 # check-all sources: core/model/src/policy.rs core/model/src/document/policy.rs core/model/src/api/policy.rs
+# check-all sources: core/model/src/document/components.rs core/model/src/api/components.rs
 # Input-driven Windows UI test of the design policy (mitcad#220) in the
 # build VM (tools/ui-windows-lib.ps1 says how the input is posted):
 #   1. A new design has Part1 under the root, active: the first sketch and
@@ -11,11 +12,18 @@
 #      no violations; the Part preset (Alt+P) counts Part1:1 against it; OK
 #      sets it, Create Sketch then asks for a plane; Undo takes the policy
 #      back and the root refuses sketches again.
-#   4. New Component Part2 (a part) in the root: Create Sketch there leaves
-#      Part1's faces out of the picks and names Part1 in the hint. With
-#      Part1 taking attachments from others (Alt+H) and Part2 attaching to
-#      others (Alt+O), Part1's faces can be picked, and the sketch goes
-#      into Part2 on it.
+#   4. New Component Part2 (a part) in the root: its first sketch can lie
+#      on Part1's face (mitcad#293); its next Create Sketch leaves Part1's
+#      faces out of the picks and names Part1 in the hint. The Policy
+#      dialog counts the first sketch against the first-sketch settings
+#      when they are off (Alt+I, Alt+K) and sets them. With Part1 taking
+#      attachments from others (Alt+H) and Part2 attaching to others
+#      (Alt+O), Part1's faces can be picked again, and the sketch goes into
+#      Part2 on it.
+#   5. Part1 renamed Bracket in the browser (F2): its only body, Body1, is
+#      renamed with it (mitcad#291).
+#   6. Bracket (a part) active, New Component Inner: made beside it in the
+#      root, with the warning (mitcad#292).
 #
 # Usage: powershell -ExecutionPolicy Bypass -File tools\ui-windows-policy-test.ps1 [-App build\dev\mitcad.exe] [-Out dir] [-QtBin dir]
 param(
@@ -107,18 +115,91 @@ Ui-Step 'name it Part2'                  { Ui-TypeIn 'Panel New Component input 
 Ui-Step 'OK (Enter)'                     { Ui-Key 'Return' }
 Ui-ExpectNew 'Browser Root/Part2:1 at' 'Part2 in the browser'
 Ui-ExpectNew 'Browser radio Root at' 'Part2 is active, not the root'
+# Part2's first sketch may lie on Part1's face (mitcad#293: both parts
+# allow first sketches across components).
 Ui-Mark
 Ui-Step 'create sketch (F7)'             { Ui-Key 'F7' }
-Ui-ExpectNew 'Create Sketch: policy leaves out Part1' "Part1's faces left out, named"
+Ui-ExpectNew 'Pick places:' 'the picks are logged'
+Ui-ExpectNew 'Pick face F2.b0/F2:side(c1[c4,c2]) in O1 at' "Part1's faces can be picked for Part2's first sketch"
+Ui-ExpectNone 'Create Sketch: policy leaves out' 'nothing left out'
+Ui-Step "pick a side face of Part1's body" { Ui-ClickPick 'face F2.b0/F2:side(c1[c4,c2])' }
+Ui-ExpectNew 'Sketch Sketch2 is in Part2' 'the first sketch went into Part2'
+Ui-ExpectNew ' in O1, origin ' 'on the face where Part1:1 shows it'
+# Something in it: Finish Sketch takes an empty sketch back, and Part2
+# would have no first sketch.
+Ui-Mark
+Ui-Step 'rectangle tool (R)'             { Ui-Key 'r' }
+Ui-Step 'first corner at the origin'     { Ui-SketchClick 0 0 }
+Ui-Step 'width 5 (Tab) height 5'         { Ui-Type '5'; Ui-Key 'Tab'; Ui-Type '5' }
+Ui-Step 'confirm (Enter)'                { Ui-Key 'Return' }
+Ui-ExpectNew 'Added rectangle 5 x 5 mm at (0, 0)' 'a 5 x 5 rectangle in Sketch2'
+Ui-Mark
+Ui-Step 'finish sketch (Ctrl+Enter)'     { Ui-Key 'ctrl+Return' }
+Ui-ExpectNew 'Sketch finished' 'sketch finished'
+# Its next sketch follows the sketch attachment pair: Part1 is left out.
+Ui-Mark
+Ui-Step 'create sketch (F7)'             { Ui-Key 'F7' }
+Ui-ExpectNew 'Create Sketch: policy leaves out Part1' "Part1's faces left out for the next sketch, named"
 Ui-ExpectNew 'Pick places:' 'the picks are logged'
 Start-Sleep -Milliseconds 500
 Ui-ExpectNone 'Pick face F2.b0/' "no face of Part1's body can be picked"
 Ui-Step 'cancel (Esc)'                   { Ui-Key 'Escape' }
 
+Write-Host '--- The first-sketch settings in the Policy dialog (mitcad#293)'
+Ui-Mark
+Ui-Step 'design policy of Part2 (F8)'    { Ui-Key 'F8' }
+Ui-ExpectNew 'Design Policy dialog opened for Part2' 'the policy of Part2 opened'
+Ui-ExpectNew 'Policy dialog Part2: part;' 'Part2 is a part'
+Ui-ExpectNew 'attach_to_others blocked (0), attachments_from_others blocked (0), first_sketch_attaches allowed, first_sketch_attachments_from_others allowed' 'the attached first sketch breaks nothing'
+Ui-FocusDialog '^Design Policy of Part2$'
+Ui-Mark
+Ui-Step 'first sketch may attach off (Alt+I)' { Ui-Key 'alt+i' }
+Ui-ExpectNew 'Policy dialog Part2: custom;' 'Part2 is custom'
+Ui-ExpectNew 'first_sketch_attaches blocked (1)' 'Sketch2 counted against it'
+Ui-Mark
+Ui-Step 'first sketch may attach on (Alt+I)' { Ui-Key 'alt+i' }
+Ui-ExpectNew 'Policy dialog Part2: part;' 'a part again'
+Ui-ExpectNew 'first_sketch_attaches allowed' 'allowed again'
+Ui-Mark
+Ui-Step 'first sketch may attach off (Alt+I)' { Ui-Key 'alt+i' }
+Ui-ExpectNew 'first_sketch_attaches blocked (1)' 'counted again'
+Ui-Step 'OK (Enter)'                     { Ui-Key 'Return' }
+Ui-FocusMain
+Ui-ExpectNew 'Policy of Part2 set: custom' 'the policy of Part2 set'
+Ui-Mark
+Ui-Step 'design policy of Part2 (F8)'    { Ui-Key 'F8' }
+Ui-ExpectNew 'Design Policy dialog opened for Part2' 'the policy of Part2 opened again'
+Ui-ExpectNew 'first_sketch_attaches blocked (1)' 'the setting stays off, Sketch2 counted'
+Ui-FocusDialog '^Design Policy of Part2$'
+Ui-Step 'cancel (Esc)'                   { Ui-Key 'Escape' }
+Ui-FocusMain
+Ui-ExpectNew 'Design Policy dialog closed without a change' 'nothing changed'
+
 Ui-Mark
 Ui-Step 'activate Part1'                 { Ui-ClickLogged 'Browser radio Root/Part1:1' }
 Ui-ExpectNew 'Activated Part1' 'Part1 is active'
-Set-Policy 'Part1' @('alt+h') 'custom'
+Ui-Mark
+Ui-Step 'design policy of Part1 (F8)'    { Ui-Key 'F8' }
+Ui-ExpectNew 'Design Policy dialog opened for Part1' 'the policy of Part1 opened'
+Ui-FocusDialog '^Design Policy of Part1$'
+Ui-Mark
+Ui-Step 'first sketches from others off (Alt+K)' { Ui-Key 'alt+k' }
+Ui-ExpectNew 'first_sketch_attachments_from_others blocked (1)' "Part2's first sketch counted against it"
+Ui-Mark
+Ui-Step 'attachments from others on (Alt+H)' { Ui-Key 'alt+h' }
+Ui-ExpectNew 'attachments_from_others allowed, first_sketch_attaches allowed, first_sketch_attachments_from_others blocked (0)' 'allowed by the general setting'
+Ui-Step 'OK (Enter)'                     { Ui-Key 'Return' }
+Ui-FocusMain
+Ui-ExpectNew 'Policy of Part1 set: custom' 'the policy of Part1 set'
+Ui-Mark
+Ui-Step 'design policy of Part1 (F8)'    { Ui-Key 'F8' }
+Ui-ExpectNew 'Design Policy dialog opened for Part1' 'the policy of Part1 opened again'
+Ui-ExpectNew 'first_sketch_attaches allowed, first_sketch_attachments_from_others blocked (0)' 'the first-sketch setting stays off'
+Ui-FocusDialog '^Design Policy of Part1$'
+Ui-Step 'cancel (Esc)'                   { Ui-Key 'Escape' }
+Ui-FocusMain
+Ui-ExpectNew 'Design Policy dialog closed without a change' 'nothing changed'
+
 Ui-Mark
 Ui-Step 'activate Part2'                 { Ui-ClickLogged 'Browser radio Root/Part2:1' }
 Ui-ExpectNew 'Activated Part2' 'Part2 is active'
@@ -129,7 +210,40 @@ Ui-ExpectNew 'Pick places:' 'the picks are logged'
 Ui-ExpectNew 'Pick face F2.b0/F2:side(c1[c4,c2]) in O1 at' "Part1's faces can be picked"
 Ui-ExpectNone 'Create Sketch: policy leaves out' 'nothing left out'
 Ui-Step "pick a side face of Part1's body" { Ui-ClickPick 'face F2.b0/F2:side(c1[c4,c2])' }
-Ui-ExpectNew 'Sketch Sketch2 is in Part2' 'the sketch went into Part2'
+Ui-ExpectNew 'Sketch Sketch3 is in Part2' 'the sketch went into Part2'
 Ui-ExpectNew ' in O1, origin ' 'on the face where Part1:1 shows it'
+
+Write-Host '--- Renaming Part1 renames its only body (mitcad#291)'
+Ui-Mark
+Ui-Step 'finish sketch (Ctrl+Enter)'      { Ui-Key 'ctrl+Return' }
+Ui-ExpectNew 'Sketch finished' 'sketch finished'
+Ui-Mark
+Ui-Step 'select Part1:1 in the browser'   { Ui-ClickLogged 'Browser Root/Part1:1' }
+Ui-Step 'rename (F2)'                     { Ui-Key 'F2' }
+Ui-ExpectNew 'Renaming Root/Part1:1' 'Part1 renamed in place'
+Ui-Step 'type Bracket, Enter'             { Ui-Type 'Bracket'; Ui-Key 'Return' }
+Ui-ExpectNew 'Renamed Part1:1 to Bracket' 'Part1 is Bracket'
+Ui-ExpectNew 'Renamed body F2.b0 with its component to Bracket' 'Body1 renamed with its component'
+Ui-ExpectNew 'Browser Root/Bracket:1/Bodies/Bracket at' "the browser shows the body's new name"
+
+Write-Host '--- New Component in Bracket, a part: made beside it (mitcad#292)'
+Ui-Mark
+Ui-Step 'activate Bracket'                { Ui-ClickLogged 'Browser radio Root/Bracket:1' }
+Ui-ExpectNew 'Activated Bracket' 'Bracket is active'
+Ui-Mark
+Ui-Step 'new component (F9)'              { Ui-Key 'F9' }
+Ui-ExpectNew 'Panel New Component input name at' 'the New Component panel'
+Ui-Step 'name it Inner'                   { Ui-TypeIn 'Panel New Component input name' 'Inner' }
+Ui-Step 'OK (Enter)'                      { Ui-Key 'Return' }
+Ui-ExpectNew 'Placement warning: Bracket does not take components (its policy): New Component made in Root instead' 'made in the root, with the warning'
+# The new row is the last: scrolled into sight when the tree is taller
+# than the panel.
+for ($i = 0; $i -lt 6; $i++) {
+  if ((Ui-LogLines | Select-Object -Skip $script:UiMark) | Where-Object { $_.Contains('Browser radio Root/Inner:1 at') }) { break }
+  Ui-WheelLogged 'Browser Root' -4
+  Start-Sleep -Milliseconds 500
+}
+Ui-ExpectNew 'Browser radio Root/Inner:1 at' 'Inner is in the root'
+Ui-ExpectNone 'Browser radio Root/Bracket:1/Inner:1' 'not under Bracket'
 
 Ui-Finish 'UI Windows policy test'

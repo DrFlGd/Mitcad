@@ -133,6 +133,12 @@ pub struct SheetFaceDef<P = ParamId> {
     pub rules: FeatureUid,
     #[serde(deserialize_with = "super::extrude::profile_set")]
     pub profiles: Vec<ProfileRef>,
+    /// A face joined to this sheet body (mitcad#242): the regions lie on
+    /// the front or back surface of one of its planar panels and are added
+    /// to that panel's material, through its thickness. Without it the
+    /// face makes new bodies.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub body: Option<BodyUid>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub panel_slots: Vec<PanelSlot>,
     #[serde(skip)]
@@ -149,6 +155,7 @@ impl<P> SheetFaceDef<P> {
         Ok(SheetFaceDef {
             rules: self.rules,
             profiles: self.profiles.clone(),
+            body: self.body,
             panel_slots: self.panel_slots.clone(),
             marker: PhantomData,
         })
@@ -183,7 +190,7 @@ impl<P> SheetFaceDef<P> {
 
 impl FeatureInfo for SheetFaceDef {
     fn references(&self) -> References {
-        References {
+        let mut refs = References {
             features: self
                 .profiles
                 .iter()
@@ -191,10 +198,17 @@ impl FeatureInfo for SheetFaceDef {
                 .chain([self.rules])
                 .collect(),
             ..References::default()
+        };
+        if let Some(body) = self.body {
+            refs.body(body);
         }
+        refs
     }
     fn check(&self, ctx: &CheckContext<'_>) -> Result<(), String> {
         super::extrude::check_profiles(ctx, &self.profiles)?;
+        if let Some(body) = self.body {
+            ctx.body(body)?;
+        }
         if !matches!(ctx.feature(self.rules)?.def, FeatureDef::SheetRules(_)) {
             return Err(format!("{} is not a sheet rules feature", self.rules));
         }
@@ -220,6 +234,9 @@ impl FeatureInfo for SheetFaceDef {
 
 impl<K: Kernel> Evaluate<K> for SheetFaceDef {
     fn evaluate(&self, ctx: &mut EvalContext<'_, K>) -> Result<FeatureOutput<K::Shape>, String> {
+        if let Some(body) = self.body {
+            return crate::sheet::folded::join_face(self, body, ctx);
+        }
         let rules = ctx.sheet_rules(self.rules)?;
         let sketch_uid = self.profiles.first().ok_or("no profiles selected")?.sketch;
         let sketch = ctx.sketch(sketch_uid)?;
@@ -349,6 +366,7 @@ impl<K: Kernel> Evaluate<K> for SheetFaceDef {
                         .collect(),
                     opened: Vec::new(),
                     lineage: Vec::new(),
+                    overlays: Vec::new(),
                     invalidated: None,
                     blockers: Vec::new(),
                 }),

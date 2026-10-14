@@ -9,6 +9,8 @@
 #include "F3dImport.hpp"
 
 #include <algorithm>
+#include <atomic>
+#include <chrono>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
@@ -29,6 +31,7 @@
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QLabel>
+#include <QMessageBox>
 #include <QProcess>
 #include <QProcessEnvironment>
 #include <QProgressBar>
@@ -77,8 +80,10 @@ bool writeFile(const QString& path, const QByteArray& data) {
 
 // The application's requests on the worker's standard input, a line each,
 // until it closes: "stop" (T1e) cancels the job of the import's document,
-// which stops the import early. Read without the C library's streams,
-// whose locks the process's exit takes while this thread waits.
+// which stops the import early; "answer keep" or "answer replace"
+// (mitcad#283) answers the import's question (relayQuestions). Read
+// without the C library's streams, whose locks the process's exit takes
+// while this thread waits.
 void readRequests(const std::shared_ptr<rust::Box<JobControl>>& control) {
   std::string pending;
   char buffer[256];
@@ -108,8 +113,27 @@ void readRequests(const std::shared_ptr<rust::Box<JobControl>>& control) {
         (*control)->cancel();
         std::printf("import-stopping\n");
         std::fflush(stdout);
+      } else if (request.startsWith("answer ")) {
+        (*control)->answer(rustStr(request.mid(7).trimmed()));
       }
     }
+  }
+}
+
+// The import's question to the user (mitcad#283), printed once as a line
+// "import-ask <question>" for the application, until `done`.
+void relayQuestions(const std::shared_ptr<rust::Box<JobControl>>& control,
+                    const std::shared_ptr<std::atomic<bool>>& done) {
+  std::string asked;
+  while (!done->load()) {
+    const rust::String question = (*control)->question();
+    const std::string text(question.data(), question.size());
+    if (!text.empty() && text != asked) {
+      std::printf("import-ask %s\n", text.c_str());
+      std::fflush(stdout);
+    }
+    asked = text;
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
   }
 }
 
@@ -216,6 +240,20 @@ bool isIptFile(const QString& path) {
          suffix.compare(QStringLiteral("iam"), Qt::CaseInsensitive) == 0;
 }
 
+// An IFC file or archive (mitcad#273), by import_ifc.
+bool isIfcFile(const QString& path) {
+  const QString suffix = QFileInfo(path).suffix();
+  return suffix.compare(QStringLiteral("ifc"), Qt::CaseInsensitive) == 0 ||
+         suffix.compare(QStringLiteral("ifczip"), Qt::CaseInsensitive) == 0;
+}
+
+// A building project or family file (mitcad#274), by import_rvt.
+bool isRvtFile(const QString& path) {
+  const QString suffix = QFileInfo(path).suffix().toLower();
+  return suffix == QLatin1String("rvt") || suffix == QLatin1String("rfa") || suffix == QLatin1String("rte") ||
+         suffix == QLatin1String("rft");
+}
+
 // The worker's exit status. While import threads that the hang watchdog
 // gave up still run (their geometry kernel call has not returned), the
 // worker ends here, without the static destructors that would tear down
@@ -235,7 +273,8 @@ int runImportWorker(int argc, char* argv[]) {
   QCoreApplication app(argc, argv);
   QCommandLineParser parser;
   const QCommandLineOption worker(QStringLiteral("import-worker"),
-                                  QStringLiteral(".f3d, .f3z, .FCStd, .ipt or .iam file"), QStringLiteral("file"));
+                                  QStringLiteral(".f3d, .f3z, .FCStd, .ipt, .iam, .ifc, .ifczip, .rvt or .rfa file"),
+                                  QStringLiteral("file"));
   const QCommandLineOption output(QStringLiteral("output"), QStringLiteral("Design file to write"),
                                   QStringLiteral("file"));
   const QCommandLineOption result(QStringLiteral("result"), QStringLiteral("Result (JSON) to write"),
@@ -268,9 +307,13 @@ int runImportWorker(int argc, char* argv[]) {
   // an .ipt part's bodies likewise.
   const bool freecad = isFreeCadFile(QString::fromUtf8(path));
   const bool ipt = isIptFile(QString::fromUtf8(path));
+  // An IFC file: its building model in one command (mitcad#273).
+  const bool ifc = isIfcFile(QString::fromUtf8(path));
+  // A building project's elements likewise (mitcad#274).
+  const bool rvt = isRvtFile(QString::fromUtf8(path));
   // The timeline's length, for the progress dialog.
   try {
-    if (!freecad && !ipt) {
+    if (!freecad && !ipt && !ifc && !rvt) {
       const QJsonObject designs = parseObject(document->import_f3d_timeline(rustStr(path), "{\"list\": true}"));
       int items = 0;
       for (const QJsonValue& design : designs.value(QStringLiteral("designs")).toArray()) {
@@ -293,6 +336,10 @@ int runImportWorker(int argc, char* argv[]) {
       freecad ? QJsonObject{{QStringLiteral("cmd"), QStringLiteral("import_fcstd")},
                             {QStringLiteral("path"), QString::fromUtf8(path)},
                             {QStringLiteral("bodies_only"), false}}
+      : ifc   ? QJsonObject{{QStringLiteral("cmd"), QStringLiteral("import_ifc")},
+                            {QStringLiteral("path"), QString::fromUtf8(path)}}
+      : rvt   ? QJsonObject{{QStringLiteral("cmd"), QStringLiteral("import_rvt")},
+                            {QStringLiteral("path"), QString::fromUtf8(path)}}
       : ipt   ? QJsonObject{{QStringLiteral("cmd"), QStringLiteral("import_ipt")},
                             {QStringLiteral("path"), QString::fromUtf8(path)},
                             {QStringLiteral("hang_limit"), kHangLimit}}
@@ -302,19 +349,29 @@ int runImportWorker(int argc, char* argv[]) {
                             // An item's definitions evaluated in parallel
                             // (mitcad#95): the logical cores, at most 8.
                             {QStringLiteral("threads"), importThreads()}};
-  if (!freecad && !ipt) {
+  if (!freecad && !ipt && !ifc && !rvt) {
     for (auto it = moreOptions.begin(); it != moreOptions.end(); ++it) {
       command.insert(it.key(), it.value());
     }
   }
   QJsonObject answer;
   document->attach_job(**control);
+  const auto relayed = std::make_shared<std::atomic<bool>>(false);
+  std::thread questions([control, relayed] { relayQuestions(control, relayed); });
+  const auto endQuestions = [&questions, &relayed] {
+    relayed->store(true);
+    if (questions.joinable()) {
+      questions.join();
+    }
+  };
   try {
     answer = parseObject(document->command(rustStr(compactJson(command))));
   } catch (const std::exception& e) {
+    endQuestions();
     std::fprintf(stderr, "import-failed %s\n", e.what());
     return endWorker(3);
   }
+  endQuestions();
   // A stop from now on has nothing to stop.
   document->detach_job();
   if (parser.isSet(store)) {
@@ -370,14 +427,18 @@ void F3dImport::start() {
   });
 
   const QString name = QFileInfo(m_path).fileName();
-  if (!isFreeCadFile(m_path) && !isIptFile(m_path)) {
+  if (!isFreeCadFile(m_path) && !isIptFile(m_path) && !isIfcFile(m_path) && !isRvtFile(m_path)) {
     m_options = askReferences();
     // The geometric tolerance of the Preferences (mitcad#224).
     m_options.insert(QStringLiteral("geometric_tolerance"), GeneralSettings::load().importTolerance);
+    // Whether a retry on the file's stored bodies replaces imported bodies
+    // that match them: asked when it comes to that (mitcad#283).
+    m_options.insert(QStringLiteral("retry_bodies"), QStringLiteral("ask"));
   }
   m_dialog = new ImportProgress(
       m_window, [this] { stop(); }, [this] { cancel(); });
-  m_dialog->setStoppable(!isFreeCadFile(m_path) && !isIptFile(m_path));
+  m_dialog->setStoppable(!isFreeCadFile(m_path) && !isIptFile(m_path) && !isIfcFile(m_path) &&
+                         !isRvtFile(m_path));
   m_ticker = new QTimer(this);
   m_ticker->setInterval(500);
   connect(m_ticker, &QTimer::timeout, this, &F3dImport::tick);
@@ -493,6 +554,12 @@ void F3dImport::readProgress() {
       qInfo().noquote() << QStringLiteral("Import stored %1 results").arg(line.mid(14).toInt());
       continue;
     }
+    if (line.startsWith(QStringLiteral("import-ask "))) {
+      // (Asked once back in the event loop, not inside this read.)
+      const QString question = line.mid(11);
+      QTimer::singleShot(0, this, [this, question] { askRetryBodies(question); });
+      continue;
+    }
     if (line == QStringLiteral("import-stopping")) {
       qInfo().noquote() << QStringLiteral("Import of %1 stopping: the remaining items take the file's bodies")
                                .arg(name);
@@ -516,6 +583,44 @@ void F3dImport::readProgress() {
     }
   }
   tick();
+}
+
+void F3dImport::askRetryBodies(const QString& question) {
+  if (m_finished || m_process == nullptr || m_question != nullptr) {
+    return;
+  }
+  const QString name = QFileInfo(m_path).fileName();
+  qInfo().noquote() << QStringLiteral("Import of %1 asks: %2").arg(name, question);
+  // (On the heap, under the window: the import may end, and this object
+  // go, while it asks.)
+  QPointer<QMessageBox> box =
+      new QMessageBox(QMessageBox::Question, tr("Keep the Imported Bodies?"), question, QMessageBox::NoButton,
+                      m_window.data());
+  box->setObjectName(QStringLiteral("importRetryBodies"));
+  QPushButton* keep = box->addButton(tr("&Keep Imported Bodies"), QMessageBox::AcceptRole);
+  keep->setToolTip(tr("The bodies imported as features stay; the item comes in as the file's bodies if it "
+                      "does not build on them"));
+  QPushButton* replace = box->addButton(tr("&Replace with Stored Bodies"), QMessageBox::DestructiveRole);
+  replace->setToolTip(tr("The file's stored bodies replace them, so that the item can build on those; the "
+                         "features before it no longer shape the bodies replaced"));
+  box->setDefaultButton(keep);
+  box->setEscapeButton(keep);
+  m_question = box;
+  const QPointer<F3dImport> self(this);
+  prepareModal(box);
+  execDialog(box);
+  if (box == nullptr) {
+    return;
+  }
+  const bool replacing = box->clickedButton() == replace;
+  box->deleteLater();
+  if (self == nullptr || m_finished || m_process == nullptr) {
+    return;
+  }
+  m_question = nullptr;
+  m_process->write(replacing ? "answer replace\n" : "answer keep\n");
+  qInfo().noquote() << QStringLiteral("Import of %1 answer: %2")
+                           .arg(name, replacing ? QStringLiteral("replace") : QStringLiteral("keep"));
 }
 
 void F3dImport::tick() {
@@ -578,6 +683,9 @@ void F3dImport::processFinished(int exitCode) {
   m_finished = true;
   m_ticker->stop();
   m_dialog->hide();
+  if (m_question != nullptr) {
+    m_question->reject(); // (the import no longer waits for the answer)
+  }
   emit finished(true, design.readAll(), QJsonDocument::fromJson(result.readAll()).object(), QString());
   deleteLater();
 }
@@ -592,6 +700,9 @@ void F3dImport::done(bool ok, const QString& error) {
   }
   if (m_dialog != nullptr) {
     m_dialog->hide();
+  }
+  if (m_question != nullptr) {
+    m_question->reject();
   }
   emit finished(ok, QByteArray(), QJsonObject(), error);
   deleteLater();

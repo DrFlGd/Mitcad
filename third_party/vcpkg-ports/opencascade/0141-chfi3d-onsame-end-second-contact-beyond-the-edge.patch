@@ -1,0 +1,56 @@
+Mitcad's patch to OCCT 8.0.1, under OCCT's licence:
+SPDX-License-Identifier: LGPL-2.1-only WITH OCCT-exception-1.0
+
+Chamfers: the end of a chamfer in the OnSame state whose second contact
+runs to the face at the end beyond that face's edge (mitcad#240).
+
+The case: the foot of a rib on a wall, under the rib's bottom, chamfered
+wider than the bottom (the rib's sides, prolonged down, cut the chamfer
+along its edge and at its ends). At the ends of the spine the edges are in
+the OnSame state: the contact on the wall runs on past the vertex, the
+contact on the rib's bottom leaves it across a slanted edge.
+ChFi3d_Builder::PerformIntersectionAtEnd updates the contact that runs
+on past the vertex to the face at the end, where it meets that face's
+edge prolonged (IntersUpdateOnSame). For the first contact the face's
+surface is taken unbounded; for the second one (the same corner with the
+chamfer's faces in the other order) it was taken bounded by the face, so
+the point beyond the edge's end, outside the face, was not found and the
+corner failed ("IntersectionAtEnd: pb intersection Face - Fi"). For a
+chamfer it is unbounded now too. Fillets keep the bounded face: on a
+rounding of a corpus design the unbounded one gave a rounding that is not
+the body stored in the file, where the failing corner let the import take
+the next definition, which is.
+
+diff --git a/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_C1.cxx b/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_C1.cxx
+index 1ac78f8..b253ca4 100644
+--- a/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_C1.cxx
++++ b/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_C1.cxx
+@@ -28,6 +28,7 @@
+ #include <ChFi3d.hxx>
+ #include <ChFi3d_Builder.hxx>
+ #include <ChFi3d_Builder_0.hxx>
++#include <ChFiDS_ChamfSpine.hxx>
+ #include <ChFiDS_CommonPoint.hxx>
+ #include <ChFiDS_FaceInterference.hxx>
+ #include <ChFiDS_SurfData.hxx>
+@@ -3768,14 +3769,17 @@ void ChFi3d_Builder::PerformIntersectionAtEnd(const int Index)
+ 
+     if (nb == nbface && isOnSame2)
+     {
+-      // update interference param on Fi2 and point of CV2
++      // update interference param on Fi2 and point of CV2 (for a chamfer
++      // on the face's unbounded surface, as for Fi1: the point may lie on
++      // the prolongation of the face's edge)
++      const bool isChamfer = !occ::down_cast<ChFiDS_ChamfSpine>(spine).IsNull();
+       if (prolface[nb - 1])
+       {
+-        Bs.Initialize(faceprol[nb - 1]);
++        Bs.Initialize(faceprol[nb - 1], !isChamfer);
+       }
+       else
+       {
+-        Bs.Initialize(Face[nb - 1]);
++        Bs.Initialize(Face[nb - 1], !isChamfer);
+       }
+       const occ::handle<Geom_Curve>& c3df = DStr.Curve(Fi2.LineIndex()).Curve();
+       double                         Ufi  = Fi1.Parameter(isfirst);

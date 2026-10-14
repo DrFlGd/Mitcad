@@ -29,7 +29,7 @@ use std::time::{Duration, Instant};
 use crate::datum::Datum;
 use crate::document::DocState;
 use crate::features::{
-    BodyChange, Env, EvalContext, FeatureDef, FeatureEntry, PlacementChange, SketchOutput,
+    BodyChange, Brep, Env, EvalContext, FeatureDef, FeatureEntry, PlacementChange, SketchOutput,
 };
 use crate::fingerprint::Fingerprint;
 use crate::ids::{BodyUid, ComponentUid, FeatureUid, OccurrenceUid};
@@ -149,13 +149,19 @@ pub(crate) struct FeatureResult<S> {
     pub status: FeatureStatus,
     /// None for suppressed and rolled back features.
     pub output: Option<Arc<Output<S>>>,
+    /// The output's warnings with those of applying it after the
+    /// evaluation (a joint's geometry found under another name after a
+    /// sketch change, mitcad#272), when there are such.
+    pub applied_warnings: Option<Vec<String>>,
 }
 
 impl<S> FeatureResult<S> {
     /// The warnings of a feature that succeeded (P9); none otherwise.
     pub fn warnings(&self) -> &[String] {
         match &self.output {
-            Some(output) if self.status.is_ok() => &output.warnings,
+            Some(output) if self.status.is_ok() => {
+                self.applied_warnings.as_deref().unwrap_or(&output.warnings)
+            }
             _ => &[],
         }
     }
@@ -420,6 +426,11 @@ pub(crate) struct Cache<S> {
     bytes: u64,
     clock: u64,
     pub stats: CacheStats,
+    /// B-rep data of base features being added and the shapes it was
+    /// written from (mitcad#244): the evaluation adopts the shape
+    /// ([`Kernel::adopt_shape`]) instead of reading the data. Set only
+    /// while a command that adds such features computes; not forked.
+    pub(crate) written_from: Vec<(Brep, S)>,
 }
 
 /// Results kept per feature: enough for a few undo steps and value changes.
@@ -434,6 +445,7 @@ impl<S> Default for Cache<S> {
             bytes: 0,
             clock: 0,
             stats: CacheStats::default(),
+            written_from: Vec::new(),
         }
     }
 }
@@ -496,6 +508,7 @@ impl<S> Cache<S> {
             bytes: self.bytes,
             clock: self.clock,
             stats: CacheStats::default(),
+            written_from: Vec::new(),
         }
     }
 
@@ -552,6 +565,7 @@ impl<S: Clone> Recomputed<S> {
                     uid: r.uid,
                     status: r.status.clone(),
                     output: r.output.clone(),
+                    applied_warnings: r.applied_warnings.clone(),
                 })
                 .collect(),
             bodies: self.bodies.clone(),
@@ -564,6 +578,7 @@ impl<S: Clone> Recomputed<S> {
             restored: Vec::new(),
             restore_times: Vec::new(),
             joints: self.joints.clone(),
+            measured: self.measured.clone(),
         }
     }
 }
@@ -741,6 +756,10 @@ pub(crate) struct Recomputed<S> {
     pub restore_times: Vec<Duration>,
     /// Joints and rigid groups before the marker (mitcad#55).
     pub joints: crate::joints::JointsState,
+    /// The values driven dimensions measured where they differ from their
+    /// reference parameters' (mitcad#231): later features used them, and
+    /// the document takes them.
+    pub measured: Vec<(ParamId, f64)>,
 }
 
 impl<S> Default for Recomputed<S> {
@@ -759,6 +778,7 @@ impl<S> Default for Recomputed<S> {
             restored: Vec::new(),
             restore_times: Vec::new(),
             joints: crate::joints::JointsState::default(),
+            measured: Vec::new(),
         }
     }
 }
@@ -782,9 +802,14 @@ pub(crate) fn recompute<K: Kernel>(
     let mut done = Recomputed::default();
     let assembly = &state.assembly;
     let total = state.marker.min(state.features.len());
+    // (A copy: the evaluations below borrow it while the cache changes.)
+    let written_from = cache.written_from.clone();
     // Each component's bodies; a feature sees only its own component's.
     let mut components: BTreeMap<ComponentUid, Arc<BodyState<K::Shape>>> = BTreeMap::new();
     let none: Arc<BodyState<K::Shape>> = Arc::new(BTreeMap::new());
+    // The parameters with the values driven dimensions measured so far
+    // (mitcad#231).
+    let mut params = std::borrow::Cow::Borrowed(&state.parameters);
     done.placements = assembly
         .occurrences
         .iter()
@@ -809,6 +834,7 @@ pub(crate) fn recompute<K: Kernel>(
                 uid: entry.uid,
                 status,
                 output: None,
+                applied_warnings: None,
             });
             continue;
         }
@@ -817,7 +843,7 @@ pub(crate) fn recompute<K: Kernel>(
         let env = Env {
             sheets: &done.sheets,
             sheet_rules: &done.sheet_rules,
-            params: &state.parameters,
+            params: &params,
             bodies: &own,
             owners: &done.owners,
             assembly,
@@ -827,11 +853,12 @@ pub(crate) fn recompute<K: Kernel>(
             history: &done.results,
             components: &components,
             placements: &done.placements,
+            written_from: &written_from,
         };
         let output = match cache.lookup(entry, &env) {
             Some(output) => output,
             None => {
-                let def_fp = def_fingerprint(&entry.def, &state.parameters);
+                let def_fp = def_fingerprint(&entry.def, &params);
                 let start = Instant::now();
                 if let Some(output) = cache.restore(kernel, entry, def_fp, &env) {
                     done.restore_times.push(start.elapsed());
@@ -847,14 +874,21 @@ pub(crate) fn recompute<K: Kernel>(
                     };
                     // A result that came back after a cancel request is not
                     // kept: the request may have cut it short (P7), or the
-                    // kernel stopped inside and failed (P7e).
-                    if let Some(monitor) = monitor {
+                    // kernel stopped inside and failed (P7e). One that ran
+                    // out of memory says so all the same: the request may
+                    // have come for that very failure (the .f3d import's
+                    // memory guard counts failed allocations, mitcad#132).
+                    let out_of_memory =
+                        matches!(&output.result, Err(m) if KernelError::is_out_of_memory(m));
+                    if let Some(monitor) = monitor
+                        && !out_of_memory
+                    {
                         monitor.evaluation_done()?;
                     }
                     done.times.push(output.time);
                     // Nor is a failure for lack of memory: the feature may
                     // build once memory is free again (mitcad#80).
-                    if !matches!(&output.result, Err(m) if KernelError::is_out_of_memory(m)) {
+                    if !out_of_memory {
                         cache.insert(kernel, entry, output.clone());
                     }
                     if let Some(monitor) = monitor {
@@ -886,11 +920,21 @@ pub(crate) fn recompute<K: Kernel>(
         }
         // Joints and rigid groups (mitcad#55) read the placements and the
         // other components' bodies at this point: applied here too.
-        if status.is_ok()
-            && crate::joints::applies(&entry.def)
-            && let Err(message) = crate::joints::apply(kernel, state, entry, &components, &mut done)
-        {
-            status = FeatureStatus::Failed(message);
+        let mut applied_warnings = None;
+        if status.is_ok() && crate::joints::applies(&entry.def) {
+            match crate::joints::apply(kernel, state, entry, &components, &mut done) {
+                Ok(warnings) if !warnings.is_empty() => {
+                    let mut all = output.warnings.clone();
+                    for warning in warnings {
+                        if !all.contains(&warning) {
+                            all.push(warning);
+                        }
+                    }
+                    applied_warnings = Some(all);
+                }
+                Ok(_) => {}
+                Err(message) => status = FeatureStatus::Failed(message),
+            }
         }
         if status.is_ok() || output.placements.is_empty() {
             if status.is_ok()
@@ -900,6 +944,7 @@ pub(crate) fn recompute<K: Kernel>(
             }
             if let Some(sketch) = &output.sketch {
                 done.sketches.insert(entry.uid, sketch.clone());
+                measure_references(entry, &sketch.value, &mut params, &mut done.measured);
             }
             if let Some(datum) = &output.datum {
                 done.datums.insert(entry.uid, datum.clone());
@@ -950,6 +995,7 @@ pub(crate) fn recompute<K: Kernel>(
             uid: entry.uid,
             status,
             output: Some(output),
+            applied_warnings,
         });
     }
     let mut all = BTreeMap::new();
@@ -964,6 +1010,30 @@ pub(crate) fn recompute<K: Kernel>(
         monitor.finish(total);
     }
     Ok(done)
+}
+
+/// Sets the reference parameters of a sketch's driven dimensions to the
+/// values the evaluated sketch measures (mitcad#231), so the features
+/// after it use them; `measured` collects those that changed.
+fn measure_references(
+    entry: &FeatureEntry,
+    sketch: &SketchOutput,
+    params: &mut std::borrow::Cow<'_, Parameters>,
+    measured: &mut Vec<(ParamId, f64)>,
+) {
+    let FeatureDef::Sketch(def) = &entry.def else {
+        return;
+    };
+    for d in &def.dimensions {
+        let (Some(id), Some(value)) = (d.reference, sketch.status().driven.get(&d.id)) else {
+            continue;
+        };
+        if params.value(id).map(f64::to_bits) != Some(value.to_bits())
+            && params.to_mut().set_measured(id, *value).is_ok()
+        {
+            measured.push((id, *value));
+        }
+    }
 }
 
 /// Applies a feature's placement changes: each occurrence must be placed
@@ -1023,6 +1093,7 @@ fn evaluate<K: Kernel>(
     crate::sheet::footprint(&entry.def, &mut ctx);
     let mut result = entry.def.evaluator::<K>().evaluate(&mut ctx);
     if let Ok(produced) = &mut result {
+        crate::sheet::adapt(&mut ctx, produced);
         crate::sheet::complete_changes(&ctx, produced);
     }
     let time = start.elapsed();

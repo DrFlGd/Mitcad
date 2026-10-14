@@ -1,0 +1,43 @@
+Mitcad's patch to OCCT 8.0.1, under OCCT's licence:
+SPDX-License-Identifier: LGPL-2.1-only WITH OCCT-exception-1.0
+
+Fillets: a closed rounding that rolls on an edge (an obstacle, 0011)
+starting at that edge's vertex, where the seam of a face around it starts
+too (mitcad#239). Example: a disc's bottom edge rounded wider than the
+disc's side and the bevel above it, the ball rolling on the bevel's top
+edge all round; the disc, bevel and neck made of separate solids, so that
+the seams meet at the edge's vertex. The rounding's first point there was
+found on the neck's seam, and ChFi3d_FilDS cut that arc at the point as if
+the rounding ended on it: the seam went, and the topological build lost
+the faces above (an unorientable shape of three faces).
+
+- ChFi3d_FilDS, the first surface data of a stripe: a point at a vertex on
+  a side rolling on an obstacle no longer cuts the arc it was found on; the
+  obstacle's end at that vertex is handled by CutEdge, as at the last
+  surface data's end, which already skipped such points.
+diff --git a/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_0.cxx b/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_0.cxx
+index d867df2..2da19f1 100644
+--- a/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_0.cxx
++++ b/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_0.cxx
+@@ -3664,7 +3664,11 @@ void ChFi3d_FilDS(const int                         SolidIndex,
+       }
+       else
+       {
+-        if (V1.IsOnArc())
++        // (A side rolling on an edge (an obstacle) starting at a vertex of
++        // it: that vertex is the obstacle's end (CutEdge above), the arc
++        // its point was found on, any edge at the vertex, is not cut; as at
++        // the last surface data's end.)
++        if (V1.IsOnArc() && !(V1.IsVertex() && Fd->IsOnCurve1()))
+         {
+           Iarc1 = DStr.AddShape(V1.Arc());
+           if (!ChFi3d_Contains(DStr.ShapeInterferences(Iarc1), Iarc1, Ipoin1))
+@@ -3678,7 +3682,7 @@ void ChFi3d_FilDS(const int                         SolidIndex,
+           }
+         }
+ 
+-        if (V2.IsOnArc())
++        if (V2.IsOnArc() && !(V2.IsVertex() && Fd->IsOnCurve2()))
+         {
+           Iarc2 = DStr.AddShape(V2.Arc());
+           if (!ChFi3d_Contains(DStr.ShapeInterferences(Iarc2), Iarc2, Ipoin2))

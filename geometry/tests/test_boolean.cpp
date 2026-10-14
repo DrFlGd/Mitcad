@@ -72,6 +72,42 @@ void test_join_merges_flush_faces() {
   CHECK(edge_names_unique(joined));
 }
 
+// A pillar (a circle of radius 10 extruded from 0 to 10, F2) and on it a
+// ring turned about its axis (the rectangle 8..10 x 10..12, F4) whose
+// profile lies on either side of the axis: the ring's seam faces the
+// pillar's or lies opposite it. The join has one outer cylinder from 0 to
+// 12, as the stored bodies of designs do: the face merge after the boolean
+// failed to build the merged face's seam where the two seams lay half a
+// turn apart (OCCT port patch 0220, mitcad#284).
+void test_join_merges_coaxial_cylinders_whatever_their_seams() {
+  for (const double side_of_axis : {1.0, -1.0}) {
+    const ShapePtr pillar = extrude("F2", {circle(1, 0, 0, 10)}, 0, 10);
+    mitcad::geometry::RevolveSpec spec;
+    spec.feature = "F4";
+    spec.frame.x_axis = gp_Dir(side_of_axis, 0, 0);
+    spec.frame.y_axis = gp_Dir(0, 0, 1);
+    spec.regions = {rectangle(2, 8, 10, 2, 2)};
+    spec.axis = gp_Ax1(gp_Pnt(0, 0, 0), gp_Dir(0, 0, 1));
+    spec.angle1 = 2.0 * kPi;
+    const ShapePtr ring = revolve(spec);
+    const BooleanResult result = run(BooleanOp::Join, {pillar}, ring);
+    CHECK(result.pieces.size() == 1);
+    if (result.pieces.size() != 1) {
+      continue;
+    }
+    const Shape& joined = *result.pieces[0].shape;
+    CHECK(near(volume(joined), kPi * 100.0 * 10.0 + kPi * (100.0 - 64.0) * 2.0));
+    // The bottom, the outer cylinder, the ring's top and inner wall, the
+    // pillar's top inside the ring.
+    CHECK(joined.face_count() == 5);
+    const std::string pillar_wall = mitcad::geometry::face_name("F2", "side", "c1");
+    const std::string ring_wall = side("F4", 2, 1); // x = 10 in the profile
+    CHECK(faces_named(joined, pillar_wall) == 1);
+    CHECK(joined.find_faces(pillar_wall) == joined.find_faces(ring_wall));
+    CHECK(edge_names_unique(joined));
+  }
+}
+
 void test_slivers_are_no_pieces() {
   // A result of the block and a flat solid beside it: two faces of a strip
   // 1.5 mm long, back to back (no volume), as a join of walls that continue
@@ -304,6 +340,8 @@ void test_intersect() {
 void boolean_tests() {
   test_join_keeps_names_and_names_new_edges();
   test_join_merges_flush_faces();
+  guarded("test_join_merges_coaxial_cylinders_whatever_their_seams",
+          test_join_merges_coaxial_cylinders_whatever_their_seams);
   test_slivers_are_no_pieces();
   test_join_with_several_participants();
   test_join_of_many_copies_finds_what_they_touch();

@@ -107,7 +107,61 @@ fn base_features_make_new_bodies_with_faces_named_by_index() {
     assert!(doc.bodies().is_empty());
     doc.redo();
     assert_eq!(doc.stats().evaluated, vec![]);
-    assert_eq!(doc.kernel().count("import"), 3);
+    // The bodies adopted their shapes once (mitcad#244); no data was read.
+    assert_eq!(doc.kernel().count("adopt"), 3);
+    assert_eq!(doc.kernel().count("import"), 0);
+}
+
+#[test]
+fn base_features_adopt_the_shapes_their_data_was_written_from() {
+    // Added from shapes: each body adopts its shape instead of reading
+    // the data it was written to back (mitcad#244), with the same faces
+    // and names the data reads as.
+    let mut doc = Document::new(MockKernel::default());
+    let input = || {
+        BaseInput::new(vec![
+            body(Some("Bracket"), "box", 6),
+            body(None, "cylinder", 3),
+        ])
+    };
+    let f1 = doc.add_base_feature(input()).unwrap().feature.uid;
+    assert_eq!(doc.kernel().count("adopt"), 2);
+    assert_eq!(doc.kernel().count("import"), 0);
+    let adopted = histories(&doc);
+    assert_eq!(
+        adopted,
+        vec![
+            (
+                "F1.b0".into(),
+                "Bracket".into(),
+                "import(F1:0..6,box)".into()
+            ),
+            (
+                "F1.b1".into(),
+                "Body1".into(),
+                "import(F1:6..9,cylinder)".into()
+            ),
+        ]
+    );
+    let shape = doc.body_shape(BodyUid::new(f1, 1)).unwrap();
+    assert_eq!(shape.faces[0], import_face(f1, 6));
+
+    // Without the shapes (a design read from its file) the data is read,
+    // with the same result.
+    let text = doc.to_json();
+    let mut loaded = Document::from_json(&text, MockKernel::default()).unwrap();
+    loaded.recompute();
+    assert_eq!(loaded.kernel().count("adopt"), 0);
+    assert_eq!(loaded.kernel().count("import"), 2);
+    assert_eq!(histories(&loaded), adopted);
+
+    // A kernel that cannot adopt reads the data.
+    let kernel = MockKernel::default();
+    kernel.fail.borrow_mut().insert("adopt");
+    let mut failing = Document::new(kernel);
+    failing.add_base_feature(input()).unwrap();
+    assert_eq!(failing.kernel().count("import"), 2);
+    assert_eq!(histories(&failing), adopted);
 }
 
 #[test]

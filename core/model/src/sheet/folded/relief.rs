@@ -565,6 +565,7 @@ mod tests {
             ],
             opened: Vec::new(),
             lineage: Vec::new(),
+            overlays: Vec::new(),
             invalidated: None,
             blockers: Vec::new(),
         };

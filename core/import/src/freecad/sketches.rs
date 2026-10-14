@@ -132,6 +132,7 @@ impl<K: Kernel> Importer<'_, '_, K> {
         let mut t = sketch::translate(&sketch, &external.maps, external.next, axes);
         // Dimensions of the constraints' parameters and expressions.
         let adopt = self.dimension_values(&object, &mut t);
+        self.reference_values(&object, &mut t);
         let frame_def = geom::relative_frame(&plane.1, &frame);
         let mut entities = external.entities.clone();
         entities.extend(t.entities.iter().cloned());
@@ -153,7 +154,18 @@ impl<K: Kernel> Importer<'_, '_, K> {
                 def["frame"] = serde_json::to_value(f).expect("serializes");
             }
             let depth = self.doc.undo_depth();
-            let uid = match self.add_named(&def, &label, place.component) {
+            let added = match self.add_named(&def, &label, place.component) {
+                // The model refuses a constraint's parameter as a driven
+                // dimension's reference (a feature before the sketch uses
+                // it): the dimensions get their own (mitcad#250).
+                Err(_) if crate::sketch::has_references(&def) => self.add_named(
+                    &crate::sketch::without_references(&def),
+                    &label,
+                    place.component,
+                ),
+                other => other,
+            };
+            let uid = match added {
                 Ok(uid) => uid,
                 Err(e) => {
                     last = e;

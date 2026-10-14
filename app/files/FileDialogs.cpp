@@ -524,6 +524,44 @@ bool isIamImport(const QJsonObject& result) {
          QLatin1String("iam");
 }
 
+// An IFC file's import result (import_ifc, mitcad#273).
+bool isIfcImport(const QJsonObject& result) {
+  return result.value(QStringLiteral("report")).toObject().value(QStringLiteral("format")).toString() ==
+         QLatin1String("ifc");
+}
+
+// An IFC file's products by how they came in.
+QString ifcCounts(const QJsonObject& report) {
+  const QJsonObject outcomes = report.value(QStringLiteral("outcomes")).toObject();
+  QStringList parts;
+  for (auto it = outcomes.begin(); it != outcomes.end(); ++it) {
+    parts << QStringLiteral("%1 %2").arg(it.value().toInt()).arg(it.key());
+  }
+  return parts.join(QStringLiteral(", "));
+}
+
+// An import_rvt result: an .rvt project's elements or an .rfa family's
+// metadata (mitcad#274).
+bool isRvtImport(const QJsonObject& result) {
+  const QString format = result.value(QStringLiteral("report")).toObject().value(QStringLiteral("format")).toString();
+  return format == QLatin1String("rvt") || format == QLatin1String("rfa");
+}
+
+// The bodies an import_rvt result made: saved meshes and boxes, on how many
+// levels.
+QString rvtCounts(const QJsonObject& report) {
+  const QJsonObject import = report.value(QStringLiteral("import")).toObject();
+  int levels = 0;
+  for (const QJsonValue& level : import.value(QStringLiteral("levels")).toArray()) {
+    levels += level.toObject().value(QStringLiteral("bodies")).toInt() > 0 ? 1 : 0;
+  }
+  return QStringLiteral("%1 saved meshes, %2 boxes at a family type's transform, %3 boxes on %4 levels")
+      .arg(import.value(QStringLiteral("meshes")).toInt())
+      .arg(import.value(QStringLiteral("oriented_boxes")).toInt())
+      .arg(import.value(QStringLiteral("boxes")).toInt())
+      .arg(levels);
+}
+
 // An assembly's occurrences and files: placed, suppressed, parts imported
 // and missing.
 QString iamCounts(const QJsonObject& report) {
@@ -568,6 +606,12 @@ QString iptFeatureCounts(const QJsonObject& report) {
 } // namespace
 
 QString importCounts(const QJsonObject& result) {
+  if (isIfcImport(result)) {
+    return ifcCounts(result.value(QStringLiteral("report")).toObject());
+  }
+  if (isRvtImport(result)) {
+    return rvtCounts(result.value(QStringLiteral("report")).toObject());
+  }
   if (isIamImport(result)) {
     return iamCounts(result.value(QStringLiteral("report")).toObject());
   }
@@ -591,7 +635,8 @@ namespace {
 // import_fcstd's report itself (its items and warnings have the same form).
 QJsonObject importedDesign(const QJsonObject& result) {
   const QJsonObject report = result.value(QStringLiteral("report")).toObject();
-  if (isFreeCadImport(result) || isIptImport(result) || isIamImport(result)) {
+  if (isFreeCadImport(result) || isIptImport(result) || isIamImport(result) || isIfcImport(result) ||
+      isRvtImport(result)) {
     return report;
   }
   const QJsonArray designs = report.value(QStringLiteral("designs")).toArray();
@@ -756,8 +801,51 @@ void showImportReport(QWidget* parent, const QString& file, const QJsonObject& r
   for (auto it = resolution.begin(); it != resolution.end(); ++it) {
     found << QStringLiteral("%1 %2").arg(it.value().toInt()).arg(it.key());
   }
+  const QJsonObject quantities = design.value(QStringLiteral("quantities")).toObject();
+  // A building project's elements or a family's metadata (mitcad#274).
+  QStringList leftOut;
+  const QJsonObject rvtImport = design.value(QStringLiteral("import")).toObject();
+  const QJsonObject left = rvtImport.value(QStringLiteral("left_out")).toObject();
+  for (auto it = left.begin(); it != left.end(); ++it) {
+    leftOut << QStringLiteral("%1 %2").arg(it.value().toInt()).arg(it.key());
+  }
+  const QJsonObject rvtElements = design.value(QStringLiteral("elements")).toObject();
   QString summary =
-      isIamImport(result)
+      isIfcImport(result)
+          ? QObject::tr("<b>%1</b> (%2, view %3, from %4)<br>%5 products: %6.<br>%7 bodies, %8 features, %9 type "
+                        "shapes as components; %10 storey planes, %11 grid axes.<br>Checked against the file: %12 of "
+                        "%13 element volumes agree with its quantities.")
+                .arg(file.toHtmlEscaped(), field("schema_name", QString()), field("view_definition", QStringLiteral("-")),
+                     field("originating_system", QStringLiteral("-")))
+                .arg(design.value(QStringLiteral("products")).toArray().size())
+                .arg(importCounts(result).toHtmlEscaped())
+                .arg(design.value(QStringLiteral("bodies")).toInt())
+                .arg(design.value(QStringLiteral("features")).toInt())
+                .arg(design.value(QStringLiteral("maps")).toArray().size())
+                .arg(design.value(QStringLiteral("storey_planes")).toInt())
+                .arg(design.value(QStringLiteral("grid_axes")).toInt())
+                .arg(quantities.value(QStringLiteral("agree")).toInt())
+                .arg(quantities.value(QStringLiteral("compared")).toInt())
+      : isRvtImport(result)
+          ? (design.value(QStringLiteral("format")).toString() == QLatin1String("rfa")
+                 ? QObject::tr("<b>%1</b> (family %2)<br>Saved by release %3 (build %4). %5 elements read; the "
+                               "family's forms are not imported yet.")
+                       .arg(file.toHtmlEscaped(), field("family", QObject::tr("unnamed")),
+                            design.value(QStringLiteral("release")).toVariant().toString(),
+                            field("build", QObject::tr("unknown")))
+                       .arg(rvtElements.value(QStringLiteral("declared")).toInt())
+                 : QObject::tr("<b>%1</b> (project)<br>Saved by release %2 (build %3).<br>%4 bodies, one component "
+                               "per level: %5.<br>%6 elements read (%7 in part); %8 placed on a level by their "
+                               "elevation.<br>Left out: %9.")
+                       .arg(file.toHtmlEscaped(), design.value(QStringLiteral("release")).toVariant().toString(),
+                            field("build", QObject::tr("unknown")))
+                       .arg(bodies)
+                       .arg(importCounts(result).toHtmlEscaped())
+                       .arg(rvtElements.value(QStringLiteral("declared")).toInt())
+                       .arg(rvtElements.value(QStringLiteral("read_in_part")).toInt())
+                       .arg(rvtImport.value(QStringLiteral("by_elevation")).toInt())
+                       .arg(leftOut.join(QStringLiteral(", ")).toHtmlEscaped()))
+      : isIamImport(result)
           ? QObject::tr("<b>%1</b> (assembly)<br>%2; %3 sub-assemblies.<br>Files found: %4.<br>Checked against "
                         "the file: %5 of %6 placements agree with the displayed ones, %7 of %8 parts' bodies lie "
                         "within their range boxes.<br>Units: %9. Saved by release %10.")
@@ -849,6 +937,25 @@ void showImportReport(QWidget* parent, const QString& file, const QJsonObject& r
                 note});
     item->setToolTip(4, note);
   }
+  // A building project's levels: their components and bodies.
+  int levelIndex = 0;
+  for (const QJsonValue& value : rvtImport.value(QStringLiteral("levels")).toArray()) {
+    const QJsonObject level = value.toObject();
+    const QString note = QObject::tr("%1 saved meshes, %2 boxes%3")
+                             .arg(level.value(QStringLiteral("meshes")).toInt())
+                             .arg(level.value(QStringLiteral("boxes")).toInt())
+                             .arg(level.value(QStringLiteral("elevation")).isDouble()
+                                      ? QObject::tr(", elevation %1 mm")
+                                            .arg(level.value(QStringLiteral("elevation")).toDouble(), 0, 'f', 1)
+                                      : QString());
+    auto* row = new QTreeWidgetItem(
+        items, {QString::number(++levelIndex), level.value(QStringLiteral("name")).toString(), QObject::tr("level"),
+                QObject::tr("%1 bodies in component %2")
+                    .arg(level.value(QStringLiteral("bodies")).toInt())
+                    .arg(level.value(QStringLiteral("component")).toString()),
+                note});
+    row->setToolTip(4, note);
+  }
   // An assembly's files: how each was found and what came in.
   int fileIndex = 0;
   for (const QJsonValue& value : design.value(QStringLiteral("files")).toArray()) {
@@ -870,6 +977,23 @@ void showImportReport(QWidget* parent, const QString& file, const QJsonObject& r
                 item.value(QStringLiteral("type")).toString(), item.value(QStringLiteral("outcome")).toString(),
                 item.value(QStringLiteral("note")).toString()});
     row->setToolTip(4, item.value(QStringLiteral("note")).toString());
+  }
+  // An IFC file's products: how each came in, or why it did not.
+  if (isIfcImport(result)) {
+    for (const QJsonValue& value : design.value(QStringLiteral("products")).toArray()) {
+      const QJsonObject p = value.toObject();
+      QStringList notes;
+      for (const QJsonValue& note : p.value(QStringLiteral("notes")).toArray()) {
+        notes << note.toString();
+      }
+      const QString note = notes.join(QStringLiteral("; "));
+      auto* row = new QTreeWidgetItem(
+          items, {QString::number(p.value(QStringLiteral("id")).toInteger()),
+                  QStringLiteral("%1 %2").arg(p.value(QStringLiteral("name")).toString(),
+                                              p.value(QStringLiteral("global_id")).toString()),
+                  p.value(QStringLiteral("kind")).toString(), p.value(QStringLiteral("outcome")).toString(), note});
+      row->setToolTip(4, note);
+    }
   }
   layout->addWidget(items, 1);
   if (!kept.isEmpty()) {
@@ -917,13 +1041,58 @@ void showImportReport(QWidget* parent, const QString& file, const QJsonObject& r
     text->setWordWrap(true);
     layout->addWidget(text);
   }
+  // Items tried again on the file's stored bodies before them (mitcad#283):
+  // the imported bodies each retry kept and replaced, and the user's answer.
+  QStringList retries;
+  const auto names = [](const QJsonValue& list) {
+    QStringList out;
+    for (const QJsonValue& name : list.toArray()) {
+      out << name.toString();
+    }
+    return out.isEmpty() ? QObject::tr("none") : out.join(QStringLiteral(", "));
+  };
+  for (const QJsonValue& value : design.value(QStringLiteral("items")).toArray()) {
+    const QJsonObject retry = value.toObject().value(QStringLiteral("exact_retry")).toObject();
+    if (retry.isEmpty()) {
+      continue;
+    }
+    retries << QObject::tr("%1: kept %2; replaced %3")
+                   .arg(value.toObject().value(QStringLiteral("name")).toString(),
+                        names(retry.value(QStringLiteral("kept"))), names(retry.value(QStringLiteral("replaced"))));
+  }
+  const QJsonObject question = design.value(QStringLiteral("retry_question")).toObject();
+  if (!question.isEmpty()) {
+    const bool replaced = question.value(QStringLiteral("answer")).toString() == QStringLiteral("replace");
+    retries.prepend(replaced ? QObject::tr("Asked at %1: the stored bodies replace the imported bodies that match "
+                                           "them")
+                                   .arg(question.value(QStringLiteral("item")).toString())
+                             : QObject::tr("Asked at %1: the imported bodies that match the stored bodies are kept")
+                                   .arg(question.value(QStringLiteral("item")).toString()));
+  }
+  if (!retries.isEmpty()) {
+    QStringList escaped;
+    for (const QString& line : retries) {
+      escaped << line.toHtmlEscaped();
+      qDebug().noquote() << QStringLiteral("Import report retry: %1: %2").arg(file, line);
+    }
+    auto* text = new QLabel(QObject::tr("<b>Retries on the file's stored bodies</b><br>%1")
+                                .arg(escaped.join(QStringLiteral("<br>"))));
+    text->setWordWrap(true);
+    layout->addWidget(text);
+  }
   auto* buttons = new QDialogButtonBox(QDialogButtonBox::Close);
   QObject::connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
   QObject::connect(buttons, &QDialogButtonBox::accepted, &dialog, &QDialog::accept);
   buttons->button(QDialogButtonBox::Close)->setDefault(true);
   layout->addWidget(buttons);
   dialog.resize(720, 520);
-  if (isIamImport(result)) {
+  if (isIfcImport(result)) {
+    qDebug().noquote() << QStringLiteral("Import report: %1: %2 products (%3), %4 bodies")
+                              .arg(file)
+                              .arg(design.value(QStringLiteral("products")).toArray().size())
+                              .arg(importCounts(result))
+                              .arg(design.value(QStringLiteral("bodies")).toInt());
+  } else if (isIamImport(result) || isRvtImport(result)) {
     qDebug().noquote() << QStringLiteral("Import report: %1: %2").arg(file, importCounts(result));
   } else if (isIptImport(result)) {
     qDebug().noquote()

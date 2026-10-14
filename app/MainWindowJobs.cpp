@@ -7,7 +7,9 @@
 
 #include <algorithm>
 #include <chrono>
+#include <exception>
 #include <memory>
+#include <thread>
 
 #include <QApplication>
 #include <QElapsedTimer>
@@ -16,8 +18,13 @@
 #include <QTimer>
 #include <QtLogging>
 
+#include "framework/Command.hpp"
+#include "framework/CommandRegistry.hpp"
 #include "framework/ComputeProgress.hpp"
 #include "framework/Dialogs.hpp"
+#include "framework/Json.hpp"
+#include "framework/TestSync.hpp"
+#include "framework/WaitCursor.hpp"
 #include "files/LockController.hpp"
 #ifdef MITCAD_MACOS_NATIVE_UI
 #include "platform/NativeDialogs.hpp"
@@ -63,8 +70,9 @@ void MainWindow::waitForJob(const QString& label, ModelJob& job, const QElapsedT
     logged = true;
     qDebug().noquote() << QStringLiteral("Computing %1 started").arg(label);
   }
-  QApplication::setOverrideCursor(Qt::WaitCursor);
-  bool cursorSet = true;
+  // Scoped (mitcad#268): restored once, by the progress dialog or at the
+  // end, also when the wait ends early or waits nest; logged.
+  WaitCursor cursor(label);
   std::unique_ptr<ComputeProgress> dialog;
   QPointer<QWidget> before; // the window that had the input when it showed
   QEventLoop loop;
@@ -107,8 +115,7 @@ void MainWindow::waitForJob(const QString& label, ModelJob& job, const QElapsedT
       dialog->showProgress(job.stage(), job.control().progress(), clock.elapsed());
       showDialog(dialog.get());
       // The dialog takes clicks; the cursor says so.
-      QApplication::restoreOverrideCursor();
-      cursorSet = false;
+      cursor.release();
       qDebug().noquote() << QStringLiteral("Progress dialog shown: %1").arg(label);
     }
 #ifdef MITCAD_MACOS_NATIVE_UI
@@ -125,9 +132,7 @@ void MainWindow::waitForJob(const QString& label, ModelJob& job, const QElapsedT
     m_worker->waitFor(milliseconds(dialog ? 10 : 0));
   }
   disconnect(done);
-  if (cursorSet) {
-    QApplication::restoreOverrideCursor();
-  }
+  cursor.release();
   if (dialog) {
     // The input goes back to the window that had it (or the one the dialog
     // blocked) while the application is in front: without a window
@@ -162,6 +167,75 @@ QJsonObject MainWindow::command(const QJsonObject& command) {
 QJsonObject MainWindow::modelPreview(const QByteArray& command, const QString& name) {
   Q_ASSERT(!m_viewer->isPainting());
   return m_documentSession->preview(command, name);
+}
+
+// ---------------------------------------------------------------------------
+// The wait cursor's idle recovery (mitcad#268)
+
+void MainWindow::createWaitCursorRecovery() {
+  // Right after each job, and every second for a cursor left on otherwise.
+  connect(m_documentSession, &DocumentSession::busyChanged, this, [this](bool busy) {
+    if (!busy) {
+      TestSync::singleShot(0, this, [this] {
+        if (!modelBusy()) {
+          WaitCursor::recoverIfIdle();
+        }
+      });
+    }
+  });
+  auto* timer = new QTimer(this);
+  timer->setInterval(1000);
+  connect(timer, &QTimer::timeout, this, [this] {
+    if (!modelBusy()) {
+      WaitCursor::recoverIfIdle();
+    }
+  });
+  timer->start();
+}
+
+void MainWindow::registerWaitCursorTestCommands() {
+  if (!WaitCursor::testHooks()) {
+    return;
+  }
+  CommandDef leave;
+  leave.id = QStringLiteral("test.leave_wait_cursor");
+  leave.name = QStringLiteral("Leave Wait Cursor On (Test)");
+  leave.icon = QStringLiteral("warning");
+  leave.kind = CommandDef::Kind::Action;
+  leave.mode = CommandDef::Mode::Any;
+  leave.tab.clear();
+  leave.tooltip = QStringLiteral("For tests: an override cursor set and left on, which the idle recovery clears");
+  leave.run = [] { WaitCursor::leaveOnForTest(QStringLiteral("test hook")); };
+  m_registry->add(leave);
+  CommandDef nested = leave;
+  nested.id = QStringLiteral("test.nested_wait");
+  nested.name = QStringLiteral("Nested Wait (Test)");
+  nested.mode = CommandDef::Mode::Model;
+  nested.tooltip = QStringLiteral("For tests: a job of two seconds whose wait is waited for again inside it");
+  nested.run = [this] { nestedWaitForTest(); };
+  m_registry->add(nested);
+}
+
+void MainWindow::nestedWaitForTest() {
+  const QString label = QStringLiteral("nested wait test");
+  // While the job runs and its wait holds the cursor, a second wait for
+  // the same job starts inside the first one's event loop: it shows the
+  // progress dialog (its cursor goes then), and the first wait ends with
+  // the job once the second has returned.
+  TestSync::singleShot(200, this, [this, label] {
+    if (ModelJob* job = m_documentSession->activeJob()) {
+      QElapsedTimer clock;
+      clock.start();
+      bool logged = true;
+      waitForJob(label + QStringLiteral(" (nested)"), *job, clock, logged);
+    }
+  });
+  try {
+    runJob(label, tr("Waiting for a test"),
+           [](ModelJob&) { std::this_thread::sleep_for(milliseconds(2000)); }, JobLog::Always);
+  } catch (const std::exception& error) {
+    showError(errorText(error));
+  }
 }
 
 } // namespace mitcad

@@ -62,6 +62,32 @@ vcpkg_from_github(
         0091-topopebrepbuild-point-uses-within-array.patch
         0100-brepoffset-faces-vanishing-within-the-offset.patch
         0110-shapeupgrade-unifysamedomain-chain-not-concatenated.patch
+        0120-brepcheck-face-wire-boxes-of-conics-past-their-range.patch
+        0121-brepcheck-shell-orientation-edges-listed-once-per-face.patch
+        0130-chfi3d-rounding-vanishing-at-a-tangent-end.patch
+        0140-chfi3d-contact-along-a-closed-face-edge.patch
+        0141-chfi3d-onsame-end-second-contact-beyond-the-edge.patch
+        0142-chfi3d-kpart-cut-by-faces-beyond-that-grow.patch
+        0143-chfi3d-chamfer-corner-beyond-the-common-face.patch
+        0144-chfi3d-closed-contact-split-at-the-edges-vertex.patch
+        0145-chfi3d-kpart-pieces-in-their-faces-periods.patch
+        0146-chfi3d-kpart-pieces-one-face-round-a-closed-spine.patch
+        0147-chfi3d-onsame-end-prolonged-along-a-seam.patch
+        0148-chfi3d-chamfer-as-wide-as-a-ledge-along-a-line-and-an-arc.patch
+        0149-chfi3d-end-snapped-onto-a-closed-edges-vertex-on-a-periodic-face.patch
+        0150-chfi3d-onsame-corner-beside-a-split-face.patch
+        0151-chfi3d-corner-on-an-end-face-split-in-one-plane.patch
+        0152-chfi3d-closed-rolling-start-on-a-seam-vertex.patch
+        0153-chfi3d-roundings-meeting-on-one-contact-line.patch
+        0160-chfi3d-walked-blend-over-a-rounded-rim.patch
+        0170-brepblend-surfrst-rolling-ball-and-pivot.patch
+        0171-chfi3d-rolling-ball-turns-about-a-vertex.patch
+        0172-chfi3d-rolled-blend-cut-by-the-face-at-the-end.patch
+        0180-chfi3d-chains-stop-where-the-edges-turn.patch
+        0190-chfi3d-consumed-face-round-a-closed-stripe.patch
+        0200-chfi3d-walked-blend-about-a-standing-contact.patch
+        0220-shapeupgrade-unifysamedomain-seams-half-a-period-apart.patch
+        0230-chfi3d-contact-in-the-adjacent-face-period.patch
 )
 
 if (VCPKG_LIBRARY_LINKAGE STREQUAL "dynamic")

@@ -1,0 +1,23 @@
+# SPDX-License-Identifier: MIT
+[package]
+name = "mitcad-ifc"
+description = "Reader for IFC files (ISO 10303-21 text, .ifczip): entities, units, the spatial structure, placements and the geometry's representation items, without geometry"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[lib]
+name = "mitcad_ifc"
+
+[[bin]]
+name = "mitcad-ifc-inspect"
+path = "src/bin/mitcad-ifc-inspect.rs"
+
+[dependencies]
+# .ifczip: a zip archive of one .ifc file.
+mitcad-zip = { path = "../zip" }
+# The inspector's JSON output and the decoded items' summaries.
+serde = { workspace = true }
+serde_json = { workspace = true }

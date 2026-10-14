@@ -24,6 +24,9 @@
 //   run. The setting reports/offerErrors (Don't Offer Again) turns the
 //   offers off; Help > Send Feedback stays.
 // - Offers wait until no dialog is open and the model computes nothing.
+// - The log (mitcad#269): every preview offers the log ring's newest lines
+//   (mcp/LogRing.hpp) and the debug log's latest file
+//   (framework/DebugLog.hpp), both left out unless the user checks them.
 //
 // For tests: MITCAD_TEST_LOG_URLS=1 logs the address instead of opening a
 // browser (tools/ui-test-lib.sh sets it); MITCAD_TEST_CRASH=app or
@@ -120,7 +123,8 @@ private:
   QString recentActions() const;
   // The preview, then the delivery; true when sent.
   bool previewAndSend(const report::Report& report, const QImage& screenshot, QWidget* parent);
-  void deliver(const report::Report& report, const QImage& screenshot, QWidget* parent);
+  void deliver(const report::Report& report, const QImage& screenshot, QWidget* parent,
+               const QString& logFile = QString());
   void markOffered(const QStringList& files);
   bool offersOn() const;
 

@@ -155,8 +155,10 @@ EOF
   ui_expect_log 'Rendered view on' 'View > Rendered: the mode entered'
   ui_expect_log 'Rendered view off' 'View > Rendered: the mode exited'
   ui_expect_log 'Render worker ended' 'View > Rendered: leaving the mode ended the worker'
-  ui_expect_log 'Render device: .*\(asked for cpu\), denoising on the CPU' \
-    'View > Rendered: rendering and denoising used the CPU'
+  ui_expect_log 'Render device: .*\(asked for cpu\)' \
+    'View > Rendered: rendering requested the CPU'
+  ui_expect_log 'Render denoising diagnostics: backend CPU,.*OIDN CPU.*\(execution confirmed\)' \
+    'View > Rendered: denoising ran on the CPU'
   ui_expect_no_log 'Render worker stopped:' 'View > Rendered: no worker failed'
   started_worker=$(ui_log_value 'Render worker started (pid [0-9]*): *\(.*\)')
   if [ "$started_worker" = "$worker" ]; then

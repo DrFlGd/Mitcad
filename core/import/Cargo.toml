@@ -16,6 +16,10 @@ mitcad-model.workspace = true
 mitcad-f3d = { path = "../f3d" }
 # FreeCAD .FCStd import (freecad/).
 mitcad-freecad = { path = "../freecad" }
+# IFC files (ifc/).
+mitcad-ifc = { path = "../ifc" }
+# The .rvt/.rfa reader (mitcad#274).
+mitcad-rvt = { path = "../rvt" }
 serde.workspace = true
 serde_json.workspace = true
 

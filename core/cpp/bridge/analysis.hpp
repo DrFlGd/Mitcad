@@ -103,5 +103,12 @@ rust::Vec<AnalysisFacePoints> analysis_face_points(const geometry::Shape& shape)
 // mitcad#138).
 rust::Vec<AnalysisNewFace> analysis_new_faces(const ShapeList& before, const geometry::Shape& after,
                                               std::size_t count);
+// The volume a change makes from the faces it changed and its slack from
+// their edges, two values (geometry::changed_volume, mitcad#235).
+rust::Vec<double> analysis_changed_volume(const ShapeList& before, const ShapeList& after);
+
+// A box that holds each face, six values per face in face order
+// (geometry::face_boxes, mitcad#119).
+rust::Vec<double> analysis_face_boxes(const geometry::Shape& shape);
 
 } // namespace mitcad::bridge

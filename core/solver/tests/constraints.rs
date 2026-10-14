@@ -479,6 +479,7 @@ fn length_and_angle() {
             a: base,
             b: arm,
             value: PI / 3.0,
+            supplement: None,
         })
         .unwrap();
     solve_ok(&mut s);
@@ -510,6 +511,7 @@ fn angle_quadrant_from_geometry() {
             a: base,
             b: arm,
             value: PI / 3.0,
+            supplement: None,
         })
         .unwrap();
     solve_ok(&mut s);
@@ -518,6 +520,62 @@ fn angle_quadrant_from_geometry() {
     solve_ok(&mut s);
     let h = 10.0 * FRAC_PI_4.cos();
     assert_pt(&s, t, -h, h);
+}
+
+#[test]
+fn angle_side_given_keeps_it() {
+    // Lines at 120 degrees to each other, the dimension on the supplement
+    // side (60 degrees). A value closer to the directions' angle keeps
+    // measuring the supplement instead of switching sides.
+    let mut s = System::new();
+    let o = s.add_point(0.0, 0.0);
+    let x = s.add_point(10.0, 0.0);
+    let base = s.add_line(o, x).unwrap();
+    s.add_constraint(FixEntity(base)).unwrap();
+    let t = s.add_point(-5.0, 8.66);
+    let arm = s.add_line(o, t).unwrap();
+    s.add_constraint(Length {
+        line: arm,
+        value: 10.0,
+    })
+    .unwrap();
+    let ang = s
+        .add_constraint(Angle {
+            a: base,
+            b: arm,
+            value: 2.0 * PI / 3.0,
+            supplement: Some(true),
+        })
+        .unwrap();
+    solve_ok(&mut s);
+    // 120 degrees on the supplement side: the arm turns to 60 degrees.
+    assert_pt(&s, t, 5.0, 10.0 * (PI / 3.0).sin());
+    s.set_dimension_value(ang, PI / 4.0).unwrap();
+    solve_ok(&mut s);
+    let h = 10.0 * FRAC_PI_4.cos();
+    assert_pt(&s, t, -h, h);
+    // The directions' side, given, at a value nearer the supplement.
+    let mut s = System::new();
+    let o = s.add_point(0.0, 0.0);
+    let x = s.add_point(10.0, 0.0);
+    let base = s.add_line(o, x).unwrap();
+    s.add_constraint(FixEntity(base)).unwrap();
+    let t = s.add_point(-5.0, 8.66);
+    let arm = s.add_line(o, t).unwrap();
+    s.add_constraint(Length {
+        line: arm,
+        value: 10.0,
+    })
+    .unwrap();
+    s.add_constraint(Angle {
+        a: base,
+        b: arm,
+        value: PI / 3.0,
+        supplement: Some(false),
+    })
+    .unwrap();
+    solve_ok(&mut s);
+    assert_pt(&s, t, 5.0, 10.0 * (PI / 3.0).sin());
 }
 
 #[test]

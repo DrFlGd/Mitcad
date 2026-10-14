@@ -1073,10 +1073,34 @@ rust::Vec<AnalysisNewFace> analysis_new_faces(const ShapeList& before, const geo
   return out;
 }
 
+rust::Vec<double> analysis_changed_volume(const ShapeList& before, const ShapeList& after) {
+  const geometry::CheckedOperation check("changed volume");
+  const geometry::ChangedVolume changed = geometry::changed_volume(occt(before), occt(after));
+  rust::Vec<double> out;
+  out.push_back(changed.volume);
+  out.push_back(changed.slack);
+  return out;
+}
+
 std::size_t analysis_face_count(const geometry::Shape& shape) {
-  NCollection_IndexedMap<TopoDS_Shape, TopTools_ShapeMapHasher> faces;
-  TopExp::MapShapes(shape.occt(), TopAbs_FACE, faces);
-  return static_cast<std::size_t>(faces.Extent());
+  // The shape's own map of its faces (TopExp's, made with it): the .f3d
+  // import counts the faces of every body it measures, and mapping a body
+  // of 23 000 faces again each time took a tenth of its replay (mitcad#119).
+  return static_cast<std::size_t>(shape.face_count());
+}
+
+// Face boxes (the .f3d import's face lookups through a point, mitcad#119).
+
+rust::Vec<double> analysis_face_boxes(const geometry::Shape& shape) {
+  rust::Vec<double> out;
+  const std::vector<std::array<double, 6>> boxes = geometry::face_boxes(shape);
+  out.reserve(6 * boxes.size());
+  for (const std::array<double, 6>& box : boxes) {
+    for (const double value : box) {
+      out.push_back(value);
+    }
+  }
+  return out;
 }
 
 } // namespace mitcad::bridge

@@ -5,7 +5,9 @@
 
 #include <algorithm>
 #include <cmath>
+#include <limits>
 #include <map>
+#include <utility>
 
 #include <QFontMetricsF>
 #include <QPainter>
@@ -33,6 +35,12 @@ const QColor kRemoveColor(0xe0, 0x30, 0x20);
 const QColor kGuideColor(0x80, 0x88, 0x96);
 const QColor kSnapColor(0xe0, 0x7b, 0x1a);
 const QColor kPickColor(0x2c, 0xa0, 0x2c);
+// The sketch's axes and origin (mitcad#254): the origin axes' colour, the
+// lines across the view half transparent, light enough on any background.
+const QColor kAxisColor(0xd9, 0x73, 0x1a);
+const QColor kAxisLineColor(0xd9, 0x73, 0x1a, 0x90);
+// A sketch origin this near the design's (mm) is the design's.
+constexpr double kOriginTolerance = 1e-6;
 
 constexpr double kGlyphSize = 15.0;
 constexpr double kGlyphStep = 17.0;
@@ -41,6 +49,31 @@ constexpr double kArrowLength = 8.0;
 QPointF unitOf(const QPointF& p) {
   const double n = std::hypot(p.x(), p.y());
   return n > 1e-12 ? QPointF(p.x() / n, p.y() / n) : QPointF(1, 0);
+}
+
+// The part of the line through `at` along `direction` (not zero) inside
+// `area`, from its end against the direction to the other.
+std::optional<QLineF> lineAcross(const QPointF& at, const QPointF& direction, const QRectF& area) {
+  double low = -std::numeric_limits<double>::infinity();
+  double high = std::numeric_limits<double>::infinity();
+  const auto clip = [&low, &high](double from, double along, double first, double last) {
+    if (std::abs(along) < 1e-12) {
+      return from >= first && from <= last;
+    }
+    double t0 = (first - from) / along;
+    double t1 = (last - from) / along;
+    if (t0 > t1) {
+      std::swap(t0, t1);
+    }
+    low = std::max(low, t0);
+    high = std::min(high, t1);
+    return low < high;
+  };
+  if (!clip(at.x(), direction.x(), area.left(), area.right()) ||
+      !clip(at.y(), direction.y(), area.top(), area.bottom())) {
+    return std::nullopt;
+  }
+  return QLineF(at + direction * low, at + direction * high);
 }
 
 // Points of a dimension's model geometry.
@@ -180,13 +213,15 @@ std::optional<Linear> linearOf(const DimensionData& d, const SketchModel& model,
   return std::nullopt;
 }
 
-// The rays of an angle dimension: where the lines meet and their
-// directions (start to end), whose angle the model measures.
-struct Rays {
-  V2 corner, da, db;
-};
+// Whether an angle dimension says which rays it measures; one stored
+// without (before mitcad#296) measures the angle closer to its value.
+bool hasSide(const DimensionData& d) {
+  return d.json.contains(QStringLiteral("reverse_a")) || d.json.contains(QStringLiteral("reverse_b"));
+}
 
-std::optional<Rays> raysOf(const DimensionData& d, const SketchModel& model) {
+} // namespace
+
+std::optional<AngleRays> angleRays(const DimensionData& d, const SketchModel& model, bool byValue) {
   const Resolver r{model};
   const CurveData* a = r.curve(d.json, "a");
   const CurveData* b = r.curve(d.json, "b");
@@ -200,10 +235,24 @@ std::optional<Rays> raysOf(const DimensionData& d, const SketchModel& model) {
     return std::nullopt;
   }
   const double t = cross(b->curve.a - a->curve.a, db) / c;
-  return Rays{a->curve.a + da * t, da, db};
+  const V2 corner = a->curve.a + da * t;
+  if (hasSide(d)) {
+    const double sa = d.json.value(QStringLiteral("reverse_a")).toBool() ? -1.0 : 1.0;
+    const double sb = d.json.value(QStringLiteral("reverse_b")).toBool() ? -1.0 : 1.0;
+    return AngleRays{corner, da * sa, db * sb};
+  }
+  if (!byValue) {
+    return AngleRays{corner, da, db};
+  }
+  const double between = std::acos(std::clamp(dot(da, db), -1.0, 1.0));
+  const bool supplement = std::abs(kPi - between - d.measured) < std::abs(between - d.measured);
+  AngleRays rays{corner, da, supplement ? -db : db};
+  if (d.text && dot(rays.da + rays.db, *d.text - corner) < 0.0) {
+    rays.da = -rays.da;
+    rays.db = -rays.db;
+  }
+  return rays;
 }
-
-} // namespace
 
 std::optional<double> measure(const DimensionData& d, const SketchModel& model) {
   const Resolver r{model};
@@ -218,7 +267,8 @@ std::optional<double> measure(const DimensionData& d, const SketchModel& model) 
     return std::abs(dot(linear->b - linear->a, linear->u));
   }
   if (t == QStringLiteral("angle")) {
-    if (const auto rays = raysOf(d, model)) {
+    // As the model measures it: without a side, between the directions.
+    if (const auto rays = angleRays(d, model, false)) {
       return std::acos(std::clamp(dot(rays->da, rays->db), -1.0, 1.0));
     }
     return std::nullopt;
@@ -277,7 +327,7 @@ V2 defaultTextPosition(const DimensionData& d, const SketchModel& model, double 
     return middle + n * off;
   }
   if (t == QStringLiteral("angle")) {
-    if (const auto rays = raysOf(d, model)) {
+    if (const auto rays = angleRays(d, model)) {
       return rays->corner + unit(rays->da + rays->db) * (60.0 * pixel);
     }
   }
@@ -351,7 +401,7 @@ DimensionShape dimensionShape(const DimensionData& d, const SketchModel& model,
     return shape;
   }
   if (t == QStringLiteral("angle")) {
-    const auto rays = raysOf(d, model);
+    const auto rays = angleRays(d, model);
     if (!rays) {
       return shape;
     }
@@ -475,13 +525,42 @@ QString SketchOverlay::dimensionText(const DimensionData& d) const {
   } else if (d.type == QStringLiteral("arc_length")) {
     value = QStringLiteral("⌒") + value;
   }
+  if (!d.driven && !plainNumber(d.expression)) {
+    value = QStringLiteral("fx: ") + value;
+  }
+  // The name instead of the value, or before it (mitcad#231).
+  if (!d.parameter.isEmpty()) {
+    switch (m_c.dimensionTextMode()) {
+    case SketchController::DimensionText::Value:
+      break;
+    case SketchController::DimensionText::Name:
+      value = d.parameter;
+      break;
+    case SketchController::DimensionText::NameValue:
+      value = QStringLiteral("%1 = %2").arg(d.parameter, value);
+      break;
+    }
+  }
+  return d.driven ? QStringLiteral("(%1)").arg(value) : value;
+}
+
+QString SketchOverlay::dimensionTooltip(const DimensionData& d) const {
+  const bool angle = d.type == QStringLiteral("angle");
+  const QString value = angle ? m_c.formatAngle(d.measured)
+                              : QStringLiteral("%1 %2").arg(m_c.formatLength(d.measured), m_c.lengthUnit());
+  QString text = d.parameter.isEmpty() ? QString() : d.parameter + QStringLiteral(" = ");
   if (d.driven) {
-    return QStringLiteral("(%1)").arg(value);
+    // A reference's comment already says it (mitcad#231).
+    text += d.comment.endsWith(QStringLiteral("(driven)")) ? value : value + QStringLiteral(", driven");
+  } else if (!plainNumber(d.expression)) {
+    text += QStringLiteral("%1 → %2").arg(d.expression, value);
+  } else {
+    text += value;
   }
-  if (!plainNumber(d.expression)) {
-    return QStringLiteral("fx: ") + value;
+  if (!d.comment.isEmpty()) {
+    text += QStringLiteral(" (%1)").arg(d.comment);
   }
-  return value;
+  return text;
 }
 
 QRectF SketchOverlay::textRect(const QPointF& at, const QString& text) const {
@@ -777,16 +856,20 @@ void SketchOverlay::paintDimension(QPainter& painter, const DimensionShape& shap
 void SketchOverlay::paintEntityHighlight(QPainter& painter, const QString& entity,
                                          const QColor& color) const {
   const SketchModel& model = m_c.model();
+  // A body edge or vertex in the sketch plane (mitcad#256) as a sketch entity.
+  const BodyGeometry& body = m_c.bodyGeometryShown();
+  const bool onBody = BodyGeometry::isBodyId(entity);
   painter.setPen(QPen(color, 4.0, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
   painter.setBrush(Qt::NoBrush);
-  if (const auto p = model.pointAt(entity)) {
+  if (const auto p = onBody ? body.pointAt(entity) : model.pointAt(entity)) {
     painter.setBrush(color);
     painter.drawEllipse(m_c.toScreen(*p), 4.5, 4.5);
     return;
   }
-  if (const CurveData* c = model.curve(entity)) {
+  const CurveData* c = onBody ? nullptr : model.curve(entity);
+  if (const Curve2* curve = onBody ? body.curve(entity) : c != nullptr ? &c->curve : nullptr) {
     QPolygonF polyline;
-    for (const V2& p : c->curve.sample(2.0 * m_c.pixel())) {
+    for (const V2& p : curve->sample(2.0 * m_c.pixel())) {
       polyline << m_c.toScreen(p);
     }
     painter.drawPolyline(polyline);
@@ -874,7 +957,8 @@ void SketchOverlay::paintPreview(QPainter& painter, const ToolPreview& preview) 
   }
   if (preview.dimension) {
     const DimensionData& d = *preview.dimension;
-    const DimensionShape shape = dimensionShape(d, m_c.model(), projection(), dimensionText(d));
+    const SketchModel& model = preview.model != nullptr ? *preview.model : m_c.model();
+    const DimensionShape shape = dimensionShape(d, model, projection(), dimensionText(d));
     if (shape.valid) {
       paintDimension(painter, shape, textRect(shape.textAt, shape.text), kPreviewColor, kPreviewColor,
                      false);
@@ -915,6 +999,7 @@ void SketchOverlay::paintSnap(QPainter& painter) const {
   switch (snap.kind) {
   case Snap::Kind::Point:
   case Snap::Kind::Origin:
+  case Snap::Kind::BodyVertex: // a body vertex looks like a point (mitcad#258)
     painter.drawRect(QRectF(c.x() - r, c.y() - r, 2 * r, 2 * r));
     break;
   case Snap::Kind::Center:
@@ -922,6 +1007,7 @@ void SketchOverlay::paintSnap(QPainter& painter) const {
     painter.drawLine(QPointF(c.x() - 2, c.y()), QPointF(c.x() + 2, c.y()));
     painter.drawLine(QPointF(c.x(), c.y() - 2), QPointF(c.x(), c.y() + 2));
     break;
+  case Snap::Kind::BodyMidpoint:
   case Snap::Kind::Midpoint: {
     QPolygonF triangle;
     triangle << QPointF(c.x(), c.y() - r) << QPointF(c.x() + r, c.y() + r * 0.8)
@@ -957,11 +1043,7 @@ void SketchOverlay::paintEvent(QPaintEvent* event) {
   painter.setRenderHint(QPainter::Antialiasing);
   const SketchModel& model = m_c.model();
 
-  // The sketch origin, which drawing snaps to.
-  const QPointF origin = m_c.toScreen(V2{});
-  painter.setPen(QPen(QColor(0x50, 0x56, 0x60), 1.2));
-  painter.setBrush(QColor(0xff, 0xd8, 0x80));
-  painter.drawEllipse(origin, 3.5, 3.5);
+  paintAxes(painter);
 
   // Texts the view shows as their glyph outlines; a text without them (no
   // fonts, a sketch that did not evaluate) as plain text at its anchor.
@@ -1066,6 +1148,23 @@ void SketchOverlay::paintEvent(QPaintEvent* event) {
     paintPreview(painter, preview);
     paintSnap(painter);
   }
+  // What a Clean Up Stale Projections preview removes and trims
+  // (mitcad#252): the removed curves as they were and the pieces cut off,
+  // dashed in the remove colour, over the trimmed lines highlighted.
+  const SketchController::StalePreview& stale = m_c.stalePreview();
+  if (!stale.empty()) {
+    for (const QString& line : stale.trimmed) {
+      paintEntityHighlight(painter, line, kPickColor);
+    }
+    ToolPreview removal;
+    for (const Curve2& curve : stale.removed) {
+      removal.curve(curve, 2.0 * m_c.pixel(), ToolPreview::Style::Remove);
+    }
+    for (const auto& [from, to] : stale.cut) {
+      removal.line(from, to, ToolPreview::Style::Remove);
+    }
+    paintPreview(painter, removal);
+  }
 
   // Degrees of freedom, as the sketch palette shows them.
   QString status = model.fullyConstrained()
@@ -1094,6 +1193,88 @@ void SketchOverlay::paintEvent(QPaintEvent* event) {
   painter.drawRoundedRect(badge, 4, 4);
   painter.setPen(statusColor);
   painter.drawText(badge, Qt::AlignCenter, status);
+
+  // The pointer's place in the sketch's coordinates (mitcad#254), above the
+  // badge, at least as wide as a place of three digits so that it does not
+  // jump as the pointer moves.
+  const QString pointer = m_c.pointerText();
+  if (!pointer.isEmpty()) {
+    const qreal pointerWidth =
+        std::max(metrics.horizontalAdvance(pointer),
+                 metrics.horizontalAdvance(QStringLiteral("x -000.00, y -000.00 ") + m_c.lengthUnit())) +
+        14.0;
+    const QRectF place(bottomInset > 0 ? badge.left() : badge.right() - pointerWidth,
+                       badge.top() - badge.height() - 4.0, pointerWidth, badge.height());
+    painter.setPen(QPen(QColor(0xb0, 0xb6, 0xc0), 1.0));
+    painter.setBrush(QColor(255, 255, 255, 220));
+    painter.drawRoundedRect(place, 4, 4);
+    painter.setPen(QColor(0x20, 0x20, 0x24));
+    painter.drawText(place, Qt::AlignCenter, pointer);
+  }
+}
+
+void SketchOverlay::paintAxes(QPainter& painter) const {
+  const SketchModel& model = m_c.model();
+  const QRectF area = rect();
+  const QPointF origin = m_c.toScreen(V2{});
+  painter.save();
+  painter.setBrush(Qt::NoBrush);
+
+  // The axes across the view, each named at its positive end. Their
+  // directions in the view from points about 100 pixels along them.
+  const double step = 100.0 * m_c.pixel();
+  QFont bold = painter.font();
+  bold.setBold(true);
+  const std::pair<V2, QString> axes[] = {{V2{step, 0.0}, QStringLiteral("X")},
+                                         {V2{0.0, step}, QStringLiteral("Y")}};
+  for (const auto& [direction, name] : axes) {
+    const QPointF along = m_c.toScreen(direction) - origin;
+    if (std::hypot(along.x(), along.y()) < 1.0) {
+      continue; // the sketch plane seen edge on
+    }
+    const std::optional<QLineF> line = lineAcross(origin, along, area);
+    if (!line) {
+      continue;
+    }
+    painter.setPen(QPen(kAxisLineColor, 1.0));
+    painter.drawLine(*line);
+    const QPointF u = unitOf(along);
+    const QPointF at = line->p2() - u * 14.0 + QPointF(-u.y(), u.x()) * 10.0;
+    painter.setFont(bold);
+    painter.setPen(kAxisColor);
+    painter.drawText(QRectF(at.x() - 8.0, at.y() - 8.0, 16.0, 16.0), Qt::AlignCenter, name);
+  }
+  painter.setFont(font());
+
+  // The sketch origin, which drawing snaps to: ringed in the axes' colour.
+  painter.setPen(QPen(kAxisColor, 1.5));
+  painter.drawEllipse(origin, 7.0, 7.0);
+  painter.setPen(QPen(QColor(0x50, 0x56, 0x60), 1.2));
+  painter.setBrush(QColor(0xff, 0xd8, 0x80));
+  painter.drawEllipse(origin, 3.5, 3.5);
+  painter.setBrush(Qt::NoBrush);
+
+  // A sketch whose origin is not the design's (on a face, a construction
+  // plane, a component placed elsewhere): its origin's place in the
+  // design beside it, and the design origin seen along the sketch's normal.
+  const gp_Pnt& placed = model.frame.origin;
+  painter.setPen(kAxisColor);
+  if (placed.XYZ().Modulus() > kOriginTolerance) {
+    painter.drawText(origin + QPointF(10.0, -10.0),
+                     tr("Sketch origin at %1, %2, %3 %4")
+                         .arg(m_c.formatLength(placed.X()), m_c.formatLength(placed.Y()),
+                              m_c.formatLength(placed.Z()), m_c.lengthUnit()));
+  }
+  const V2 design = toSketch(model.frame, gp_Pnt(0.0, 0.0, 0.0));
+  const QPointF at = m_c.toScreen(design);
+  if (norm(design) > kOriginTolerance && area.adjusted(-10.0, -10.0, 10.0, 10.0).contains(at)) {
+    painter.setPen(QPen(kAxisColor, 1.5));
+    painter.drawEllipse(at, 5.0, 5.0);
+    painter.drawLine(at - QPointF(8.0, 0.0), at + QPointF(8.0, 0.0));
+    painter.drawLine(at - QPointF(0.0, 8.0), at + QPointF(0.0, 8.0));
+    painter.drawText(at + QPointF(10.0, -8.0), tr("Design origin"));
+  }
+  painter.restore();
 }
 
 void SketchOverlay::hideEvent(QHideEvent* event) {

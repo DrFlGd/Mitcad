@@ -180,7 +180,8 @@ CommandDef shellCommand(const CommandContext& context) {
   const auto outside = [](const CommandState& s) { return s.choice(QStringLiteral("direction")) != QStringLiteral("inside"); };
   def.inputs = {
       selectionInput(QStringLiteral("faces"), QObject::tr("Faces/Body"), SelectKind::Face | SelectKind::Body, 1, 0)
-          .withTooltip(QObject::tr("Faces to remove, or a body to hollow closed")),
+          .withTooltip(QObject::tr("Faces to remove, or a body to hollow closed"))
+          .withHoverChain(SelectKind::Face, QStringLiteral("tangent_chain")),
       checkInput(QStringLiteral("tangent_chain"), QObject::tr("Tangent Chain"), true),
       choiceInput(QStringLiteral("direction"), QObject::tr("Direction"),
                   {{QStringLiteral("inside"), QStringLiteral("Inside")},
@@ -274,7 +275,8 @@ CommandDef draftCommand(const CommandContext& context) {
       selectionInput(QStringLiteral("plane"), QObject::tr("Plane"), kPlaneKinds, 1, 1)
           .withTooltip(QObject::tr("The fixed plane: its normal is the pull direction"))
           .withAccepts(isPlanar),
-      selectionInput(QStringLiteral("faces"), QObject::tr("Faces"), SelectKind::Face, 1, 0),
+      selectionInput(QStringLiteral("faces"), QObject::tr("Faces"), SelectKind::Face, 1, 0)
+          .withHoverChain(SelectKind::Face, QStringLiteral("tangent_chain")),
       choiceInput(QStringLiteral("draft_type"), QObject::tr("Draft Sides"),
                   {{QStringLiteral("one"), QStringLiteral("One Side")},
                    {QStringLiteral("two"), QStringLiteral("Two Sides")},
@@ -410,7 +412,8 @@ CommandDef replaceFaceCommand(const CommandContext& context) {
   def.group = QStringLiteral("MODIFY");
   def.featureType = QStringLiteral("replace_face");
   def.inputs = {
-      selectionInput(QStringLiteral("faces"), QObject::tr("Source Faces"), SelectKind::Face, 1, 0),
+      selectionInput(QStringLiteral("faces"), QObject::tr("Source Faces"), SelectKind::Face, 1, 0)
+          .withHoverChain(SelectKind::Face, QStringLiteral("tangent_chain")),
       selectionInput(QStringLiteral("target"), QObject::tr("Target Faces"), kPlaneKinds | SelectKind::Body, 1, 1)
           .withTooltip(QObject::tr("A plane, a face of another body (also curved) or a surface body"))
           .withAccepts([&context](const SelectionItem& item) {

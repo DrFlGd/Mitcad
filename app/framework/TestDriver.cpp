@@ -89,6 +89,7 @@ const StepSpec kSpecs[] = {
     {"drag", 4, 6, kInputOfMain},
     {"wheel", 3, 4, kInputOfMain},
     {"wheel-burst", 4, 5, kInputOfMain},
+    {"trackpad-scroll", 5, 6, kInputOfMain},
     {"click-logged", 1, 3, kInputOfMain},
     {"dblclick-logged", 1, 2, kInputOfMain},
     {"click-pick", 1, 2, kInputOfMain},
@@ -112,6 +113,7 @@ const StepSpec kSpecs[] = {
     {"native-expand", 1, 1, kInputOfTarget},
     {"native-click-now", 1, 1, kPlain},
     {"native-click-on-job", 2, 2, kIdle},
+    {"expect-picking-on-job", 1, 1, kIdle},
     {"native-type-now", 2, 2, kPlain},
     {"native-key-now", 1, -1, kPlain},
     {"native-file-name", 1, 1, kInputOfTarget},
@@ -714,6 +716,8 @@ void TestDriver::fail(int line, const QString& reason) {
 }
 
 void TestDriver::leave(int code) {
+  QObject::disconnect(m_jobPickConnection);
+  m_jobPickLabel.clear();
   QObject::disconnect(m_nativeJobClickConnection);
   m_nativeJobClickLabel.clear();
   m_finished = true;
@@ -726,6 +730,10 @@ void TestDriver::leave(int code) {
 }
 
 void TestDriver::finish() {
+  if (!m_jobPickLabel.isEmpty()) {
+    fail(m_jobPickLine, QStringLiteral("the armed pick's job '%1' never started").arg(m_jobPickLabel));
+    return;
+  }
   if (!m_nativeJobClickLabel.isEmpty()) {
     fail(m_nativeJobClickLine, QStringLiteral("the armed native click's job '%1' never started").arg(m_nativeJobClickLabel));
     return;
@@ -1178,7 +1186,38 @@ void TestDriver::run(const Step& step) {
   QWidget* mainWindow = m_main.data();
 
   // --- Keys and text
-  if (name == QLatin1String("native-click-on-job")) {
+  if (name == QLatin1String("expect-picking-on-job")) {
+    auto* window = qobject_cast<MainWindow*>(mainWindow);
+    auto* session = window ? window->findChild<DocumentSession*>() : nullptr;
+    if (!session || window->modelBusy() || !m_jobPickLabel.isEmpty()) {
+      fail(line, QStringLiteral("expect-picking-on-job requires an idle document and no armed pick")); return;
+    }
+    auto& viewer = window->viewer();
+    const auto points = viewer.pickPoints(SelectKind::Face | SelectKind::Edge | SelectKind::Body);
+    if (points.empty() || !viewer.itemAt(points.front().second)) {
+      fail(line, QStringLiteral("expect-picking-on-job requires a pickable body")); return;
+    }
+    const QPoint point = points.front().second;
+    const QString label = a.at(0);
+    m_jobPickLabel = label;
+    m_jobPickLine = line;
+    const QPointer<MainWindow> guard(window);
+    m_jobPickConnection = connect(session, &DocumentSession::jobStarted, this,
+        [this, guard, point, label, line](const QString& started, const QString&) {
+          if (started != label) return;
+          QObject::disconnect(m_jobPickConnection);
+          m_jobPickLabel.clear();
+          if (!guard || !guard->modelBusy()) {
+            fail(line, QStringLiteral("the armed pick did not observe a busy job")); return;
+          }
+          // Same OCCT MoveTo/filter path as a hover inside paintGL, with
+          // deterministic timing before the job can finish.
+          if (guard->viewer().itemAt(point) || !guard->viewer().itemsAt(point).empty()) {
+            fail(line, QStringLiteral("a model item remained pickable during a job")); return;
+          }
+          qInfo().noquote() << QStringLiteral("Picking suspended during %1 (busy)").arg(label);
+        });
+  } else if (name == QLatin1String("native-click-on-job")) {
     if (!mac::test::active()) { fail(line, QStringLiteral("native-click-on-job requires the native macOS UI")); return; }
     auto* window = qobject_cast<MainWindow*>(mainWindow);
     auto* session = window ? window->findChild<DocumentSession*>() : nullptr;
@@ -1692,6 +1731,30 @@ void TestDriver::run(const Step& step) {
       return;
     }
     queueDrag(from, to, button, modifiers);
+  } else if (name == QLatin1String("trackpad-scroll")) {
+    double x = 0, y = 0, dx = 0, dy = 0;
+    Qt::KeyboardModifiers modifiers;
+    const bool momentum = a.size() == 6 && a.at(5) == QLatin1String("momentum");
+    if (!toNumber(a.at(0), x) || !toNumber(a.at(1), y) ||
+        !toNumber(a.at(2), dx) || !toNumber(a.at(3), dy) ||
+        !parseModifiers(a.at(4), modifiers) || (a.size() == 6 && !momentum)) {
+      fail(line, QStringLiteral("trackpad-scroll <x%> <y%> <dx> <dy> <mods> [momentum]"));
+      return;
+    }
+    QPoint at;
+    if (!viewPoint(x, y, at)) {
+      fail(line, QStringLiteral("no 3D view"));
+      return;
+    }
+    queue([this, at, dx, dy, modifiers, momentum] {
+      QWidget* view = viewer();
+      if (!view || !m_main) return;
+      const QPoint global = m_main->mapToGlobal(at);
+      QWheelEvent event(QPointF(view->mapFromGlobal(global)), QPointF(global),
+                        QPoint(qRound(dx), qRound(dy)), QPoint(), Qt::NoButton,
+                        modifiers, momentum ? Qt::ScrollMomentum : Qt::ScrollUpdate, false);
+      QCoreApplication::sendEvent(view, &event);
+    });
   } else if (name == QLatin1String("wheel")) {
     double x = 0;
     double y = 0;

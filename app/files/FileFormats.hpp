@@ -15,6 +15,8 @@ enum class FileKind {
   Mesh,    // .stl, .obj: mesh bodies
   Drawing, // .dxf: a sketch
   Ipt,     // .ipt or .iam: a new document with the part or the assembly (mitcad#60)
+  Ifc,     // .ifc, .ifczip: a new document with the building model (mitcad#273)
+  Rvt,     // .rvt, .rfa, .rte, .rft: a new document with the project's elements by level (mitcad#274)
 };
 
 FileKind fileKind(const QString& path);

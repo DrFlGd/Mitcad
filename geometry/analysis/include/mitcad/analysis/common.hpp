@@ -10,9 +10,12 @@
 // curved face where a planar one is needed) or when OCCT fails.
 
 #include <stdexcept>
+#include <vector>
 
 #include <GProp_GProps.hxx>
+#include <TopoDS_Face.hxx>
 #include <TopoDS_Shape.hxx>
+#include <gp_Pnt.hxx>
 
 namespace mitcad::analysis {
 
@@ -67,5 +70,12 @@ TopoDS_Shape oriented_solids(const TopoDS_Shape& shape);
 GProp_GProps volume_properties(const TopoDS_Shape& shape, bool only_closed = false,
                                bool skip_shared = false);
 GProp_GProps surface_properties(const TopoDS_Shape& shape, bool skip_shared = false);
+
+// The volume integral of the faces (each by its orientation) about `at`,
+// as volume_properties integrates a shape's faces: the faces of a closed
+// shell give its volume about any point; a part of them, the share they
+// contribute about `at` (mitcad#235: the volume a change makes, from the
+// faces it changed).
+GProp_GProps faces_volume(const std::vector<TopoDS_Face>& faces, const gp_Pnt& at);
 
 } // namespace mitcad::analysis

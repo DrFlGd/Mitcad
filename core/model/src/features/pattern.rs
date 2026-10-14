@@ -383,7 +383,11 @@ impl PatternObjects {
                         }
                         None => {}
                     }
-                    if entry.def.info().tool_use().is_none() && !is_dressup(&entry.def) {
+                    if entry.def.info().tool_use().is_none()
+                        && !is_dressup(&entry.def)
+                        && !changes_sheet(&entry.def)
+                        && !makes_sheets(&entry.def)
+                    {
                         return Err(format!(
                             "{} ({}) cannot be patterned or mirrored: a {} has no tool body",
                             entry.name,
@@ -490,6 +494,104 @@ pub(crate) fn repeated(def: &FeatureDef) -> Option<(&PatternObjects, &[u32])> {
     }
 }
 
+/// A sheet feature that changes the material of an existing sheet body
+/// (mitcad#242): a pattern or mirror repeats the material it added and
+/// removed ([`repeat_sheet_change`]), and the sheet-domain adapter takes
+/// the result back into the sheet's domains.
+pub(crate) fn changes_sheet(def: &FeatureDef) -> bool {
+    match def {
+        FeatureDef::SheetFace(d) => d.body.is_some(),
+        FeatureDef::SheetFlange(_)
+        | FeatureDef::SheetCut(_)
+        | FeatureDef::SheetCornerRound(_)
+        | FeatureDef::SheetCornerChamfer(_)
+        | FeatureDef::SheetCornerRelief(_) => true,
+        _ => false,
+    }
+}
+
+/// A face that makes new sheet bodies, whose copies are new sheet bodies
+/// ([`crate::sheet::replay::copy_faces`], mitcad#280).
+pub(crate) fn makes_sheets(def: &FeatureDef) -> bool {
+    matches!(def, FeatureDef::SheetFace(d) if d.body.is_none())
+}
+
+/// The copies of a sheet feature's change at the elements (mitcad#242):
+/// the material it added to a body (its result less the body before it)
+/// joined and the material it removed (the body before it less its result)
+/// cut, each moved by the place's steps and the element's transform. The
+/// feature's own operation is not repeated: its inputs (boundaries,
+/// panels, corners) name domains of the original, not of the copies.
+fn repeat_sheet_change<K: Kernel>(
+    ctx: &mut EvalContext<'_, K>,
+    set: &mut BodySet<K::Shape>,
+    place: &Placed,
+    elements: &[Element],
+) -> Result<bool, String> {
+    let uid = place.feature;
+    let at = place
+        .steps
+        .iter()
+        .fold(Transform::IDENTITY, |done, (t, _)| t.after(&done));
+    let mut reached = false;
+    for body in ctx.feature_changed_bodies(uid)? {
+        let Some(before) = ctx.body_before(uid, body) else {
+            continue;
+        };
+        let Some(after) = ctx
+            .env
+            .history
+            .iter()
+            .find(|r| r.uid == uid)
+            .and_then(|r| r.shape_set(body))
+            .cloned()
+        else {
+            continue;
+        };
+        let volume = |shape: &K::Shape| -> Result<f64, String> {
+            Ok(ctx
+                .kernel
+                .mass_properties(shape)
+                .map_err(|e| e.to_string())?
+                .volume)
+        };
+        let least = 1e-9 * volume(&before)?.abs().max(1.0);
+        let mut changes = Vec::new();
+        for (operation, from, less) in [
+            (Operation::Join, &after, &before),
+            (Operation::Cut, &before, &after),
+        ] {
+            let difference = ctx
+                .kernel
+                .boolean(BooleanOp::Cut, &[from], less)
+                .map_err(|e| e.to_string())?;
+            for piece in difference.pieces {
+                if volume(&piece.shape)? > least {
+                    changes.push((operation, piece.shape));
+                }
+            }
+        }
+        for element in elements {
+            let transform = element.transform.after(&at);
+            for (operation, piece) in &changes {
+                let copy = ctx
+                    .kernel
+                    .transform_shape(
+                        piece,
+                        &transform,
+                        Some(Instance {
+                            feature: ctx.uid,
+                            index: element.index,
+                        }),
+                    )
+                    .map_err(|e| e.to_string())?;
+                reached |= apply_tool(ctx, set, *operation, &[body], &copy)?;
+            }
+        }
+    }
+    Ok(reached)
+}
+
 /// A place of a feature with a tool among a pattern's objects: the steps
 /// of the patterns of features (patterns of patterns) that took it there,
 /// innermost first: each element's transform and the instance that names
@@ -512,7 +614,11 @@ fn originals<K: Kernel>(
     depth: usize,
 ) -> Result<Vec<Placed>, String> {
     let entry = ctx.feature_entry(uid)?;
-    if entry.def.info().tool_use().is_some() || is_dressup(&entry.def) {
+    if entry.def.info().tool_use().is_some()
+        || is_dressup(&entry.def)
+        || changes_sheet(&entry.def)
+        || makes_sheets(&entry.def)
+    {
         return Ok(vec![Placed {
             feature: uid,
             steps: Vec::new(),
@@ -887,6 +993,65 @@ pub(crate) fn repeat<K: Kernel>(
                     }
                 }
             }
+            // Copies of faces that made new sheet bodies are new sheet
+            // bodies (mitcad#280).
+            if places.iter().all(|p| {
+                ctx.feature_entry(p.feature)
+                    .is_ok_and(|e| makes_sheets(&e.def))
+            }) {
+                let mut copies = Vec::new();
+                for place in &places {
+                    let at = place
+                        .steps
+                        .iter()
+                        .fold(Transform::IDENTITY, |done, (t, _)| t.after(&done));
+                    for element in elements {
+                        copies.push(crate::sheet::replay::Copy {
+                            feature: place.feature,
+                            transform: element.transform.after(&at),
+                            instance: Instance {
+                                feature: ctx.uid,
+                                index: element.index,
+                            },
+                        });
+                    }
+                }
+                if let Some(output) = crate::sheet::replay::copy_faces(ctx, &copies)? {
+                    return Ok(output);
+                }
+            }
+            // Copies of sheet features on one sheet body are repeated on the
+            // sheet, in timeline order (mitcad#242).
+            if places.iter().any(|p| {
+                ctx.feature_entry(p.feature)
+                    .is_ok_and(|e| changes_sheet(&e.def))
+                    || crate::sheet::replay::kept_as_change(ctx, p.feature, None)
+            }) {
+                let timeline = &ctx.env.features;
+                let position = |uid: FeatureUid| timeline.iter().position(|f| f.uid == uid);
+                let mut ordered: Vec<&Placed> = places.iter().collect();
+                ordered.sort_by_key(|p| position(p.feature));
+                let mut copies = Vec::new();
+                for place in ordered {
+                    let at = place
+                        .steps
+                        .iter()
+                        .fold(Transform::IDENTITY, |done, (t, _)| t.after(&done));
+                    for element in elements {
+                        copies.push(crate::sheet::replay::Copy {
+                            feature: place.feature,
+                            transform: element.transform.after(&at),
+                            instance: Instance {
+                                feature: ctx.uid,
+                                index: element.index,
+                            },
+                        });
+                    }
+                }
+                if let Some(output) = crate::sheet::replay::repeat(ctx, &copies)? {
+                    return Ok(output);
+                }
+            }
             // Fillets and chamfers (mitcad#105) go on the copies' edges,
             // after the copies of the features before them.
             let mut dressups = BTreeSet::new();
@@ -972,9 +1137,14 @@ pub(crate) fn repeat<K: Kernel>(
         }
         PatternObjects::Faces { body, faces } => {
             let shape = ctx.body(*body)?;
+            // A face a sketch change renamed is found again (mitcad#272).
+            let mut found = Vec::with_capacity(faces.len());
+            for face in faces {
+                found.push(super::renamed::face_for(ctx, &shape, face)?);
+            }
             let (tool, op) = ctx
                 .kernel
-                .face_tool(&shape, faces)
+                .face_tool(&shape, &found)
                 .map_err(|e| e.to_string())?;
             let operation = if op == BooleanOp::Cut {
                 Operation::Cut
@@ -1215,6 +1385,9 @@ impl Copying<'_> {
         }
         let uid = &place.feature;
         let entry = ctx.feature_entry(*uid)?;
+        if changes_sheet(&entry.def) {
+            return repeat_sheet_change(ctx, set, place, elements);
+        }
         let tool_use = entry
             .def
             .info()

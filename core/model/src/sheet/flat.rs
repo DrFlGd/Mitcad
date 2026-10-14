@@ -219,6 +219,7 @@ pub(crate) fn evaluate<K: Kernel>(
 ) -> Result<FlatPattern<K::Shape>, FlatFailure> {
     let (state, thickness, sheet_version) = current(result, body)?;
     let invalid = |m: String| FlatFailure::new("invalid", m);
+    state.overlay_refusal("the Flat Pattern").map_err(invalid)?;
     let fixed = SheetDomainRef::Panel(def.stationary);
     let fixed_embedding = state
         .charts

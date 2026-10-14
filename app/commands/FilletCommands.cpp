@@ -196,7 +196,8 @@ CommandDef filletCommand(const CommandContext& context) {
       listInput(kSets, QObject::tr("Edge Sets"),
                 {selectionInput(QStringLiteral("edges"), QObject::tr("Edges"),
                                 SelectKind::Edge | SelectKind::Face, 1, 0)
-                     .withTooltip(QObject::tr("Edges to round; a face rounds all its edges")),
+                     .withTooltip(QObject::tr("Edges to round; a face rounds all its edges"))
+                     .withHoverChain(SelectKind::Edge, QStringLiteral("tangent_chain")),
                  choiceInput(QStringLiteral("size"), QObject::tr("Radius Type"), kFilletSizes,
                              QStringLiteral("constant")),
                  valueInput(QStringLiteral("radius"), QObject::tr("Radius"), ValueKind::Length,
@@ -464,7 +465,8 @@ CommandDef chamferCommand(const CommandContext& context) {
       listInput(kSets, QObject::tr("Edge Sets"),
                 {selectionInput(QStringLiteral("edges"), QObject::tr("Edges"),
                                 SelectKind::Edge | SelectKind::Face, 1, 0)
-                     .withTooltip(QObject::tr("Edges to bevel; a face bevels all its edges")),
+                     .withTooltip(QObject::tr("Edges to bevel; a face bevels all its edges"))
+                     .withHoverChain(SelectKind::Edge, QStringLiteral("tangent_chain")),
                  choiceInput(QStringLiteral("type"), QObject::tr("Chamfer Type"), kChamferTypes,
                              QStringLiteral("equal_distance")),
                  valueInput(QStringLiteral("distance"), QObject::tr("Distance"), ValueKind::Length,

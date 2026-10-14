@@ -160,6 +160,24 @@ Shape::~Shape() {
   }
 }
 
+void Shape::keep_measures_of(const Shape& other) const {
+  if (!other.m_shape.IsEqual(m_shape)) {
+    return;
+  }
+  const auto take = [](const auto& from, const auto& to) {
+    if (const auto value = from.get()) {
+      to.set(*value);
+    }
+  };
+  take(other.m_measured, m_measured);
+  take(other.m_bounds, m_bounds);
+  take(other.m_boundaryIndex, m_boundaryIndex);
+  take(other.m_faceMeasures, m_faceMeasures);
+  take(other.m_edgeCurves, m_edgeCurves);
+  take(other.m_faceBoxes, m_faceBoxes);
+  take(other.m_valid, m_valid);
+}
+
 const TopoDS_Face& Shape::face(int i) const {
   if (detail::input_checks.load(std::memory_order_relaxed)) {
     detail::shape_read(*this);

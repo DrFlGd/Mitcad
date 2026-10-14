@@ -137,12 +137,13 @@ void MainWindow::registerFileCommands() {
   CommandDef importDef = def("file.import", tr("Import..."), "import",
                              tr("STEP, IGES, BRep, STL, OBJ, DXF or another design into this one; an .f3d "
                                 "design as a new document with its history, a FreeCAD document, an .ipt "
-                                "part or an .iam assembly"),
+                                "part, an .iam assembly, an IFC building model or an .rvt project's elements"),
                              [this] { importFile(); });
   importDef.keywords = {QStringLiteral("step"),    QStringLiteral("iges"),  QStringLiteral("brep"),
                         QStringLiteral("f3d"),     QStringLiteral("f3z"),   QStringLiteral("freecad"),
                         QStringLiteral("fcstd"),   QStringLiteral("ipt"),   QStringLiteral("iam"),
-                        QStringLiteral("open")};
+                        QStringLiteral("ifc"),     QStringLiteral("ifczip"), QStringLiteral("rvt"),
+                        QStringLiteral("rfa"),     QStringLiteral("open")};
   m_registry->add(importDef);
   CommandDef exportDef = def("file.export", tr("Export..."), "export",
                              tr("Bodies to STEP, IGES, STL, OBJ or BRep; a sketch to DXF"),
@@ -291,6 +292,8 @@ bool MainWindow::openFile(const QString& path, QString& error) {
   case FileKind::F3d:
   case FileKind::FreeCad:
   case FileKind::Ipt:
+  case FileKind::Ifc:
+  case FileKind::Rvt:
     // After the window shows: the import has a progress dialog.
     QTimer::singleShot(0, this, [this, path] { startF3dImport(path); });
     return true;
@@ -483,6 +486,8 @@ bool MainWindow::importPath(const QString& path, bool interactive, QString* erro
   case FileKind::F3d:
   case FileKind::FreeCad:
   case FileKind::Ipt:
+  case FileKind::Ifc:
+  case FileKind::Rvt:
     // A design with its history is a document of its own (a FreeCAD
     // document too, and a part file, whose history comes later).
     if (interactive && !maybeSave()) {
@@ -796,6 +801,24 @@ void MainWindow::startF3dImport(const QString& path) {
                                      .arg(bodies)
                                      .arg(importCounts(result))
                                      .arg(stop.isEmpty() ? QString() : QStringLiteral("; stopped %1").arg(stop));
+            // The components the import made, with their bodies (an .rvt
+            // project's levels, mitcad#274).
+            const QJsonArray components = queryObject({{QStringLiteral("query"), QStringLiteral("components")}})
+                                              .value(QStringLiteral("components"))
+                                              .toArray();
+            if (components.size() > 1) {
+              QStringList made;
+              for (const QJsonValue& value : components) {
+                const QJsonObject c = value.toObject();
+                made << QStringLiteral("%1 (%2 bodies)")
+                            .arg(c.value(QStringLiteral("name")).toString())
+                            .arg(c.value(QStringLiteral("bodies")).isArray()
+                                     ? static_cast<int>(c.value(QStringLiteral("bodies")).toArray().size())
+                                     : c.value(QStringLiteral("bodies")).toInt());
+              }
+              qInfo().noquote() << QStringLiteral("Imported %1: components %2")
+                                       .arg(name, made.join(QStringLiteral(", ")));
+            }
             // The documents the design refers to (mitcad#196).
             const QJsonArray references = result.value(QStringLiteral("report"))
                                               .toObject()

@@ -11,17 +11,20 @@
 //! (`#k`) all keep it. When a change of the sketch renames the face (a
 //! side face's segment ends on other curves), the name still finds the
 //! face of the same feature and role whose key has most in common with it
-//! (the same curve for a side face), as a profile's region key does; the
-//! name kept is the one assigned.
+//! (the same curve for a side face), as a profile's region key does and
+//! features' references do (`features/renamed.rs`, which has the rule);
+//! unlike a feature's reference, a tie finds every face of it. The name
+//! kept is the one assigned.
 
 use std::collections::BTreeMap;
 use std::str::FromStr;
 
 use super::{Document, ModelError, invalid};
 use crate::analysis::{self, DEFAULT_MATERIAL, MATERIALS};
+use crate::features::renamed::faces_found;
 use crate::ids::BodyUid;
 use crate::kernel::{Kernel, KernelError};
-use crate::topo::{CurveId, FaceName, RoleKey};
+use crate::topo::FaceName;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BodyAttributes {
@@ -340,66 +343,4 @@ pub(super) fn faces_named(faces: &[Vec<FaceName>], reference: &FaceName) -> Vec<
         .into_iter()
         .map(|(_, name)| name.to_string())
         .collect()
-}
-
-/// The faces `reference` finds (see [`faces_named`]): each one's index
-/// among `faces` and the name of it that it finds.
-fn faces_found<'a>(faces: &'a [Vec<FaceName>], reference: &FaceName) -> Vec<(usize, &'a FaceName)> {
-    let exact: Vec<(usize, &FaceName)> = faces
-        .iter()
-        .enumerate()
-        .filter_map(|(i, names)| names.iter().find(|n| n.matches(reference)).map(|n| (i, n)))
-        .collect();
-    if !exact.is_empty() {
-        return exact;
-    }
-    let scored: Vec<(usize, usize, &FaceName)> = faces
-        .iter()
-        .enumerate()
-        .filter_map(|(i, names)| {
-            names
-                .iter()
-                .filter_map(|n| likeness(reference, n).map(|score| (score, i, n)))
-                .max_by_key(|(score, _, _)| *score)
-        })
-        .collect();
-    let Some(best) = scored.iter().map(|(score, _, _)| *score).max() else {
-        return Vec::new();
-    };
-    scored
-        .into_iter()
-        .filter(|(score, _, _)| *score == best)
-        .map(|(_, i, n)| (i, n))
-        .collect()
-}
-
-/// How much a face's name has in common with a reference that names no
-/// face: None unless the feature and the role are the same and the keys
-/// share a curve (a side face: its own curve), else the number of curves
-/// they share.
-fn likeness(reference: &FaceName, name: &FaceName) -> Option<usize> {
-    if reference.feature != name.feature || reference.role != name.role {
-        return None;
-    }
-    let curves = |key: &Option<RoleKey>| -> Option<Vec<CurveId>> {
-        match key {
-            Some(RoleKey::Segment(segment)) => Some(segment.curves().collect()),
-            Some(RoleKey::Region(region)) => {
-                Some(region.segments().flat_map(|s| s.curves()).collect())
-            }
-            _ => None,
-        }
-    };
-    match (&reference.key, &name.key) {
-        (Some(RoleKey::Segment(a)), Some(RoleKey::Segment(b))) if a.curve != b.curve => None,
-        (Some(RoleKey::Segment(_)), Some(RoleKey::Segment(_)))
-        | (Some(RoleKey::Region(_)), Some(RoleKey::Region(_))) => {
-            let a = curves(&reference.key)?;
-            let b = curves(&name.key)?;
-            let shared = a.iter().filter(|c| b.contains(c)).count();
-            (shared > 0).then_some(shared)
-        }
-        (None, None) => Some(1),
-        _ => None,
-    }
 }

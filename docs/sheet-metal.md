@@ -7,7 +7,8 @@ The parent remains open until the complete acceptance map at the end is
 satisfied. Native folded modelling, Unfold/Refold and the derived Flat Pattern
 are implemented through phase mitcad#208, the production Cut and the reliefs
 through mitcad#209, the command UI and the Flat Pattern DXF through
-mitcad#210; the import phase remains a contract below.
+mitcad#210; the import phase (mitcad#211) is in progress, see the
+[import contract](#import-contract).
 
 Phase mitcad#206 implements native `sheet_rules` and `sheet_face` definitions,
 exact bounded planar domains, paired shape/state cache results and the
@@ -118,9 +119,12 @@ outer setback So = (r+t) * tan(abs(theta)/2)
 ```
 
 For the initial cylindrical-bend topology, require
-`angular_tolerance < abs(theta) < pi - angular_tolerance`. A 180-degree hem
-needs a separate topology contract and is explicitly unsupported. Setbacks
-become singular as the angle approaches pi. All frames must be finite and
+`angular_tolerance < abs(theta) < pi - angular_tolerance`. Setbacks
+become singular as the angle approaches pi. A flange of up to and including
+180 degrees (a hem) is supported since mitcad#242: its half-cylinder bend is
+an ordinary chart, and its length and position are measured from the bend's
+outer extent instead of the virtual sharps, which a 180-degree bend does not
+have (see the [notes](#implementation-notes-mitcad242)). All frames must be finite and
 orthonormal, and `r`, `t` and `Rn` must exceed linear tolerance. A positive
 radius does not guarantee that a short flange fits.
 
@@ -262,8 +266,8 @@ taking the first surviving face.
 Invalidation is per actual affected `BodyUid`, not merely per feature-owning
 component. This matters for assembly cuts and split outputs owned by another
 component. Unchanged bodies retain their states. An invalidated body remains
-ordinary solid geometry and reports the operation that invalidated its sheet
-meaning; it cannot continue through sheet commands or export a fabricated flat
+ordinary solid geometry and reports the first operation that invalidated its
+sheet meaning; it cannot continue through sheet commands or export a fabricated flat
 pattern without an explicit supported reconstruction.
 
 Sheet modelling edits a component definition. Multiple occurrences therefore
@@ -777,6 +781,174 @@ Decisions made while closing the leftovers of mitcad#208 to mitcad#210:
   either bend order, a K edit) and `sheet_copy_pieces` (Paste New of a split
   sheet with two Flat Patterns, independent copied rules, Undo/Redo).
 
+### Implementation notes (mitcad#242)
+
+Decisions made while closing the import gaps of mitcad#211:
+
+- **Hems and the outer extent.** A flange's angle may reach 180 degrees.
+  `X = (r+t) sin(min(|angle|, 90 degrees))` is how far the bend's outer
+  surface reaches past its stationary tangent line. Position
+  `side_tangent` puts the tangent line at `-X` (the outer surface touches
+  the side plane through the selected boundary and does not pass it);
+  length mode `outer_tangent` measures from the plane touching the outer
+  surface normal to the wall (straight length `L - X`). At 90 degrees they
+  are `inside` and `outer`; at 180 degrees the virtual sharps do not exist
+  and `inside`, `outside`, `inner` and `outer` are refused. The `.f3d`
+  flanges "tangent to the side face" with the height datum 3 are these.
+- **Widths from the middle.** `width: {type: middle, before, after}`
+  measures from the boundary's midpoint along the canonical axial
+  direction. A width past an end of the boundary is a wall wider than its
+  bend: the bend covers the boundary, and the wall's overhang is cut back
+  at its root by the relief depth, so the bend's side face stays free (a
+  rectangular notch; the moving chart's root edge stays the bend's port).
+- **Faces joined in a panel's plane.** `sheet_face` with `body` adds its
+  regions to the panel whose front or back surface holds its sketch (one
+  union through the thickness, the sheet's rules). A coplanar join leaves
+  no seam, so the added material has no panel identity; its sketch curves
+  become the panel's boundaries through the trim's lineage. The `.ipt`
+  joined faces that #211 took for double bends are such joins (their
+  plate's side was not read).
+- **The sheet-domain adapter** (`sheet/rederive.rs`). An ordinary feature on
+  a valid sheet body (also an import's base feature) is followed by a
+  re-derivation: per plane of planar charts, the result's faces on the front
+  surface give the new outline (exact edge curves mapped into the chart);
+  the lost material is removed with the Cut's trim (seams, lineage, pieces);
+  the rebuilt sheet must have the result's volume, area and centre of mass.
+  Through-thickness changes (cuts, holes, their mirrors and patterns,
+  library cut features, contour corners) keep the sheet; added material,
+  changed bends, slanted walls and dressups of surface edges invalidate it
+  with that reason. Bends are not re-derived.
+- **Patterns and mirrors of sheet features** (`sheet/replay.rs`). Copies in
+  timeline order on the working sheet: a flange is rebuilt on the copy of
+  its boundary (found by geometry in the current sheet, front or back
+  surface; side and axial direction from the transform); other features
+  repeat their material change (exact booleans of their before and after
+  bodies) and the adapter re-derives the domains, now also uniting added
+  coplanar material with the panel it touches. Spline edges the sheet
+  construction gives straight and circular walls are read back as lines
+  and arcs. Copies' identities are renumbered per copy. A straight cut is
+  cut again from the copy of its sketch plane (an overlay of the copy where
+  it crosses a bend), and a feature kept as a `change` overlay is copied as
+  one (its placement the copy's transform). CLI `sheet_pattern_straight_cut`,
+  `sheet_mirror_dressup`.
+- **Straight cuts and overlays.** `sheet_cut` mode `straight` is an
+  extrusion's cut. Re-derived where possible; otherwise (walls following
+  the sweep through a bend or an inclined panel) kept as a `SheetOverlay`
+  of the state and cut from every rebuilt solid, with a guard against
+  cutting material added later. A sheet with overlays has no developed
+  form: Unfold, Refold, Fold, Bend and the Flat Pattern refuse it. The
+  `.ipt` cuts are straight cuts (both of their sheet options unset).
+  Ordinary fillets and chamfers the adapter cannot re-derive are kept as
+  `change` overlays: the material the feature changed (exact booleans of
+  its input and result, read again from the timeline's results at every
+  rebuild, moved with the body), with the same guard and refusals.
+- **Relief depth.** Any positive depth behind the stationary tangent
+  separates the moving material; the earlier minimum of one thickness was a
+  convention that rules of half a thickness (the `.f3d` default) do not
+  follow.
+- **Tests.** CLI `sheet_flange_hem` (a 180-degree hem: volume `2000 +
+  160 pi`, flat area `1000 + 72 pi`; `side_tangent` with `outer_tangent` at
+  90 degrees; a wall 24 wide on a boundary of 20 with root notches of the
+  relief depth; a partial width with reliefs half a thickness deep), the
+  adjusted `sheet_flange_geometry` and `sheet_fold_reliefs`;
+  `sheet_face_join` (a 20 x 4 strip joined to a 40 x 20 panel, a flange on
+  the strip, a thickness edit, a face apart refused), `sheet_adapter` (an
+  ordinary cut keeps the sheet, a flange after it, a thickness edit, a boss
+  invalidates it) and `sheet_cut_straight` with its reopen pass (a straight
+  cut in the panel as a domain edit; one through a bend as an overlay:
+  `40 + 4 (12.5 asin 0.6 - 3)` removed; a later developed cut; Unfold and
+  the Flat Pattern refused), `sheet_mirror` (a joined strip and a hole
+  mirrored, a flange after them, a thickness edit), `sheet_mirror_flange`
+  (a flange mirrored onto the opposite edge, following a length edit),
+  `sheet_corner_whole` (a corner chamfer along a whole boundary),
+  `sheet_dressup_overlay` (an ordinary chamfer kept as an overlay through a
+  later flange and a thickness edit, Unfold refused) and
+  `sheet_curved_seam` (two regions of one Face meeting on a half circle,
+  a flange on the bigger one: `800 + 15 pi + 200`, one body).
+- **Panels meeting on a curve.** Panels of one plane may touch along a
+  boundary no bend port pairs (two regions of one Face meeting on an arc,
+  a spline or a straight seam that is not a bend). The general
+  construction sews each group of panels joined by ports into its own
+  shells, so coincident walls of such a seam are never sewn together, and
+  then fuses solids that share a panel plane and touch (the sum of their
+  volumes must be kept, otherwise the regions overlap and the sheet is
+  refused). The fused solid keeps every panel's identity.
+
+### Implementation notes (mitcad#280)
+
+- **Double bends.** `sheet_bend` with port mode `double` joins two parallel
+  panels of separate bodies whose straight boundaries face each other by a
+  jog: two opposite bends of the entered angle (at most 90 degrees) and a
+  straight panel between them. The jog is built from the fixed boundary:
+  the first bend at the fixed panel's port (the flange construction with
+  the tangent line on the boundary), the straight panel, the second bend
+  from the straight's far port; the second bend's moving plane must be the
+  other panel's (front surface on its front surface, within `1e-6 mm`).
+  With `h` the distance between the panels' planes and `rm = r + t/2`, the
+  straight is `(h - 2 rm (1 - cos a)) / sin a` long and the jog's run
+  `2 rm sin a + L cos a`. The other panel is cut back to the run with the
+  flange's trim (`cut_back`), through the bends seamed to it along the cut,
+  developed; the cut stops `1e-4 mm` past the panel's boundary, because in
+  that development other panels (a base panel's corner beyond a relief
+  notch) can lie just beyond it. Unfold, Refold and the Flat Pattern
+  develop the jog as any bends (CLI `sheet_double_bend`: `1300 - 100 sqrt 2
+  + 25 pi` folded, `1300 - 100 sqrt 2 + 24 pi` developed, with both
+  boundaries fixed in turn, a thickness edit, a turned-over moving body and
+  a reopen pass).
+- **Loops of material.** The `.ipt` double bends that #242 took for
+  loop-closing bends join a separate island to the sheet: the joined face
+  before them adds strips that touch no material (their own bend part
+  lists no edge, and their history state holds them as separate lumps of
+  the body), so each double bend closes no loop. A double bend between
+  panels of one body would close one; the folded construction could build
+  it, but Unfold, Refold and the Flat Pattern develop a tree and refuse a
+  second path to a domain unless it closes exactly, so such a bend is
+  refused with that reason instead of building a sheet that has no
+  developed form.
+- **Front and back of the moving body.** Two bodies made from sketches with
+  opposite normals have their front surfaces on opposite sides. A double
+  bend joins front to front: the moving body's charts take the stationary
+  body's labels (each frame moved to the other surface, the material
+  direction reversed, the material coordinates kept). A moving body with
+  bends is refused then (their inside sides would change).
+- **Copies of faces that make bodies.** A pattern or mirror whose objects
+  are faces that made new sheet bodies copies each body as a new sheet body
+  of the pattern: the panels' frames moved by the element's transform (a
+  reflection reverses the frame's handedness, so the material direction
+  keeps its image by reversing the parity), the domains renamed as the
+  pattern's (slots offset by 100000 per copy) and the solid built again
+  from them (CLI `sheet_double_bend_mirror`: a strip and its mirror joined
+  to a panel's two ends by double bends, `1400 - 200 sqrt 2 + 50 pi`).
+- **Cuts ending on a folded seam.** A developed cut (also the adapter's
+  re-derivation of an ordinary cut) whose contour ends on the seam of a bend
+  that is not developed, removing material on the panel's side only,
+  shortens the seam to the stretch the panel's boundary keeps; the bend's
+  boundary keeps the rest as a free edge (its chart is outside the cut's
+  plane and does not change). A cut that leaves the boundary in more than
+  one stretch along the seam still asks for the bend to be opened. CLI
+  `sheet_cut_on_seam`.
+- **The adapter and walls in a panel's plane.** The re-derivation reads a
+  plane's material from the result's faces on its front surface; faces the
+  sheet names as thickness walls of other domains (the ends of a box's side
+  flanges in the plane of its end wall's outside) are skipped, so an
+  ordinary cut on such a box keeps the sheet.
+- **Corners of one feature on its input.** A corner round's or chamfer's
+  corners are all found on the sheet before the feature, then each trims
+  its panel: an earlier corner's trim renumbers the pieces of the curves a
+  later corner names. A boundary reference to a piece prefers that piece
+  to another piece that inherited its alias when it was split off.
+- **Rounds past a short side.** A round whose tangent length exceeds one
+  side of its corner, where the contour continues on an arc beyond that
+  side (an earlier round), takes that side whole: the round's circle is
+  tangent to the other side's line and to the arc's circle (the one
+  solution touching the line within its side and the arc within its
+  extent), the material between the contour and the round removed or added.
+  CLI `sheet_corner_round_past`: `358 - (16 - 4 pi)` after a radius-4 round,
+  then `+ 0.170772982484` for a radius-1 round below it.
+- **Fold lines on the back surface.** A fold line may lie on the panel's
+  front or back surface: across the thickness it is the same line. CLI
+  `sheet_fold_back`: `800 + pi` either way.
+
 ## Kernel seam
 
 Add one sheet-metal family to `core/model/src/kernel.rs`, using default
@@ -1054,6 +1226,27 @@ replayed result but cannot supply missing parameters by assumption. Sheet holes
 must resolve against the actual material face/chart, including transformed
 parts. The `.f3d` integration decodes flange inputs and uses the same native
 contract, with explicit errors for undecoded fields.
+
+Implementation (mitcad#211, first part): the decoders write sheet items
+(`core/import/SCHEMA.md`, *Sheet metal*) and the import replays them
+(`core/import/README.md`, *Sheet metal*; the `.ipt` records in
+`core/ipt/README.md`, *Sheet metal*): `.ipt` new-body faces with the
+style's rules, flanges on one edge and cuts through the sheet; `.f3d` base
+flanges with the design's rule and edge flanges on one edge at the inside
+or outside position. Not yet: joined faces, multi-edge and partial-width
+flanges, flanges at the edge (adjacent or tangent positions), hems,
+corners, bends, folds and cuts reaching a bend; each falls back with its
+reason. Since mitcad#242: faces joined in a panel's plane, `.f3d` hems,
+side-tangent flanges and widths, straight `.ipt` cuts (through bends as
+overlays), and sheets kept through ordinary features by the sheet-domain
+adapter (see its [notes](#implementation-notes-mitcad242)).
+
+`.ipt` edges by their names (mitcad#242): the edges flanges, corner rounds
+and chamfers and bends select are read from the file's topological names
+and found in the history state each item starts from (`core/ipt/README.md`,
+*Topological names*); a flange on several edges is one flange per edge read,
+with the file's width extents as offsets. No edge is chosen among
+candidates; an edge not read makes its item fall back with the reason.
 
 Report parameter replay, geometric match and retained fallback separately.
 A stored B-rep may preserve an unsupported item's geometry, but it has no

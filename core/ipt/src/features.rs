@@ -1732,8 +1732,8 @@ pub const COIL_TYPE: [u8; 16] = type_id("b80cb14fd21158d6600013a99dccefb0");
 /// A coil: slots 0 operation, 1 profiles, 2 axis (a work axis), 3 against
 /// the axis (a boolean), 5 its type (0 pitch and turns, 1 turns and
 /// height, 2 pitch and height; 3, a spiral, not seen), 6 pitch, 7 height,
-/// 8 turns, 9 taper *(seen)*; the hand is not decoded (the import tries
-/// both).
+/// 8 turns, 9 taper, 10 to 15 its ends, 19 its bodies *(seen)*; the hand
+/// is not decoded (the import tries both).
 pub fn coil(
     cx: &Context,
     record: usize,
@@ -1762,6 +1762,9 @@ pub fn coil(
         other => return Err(format!("coil type {other:?} is not known")),
     };
     let mut d = json!({"operation": operation, "coilType": kind});
+    // Its bodies (slot 19, a list `ae70680e…` *(seen)*), as an
+    // extrusion's.
+    participants(cx, &slots, operation, &mut d);
     for (key, i) in [
         ("pitch", 6),
         ("height", 7),
@@ -1778,6 +1781,19 @@ pub fn coil(
         };
         if let Some(p) = cx.parameter(slot(i), made) {
             d[key] = p;
+        }
+    }
+    // Its ends (mitcad#235): a boolean (flat, else natural) and the
+    // transition and flat angles, slots 10 to 12 for the start and 13 to 15
+    // for the end *(seen: one coil of the older parts with a flat end; the
+    // angles of a natural end keep values the coil does not use)*.
+    for (key, at) in [("startEnd", 10), ("endEnd", 13)] {
+        if cx.boolean(slot(at)) == Some(true) {
+            let transition = cx.parameter(slot(at + 1), &mut t.parameters);
+            let flat = cx.parameter(slot(at + 2), &mut t.parameters);
+            if let (Some(transition), Some(flat)) = (transition, flat) {
+                d[key] = json!({"transition": transition, "flat": flat});
+            }
         }
     }
     if let Some((index, name)) = &sketch {

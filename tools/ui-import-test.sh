@@ -26,6 +26,11 @@
 #     project of test_exchange --write-iam (a sub-assembly, parts found
 #     relative to the assembly and by name, a missing one, a suppressed
 #     occurrence) imported in the import process, its report shown.
+#   - An IFC building model through File > Open (mitcad#273): the IFC
+#     reader's test building (mitcad-cli import-ifc --write-test), every
+#     product accounted for in the report. With MITCAD_IFC_CORPUS (never
+#     committed) the MIT-licensed project's IFC4 export too, none of its
+#     products failed.
 #   - With MITCAD_F3D_CORPUS (real .f3d files, never committed): a small
 #     .f3d (MITCAD_F3D_UI_PART, else the corpus' smallest part) opened
 #     through File > Open, imported with its history to its end behind a
@@ -50,6 +55,7 @@
 # check-all sources: core/import core/f3d core/freecad core/ipt core/zip core/dxf core/tests tools/cli core/usdz
 # check-all sources: core/ffi/src/brep_import.rs core/ffi/src/f3d_import.rs core/ffi/src/fcstd_import.rs
 # check-all sources: core/ffi/src/ipt_import.rs core/ffi/src/ipt_history.rs core/ffi/src/iam_import.rs
+# check-all sources: core/ifc core/ffi/src/ifc_import.rs
 
 source "$(dirname "$0")/ui-test-lib.sh"
 
@@ -417,6 +423,44 @@ ui_step "close the report (Enter)"         ui_key Return
 ui_focus_main
 ui_expect_new "Imported top.iam: 5 bodies" "a new document with the parts' bodies in their components"
 expect_title "top* - Mitcad"
+
+echo "--- IFC building model (mitcad#273)"
+"$CLI" import-ifc --write-test "$WORK/building.ifc" || ui_fail "cannot write the test building"
+ui_mark
+ui_step "open the building (Ctrl+O)"       open_fcstd "$WORK/building.ifc"
+ui_expect_new "Import of building.ifc started" "the import runs in its own process"
+ui_expect_new "Import report: building.ifc: 16 products (1 axes, 4 component, 1 cut, 1 mesh, 2 not_imported, 2 occurrence, 4 parametric, 1 stored), 7 bodies" \
+  "every product accounted for: storeys, the wall with its opening cut, the window type's occurrences" 120
+ui_expect_new "Import report summary: building.ifc (IFC4, view ReferenceView_V1.2, from Mitcad test) 16 products: 1 axes, 4 component, 1 cut, 1 mesh, 2 not_imported, 2 occurrence, 4 parametric, 1 stored. 7 bodies, 16 features, 1 type shapes as components; 2 storey planes, 2 grid axes. Checked against the file: 1 of 1 element volumes agree with its quantities." \
+  "the report: the products' outcomes and the check against the file's quantities"
+ui_focus_dialog '^Import Report$'
+ui_step "close the report (Enter)"         ui_key Return
+ui_focus_main
+ui_expect_new "Imported building.ifc: 7 bodies" "a new document with the storeys' bodies"
+expect_title "building* - Mitcad"
+# The MIT-licensed project's IFC4 export (content id bfdf36ff) from
+# MITCAD_IFC_CORPUS (never committed): every product accounted for, none
+# failed.
+REAL_IFC=""
+if [ -n "${MITCAD_IFC_CORPUS:-}" ] && [ -f "$MITCAD_IFC_CORPUS/index.tsv" ]; then
+  REAL_IFC=$(awk -F'\t' '$2 ~ /^bfdf36ff/ {print $1}' "$MITCAD_IFC_CORPUS/index.tsv")
+fi
+if [ -n "$REAL_IFC" ]; then
+  REAL_NAME=$(basename "$REAL_IFC")
+  ui_mark
+  ui_step "open the project bfdf36ff (Ctrl+O)" open_fcstd "$MITCAD_IFC_CORPUS/$REAL_IFC"
+  ui_expect_new "Import report: $REAL_NAME: " "the project's report" 900
+  report=$(grep "Import report: $REAL_NAME: " "$UI_LOG" | tail -1)
+  grep -qE ": [0-9]+ products \(" <<< "$report" || ui_fail "the project's report has no products: $report"
+  grep -q " failed" <<< "$report" && ui_fail "a product of the project failed: $report"
+  echo "ok   bfdf36ff: ${report#*: }"
+  ui_focus_dialog '^Import Report$'
+  ui_step "close the report (Enter)"       ui_key Return
+  ui_focus_main
+  ui_expect_new "Imported $REAL_NAME:" "a new document with the project's storeys and elements" 900
+else
+  echo "skip the IFC project: MITCAD_IFC_CORPUS is not set"
+fi
 
 if [ -n "${MITCAD_F3D_CORPUS:-}" ] && [ -d "${MITCAD_F3D_CORPUS:-}" ]; then
   echo "--- .f3d import ($MITCAD_F3D_CORPUS)"

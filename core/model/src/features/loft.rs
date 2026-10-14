@@ -413,15 +413,10 @@ impl<K: Kernel> Evaluate<K> for LoftDef {
                 }
                 LoftSectionDef::Face { body, face } => {
                     let shape = ctx.body(*body).map_err(at)?;
-                    if ctx
-                        .kernel
-                        .count_faces(&shape, face)
-                        .map_err(|e| at(e.to_string()))?
-                        == 0
-                    {
-                        return Err(at(format!("body {body} has no face {face}")));
-                    }
-                    Found::Face(shape, face.clone())
+                    let face = ctx
+                        .face_or(&shape, face, || format!("body {body} has no face {face}"))
+                        .map_err(at)?;
+                    Found::Face(shape, face)
                 }
                 LoftSectionDef::Point { point } => Found::Point(ctx.point(point).map_err(at)?),
             });

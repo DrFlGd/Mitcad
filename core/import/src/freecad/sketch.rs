@@ -92,6 +92,10 @@ pub(super) struct Translated {
     /// Remarks that do not.
     pub notes: Vec<String>,
     pub sources: Vec<DimensionSource>,
+    /// The driven dimensions made of FreeCAD's reference constraints, as
+    /// `sources` lists the driving ones: their parameters, where the
+    /// document has them, become the dimensions' references (mitcad#250).
+    pub references: Vec<DimensionSource>,
     /// The Mitcad curve of each FreeCAD geometry made (by geometry index),
     /// and the point of each point geometry: what the history's features
     /// refer to (revolve axes, holes, paths).
@@ -230,7 +234,7 @@ pub(super) fn translate(
         driven["id"] = id;
     }
     // The sources were numbered by their dimension's index.
-    for s in &mut t.out.sources {
+    for s in t.out.sources.iter_mut().chain(t.out.references.iter_mut()) {
         let i: usize = s.dimension.parse().unwrap_or(0);
         s.dimension = format!("k{}", first_dimension + i + 1);
     }
@@ -1029,6 +1033,15 @@ impl Translator<'_> {
             });
         } else {
             v = driven.clone();
+            self.out.references.push(DimensionSource {
+                index: i,
+                dimension: self.out.dimensions.len().to_string(),
+                name: con.name.clone(),
+                expression: None,
+                value: con.value,
+                mitcad,
+                parameter: None,
+            });
         }
         self.out.dimensions.push(v);
         self.out.driven_dimensions.push(driven);

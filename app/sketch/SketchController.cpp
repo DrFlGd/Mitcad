@@ -6,13 +6,18 @@
 #include <cmath>
 #include <limits>
 
+#include <QAction>
 #include <QCoreApplication>
 #include <QJsonArray>
 #include <QKeyEvent>
+#include <QLabel>
 #include <QLineEdit>
 #include <QMessageBox>
 #include <QPushButton>
+#include <QRegularExpression>
 #include <QResizeEvent>
+#include <QSettings>
+#include <QToolTip>
 #include <QtLogging>
 
 #include "../OcctViewer.hpp"
@@ -118,6 +123,7 @@ bool SketchOp::run(const QJsonObject& command, QJsonObject* result) {
       m_label = m_c.undoLabel();
     }
     m_stale = true;
+    noteImplied(command, answer);
     if (result != nullptr) {
       *result = answer;
     }
@@ -133,13 +139,57 @@ bool SketchOp::run(const QJsonObject& command, QJsonObject* result) {
 bool SketchOp::attempt(const QJsonObject& command) {
   const QString kept = m_error;
   const bool done = run(command);
+  if (!done) {
+    // A constraint a snap or an inference adds, or a typed dimension: the
+    // action goes on without it, and says why (mitcad#287).
+    const bool dimension = command.contains(QStringLiteral("dimension"));
+    const QJsonObject item =
+        command.value(dimension ? QStringLiteral("dimension") : QStringLiteral("constraint")).toObject();
+    const QString type = item.value(QStringLiteral("type")).toString();
+    QStringList on;
+    for (auto it = item.begin(); it != item.end(); ++it) {
+      if (it.key() != QStringLiteral("type") && it.value().isString()) {
+        on << it.value().toString();
+      }
+    }
+    qDebug().noquote() << QStringLiteral("%1 %2 on %3 not added: %4")
+                              .arg(dimension ? QStringLiteral("Dimension") : QStringLiteral("Constraint"), type,
+                                   on.join(QStringLiteral(", ")), m_error);
+    const QString what = dimension ? QObject::tr("Dimension") : constraintName(type);
+    m_notices << QObject::tr("%1 not added: %2").arg(what, m_error);
+  }
   m_error = kept;
   return done;
+}
+
+void SketchOp::noteImplied(const QJsonObject& command, const QJsonObject& answer) {
+  const QJsonArray implied = answer.value(QStringLiteral("implied_removed")).toArray();
+  if (implied.isEmpty()) {
+    return;
+  }
+  const QString type = command.value(QStringLiteral("constraint")).toObject().value(QStringLiteral("type")).toString();
+  const QJsonArray made = answer.value(QStringLiteral("constraints")).toArray();
+  const QString id = made.isEmpty() ? QString() : QStringLiteral(" ") + made.first().toString();
+  for (const QJsonValue& v : implied) {
+    const QJsonObject removed = v.toObject();
+    const QString removedType = removed.value(QStringLiteral("type")).toString();
+    qDebug().noquote() << QStringLiteral("Removed constraint %1 %2: implied by the new %3%4")
+                              .arg(removedType, removed.value(QStringLiteral("constraint")).toString(), type, id);
+    m_notices << QObject::tr("%1 removed: implied by the new %2")
+                     .arg(constraintName(removedType), constraintName(type));
+  }
 }
 
 QJsonValue SketchOp::pointInput(const Snap& snap) {
   if (snap.atPoint()) {
     return snap.point;
+  }
+  if (snap.kind == Snap::Kind::BodyVertex) {
+    // A body vertex: the point its projection gives (mitcad#258).
+    const QString projected = projectBody(snap.bodyItem).point;
+    if (!projected.isEmpty()) {
+      return projected;
+    }
   }
   if (snap.kind == Snap::Kind::Origin) {
     const QString origin = model().originPoint();
@@ -193,6 +243,20 @@ void SketchOp::constrain(const QString& point, const Snap& snap) {
     coincident(snap.curve);
     coincident(snap.curve2);
     break;
+  case Snap::Kind::BodyVertex:
+    // On the projected vertex, which follows the body (mitcad#258).
+    coincident(projectBody(snap.bodyItem).point);
+    break;
+  case Snap::Kind::BodyMidpoint: {
+    // At the middle of the projected edge.
+    const QString edge = projectBody(snap.bodyItem).curve;
+    if (!edge.isEmpty()) {
+      addConstraint({{QStringLiteral("type"), QStringLiteral("midpoint")},
+                     {QStringLiteral("point"), point},
+                     {QStringLiteral("curve"), edge}});
+    }
+    break;
+  }
   default:
     break;
   }
@@ -209,6 +273,54 @@ void SketchOp::addDimension(const QJsonObject& dimension, const QString& value) 
   cmd.insert(QStringLiteral("dimension"), dimension);
   cmd.insert(QStringLiteral("value"), value);
   attempt(cmd);
+}
+
+ProjectedItem SketchOp::projectBody(const BodyItem& item) {
+  const QString key = QStringList{item.source, item.body, item.linked ? item.occurrence : QStringLiteral("-")}.join(
+      QLatin1Char('|'));
+  if (const auto done = m_projected.constFind(key); done != m_projected.cend()) {
+    return done.value();
+  }
+  ProjectedItem out;
+  if (const auto existing = existingProjection(model(), item)) {
+    out = *existing;
+    qDebug().noquote() << QStringLiteral("Reused the projection of %1 of %2: %3")
+                              .arg(item.describe(), item.body, out.point.isEmpty() ? out.curve : out.point);
+  } else {
+    // Linked, as Project makes it by default; Project's own command.
+    QJsonObject cmd = command(QStringLiteral("sketch.project"));
+    cmd.insert(QStringLiteral("source"), item.source);
+    cmd.insert(QStringLiteral("body"), item.body);
+    cmd.insert(QStringLiteral("linked"), true);
+    if (item.linked) {
+      cmd.insert(QStringLiteral("occurrence"), item.occurrence);
+    }
+    // The action's undo step is named after what it makes, not after the
+    // projection that comes first.
+    const bool first = m_label.isEmpty();
+    QJsonObject result;
+    if (!run(cmd, &result)) {
+      return out;
+    }
+    if (first) {
+      m_label.clear();
+    }
+    const SketchModel& after = model();
+    for (const QJsonValue& value : result.value(QStringLiteral("entities")).toArray()) {
+      const QString id = value.toString();
+      if (item.isVertex() && out.point.isEmpty() && after.point(id) != nullptr) {
+        out.point = id;
+      } else if (!item.isVertex() && out.curve.isEmpty() && after.curve(id) != nullptr) {
+        out.curve = id;
+      }
+    }
+    qDebug().noquote() << QStringLiteral("Projected %1 of %2: %3")
+                              .arg(item.describe(), item.body, out.point.isEmpty() ? out.curve : out.point);
+  }
+  if (!out.empty()) {
+    m_projected.insert(key, out);
+  }
+  return out;
 }
 
 const SketchModel& SketchOp::model() {
@@ -232,6 +344,9 @@ bool SketchOp::commit() {
     }
   }
   m_c.host().refreshScene();
+  if (!m_notices.isEmpty()) {
+    m_c.notice(m_notices.join(QStringLiteral("; ")));
+  }
   return depth > m_depth;
 }
 
@@ -254,6 +369,10 @@ SketchController::SketchController(SketchHost& host, OcctViewer& viewer, Command
     : QObject(parent), m_registry(registry), m_host(host), m_viewer(viewer) {
   m_overlay = new SketchOverlay(*this, &viewer);
   m_overlay->hide();
+  const QString dimensionText = QSettings().value(QStringLiteral("sketch/dimensionText")).toString();
+  m_dimensionText = dimensionText == QStringLiteral("name")         ? DimensionText::Name
+                    : dimensionText == QStringLiteral("name_value") ? DimensionText::NameValue
+                                                                    : DimensionText::Value;
   viewer.installEventFilter(this);
   // After the frame, which may have moved the camera.
   connect(
@@ -299,6 +418,11 @@ SketchController::SketchController(SketchHost& host, OcctViewer& viewer, Command
   m_dragTimer.setSingleShot(true);
   connect(&m_dragTimer, &QTimer::timeout, this, &SketchController::applyDrag);
   TestSync::watch(&m_dragTimer);
+  // The pointer's place is logged once the pointer rests (mitcad#254).
+  m_pointerTimer.setSingleShot(true);
+  m_pointerTimer.setInterval(150);
+  connect(&m_pointerTimer, &QTimer::timeout, this, &SketchController::logPointer);
+  TestSync::watch(&m_pointerTimer);
 }
 
 SketchController::~SketchController() = default;
@@ -306,9 +430,17 @@ SketchController::~SketchController() = default;
 void SketchController::enter(const QString& uid) {
   m_uid = uid;
   m_status.clear();
+  m_loggedProjections.clear();
   m_loggedView.clear();
   m_loggedSpacings.clear();
+  m_loggedPointer.clear();
   reload();
+  // Where the sketch lies in the design, which the overlay shows (mitcad#254).
+  const gp_Pnt& origin = m_model.frame.origin;
+  const V2 designOrigin = toSketch(m_model.frame, gp_Pnt(0.0, 0.0, 0.0));
+  qDebug().noquote() << QStringLiteral("Sketch origin at %1, %2, %3 %4 in the design; the design origin at %5 in the sketch")
+                            .arg(formatLength(origin.X()), formatLength(origin.Y()), formatLength(origin.Z()), m_unit,
+                                 pointerTextAt(designOrigin));
   m_viewer.setSketchPlane(toAx3(m_model.frame));
   m_overlay->resize(m_viewer.size());
   m_overlay->show();
@@ -318,13 +450,21 @@ void SketchController::enter(const QString& uid) {
 void SketchController::leave() {
   stopTool();
   closeEditor();
+  m_notice.clear();
   m_pressed = false;
   m_dragging = false;
   m_dragTimer.stop();
   m_textOverride.reset();
+  m_pointerTimer.stop();
+  m_pointerText.clear();
+  m_movedPointer.clear();
+  m_cursorValid = false;
   m_overlay->hide();
   m_uid.clear();
   m_model = SketchModel();
+  ++m_modelRevision;
+  m_body.clear();
+  m_bodyKey.clear();
   m_hover.clear();
   m_picked.clear();
   m_hoverAnnotation.clear();
@@ -338,20 +478,32 @@ void SketchController::reload() {
   try {
     m_model.load(m_host.queryObject(
         {{QStringLiteral("query"), QStringLiteral("sketch")}, {QStringLiteral("uid"), m_uid}}));
-    const QJsonObject units = m_host.queryObject({{QStringLiteral("query"), QStringLiteral("document")}})
-                                  .value(QStringLiteral("units"))
-                                  .toObject();
+    const QJsonObject document = m_host.queryObject({{QStringLiteral("query"), QStringLiteral("document")}});
+    const QJsonObject units = document.value(QStringLiteral("units")).toObject();
+    // The same revision means the same definition (the body geometry read
+    // for it holds).
+    m_revision = QString::number(document.value(QStringLiteral("revision")).toDouble(), 'f', 0);
     m_unit = units.value(QStringLiteral("length")).toString(QStringLiteral("mm"));
     m_unitScale = unitScale(m_unit);
   } catch (const std::exception&) {
     // The sketch was just taken back; the main window leaves sketch mode.
   }
+  ++m_modelRevision;
   const QString status = describeStatus();
   if (status != m_status) {
     m_status = status;
     qDebug().noquote() << status;
   }
+  // For UI tests: the linked projections, when their number changes
+  // (projected by Project, a dimension or a point; mitcad#256).
+  const QString projections =
+      QStringLiteral("Sketch %1: %2 linked projection(s)").arg(m_model.name).arg(m_model.projections.size());
+  if (isActive() && projections != m_loggedProjections) {
+    m_loggedProjections = projections;
+    qDebug().noquote() << projections;
+  }
   logSpacings();
+  updateConvertAction();
   m_overlay->update();
   emit changed();
 }
@@ -365,6 +517,49 @@ void SketchController::setSpacingPreview(const QStringList& anchors) {
     qDebug().noquote() << QStringLiteral("Equal spacing preview: %1").arg(anchors.join(QStringLiteral(", ")));
   }
   if (m_overlay != nullptr) {
+    m_overlay->update();
+  }
+}
+
+void SketchController::setStalePreview(const QJsonObject& answer) {
+  const auto point = [](const QJsonValue& value) {
+    const QJsonArray xy = value.toArray();
+    return V2{xy.at(0).toDouble(), xy.at(1).toDouble()};
+  };
+  // `stale` of sketch.clean_up_stale_projections (core/model/src/api/commands.md).
+  const QJsonObject stale = answer.value(QStringLiteral("stale")).toObject();
+  const QJsonObject shown = stale.value(QStringLiteral("preview")).toObject();
+  StalePreview preview;
+  QStringList removed;
+  for (const QJsonValue& value : shown.value(QStringLiteral("removed")).toArray()) {
+    const QJsonObject curve = value.toObject();
+    preview.removed.push_back(curveFromJson(curve.value(QStringLiteral("type")).toString(),
+                                            curve.value(QStringLiteral("geometry")).toObject()));
+    removed << curve.value(QStringLiteral("curve")).toString();
+  }
+  for (const QJsonValue& value : stale.value(QStringLiteral("trimmed")).toArray()) {
+    preview.trimmed << value.toString();
+  }
+  for (const QJsonValue& value : shown.value(QStringLiteral("cut")).toArray()) {
+    const QJsonObject piece = value.toObject();
+    preview.cut.emplace_back(point(piece.value(QStringLiteral("start"))), point(piece.value(QStringLiteral("end"))));
+  }
+  const bool was = !m_stalePreview.empty();
+  const bool redraw = was || !preview.empty();
+  m_stalePreview = std::move(preview);
+  if (was && m_stalePreview.empty()) {
+    qDebug().noquote() << QStringLiteral("Preview highlights: none");
+  }
+  if (!m_stalePreview.empty()) {
+    // "Preview highlights: removed c8; trimmed c3, c5, c7", for UI tests.
+    const QString none = QStringLiteral("none");
+    qDebug().noquote() << QStringLiteral("Preview highlights: removed %1; trimmed %2")
+                              .arg(removed.isEmpty() ? none : removed.join(QStringLiteral(", ")),
+                                   m_stalePreview.trimmed.isEmpty()
+                                       ? none
+                                       : m_stalePreview.trimmed.join(QStringLiteral(", ")));
+  }
+  if (redraw && m_overlay != nullptr) {
     m_overlay->update();
   }
 }
@@ -429,6 +624,15 @@ void SketchController::logView() {
   if (line != m_loggedView) {
     m_loggedView = line;
     qDebug().noquote() << line;
+    // Where each dimension's text is (mitcad#231: hovered and clicked).
+    const QPoint window = m_viewer.mapTo(m_viewer.window(), QPoint(0, 0));
+    for (const DimensionData& d : m_model.dimensions) {
+      const QPointF at = m_overlay->dimensionTextRect(d.id).center();
+      qDebug().noquote() << QStringLiteral("Dimension %1 text at %2,%3")
+                                .arg(d.id)
+                                .arg(qRound(at.x() + window.x()))
+                                .arg(qRound(at.y() + window.y()));
+    }
   }
 }
 
@@ -440,6 +644,7 @@ void SketchController::startTool(std::unique_ptr<SketchTool> tool) {
   closeEditor();
   m_tool = std::move(tool);
   m_viewer.setSketchInput(true, m_toolIcons.value(m_tool->name()));
+  ++m_toolSession; // the body geometry is read again for it
   m_viewer.setPickFilter(SelectFilter());
   qDebug().noquote() << QStringLiteral("Sketch tool %1").arg(m_tool->name());
   emit toolChanged(m_tool->name());
@@ -671,6 +876,74 @@ void SketchController::toggleCenterline() {
                                  QJsonDocument(lines).toJson(QJsonDocument::Compact));
 }
 
+bool SketchController::selectionHasProjected() const {
+  if (!isActive()) {
+    return false;
+  }
+  return std::any_of(m_host.selection().begin(), m_host.selection().end(), [this](const SelectionItem& item) {
+    if (item.owner != m_uid) {
+      return false;
+    }
+    const PointData* p = m_model.point(item.name);
+    const CurveData* c = m_model.curve(item.name);
+    return (p != nullptr && p->reference) || (c != nullptr && c->reference);
+  });
+}
+
+void SketchController::updateConvertAction() {
+  // The command is enabled while the selection holds projected geometry:
+  // the main window refreshes the commands on model changes, not on each
+  // selection change.
+  if (QAction* action = m_registry.action(QStringLiteral("sketch.convert_projected"))) {
+    action->setEnabled(selectionHasProjected());
+  }
+}
+
+void SketchController::convertProjected() {
+  QJsonArray entities;
+  for (const SelectionItem& item : m_host.selection()) {
+    if (item.owner == m_uid && (item.kind == SelectKind::SketchCurve || item.kind == SelectKind::SketchPoint)) {
+      entities.append(item.name);
+    }
+  }
+  if (entities.isEmpty()) {
+    hint(tr("Convert to Sketch Geometry: select projected curves or points first."));
+    return;
+  }
+  SketchOp op(*this);
+  QJsonObject cmd = op.command(QStringLiteral("sketch.convert_projected"));
+  cmd.insert(QStringLiteral("entities"), entities);
+  QJsonObject result;
+  if (!op.run(cmd, &result)) {
+    const QString reason = op.error();
+    op.rollback();
+    error(tr("Convert to Sketch Geometry: %1").arg(reason));
+    return;
+  }
+  op.commit();
+  QStringList converted;
+  for (const QJsonValue& v : result.value(QStringLiteral("converted")).toArray()) {
+    converted << v.toString();
+  }
+  QStringList kept;
+  for (const QJsonValue& v : result.value(QStringLiteral("kept")).toArray()) {
+    kept << v.toString();
+  }
+  QString line = QStringLiteral("Converted to sketch geometry: %1").arg(converted.join(QStringLiteral(", ")));
+  if (!kept.isEmpty()) {
+    line += QStringLiteral("; kept projected: %1").arg(kept.join(QStringLiteral(", ")));
+  }
+  qDebug().noquote() << line;
+  QStringList warnings;
+  for (const QJsonValue& v : result.value(QStringLiteral("warnings")).toArray()) {
+    warnings << v.toString();
+  }
+  if (!warnings.isEmpty()) {
+    hint(tr("Convert to Sketch Geometry: %1").arg(warnings.join(QStringLiteral("; "))));
+  }
+  updateConvertAction();
+}
+
 void SketchController::toggleFixed() {
   QJsonArray entities;
   bool all = true;
@@ -723,22 +996,32 @@ void SketchController::editDimension(const QString& id) {
                                           : QString::number(d->measured / m_unitScale, 'g', 10);
   }
   qDebug().noquote() << QStringLiteral("Editing dimension %1 (%2)").arg(id, text);
-  openValueEditor(rect.center(), text, kind, [this, id](const QString& expression) {
-    SketchOp op(*this);
-    QJsonObject cmd = op.command(QStringLiteral("sketch.set_dimension"));
-    cmd.insert(QStringLiteral("dimension"), id);
-    cmd.insert(QStringLiteral("value"), expression);
-    if (!op.run(cmd)) {
-      const QString reason = op.error();
-      op.rollback();
-      error(reason);
-      return;
-    }
-    op.commit();
-    const DimensionData* changed = m_model.dimension(id);
-    qDebug().noquote() << QStringLiteral("Dimension %1 = %2 (%3)")
-                              .arg(id, expression, changed != nullptr ? changed->parameter : QString());
-  });
+  openValueEditor(
+      rect.center(), text, kind,
+      [this, id](const QString& expression) {
+        SketchOp op(*this);
+        QJsonObject cmd = op.command(QStringLiteral("sketch.set_dimension"));
+        cmd.insert(QStringLiteral("dimension"), id);
+        cmd.insert(QStringLiteral("value"), expression);
+        if (!op.run(cmd)) {
+          const QString reason = op.error();
+          op.rollback();
+          error(reason);
+          return;
+        }
+        op.commit();
+        const DimensionData* changed = m_model.dimension(id);
+        qDebug().noquote() << QStringLiteral("Dimension %1 = %2 (%3)")
+                                  .arg(id, expression, changed != nullptr ? changed->parameter : QString());
+      },
+      d->driven ? QString() : d->parameter);
+  m_editorDimension = id;
+  // What the dimension is, as its tooltip says (mitcad#231).
+  if (m_editor) {
+    const QString about = m_overlay->dimensionTooltip(*d);
+    m_editor->setToolTip(about + QLatin1Char('\n') + m_editor->toolTip());
+    qDebug().noquote() << QStringLiteral("Sketch value editor tooltip: %1").arg(about);
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -788,6 +1071,57 @@ void SketchController::setHideAbove(bool on) {
   qDebug().noquote() << QStringLiteral("Hide Above Sketch %1").arg(on ? QStringLiteral("on") : QStringLiteral("off"));
   emit optionsChanged();
   m_host.refreshScene();
+}
+
+namespace {
+
+const char* dimensionTextKey(SketchController::DimensionText mode) {
+  switch (mode) {
+  case SketchController::DimensionText::Name:
+    return "name";
+  case SketchController::DimensionText::NameValue:
+    return "name_value";
+  case SketchController::DimensionText::Value:
+    break;
+  }
+  return "value";
+}
+
+} // namespace
+
+void SketchController::setDimensionTextMode(DimensionText mode) {
+  if (mode == m_dimensionText) {
+    return;
+  }
+  m_dimensionText = mode;
+  QSettings().setValue(QStringLiteral("sketch/dimensionText"), QString::fromLatin1(dimensionTextKey(mode)));
+  qDebug().noquote() << QStringLiteral("Dimension text %1").arg(QString::fromLatin1(dimensionTextKey(mode)));
+  emit optionsChanged();
+  m_overlay->update();
+  logDimensionTexts();
+}
+
+void SketchController::logDimensionTexts() const {
+  QStringList texts;
+  for (const DimensionData& d : m_model.dimensions) {
+    texts << QStringLiteral("%1 %2").arg(d.id, m_overlay->dimensionText(d));
+  }
+  qDebug().noquote() << QStringLiteral("Dimension texts: %1").arg(texts.join(QStringLiteral(", ")));
+}
+
+void SketchController::showDimensionTooltip(const QString& dimension, const QPointF& at) {
+  if (dimension == m_tooltipDimension) {
+    return;
+  }
+  m_tooltipDimension = dimension;
+  const DimensionData* d = dimension.isEmpty() ? nullptr : m_model.dimension(dimension);
+  if (d == nullptr) {
+    QToolTip::hideText();
+    return;
+  }
+  const QString text = m_overlay->dimensionTooltip(*d);
+  QToolTip::showText(m_viewer.mapToGlobal(at.toPoint()), text, &m_viewer);
+  qDebug().noquote() << QStringLiteral("Dimension tooltip %1: %2").arg(dimension, text);
 }
 
 // ---------------------------------------------------------------------------
@@ -990,12 +1324,23 @@ double SketchController::pixel() const {
 QString SketchController::entityAt(const QPointF& screen, unsigned filter) const {
   QString best;
   double bestDistance = std::numeric_limits<double>::max();
+  // Body geometry in the plane (mitcad#256) counts as this much further
+  // than it is: the sketch's own entity at the same place wins.
+  constexpr double kBodyTiePixels = 1.0;
+  const bool body = (filter & PickBody) != 0;
   if (filter & PickPoints) {
     for (const PointData& p : m_model.points) {
       const double d = screenDistance(toScreen(p.at), screen);
       if (d <= kPointPixels && d < bestDistance) {
         best = p.id;
         bestDistance = d;
+      }
+    }
+    for (const auto& [id, at] : body ? m_body.points() : std::vector<std::pair<QString, V2>>()) {
+      const double d = screenDistance(toScreen(at), screen);
+      if (d <= kPointPixels && d + kBodyTiePixels < bestDistance) {
+        best = id;
+        bestDistance = d + kBodyTiePixels;
       }
     }
     if (!best.isEmpty()) {
@@ -1015,8 +1360,46 @@ QString SketchController::entityAt(const QPointF& screen, unsigned filter) const
         bestDistance = d;
       }
     }
+    for (std::size_t i = 0; body && i < m_body.items().size(); ++i) {
+      const BodyItem& item = m_body.items()[i];
+      if (item.isVertex()) {
+        continue;
+      }
+      const double d = item.curve.distanceTo(*raw) / px;
+      if (d <= kCurvePixels && d + kBodyTiePixels < bestDistance) {
+        best = BodyGeometry::itemId(i);
+        bestDistance = d + kBodyTiePixels;
+      }
+    }
   }
   return best;
+}
+
+const BodyGeometry& SketchController::bodyGeometry() {
+  if (!isActive()) {
+    return m_body;
+  }
+  const QString key = QStringLiteral("%1 %2 %3").arg(m_uid, m_revision).arg(m_toolSession);
+  // Queries wait while a job computes the model: the last read until then.
+  if (key == m_bodyKey || m_host.modelBusy()) {
+    return m_body;
+  }
+  m_bodyKey = key;
+  try {
+    m_body.load(m_host.query({{QStringLiteral("query"), QStringLiteral("plane_geometry")},
+                              {QStringLiteral("sketch"), m_uid}})
+                    .toArray(),
+                &curveFromJson);
+  } catch (const std::exception& e) {
+    m_body.clear();
+    qDebug().noquote() << QStringLiteral("Sketch plane geometry not read: %1").arg(errorText(e));
+    return m_body;
+  }
+  // For UI tests: what the tools can pick and snap to.
+  qDebug().noquote() << QStringLiteral("Sketch plane geometry: %1 edge(s), %2 vertex(es)")
+                            .arg(m_body.edgeCount())
+                            .arg(m_body.vertexCount());
+  return m_body;
 }
 
 void SketchController::setHover(const QString& entity) {
@@ -1031,17 +1414,38 @@ void SketchController::setPicked(const QStringList& entities) {
   m_overlay->update();
 }
 
-void SketchController::refreshView() { m_overlay->update(); }
+void SketchController::refreshView() {
+  m_overlay->update();
+  updateConvertAction();
+}
 
-void SketchController::hint(const QString& message) { m_host.showHint(message); }
+void SketchController::hint(const QString& message) {
+  if (m_notice.isEmpty()) {
+    m_host.showHint(message);
+    return;
+  }
+  // The prompt that follows a notice keeps it in front, once.
+  m_host.showHint(QStringLiteral("%1 %2").arg(m_notice, message));
+  m_notice.clear();
+}
 
-void SketchController::error(const QString& message) { m_host.showError(message); }
+void SketchController::notice(const QString& message) {
+  m_notice = message.endsWith(QLatin1Char('.')) ? message : message + QLatin1Char('.');
+  qDebug().noquote() << QStringLiteral("Sketch notice: %1").arg(m_notice);
+  m_host.showHint(m_notice);
+}
+
+void SketchController::error(const QString& message) {
+  m_notice.clear();
+  m_host.showError(message);
+}
 
 void SketchController::updateCursor(const QPointF& position) {
   m_cursor = position;
   const auto raw = sketchAt(position);
   m_cursorValid = raw.has_value();
   if (!raw) {
+    setPointerText(QString());
     return;
   }
   if (m_tool && m_tool->snaps()) {
@@ -1050,6 +1454,7 @@ void SketchController::updateCursor(const QPointF& position) {
     settings.toScreen = [this](const V2& p) { return toScreen(p); };
     settings.grid = m_gridSnap;
     settings.gridStep = m_gridStep > 0.0 ? m_gridStep : m_viewer.gridStep(); // the lines shown
+    settings.body = m_tool->bodySnaps() ? &bodyGeometry() : nullptr;
     m_snap = snap(settings, *raw, position);
   } else {
     m_snap = Snap();
@@ -1058,6 +1463,40 @@ void SketchController::updateCursor(const QPointF& position) {
   }
   // Snapped to a point (not onto a curve or the grid): the cursor shows it.
   m_viewer.setSketchSnapping(m_tool && m_snap.onGeometry() && m_snap.kind != Snap::Kind::OnCurve);
+  setPointerText(pointerTextAt(m_snap.at));
+}
+
+QString SketchController::pointerTextAt(const V2& at) const {
+  const auto coordinate = [this](double mm) {
+    const QString text = formatLength(mm);
+    return text == QStringLiteral("-0.00") ? QStringLiteral("0.00") : text;
+  };
+  return QStringLiteral("x %1, y %2 %3").arg(coordinate(at.x), coordinate(at.y), m_unit);
+}
+
+void SketchController::setPointerText(const QString& text) {
+  if (text == m_pointerText) {
+    return;
+  }
+  m_pointerText = text;
+  m_overlay->update();
+  if (!text.isEmpty()) {
+    m_movedPointer = text;
+    m_pointerTimer.start(); // again: logged once the pointer rests
+  }
+}
+
+void SketchController::logPointer() {
+  // For UI tests: what the view showed for the place the pointer was moved
+  // to last, also when it has left the view since. Moves posted to the
+  // window (the Windows UI tests in session 0, where no real pointer is
+  // over it) are followed by a Leave at once, which hides the place before
+  // the pointer rests.
+  if (!isActive() || m_movedPointer.isEmpty() || m_movedPointer == m_loggedPointer) {
+    return;
+  }
+  m_loggedPointer = m_movedPointer;
+  qDebug().noquote() << QStringLiteral("Sketch pointer %1").arg(m_movedPointer);
 }
 
 // ---------------------------------------------------------------------------
@@ -1081,6 +1520,16 @@ bool SketchController::viewerEvent(QEvent* event) {
   if (event->type() == QEvent::WindowBlocked) {
     interruptDrag();
     return false;
+  }
+  // The pointer's place shows also while a command's panel runs in the
+  // sketch (mitcad#254).
+  if (isActive() && m_paused && !m_forwarding) {
+    if (event->type() == QEvent::MouseMove) {
+      const auto at = sketchAt(static_cast<QMouseEvent*>(event)->position());
+      setPointerText(at ? pointerTextAt(*at) : QString());
+    } else if (event->type() == QEvent::Leave) {
+      setPointerText(QString());
+    }
   }
   if (!isActive() || m_forwarding || m_paused) {
     return false;
@@ -1108,6 +1557,8 @@ bool SketchController::viewerEvent(QEvent* event) {
   switch (event->type()) {
   case QEvent::Leave:
     m_cursorValid = false;
+    setPointerText(QString());
+    showDimensionTooltip(QString(), QPointF());
     if (!m_hoverAnnotation.isEmpty()) {
       m_hoverAnnotation.clear();
     }
@@ -1140,6 +1591,8 @@ bool SketchController::viewerEvent(QEvent* event) {
       m_hoverAnnotation = hit.id;
       m_overlay->update();
     }
+    const SketchOverlay::Hit under = m_overlay->hitTest(e->position());
+    showDimensionTooltip(under.kind == SketchOverlay::Hit::Kind::Dimension ? under.id : QString(), e->position());
     return m_pressed;
   }
   case QEvent::MouseButtonPress: {
@@ -1152,6 +1605,16 @@ bool SketchController::viewerEvent(QEvent* event) {
       return false;
     }
     if (m_editor) {
+      // A click on another dimension puts its name into the expression
+      // (mitcad#231); elsewhere it accepts.
+      const SketchOverlay::Hit hit = m_overlay->hitTest(e->position());
+      if (hit.kind == SketchOverlay::Hit::Kind::Dimension) {
+        const DimensionData* d = m_model.dimension(hit.id);
+        if (hit.id != m_editorDimension && d != nullptr && !d->parameter.isEmpty()) {
+          insertIntoEditor(d->parameter);
+        }
+        return true;
+      }
       acceptEditor();
       return true;
     }
@@ -1658,16 +2121,34 @@ void SketchController::setLive(const QString& id, double value) {
 }
 
 void SketchController::openValueEditor(const QPointF& at, const QString& text, FieldSpec::Kind kind,
-                                       std::function<void(const QString&)> accept) {
+                                       std::function<void(const QString&)> accept, const QString& name) {
   closeEditor();
   auto* edit = new QLineEdit(&m_viewer);
   edit->setObjectName(QStringLiteral("sketchValueEditor"));
   edit->setStyleSheet(kFieldStyle);
   edit->setText(text);
-  edit->setFixedWidth(110);
-  edit->setToolTip(tr("A value or an expression, such as 20, 2 in or d1 * 2; Enter accepts"));
+  int width = 110;
+  if (!name.isEmpty()) {
+    // The parameter's name before the text, not part of it (mitcad#231).
+    auto* label = new QLabel(QStringLiteral("%1 =").arg(name), edit);
+    label->setObjectName(QStringLiteral("sketchValueEditorName"));
+    label->setStyleSheet(QStringLiteral("color: palette(mid); background: transparent; padding-left: 4px;"));
+    label->adjustSize();
+    edit->setTextMargins(label->width(), 0, 0, 0);
+    width += label->width();
+    m_editorLabel = label;
+    // The native inline editor hides this widget with the label: it shows
+    // the name itself (mitcad#250).
+    edit->setProperty("nativeInlineName", label->text());
+  }
+  edit->setFixedWidth(width);
+  edit->setToolTip(tr("A value or an expression, such as 20, 2 in or d1 * 2; name = value renames; "
+                      "a click on another dimension inserts its name; Enter accepts"));
   const QSize size = edit->sizeHint();
-  edit->move(static_cast<int>(at.x() - 55.0), static_cast<int>(at.y() - size.height() / 2.0));
+  if (m_editorLabel) {
+    m_editorLabel->setFixedHeight(size.height());
+  }
+  edit->move(static_cast<int>(at.x() - width / 2.0), static_cast<int>(at.y() - size.height() / 2.0));
   if (!showNativeInlineEditor(edit)) {
     edit->show();
     edit->raise();
@@ -1678,19 +2159,47 @@ void SketchController::openValueEditor(const QPointF& at, const QString& text, F
   edit->selectAll();
   m_editor = edit;
   m_editorKind = kind;
+  m_editorText = text;
   m_editorAccept = std::move(accept);
   const QPoint corner = m_viewer.mapTo(m_viewer.window(), edit->geometry().center());
-  qDebug().noquote() << QStringLiteral("Sketch value editor at %1,%2 with %3")
+  qDebug().noquote() << QStringLiteral("Sketch value editor at %1,%2 with %3%4")
                             .arg(corner.x())
                             .arg(corner.y())
-                            .arg(text);
+                            .arg(name.isEmpty() ? QString() : QStringLiteral("%1 = ").arg(name), text);
+}
+
+void SketchController::insertIntoEditor(const QString& name) {
+  if (!m_editor || name.isEmpty()) {
+    return;
+  }
+  // Into a value not edited yet, the name replaces it, as typing would.
+  if (m_editor->text() == m_editorText) {
+    m_editor->selectAll();
+  }
+  m_editor->insert(name);
+  if (!focusNativeInlineEditor(m_editor)) {
+    m_editor->setFocus();
+  }
+  qDebug().noquote() << QStringLiteral("Sketch value editor: inserted %1, now %2").arg(name, m_editor->text());
 }
 
 void SketchController::acceptEditor() {
   if (!m_editor) {
     return;
   }
-  const QString text = m_editor->text().trimmed();
+  QString text = m_editor->text().trimmed();
+  // `name = value` renames the parameter as it sets it (mitcad#231): the
+  // value is checked here, the name by the model.
+  QString rename;
+  if (m_editorKind != FieldSpec::Kind::Text) {
+    static const QRegularExpression named(QStringLiteral(R"(^(\w+)\s*=(?!=)\s*(.*)$)"),
+                                          QRegularExpression::UseUnicodePropertiesOption);
+    const QRegularExpressionMatch match = named.match(text);
+    if (match.hasMatch()) {
+      rename = match.captured(1);
+      text = match.captured(2).trimmed();
+    }
+  }
   QString expression;
   double value = 0.0;
   QString problem;
@@ -1700,10 +2209,38 @@ void SketchController::acceptEditor() {
     error(tr("%1: %2").arg(text, problem));
     return;
   }
+  if (!rename.isEmpty()) {
+    expression = QStringLiteral("%1 = %2").arg(rename, expression);
+  }
   auto accept = std::move(m_editorAccept);
-  closeEditor();
+  // A refused name keeps the editor open with what was typed.
+  const QPointer<QLineEdit> editor = m_editor;
+  const QString typed = editor->text();
+  const QString dimension = m_editorDimension;
+  hideNativeInlineEditor(editor);
+  editor->hide();
   if (accept) {
     accept(expression);
+  }
+  if (!rename.isEmpty() && editor && editor == m_editor) {
+    const DimensionData* d = m_model.dimension(dimension);
+    if (d == nullptr || d->parameter != rename) {
+      m_editorAccept = std::move(accept);
+      editor->setText(typed);
+      editor->setStyleSheet(kInvalidFieldStyle);
+      editor->setProperty("nativeInlineInvalid", true);
+      if (!showNativeInlineEditor(editor)) {
+        editor->show();
+        editor->setFocus();
+      } else {
+        focusNativeInlineEditor(editor);
+      }
+      qDebug().noquote() << QStringLiteral("Sketch value editor kept open with %1").arg(typed);
+      return;
+    }
+  }
+  if (editor && editor == m_editor) {
+    closeEditor();
   }
 }
 
@@ -1716,6 +2253,8 @@ void SketchController::closeEditor() {
     m_viewer.setFocus();
   }
   m_editorAccept = nullptr;
+  m_editorDimension.clear();
+  m_editorLabel = nullptr;
 }
 
 bool SketchController::evaluate(const QString& text, FieldSpec::Kind kind, QString& expression,

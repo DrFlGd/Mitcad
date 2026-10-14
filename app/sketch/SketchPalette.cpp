@@ -4,6 +4,8 @@
 #include <QAction>
 #include <QButtonGroup>
 #include <QCheckBox>
+#include <QComboBox>
+#include <QHBoxLayout>
 #include <QEvent>
 #include <QGridLayout>
 #include <QGroupBox>
@@ -14,6 +16,7 @@
 #include <QSignalBlocker>
 #include <QStyle>
 #include <QStyleOptionButton>
+#include <QTextDocumentFragment>
 #include <QToolButton>
 #include <QVBoxLayout>
 #include <QtLogging>
@@ -24,6 +27,7 @@
 #include "../framework/TestSync.hpp"
 #include "../framework/Theme.hpp"
 #include "AutoConstraint.hpp"
+#include "PaletteWarnings.hpp"
 #include "SketchController.hpp"
 
 namespace mitcad::sketch {
@@ -103,6 +107,32 @@ SketchPalette::SketchPalette(SketchController& controller, CommandRegistry& regi
   m_status->setWordWrap(true);
   layout->addWidget(m_title);
   layout->addWidget(m_status);
+  // The warnings under the status; a click on one selects what it is about
+  // (mitcad#264).
+  m_warnings = new PaletteWarnings;
+  m_warnings->activated = [this](int index) { selectWarning(index); };
+  layout->addWidget(m_warnings);
+  // Under a warning about linked projections that cannot follow their
+  // sources: the command that tidies them (mitcad#252).
+  if (chromeStyle() == ChromeStyle::Floating) {
+    m_cleanUp = new CapsuleButton(tr("Clean Up Stale Projections"));
+  } else {
+    m_cleanUp = new QPushButton(tr("Clean Up Stale Projections"));
+    m_cleanUp->setFocusPolicy(Qt::NoFocus);
+  }
+  m_cleanUp->setObjectName(QStringLiteral("paletteCleanUpStale"));
+  m_cleanUp->setToolTip(tr("Removes the projected curves that no longer match their source and that nothing "
+                           "uses, trims the ones the profiles still use, and unlinks the projections that "
+                           "cannot follow"));
+  m_cleanUp->hide();
+  layout->addWidget(m_cleanUp, 0, Qt::AlignLeft);
+  CommandRegistry* commands = &registry;
+  connect(m_cleanUp, &QAbstractButton::clicked, this, [commands] {
+    if (QAction* action = commands->action(QStringLiteral("sketch.clean_up_stale_projections"))) {
+      qDebug().noquote() << QStringLiteral("Palette: Clean Up Stale Projections from the warning");
+      action->trigger();
+    }
+  });
 
   const Section options = makeSection(tr("Options"));
   auto* optionLayout = new QVBoxLayout(options.host);
@@ -123,6 +153,21 @@ SketchPalette::SketchPalette(SketchController& controller, CommandRegistry& regi
   m_grid = check(tr("Snap to grid"), QStringLiteral("paletteGrid"),
                  tr("Points that snap to nothing else snap to a grid that follows the zoom"));
   m_dimensions = check(tr("Show dimensions"), QStringLiteral("paletteDimensions"), QString());
+  // What dimensions show (mitcad#231).
+  {
+    auto* row = new QHBoxLayout;
+    row->setContentsMargins(0, 0, 0, 0);
+    auto* label = new QLabel(tr("Dimension text"));
+    m_dimensionText = new QComboBox;
+    m_dimensionText->setObjectName(QStringLiteral("paletteDimensionText"));
+    m_dimensionText->addItems({tr("Value"), tr("Name"), tr("Name = value")});
+    m_dimensionText->setToolTip(tr("What a dimension shows: its value, its parameter's name (d3) or both"));
+    m_dimensionText->setFocusPolicy(Qt::NoFocus);
+    label->setBuddy(m_dimensionText);
+    row->addWidget(label);
+    row->addWidget(m_dimensionText, 1);
+    optionLayout->addLayout(row);
+  }
   m_constraints = check(tr("Show constraints"), QStringLiteral("paletteConstraints"), QString());
   m_profiles = check(tr("Show profiles"), QStringLiteral("paletteProfiles"),
                      tr("Shade the closed regions, which Extrude and Revolve take"));
@@ -146,6 +191,9 @@ SketchPalette::SketchPalette(SketchController& controller, CommandRegistry& regi
   connect(m_constraints, &QCheckBox::toggled, &m_c, &SketchController::setShowConstraints);
   connect(m_profiles, &QCheckBox::toggled, &m_c, &SketchController::setShowProfiles);
   connect(m_hideAbove, &QCheckBox::toggled, &m_c, &SketchController::setHideAbove);
+  connect(m_dimensionText, qOverload<int>(&QComboBox::currentIndexChanged), &m_c, [this](int index) {
+    m_c.setDimensionTextMode(static_cast<SketchController::DimensionText>(index));
+  });
   connect(lookAt, &QAbstractButton::clicked, &m_c, &SketchController::lookAt);
 
   const Section constraintBox = makeSection(tr("Constraints"));
@@ -271,12 +319,19 @@ void SketchPalette::refresh() {
   } else {
     status = tr("%n degree(s) of freedom", nullptr, model.dof);
   }
-  // What the evaluation warns about (mitcad#232: projections that could
-  // not follow their sources).
-  for (const QString& warning : model.warnings) {
-    status += QStringLiteral("<br><span style='color:%1'>%2</span>").arg(warningColor().name(), warning.toHtmlEscaped());
-  }
   m_status->setText(status);
+  // What the evaluation warns about (mitcad#232: projections that could
+  // not follow their sources), as links to what they are about (mitcad#264).
+  m_warnings->setWarnings(model.warnings, model.warningEntities);
+  // The clean-up offered while projections cannot follow (mitcad#252).
+  if (model.staleProjections != m_cleanUpOffered) {
+    m_cleanUpOffered = model.staleProjections;
+    m_cleanUp->setVisible(m_cleanUpOffered);
+    if (m_cleanUpOffered) {
+      // Once it is laid out.
+      TestSync::singleShot(50, this, [this] { logCleanUp(); });
+    }
+  }
   const auto set = [](QCheckBox* box, bool on) {
     const QSignalBlocker block(box);
     box->setChecked(on);
@@ -287,6 +342,10 @@ void SketchPalette::refresh() {
   set(m_constraints, m_c.showConstraints());
   set(m_profiles, m_c.showProfiles());
   set(m_hideAbove, m_c.hideAbove());
+  {
+    const QSignalBlocker block(m_dimensionText);
+    m_dimensionText->setCurrentIndex(static_cast<int>(m_c.dimensionTextMode()));
+  }
   // Undo may have taken the tool's entities back.
   refreshAuto();
 }
@@ -373,6 +432,37 @@ void SketchPalette::logLayout() const {
     const QPoint center = GlassCard::mapToHost(box, indicator.center());
     qDebug().noquote() << QStringLiteral("Palette %1 at %2,%3").arg(box->objectName()).arg(center.x()).arg(center.y());
   }
+  const QPoint combo = GlassCard::mapToHost(m_dimensionText, m_dimensionText->rect().center());
+  qDebug().noquote() << QStringLiteral("Palette %1 at %2,%3").arg(m_dimensionText->objectName()).arg(combo.x()).arg(combo.y());
+  m_warnings->logLayout();
+  logCleanUp();
+}
+
+void SketchPalette::selectWarning(int index) {
+  const SketchModel& model = m_c.model();
+  if (index < 0 || static_cast<std::size_t>(index) >= model.warningEntities.size()) {
+    return;
+  }
+  const QStringList& entities = model.warningEntities[static_cast<std::size_t>(index)];
+  // "Palette: warning 0 selects 8 entities: p1, p2, c3, ...", for UI tests.
+  qDebug().noquote() << QStringLiteral("Palette: warning %1 selects %2 entities: %3")
+                            .arg(index)
+                            .arg(entities.size())
+                            .arg(entities.join(QStringLiteral(", ")));
+  m_c.selectEntities(entities, true);
+}
+
+void SketchPalette::logCleanUp() const {
+  if (!m_cleanUp->isVisible()) {
+    return;
+  }
+  // "Palette paletteCleanUpStale at x,y", for UI tests.
+  const QPoint center = GlassCard::mapToHost(m_cleanUp, m_cleanUp->rect().center());
+  qDebug().noquote() << QStringLiteral("Palette %1 at %2,%3").arg(m_cleanUp->objectName()).arg(center.x()).arg(center.y());
+}
+
+QString SketchPalette::statusText() const {
+  return QTextDocumentFragment::fromHtml(m_status->text()).toPlainText();
 }
 
 } // namespace mitcad::sketch

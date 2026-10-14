@@ -16,6 +16,17 @@ use mitcad_f3d::convert::Options;
 const USAGE: &str = "usage: mitcad-f3d-inspect <command> ...
   list <file>                 entries with sizes, methods and kinds
   info <file>                 segments, body blobs and their ASM headers
+  assets <file> [-v]          appearance and material assets of the
+                              document's packages (-v: every property)
+  appearances <file> [--json] the appearances and materials of the bodies,
+                              faces and occurrences (a summary)
+  presentations <file>        the design stream's objects that name
+                              appearance or material libraries
+  blob-bodies <file> <entry>  a blob's bodies in its stored state: record,
+                              key and their faces' appearance GUIDs
+  face-boundary <file> <entry> <guid>
+                              the face carrying an appearance GUID: its
+                              edges sampled and the point inside it
   extract <file> <dir>        write every entry to <dir>
   dump <file> <entry> [n]     ASM records of a body blob as text (first n)
   bodies <file> [-v]          convert every body; per-body report
@@ -72,6 +83,42 @@ fn cmd_list(path: &str) -> Result<(), String> {
                 .unwrap_or(""),
             e.name
         );
+    }
+    Ok(())
+}
+
+/// The appearance and material assets of the document's packages
+/// (mitcad#228); `-v` lists every property.
+fn cmd_assets(path: &str, all: bool) -> Result<(), String> {
+    for (name, doc) in documents(path)? {
+        if !name.is_empty() {
+            println!("== document {name}");
+        }
+        let package = mitcad_f3d::protein::document_assets(&doc);
+        for a in &package.assets {
+            println!(
+                "{} {} name {:?} library {} ui {:?} category {:?} description {:?}",
+                a.schema, a.guid, a.name, a.library, a.ui_name, a.category, a.description
+            );
+            for (id, p) in &a.properties {
+                let interesting = all
+                    || !matches!(
+                        &p.value,
+                        mitcad_f3d::protein::Value::Text(s) if s.is_empty()
+                    ) && !id.ends_with("_colorspace");
+                if interesting {
+                    let links = if p.connections.is_empty() {
+                        String::new()
+                    } else {
+                        format!(" -> {}", p.connections.join(", "))
+                    };
+                    println!("    {id} = {:?}{links}", p.value);
+                }
+            }
+        }
+        for e in &package.errors {
+            println!("error: {e}");
+        }
     }
     Ok(())
 }
@@ -192,7 +239,7 @@ fn cmd_names(path: &str, entry: &str, cylinders: bool) -> Result<(), String> {
             println!("{name}{}", blob.entry);
             for k in 0..=steps {
                 let view = history.as_ref().map(|h| h.view(k));
-                let state = NamedState::new(&file, view.as_ref());
+                let state = NamedState::new(&file, view);
                 let id = history
                     .as_ref()
                     .and_then(|h| h.states.get(k))
@@ -723,6 +770,231 @@ fn cmd_off_timeline(files: &[String]) -> Result<(), String> {
 /// The design stream's objects of one class in hex, for studying a record
 /// layout: id, version, length, references (offset and target class) and
 /// the bytes, 32 a line.
+/// The appearances and materials the design gives its bodies, faces and
+/// occurrences (mitcad#228): a summary, or with `--json` the decoded data.
+fn cmd_appearances(path: &str, json: bool) -> Result<(), String> {
+    use mitcad_f3d::design;
+    for (label, doc) in design::documents(Path::new(path))? {
+        let d = design::decode_document(&doc, &label)?;
+        let Some(a) = d.dump.and_then(|d| d.f3d).and_then(|f| f.appearance) else {
+            println!("{label}: no design");
+            continue;
+        };
+        if json {
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&a).map_err(|e| e.to_string())?
+            );
+            continue;
+        }
+        let bodies = a.bodies.as_deref().unwrap_or(&[]);
+        let faces: Vec<_> = bodies
+            .iter()
+            .flat_map(|b| b.faces.iter().flatten())
+            .collect();
+        let count = |f: &dyn Fn(&mitcad_f3d::design::ir::BodyLook) -> bool| {
+            bodies.iter().filter(|b| f(b)).count()
+        };
+        println!(
+            "{label}: bodies {} (in a blob {}, record {}), appearance {} (asset {}), material {} \
+             (asset {}); faces {} (found {}, asset {}); face references not found {}; \
+             occurrence overrides {}; assets {}; warnings {}",
+            bodies.len(),
+            count(&|b| b.blob.is_some()),
+            count(&|b| b.record.is_some()),
+            count(&|b| b.appearance.is_some()),
+            count(&|b| b.appearance.as_ref().is_some_and(|x| x.asset.is_some())),
+            count(&|b| b.material.is_some()),
+            count(&|b| b.material.as_ref().is_some_and(|x| x.asset.is_some())),
+            faces.len(),
+            faces.iter().filter(|f| f.faces.is_some()).count(),
+            faces
+                .iter()
+                .filter(|f| f.appearance.as_ref().is_some_and(|x| x.asset.is_some()))
+                .count(),
+            a.faces.as_ref().map_or(0, Vec::len),
+            a.occurrences.as_ref().map_or(0, Vec::len),
+            a.assets.as_ref().map_or(0, Vec::len),
+            a.warnings.as_ref().map_or(0, Vec::len),
+        );
+        for w in a.warnings.iter().flatten() {
+            println!("  warning: {w}");
+        }
+        for f in a.faces.iter().flatten() {
+            println!(
+                "  face reference {} {}: {}",
+                f.object_id.unwrap_or(0),
+                f.guid.as_deref().unwrap_or(""),
+                f.why.as_deref().unwrap_or("")
+            );
+        }
+        for b in bodies {
+            for f in b.faces.iter().flatten().filter(|f| f.faces.is_none()) {
+                println!(
+                    "  face {} of body {}: {}",
+                    f.guid.as_deref().unwrap_or(""),
+                    b.entity.unwrap_or(0),
+                    f.why.as_deref().unwrap_or("")
+                );
+            }
+            if b.appearance.as_ref().is_some_and(|x| x.asset.is_none()) {
+                println!(
+                    "  body {}: appearance {:?} not in the assets",
+                    b.entity.unwrap_or(0),
+                    b.appearance
+                );
+            }
+        }
+    }
+    Ok(())
+}
+
+/// The bodies of a blob in its stored state: record, key (the design's
+/// body map names a body by it) and the appearance GUIDs of its faces.
+fn cmd_blob_bodies(path: &str, entry: &str) -> Result<(), String> {
+    let f = open(path)?;
+    let name = f
+        .body_blobs()
+        .into_iter()
+        .find(|b| b.entry.ends_with(entry))
+        .ok_or_else(|| format!("no blob {entry}"))?
+        .entry;
+    let data = f.read(&name).map_err(|e| e.to_string())?;
+    let file = AsmFile::parse(&data).map_err(|e| e.to_string())?;
+    let state = mitcad_f3d::names::NamedState::new(&file, None);
+    let tops = mitcad_f3d::convert::body_records(&file);
+    for (k, b) in state.bodies.iter().enumerate() {
+        let top = tops
+            .iter()
+            .find(|(r, _)| *r == b.record)
+            .is_some_and(|t| t.1);
+        let names: Vec<String> = b
+            .names
+            .iter()
+            .map(|n| format!("{}:{}{:?}", n.kind_type, n.tag, n.ops))
+            .collect();
+        println!(
+            "  top {top} type {} names {}",
+            file.records[b.record].type_name,
+            names.join(" ")
+        );
+        let guids: Vec<String> = (0..state.faces.len())
+            .filter(|&i| state.faces[i].body == k)
+            .filter_map(|i| state.face_appearance_guid(i))
+            .collect();
+        println!(
+            "body {k} record {} key {:?} faces {} appearance GUIDs {}",
+            b.record,
+            state.body_key(k),
+            state.faces.iter().filter(|x| x.body == k).count(),
+            guids.join(" ")
+        );
+    }
+    Ok(())
+}
+
+/// The face of a blob's stored state whose appearance GUID is `guid`: its
+/// surface, the boundary sampled edge by edge (first and last point of
+/// each) and the point inside it the import looks for it by.
+fn cmd_face_boundary(path: &str, entry: &str, guid: &str) -> Result<(), String> {
+    let f = open(path)?;
+    let name = f
+        .body_blobs()
+        .into_iter()
+        .find(|b| b.entry.ends_with(entry))
+        .ok_or_else(|| format!("no blob {entry}"))?
+        .entry;
+    let data = f.read(&name).map_err(|e| e.to_string())?;
+    let file = AsmFile::parse(&data).map_err(|e| e.to_string())?;
+    let state = mitcad_f3d::names::NamedState::new(&file, None);
+    for i in 0..state.faces.len() {
+        if state.face_appearance_guid(i).as_deref() != Some(guid) {
+            continue;
+        }
+        let face = &state.faces[i];
+        let body = state.bodies[face.body].record;
+        let s = mitcad_f3d::convert::face_surface(
+            &file,
+            body,
+            face.entity,
+            &mitcad_f3d::convert::Options::default(),
+            None,
+            16,
+        )
+        .map_err(|e| e.0)?;
+        println!("face {} surface {}", face.entity, s.surface.kind());
+        for (k, edge) in s.boundary.chunks(16).enumerate() {
+            println!(
+                "  edge {k}: {:?} .. {:?} .. {:?}",
+                edge.first(),
+                edge.get(edge.len() / 2),
+                edge.last()
+            );
+        }
+        println!("  plane {:?}", state.plane(i));
+    }
+    Ok(())
+}
+
+/// The design stream's objects that name appearance or material libraries
+/// (mitcad#228): their UTF-16 strings and references, in order.
+fn cmd_presentations(path: &str) -> Result<(), String> {
+    use mitcad_f3d::design;
+    const LIBRARIES: [&str; 3] = [
+        "BA5EE55E-9982-449B-9D66-9F036540E140",
+        "C1EEA57C-3F56-45FC-B8CB-A9EC46A9994C",
+        "08861000-1D69-CF2A-C082-CBD98E7E5D7F",
+    ];
+    for (label, doc) in design::documents(Path::new(path))? {
+        let Some(s) = design::find_design_streams(&doc).map_err(|e| e.to_string())? else {
+            continue;
+        };
+        let seg = design::Segment::parse(&s.meta, s.bulk).map_err(|e| e.to_string())?;
+        for o in &seg.objects {
+            let d = seg.data(o);
+            let mut items: Vec<(usize, String)> = Vec::new();
+            let mut p = 0;
+            while p + 4 < d.len() {
+                let n = u32::from_le_bytes([d[p], d[p + 1], d[p + 2], d[p + 3]]) as usize;
+                if (1..=200).contains(&n) && p + 4 + 2 * n <= d.len() {
+                    let units: Vec<u16> = d[p + 4..p + 4 + 2 * n]
+                        .chunks(2)
+                        .map(|c| u16::from_le_bytes([c[0], c[1]]))
+                        .collect();
+                    if let Ok(s) = String::from_utf16(&units)
+                        && s.chars().all(|c| (' '..='~').contains(&c))
+                    {
+                        items.push((p, s));
+                        p += 4 + 2 * n;
+                        continue;
+                    }
+                }
+                p += 1;
+            }
+            if !items.iter().any(|(_, s)| LIBRARIES.contains(&s.as_str())) {
+                continue;
+            }
+            println!(
+                "== {label} object {} class {} v{} @{} len {} name {:?}",
+                o.id,
+                seg.guid(o).unwrap_or("?"),
+                seg.version(o).unwrap_or(0),
+                o.offset,
+                d.len(),
+                seg.header(o).map(|h| h.name).unwrap_or_default()
+            );
+            for (p, r) in seg.refs_in(d, 0, d.len()) {
+                let t = seg.guid_of(r.id).unwrap_or("?");
+                println!("  ref @{p} -> {} {}", r.id, &t[..8.min(t.len())]);
+            }
+            for (p, s) in items {
+                println!("  str @{p} {s}");
+            }
+        }
+    }
+    Ok(())
+}
+
 fn cmd_objects(path: &str, class: &str, max: Option<usize>) -> Result<(), String> {
     use mitcad_f3d::design;
     let prefix = class.to_uppercase();
@@ -780,6 +1052,15 @@ fn run(args: &[String]) -> Result<(), String> {
     match args {
         [cmd, file] if cmd == "list" => cmd_list(file),
         [cmd, file] if cmd == "info" => cmd_info(file),
+        [cmd, file] if cmd == "assets" => cmd_assets(file, false),
+        [cmd, file] if cmd == "presentations" => cmd_presentations(file),
+        [cmd, file, entry] if cmd == "blob-bodies" => cmd_blob_bodies(file, entry),
+        [cmd, file, entry, guid] if cmd == "face-boundary" => cmd_face_boundary(file, entry, guid),
+        [cmd, file] if cmd == "appearances" => cmd_appearances(file, false),
+        [cmd, file, flag] if cmd == "appearances" && flag == "--json" => {
+            cmd_appearances(file, true)
+        }
+        [cmd, file, flag] if cmd == "assets" && flag == "-v" => cmd_assets(file, true),
         [cmd, file, out] if cmd == "extract" => cmd_extract(file, out),
         [cmd, file, entry] if cmd == "dump" => cmd_dump(file, entry, None),
         [cmd, file, entry, n] if cmd == "dump" => cmd_dump(file, entry, n.parse().ok()),

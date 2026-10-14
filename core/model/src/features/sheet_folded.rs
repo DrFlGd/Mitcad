@@ -8,7 +8,7 @@ use super::{
 use crate::ids::{BodyUid, EntityUid, FeatureUid};
 use crate::kernel::Kernel;
 use crate::parameters::ParamId;
-use crate::sheet::{BendPortMode, BoundaryRef, PanelId, SheetCurveId};
+use crate::sheet::{BendPortMode, BoundaryRef, DoubleBendFixed, PanelId, SheetCurveId};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -18,6 +18,16 @@ pub enum SheetPosition {
     Outside,
     #[default]
     BendLine,
+    /// The stationary tangent line on the selected boundary: the bend
+    /// starts at the edge and the panel keeps all its material (mitcad#211,
+    /// the imports' flanges at the edge).
+    Edge,
+    /// The bend's outer surface touches the side plane through the
+    /// selected boundary (normal to the panel) and does not pass it: the
+    /// stationary tangent at minus the outer extent `(r+t)
+    /// sin(min(|angle|, 90 degrees))` (mitcad#242, the `.f3d` flanges
+    /// "tangent to the side face", hems among them).
+    SideTangent,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -26,6 +36,31 @@ pub enum SheetLengthMode {
     Tangent,
     Inner,
     Outer,
+    /// From the plane that touches the bend's outer surface and is normal
+    /// to the wall: the straight length is the entered length minus the
+    /// outer extent `(r+t) sin(min(|angle|, 90 degrees))`; defined up to a
+    /// 180-degree hem, where the virtual sharps are not (mitcad#242).
+    OuterTangent,
+}
+
+/// The part of the selected boundary a flange covers, measured from the
+/// boundary's midpoint (mitcad#242): `before` towards the start of the
+/// canonical axial direction `e` (where `offsets.start` is measured from),
+/// `after` towards its end. A flange may be wider than its boundary: past
+/// the boundary's ends the wall continues beside the bend and is cut back
+/// at its root by the relief depth, or by `root` where given (0: the
+/// overhang starts at the bend's moving tangent line, as the `.ipt`
+/// flanges' do, mitcad#242). The whole boundary when left out; `offsets`
+/// measures from the ends instead and cannot be combined with it.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
+pub enum SheetFlangeWidth<P> {
+    Middle {
+        before: P,
+        after: P,
+        #[serde(default = "Option::default", skip_serializing_if = "Option::is_none")]
+        root: Option<P>,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -54,6 +89,8 @@ pub struct SheetFlangeDef<P = ParamId> {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub offsets: Option<SheetOffsets<P>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub width: Option<SheetFlangeWidth<P>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub radius: Option<P>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub relief: Option<Relief<P>>,
@@ -74,6 +111,11 @@ pub struct SheetBendDef<P = ParamId> {
     pub radius: Option<P>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub relief: Option<Relief<P>>,
+    /// A double bend's boundary whose panel stays whole (mitcad#280):
+    /// `stationary` (the default) or `moving`. Only with port mode
+    /// `double`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fixed: Option<DoubleBendFixed>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -193,6 +235,22 @@ impl<P> SheetFlangeDef<P> {
                     })
                 })
                 .transpose()?,
+            width: self
+                .width
+                .as_ref()
+                .map(|w| {
+                    let SheetFlangeWidth::Middle {
+                        before,
+                        after,
+                        root,
+                    } = w;
+                    Ok(SheetFlangeWidth::Middle {
+                        before: f("width.before", before)?,
+                        after: f("width.after", after)?,
+                        root: root.as_ref().map(|r| f("width.root", r)).transpose()?,
+                    })
+                })
+                .transpose()?,
             radius: self.radius.as_ref().map(|p| f("radius", p)).transpose()?,
             relief: map_relief(&self.relief, f)?,
         })
@@ -222,6 +280,7 @@ impl<P> SheetBendDef<P> {
             port_mode: Some(self.resolved_mode()),
             radius: self.radius.as_ref().map(|p| f("radius", p)).transpose()?,
             relief: map_relief(&self.relief, f)?,
+            fixed: self.fixed,
         })
     }
 }
@@ -393,6 +452,9 @@ impl FeatureInfo for SheetBendDef {
     }
     fn check(&self, c: &CheckContext<'_>) -> Result<(), String> {
         c.body(self.moving_body.unwrap_or(self.body))?;
+        if self.fixed.is_some() && self.resolved_mode() != BendPortMode::Double {
+            return Err("a sheet bend's fixed boundary is chosen only for a double bend".into());
+        }
         checked(c, self.body, self.references())
     }
     fn creates_bodies(&self) -> bool {

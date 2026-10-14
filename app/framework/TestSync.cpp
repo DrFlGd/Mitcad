@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: MIT
 #include "framework/TestSync.hpp"
 
+#include "platform/WindowsTestSync.hpp"
+
 #include <QCoreApplication>
 #include <QGuiApplication>
 #include <QList>
@@ -77,8 +79,13 @@ void TestSync::installIfRequested() {
   }
   g_sync = new TestSync(keycode);
   QCoreApplication::instance()->installNativeEventFilter(g_sync);
+#elif defined(Q_OS_WIN)
+  // The Pause key posted to a window (tools/ui-windows-lib.ps1, Ui-Sync).
+  g_sync = new TestSync(0);
+  QCoreApplication::instance()->installNativeEventFilter(g_sync);
+  qInfo().noquote() << QStringLiteral("Test sync on");
 #else
-  qWarning() << "MITCAD_TEST_SYNC works on X11 only; no sync";
+  qWarning() << "MITCAD_TEST_SYNC works on X11 and Windows only; no sync";
 #endif
 }
 
@@ -109,6 +116,15 @@ bool TestSync::nativeEventFilter(const QByteArray& eventType, void* message, qin
     return false;
   }
   if (type == XCB_KEY_RELEASE) {
+    request();
+  }
+  return true; // the key goes no further
+#elif defined(Q_OS_WIN)
+  bool released = false;
+  if (eventType != "windows_generic_MSG" || !win::isSyncKey(message, &released)) {
+    return false;
+  }
+  if (released) {
     request();
   }
   return true; // the key goes no further

@@ -113,7 +113,12 @@ public:
   void startRename(const BrowserNode& node);
   // Closes an open rename editor without renaming; false when none is open.
   bool cancelEditing();
-  // Logs where the rows are, for UI tests (when it changed).
+  // Logs where the rows are, for UI tests (when it changed): "Browser <path>
+  // at x,y" for a row whose middle is in sight (also "Browser eye ...",
+  // "Browser radio ..."), and "<the same> out of sight" once, for a place
+  // logged before whose row has left it (scrolled away, folded, gone), so
+  // that a test never clicks a place that is not valid any more. Logged again
+  // when the tree scrolls and when the panel moves in its window.
   void logLayout();
   // The height of all the rows in sight (a floating card is as high as
   // they, up to a share of the view).
@@ -177,6 +182,7 @@ private:
   QHash<QString, bool> m_expanded; // by row key
   bool m_building = false;
   QString m_logged;
+  QSet<QString> m_loggedPlaces; // what logLayout logged a place for, and has not logged out of sight
   QString m_loggedSelection;
 };
 

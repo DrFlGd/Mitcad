@@ -1,0 +1,22 @@
+[
+  {"comment":"SPDX-License-Identifier: MIT. A round whose side is shorter than its tangent length (mitcad#280): t=1. A step outline (40 x 5.8 below, 30 x 4.2 above; 358 mm2). A radius-4 round of the convex step corner (30, 10) leaves 0.2 of the step's side (- (16 - 4 pi)); a radius-1 round of the concave corner (30, 5.8) below it takes that rest whole and is tangent to the radius-4 arc: centre (26 + sqrt 24.36, 6.8), the material between the contour and the round added (0.170772982484)."},
+  {"cmd":"add_feature","def":{"type":"sheet_rules","thickness":1,"bend_radius":1,"allowance":{"type":"k_factor","k":0.4},"reference_side":"front","bend_relief":{"type":"rectangular","width":1,"depth":1},"corner_relief":{"type":"round","width":2,"depth":2}}},
+  {"cmd":"sketch.create"},
+  {"cmd":"sketch.add_line","sketch":"F2","start":[0,0],"end":[40,0]},
+  {"cmd":"sketch.add_line","sketch":"F2","start":[40,0],"end":[40,5.8]},
+  {"cmd":"sketch.add_line","sketch":"F2","start":[40,5.8],"end":[30,5.8]},
+  {"cmd":"sketch.add_line","sketch":"F2","start":[30,5.8],"end":[30,10]},
+  {"cmd":"sketch.add_line","sketch":"F2","start":[30,10],"end":[0,10]},
+  {"cmd":"sketch.add_line","sketch":"F2","start":[0,10],"end":[0,0]},
+  {"expect":{"sketch":"F2","regions":["r{c1[c16,c4],c4[c1,c7],c7[c4,c10],c10[c7,c13],c13[c10,c16],c16[c13,c1]}"]}},
+  {"cmd":"add_feature","def":{"type":"sheet_face","rules":"F1","profiles":[{"sketch":"F2","region":"r{c1[c16,c4],c4[c1,c7],c7[c4,c10],c10[c7,c13],c13[c10,c16],c16[c13,c1]}"}]}},
+  {"expect":{"body":"F3.b0","volume":358}},
+  {"cmd":"add_feature","def":{"type":"sheet_corner_round","body":"F3.b0","corners":[{"panel":{"feature":"F3","slot":0},"incoming":{"type":"sketch","sketch":"F2","segment":"c10[c7,c13]"},"outgoing":{"type":"sketch","sketch":"F2","segment":"c13[c10,c16]"}}],"radius":4}},
+  {"expect":{"feature":"F4","status":"ok","body":"F3.b0","volume":354.566370614359}},
+  {"cmd":"add_feature","def":{"type":"sheet_corner_round","body":"F3.b0","corners":[{"panel":{"feature":"F3","slot":0},"incoming":{"type":"sketch","sketch":"F2","segment":"c7[c4,c10]"},"outgoing":{"type":"sketch","sketch":"F2","segment":"c10[c7,c13]"}}],"radius":1}},
+  {"expect":{"feature":"F5","status":"ok","body":"F3.b0","volume":354.737143596843,"min":[0,0,0],"max":[40,10,1]}},
+  {"expect":{"query":{"query":"sheet_state","body":"F3.b0"},"result":{"status":"valid"}}},
+  {"comment":"A radius of 20 below: no round tangent to the long side within it and to the radius-4 arc, refused."},
+  {"cmd":"edit_feature","uid":"F5","def":{"type":"sheet_corner_round","body":"F3.b0","corners":[{"panel":{"feature":"F3","slot":0},"incoming":{"type":"sketch","sketch":"F2","segment":"c7[c4,c10]"},"outgoing":{"type":"sketch","sketch":"F2","segment":"c10[c7,c13]"}}],"radius":20}},
+  {"expect":{"feature":"F5","status":"error"}}
+]

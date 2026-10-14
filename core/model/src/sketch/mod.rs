@@ -41,6 +41,12 @@ pub mod text;
 pub mod spacing;
 // Duplicate and overlapping projected curves (mitcad#232).
 pub mod cleanup;
+// Projected curves that no longer match their source (mitcad#252).
+pub mod stale;
+// Points that become one (mitcad#259, mitcad#260).
+pub mod points;
+// Projected geometry into ordinary sketch geometry (mitcad#257).
+pub mod convert;
 
 #[cfg(test)]
 mod tests;
@@ -781,13 +787,22 @@ pub enum DimensionKind {
         #[serde(with = "curve_serde")]
         line: EntityUid,
     },
-    /// Angle between two lines, 0 to 180 degrees, in the quadrant where the
-    /// lines are when it is added.
+    /// Angle between two lines, 0 to 180 degrees (mitcad#296): between the
+    /// rays `±(a's end - start)` and `±(b's end - start)`, reversed where
+    /// `reverse_a` or `reverse_b` is true, which bound the sector of the
+    /// four the lines' extensions make that it measures. With neither
+    /// given (sketches from before), the angle between the directions or
+    /// its supplement, whichever is closer to the value where the lines are
+    /// when the sketch is solved; see [`DimensionKind::angle_side`].
     Angle {
         #[serde(with = "curve_serde")]
         a: EntityUid,
         #[serde(with = "curve_serde")]
         b: EntityUid,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        reverse_a: Option<bool>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        reverse_b: Option<bool>,
     },
     Radius {
         #[serde(with = "curve_serde")]
@@ -840,7 +855,7 @@ impl DimensionKind {
                 vec![p(*a), p(*b)]
             }
             PointLineDistance { point, line } => vec![p(*point), c(*line)],
-            LineDistance { a, b } | Angle { a, b } => vec![c(*a), c(*b)],
+            LineDistance { a, b } | Angle { a, b, .. } => vec![c(*a), c(*b)],
             TangentDistance { circle, line } => vec![c(*circle), c(*line)],
             Length { line } => vec![c(*line)],
             Radius { curve } | Diameter { curve } => vec![c(*curve)],
@@ -875,6 +890,23 @@ impl DimensionKind {
         }
     }
 
+    /// An angle dimension's side (mitcad#296): whether it measures from
+    /// `a`'s reversed direction and whether to `b`'s reversed one. None for
+    /// one without a side (it takes the angle closer to its value) and for
+    /// the other kinds.
+    pub fn angle_side(&self) -> Option<[bool; 2]> {
+        match self {
+            Self::Angle {
+                reverse_a,
+                reverse_b,
+                ..
+            } if reverse_a.is_some() || reverse_b.is_some() => {
+                Some([reverse_a.unwrap_or(false), reverse_b.unwrap_or(false)])
+            }
+            _ => None,
+        }
+    }
+
     pub fn range(&self) -> ValueRange {
         use DimensionKind::*;
         match self {
@@ -896,6 +928,10 @@ pub struct Dimension<P> {
     pub kind: DimensionKind,
     /// The parameter of a driving dimension; None for a driven one.
     pub value: Option<P>,
+    /// The read-only reference parameter of a driven dimension: the value
+    /// it measures (mitcad#231). None for a driving one, and for a driven
+    /// one until the document gives it one.
+    pub reference: Option<P>,
     /// Where the value is shown, in sketch coordinates.
     pub text: Option<[f64; 2]>,
 }
@@ -921,6 +957,10 @@ impl<P> Dimension<P> {
                 Some(value) => Some(f(&self.slot(), value)?),
                 None => None,
             },
+            reference: match &self.reference {
+                Some(reference) => Some(f(&self.slot(), reference)?),
+                None => None,
+            },
             text: self.text,
         })
     }
@@ -936,6 +976,8 @@ struct DimensionOut<'a, P> {
     #[serde(skip_serializing_if = "is_false")]
     driven: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
+    reference: Option<&'a P>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     text: Option<[f64; 2]>,
 }
 
@@ -946,6 +988,7 @@ impl<P: Serialize> Serialize for Dimension<P> {
             kind: &self.kind,
             value: self.value.as_ref(),
             driven: self.value.is_none(),
+            reference: self.reference.as_ref(),
             text: self.text,
         }
         .serialize(serializer)
@@ -960,6 +1003,9 @@ impl<'de, P: Deserialize<'de>> Deserialize<'de> for Dimension<P> {
         let value = take_field(&mut map, "value")
             .map(|v| P::deserialize(v).map_err(D::Error::custom))
             .transpose()?;
+        let reference = take_field(&mut map, "reference")
+            .map(|v| P::deserialize(v).map_err(D::Error::custom))
+            .transpose()?;
         let text = take_field(&mut map, "text")
             .map(|v| serde_json::from_value::<[f64; 2]>(v).map_err(D::Error::custom))
             .transpose()?;
@@ -968,6 +1014,9 @@ impl<'de, P: Deserialize<'de>> Deserialize<'de> for Dimension<P> {
             (true, Some(_)) => Err(D::Error::custom(format!(
                 "{id}: a driven dimension has no \"value\""
             ))),
+            (false, Some(_)) if reference.is_some() => Err(D::Error::custom(format!(
+                "{id}: a driving dimension has no \"reference\""
+            ))),
             (false, None) => Err(D::Error::custom(format!(
                 "{id}: a driving dimension needs a \"value\" (or \"driven\": true)"
             ))),
@@ -975,6 +1024,7 @@ impl<'de, P: Deserialize<'de>> Deserialize<'de> for Dimension<P> {
                 id,
                 kind,
                 value,
+                reference,
                 text,
             }),
         }

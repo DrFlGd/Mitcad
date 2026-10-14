@@ -14,4 +14,4 @@ name = "mitcad_zip"
 [dependencies]
 # Pure-Rust decompressors (deflate and zstd); deflate also compresses.
 miniz_oxide = { version = "0.8.9", default-features = false, features = ["with-alloc"] }
-ruzstd = { version = "0.8.1", default-features = false, features = ["std"] }
+ruzstd = { version = "0.9.1", default-features = false, features = ["std"] }

@@ -8,6 +8,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::f64::consts::TAU;
 
+use super::edit::DRIVEN_SUFFIX;
 use super::edit::{PointInput, SketchEdit};
 use super::geometry::{Curve2, P2, add, cross, dist, dot, norm, perp, scale, sub, unit};
 use super::intersect::intersections;
@@ -16,6 +17,7 @@ use super::{
     Constraint, ConstraintKind, ConstraintUid, DimensionKind, Entity, EntityKind, Ref, SpacingMode,
 };
 use crate::document::resolve_value;
+use crate::expr::ParamKind;
 use crate::features::ValueInput;
 use crate::ids::EntityUid;
 
@@ -386,7 +388,21 @@ impl SketchEdit<'_> {
         let d = &self.def.dimensions[i];
         let slot = d.slot();
         let comment = format!("{} {}", self.owner_name(), d.kind.type_name());
-        let old = d.value;
+        // A driven dimension's reference becomes its driving parameter,
+        // keeping the name (mitcad#231).
+        let reference = d
+            .reference
+            .filter(|id| self.params.owner(*id) == Some(self.owner()));
+        if let Some(id) = reference {
+            self.params.set_kind(id, ParamKind::Model);
+            let kept = self.params.get(id).map(|p| p.comment().to_owned());
+            if let Some(stem) = kept.as_deref().and_then(|c| c.strip_suffix(DRIVEN_SUFFIX)) {
+                self.params
+                    .set_comment(id, stem)
+                    .map_err(|e| e.to_string())?;
+            }
+        }
+        let old = d.value.or(reference);
         let (param, created) = resolve_value(
             self.params,
             &slot,
@@ -398,6 +414,7 @@ impl SketchEdit<'_> {
         .map_err(|e| e.to_string())?;
         self.report.parameters.extend(created);
         self.def.dimensions[i].value = Some(param);
+        self.def.dimensions[i].reference = None;
         Ok(())
     }
 
@@ -409,7 +426,22 @@ impl SketchEdit<'_> {
             return Ok(());
         }
         if driven {
-            self.def.dimensions[i].value = None;
+            // Its own parameter becomes its reference, keeping the name
+            // (mitcad#231); the value is set when the sketch solves.
+            let owner = self.owner();
+            let d = &mut self.def.dimensions[i];
+            let own = d.value.filter(|id| self.params.owner(*id) == Some(owner));
+            d.reference = own;
+            d.value = None;
+            if let Some(id) = own {
+                self.params.set_kind(id, ParamKind::Reference);
+                let comment = self.params.get(id).map(|p| p.comment().to_owned());
+                if let Some(comment) = comment.filter(|c| !c.ends_with(DRIVEN_SUFFIX)) {
+                    self.params
+                        .set_comment(id, &format!("{comment}{DRIVEN_SUFFIX}"))
+                        .map_err(|e| e.to_string())?;
+                }
+            }
             return Ok(());
         }
         let solved = self.solved()?;
@@ -897,8 +929,12 @@ impl SketchEdit<'_> {
 
     /// Extends the end of a line or arc nearest `at` to the nearest curve
     /// beyond it (Extend). An arc extended all the way round
-    /// becomes a circle.
-    pub fn extend(&mut self, id: EntityUid, at: P2) -> Result<(), String> {
+    /// becomes a circle. An end that reaches an existing point joins it
+    /// (mitcad#259): the point becomes the curve's end, or holds it with a
+    /// point-to-point coincident constraint when it is projected or computed
+    /// (see `points.rs`); returns that point. Elsewhere the end is a new
+    /// point on the curve reached.
+    pub fn extend(&mut self, id: EntityUid, at: P2) -> Result<Option<EntityUid>, String> {
         let solved = self.solved()?;
         let curve = solved
             .curves
@@ -1002,9 +1038,21 @@ impl SketchEdit<'_> {
             };
             self.drop_if_unused(old_start);
             self.drop_if_unused(old_end);
-            return Ok(());
+            return Ok(None);
         }
-        let p = self.point_on(point, target);
+        let reached = self.point_reached(point, &solved.points, target, id, tol * 10.0);
+        let p = match reached {
+            Some((q, true)) => q,
+            Some((q, false)) => {
+                let p = self.add_point(point);
+                self.add_constraint(ConstraintKind::Coincident {
+                    point: p,
+                    entity: Ref::Point(q),
+                });
+                p
+            }
+            None => self.point_on(point, target),
+        };
         let (s, e) = if at_end {
             (None, Some(p))
         } else {
@@ -1013,7 +1061,7 @@ impl SketchEdit<'_> {
         let (lo, hi) = curve.domain();
         self.reshape(id, &curve, lo, hi, s, e)?;
         self.drop_if_unused(moved);
-        Ok(())
+        Ok(reached.map(|(q, _)| q))
     }
 
     // Fillet and chamfer.
@@ -1239,7 +1287,12 @@ impl SketchEdit<'_> {
         match (second, angle) {
             (_, Some(angle)) => {
                 self.add_dimension(
-                    DimensionKind::Angle { a, b: line },
+                    DimensionKind::Angle {
+                        a,
+                        b: line,
+                        reverse_a: None,
+                        reverse_b: None,
+                    },
                     Some(angle),
                     false,
                     Some("chamfer angle"),

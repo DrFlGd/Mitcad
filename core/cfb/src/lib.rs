@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: MIT
-//! Compound files (the structured storage container of `.ipt` files) as
+//! Compound files (the structured storage container of `.ipt`, `.iam`,
+//! `.rvt` and `.rfa` files) as
 //! Microsoft's published specification describes them (MS-CFB): a header,
 //! a file allocation table (FAT) chaining fixed-size sectors, a directory of
 //! storages and streams kept as red-black trees, and a mini stream with its
@@ -494,7 +495,8 @@ pub fn guid_bytes(text: &str) -> Option<[u8; 16]> {
     Some(b)
 }
 
-/// Writes compound files (version 3) for tests: streams below the cutoff
+/// Writes compound files (version 3, or 4 with [`Writer::version`]) for
+/// tests: streams below the cutoff
 /// go into the mini stream, the others into regular sectors, as the
 /// specification requires. The directory is a degenerate tree (each
 /// storage's children chained through their right siblings, all black),
@@ -505,6 +507,8 @@ pub struct Writer {
     /// (path, data); a path's storages are made as needed.
     streams: Vec<(String, Vec<u8>)>,
     clsids: Vec<(String, [u8; 16])>,
+    /// Version 4 (4096-byte sectors) instead of 3 (512-byte sectors).
+    version4: bool,
 }
 
 impl Writer {
@@ -526,8 +530,20 @@ impl Writer {
         self
     }
 
+    /// The major version written: 3 (the default, 512-byte sectors) or 4
+    /// (4096-byte sectors).
+    pub fn version(&mut self, version: u16) -> &mut Self {
+        assert!(version == 3 || version == 4, "compound file version 3 or 4");
+        self.version4 = version == 4;
+        self
+    }
+
     pub fn finish(&self) -> Vec<u8> {
-        const SECTOR: usize = 512;
+        let (sector, version, shift): (usize, u16, u16) = if self.version4 {
+            (4096, 4, 12)
+        } else {
+            (512, 3, 9)
+        };
         const MINI: usize = 64;
         const CUTOFF: usize = 4096;
         const FREE: u32 = 0xFFFF_FFFF;
@@ -603,10 +619,10 @@ impl Writer {
                 return END_OF_CHAIN;
             }
             let first = sectors.len() as u32;
-            let count = data.len().div_ceil(SECTOR);
+            let count = data.len().div_ceil(sector);
             for k in 0..count {
-                let mut s = data[k * SECTOR..((k + 1) * SECTOR).min(data.len())].to_vec();
-                s.resize(SECTOR, 0);
+                let mut s = data[k * sector..((k + 1) * sector).min(data.len())].to_vec();
+                s.resize(sector, 0);
                 sectors.push(s);
                 fat.push(if k + 1 == count {
                     END_OF_CHAIN
@@ -641,7 +657,7 @@ impl Writer {
         let mini_start = put(&mut sectors, &mut fat, &mini_stream);
         let mini_fat_bytes: Vec<u8> = mini_fat.iter().flat_map(|v| v.to_le_bytes()).collect();
         let mini_fat_start = put(&mut sectors, &mut fat, &mini_fat_bytes);
-        let mini_fat_sectors = mini_fat_bytes.len().div_ceil(SECTOR);
+        let mini_fat_sectors = mini_fat_bytes.len().div_ceil(sector);
 
         let mut dir = Vec::new();
         for (index, node) in nodes.iter().enumerate() {
@@ -684,7 +700,7 @@ impl Writer {
             dir.extend_from_slice(&e);
         }
         // Unused entries of the last directory sector.
-        while dir.len() % SECTOR != 0 {
+        while dir.len() % sector != 0 {
             let mut e = vec![0u8; 128];
             e[0x44..0x50].copy_from_slice(&[0xFF; 12]);
             dir.extend_from_slice(&e);
@@ -693,7 +709,7 @@ impl Writer {
 
         // The FAT covers itself: enough sectors for every sector's entry.
         let mut fat_sectors = 1;
-        while (sectors.len() + fat_sectors) > fat_sectors * SECTOR / 4 {
+        while (sectors.len() + fat_sectors) > fat_sectors * sector / 4 {
             fat_sectors += 1;
         }
         assert!(
@@ -702,19 +718,23 @@ impl Writer {
         );
         let fat_first = sectors.len() as u32;
         fat.extend(std::iter::repeat_n(FATSECT, fat_sectors));
-        fat.resize(fat_sectors * SECTOR / 4, FREE);
+        fat.resize(fat_sectors * sector / 4, FREE);
         let fat_bytes: Vec<u8> = fat.iter().flat_map(|v| v.to_le_bytes()).collect();
-        for chunk in fat_bytes.chunks(SECTOR) {
+        for chunk in fat_bytes.chunks(sector) {
             sectors.push(chunk.to_vec());
         }
 
-        let mut header = vec![0u8; SECTOR];
+        let mut header = vec![0u8; sector];
         header[..8].copy_from_slice(&SIGNATURE);
         header[0x18..0x1A].copy_from_slice(&0x3Eu16.to_le_bytes());
-        header[0x1A..0x1C].copy_from_slice(&3u16.to_le_bytes());
+        header[0x1A..0x1C].copy_from_slice(&version.to_le_bytes());
         header[0x1C..0x1E].copy_from_slice(&0xFFFEu16.to_le_bytes());
-        header[0x1E..0x20].copy_from_slice(&9u16.to_le_bytes());
+        header[0x1E..0x20].copy_from_slice(&shift.to_le_bytes());
         header[0x20..0x22].copy_from_slice(&6u16.to_le_bytes());
+        // Version 4 counts its directory sectors; version 3 leaves it 0.
+        if self.version4 {
+            header[0x28..0x2C].copy_from_slice(&((dir.len() / sector) as u32).to_le_bytes());
+        }
         header[0x2C..0x30].copy_from_slice(&(fat_sectors as u32).to_le_bytes());
         header[0x30..0x34].copy_from_slice(&dir_start.to_le_bytes());
         header[0x38..0x3C].copy_from_slice(&(CUTOFF as u32).to_le_bytes());
@@ -779,6 +799,21 @@ mod tests {
         let children: Vec<&str> = f.children("/Store").map(|(p, _)| p).collect();
         assert_eq!(children, ["/Store/Empty", "/Store/Inner", "/Store/Tiny"]);
         assert!(f.read_path("/Store").is_err());
+    }
+
+    #[test]
+    fn writes_and_reads_version_4() {
+        let big: Vec<u8> = (0..70_000u32).map(|i| (i * 13 % 253) as u8).collect();
+        let mut w = Writer::new();
+        w.version(4)
+            .stream("Formats/Latest", &big)
+            .stream("BasicFileInfo", b"small");
+        let data = w.finish();
+        assert_eq!(data.len() % 4096, 0);
+        let f = CompoundFile::parse(data).unwrap();
+        assert_eq!(f.version, 4);
+        assert_eq!(f.read_path("/Formats/Latest").unwrap(), big);
+        assert_eq!(f.read_path("BasicFileInfo").unwrap(), b"small");
     }
 
     #[test]

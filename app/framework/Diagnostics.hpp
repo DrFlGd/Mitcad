@@ -36,6 +36,9 @@ namespace mitcad {
 // - MITCAD_COMPUTE_INLINE=1: jobs run on the UI thread, with the same
 //   progress and cancel in the model but without waiting for them (no
 //   dialog, no drawing meanwhile): for a debugger, or to compare.
+// - MITCAD_TEST_WAIT_CURSOR=1: the wait cursor's test commands, Nested Wait
+//   (Test) and Leave Wait Cursor On (Test) (framework/WaitCursor.hpp,
+//   mitcad#268; tools/ui-compute-test.sh).
 //
 // And for autosave (P8, app/files/Autosave.hpp):
 //

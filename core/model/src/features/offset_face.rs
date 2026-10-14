@@ -71,10 +71,10 @@ impl<K: Kernel> Evaluate<K> for OffsetFaceDef {
             ));
         }
         let shape = ctx.body(self.body)?;
-        require_faces(ctx, self.body, &shape, &self.faces)?;
+        let faces = require_faces(ctx, self.body, &shape, &self.faces)?;
         let moved = ctx
             .kernel
-            .offset_faces(ctx.uid, &shape, &self.faces, distance)
+            .offset_faces(ctx.uid, &shape, &faces, distance)
             .map_err(kernel_error)?;
         Ok(FeatureOutput {
             changes: vec![BodyChange::Set(self.body, moved)],

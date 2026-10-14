@@ -4,6 +4,7 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <functional>
 #include <limits>
 #include <set>
 #include <stdexcept>
@@ -46,6 +47,7 @@
 #include "history.hpp"
 #include "mitcad/geometry/query.hpp"
 #include "sheet_curve.hpp"
+#include "sweep.hpp"
 #include "util.hpp"
 
 namespace mitcad::geometry {
@@ -146,7 +148,7 @@ Embedding make_embedding(const SheetPatch& patch, double thickness) {
     detail::require_positive("sheet neutral radius", c.neutral_radius);
     detail::require_positive("sheet bend angle", c.angle_extent);
     if (c.neutral_radius < c.inside_radius || c.neutral_radius > c.inside_radius + thickness ||
-        c.angle_extent >= kPi || std::abs(c.axis.Dot(c.radial_start)) > kAngularTolerance ||
+        c.angle_extent > kPi + kAngularTolerance || std::abs(c.axis.Dot(c.radial_start)) > kAngularTolerance ||
         std::abs(c.axis.Dot(c.angular_direction)) > kAngularTolerance ||
         std::abs(c.radial_start.Dot(c.angular_direction)) > kAngularTolerance) {
       throw std::invalid_argument("invalid sheet cylinder radius, angle or orthogonal basis");
@@ -546,6 +548,64 @@ void region_faces(const MaterialRegion& input, const Embedding& embedding, std::
   }
 }
 
+// Panels of one plane and material direction whose regions touch along a
+// boundary that is not a registered port (a curved seam between panels of
+// one Face, which ports, being straight, cannot pair) form one material, as
+// the base Face's union makes them (mitcad#242): solids that touch only
+// through such panels are fused, their memberships joined.
+void fuse_coplanar(SheetChartGeometry& result, const SheetChartShapeSpec& spec,
+                   const std::vector<Embedding>& embeddings) {
+  const auto plane_of = [&](const RegionMembership& m) -> const PlaneEmbedding* {
+    for (std::size_t p = 0; p < spec.patches.size(); ++p) {
+      if (domain_key(spec.patches[p].domain) != domain_key(m.domain)) continue;
+      if (spec.patches[p].domain.kind != SheetDomainKind::Panel) return nullptr;
+      return std::get_if<PlaneEmbedding>(&embeddings[p].patch->embedding);
+    }
+    return nullptr;
+  };
+  const auto coplanar = [&](const PlaneEmbedding* a, const PlaneEmbedding* b) {
+    if (!a || !b) return false;
+    const gp_Vec fa = parity(a->front_to_back_sign) * gp_Vec(a->front_frame.normal());
+    const gp_Vec fb = parity(b->front_to_back_sign) * gp_Vec(b->front_frame.normal());
+    return fa.IsEqual(fb, spec.tolerance, kAngularTolerance) &&
+           std::abs(gp_Vec(a->front_frame.origin, b->front_frame.origin).Dot(fa)) <= spec.tolerance;
+  };
+  bool merged = true;
+  while (merged) {
+    merged = false;
+    for (std::size_t i = 0; i < result.solids.size() && !merged; ++i) {
+      for (std::size_t j = i + 1; j < result.solids.size() && !merged; ++j) {
+        bool shares_plane = false;
+        for (const auto& a : result.solids[i].membership) {
+          for (const auto& b : result.solids[j].membership) {
+            shares_plane = shares_plane || coplanar(plane_of(a), plane_of(b));
+          }
+        }
+        if (!shares_plane) continue;
+        detail::Interrupt interrupt;
+        BRepExtrema_DistShapeShape distance(result.solids[i].shape->occt(), result.solids[j].shape->occt(),
+                                            Extrema_ExtFlag_MINMAX, Extrema_ExtAlgo_Grad, interrupt.range());
+        throw_if_cancelled();
+        if (!distance.IsDone() || distance.Value() > spec.tolerance) continue;
+        const double parts = volume(*result.solids[i].shape) + volume(*result.solids[j].shape);
+        const ShapePtr joined = detail::finished(
+            *detail::fused({result.solids[i].shape, result.solids[j].shape}, "sheet chart shape"),
+            "sheet chart shape");
+        if (solids(*joined).size() != 1) continue;
+        if (std::abs(volume(*joined) - parts) > 1.0e-9 * std::max(parts, 1.0)) {
+          throw std::invalid_argument("sheet material regions overlap");
+        }
+        result.solids[i].shape = joined;
+        result.solids[i].membership.insert(result.solids[i].membership.end(),
+                                           result.solids[j].membership.begin(),
+                                           result.solids[j].membership.end());
+        result.solids.erase(result.solids.begin() + static_cast<std::ptrdiff_t>(j));
+        merged = true;
+      }
+    }
+  }
+}
+
 bool legacy_planar(const SheetChartShapeSpec& spec) {
   if (!spec.ports.empty()) return false;
   const PlaneEmbedding* first = nullptr;
@@ -634,50 +694,84 @@ SheetChartGeometry sheet_shape(const SheetChartShapeSpec& spec) {
     for (const auto& port : ports) {
       if (port.uses[0] != 2 || port.uses[1] != 2) throw std::invalid_argument("sheet port must join exactly two material regions");
     }
-    // The port edges above are shared topology, with both incident pcurves.
-    // Sewing closes the remaining exterior-wall vertices, within the explicit
-    // modelling tolerance; it does not discover or guess material adjacency.
-    BRepBuilderAPI_Sewing sewing(spec.tolerance);
-    sewing.SetMaxTolerance(spec.tolerance);
-    for (const auto& face : faces) sewing.Add(face.face);
-    detail::interruptible([&](const Message_ProgressRange& range) { sewing.Perform(range); });
-    if (sewing.NbFreeEdges() != 0 || sewing.NbMultipleEdges() != 0) {
-      throw std::runtime_error("sheet charts do not close into manifold shells");
+    // Domains joined by ports form one shell; each such group is sewn on its
+    // own, so that walls of separate groups that coincide (coplanar panels
+    // meeting along a boundary no port pairs, mitcad#242) are not sewn into
+    // one shell. Their material is joined afterwards (fuse_coplanar).
+    std::vector<std::size_t> group(spec.patches.size());
+    for (std::size_t p = 0; p < group.size(); ++p) group[p] = p;
+    const auto patch_of = [&](const SheetDomainRef& d) {
+      for (std::size_t p = 0; p < spec.patches.size(); ++p) {
+        if (domain_key(spec.patches[p].domain) == domain_key(d)) return p;
+      }
+      throw std::invalid_argument("sheet port refers to an unknown domain");
+    };
+    const std::function<std::size_t(std::size_t)> root = [&](std::size_t p) {
+      return group[p] == p ? p : group[p] = root(group[p]);
+    };
+    for (const auto& port : ports) {
+      group[root(patch_of(port.input->first.boundary.domain))] = root(patch_of(port.input->second.boundary.domain));
     }
+    std::vector<std::size_t> member_patch;
+    for (const auto& m : membership) member_patch.push_back(patch_of(m.domain));
     SheetChartGeometry result;
     std::vector<bool> seen(membership.size(), false);
-    for (TopExp_Explorer it(sewing.SewedShape(), TopAbs_SHELL); it.More(); it.Next()) {
-      const auto shell = TopoDS::Shell(it.Current());
-      if (!BRep_Tool::IsClosed(shell)) throw std::runtime_error("sheet chart shell is open");
-      BRepBuilderAPI_MakeSolid maker(shell);
-      TopoDS_Solid solid = maker.Solid();
-      if (!BRepLib::OrientClosedSolid(solid)) throw std::runtime_error("sheet chart shell has no consistent material side");
-      detail::require_valid(solid, "sheet chart solid");
-      // Topological validity alone permits intersecting nonadjacent walls in
-      // a connected folded sheet. Check geometric self-interference as well.
-      BRepAlgoAPI_Check collision;
-      collision.SetData(solid, false, true);
-      detail::interruptible([&](const Message_ProgressRange& range) { collision.Perform(range); });
-      if (collision.HasErrors() || !collision.IsValid()) {
-        throw std::invalid_argument("sheet material charts intersect in the current configuration");
-      }
-      detail::FaceNamer namer(solid);
-      std::set<std::size_t> members;
+    std::set<std::size_t> roots;
+    for (std::size_t p = 0; p < group.size(); ++p) roots.insert(root(p));
+    const auto sew = [&](std::size_t current) {
+      // The port edges above are shared topology, with both incident pcurves.
+      // Sewing closes the remaining exterior-wall vertices, within the
+      // explicit modelling tolerance; it does not discover or guess material
+      // adjacency.
+      BRepBuilderAPI_Sewing sewing(spec.tolerance);
+      sewing.SetMaxTolerance(spec.tolerance);
+      std::vector<const NamedFace*> mine;
       for (const auto& face : faces) {
-        const auto image = sewing.IsModified(face.face) ? sewing.Modified(face.face) : face.face;
-        if (namer.contains(image)) { namer.add(image, face.name); members.insert(face.member); }
+        if (root(member_patch[face.member]) == current) {
+          sewing.Add(face.face);
+          mine.push_back(&face);
+        }
       }
-      namer.finish();
-      SheetChartSolid output{namer.shape(), {}};
-      if (volume(*output.shape) <= 0 || members.empty()) throw std::runtime_error("sheet chart produced an empty material solid");
-      for (std::size_t member : members) {
-        if (seen[member]) throw std::runtime_error("sheet material region belongs to multiple solids");
-        seen[member] = true;
-        output.membership.push_back(membership[member]);
+      detail::interruptible([&](const Message_ProgressRange& range) { sewing.Perform(range); });
+      if (sewing.NbFreeEdges() != 0 || sewing.NbMultipleEdges() != 0) {
+        throw std::runtime_error("sheet charts do not close into manifold shells");
       }
-      result.solids.push_back(std::move(output));
-    }
+      for (TopExp_Explorer it(sewing.SewedShape(), TopAbs_SHELL); it.More(); it.Next()) {
+        const auto shell = TopoDS::Shell(it.Current());
+        if (!BRep_Tool::IsClosed(shell)) throw std::runtime_error("sheet chart shell is open");
+        BRepBuilderAPI_MakeSolid maker(shell);
+        TopoDS_Solid solid = maker.Solid();
+        if (!BRepLib::OrientClosedSolid(solid)) throw std::runtime_error("sheet chart shell has no consistent material side");
+        detail::require_valid(solid, "sheet chart solid");
+        // Topological validity alone permits intersecting nonadjacent walls
+        // in a connected folded sheet. Check geometric self-interference as
+        // well.
+        BRepAlgoAPI_Check collision;
+        collision.SetData(solid, false, true);
+        detail::interruptible([&](const Message_ProgressRange& range) { collision.Perform(range); });
+        if (collision.HasErrors() || !collision.IsValid()) {
+          throw std::invalid_argument("sheet material charts intersect in the current configuration");
+        }
+        detail::FaceNamer namer(solid);
+        std::set<std::size_t> members;
+        for (const NamedFace* face : mine) {
+          const auto image = sewing.IsModified(face->face) ? sewing.Modified(face->face) : face->face;
+          if (namer.contains(image)) { namer.add(image, face->name); members.insert(face->member); }
+        }
+        namer.finish();
+        SheetChartSolid output{namer.shape(), {}};
+        if (volume(*output.shape) <= 0 || members.empty()) throw std::runtime_error("sheet chart produced an empty material solid");
+        for (std::size_t member : members) {
+          if (seen[member]) throw std::runtime_error("sheet material region belongs to multiple solids");
+          seen[member] = true;
+          output.membership.push_back(membership[member]);
+        }
+        result.solids.push_back(std::move(output));
+      }
+    };
+    for (const std::size_t current : roots) sew(current);
     if (std::find(seen.begin(), seen.end(), false) != seen.end()) throw std::runtime_error("sheet chart construction lost a material region");
+    fuse_coplanar(result, spec, embeddings);
     for (std::size_t i = 0; i < result.solids.size(); ++i) for (std::size_t j = i + 1; j < result.solids.size(); ++j) {
       detail::Interrupt interrupt;
       BRepExtrema_DistShapeShape distance(result.solids[i].shape->occt(), result.solids[j].shape->occt(),

@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT
 //! Conversion of ASM bodies to the neutral B-rep model (millimetres).
 
+use crate::ids::{IdMap, View};
 use std::collections::HashMap;
 
 use crate::asm::file::AsmFile;
@@ -256,18 +257,18 @@ struct Ctx<'a> {
     file: &'a AsmFile,
     /// Entity -> record holding its data at an earlier history state
     /// (`None`: the entity did not exist then); see [`crate::asm::history`].
-    view: Option<&'a HashMap<usize, Option<usize>>>,
+    view: Option<&'a View>,
     opt: Options,
     body: Body,
     issues: Vec<String>,
-    vertex_map: HashMap<usize, usize>,
-    edge_map: HashMap<usize, EdgeRef>,
+    vertex_map: IdMap<usize>,
+    edge_map: IdMap<EdgeRef>,
     /// Edges without a curve (left out of their loops).
     degenerate_edges: usize,
     /// Loops made fit for the builder ([`tidy_loop`]).
     tidied: LoopTidy,
     /// ASM surface record -> (neutral surface, normal flipped).
-    surface_map: HashMap<usize, Option<(usize, bool)>>,
+    surface_map: IdMap<Option<(usize, bool)>>,
 }
 
 fn unit(v: P3) -> P3 {
@@ -1096,7 +1097,7 @@ pub fn edge_curve(
     body: usize,
     edge: usize,
     options: &Options,
-    view: Option<&HashMap<usize, Option<usize>>>,
+    view: Option<&View>,
 ) -> Result<(Curve, [f64; 2], Option<Transform>), GeomError> {
     edge_curve_along(file, body, edge, options, view).map(|(c, t, tr, _)| (c, t, tr))
 }
@@ -1109,7 +1110,7 @@ pub fn edge_curve_along(
     body: usize,
     edge: usize,
     options: &Options,
-    view: Option<&HashMap<usize, Option<usize>>>,
+    view: Option<&View>,
 ) -> Result<(Curve, [f64; 2], Option<Transform>, bool), GeomError> {
     let mut ctx = Ctx {
         file,
@@ -1117,11 +1118,11 @@ pub fn edge_curve_along(
         opt: *options,
         body: Body::default(),
         issues: Vec::new(),
-        vertex_map: HashMap::new(),
-        edge_map: HashMap::new(),
+        vertex_map: IdMap::default(),
+        edge_map: IdMap::default(),
         degenerate_edges: 0,
         tidied: LoopTidy::default(),
-        surface_map: HashMap::new(),
+        surface_map: IdMap::default(),
     };
     let mut c = ctx.cursor(body)?;
     c.ptr()?; // lump
@@ -1147,7 +1148,7 @@ pub fn vertex_position(
     body: usize,
     vertex: usize,
     options: &Options,
-    view: Option<&HashMap<usize, Option<usize>>>,
+    view: Option<&View>,
 ) -> Result<P3, GeomError> {
     let mut ctx = Ctx {
         file,
@@ -1155,11 +1156,11 @@ pub fn vertex_position(
         opt: *options,
         body: Body::default(),
         issues: Vec::new(),
-        vertex_map: HashMap::new(),
-        edge_map: HashMap::new(),
+        vertex_map: IdMap::default(),
+        edge_map: IdMap::default(),
         degenerate_edges: 0,
         tidied: LoopTidy::default(),
-        surface_map: HashMap::new(),
+        surface_map: IdMap::default(),
     };
     let mut c = ctx.cursor(body)?;
     c.ptr()?; // lump
@@ -1204,7 +1205,7 @@ pub fn face_surface(
     body: usize,
     face: usize,
     options: &Options,
-    view: Option<&HashMap<usize, Option<usize>>>,
+    view: Option<&View>,
     samples: usize,
 ) -> Result<FaceSurface, GeomError> {
     let mut ctx = Ctx {
@@ -1213,11 +1214,11 @@ pub fn face_surface(
         opt: *options,
         body: Body::default(),
         issues: Vec::new(),
-        vertex_map: HashMap::new(),
-        edge_map: HashMap::new(),
+        vertex_map: IdMap::default(),
+        edge_map: IdMap::default(),
         degenerate_edges: 0,
         tidied: LoopTidy::default(),
-        surface_map: HashMap::new(),
+        surface_map: IdMap::default(),
     };
     let mut c = ctx.cursor(body)?;
     c.ptr()?; // lump
@@ -1261,7 +1262,7 @@ pub fn convert_body_at(
     file: &AsmFile,
     record: usize,
     options: &Options,
-    view: Option<&HashMap<usize, Option<usize>>>,
+    view: Option<&View>,
 ) -> ConvertedBody {
     let mut ctx = Ctx {
         file,
@@ -1269,11 +1270,11 @@ pub fn convert_body_at(
         opt: *options,
         body: Body::default(),
         issues: Vec::new(),
-        vertex_map: HashMap::new(),
-        edge_map: HashMap::new(),
+        vertex_map: IdMap::default(),
+        edge_map: IdMap::default(),
         degenerate_edges: 0,
         tidied: LoopTidy::default(),
-        surface_map: HashMap::new(),
+        surface_map: IdMap::default(),
     };
     let mut skipped_faces = 0;
     let result: Result<(), GeomError> = (|| {

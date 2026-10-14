@@ -17,6 +17,7 @@
 #include <QTimer>
 #include <QVariant>
 #include <QWidget>
+#include <QtLogging>
 
 #include "platform/NativeDialogs.hpp"
 
@@ -86,8 +87,31 @@ public:
     NSView* content = [[NSView alloc] initWithFrame:NSZeroRect];
     m_panel.contentView = content;
     [content addSubview:m_field];
+    // A dimension's parameter name before the field, not part of its text
+    // ("d3 =", mitcad#231 and #250): the Qt label beside the presenter is
+    // hidden with it, so the panel shows its own.
+    const QString name = source->property("nativeInlineName").toString();
+    NSLayoutXAxisAnchor* leading = content.leadingAnchor;
+    CGFloat gap = 0.0;
+    if (!name.isEmpty()) {
+      m_label = [NSTextField labelWithString:name.toNSString()];
+      m_label.font = [NSFont systemFontOfSize:NSFont.systemFontSize];
+      m_label.textColor = NSColor.secondaryLabelColor;
+      m_label.identifier = (source->objectName() + QStringLiteral("Name")).toNSString();
+      m_label.translatesAutoresizingMaskIntoConstraints = NO;
+      [m_label setContentHuggingPriority:NSLayoutPriorityRequired
+                          forOrientation:NSLayoutConstraintOrientationHorizontal];
+      [content addSubview:m_label];
+      [NSLayoutConstraint activateConstraints:@[
+        [m_label.leadingAnchor constraintEqualToAnchor:content.leadingAnchor constant:4.0],
+        [m_label.centerYAnchor constraintEqualToAnchor:content.centerYAnchor]
+      ]];
+      leading = m_label.trailingAnchor;
+      gap = 4.0;
+      qDebug().noquote() << QStringLiteral("Native inline editor %1 name: %2").arg(source->objectName(), name);
+    }
     [NSLayoutConstraint activateConstraints:@[
-      [m_field.leadingAnchor constraintEqualToAnchor:content.leadingAnchor],
+      [m_field.leadingAnchor constraintEqualToAnchor:leading constant:gap],
       [m_field.trailingAnchor constraintEqualToAnchor:content.trailingAnchor],
       [m_field.topAnchor constraintEqualToAnchor:content.topAnchor],
       [m_field.bottomAnchor constraintEqualToAnchor:content.bottomAnchor]
@@ -234,6 +258,9 @@ private:
       if (liveText && focused()) [m_field selectText:nil];
     }
     m_field.placeholderString = m_source->placeholderText().toNSString();
+    if (m_label != nil) {
+      m_label.stringValue = m_source->property("nativeInlineName").toString().toNSString();
+    }
     m_field.toolTip = m_source->toolTip().toNSString();
     m_field.enabled = m_source->isEnabled();
     m_field.textColor = m_source->property("nativeInlineInvalid").toBool() ? NSColor.systemRedColor : NSColor.labelColor;
@@ -262,6 +289,7 @@ private:
   bool m_retired = false;
   MITCADInlineEditorTarget* __strong m_target = nil;
   NSTextField* __strong m_field = nil;
+  NSTextField* __strong m_label = nil; // the parameter's name, "d3 =" (mitcad#250)
   MITCADInlinePanel* __strong m_panel = nil;
   NSWindow* __weak m_host = nil;
 };

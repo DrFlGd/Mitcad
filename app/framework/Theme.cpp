@@ -87,8 +87,12 @@ QColor accentColor(const QPalette& palette) {
 #ifdef Q_OS_MACOS
   return palette.color(QPalette::Accent);
 #else
-  return isDarkPalette(palette) ? QColor(0x6f, 0xa8, 0xff) : QColor(0x1f, 0x5f, 0xc0);
+  return actionColor(palette);
 #endif
+}
+
+QColor actionColor(const QPalette& palette) {
+  return isDarkPalette(palette) ? QColor(0x5a, 0xa2, 0xff) : QColor(0x1a, 0x6e, 0xe0);
 }
 
 QColor cardFillColor(const QPalette& palette) {

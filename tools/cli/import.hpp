@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 #pragma once
 
-// mitcad-cli import, import-f3d, import-fcstd and import-ipt (import.cpp),
+// mitcad-cli import, import-f3d, import-fcstd, import-ipt and import-rvt (import.cpp),
 // and what mitcad-cli's other commands share with them: the arguments, JSON
 // text, and opening and saving design files. The import corpus tests run
 // these commands; tools/check-all.sh runs the corpus again when this code
@@ -74,5 +74,7 @@ int import_f3d(const std::vector<std::string>& args);
 int import_fcstd(const std::vector<std::string>& args);
 int import_ipt(const std::vector<std::string>& args);
 int import_iam(const std::vector<std::string>& args);
+int import_ifc(const std::vector<std::string>& args);
+int import_rvt(const std::vector<std::string>& args);
 
 } // namespace mitcad::cli

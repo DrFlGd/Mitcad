@@ -1,0 +1,55 @@
+Mitcad's patch to OCCT 8.0.1, under OCCT's licence:
+SPDX-License-Identifier: LGPL-2.1-only WITH OCCT-exception-1.0
+
+ShapeUpgrade_UnifySameDomain: two faces of one cylinder (or another
+surface periodic in one direction) whose seams lie half a period apart
+are merged (mitcad#284).
+
+A join of two coaxial cylinders of the same radius, one on the other,
+leaves two faces of one cylindrical surface, each with its own seam; the
+circle between them is cut at both seams. The face merge after the
+boolean removes the seams and the circle between the faces, and builds
+the merged face's seam again from the removed edges
+(ReconstructMissedSeam): at each vertex it takes the removed edge that
+continues from the current point in the parametric space. A removed edge
+that ends at the current vertex was compared by its far end: it was taken
+(turned round) when that end lay more than half a period from the current
+point, and dropped when it lay less than half a period away. Where the
+seams lie half a period apart, the half circle between them ends exactly
+half a period from where it starts, so it was taken by neither test, the
+wire could not be built and the two faces stayed apart (the stored bodies
+of the designs have one face there). Such an edge is now turned to start
+at the current vertex first, and its own end there is compared with the
+current point (and its p-curves swapped where that end lies a period
+away), on a surface periodic in one direction; the case of a surface
+periodic in both is unchanged.
+--- a/src/ModelingAlgorithms/TKShHealing/ShapeUpgrade/ShapeUpgrade_UnifySameDomain.cxx
++++ b/src/ModelingAlgorithms/TKShHealing/ShapeUpgrade/ShapeUpgrade_UnifySameDomain.cxx
+@@ -911,6 +911,18 @@
+     if ((aFirstVertex.IsSame(theCurVertex) || aLastVertex.IsSame(theCurVertex))
+         && BRep_Tool::IsClosed(anEdge, theFrefFace))
+     {
++      // On a surface periodic in one direction, the edge is turned to start
++      // at the current vertex first, so that the point compared with the
++      // current one is the edge's end at that vertex, not its far end (an
++      // edge ending at the vertex whose far end lies half a period away,
++      // the circle between two cylinders whose seams are opposite, was
++      // taken by neither test below).
++      const bool aBothPeriodic = theUperiod != 0. && theVperiod != 0.;
++      if (!aBothPeriodic && !aFirstVertex.IsSame(theCurVertex))
++      {
++        anEdge.Reverse();
++        aPC = BRep_Tool::CurveOnSurface(anEdge, theFrefFace, Param1, Param2);
++      }
+       double   aParam = (anEdge.Orientation() == TopAbs_FORWARD) ? Param1 : Param2;
+       gp_Pnt2d aPoint = aPC->Value(aParam);
+       double   aUdiff = std::abs(aPoint.X() - theCurPoint.X());
+@@ -918,7 +930,7 @@
+       if ((theUperiod != 0. && aUdiff > theUperiod / 2)
+           || (theVperiod != 0. && aVdiff > theVperiod / 2))
+       {
+-        if (aLastVertex.IsSame(theCurVertex) || (theUperiod != 0. && theVperiod != 0.))
++        if (aBothPeriodic)
+         {
+           anEdge.Reverse();
+         }

@@ -12,7 +12,7 @@ Enter.
 
 ### A part from a sketch to a fillet
 
-1. **Create Sketch** (command search S) and click the XY plane; the view
+1. **Create Sketch** (Alt+S, or command search S) and click the XY plane; the view
    turns to the plane.
 2. **R** (2-Point Rectangle): click the first corner at the origin, type
    the width `40`, Tab, the height `25`, Enter. Typed values become
@@ -43,6 +43,20 @@ end it early:
   a moment.
 - **Cancel Import** (or Esc): the import is discarded.
 
+When a feature does not build on the imported bodies, the import tries it
+again on the bodies stored in the file. If that would replace bodies
+that were already imported correctly (they match the file's within the
+import tolerance), a dialog asks once per import:
+
+- **Keep Imported Bodies** (the default): those bodies stay parametric;
+  the feature comes in as the file's bodies if it still fails.
+- **Replace with Stored Bodies**: the stored bodies replace them, so that
+  the feature can build on those; the features before it then no longer
+  shape the bodies replaced.
+
+The import report lists, per feature tried again, the bodies kept and
+replaced.
+
 An import report then shows which items came in as parametric features,
 which partly (for example a sketch without unsupported constraints),
 which as the file's bodies and which were left out (for example assembly
@@ -59,7 +73,9 @@ result as a `.mitcad` design. More in [.f3d import](#f3d-import).
   component, linked or as a copy (Insert Component). FreeCAD documents
   and `.f3d` designs open as new documents with their history
   ([FreeCAD import](#freecad-import), [.f3d import](#f3d-import)), `.ipt`
-  parts as new documents with their bodies ([.ipt import](#ipt-import)). The
+  parts as new documents with their bodies ([.ipt import](#ipt-import)), IFC
+  building models as new documents of their storeys and elements ([IFC
+  import](#ifc-import)). The
   file dialogs list the CAD formats under one *CAD files* filter. Which
   formats Mitcad reads and writes, and which keep their design history:
   [Support for multiple CAD formats](../README.md#support-for-multiple-cad-formats).
@@ -87,7 +103,7 @@ Keyboard Shortcuts), and Help › Keyboard and Mouse Overview lists them
 all. Commands without a shortcut are in command search (S) and in the
 groups' menus. Tools › Preferences has a page for each kind of setting
 (General, Navigation, Display, Cache, Cloud, Updates,
-3D Print); command search finds each page by its name or by what it
+3D Print, Diagnostics); command search finds each page by its name or by what it
 sets ("autosave", "slicer", "git"), as *Preferences: Cache* and so on.
 
 | Command | Key | Action |
@@ -103,12 +119,12 @@ sets ("autosave", "slicer", "git"), as *Preferences: Cache* and so on.
 | Undo, Redo | Ctrl+Z, Ctrl+Y | Undo, redo (also a dimension change and a drag of the timeline marker) |
 | Fit | F6 | Fit the model to the view |
 | OK, Cancel | Enter, Esc | Accept or cancel a command; Esc also clears the selection |
-| Create Sketch | | A plane or a planar face (or select it first) |
+| Create Sketch | Alt+S (Option+S) | A plane or a planar face (or select it first); outside a sketch |
 | Finish Sketch | Ctrl+Enter | Back to the 3D view |
 | Line | L | Lines one after another; drag from the last point for a tangent arc |
 | 2-Point Rectangle | R | Also 3-Point and Center Rectangle |
 | Center Diameter Circle | C | Also 2- and 3-Point, 2- and 3-Tangent |
-| Sketch Dimension | D | Length, distance (horizontal, vertical, aligned), angle, radius, diameter |
+| Sketch Dimension | D | Length, distance (horizontal, vertical, aligned), angle (the one on the side where the value is placed), radius, diameter; also to body edges and corners in the sketch plane |
 | Trim | T | Remove the part of a curve between intersections (also Extend) |
 | Offset, Project, Move/Copy | O, P, M | In a sketch: offset curve, projection (also in the context menu of a face, edge or vertex), move |
 | Construction | X | Selected curves to construction geometry and back |
@@ -144,7 +160,12 @@ Other commands of the SOLID tab, in menu order:
   emission and opacity. New copies the selected appearance into the design,
   where its values can be changed; Assign gives the bodies it was opened
   for the selected appearance. The shaded view shows an appearance's base
-  colour; the rendered view uses all of its values.
+  colour; the rendered view uses all of its values. With *Tangent Chain*
+  on (the default), Fillet and Chamfer also take the edges that continue
+  a picked edge smoothly, and Shell, Draft and Replace Face the faces
+  joined to a picked face through smooth edges; the hover then shows the
+  whole chain before the click, and with the option off only the edge
+  or face under the pointer.
 - **ASSEMBLE:** New Component, Joint, As-Built Joint, Joint Origin,
   Rigid Group, Drive Joint, Constraint, Animate Joint, Insert Component,
   Insert from Library: everything that builds an assembly. Once Joint's origin A (or
@@ -201,7 +222,8 @@ a copy. Edit the timeline feature to change sources, targets or the anchor.
 
 On macOS the keys that say Ctrl are Cmd keys (Cmd+N, Cmd+S, Cmd+Z, ...),
 and Redo is Shift+Cmd+Z (elsewhere Ctrl+Y and Ctrl+Shift+Z). Fit is also
-Cmd+0, Delete also takes the delete key (Backspace), Cmd+, opens Settings
+Cmd+0, Delete also takes the delete key (Backspace), Alt+S (Create Sketch) is
+Option+S (⌥S in the menus), Cmd+, opens Settings
 and Cmd+Q quits (both in the application menu), the Window menu has
 Minimize (Cmd+M), Zoom and Bring All to Front, and About is in the
 application menu.
@@ -332,8 +354,8 @@ brings back the layout of the other systems.
 
 The SKETCH tab has the drawing tools (CREATE), modification (MODIFY:
 fillet, chamfer, Trim, Extend, Offset, Move/Copy, Edit Pattern, Edit
-Offset, Edit Text, construction, centre line) and constraints
-(CONSTRAINTS). The CREATE menu groups its tools:
+Offset, Edit Text, construction, centre line, Convert to Sketch Geometry)
+and constraints (CONSTRAINTS). The CREATE menu groups its tools:
 
 | Entry | Tools |
 | --- | --- |
@@ -364,6 +386,16 @@ bodies stay cut while a sketch command's panel is open (Offset, Mirror,
 the patterns, Project, sketch Fillet, ...) and its preview is shown. It
 stays on for the next sketch.
 
+- The sketch's X and Y axes run across the view through its origin,
+  which is ringed, also when the design's Origin is hidden. Above the
+  status badge the view shows where the pointer is in the sketch's
+  coordinates, in the document's length unit (where a tool snaps it).
+  A sketch whose origin is not the design's (on a face or a construction
+  plane, in a component placed elsewhere) names its origin's place in the
+  design beside it and marks the design origin as seen along the sketch's
+  normal. Fully constrained geometry is drawn dark, or light on a dark
+  background, also in the sketches shown outside sketch editing, so a
+  glance tells which of them are fully constrained.
 - While a tool is active the pointer is a slim cross with the tool's
   icon; a small square in its centre gap shows that the point snaps to
   geometry.
@@ -371,9 +403,27 @@ stays on for the next sketch.
   quadrants, intersections, curves, the origin and (optionally) the grid,
   and the snap adds a constraint. A line gets horizontal, vertical,
   perpendicular, parallel and tangent constraints when it is nearly so.
+- **Point on a body:** the Point tool also snaps to the corners of visible
+  bodies that lie in the sketch plane and to the middles of their edges
+  there (lines and arcs), also of other components' bodies; the marker and
+  the hint are those of a point or a midpoint, and the sketch's own
+  geometry wins when both are under the pointer. Nothing is added while
+  the pointer only hovers; a click projects the corner or the edge into the
+  sketch (linked, as Project does it), adds the point and holds it on the
+  projected corner or at the projected edge's middle, in one undo step, so
+  the point follows the body when the model changes. A projection of the
+  same corner or edge the sketch already has is used again; a click on a
+  corner that already has a point does nothing.
 - Values can be typed while drawing: fields appear next to the cursor,
   Tab moves between them, Enter accepts. Typed values (also expressions)
   become dimensions.
+- **Angles:** Sketch Dimension (D) on two lines measures the angle on the
+  side where the value is placed: the two lines, extended, make four
+  angles at their crossing, and the one the pointer is in is measured (the
+  inner corner of a shape with the pointer inside it). The arc and the
+  value follow the pointer, so moving across a line switches between the
+  angle and its supplement. The dimension keeps that side when its value
+  changes; moving the value afterwards moves only the text.
 - **Auto constraint:** once the line, circle or arc tool has drawn its
   first entity, the palette shows an *Auto constraint* section that
   constrains each next entity of the same tool to the first one it drew
@@ -390,10 +440,43 @@ stays on for the next sketch.
   dialog that lists it: *Cancel* takes the entity back, *Accept* keeps it
   without that constraint. Tangent circles and tangent arcs take no auto
   constraints.
+- **Dimensions to bodies:** Sketch Dimension (D) also picks the edges of
+  visible bodies that lie in the sketch plane (lines, arcs, circles,
+  ellipses, splines), their corners and the centres of their circles and
+  arcs, also of other components' bodies, and also while Hide Above
+  Sketch cuts the bodies. They highlight under the pointer as sketch
+  geometry does, which wins when both are under it. Nothing is added
+  while picking; when the dimension is made, the edge or corner is
+  projected into the sketch (linked, as Project does it) and the
+  dimension attaches to it, in one undo step. A projection of the same
+  edge or corner the sketch already has is used again. Projected geometry
+  is fixed: a dimension to sketch geometry moves that geometry, one
+  between two projected edges is driven. Edges that are not in the plane
+  still need Project (P).
 - A double-click on a dimension edits its value; a dimension's text can
   be dragged. A dimension that would over-constrain the sketch is added
   as driven (in parentheses); an over-constraining constraint is refused
-  with a message.
+  with a message. A driven dimension's value is a read-only parameter
+  (`d7`, kind reference): it can be renamed and used in expressions of
+  features after the sketch, and a value typed into it makes it driving.
+- Dimension names: hovering a dimension shows its parameter (`d3 = d1 / 2
+  → 20 mm (Sketch1 distance)`). The value editor shows the name before
+  the field (`d3 =`); typing `width = 40` renames the parameter as it
+  sets it, and a click on another dimension while the editor is open
+  inserts that dimension's name. The palette's *Dimension text* option
+  shows each dimension's value, its name, or both (`d3 = 20`). A feature
+  panel's value field shows its own parameter's name after the label
+  (`Distance (d5)`), its tooltip says what the parameter is as a
+  dimension's does (`d5 = d1 / 2 → 20 mm (Extrude2 distance)`), and it
+  also takes `name = value`. While a feature panel's value field has the
+  keyboard, the view labels the dimensions of the sketches it shows and
+  the values of the features before the one the panel adds or edits
+  (`depth = 12 mm`, where their handles would be; a fillet's or chamfer's
+  sets' values on the faces they made); a click on a label
+  inserts its name at the field's cursor.
+- Imported designs: a dimension the file keeps driven gets the file's own
+  parameter of it as its read-only reference, so expressions that use it
+  follow what the sketch measures.
 - A constraint button applies to the selected geometry, or picks it
   when nothing fitting is selected. Equal, Parallel, Perpendicular,
   Collinear, Concentric, Tangent and Coincident on more than two selected
@@ -402,6 +485,19 @@ stays on for the next sketch.
   on several lines makes each one horizontal or vertical. The constraints
   are one undo step; ones the sketch refuses (already implied or
   conflicting) are left out with a message.
+- Coincident between the ends of two curves makes them one point, as if
+  both curves had been drawn from it, so Offset and chain selection see
+  the corner joined (a fixed end is the one kept; a distance between the
+  two goes). A point and a curve, a centre, a lone point or a projected
+  point stay a coincident constraint.
+- Extend: an end that reaches another curve's end, or any existing point,
+  joins it; reaching the middle of a curve, the end stays on it. A
+  projected point holds the extended end with a coincident constraint.
+- **Convert to Sketch Geometry** (MODIFY, and the context menu of
+  projected geometry): the selected projected curves and points become
+  ordinary sketch geometry, free and no longer following their source.
+  A corner that projected curves you do not convert also use stays
+  projected, and the converted curve stays joined to it.
 - **Equal Spacing** (Constraints) keeps the intervals between three or
   more independent objects equal without copying them: points, circles
   and arcs (their centres) and lines (their midpoints), mixed as needed.
@@ -1163,6 +1259,42 @@ issue tracker with the setting `reports/issueUrl` (an issue list's
 address, `https://host/owner/repository/issues`, or a template with
 `{title}` and `{body}`).
 
+### Debug log
+
+When something odd happens in normal use (a cursor that stays busy, a
+command that does nothing), a debug log shows afterwards what Mitcad did.
+**Preferences › Diagnostics › Write a debug log** switches it on at once,
+without a restart, and it stays on (also at the next start) until you
+turn it off there or in the project indicator's menu (**Turn Off Debug
+Log**). While it runs, the project indicator (in the status bar; beside
+the document's name in the Mac layout) says **Debug log on**. For one run
+only, start Mitcad with `--debug-log` (or `--debug-log trace.log`) or
+with the variable `MITCAD_DEBUG_LOG=1` (or a file's path).
+
+The log is written to Mitcad's log folder (**Help › Open Log Folder**;
+`logs` in Mitcad's local data folder), one file per start,
+`mitcad-YYYYMMDD-HHMMSS-<process>.log`; a file continues in a new one at
+20 MB, and the folder keeps the newest 10 files, at most 200 MB. Each
+file begins with Mitcad's version and build, the system, the graphics
+card and its OpenGL renderer, the command line, the open design's path
+and the switches in use; started with Mitcad, the file is written once
+the 3D view knows its graphics card (at most a few seconds, at once when
+something goes wrong first); when it is switched on, the lines Mitcad kept
+in memory from before (the newest 5000) come first. Each line has the
+time in milliseconds, the level (debug, info, warning, critical), the
+thread when it is not the main one, and the text. It is written at least
+once a second and at every warning, so a crash loses at most a second.
+
+**What a log contains.** Commands, sketch operations, computations,
+refusals, warnings: file paths, design names and names of features,
+bodies and sketch entities. What you type into fields and where clicks
+pick are left out unless switched on separately (`MITCAD_LOG_TYPED_TEXT`,
+`MITCAD_LOG_PICKS`, for tests). Logs stay on your computer: a report
+(Help › Send Feedback, an error report) offers the latest log and the
+newest lines kept in memory, both left out unless you tick them; a
+ticked log file is not sent but its place is shown, to drag it into the
+issue form.
+
 ## Import and export
 
 ### Base features
@@ -1261,6 +1393,15 @@ documents (fasteners, for example) come in as empty components named
 after the item that inserted them: their bodies are not in the file, but
 their joints and positions are.
 
+Bodies and faces keep the file's appearances: each one the design uses
+becomes an appearance of the document (named as in the file, its colour,
+roughness, metal or transparency taken over), given to the bodies and to
+faces painted on their own; an occurrence's appearance goes to its bodies
+where its component is placed once. A body's material becomes Mitcad's
+where Mitcad has the same one (steel, aluminium, ...); the report lists
+every material with its density. Texture images are not in the file: such
+an appearance comes in with its stored colour.
+
 In the application the import has no time limit; see [Opening an .f3d
 design](#opening-an-f3d-design) for stopping it early. A geometry kernel
 operation that does not return for 90 seconds is given up on (that item
@@ -1278,8 +1419,9 @@ again:
 - **Yellow, a base feature:** a fallback. Its tooltip names the items of
   the file it stands in for and why each did not replay ("Stands in for
   Extrude5 (its result is not in the file's history)"). A base feature
-  that brings the bodies to the file's exactly, after an approximate item
-  or at the end, says that.
+  that brings the bodies that differ to the file's, after an approximate
+  item or at the end, says that. Bodies the import made within 0.01 mm
+  of the file's are never replaced.
 - **Yellow, another feature:** it came in partly; the tooltip says what
   was left out ("Partly imported: left out: 3 constraints ...").
 - **Struck through with a yellow outline:** a placeholder, named after an
@@ -1372,6 +1514,46 @@ the ASM format are not read. The timeline shows the fallbacks, partial
 items and suppressed features as an `.f3d` import does ([Reading an
 imported timeline](#reading-an-imported-timeline)).
 
+### IFC import
+
+An IFC file (`.ifc`, or `.ifczip`; IFC2X3, IFC4 or IFC4X3, the open
+exchange format of building models) opens as a new document (File › Open
+or Import, or `mitcad-cli import-ifc`). Each site, building and storey
+becomes a component placed where the file places it, a storey's elevation
+a construction plane in it, a grid's axes construction axes. Each
+element (wall, slab, beam, column, door, window, furniture, ...) comes
+into its storey's component, its bodies named by its name and GlobalId
+and coloured as the file colours them: walls, slabs, beams and other
+swept shapes as sketches and extrusions (or revolutions, sweeps and
+pipes) with their clippings and boolean cuts, which can be edited like
+any feature; breps as the bodies the file describes; tessellated shapes
+as mesh bodies. Openings are cut from their walls and slabs. A shape that
+a type gives many elements (doors, windows, columns, furniture) is one
+component, and each element an occurrence of it. Spaces are not
+imported. The import report has a line for every element of the file:
+how it came in, or why it did not, and checks the bodies' volumes
+against the volumes the file states for its elements. What did not
+build stays on the timeline as a note ([Reading an imported
+timeline](#reading-an-imported-timeline)). The import runs in a process
+of its own; Cancel Import ends it.
+
+### .rvt import
+
+An `.rvt` building project opens as a new document of reference geometry
+(File › Open, or `mitcad-cli import-rvt`): one component per level, named
+as the level, and in it a body for each building element (walls, floors,
+roofs, columns, beams, doors, windows, furniture, fixtures, ducts and pipes,
+…), named `Family:Type:Id` as the project names it. A body is the triangle
+mesh the file saves for the element where it has one (topography), else
+the element's box: a family instance's type box turned and placed as the
+instance is, other elements' boxes along the model's axes. The elements'
+real shapes come in a later version. Annotations, rooms, levels, grids,
+types and group definitions stay out; the import report counts them, lists
+the bodies per level and category and names the release that saved the
+file. An `.rfa` family file opens with its metadata only (its forms come
+later). The timeline's yellow badge notes that the bodies are boxes and
+saved meshes.
+
 ## Command line
 
 The application (`mitcad`, on Windows `mitcad.exe`):
@@ -1390,9 +1572,13 @@ The application (`mitcad`, on Windows `mitcad.exe`):
   view (default: floating on macOS, docked elsewhere)
 - `--no-glass`: floating panels paint their own material instead of
   Liquid Glass (macOS 26 and later)
+- `--debug-log [file.log]`, `--debug-log=file`: write a debug log for this
+  run ([Debug log](#debug-log)), to the file given or to a new file in
+  the log folder
 
 Environment variables: `MITCAD_NO_UPDATE_CHECK=1` turns update checks
-off, `MITCAD_PROJECTS_DIR` sets where New Project puts projects (instead
+off, `MITCAD_DEBUG_LOG=1|<file>` writes a debug log as `--debug-log` does,
+`MITCAD_PROJECTS_DIR` sets where New Project puts projects (instead
 of Documents/Mitcad), `MITCAD_GIT` the git program when it is not on
 `PATH` (Preferences › Cloud sets it for the application), `MITCAD_LIBRARIES_DIR` where fetched component libraries are
 kept.
@@ -1426,6 +1612,13 @@ and options.
   of an `.ipt` part; `--reference` compares its solids with a STEP file of
   the same part (volume and area, 1e-6 relative by default; exit code 1
   when they differ).
+- `import-ifc building.ifc --save building.mitcad [--report report.json]
+  [--no-openings] [--no-occurrences]`: an IFC building model; the report
+  has a line for every product of the file.
+- `import-rvt project.rvt --save project.mitcad [--report report.json]
+  [--report-only]`: an `.rvt` project's building elements, one component
+  per level (an `.rfa` family: its metadata); `--report-only` reads and
+  reports without importing.
 - `export part.mitcad result.step [--bodies …] [--schema ap214|ap242]
   [--unit mm|in|…] [--refinement low|medium|high] [--ascii]`; a `.3mf`
   file holds the solid and mesh bodies as the parts of one object, a

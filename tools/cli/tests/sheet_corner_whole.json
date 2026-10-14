@@ -1,0 +1,12 @@
+[
+  {"comment":"SPDX-License-Identifier: MIT. A corner chamfer that takes a whole adjacent boundary (mitcad#242): on the 20 x 10 panel (t=1) a chamfer of 20 along the bottom edge and 5 up the right one removes the triangle (0,0), (20,0), (20,5): 200 - 50. A longer one is refused."},
+  {"cmd":"add_feature","def":{"type":"sheet_rules","thickness":1,"bend_radius":1,"allowance":{"type":"k_factor","k":0.4},"reference_side":"front","bend_relief":{"type":"rectangular","width":1,"depth":1},"corner_relief":{"type":"round","width":2,"depth":2}}},
+  {"cmd":"sketch.create"},
+  {"cmd":"sketch.add_rectangle","sketch":"F2","corner":[0,0],"width":20,"height":10},
+  {"cmd":"add_feature","def":{"type":"sheet_face","rules":"F1","profiles":[{"sketch":"F2","region":"r{c1[c4,c2],c2[c1,c3],c3[c2,c4],c4[c3,c1]}"}]}},
+  {"cmd":"add_feature","def":{"type":"sheet_corner_chamfer","body":"F3.b0","corners":[{"panel":{"feature":"F3","slot":0},"incoming":{"type":"sketch","sketch":"F2","segment":"c1[c4,c2]"},"outgoing":{"type":"sketch","sketch":"F2","segment":"c2[c1,c3]"}}],"distances":{"first":20,"second":5}}},
+  {"expect":{"feature":"F4","status":"ok","body":"F3.b0","volume":150}},
+  {"expect":{"query":{"query":"sheet_state","body":"F3.b0"},"result":{"status":"valid"}}},
+  {"cmd":"edit_feature","uid":"F4","def":{"type":"sheet_corner_chamfer","body":"F3.b0","corners":[{"panel":{"feature":"F3","slot":0},"incoming":{"type":"sketch","sketch":"F2","segment":"c1[c4,c2]"},"outgoing":{"type":"sketch","sketch":"F2","segment":"c2[c1,c3]"}}],"distances":{"first":20.5,"second":5}}},
+  {"expect":{"feature":"F4","status":"error","error_contains":"exceeds"}}
+]

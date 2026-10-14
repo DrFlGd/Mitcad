@@ -110,6 +110,7 @@ pub(crate) fn resolve_geo(r: &mut impl Resolver, origin: &JointOrigin) -> Result
         GeomRef::Datum(uid) => (datum_kind(r.datum(*uid)?), 0.0),
         GeomRef::Face { body, face } => {
             let shape = r.shape(*body)?;
+            let face = &crate::features::renamed::face_for(r, &shape, face)?;
             match r
                 .kernel()
                 .face_geometry(&shape, face)
@@ -128,6 +129,7 @@ pub(crate) fn resolve_geo(r: &mut impl Resolver, origin: &JointOrigin) -> Result
         }
         GeomRef::Edge { body, edge } => {
             let shape = r.shape(*body)?;
+            let edge = &crate::features::renamed::edge_for(r, &shape, edge)?;
             match r
                 .kernel()
                 .edge_geometry(&shape, edge)

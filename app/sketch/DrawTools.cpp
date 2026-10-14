@@ -2089,12 +2089,54 @@ public:
 
   QString name() const override { return QObject::tr("Point"); }
   void start() override { m_c.hint(QObject::tr("Point: click where it goes.")); }
+  // Body corners and the middles of body edges in the sketch plane too
+  // (mitcad#258).
+  bool bodySnaps() const override { return true; }
+
+  void move(const Snap& snap) override {
+    // The hint says what a body snap does; the marker is a point's or a
+    // midpoint's.
+    const QString onBody =
+        body(snap) ? QStringLiteral("%1 %2").arg(static_cast<int>(snap.kind)).arg(snap.bodyItem.source) : QString();
+    if (onBody == m_onBody) {
+      return;
+    }
+    m_onBody = onBody;
+    if (snap.kind == Snap::Kind::BodyVertex) {
+      m_c.hint(QObject::tr("Point: on the body's corner; placing it projects the corner into the sketch (linked)."));
+    } else if (snap.kind == Snap::Kind::BodyMidpoint) {
+      m_c.hint(QObject::tr("Point: at the middle of the body's edge; placing it projects the edge into the sketch "
+                           "(linked)."));
+    } else {
+      start();
+    }
+  }
 
   void press(const Snap& snap) override {
     if (snap.atPoint()) {
       return; // a point is there already
     }
+    // A point already on the projected corner: nothing to add, as at a
+    // point of the sketch.
+    if (snap.kind == Snap::Kind::BodyVertex) {
+      if (const auto projected = existingProjection(m_c.model(), snap.bodyItem);
+          projected && !coincidentPoint(m_c.model(), projected->point).isEmpty()) {
+        qDebug().noquote() << QStringLiteral("Point: %1 is on %2 already")
+                                  .arg(coincidentPoint(m_c.model(), projected->point), snap.bodyItem.describe());
+        return;
+      }
+    }
     SketchOp op(m_c);
+    // A body corner or edge is projected first (linked, or an existing
+    // projection taken), then the point is added and held on it.
+    ProjectedItem projected;
+    if (body(snap)) {
+      projected = op.projectBody(snap.bodyItem);
+      if (projected.empty()) {
+        refuse(m_c, op, name());
+        return;
+      }
+    }
     QJsonObject cmd = op.command(QStringLiteral("sketch.add_point"));
     cmd.insert(QStringLiteral("at"), xy(snap.at));
     QJsonObject result;
@@ -2106,7 +2148,21 @@ public:
     op.constrain(point, snap);
     op.commit();
     qDebug().noquote() << QStringLiteral("Added point %1 at %2").arg(point, text(snap.at));
+    if (snap.kind == Snap::Kind::BodyVertex) {
+      qDebug().noquote() << QStringLiteral("Point %1 coincident with %2, the projected corner %3")
+                                .arg(point, projected.point, snap.bodyItem.source);
+    } else if (snap.kind == Snap::Kind::BodyMidpoint) {
+      qDebug().noquote() << QStringLiteral("Point %1 at the midpoint of %2, the projected edge %3")
+                                .arg(point, projected.curve, snap.bodyItem.source);
+    }
   }
+
+private:
+  static bool body(const Snap& snap) {
+    return snap.kind == Snap::Kind::BodyVertex || snap.kind == Snap::Kind::BodyMidpoint;
+  }
+
+  QString m_onBody; // the body snap the hint is about
 };
 
 // Text: a click places a text that starts there; a drag draws its

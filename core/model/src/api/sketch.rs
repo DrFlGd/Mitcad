@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: MIT
 //! Sketch commands (`sketch.*`) and the `sketch` query; see `commands.md`.
 
+use std::collections::BTreeSet;
+
 use serde::Deserialize;
 use serde_json::{Value, json};
 
@@ -16,14 +18,16 @@ use crate::sketch::geometry::Curve2;
 use crate::sketch::modify::{DragTarget, Item, Map2, point_input};
 use crate::sketch::offset::derived_entities;
 use crate::sketch::pattern::PatternChange;
+use crate::sketch::regions::Region;
 use crate::sketch::solve::{SketchStatus, SolverItem};
 use crate::sketch::spacing::{SpacingDimension, SpacingInput};
+use crate::sketch::stale::Keep;
 use crate::sketch::tools::{ArcMode, CircleMode, RectangleMode, SlotMode};
 use crate::sketch::{
     ConstraintKind, ConstraintUid, DimensionKind, EntityIndex, EntityKind, Ref, SketchText,
     SpacingMode, TextAlign, TextPath, TextVAlign,
 };
-use crate::topo::TopoName;
+use crate::topo::{RegionKey, TopoName};
 
 #[derive(Debug, Deserialize)]
 #[serde(tag = "cmd", deny_unknown_fields)]
@@ -507,6 +511,15 @@ pub(super) enum SketchCommand {
         #[serde(default = "yes")]
         merge: bool,
     },
+    // Projected curves that no longer match their source (mitcad#252).
+    #[serde(rename = "sketch.clean_up_stale_projections")]
+    CleanUpStaleProjections { sketch: FeatureUid },
+    // Projected geometry into ordinary sketch geometry (mitcad#257).
+    #[serde(rename = "sketch.convert_projected")]
+    ConvertProjected {
+        sketch: FeatureUid,
+        entities: Vec<Ref>,
+    },
 }
 
 /// The `dxf_info` query (P9): what the Insert DXF dialog offers, its
@@ -843,6 +856,12 @@ impl<K: Kernel> Document<K> {
             SketchCommand::CleanUpProjections { sketch, merge } => {
                 self.clean_up_projections(sketch, merge)?
             }
+            SketchCommand::CleanUpStaleProjections { sketch } => {
+                self.clean_up_stale_projections(sketch)?
+            }
+            SketchCommand::ConvertProjected { sketch, entities } => {
+                self.convert_projected(sketch, &entities)?
+            }
             command => self.edit_command(command)?,
         })
     }
@@ -852,6 +871,10 @@ impl<K: Kernel> Document<K> {
         use SketchCommand as C;
         let mut made: Vec<String> = Vec::new();
         let made_ref = &mut made;
+        // Points that became one (mitcad#259, mitcad#260): the result's
+        // `joined` and `merged`.
+        let mut joined: Option<Value> = None;
+        let joined_ref = &mut joined;
         let (sketch, label): (FeatureUid, &str) = match &command {
             C::AddPoint { sketch, .. } => (*sketch, "Add Point to {sketch}"),
             C::AddLine { sketch, .. } => (*sketch, "Add Line to {sketch}"),
@@ -899,7 +922,9 @@ impl<K: Kernel> Document<K> {
             | C::AddCircle { .. }
             | C::Project { .. }
             | C::ImportDxf { .. }
-            | C::CleanUpProjections { .. } => {
+            | C::CleanUpProjections { .. }
+            | C::CleanUpStaleProjections { .. }
+            | C::ConvertProjected { .. } => {
                 unreachable!("handled above")
             }
         };
@@ -1252,10 +1277,33 @@ impl<K: Kernel> Document<K> {
                     made_ref.push(id);
                 }
                 C::AddConstraint { constraint, .. } => {
-                    let before = edit.redundancy().ok();
+                    let before = edit.solved().ok().map(|s| s.status);
+                    // Two curve ends made coincident become one point
+                    // (mitcad#260).
+                    let merge = edit.coincident_merge(&constraint);
                     let id = edit.add_constraint(constraint);
+                    if let Some((keep, drop)) = merge {
+                        edit.merge_coincident(id, keep, drop)?;
+                        *joined_ref = Some(json!({
+                            "merged": {"kept": Ref::Point(keep), "removed": Ref::Point(drop)}
+                        }));
+                    }
                     if let Some(before) = before {
-                        edit.require_needed(before, &id.to_string())?;
+                        // An older constraint the new one makes redundant
+                        // goes in its favour (mitcad#287).
+                        let implied = edit.drop_implied(id, &before);
+                        if !implied.is_empty() {
+                            let list: Vec<Value> = implied
+                                .iter()
+                                .map(|c| {
+                                    json!({"constraint": c.id.to_string(),
+                                           "type": c.kind.type_name()})
+                                })
+                                .collect();
+                            joined_ref.get_or_insert_with(|| json!({}))["implied_removed"] =
+                                json!(list);
+                        }
+                        edit.require_needed(before.redundant.len(), &id.to_string())?;
                     }
                 }
                 C::AddDimension {
@@ -1362,7 +1410,11 @@ impl<K: Kernel> Document<K> {
                     }
                 }
                 C::Trim { curve, at, .. } => edit.trim(curve, at)?,
-                C::Extend { curve, at, .. } => edit.extend(curve, at)?,
+                C::Extend { curve, at, .. } => {
+                    if let Some(p) = edit.extend(curve, at)? {
+                        *joined_ref = Some(json!({"joined": Ref::Point(p)}));
+                    }
+                }
                 C::Fillet { a, b, radius, .. } => {
                     let arc = edit.fillet(a, b, &radius)?;
                     made_ref.push(Ref::Curve(arc).to_string());
@@ -1507,7 +1559,9 @@ impl<K: Kernel> Document<K> {
                 | C::AddCircle { .. }
                 | C::Project { .. }
                 | C::ImportDxf { .. }
-                | C::CleanUpProjections { .. } => {
+                | C::CleanUpProjections { .. }
+                | C::CleanUpStaleProjections { .. }
+                | C::ConvertProjected { .. } => {
                     unreachable!("handled above")
                 }
             }
@@ -1516,6 +1570,11 @@ impl<K: Kernel> Document<K> {
         let mut value = report_json(&report, self.sketch_def(sketch));
         if !made.is_empty() {
             value["made"] = json!(made);
+        }
+        if let Some(Value::Object(fields)) = joined {
+            for (key, field) in fields {
+                value[key.as_str()] = field;
+            }
         }
         Ok(value)
     }
@@ -1595,6 +1654,234 @@ impl<K: Kernel> Document<K> {
         value["cleaned"] = json!(cleaned);
         value["warnings"] = json!(warnings);
         Ok(value)
+    }
+
+    /// `sketch.clean_up_stale_projections` (mitcad#252): the clean-up of
+    /// the projected curves the last evaluation found stale, with what it
+    /// removed, trimmed, unlinked and kept and, in `warnings`, the same in
+    /// words and the regions later features use whose names change (the
+    /// Clean Up Stale Projections panel shows them).
+    fn clean_up_stale_projections(&mut self, sketch: FeatureUid) -> Result<Value, ApiError> {
+        let output = self.sketch_output(sketch).ok_or_else(|| {
+            ApiError(format!(
+                "{sketch} has not evaluated: which of its projected curves are stale is not known"
+            ))
+        })?;
+        let follow = output.follow.to_vec();
+        let texts = output.texts.to_vec();
+        let before: Vec<String> = output.regions.iter().map(|r| r.key.to_string()).collect();
+        let used = self.used_regions(sketch);
+        let (cleaned, report) =
+            self.edit_sketch(sketch, "Clean Up Stale Projections in {sketch}", |edit| {
+                edit.clean_up_stale_projections(&follow, &used, &texts)
+            })?;
+        let curves = |ids: &[EntityUid]| -> Vec<String> {
+            ids.iter().map(|id| Ref::Curve(*id).to_string()).collect()
+        };
+        let counted = |n: usize, what: &str| {
+            if n == 1 {
+                format!("1 stale {what}")
+            } else {
+                format!("{n} stale {what}s")
+            }
+        };
+        let mut warnings = Vec::new();
+        if !cleaned.removed.is_empty() {
+            warnings.push(format!(
+                "{} removed: {}",
+                counted(cleaned.removed.len(), "curve"),
+                curves(&cleaned.removed).join(", ")
+            ));
+        }
+        if !cleaned.trimmed.is_empty() {
+            warnings.push(format!(
+                "{} trimmed to the regions later features use: {}",
+                counted(cleaned.trimmed.len(), "line"),
+                curves(&cleaned.trimmed).join(", ")
+            ));
+        }
+        if !cleaned.unlinked.is_empty() {
+            warnings.push(format!(
+                "unlinked, their curves kept as fixed references: the projection{} of {}",
+                if cleaned.unlinked.len() == 1 { "" } else { "s" },
+                cleaned.unlinked.join(", ")
+            ));
+        }
+        for why in [Keep::Region, Keep::UserCurve, Keep::Constrained, Keep::Used] {
+            let ids: Vec<EntityUid> = cleaned
+                .kept
+                .iter()
+                .filter(|(_, w)| *w == why)
+                .map(|(id, _)| *id)
+                .collect();
+            if !ids.is_empty() {
+                warnings.push(format!(
+                    "{} kept, {}: {}",
+                    counted(ids.len(), "curve"),
+                    why.words(),
+                    curves(&ids).join(", ")
+                ));
+            }
+        }
+        warnings.extend(self.renamed_regions(sketch, &before));
+        let kept: Vec<Value> = cleaned
+            .kept
+            .iter()
+            .map(|(id, why)| json!({"curve": Ref::Curve(*id).to_string(), "why": why.name()}))
+            .collect();
+        // What a preview shows: the removed curves as they were, and the
+        // pieces trimmed off (mitcad#252).
+        let removed_geometry: Vec<Value> = cleaned
+            .removed_geometry
+            .iter()
+            .map(|(id, kind, curve)| {
+                json!({"curve": Ref::Curve(*id).to_string(), "type": kind,
+                       "geometry": curve_json(curve)})
+            })
+            .collect();
+        let cut: Vec<Value> = cleaned
+            .cut
+            .iter()
+            .map(|(id, from, to)| {
+                json!({"line": Ref::Curve(*id).to_string(), "start": from, "end": to})
+            })
+            .collect();
+        let mut value = report_json(&report, self.sketch_def(sketch));
+        value["stale"] = json!({
+            "removed": curves(&cleaned.removed),
+            "trimmed": curves(&cleaned.trimmed),
+            "unlinked": cleaned.unlinked,
+            "kept": kept,
+            "preview": {"removed": removed_geometry, "cut": cut},
+        });
+        value["warnings"] = json!(warnings);
+        Ok(value)
+    }
+
+    /// `sketch.convert_projected` (mitcad#257): projected entities into
+    /// ordinary sketch geometry, with what was converted, the shared points
+    /// that stay projected and, in `warnings`, what the user is to know.
+    fn convert_projected(
+        &mut self,
+        sketch: FeatureUid,
+        entities: &[Ref],
+    ) -> Result<Value, ApiError> {
+        let (done, report) =
+            self.edit_sketch(sketch, "Convert to Sketch Geometry in {sketch}", |edit| {
+                edit.convert_projected(entities)
+            })?;
+        let points = |ids: &[EntityUid]| -> Vec<String> {
+            ids.iter().map(|p| Ref::Point(*p).to_string()).collect()
+        };
+        let mut warnings = Vec::new();
+        if !done.kept.is_empty() {
+            warnings.push(format!(
+                "projected curves that stay use {}: {} projected",
+                points(&done.kept).join(", "),
+                if done.kept.len() == 1 {
+                    "it stays"
+                } else {
+                    "they stay"
+                }
+            ));
+        }
+        if !done.ignored.is_empty() {
+            let names: Vec<String> = done.ignored.iter().map(ToString::to_string).collect();
+            warnings.push(format!(
+                "not projected geometry, left as it is: {}",
+                names.join(", ")
+            ));
+        }
+        for source in &done.unfollowing {
+            warnings.push(format!(
+                "the projection of {source} follows only a source like the one it was made from \
+                 (an import's, or of a file of an earlier version): with some of its entities \
+                 converted it keeps its geometry from now on"
+            ));
+        }
+        let mut value = report_json(&report, self.sketch_def(sketch));
+        value["converted"] = names(&done.converted);
+        value["kept"] = json!(points(&done.kept));
+        value["warnings"] = json!(warnings);
+        Ok(value)
+    }
+
+    /// The features after a sketch: their names and their definitions as
+    /// text (parameters by name).
+    fn later_definitions(&self, sketch: FeatureUid) -> Vec<(String, String)> {
+        let params = self.parameters();
+        self.features()
+            .skip_while(|e| e.uid != sketch)
+            .skip(1)
+            .map(|entry| {
+                let text = entry
+                    .def
+                    .map_params(&mut |_, id| Ok::<_, ()>(params.name(*id)))
+                    .ok()
+                    .and_then(|def| serde_json::to_string(&def).ok())
+                    .unwrap_or_default();
+                (entry.name.clone(), text)
+            })
+            .collect()
+    }
+
+    /// The regions of an evaluated sketch that later features use: the
+    /// profiles they sweep, as they find them, and the regions their
+    /// definitions name (faces named by them).
+    fn used_regions(&self, sketch: FeatureUid) -> Vec<Region> {
+        let Some(output) = self.sketch_output(sketch) else {
+            return Vec::new();
+        };
+        let mut keys: BTreeSet<RegionKey> = BTreeSet::new();
+        for entry in self.features().skip_while(|e| e.uid != sketch).skip(1) {
+            for p in entry.def.info().profiles() {
+                if p.sketch == sketch
+                    && let Some(region) = output.resolved(&p.region)
+                {
+                    keys.insert(region.key.clone());
+                }
+            }
+        }
+        let named: Vec<(String, &RegionKey)> = output
+            .regions
+            .iter()
+            .map(|r| (r.key.to_string(), &r.key))
+            .collect();
+        for (_, text) in self.later_definitions(sketch) {
+            for (name, key) in &named {
+                if text.contains(name.as_str()) {
+                    keys.insert((*key).clone());
+                }
+            }
+        }
+        output
+            .region_info
+            .iter()
+            .filter(|r| keys.contains(&r.profile.key))
+            .cloned()
+            .collect()
+    }
+
+    /// Warnings about the regions named `before` an edit of a sketch that
+    /// it renamed and later features use.
+    fn renamed_regions(&self, sketch: FeatureUid, before: &[String]) -> Vec<String> {
+        let after: Vec<String> = self
+            .sketch_output(sketch)
+            .map(|o| o.regions.iter().map(|r| r.key.to_string()).collect())
+            .unwrap_or_default();
+        let changed: Vec<&String> = before.iter().filter(|k| !after.contains(k)).collect();
+        let mut warnings = Vec::new();
+        if changed.is_empty() {
+            return warnings;
+        }
+        for (name, text) in self.later_definitions(sketch) {
+            for key in changed.iter().filter(|k| text.contains(k.as_str())) {
+                warnings.push(format!(
+                    "{name} uses the region {key}, whose name changes: check it"
+                ));
+            }
+        }
+        warnings
     }
 
     fn sketch_def(&self, uid: FeatureUid) -> Option<&SketchDef> {
@@ -1679,8 +1966,9 @@ impl<K: Kernel> Document<K> {
                     None => status.driven.get(&d.id).copied(),
                 };
                 value["measured"] = json!(measured);
-                if let Some(param) = d.value.and_then(|id| params.get(id)) {
+                if let Some(param) = d.value.or(d.reference).and_then(|id| params.get(id)) {
                     value["expression"] = json!(param.expression());
+                    value["comment"] = json!(param.comment());
                 }
                 value
             })
@@ -1810,8 +2098,33 @@ impl<K: Kernel> Document<K> {
                     if report.unmatched > 0 {
                         value["unmatched"] = json!(report.unmatched);
                     }
+                    if !report.stale.is_empty() {
+                        let ids: Vec<String> = report
+                            .stale
+                            .iter()
+                            .map(|id| Ref::Curve(*id).to_string())
+                            .collect();
+                        value["stale"] = json!(ids);
+                    }
                 }
                 value
+            })
+            .collect();
+        // What each warning is about (mitcad#264): a linked projection's
+        // warning carries its entities, the others none.
+        let warnings = self.warnings(uid);
+        let warning_entities: Vec<Vec<String>> = warnings
+            .iter()
+            .map(|warning| {
+                output
+                    .and_then(|o| {
+                        o.follow.iter().find_map(|report| {
+                            let p = def.projections.get(report.projection)?;
+                            (report.warning(p).as_deref() == Some(warning.as_str()))
+                                .then(|| projection_warning_entities(report, p))
+                        })
+                    })
+                    .unwrap_or_default()
             })
             .collect();
         let mut result = json!({
@@ -1822,7 +2135,8 @@ impl<K: Kernel> Document<K> {
             "frame": frame,
             "solved": solved.is_some(),
             "error": error.map(|e| e.message),
-            "warnings": self.warnings(uid),
+            "warnings": warnings,
+            "warning_entities": warning_entities,
             "entities": entities,
             "constraints": def.constraints,
             "dimensions": dimensions,
@@ -1840,6 +2154,36 @@ impl<K: Kernel> Document<K> {
     }
 }
 
+/// The entities a linked projection's warning is about (mitcad#264): all
+/// of its curves and points when it keeps its geometry as a whole (`kept`,
+/// `lost`), else its stale curves when it has any, else those that found
+/// nothing like them in the source (`unfollowed`).
+fn projection_warning_entities(
+    report: &crate::sketch::project::ProjectionFollow,
+    projection: &crate::sketch::Projection,
+) -> Vec<String> {
+    if report.kept || report.lost {
+        return projection
+            .entities
+            .iter()
+            .map(ToString::to_string)
+            .collect();
+    }
+    if !report.stale.is_empty() {
+        return report
+            .stale
+            .iter()
+            .map(|id| Ref::Curve(*id).to_string())
+            .collect();
+    }
+    report
+        .unfollowed
+        .iter()
+        .filter_map(|id| projection.entities.iter().find(|r| r.uid() == *id))
+        .map(ToString::to_string)
+        .collect()
+}
+
 fn shape_added(added: &crate::document::ShapeAdded, def: Option<&SketchDef>) -> Value {
     let curves: Vec<String> = added
         .curves
@@ -1855,4 +2199,49 @@ fn shape_added(added: &crate::document::ShapeAdded, def: Option<&SketchDef>) -> 
 /// Parses a `sketch.*` command.
 pub(super) fn parse_sketch_command(value: Value) -> Result<SketchCommand, ApiError> {
     parse(value, "sketch command")
+}
+
+// Body edges and vertices in a sketch's plane (mitcad#256, mitcad#258).
+
+/// The type a curve gets as a sketch entity (the `sketch` query's `type`).
+fn curve_type(curve: &Curve2) -> &'static str {
+    match curve {
+        Curve2::Line { .. } => "line",
+        Curve2::Circle { .. } => "circle",
+        Curve2::Arc { .. } => "arc",
+        Curve2::Ellipse { .. } => "ellipse",
+        Curve2::EllipticalArc { .. } => "elliptical_arc",
+        Curve2::Nurbs(_) => "spline",
+    }
+}
+
+impl<K: Kernel> Document<K> {
+    /// The `plane_geometry` query: the visible bodies' edges and vertices
+    /// in the sketch's plane, in sketch coordinates, each with the `source`,
+    /// `body` and `occurrence` that `sketch.project` takes.
+    pub(super) fn plane_geometry_json(&self, sketch: FeatureUid) -> Result<Value, ApiError> {
+        let items: Vec<Value> = self
+            .plane_geometry(sketch)?
+            .into_iter()
+            .map(|item| {
+                let (kind, geometry) = match &item.shape {
+                    crate::document::PlaneShape::Vertex(at) => ("vertex", json!({"at": at})),
+                    crate::document::PlaneShape::Curve(curve) => {
+                        (curve_type(curve), curve_json(curve))
+                    }
+                };
+                let mut value = json!({
+                    "source": item.source.to_string(),
+                    "body": item.body,
+                    "kind": kind,
+                    "geometry": geometry,
+                });
+                if let Some(path) = item.occurrence {
+                    value["occurrence"] = json!(OccurrencePath(path).to_string());
+                }
+                value
+            })
+            .collect();
+        Ok(Value::Array(items))
+    }
 }

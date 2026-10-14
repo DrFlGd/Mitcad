@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: MIT
 # check-all sources: app/MainWindowJobs.cpp app/framework/ComputeProgress.cpp app/framework/ComputeProgress.hpp
+# check-all sources: app/framework/WaitCursor.cpp app/framework/WaitCursor.hpp
 # Background computation (P7) through the real UI. Every feature a job
 # evaluates is made slower (MITCAD_TEST_RECOMPUTE_DELAY_MS: 400 ms, in
 # some jobs more), so a six-feature design takes seconds to compute:
@@ -25,6 +26,10 @@
 #      of a modelled thread and OK of its edit, each cancelled while OCCT
 #      sweeps and cuts the groove, stop within a second of the request;
 #      then OK computes the thread.
+#   9. The wait cursor (mitcad#268): every wait's "Wait cursor on" has
+#      its "off" (the progress dialog's or the end's), none is left on
+#      once idle; a wait nested in a wait (a test hook) with its progress
+#      dialog; a cursor left on (a test hook) is cleared once idle.
 #
 # The result store is off (ui-test-lib.sh) but in part 7.
 #
@@ -41,6 +46,9 @@ FILE=$WORK/boss.mitcad
 trap 'ui_cleanup; rm -rf "$WORK"' EXIT
 # A change of d1 computes five features (3 s), a preview one (1.5 s).
 export MITCAD_TEST_RECOMPUTE_DELAY_MS=400,set_parameter=600,preview=1500
+# The wait cursor's test hooks (mitcad#268): Nested Wait (Test) and Leave
+# Wait Cursor On (Test).
+export MITCAD_TEST_WAIT_CURSOR=1
 
 # Six features: a block, a boss joined onto it, a hole cut, a fillet.
 cat > "$FILE" << 'EOF'
@@ -105,6 +113,29 @@ cancel_job() {
   ui_focus_dialog '^Computing$'
   ui_key Escape
   ui_expect_new "Computing $1 cancelled after" "$1 cancelled" 10
+}
+
+# wait_cursor_balanced description: in this run's log, every "Wait cursor
+# on: <job> (depth N)" has its "Wait cursor off: <job> (depth N)" after it,
+# no wait cursor was left on, and the idle check after them found none
+# (mitcad#268).
+wait_cursor_balanced() {
+  local unbalanced
+  grep -q '^Wait cursor on: ' "$UI_LOG" || ui_fail "$1: no wait cursor logged"
+  unbalanced=$(awk '
+    /^Wait cursor on: / { key = substr($0, 17); open[key]++ }
+    /^Wait cursor off: / { key = substr($0, 18); if (--open[key] < 0) { print "off before on: " key; exit } }
+    END { for (key in open) if (open[key] != 0) print open[key] " unbalanced: " key }' "$UI_LOG")
+  [ -z "$unbalanced" ] || ui_fail "$1: $unbalanced"
+  grep -q "Wait cursor left on after" "$UI_LOG" && ui_fail "$1: $(grep "Wait cursor left on after" "$UI_LOG" | head -1)"
+  local idle=""
+  for _ in $(seq 1 15); do
+    idle=$(awk '/^Wait cursor off: / { seen = 0 } /^Wait cursor at idle: none set$/ { seen = 1 } END { print seen + 0 }' "$UI_LOG")
+    [ "$idle" = 1 ] && break
+    sleep 0.2
+  done
+  [ "$idle" = 1 ] || ui_fail "$1: no idle check found the cursor gone after the last wait"
+  echo "ok   $1: $(grep -c '^Wait cursor on: ' "$UI_LOG") wait cursors, each restored once"
 }
 
 # no_new "text" description: the text was not logged since the mark.
@@ -240,6 +271,7 @@ no_new "Body Body1 (F2.b0): volume" "the volume stays"
 tail -n +$((UI_MARK + 1)) "$UI_LOG" | grep -q "The document was read while a job computes it" &&
   ui_fail "the document was read during a job"
 ui_crashed && ui_fail "crashed"
+wait_cursor_balanced "the jobs with progress dialogs, cancels and previews"
 ui_stop_app
 
 echo "--- --open at start-up: the dialog before the window"
@@ -449,5 +481,33 @@ ui_expect_volume "Body Body1 (F2.b0): volume 11780.972 -> \([0-9.]*\) mm3" 9771.
   "the groove cut in" 1e-3
 grep -q "The document was read while a job computes it" "$UI_LOG" && ui_fail "the document was read during a job"
 ui_crashed && ui_fail "crashed"
+wait_cursor_balanced "the cancels inside the kernel"
+
+echo "--- The wait cursor (mitcad#268): a wait nested in a wait, with its progress dialog"
+# Nested Wait (Test): a job of two seconds; 200 ms into its wait, while
+# that holds the cursor, a second wait for it starts inside the first
+# one's loop and shows the progress dialog after its own 400 ms.
+ui_mark
+ui_step "nested wait (search)"            ui_command "Nested Wait"
+ui_expect_new "Wait cursor on: nested wait test (depth 1)" "the wait's cursor"
+ui_expect_new "Wait cursor on: nested wait test (nested) (depth 2)" "the nested wait's cursor"
+ui_expect_new "Progress dialog shown: nested wait test (nested)" "the nested wait's progress dialog"
+ui_expect_new "Wait cursor off: nested wait test (nested) (depth 2)" "its cursor gone with the dialog"
+ui_expect_new "Computing nested wait test done in" "the job done" 10
+ui_expect_new "Wait cursor off: nested wait test (depth 1)" "the first wait's cursor gone at its end"
+lines=$(tail -n +$((UI_MARK + 1)) "$UI_LOG" | grep -E '^(Wait cursor (on|off): nested|Progress dialog shown: nested)' |
+  sed -E 's/^(Wait cursor|Progress dialog) //' | tr '\n' ';')
+[ "$lines" = "on: nested wait test (depth 1);on: nested wait test (nested) (depth 2);off: nested wait test (nested) (depth 2);shown: nested wait test (nested);off: nested wait test (depth 1);" ] ||
+  ui_fail "the nested waits in another order: $lines"
+echo "ok   in order: $lines"
+ui_focus_main
+wait_cursor_balanced "the nested waits"
+
+echo "--- The wait cursor (mitcad#268): one left on is cleared once idle"
+ui_mark
+ui_step "leave a wait cursor on (search)" ui_command "Leave Wait Cursor On"
+ui_expect_new "Wait cursor left on for a test: test hook" "an override cursor set and left (the test hook)"
+ui_expect_new "Wait cursor left on after test hook: cleared" "cleared once idle"
+ui_expect_new "Wait cursor at idle: none set" "none left"
 
 ui_finish "UI compute test"

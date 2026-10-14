@@ -30,6 +30,8 @@
 //! FreeCAD documents ([`freecad`]): the bodies FreeCAD stored, in the
 //! document's parts and links; their history is a later stage.
 
+// Appearances and physical materials of bodies and faces (mitcad#228).
+pub mod appearances;
 pub mod components;
 pub mod geom;
 pub mod history;
@@ -78,6 +80,8 @@ mod pasting;
 // Sketches on other components' faces, linked curves as projections
 // (mitcad#225).
 mod linked;
+// IFC building models (mitcad#273).
+pub mod ifc;
 
 use std::cell::Cell;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
@@ -98,7 +102,8 @@ pub use history::{NoGeometry, Oracle, SheetSig, Sig, StoredBody, StoredGeometry}
 pub use refs::DEFAULT_GEOMETRIC_TOLERANCE;
 pub use report::{
     BodyReport, ComponentReport, DesignReport, ImportReport, InputProvenance, ItemReport,
-    JointReport, LightBulbReport, LowMemoryReport, Outcome, ReferenceReport, StopReport,
+    JointReport, LightBulbReport, LowMemoryReport, Outcome, ReferenceReport, RetryQuestionReport,
+    RetryReport, StopReport,
 };
 
 use params::ParamMap;
@@ -184,6 +189,10 @@ pub struct Options {
     /// ([`DesignReport::geometric_tolerance`]) and each item's largest
     /// deviation beyond the exact tolerance.
     pub geometric_tolerance: f64,
+    /// What a retry of an item on the file's exact state does with the
+    /// replay's bodies that match the state (mitcad#283, [`retry`]): None
+    /// keeps them, as [`RetryBodies::Keep`].
+    pub retry_bodies: Option<Arc<RetryChoice>>,
 }
 
 impl Default for Options {
@@ -208,6 +217,7 @@ impl Default for Options {
             learn: None,
             validate: false,
             geometric_tolerance: DEFAULT_GEOMETRIC_TOLERANCE,
+            retry_bodies: None,
         }
     }
 }
@@ -265,6 +275,13 @@ struct Memory {
     /// When it first ran low: the memory in use, and where the import was
     /// (as [`Progress::item`]).
     first_low: Option<(String, i64)>,
+    /// Whether `first_low` is the memory guard's word for a failed
+    /// allocation it saw before the operation that failed said which it
+    /// was ([`Progress::low_memory_unattributed`]).
+    first_low_unattributed: bool,
+    /// A worker's operation that ran out of memory before the import first
+    /// ran low ([`Progress::name_failed_allocation`]).
+    named: Option<String>,
 }
 
 impl Progress {
@@ -284,6 +301,8 @@ impl Progress {
                 lows: 0,
                 last: String::new(),
                 first_low: None,
+                first_low_unattributed: false,
+                named: None,
             }),
             memory_tight: std::sync::atomic::AtomicBool::new(false),
             memory_share: AtomicU64::new(0),
@@ -317,15 +336,61 @@ impl Progress {
     /// volume only if the memory is still low then. `memory` says how much
     /// is in use, for the report.
     pub fn low_memory(&self, memory: &str) {
+        self.went_low(memory, false);
+    }
+
+    /// As [`Progress::low_memory`], for an allocation in the kernel that
+    /// failed without saying in which operation (the memory guard counts
+    /// the failed allocations, mitcad#132): when the operation that failed
+    /// reports it later ([`Progress::low_memory`]), the report tells its
+    /// words instead (the guard polls on a thread of its own and can see
+    /// the count, and the memory recover, before the operation has
+    /// thrown).
+    pub fn low_memory_unattributed(&self, memory: &str) {
+        self.went_low(memory, true);
+    }
+
+    fn went_low(&self, memory: &str, unattributed: bool) {
         let item = self.item.load(Ordering::Relaxed);
-        if let Ok(mut m) = self.memory.lock()
-            && !m.low.is_cancelled()
-        {
-            m.lows += 1;
-            if m.first_low.is_none() {
-                m.first_low = Some((memory.to_owned(), item));
+        let Ok(mut m) = self.memory.lock() else {
+            return;
+        };
+        // An operation names the failure the guard saw first (the guard
+        // may have seen the memory recover meanwhile: a failed allocation
+        // leaves the memory as it was).
+        if !unattributed && m.first_low_unattributed {
+            m.first_low_unattributed = false;
+            if let Some((text, _)) = m.first_low.as_mut() {
+                memory.clone_into(text);
             }
-            m.low.cancel();
+        }
+        if m.low.is_cancelled() {
+            return;
+        }
+        m.lows += 1;
+        if m.first_low.is_none() {
+            let named = if unattributed { m.named.take() } else { None };
+            m.first_low_unattributed = unattributed && named.is_none();
+            m.first_low = Some((named.unwrap_or_else(|| memory.to_owned()), item));
+        }
+        m.low.cancel();
+    }
+
+    /// A worker's operation ran out of memory (it is evaluated again on the
+    /// import's thread, which tells whether the import is low on memory):
+    /// names the failed allocation the memory guard counted, or counts
+    /// next ([`Progress::low_memory_unattributed`]), in the report.
+    pub fn name_failed_allocation(&self, memory: &str) {
+        let Ok(mut m) = self.memory.lock() else {
+            return;
+        };
+        if m.first_low_unattributed {
+            m.first_low_unattributed = false;
+            if let Some((text, _)) = m.first_low.as_mut() {
+                memory.clone_into(text);
+            }
+        } else if m.first_low.is_none() {
+            m.named = Some(memory.to_owned());
         }
     }
 
@@ -632,6 +697,9 @@ enum Before {
     Keep,
     /// Replaced by a history state (the pending items' fallback).
     State(usize),
+    /// Brought to a history state for a retry on it exactly, the bodies
+    /// that match it treated as [`Retry`] says (mitcad#283).
+    Exact(usize, Retry),
 }
 
 pub(crate) struct Importer<'a, K: Kernel> {
@@ -723,6 +791,13 @@ pub(crate) struct Importer<'a, K: Kernel> {
     /// The occurrence path each body found for such a reference is in, for
     /// the links of the features that use it ([`focus`]).
     link_paths: std::sync::Mutex<HashMap<BodyUid, Vec<OccurrenceUid>>>,
+    /// The replay's bodies that match the history state of the item's retry
+    /// on it exactly, which stay ([`retry`], mitcad#283); None before they
+    /// are found.
+    exact_pairs: Option<Vec<retry::Pair>>,
+    /// Nanoseconds the import waited for the user's answer ([`retry`]),
+    /// left out of the items' and the import's time (`learn::Clock`).
+    waited: Arc<AtomicU64>,
 }
 
 impl<'a, K: Kernel> Importer<'a, K> {
@@ -770,6 +845,8 @@ impl<'a, K: Kernel> Importer<'a, K> {
             focus_paths: HashMap::new(),
             link_paths: Default::default(),
             made_ahead: HashMap::new(),
+            exact_pairs: None,
+            waited: Arc::default(),
         }
     }
 }
@@ -865,10 +942,15 @@ pub fn import_design_with<K: ImportKernel>(
     importer.trace_states();
     importer.run();
     importer.light_bulbs();
+    importer.appearances();
     importer.timeline_notes();
     importer.learn_write();
     importer.finish_references();
-    let Importer { doc, report, .. } = importer;
+    let Importer {
+        doc, mut report, ..
+    } = importer;
+    // (Asked in this import or an earlier try of it, mitcad#283.)
+    report.retry_question = options.retry_bodies.as_ref().and_then(|c| c.asked());
     if let Some(label) = &options.undo_label {
         doc.merge_undo(depth, label);
     }
@@ -982,6 +1064,8 @@ use ahead::Adding;
 pub use ahead::{
     Helper, ImportKernel, Spawner, WORKER_STACK, WorkerJob, in_order, running_workers,
 };
+// Threads shared between reading and healing the first bodies (mitcad#245).
+pub use ahead::{Share, Taken, in_order_sharing};
 
 // The geometric check of an item's change (mitcad#138).
 mod geometric;
@@ -992,6 +1076,17 @@ mod timeline_notes;
 // Items suppressed in the file as suppressed features (mitcad#180).
 mod suppressed;
 pub use suppressed::SuppressedReport;
+
+// Sheet-metal items as native sheet features (mitcad#211).
+mod sheet;
+
+// Retries on the file's exact state keep the bodies the replay already
+// imported correctly (mitcad#283).
+mod retry;
+pub use retry::{AskUser, RetryBodies, RetryChoice};
+use retry::{Retry, Stay};
+// The .rvt import, phase 1: elements by level as meshes and boxes (mitcad#274).
+pub mod rvt;
 
 fn item_name(item: &TimelineItem) -> String {
     item.name().unwrap_or("?").to_owned()
@@ -1698,6 +1793,7 @@ impl<'a, K: ImportKernel> Importer<'a, K> {
         }
         let (results, bytes) = self.doc.clear_memory_cache();
         let states = self.oracle.release_behind();
+        refs::release_kept_edges();
         trace!(
             "memory {} ({}): {results} cached results ({} MiB) and {states} history states dropped",
             if low { "low" } else { "tight" },
@@ -1710,10 +1806,15 @@ impl<'a, K: ImportKernel> Importer<'a, K> {
             // (`mitcad-ffi`, 100 ms): the next items wait a little for it to
             // see the memory recover rather than take the file's bodies at
             // once (all the items after a combine cut short came in so,
-            // within the same millisecond).
+            // within the same millisecond). The wait is the import's own and
+            // ends by itself: it ticks the progress, so that a watchdog with
+            // a hang limit below the wait does not take it for a kernel call
+            // that does not return (an import started near its memory limit
+            // was given up as hung, again on every try).
             let until = std::time::Instant::now() + MEMORY_SETTLE;
             while p.is_memory_low() && !p.abandoned() && std::time::Instant::now() < until {
                 std::thread::sleep(std::time::Duration::from_millis(20));
+                p.tick();
             }
             trace!(
                 "memory {} after the wait ({})",
@@ -1832,6 +1933,7 @@ impl<'a, K: ImportKernel> Importer<'a, K> {
             geometric_deviation: None,
             note: None,
             component: None,
+            exact_retry: None,
         };
         self.report.items.push(report);
         let at = self.report.items.len() - 1;
@@ -2781,10 +2883,13 @@ impl<'a, K: ImportKernel> Importer<'a, K> {
     /// exactly keeps its other definitions for a later pattern or mirror
     /// ([`Alternatives`]); a suspect approximation it made itself
     /// ([`suspect`]) does not reach later items: a base feature brings
-    /// the bodies to the state exactly (the item stays, checked within
-    /// the tolerance). Left alone, the difference grows in later items or
+    /// the bodies that differ from the state by more than the geometric
+    /// tolerance to it (the item stays, checked within the matching
+    /// tolerance). Left alone, such a difference grows in later items or
     /// keeps a later state (a split, a mirror, the stored design) from
-    /// matching.
+    /// matching. The bodies within the geometric tolerance, the item's own
+    /// among them, stay as they are: they were imported correctly
+    /// (mitcad#285).
     #[allow(clippy::too_many_arguments)]
     fn after_match(
         &mut self,
@@ -2823,12 +2928,12 @@ impl<'a, K: ImportKernel> Importer<'a, K> {
         match self.fallback_to(state, None) {
             Ok(Some(uid)) => {
                 let base = self.doc.feature(uid).map(|f| f.name.clone());
-                trace!("{name}: {uid} brings the bodies to state {state} exactly");
+                trace!("{name}: {uid} brings the bodies that differ to state {state}");
                 self.base_warning(
                     uid,
                     format!(
-                        "{} brings the bodies to the file's state after {name}, whose result \
-                         differs from it by {:.1e}",
+                        "{} brings the bodies that differ to the file's state after {name}, \
+                         whose result differs from it by {:.1e}",
                         base.unwrap_or_default(),
                         d
                     ),
@@ -3122,8 +3227,14 @@ impl<'a, K: ImportKernel> Importer<'a, K> {
             && self.carried(q) > history::EXACT
         {
             // The bodies carry an earlier item's approximation, which may
-            // keep it from matching: also tried on the state's bodies.
-            befores.push(Before::State(q));
+            // keep it from matching: also tried on the state's bodies, the
+            // bodies that match it kept unless the user chose otherwise
+            // (mitcad#283).
+            befores.extend(
+                self.exact_retries(false)
+                    .into_iter()
+                    .map(|r| Before::Exact(q, r)),
+            );
         }
         let mut last_error = String::from("no definition gave the file's result");
         // The definition cut short after the longest time ([`Turns::note`]).
@@ -3156,11 +3267,39 @@ impl<'a, K: ImportKernel> Importer<'a, K> {
                         continue;
                     }
                 },
+                Before::Exact(q, retry) => {
+                    match self.bring_for_retry(at, q, &item_name(item), retry) {
+                        Ok(Some(uid)) => {
+                            fallback = Some(uid);
+                            Some(q)
+                        }
+                        // (Nothing to bring: the bodies are the state's.)
+                        Ok(None) => {
+                            self.undo_to(depth);
+                            continue;
+                        }
+                        Err(e) => {
+                            trace!("{}: {before:?} fallback failed: {e}", item_name(item));
+                            last_error = e;
+                            self.undo_to(depth);
+                            continue;
+                        }
+                    }
+                }
             };
             let from = base.map_or(0, |b| b + 1);
             // How far the bodies are from the state they stand for.
             let carried = match base {
-                Some(q) if before == Before::Keep => self.carried(q),
+                // (The bodies kept on a retry or a fallback, within the
+                // geometric tolerance, carry what they carried, mitcad#285.)
+                Some(q)
+                    if matches!(
+                        before,
+                        Before::Keep | Before::State(_) | Before::Exact(_, Retry::Keeping)
+                    ) =>
+                {
+                    self.carried(q)
+                }
                 _ => 0.0,
             };
             let candidates = match self.translate(index, item) {
@@ -3186,7 +3325,7 @@ impl<'a, K: ImportKernel> Importer<'a, K> {
             // After a fallback only the likeliest few.
             let limit = match before {
                 Before::Keep => candidates.len(),
-                Before::State(_) => candidates.len().min(4),
+                Before::State(_) | Before::Exact(..) => candidates.len().min(4),
             };
             let start = self.current_sigs();
             let start_shapes = self.body_shapes();
@@ -3342,6 +3481,9 @@ impl<'a, K: ImportKernel> Importer<'a, K> {
                             self.commit(before, base, fallback);
                             if !pending && let Some(uid) = fallback {
                                 self.exact_before(uid, &item_name(item));
+                            }
+                            if let Before::Exact(..) = before {
+                                self.retry_matched(at);
                             }
                             self.oracle.cursor = Some(r);
                             self.report.history.matched += 1;
@@ -3536,6 +3678,9 @@ impl<'a, K: ImportKernel> Importer<'a, K> {
                         }
                     }
                     self.commit(Before::State(s), Some(s), fallback);
+                    // The bodies kept within the geometric tolerance carry
+                    // what they carried (mitcad#285).
+                    carried = self.carried(s);
                 }
                 Err(e) => {
                     trace!("{name}: the state before it did not come in: {e}");
@@ -3585,12 +3730,17 @@ impl<'a, K: ImportKernel> Importer<'a, K> {
             && (carried > history::EXACT || kernel_failed)
             && self.give_up(index).is_none();
         if let (true, Some(s)) = (again, start) {
-            let depth = self.doc.undo_depth();
-            // (Bodies within the tolerance of the state's are replaced too.)
-            match self.fallback_to_as(s, None, carried <= history::EXACT) {
-                Ok(Some(uid)) => {
-                    trace!("{name}: tried again on state {s} exactly");
-                    let retried = self.try_state(
+            // The bodies that match the state stay unless the user chose
+            // otherwise (mitcad#283, `retry`); where every body is the
+            // state's (a fillet or chamfer the kernel failed on them), the
+            // choice is whether to replace them all.
+            let retried = self.retry_on_state(
+                at,
+                s,
+                &name,
+                carried <= history::EXACT,
+                &mut |this: &mut Self| {
+                    this.try_state(
                         at,
                         index,
                         item,
@@ -3599,18 +3749,15 @@ impl<'a, K: ImportKernel> Importer<'a, K> {
                         reference,
                         0.0,
                         budget / 2.0,
-                    );
-                    if retried.is_ok() {
-                        self.exact_before(uid, &name);
-                        tried = retried;
-                    } else {
-                        self.undo_to(depth);
-                    }
-                }
-                _ => {
-                    self.undo_to(depth);
-                    // (Not brought to the state: the guesses deferred are
-                    // tried on the bodies as they are after all.)
+                    )
+                },
+            );
+            match retried {
+                Some(Ok(())) => tried = Ok(()),
+                Some(Err(_)) => {}
+                // (Not brought to the state: the guesses deferred are
+                // tried on the bodies as they are after all.)
+                None => {
                     if defer {
                         tried = self.try_state(
                             at, index, item, states, &target, reference, carried, budget,
@@ -3648,10 +3795,12 @@ impl<'a, K: ImportKernel> Importer<'a, K> {
         // An operation that changed nothing in the file, which no definition
         // reproduces (each one changes the bodies or fails): the item
         // failed in the file and is skipped as a suppressed one is. Its
-        // state is the items' before it; where the replay's bodies carry an
-        // approximation of theirs, a base feature brings them to it exactly
-        // (as after an approximate extrusion), so that it does not reach
-        // the items after (sketches on its faces, extents up to them).
+        // state is the items' before it; where a body of the replay differs
+        // from it by more than the geometric tolerance, a base feature
+        // brings that body to it (as after an approximate extrusion), so
+        // that it does not reach the items after (sketches on its faces,
+        // extents up to them); the bodies within the tolerance stay
+        // (mitcad#285).
         // (Only an item whose definitions were tried: one not translated,
         // such as a base feature that brings no body, is skipped as before
         // where its state is the bodies'.)
@@ -3668,8 +3817,8 @@ impl<'a, K: ImportKernel> Importer<'a, K> {
                     self.base_warning(
                         uid,
                         format!(
-                            "{} brings the bodies to the file's state at {name}, which failed \
-                             in the file",
+                            "{} brings the bodies that differ to the file's state at {name}, \
+                             which failed in the file",
                             base.unwrap_or_default()
                         ),
                     );
@@ -3796,6 +3945,12 @@ impl<'a, K: ImportKernel> Importer<'a, K> {
                 });
         let mut guesses = match &item.detail {
             Some(Detail::Fillet(_) | Detail::Chamfer(_)) => Some(Guesses {
+                own: Some(state),
+                ..Guesses::default()
+            }),
+            // Sheet-metal corners, whose edges are found as a fillet's
+            // (mitcad#211).
+            Some(Detail::Other(m)) if sheet::is_corner(m) => Some(Guesses {
                 own: Some(state),
                 ..Guesses::default()
             }),
@@ -4525,9 +4680,11 @@ impl<'a, K: ImportKernel> Importer<'a, K> {
                 return false;
             }
         };
+        // (The bodies that matched the state within the geometric tolerance
+        // stayed, mitcad#285: the state within the matching tolerance.)
         let kernel = self.doc.kernel();
         let state = self.oracle.sigs(kernel, q);
-        if !history::bodies_distance(&state, &self.current_sigs()).is_some_and(|d| d.1) {
+        if history::bodies_distance(&state, &self.current_sigs()).is_none() {
             self.undo_to(depth);
             return false;
         }
@@ -4587,7 +4744,7 @@ impl<'a, K: ImportKernel> Importer<'a, K> {
                     self.note(p.report, Outcome::Skipped, note);
                 }
             }
-            Before::State(q) => {
+            Before::State(q) | Before::Exact(q, _) => {
                 self.oracle.cursor = base.or(Some(q));
                 self.settle_fallback(pending, fallback);
             }
@@ -4653,19 +4810,20 @@ impl<'a, K: ImportKernel> Importer<'a, K> {
 
     /// Replaces the replay's bodies that differ from history state `q` with
     /// that state's bodies, as one base feature named after the pending
-    /// item. Ok(None) when nothing differs.
+    /// item. Ok(None) when nothing differs. The bodies that match the state
+    /// within the geometric tolerance stay ([`Stay::Matching`], mitcad#285).
     fn fallback_to(&mut self, q: usize, name: Option<&str>) -> Result<Option<FeatureUid>, String> {
-        self.fallback_to_as(q, name, false)
+        self.fallback_to_as(q, name, Stay::Matching)
     }
 
-    /// [`Importer::fallback_to`]; `all`: every solid comes from the state,
-    /// also one the replay has within the tolerance (whose edges are split
-    /// otherwise).
+    /// [`Importer::fallback_to`]; `stay`: which of the replay's solids stay
+    /// ([`Stay`]; a retry on the state exactly keeps those that match it,
+    /// mitcad#283).
     fn fallback_to_as(
         &mut self,
         q: usize,
         name: Option<&str>,
-        all: bool,
+        stay: Stay<'_>,
     ) -> Result<Option<FeatureUid>, String> {
         if self.abandoned() {
             return Err(STOPPED.to_owned());
@@ -4683,7 +4841,7 @@ impl<'a, K: ImportKernel> Importer<'a, K> {
             &sheets,
             name.as_deref(),
             &format!("ASM history state {q}"),
-            all,
+            stay,
         )
     }
 
@@ -4724,7 +4882,9 @@ impl<'a, K: ImportKernel> Importer<'a, K> {
     }
 
     /// Base features, one per component that changes: bodies of `target`
-    /// not in the replay replace the replay's bodies not in `target`, in
+    /// not in the replay replace the replay's bodies not in `target` (a body
+    /// that matches one of `target` within the geometric tolerance is in
+    /// it, [`Stay::Matching`]: it was imported correctly, mitcad#285), in
     /// their components (a body in another component than the file's moves
     /// there). Returns the first. The state's `sheets` (surface bodies,
     /// which the history's matching leaves out) come in alike: those the
@@ -4737,18 +4897,18 @@ impl<'a, K: ImportKernel> Importer<'a, K> {
         name: Option<&str>,
         source: &str,
     ) -> Result<Option<FeatureUid>, String> {
-        self.replace_bodies_as(target, sheets, name, source, false)
+        self.replace_bodies_as(target, sheets, name, source, Stay::Matching)
     }
 
-    /// [`Importer::replace_bodies`]; `all`: every solid of the replay is
-    /// replaced, also one that measures as a body of `target`.
+    /// [`Importer::replace_bodies`]; `stay`: which solids of the replay stay
+    /// ([`Stay`]).
     fn replace_bodies_as(
         &mut self,
         target: &[(StoredBody<K::Shape>, Sig)],
         sheets: &[(StoredBody<K::Shape>, SheetSig)],
         name: Option<&str>,
         source: &str,
-        all: bool,
+        stay: Stay<'_>,
     ) -> Result<Option<FeatureUid>, String> {
         self.tick();
         let current: Vec<(BodyUid, Sig, ComponentUid)> = self
@@ -4760,14 +4920,31 @@ impl<'a, K: ImportKernel> Importer<'a, K> {
             })
             .collect();
         let old_lineages = self.replay_lineages(&current);
+        let matching;
+        let stay = match stay {
+            Stay::Matching => {
+                matching = self.pair_within(target, &current, source);
+                Stay::Paired(&matching)
+            }
+            other => other,
+        };
         let mut used = vec![false; current.len()];
         type Bodies<'b, S> = Vec<(&'b StoredBody<S>, &'b Sig)>;
         let mut new: BTreeMap<ComponentUid, Bodies<'_, K::Shape>> = BTreeMap::new();
-        for (body, sig) in target {
+        for (j, (body, sig)) in target.iter().enumerate() {
             let component = self.components.of_body(body.component);
-            match (0..current.len())
-                .find(|&i| !all && !used[i] && current[i].2 == component && current[i].1.same(sig))
-            {
+            let staying = match stay {
+                Stay::Same => (0..current.len())
+                    .find(|&i| !used[i] && current[i].2 == component && current[i].1.same(sig)),
+                // (Paired above.)
+                Stay::Matching | Stay::Nothing => None,
+                Stay::Paired(pairs) => pairs
+                    .iter()
+                    .find(|p| p.target == j)
+                    .and_then(|p| current.iter().position(|c| c.0 == p.body))
+                    .filter(|&i| !used[i]),
+            };
+            match staying {
                 Some(i) => used[i] = true,
                 None => new.entry(component).or_default().push((body, sig)),
             }
@@ -5228,14 +5405,19 @@ fn interruptible<K: Kernel, T>(
 }
 
 /// A kernel operation that ran out of memory (`error`, mitcad#80): the
-/// process is low on memory.
-fn out_of_memory(progress: Option<&Progress>, error: &str) {
+/// process is low on memory (`tells`), or, for a worker's operation, which
+/// is evaluated again on the import's thread, the failed allocation the
+/// memory guard counts is named by it ([`Progress::name_failed_allocation`]).
+fn out_of_memory(progress: Option<&Progress>, tells: bool, error: &str) {
     if KernelError::is_out_of_memory(error)
         && let Some(p) = progress
     {
-        p.low_memory(&format!(
-            "a geometry kernel operation ran out of memory ({error})"
-        ));
+        let memory = format!("a geometry kernel operation ran out of memory ({error})");
+        if tells {
+            p.low_memory(&memory);
+        } else {
+            p.name_failed_allocation(&memory);
+        }
     }
 }
 
@@ -5273,8 +5455,9 @@ fn add_in<K: Kernel>(
         serde_json::from_value(def).map_err(|e| format!("definition: {e}"))?;
     let monitor = adding.monitor.as_ref();
     // (A worker's definition that ran out of memory is evaluated again on
-    // the import's thread: the import is told by that one.)
-    let progress = adding.progress.filter(|_| adding.memory);
+    // the import's thread: the import is told by that one; a worker's only
+    // names a failed allocation the memory guard saw, out_of_memory.)
+    let (progress, tells) = (adding.progress, adding.memory);
     let added = match interruptible(doc, monitor, |doc| {
         doc.add_feature_to(&def, name, component)
     }) {
@@ -5285,11 +5468,11 @@ fn add_in<K: Kernel>(
                 doc.add_feature_to(&def, None, component)
             })
             .map_err(|e| e.to_string())
-            .inspect_err(|e| out_of_memory(progress, e))?
+            .inspect_err(|e| out_of_memory(progress, tells, e))?
         }
         Err(e) => {
             let e = e.to_string();
-            out_of_memory(progress, &e);
+            out_of_memory(progress, tells, &e);
             return Err(e);
         }
     };
@@ -5298,7 +5481,7 @@ fn add_in<K: Kernel>(
         Some(error) => {
             let error = error.to_owned();
             doc.undo();
-            out_of_memory(progress, &error);
+            out_of_memory(progress, tells, &error);
             Err(error)
         }
     }
@@ -5445,6 +5628,28 @@ fn add_all<K: Kernel>(
         let mut def = def.clone();
         if !uids.is_empty() {
             substitute(&mut def, &uids);
+        }
+        // A sheet face's rules take the file's rule's name, not the item's
+        // (mitcad#211).
+        if let Some(rules) = def
+            .as_object_mut()
+            .and_then(|m| m.remove("_import_name"))
+            .and_then(|v| v.as_str().map(str::to_owned))
+        {
+            match add(doc, &def, Some(&rules), adding) {
+                Ok(uid) => {
+                    uids.push(uid);
+                    continue;
+                }
+                Err(e) => {
+                    while doc.undo_depth() > depth {
+                        if doc.undo().is_none() {
+                            break;
+                        }
+                    }
+                    return Err(e);
+                }
+            }
         }
         // A thread's faces sized before it (`ops.rs`, threads) leave
         // the item's name to the thread.

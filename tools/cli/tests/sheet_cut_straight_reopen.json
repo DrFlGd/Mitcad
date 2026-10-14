@@ -1,0 +1,6 @@
+[
+  {"comment":"SPDX-License-Identifier: MIT. Reopened, the straight cut kept as an overlay rebuilds the same sheet (mitcad#242)."},
+  {"cmd":"set_marker","position":10},
+  {"expect":{"feature":"F10","status":"ok","body":"F3.b0","volume":2116.019615618801}},
+  {"expect":{"query":{"query":"sheet_state","body":"F3.b0"},"result":{"status":"valid","overlays":[{"feature":"F8","removed":60.17505543966422}]}}}
+]

@@ -3,7 +3,7 @@
 //! the property sets, the segments with their record tables, and the
 //! B-rep records with the bodies converted to the neutral B-rep model.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::path::Path;
 use std::process::ExitCode;
 
@@ -49,6 +49,8 @@ const USAGE: &str = "usage: mitcad-ipt-inspect <command> ...
                                 boundaries, by their entity flags
   history <file>                the ASM history of the B-rep records: its
                                 states and the bodies rolled back
+  state <file> <id>             the bodies' faces after a history state,
+                                with their surfaces
   write-test <out.ipt>          write the test part of mitcad_ipt::testdata
   assembly <file>               an assembly's referenced files and its
                                 occurrences: keys, flags, files,
@@ -300,6 +302,94 @@ fn cmd_dump(path: &str, name: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// Every record of a segment up to 64 KiB as u32 words (from its 4th
+/// byte, as the records of the B-rep segment's naming are laid out):
+/// references to records of the segment (bit 31) as `@<record>:<type>`,
+/// other words in decimal (naming study, mitcad#242).
+fn cmd_words(path: &str, name: &str, shift: usize) -> Result<(), String> {
+    let f = open(path)?;
+    let content = f
+        .segment_data(segment(&f, name)?)
+        .map_err(|e| e.to_string())?;
+    let records = content
+        .records
+        .map_err(|e| format!("records not split: {e}"))?;
+    let n = records.len();
+    for r in &records {
+        let b = &content.data[r.range.clone()];
+        let t = hex(&content.tables.types[r.type_index()].id);
+        if b.len() > 65536 {
+            println!("{} {}: {} bytes", r.index, &t[..8], b.len());
+            continue;
+        }
+        let mut line = format!("{} {} {}:", r.index, &t[..8], b.len());
+        let mut at = shift;
+        while at + 4 <= b.len() {
+            let v = u32::from_le_bytes([b[at], b[at + 1], b[at + 2], b[at + 3]]);
+            let i = (v & 0x7fff_ffff) as usize;
+            if v & 0x8000_0000 != 0 && i >= 1 && i <= n {
+                let tt = hex(&content.tables.types[records[i - 1].type_index()].id);
+                line.push_str(&format!(" @{}:{}", i - 1, &tt[..4]));
+            } else if v == 0xffff_ffff {
+                line.push_str(" -1");
+            } else {
+                line.push_str(&format!(" {v}"));
+            }
+            at += 4;
+        }
+        if at < b.len() {
+            line.push_str(" |");
+            for x in &b[at..] {
+                line.push_str(&format!(" {x:02x}"));
+            }
+        }
+        println!("{line}");
+    }
+    Ok(())
+}
+
+/// Every f64 within a relative 1e-9 of `value` (or a text when `value` is
+/// not a number, as UTF-16) in the records of every segment: segment,
+/// record, type and offset (sheet-metal study, mitcad#211).
+fn cmd_find(path: &str, value: &str) -> Result<(), String> {
+    let f = open(path)?;
+    let number: Option<f64> = value.parse().ok();
+    let text: Vec<u8> = value.encode_utf16().flat_map(u16::to_le_bytes).collect();
+    for s in &f.segments {
+        let Ok(content) = f.segment_data(s) else {
+            continue;
+        };
+        let Ok(records) = &content.records else {
+            continue;
+        };
+        for r in records {
+            let b = &content.data[r.range.clone()];
+            let t = hex(&content.tables.types[r.type_index()].id);
+            let hits: Vec<usize> = match number {
+                Some(v) => (0..b.len().saturating_sub(7))
+                    .filter(|&k| {
+                        let x = f64::from_le_bytes(b[k..k + 8].try_into().expect("8 bytes"));
+                        x.is_finite() && (x - v).abs() <= 1e-9 * v.abs().max(1e-12)
+                    })
+                    .collect(),
+                None => (0..b.len().saturating_sub(text.len().saturating_sub(1)))
+                    .filter(|&k| b[k..].starts_with(&text))
+                    .collect(),
+            };
+            if !hits.is_empty() {
+                println!(
+                    "{} record {} type {} ({} bytes) at {hits:?}",
+                    s.name,
+                    r.index,
+                    &t[..8],
+                    b.len()
+                );
+            }
+        }
+    }
+    Ok(())
+}
+
 fn cmd_assembly(path: &str) -> Result<(), String> {
     use mitcad_ipt::assembly;
     let f = open(path)?;
@@ -461,62 +551,7 @@ fn cmd_bodies(path: &str, verbose: bool, faces: bool) -> Result<(), String> {
                 b.check.is_clean()
             );
             if faces {
-                for (i, face) in body.faces.iter().enumerate() {
-                    let mut lo = [f64::INFINITY; 3];
-                    let mut hi = [f64::NEG_INFINITY; 3];
-                    let mut loops = Vec::new();
-                    for lp in &face.loops {
-                        let mut kinds = Vec::new();
-                        for c in lp {
-                            let e = &body.edges[c.edge];
-                            for &v in &e.vertices {
-                                let p = body.vertices[v].point;
-                                for k in 0..3 {
-                                    lo[k] = lo[k].min(p[k]);
-                                    hi[k] = hi[k].max(p[k]);
-                                }
-                            }
-                            kinds.push(format!(
-                                "e{}{}:{}[{:.4},{:.4}]v{}-{}({:.3},{:.3},{:.3})",
-                                c.edge,
-                                if c.forward { "+" } else { "-" },
-                                body.curves[e.curve].kind(),
-                                e.t[0],
-                                e.t[1],
-                                e.vertices[0],
-                                e.vertices[1],
-                                body.vertices[e.vertices[0]].point[0],
-                                body.vertices[e.vertices[0]].point[1],
-                                body.vertices[e.vertices[0]].point[2]
-                            ));
-                        }
-                        for c in lp {
-                            let curve = &body.curves[body.edges[c.edge].curve];
-                            if matches!(curve, mitcad_f3d::brep::Curve::Ellipse { .. }) {
-                                kinds.push(format!(
-                                    "
-        e{} {curve:?}",
-                                    c.edge
-                                ));
-                            }
-                        }
-                        loops.push(kinds.join(" "));
-                    }
-                    println!(
-                        "    face {i} {}{} box [{:.3} {:.3} {:.3}] [{:.3} {:.3} {:.3}]",
-                        body.surfaces[face.surface].kind(),
-                        if face.reversed { " reversed" } else { "" },
-                        lo[0],
-                        lo[1],
-                        lo[2],
-                        hi[0],
-                        hi[1],
-                        hi[2]
-                    );
-                    for l in loops {
-                        println!("      loop {l}");
-                    }
-                }
+                print_faces(body, false);
             }
             if verbose {
                 let points: usize = body.faces.iter().map(|f| f.point_loops.len()).sum();
@@ -528,6 +563,112 @@ fn cmd_bodies(path: &str, verbose: bool, faces: bool) -> Result<(), String> {
                     println!("    check: {m}");
                 }
             }
+        }
+    }
+    Ok(())
+}
+
+/// Each face of a body: its surface (with its geometry when `surfaces`),
+/// box and loops (each edge's curve, parameter range, vertices and first
+/// point).
+fn print_faces(body: &mitcad_f3d::brep::Body, surfaces: bool) {
+    for (i, face) in body.faces.iter().enumerate() {
+        let mut lo = [f64::INFINITY; 3];
+        let mut hi = [f64::NEG_INFINITY; 3];
+        let mut loops = Vec::new();
+        for lp in &face.loops {
+            let mut kinds = Vec::new();
+            for c in lp {
+                let e = &body.edges[c.edge];
+                for &v in &e.vertices {
+                    let p = body.vertices[v].point;
+                    for k in 0..3 {
+                        lo[k] = lo[k].min(p[k]);
+                        hi[k] = hi[k].max(p[k]);
+                    }
+                }
+                kinds.push(format!(
+                    "e{}{}:{}[{:.4},{:.4}]v{}-{}({:.3},{:.3},{:.3})",
+                    c.edge,
+                    if c.forward { "+" } else { "-" },
+                    body.curves[e.curve].kind(),
+                    e.t[0],
+                    e.t[1],
+                    e.vertices[0],
+                    e.vertices[1],
+                    body.vertices[e.vertices[0]].point[0],
+                    body.vertices[e.vertices[0]].point[1],
+                    body.vertices[e.vertices[0]].point[2]
+                ));
+            }
+            for c in lp {
+                let curve = &body.curves[body.edges[c.edge].curve];
+                if matches!(curve, mitcad_f3d::brep::Curve::Ellipse { .. }) {
+                    kinds.push(format!(
+                        "
+        e{} {curve:?}",
+                        c.edge
+                    ));
+                }
+            }
+            loops.push(kinds.join(" "));
+        }
+        let surface = &body.surfaces[face.surface];
+        println!(
+            "    face {i} {}{} box [{:.3} {:.3} {:.3}] [{:.3} {:.3} {:.3}]",
+            surface.kind(),
+            if face.reversed { " reversed" } else { "" },
+            lo[0],
+            lo[1],
+            lo[2],
+            hi[0],
+            hi[1],
+            hi[2]
+        );
+        if surfaces && !matches!(surface, mitcad_f3d::brep::Surface::BSpline(_)) {
+            println!("      surface {surface:?}");
+        }
+        for l in loops {
+            println!("      loop {l}");
+        }
+    }
+}
+
+/// The faces of the top-level bodies as they were after an ASM history
+/// state (the history rolled back to it), with their surfaces.
+fn cmd_state_faces(path: &str, state: &str) -> Result<(), String> {
+    use mitcad_f3d::asm::AsmFile;
+    use mitcad_f3d::asm::history::History;
+    let f = open(path)?;
+    let state: i64 = state.parse().map_err(|_| format!("bad state {state}"))?;
+    let options = mitcad_ipt::convert_options();
+    for record in f.brep_records().map_err(|e| e.to_string())? {
+        let file = AsmFile::parse(&record.asm).map_err(|e| e.to_string())?;
+        let Ok(Some(history)) = History::parse(&file) else {
+            println!("{}: no history", record.place());
+            continue;
+        };
+        let steps = mitcad_ipt::naming::steps_to(&history, state)
+            .ok_or_else(|| format!("no state {state}"))?;
+        let view = history.view(steps);
+        let deleted = mitcad_ipt::deleted_bodies(&history, &file);
+        let bodies = mitcad_f3d::convert::body_records(&file)
+            .into_iter()
+            .filter(|(_, top)| *top)
+            .map(|(b, _)| (b, None))
+            .chain(deleted.iter().map(|&(c, j)| (c, Some(j))));
+        for (body, deleted_by) in bodies {
+            if deleted_by.is_some_and(|j| steps <= j) || view.get(&body) == Some(&None) {
+                continue;
+            }
+            let b = mitcad_f3d::convert::convert_body_at(&file, body, &options, Some(&view));
+            println!(
+                "{} body {body} after state {state} ({steps} back): {} faces, {} edges",
+                record.place(),
+                b.body.faces.len(),
+                b.body.edges.len()
+            );
+            print_faces(&b.body, true);
         }
     }
     Ok(())
@@ -735,21 +876,38 @@ fn cmd_slots(path: &str, kind: &str) -> Result<(), String> {
         .map_err(|e| e.to_string())?
         .ok_or("no definitions segment")?;
     let params = mitcad_ipt::params::Parameters::read(&dc);
+    let labels = dc.labels();
+    // One record (a number), or the timeline's items of a kind; a
+    // sheet-metal group's own features (its label's children) after it.
+    let mut records: Vec<(String, usize)> = Vec::new();
+    if let Ok(record) = kind.parse::<usize>() {
+        records.push((format!("record {record}"), record));
+    }
     for item in design
         .items
         .iter()
         .filter(|i| kind == "*" || i.object_type == kind)
     {
+        records.push((format!("{} {}", item.index, item.name), item.record));
+        if !dc.is(item.record, &mitcad_ipt::design::FEATURE)
+            && let Some(label) = labels.get(&item.record)
+        {
+            for &child in &label.children {
+                if child != item.record && dc.is(child, &mitcad_ipt::design::FEATURE) {
+                    let name = labels.get(&child).map_or("", |l| l.name.as_str());
+                    records.push((format!("  part {name}"), child));
+                }
+            }
+        }
+    }
+    for (title, record) in records {
         println!(
-            "{} {} (record {}, {})",
-            item.index,
-            item.name,
-            item.record,
-            dc.type_of(item.record)
+            "{title} (record {record}, {})",
+            dc.type_of(record)
                 .map(mitcad_ipt::dc::type_text)
                 .unwrap_or_default()
         );
-        let mut r = dc.body(item.record);
+        let mut r = dc.body(record);
         let slots = (|| -> mitcad_ipt::dc::Result<Vec<u32>> {
             r.i32()?;
             r.u32()?;
@@ -793,7 +951,7 @@ fn cmd_slots(path: &str, kind: &str) -> Result<(), String> {
     Ok(())
 }
 
-fn cmd_profile(path: &str, n: &str) -> Result<(), String> {
+fn cmd_profile(path: &str, n: &str, verbose: bool) -> Result<(), String> {
     let f = open(path)?;
     let dc = f
         .definitions()
@@ -822,6 +980,21 @@ fn cmd_profile(path: &str, n: &str) -> Result<(), String> {
                     l.len(),
                     l[0]
                 );
+                if verbose {
+                    // Where the direction changes (corners), mm.
+                    for (i, p) in l.iter().enumerate() {
+                        let a = l[(i + l.len() - 1) % l.len()];
+                        let b = l[(i + 1) % l.len()];
+                        let u: Vec<f64> = (0..3).map(|k| p[k] - a[k]).collect();
+                        let v: Vec<f64> = (0..3).map(|k| b[k] - p[k]).collect();
+                        let dot: f64 = (0..3).map(|k| u[k] * v[k]).sum();
+                        let nu = u.iter().map(|x| x * x).sum::<f64>().sqrt();
+                        let nv = v.iter().map(|x| x * x).sum::<f64>().sqrt();
+                        if nu * nv > 0.0 && dot / (nu * nv) < 0.999 {
+                            println!("  corner {i}: {p:.4?}");
+                        }
+                    }
+                }
             }
         }
         None => println!("no loops"),
@@ -1066,6 +1239,274 @@ fn cmd_typed(path: &str, prefix: &str) -> Result<(), String> {
 
 /// A definitions record: its type, bytes, and the u32 at each offset that
 /// look like flagged references, with their records' types.
+/// The topological names of the edges and faces each timeline item (and a
+/// sheet-metal group's parts) selects: per slot, the items under it with
+/// their naming table entries as nested names (mitcad#242).
+fn cmd_names(path: &str, depth: usize) -> Result<(), String> {
+    let f = open(path)?;
+    let dc = f
+        .definitions()
+        .map_err(|e| e.to_string())?
+        .ok_or("no definitions segment")?;
+    let design = mitcad_ipt::design::read(&f, path)
+        .map_err(|e| e.to_string())?
+        .ok_or("no definitions segment")?;
+    let naming = mitcad_ipt::naming::Naming::new(&dc);
+    let labels = dc.labels();
+    let history = mitcad_ipt::design::history_states(&dc);
+    // The items under a record, through references (four levels).
+    let items_under = |root: usize| -> Vec<usize> {
+        let mut seen = std::collections::HashSet::new();
+        let mut out = Vec::new();
+        let mut stack = vec![(root, 0)];
+        while let Some((r, d)) = stack.pop() {
+            if !seen.insert(r) || d > 4 {
+                continue;
+            }
+            if dc.is(r, &mitcad_ipt::naming::ITEM) {
+                out.push(r);
+                continue;
+            }
+            let b = dc.bytes(r);
+            let mut at = dc.header_len();
+            while at + 4 <= b.len() {
+                let v = u32::from_le_bytes([b[at], b[at + 1], b[at + 2], b[at + 3]]);
+                match mitcad_ipt::dc::reference(v) {
+                    Some(c) if v & 0x8000_0000 != 0 && c < dc.len() => {
+                        stack.push((c, d + 1));
+                        at += 4;
+                    }
+                    _ => at += 1,
+                }
+            }
+        }
+        out.sort_unstable();
+        out
+    };
+    for item in &design.items {
+        let mut records = vec![(item.name.clone(), item.record)];
+        if let Some(label) = labels.get(&item.record) {
+            for &child in &label.children {
+                if child != item.record && dc.is(child, &mitcad_ipt::design::FEATURE) {
+                    let name = labels.get(&child).map_or("", |l| l.name.as_str());
+                    records.push((format!("  {name}"), child));
+                }
+            }
+        }
+        for (title, record) in records {
+            let mut r = dc.body(record);
+            let Ok(slots) = (|| -> mitcad_ipt::dc::Result<Vec<u32>> {
+                r.i32()?;
+                r.u32()?;
+                Ok(r.list()?.1)
+            })() else {
+                continue;
+            };
+            let mut header = false;
+            for (k, v) in slots.iter().enumerate() {
+                let Some(s) = mitcad_ipt::dc::reference(*v).filter(|&s| s < dc.len()) else {
+                    continue;
+                };
+                for it in items_under(s) {
+                    if !header {
+                        let states = dc
+                            .header(record)
+                            .and_then(|h| history.get(&h.node).cloned())
+                            .unwrap_or_default();
+                        println!("{} {title} (record {record}) states {states:?}", item.index);
+                        header = true;
+                    }
+                    match naming.item_entry(it) {
+                        Some(e) => println!("  [{k:>2}] item {it}: {}", naming.text(e, depth)),
+                        None => println!("  [{k:>2}] item {it}: no entry"),
+                    }
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+/// For each feature that names edges or faces: the naming tags in its
+/// names and the naming attributes of the same features on the faces and
+/// edges of the state before it (naming study, mitcad#242).
+fn cmd_study(path: &str) -> Result<(), String> {
+    let f = open(path)?;
+    let dc = f
+        .definitions()
+        .map_err(|e| e.to_string())?
+        .ok_or("no definitions segment")?;
+    let naming = mitcad_ipt::naming::Naming::new(&dc);
+    let history = mitcad_ipt::design::history_states(&dc);
+    let records = f.brep_records().map_err(|e| e.to_string())?;
+    let Some(record) = records.first() else {
+        return Err("no B-rep record".to_owned());
+    };
+    let file = mitcad_f3d::asm::AsmFile::parse(&record.asm).map_err(|e| e.to_string())?;
+    let asm_history = mitcad_f3d::asm::history::History::parse(&file).map_err(|e| e.0)?;
+    let mut cache: HashMap<i64, mitcad_ipt::naming::BrepState> = HashMap::new();
+    let design = mitcad_ipt::design::read(&f, path)
+        .map_err(|e| e.to_string())?
+        .ok_or("no definitions segment")?;
+    let labels = dc.labels();
+    // The timeline's features and a sheet-metal group's parts, with the
+    // state before them, and the items under their slots.
+    let mut work: Vec<(usize, usize, i64)> = Vec::new();
+    for item in &design.items {
+        let mut records = vec![item.record];
+        if let Some(label) = labels.get(&item.record) {
+            records.extend(
+                label
+                    .children
+                    .iter()
+                    .copied()
+                    .filter(|&c| c != item.record && dc.is(c, &mitcad_ipt::design::FEATURE)),
+            );
+        }
+        for record in records {
+            let Some(before) = dc
+                .header(record)
+                .and_then(|h| history.get(&h.node))
+                .and_then(|s| s.first().copied())
+            else {
+                continue;
+            };
+            for it in naming.items_of(record) {
+                if !work.iter().any(|w| w.0 == it && w.1 == record) {
+                    work.push((it, record, before));
+                }
+            }
+        }
+    }
+    for (item, owner, before) in work {
+        let Some(entry) = naming.item_entry(item) else {
+            println!("item {item} of record {owner}: no entry");
+            continue;
+        };
+        let state = cache.entry(before).or_insert_with(|| {
+            let steps = asm_history
+                .as_ref()
+                .and_then(|h| mitcad_ipt::naming::steps_to(h, before))
+                .unwrap_or(0);
+            mitcad_ipt::naming::BrepState::read(&file, asm_history.as_ref(), steps)
+        });
+        let name = labels.get(&owner).map_or("", |l| l.name.as_str());
+        print!("item {item} of {name} (record {owner}), state {before}: ");
+        // The edges the file marks as matched by this reference (an
+        // attribute `matched` of the reference's node).
+        let value = naming.item_value(item).map(i64::from);
+        let marked: Vec<usize> = state
+            .edges
+            .iter()
+            .filter(|(_, e)| {
+                e.tags.iter().any(|t| {
+                    t.kind() == "matched"
+                        && Some(t.features.as_slice()) == value.as_ref().map(std::slice::from_ref)
+                })
+            })
+            .map(|(k, _)| *k)
+            .collect();
+        match naming.resolve_edge(entry, state) {
+            Ok(e) => {
+                let edge = &state.edges[&e];
+                let mm = |p: [f64; 3]| p.map(|x| (x * 10_000.0).round() / 1000.0);
+                let check = match marked.as_slice() {
+                    [] => "unmarked",
+                    [m] if *m == e => "marked",
+                    _ => "MARKED ELSEWHERE",
+                };
+                println!(
+                    "edge {e} {:?} {:?} {check}",
+                    mm(edge.ends[0]),
+                    mm(edge.ends[1])
+                );
+            }
+            Err(why) => {
+                println!("NOT RESOLVED: {why}: {}", naming.text(entry, 1));
+            }
+        }
+    }
+    Ok(())
+}
+
+/// The faces of the bodies at an ASM history state (its id) with their
+/// naming attributes, and the edges with theirs (mitcad#242).
+fn cmd_brep_names(path: &str, state: &str) -> Result<(), String> {
+    let f = open(path)?;
+    let records = f.brep_records().map_err(|e| e.to_string())?;
+    let state: i64 = state.parse().map_err(|_| format!("bad state {state}"))?;
+    for record in &records {
+        let file = mitcad_f3d::asm::AsmFile::parse(&record.asm).map_err(|e| e.to_string())?;
+        let history = mitcad_f3d::asm::history::History::parse(&file).map_err(|e| e.0)?;
+        let steps = history
+            .as_ref()
+            .and_then(|h| mitcad_ipt::naming::steps_to(h, state))
+            .unwrap_or(0);
+        let s = mitcad_ipt::naming::BrepState::read(&file, history.as_ref(), steps);
+        println!(
+            "{}: {} steps back, {} faces, {} edges",
+            record.place(),
+            steps,
+            s.faces.len(),
+            s.edges.len()
+        );
+        let text = |tags: &[mitcad_ipt::naming::Tag]| {
+            tags.iter()
+                .map(|t| {
+                    format!(
+                        "{}{:?}{:?}",
+                        t.class.trim_start_matches("NMx_"),
+                        t.features,
+                        t.fields
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join(" ")
+        };
+        for face in &s.faces {
+            println!(
+                "face {} edges {:?}: {}",
+                face.entity,
+                face.edges,
+                text(&face.tags)
+            );
+        }
+        let mut edges: Vec<_> = s.edges.iter().collect();
+        edges.sort_by_key(|e| *e.0);
+        for (e, edge) in edges {
+            let mm = |p: [f64; 3]| p.map(|x| (x * 10_000.0).round() / 1000.0);
+            println!(
+                "edge {e} {:?} {:?}: {}",
+                mm(edge.ends[0]),
+                mm(edge.ends[1]),
+                text(&edge.tags)
+            );
+        }
+    }
+    Ok(())
+}
+
+/// Every definitions record's index, type, node number and label name
+/// (naming study, mitcad#242).
+fn cmd_nodes(path: &str) -> Result<(), String> {
+    let f = open(path)?;
+    let dc = f
+        .definitions()
+        .map_err(|e| e.to_string())?
+        .ok_or("no definitions segment")?;
+    let labels = dc.labels();
+    for i in 0..dc.len() {
+        let t = dc
+            .type_of(i)
+            .map(mitcad_ipt::dc::type_text)
+            .unwrap_or_default();
+        let node = dc.header(i).map_or(-1, |h| i64::from(h.node));
+        let name = labels.get(&i).map_or("", |l| l.name.as_str());
+        println!("{i} {} {node} {name}", &t[..8]);
+    }
+    Ok(())
+}
+
 fn cmd_show(path: &str, n: &str) -> Result<(), String> {
     let f = open(path)?;
     let dc = f
@@ -1094,6 +1535,76 @@ fn cmd_show(path: &str, n: &str) -> Result<(), String> {
             }
             _ => at += 1,
         }
+    }
+    Ok(())
+}
+
+/// A definitions record and, `depth` levels deep, the records its body
+/// refers to (not those of its header), each once: index, type, label name
+/// or parameter, and the bytes after the header (sheet-metal study,
+/// mitcad#211).
+fn cmd_tree(path: &str, n: &str, depth: usize) -> Result<(), String> {
+    let f = open(path)?;
+    let dc = f
+        .definitions()
+        .map_err(|e| e.to_string())?
+        .ok_or("no definitions segment")?;
+    let root: usize = n.parse().map_err(|_| format!("bad record {n}"))?;
+    let labels = dc.labels();
+    let params = mitcad_ipt::params::Parameters::read(&dc);
+    let mut seen = std::collections::HashSet::new();
+    let mut stack = vec![(root, 0usize, 0usize)];
+    while let Some((i, level, at_parent)) = stack.pop() {
+        let t = dc
+            .type_of(i)
+            .map(mitcad_ipt::dc::type_text)
+            .unwrap_or_default();
+        let b = dc.bytes(i);
+        let what = if let Some(p) = params.by_record(i) {
+            format!(" parameter {} = {}", p.name, p.value)
+        } else if let Some(l) = labels.get(&i) {
+            format!(" \"{}\"", l.name)
+        } else {
+            String::new()
+        };
+        let repeated = !seen.insert(i);
+        let body = &b[dc.header_len().min(b.len())..];
+        let shown = &body[..body.len().min(160)];
+        println!(
+            "{:indent$}@{at_parent} {i} {}{what} ({} bytes){}: {}",
+            "",
+            &t[..t.len().min(8)],
+            b.len(),
+            if repeated { " (again)" } else { "" },
+            hex(shown),
+            indent = level * 2
+        );
+        if repeated || level >= depth {
+            continue;
+        }
+        let skip = |r: usize| {
+            dc.type_of(r).is_some_and(|ty| {
+                let ty = mitcad_ipt::dc::type_text(ty);
+                ty.starts_with("2ba4482b")
+                    || ty.starts_with("634d8790")
+                    || ty.starts_with("164d8790")
+            })
+        };
+        let mut children = Vec::new();
+        let mut at = dc.header_len();
+        while at + 4 <= b.len() {
+            let v = u32::from_le_bytes([b[at], b[at + 1], b[at + 2], b[at + 3]]);
+            match mitcad_ipt::dc::reference(v) {
+                Some(r) if v & 0x8000_0000 != 0 && r < dc.len() => {
+                    if !skip(r) {
+                        children.push((r, level + 1, at - dc.header_len()));
+                    }
+                    at += 4;
+                }
+                _ => at += 1,
+            }
+        }
+        stack.extend(children.into_iter().rev());
     }
     Ok(())
 }
@@ -1393,6 +1904,8 @@ fn run(args: &[String]) -> Result<(), String> {
         ["stream", file, stream, "--raw"] => cmd_stream(file, stream, true),
         ["record", file, segment, n, "--raw"] => cmd_raw_record(file, segment, n),
         ["dump", file, segment] => cmd_dump(file, segment),
+        ["words", file, segment] => cmd_words(file, segment, 0),
+        ["words", file, segment, shift] => cmd_words(file, segment, parse_number(shift)?),
         ["labels", file, segment] => cmd_labels(file, segment),
         ["assembly", file] => cmd_assembly(file),
         ["bodies", file] => cmd_bodies(file, false, false),
@@ -1400,18 +1913,44 @@ fn run(args: &[String]) -> Result<(), String> {
         ["bodies", file, "-v"] => cmd_bodies(file, true, false),
         ["result", file] => cmd_result(file),
         ["history", file] => cmd_history(file),
+        ["state", file, state] => cmd_state_faces(file, state),
         ["parameters", file] => cmd_parameters(file),
         ["typed", file, prefix] => cmd_typed(file, prefix),
         ["show", file, n] => cmd_show(file, n),
+        ["nodes", file] => cmd_nodes(file),
+        ["names", file] => cmd_names(file, 3),
+        ["brepnames", file, state] => cmd_brep_names(file, state),
+        ["study", file] => cmd_study(file),
+        ["entry", file, n] => {
+            let f = open(file)?;
+            let dc = f
+                .definitions()
+                .map_err(|e| e.to_string())?
+                .ok_or("no definitions segment")?;
+            let naming = mitcad_ipt::naming::Naming::new(&dc);
+            let n = parse_number(n)? as u32;
+            let r = *naming.entries.get(&n).ok_or("no such entry")?;
+            println!("entry {n}: record {r}: {}", naming.text(n, 1));
+            cmd_show(file, &r.to_string())
+        }
+        ["names", file, depth] => cmd_names(file, parse_number(depth)?),
         ["prefix", file] => cmd_prefix(file),
         ["flags", file] => cmd_flags(file, false),
         ["flags", file, "-v"] => cmd_flags(file, true),
         ["constraints", file, prefix] => cmd_constraints(file, prefix),
         ["design", file] => cmd_design(file, false),
-        ["profile", file, n] => cmd_profile(file, n),
+        ["profile", file, n] => cmd_profile(file, n, false),
+        ["profile", file, n, "-v"] => cmd_profile(file, n, true),
         ["design", file, "--json"] => cmd_design(file, true),
         ["slots", file, kind] => cmd_slots(file, kind),
         ["refs", file, n] => cmd_refs(file, n),
+        ["find", file, value] => cmd_find(file, value),
+        ["tree", file, n] => cmd_tree(file, n, 3),
+        ["tree", file, n, depth] => cmd_tree(
+            file,
+            n,
+            depth.parse().map_err(|_| format!("bad depth {depth}"))?,
+        ),
         ["expr", file, n] => cmd_expr(file, n),
         ["owners", file] => cmd_owners(file),
         ["planedefs", file] => cmd_planedefs(file),

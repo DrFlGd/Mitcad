@@ -25,6 +25,9 @@
 //   test_exchange --write-iam <dir>     writes a small project with .iam
 //                                       assemblies and parts into <dir>
 //                                       (CLI tests)
+//   test_exchange --write-rvt <file>    writes the .rvt reader's small test
+//                                       project (--write-rfa: family; CLI
+//                                       and UI tests)
 //   test_exchange --corpus [dir]        imports every .f3d/.f3z under dir
 //                                       (default MITCAD_F3D_CORPUS, else
 //                                       ~/f3d-corpus) bodies only; exits 77
@@ -737,6 +740,36 @@ int corpus(const fs::path& dir, int every, double min_valid, const mitcad::runs:
 
 } // namespace
 
+// The .rvt import (mitcad#274): the reader's test project (two levels, a
+// column of a family type at its transform, a wall, a surface's saved
+// mesh) as one component per level, and its test family's metadata.
+void test_rvt_import(const fs::path& dir) {
+  const fs::path rvt = dir / "project.rvt";
+  const fs::path rfa = dir / "family.rfa";
+  mitcad::rvt_write_test_file(rvt.string(), false);
+  mitcad::rvt_write_test_file(rfa.string(), true);
+  auto document = mitcad::new_document();
+  const std::string text(document->import_rvt(rvt.string(), R"({"text": true})"));
+  CHECK(contains(text, "project.rvt (rvt), saved by release 2024"));
+  CHECK(contains(text, "Imported 3 bodies: 1 saved meshes, 1 boxes at a family type's transform, 1 boxes"));
+  CHECK(contains(text, "  Ground: 2 bodies (1 meshes, 1 boxes) at 0.0 mm"));
+  CHECK(contains(text, "  Upper: 1 bodies (0 meshes, 1 boxes) at 3048.0 mm"));
+  // The wall's box, 10 x 0.5 x 10 ft; the column's type box at its
+  // transform, 2 x 2 x 9 ft.
+  const double cubic_foot = 304.8 * 304.8 * 304.8;
+  CHECK(near(volume(*document, "F1.b0"), 50.0 * cubic_foot, 1e-6));
+  CHECK(near(volume(*document, "F2.b0"), 36.0 * cubic_foot, 1e-6));
+  auto command = mitcad::new_document();
+  const std::string result(command->command(R"({"cmd": "import_rvt", "path": )" + json_path(rvt) + "}"));
+  CHECK(contains(result, R"("bodies":3)"));
+  auto family = mitcad::new_document();
+  const std::string metadata(family->import_rvt(rfa.string(), R"({"text": true})"));
+  CHECK(contains(metadata, "family.rfa (rfa), saved by release 2020"));
+  CHECK(contains(metadata, "family: Test Family & Co"));
+  CHECK(throws_with([&] { family->import_rvt((dir / "none.rvt").string(), "{}"); }, "none.rvt"));
+  CHECK(throws_with([&] { family->import_rvt(rvt.string(), R"({"timeline": true})"); }, "unknown field"));
+}
+
 int main(int argc, char** argv) {
   mitcad::runs::no_core_dumps();
   mitcad::io::silence_occt_messages();
@@ -764,6 +797,10 @@ int main(int argc, char** argv) {
     }
     if (args.size() == 2 && args[0] == "--write-iam") {
       mitcad::bridge::ipt_write_test_assembly(args[1]);
+      return 0;
+    }
+    if (args.size() == 2 && (args[0] == "--write-rvt" || args[0] == "--write-rfa")) {
+      mitcad::rvt_write_test_file(args[1], args[0] == "--write-rfa");
       return 0;
     }
     if (args.size() == 3 && args[0] == "--corpus-file") {
@@ -808,6 +845,7 @@ int main(int argc, char** argv) {
     test_3mf_export(dir);
     test_usdz_export(dir);
     test_ipt_import(dir);
+    test_rvt_import(dir);
   } catch (const std::exception& e) {
     std::fprintf(stderr, "test_exchange: %s\n", e.what());
     return 2;

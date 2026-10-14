@@ -275,6 +275,9 @@ fn current_names(reference: &Value) -> Value {
 /// the dumps of the reference models instead (`design_models.rs`), and an
 /// extrusion's direction vector.
 const DECODER_ONLY: &[&str] = &[
+    // The appearances and materials (mitcad#228), which the reference
+    // decoder did not read.
+    "._f3d.appearance",
     // The external documents of mitcad#196 (their keys, GUIDs and versions,
     // and the occurrences' GUIDs that name levels inside them) and a sweep's
     // orientation (the controlled variant models), which the reference

@@ -267,6 +267,7 @@ fn direction_cycle_conflict_through_several_lines() {
             a: b,
             b: c,
             value: PI / 6.0,
+            supplement: None,
         })
         .unwrap();
     solve_ok(&mut s);

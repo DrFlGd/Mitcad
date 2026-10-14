@@ -832,3 +832,62 @@ fn of_a_spline_and_a_line_along_each_other_the_spline_bounds_the_region() {
         "{keys:?}"
     );
 }
+
+#[test]
+fn an_angle_dimensions_side_is_the_sector_of_a_point() {
+    use super::geometry::{angle_on_side, angle_side_at, angle_side_for};
+    // A trapezoid's lower left corner (mitcad#296): the bottom from the
+    // corner to the right, the side from up right down to the corner.
+    let bottom = ([0.0, 0.0], [40.0, 0.0]);
+    let side = ([10.0, 20.0], [0.0, 0.0]);
+    let inner = 2.0f64.atan();
+    // Inside the corner: the bottom's direction and the side's reversed.
+    assert_eq!(angle_side_at(bottom, side, [5.0, 3.0]), Some([false, true]));
+    assert!((angle_on_side(bottom, side, [false, true]) - inner).abs() < 1e-12);
+    // The other three sectors.
+    assert_eq!(angle_side_at(bottom, side, [-5.0, 3.0]), Some([true, true]));
+    assert_eq!(
+        angle_side_at(bottom, side, [-5.0, -3.0]),
+        Some([true, false])
+    );
+    assert_eq!(
+        angle_side_at(bottom, side, [5.0, -3.0]),
+        Some([false, false])
+    );
+    assert!((angle_on_side(bottom, side, [false, false]) - (PI - inner)).abs() < 1e-12);
+    assert_eq!(
+        angle_side_at(bottom, ([0.0, 1.0], [9.0, 1.0]), [1.0, 1.0]),
+        None
+    );
+    // A value and where it is shown: the sector there when its angle is
+    // the value, else the neighbour nearer to it.
+    assert_eq!(
+        angle_side_for(bottom, side, inner, Some([5.0, 3.0]), 1e-6),
+        Some([false, true])
+    );
+    assert_eq!(
+        angle_side_for(bottom, side, PI - inner, Some([5.0, 8.0]), 1e-6),
+        Some([true, true])
+    );
+    assert_eq!(
+        angle_side_for(bottom, side, PI - inner, None, 1e-6),
+        Some([false, false])
+    );
+    assert_eq!(
+        angle_side_for(bottom, side, 0.5, Some([5.0, 3.0]), 1e-6),
+        None
+    );
+    // Stored without a side (before mitcad#296): none, and none written.
+    let stored: DimensionKind =
+        serde_json::from_value(serde_json::json!({"type": "angle", "a": "c1", "b": "c2"})).unwrap();
+    assert_eq!(stored.angle_side(), None);
+    assert_eq!(
+        serde_json::to_value(&stored).unwrap(),
+        serde_json::json!({"type": "angle", "a": "c1", "b": "c2"})
+    );
+    let given: DimensionKind = serde_json::from_value(
+        serde_json::json!({"type": "angle", "a": "c1", "b": "c2", "reverse_b": true}),
+    )
+    .unwrap();
+    assert_eq!(given.angle_side(), Some([false, true]));
+}

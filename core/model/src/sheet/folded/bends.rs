@@ -30,13 +30,21 @@ struct BendMetrics {
     allowance: f64,
     inner: f64,
     outer: f64,
+    /// How far the bend's outer surface reaches beyond its stationary
+    /// tangent line, along the panel and against the wall's direction:
+    /// `(r+t) sin(min(|angle|, 90 degrees))` (mitcad#242).
+    extent: f64,
 }
 impl BendMetrics {
+    /// A bend of up to 180 degrees (a hem, mitcad#242). The virtual sharps
+    /// (and so the inner and outer setbacks) are not defined at 180
+    /// degrees; [`BendMetrics::setback`] refuses them there.
     fn new(angle: f64, radius: Option<f64>, rules: &SheetRulesDef<f64>) -> Result<Self, String> {
         let radius = radius.unwrap_or(rules.bend_radius);
-        if !angle.is_finite() || angle.abs() <= 1e-9 || angle.abs() >= std::f64::consts::PI - 1e-9 {
-            return Err("sheet bend angle must be nonzero and less than 180 degrees".into());
+        if !angle.is_finite() || angle.abs() <= 1e-9 || angle.abs() > std::f64::consts::PI + 1e-12 {
+            return Err("sheet bend angle must be nonzero and at most 180 degrees".into());
         }
+        let angle = angle.clamp(-std::f64::consts::PI, std::f64::consts::PI);
         if !radius.is_finite() || radius <= TOLERANCE {
             return Err("sheet inside radius must be positive".into());
         }
@@ -51,14 +59,28 @@ impl BendMetrics {
             allowance: angle.abs() * (radius + k * rules.thickness),
             inner: radius * setback,
             outer: (radius + rules.thickness) * setback,
+            extent: (radius + rules.thickness) * angle.abs().min(std::f64::consts::FRAC_PI_2).sin(),
         })
     }
-    fn offset(&self, position: SheetPosition) -> f64 {
-        match position {
-            SheetPosition::Inside => -self.outer,
-            SheetPosition::Outside => -self.inner,
-            SheetPosition::BendLine => -self.allowance / 2.0,
+    /// The inner or outer setback, refused where the virtual sharp does
+    /// not exist (a bend of 180 degrees).
+    fn setback(&self, value: f64, what: &str) -> Result<f64, String> {
+        if self.angle.abs() >= std::f64::consts::PI - 1e-9 || !value.is_finite() {
+            return Err(format!(
+                "a 180-degree bend has no {what} virtual sharp; measure it from the tangent or \
+                 the outer tangent"
+            ));
         }
+        Ok(value)
+    }
+    fn offset(&self, position: SheetPosition) -> Result<f64, String> {
+        Ok(match position {
+            SheetPosition::Inside => -self.setback(self.outer, "outer")?,
+            SheetPosition::Outside => -self.setback(self.inner, "inner")?,
+            SheetPosition::BendLine => -self.allowance / 2.0,
+            SheetPosition::Edge => 0.0,
+            SheetPosition::SideTangent => -self.extent,
+        })
     }
 }
 
@@ -128,6 +150,72 @@ fn extent(patch: &SheetPatch, map: Isometry2) -> Result<([f64; 2], [f64; 2]), St
 
 fn margin(min: [f64; 2], max: [f64; 2]) -> f64 {
     1.0 + 10.0 * ((max[0] - min[0]).abs() + (max[1] - min[1]).abs())
+}
+
+/// The boundary edges of a chart.
+fn edges_of(patch: &SheetPatch) -> impl Iterator<Item = &MaterialEdge> {
+    patch
+        .regions
+        .iter()
+        .flat_map(|r| &r.loops)
+        .flat_map(|l| &l.edges)
+}
+
+/// A bend whose seam with a panel a flange's trim reaches: which end of
+/// the trim's axial interval it lies at, and its developed width.
+struct Crossed {
+    bend: BendId,
+    upper: bool,
+    allowance: f64,
+}
+
+/// The bends seamed to `panel` along a boundary the trim rectangle `min`
+/// to `max` (operation coordinates of `to_operation`) reaches beyond the
+/// modelling tolerance.
+fn crossed_bends(
+    state: &SheetState,
+    panel: PanelId,
+    to_operation: Isometry2,
+    min: [f64; 2],
+    max: [f64; 2],
+) -> Vec<Crossed> {
+    let mut out: Vec<Crossed> = Vec::new();
+    for port in &state.joins {
+        for (here, there) in [(&port.first, &port.second), (&port.second, &port.first)] {
+            if here.boundary.domain != SheetDomainRef::Panel(panel) {
+                continue;
+            }
+            let SheetDomainRef::Bend(bend) = there.boundary.domain else {
+                continue;
+            };
+            let Some((a, b)) = port_ends(state, here) else {
+                continue;
+            };
+            let (a, b) = (to_operation.point(a), to_operation.point(b));
+            let inside = |p: [f64; 2]| {
+                p[0] > min[0] + TOLERANCE
+                    && p[0] < max[0]
+                    && p[1] > min[1] - TOLERANCE
+                    && p[1] < max[1] + TOLERANCE
+            };
+            let reached = (0..=64).any(|k| {
+                let t = f64::from(k) / 64.0;
+                inside([a[0] + t * (b[0] - a[0]), a[1] + t * (b[1] - a[1])])
+            });
+            let Some(record) = state.bends.iter().find(|r| r.id == bend) else {
+                continue;
+            };
+            if reached && !out.iter().any(|c| c.bend == bend) {
+                let middle = (a[1] + b[1]) / 2.0;
+                out.push(Crossed {
+                    bend,
+                    upper: middle > (min[1] + max[1]) / 2.0,
+                    allowance: record.allowance,
+                });
+            }
+        }
+    }
+    out
 }
 
 fn side(
@@ -329,27 +417,58 @@ fn add_strip<K: Kernel>(
     width: f64,
     strip_regions: Option<Vec<MaterialRegion>>,
 ) -> Result<(), String> {
+    add_bend_strip(
+        ctx,
+        state,
+        metrics,
+        construction.cylinder,
+        stationary,
+        moving_side,
+        width,
+        strip_regions,
+        0,
+    )?;
+    state.charts.push(moving);
+    Ok(())
+}
+
+/// A bend of the feature (its `slot`) on `cylinder` between two port
+/// sides: its record, its strip (generated curves `40 + 100 slot` to `43 +
+/// 100 slot`) and its two seams.
+#[allow(clippy::too_many_arguments)]
+fn add_bend_strip<K: Kernel>(
+    ctx: &EvalContext<'_, K>,
+    state: &mut SheetState,
+    metrics: &BendMetrics,
+    cylinder: CylinderEmbedding,
+    stationary: ShapePortSide,
+    moving_side: ShapePortSide,
+    width: f64,
+    strip_regions: Option<Vec<MaterialRegion>>,
+    slot: u32,
+) -> Result<(), String> {
     let id = BendId {
         feature: ctx.uid,
-        slot: 0,
+        slot,
     };
+    let curves = 40 + 100 * slot;
     let strip = SheetPatch {
         domain: SheetDomainRef::Bend(id),
         regions: strip_regions.unwrap_or(vec![rectangle(
             ctx.uid,
-            40,
+            curves,
             [0.0, 0.0],
             [metrics.allowance, width],
         )?]),
-        embedding: SheetEmbedding::Cylinder(construction.cylinder.clone()),
+        embedding: SheetEmbedding::Cylinder(cylinder.clone()),
     };
-    let left = side(&strip, &generated(ctx.uid, 43), Isometry2::IDENTITY)?;
-    let right = side(&strip, &generated(ctx.uid, 41), Isometry2::IDENTITY)?;
+    let left = side(&strip, &generated(ctx.uid, curves + 3), Isometry2::IDENTITY)?;
+    let right = side(&strip, &generated(ctx.uid, curves + 1), Isometry2::IDENTITY)?;
     state.bends.push(BendDomain {
         id,
         stationary: stationary.boundary.clone(),
         moving: moving_side.boundary.clone(),
-        folded_embedding: construction.cylinder,
+        folded_embedding: cylinder,
         signed_angle: metrics.angle,
         k_factor: metrics.k,
         radius: metrics.radius,
@@ -364,8 +483,174 @@ fn add_strip<K: Kernel>(
     pair(state, stationary, left, width)?;
     pair(state, right, moving_side, width)?;
     state.charts.push(strip);
-    state.charts.push(moving);
     Ok(())
+}
+
+/// The distances the flange leaves free at the start and the end of the
+/// selected boundary (along the canonical axial direction): its `offsets`,
+/// or those its `width` gives on a boundary of length `edge` (mitcad#242).
+/// A negative distance is an overhang: the wall passes that end of the
+/// boundary (only a width measured from the middle gives one).
+fn flange_span(d: &SheetFlangeDef<f64>, edge: f64) -> Result<(f64, f64), String> {
+    let (start, end) = match (&d.offsets, &d.width) {
+        (Some(_), Some(_)) => {
+            return Err("a sheet flange takes offsets or a width, not both".into());
+        }
+        (Some(o), None) => {
+            if [o.start, o.end].iter().any(|v| !v.is_finite() || *v < 0.0) {
+                return Err("sheet flange offsets must not be negative".into());
+            }
+            (o.start, o.end)
+        }
+        (None, None) => (0.0, 0.0),
+        (None, Some(SheetFlangeWidth::Middle { before, after, .. })) => {
+            if !(before + after).is_finite() || before + after <= TOLERANCE {
+                return Err("a sheet flange width must be positive".into());
+            }
+            (edge / 2.0 - before, edge / 2.0 - after)
+        }
+    };
+    if !start.is_finite() || !end.is_finite() || start.max(0.0) + end.max(0.0) >= edge - TOLERANCE {
+        return Err(format!(
+            "sheet flange offsets or width leave no positive axial width on its {edge:.4} mm \
+             boundary"
+        ));
+    }
+    // Overhangs within the modelling tolerance are none.
+    let clean = |v: f64| if v.abs() <= TOLERANCE { 0.0 } else { v };
+    Ok((clean(start), clean(end)))
+}
+
+/// A flange's wall in its own chart: `length` along the wall from its
+/// tangent line, the bend's axial width `width`, and the overhangs past
+/// the boundary's start and end, each cut back at the root by `root`. The
+/// root edge along the bend is always `g53` (the bend's moving port).
+fn wall_region(
+    feature: FeatureUid,
+    length: f64,
+    width: f64,
+    overhang: (f64, f64),
+    root: f64,
+) -> Result<MaterialRegion, String> {
+    let (before, after) = overhang;
+    if before <= 0.0 && after <= 0.0 {
+        return rectangle(feature, 50, [0.0, 0.0], [length, width]);
+    }
+    if root >= length - TOLERANCE {
+        return Err("the flange's wall is shorter than the relief cut back beside its bend".into());
+    }
+    let line = |slot: u32, start: [f64; 2], end: [f64; 2]| SheetSegment {
+        id: SheetCurveId::Generated { feature, slot },
+        geometry: SegmentGeometry::Line { start, end },
+    };
+    let mut segments = Vec::new();
+    // (A root of 0: the overhang's root edge goes on from the bend's port.)
+    let flush = root <= TOLERANCE;
+    let root = if flush { 0.0 } else { root };
+    if before > 0.0 {
+        if !flush {
+            segments.push(line(54, [0.0, 0.0], [root, 0.0]));
+        }
+        segments.push(line(55, [root, 0.0], [root, -before]));
+        segments.push(line(50, [root, -before], [length, -before]));
+    } else {
+        segments.push(line(50, [0.0, 0.0], [length, 0.0]));
+    }
+    let top = width + after.max(0.0);
+    segments.push(line(51, [length, -before.max(0.0)], [length, top]));
+    if after > 0.0 {
+        segments.push(line(52, [length, top], [root, top]));
+        segments.push(line(56, [root, top], [root, width]));
+        if !flush {
+            segments.push(line(57, [root, width], [0.0, width]));
+        }
+    } else {
+        segments.push(line(52, [length, top], [0.0, width]));
+    }
+    segments.push(line(53, [0.0, width], [0.0, 0.0]));
+    MaterialRegion::from_legacy(&SheetRegion {
+        loops: vec![SheetLoop { segments }],
+    })
+}
+
+/// Cuts a panel back from its `reference` boundary to the line `tangent`
+/// of the boundary's port frame (negative: into the material), between the
+/// axial distances `start` and `width - end`, with the relief tools
+/// `reliefs` gives for the far side of the cut. Bends already on a
+/// neighbouring boundary whose seam the cut reaches (flanges on adjacent
+/// edges, a flange on the side edge of a wall) are cut too: the cut goes
+/// on across the seam through each such bend, developed, so that the bend
+/// ends where the panel now ends (a rectangular corner relief of the cut's
+/// depth), mitcad#211. The piece of the new boundary (the feature's
+/// generated curve 13), or the boundary itself where the cut removes
+/// nothing (`at_edge`).
+#[allow(clippy::too_many_arguments)]
+fn cut_back<K: Kernel>(
+    ctx: &mut EvalContext<'_, K>,
+    state: &mut SheetState,
+    thickness: f64,
+    reference: &BoundaryRef,
+    frame: &PortFrame,
+    tangent: f64,
+    (start, end): (f64, f64),
+    reliefs: impl FnOnce(f64) -> Result<Vec<MaterialRegion>, String>,
+    at_edge: bool,
+    beyond: Option<f64>,
+    what: &str,
+) -> Result<CurvePieceRef, String> {
+    let panel = reference.panel;
+    let (min, max) = extent(chart(state, panel)?, frame.to_operation)?;
+    let far = beyond.unwrap_or_else(|| max[0] + margin(min, max));
+    let mut tools = vec![rectangle(
+        ctx.uid,
+        10,
+        [tangent, start],
+        [far, frame.width - end],
+    )?];
+    tools.extend(reliefs(far)?);
+    let crossed = crossed_bends(
+        state,
+        panel,
+        frame.to_operation,
+        [tangent, start],
+        [far, frame.width - end],
+    );
+    if crossed.is_empty() {
+        trim(
+            ctx,
+            state,
+            &[SheetDomainRef::Panel(panel)],
+            SheetTrimOperation::Difference,
+            &tools,
+            &[frame.to_operation],
+        )?;
+    } else {
+        let lower = crossed.iter().filter(|c| !c.upper).map(|c| c.allowance);
+        let upper = crossed.iter().filter(|c| c.upper).map(|c| c.allowance);
+        let below = lower.fold(0.0, f64::max);
+        let above = upper.fold(0.0, f64::max);
+        tools[0] = rectangle(
+            ctx.uid,
+            10,
+            [tangent, start - below],
+            [far, frame.width - end + above],
+        )?;
+        let to_chart = super::develop::inverse(frame.to_operation);
+        let chart_tools = mapped_regions(&tools, to_chart);
+        let bends: Vec<BendId> = crossed.iter().map(|c| c.bend).collect();
+        let outcome =
+            super::cut::developed_cut(ctx, state, thickness, panel, &bends, &chart_tools, what)?;
+        *state = outcome.state;
+    }
+    // (Across a bend, the cut's line has a piece on each domain.)
+    Ok(
+        match edges_of(chart(state, panel)?).find(|e| e.piece.curve == generated(ctx.uid, 13).curve)
+        {
+            Some(e) => e.piece.clone(),
+            None if at_edge => boundary(state, reference)?.piece.clone(),
+            None => generated(ctx.uid, 13),
+        },
+    )
 }
 
 pub(crate) fn flange<K: Kernel>(
@@ -378,73 +663,75 @@ pub(crate) fn flange<K: Kernel>(
     let length = d.length.value
         - match d.length.mode {
             SheetLengthMode::Tangent => 0.0,
-            SheetLengthMode::Inner => metrics.inner,
-            SheetLengthMode::Outer => metrics.outer,
+            SheetLengthMode::Inner => metrics.setback(metrics.inner, "inner")?,
+            SheetLengthMode::Outer => metrics.setback(metrics.outer, "outer")?,
+            SheetLengthMode::OuterTangent => metrics.extent,
         };
     if !length.is_finite() || length <= TOLERANCE {
         return Err("sheet flange length is shorter than its requested setback".into());
     }
     let frame = port_frame(&state, &d.boundary)?;
-    let (start, end) = d.offsets.as_ref().map_or((0.0, 0.0), |o| (o.start, o.end));
-    if [start, end].iter().any(|v| !v.is_finite() || *v < 0.0)
-        || start + end >= frame.width - TOLERANCE
-    {
-        return Err("sheet flange offsets leave no positive axial width".into());
-    }
+    // The bend covers the boundary between the flange's ends; a wall wider
+    // than the boundary overhangs past them (mitcad#242).
+    let (lo, hi) = flange_span(d, frame.width)?;
+    let (start, end) = (lo.max(0.0), hi.max(0.0));
+    let overhang = (-lo.min(0.0), -hi.min(0.0));
     let width = frame.width - start - end;
-    let tangent = metrics.offset(d.position);
-    let (min, max) = extent(chart(&state, d.boundary.panel)?, frame.to_operation)?;
-    let far = max[0] + margin(min, max);
-    let mut tools = vec![rectangle(
-        ctx.uid,
-        10,
-        [tangent, start],
-        [far, frame.width - end],
-    )?];
+    let tangent = metrics.offset(d.position)?;
     let relief = d.relief.as_ref().unwrap_or(&rules.bend_relief);
-    if (start > TOLERANCE || end > TOLERANCE) && relief.depth < rules.thickness - TOLERANCE {
-        return Err(
-            "sheet endpoint relief must extend at least one thickness behind the tangent".into(),
-        );
-    }
-    if start > TOLERANCE {
-        tools.push(relief_tool(
-            ctx.uid, 20, relief, tangent, start, false, far,
-        )?);
-    }
-    if end > TOLERANCE {
-        tools.push(relief_tool(
-            ctx.uid,
-            30,
-            relief,
-            tangent,
-            frame.width - end,
-            true,
-            far,
-        )?);
-    }
-    trim(
+    // Where the overhangs start along the wall: cut back by the relief
+    // depth, or by the width's own `root` (mitcad#242).
+    let root = match &d.width {
+        Some(SheetFlangeWidth::Middle { root: Some(r), .. }) => {
+            if !r.is_finite() || *r < 0.0 {
+                return Err("a sheet flange's overhang root must not be negative".into());
+            }
+            *r
+        }
+        _ => relief.depth,
+    };
+    let uid = ctx.uid;
+    // (At the edge the trim removes nothing: the boundary is the port.)
+    let tangent_piece = cut_back(
         ctx,
         &mut state,
-        &[SheetDomainRef::Panel(d.boundary.panel)],
-        SheetTrimOperation::Difference,
-        &tools,
-        &[frame.to_operation],
+        rules.thickness,
+        &d.boundary,
+        &frame,
+        tangent,
+        (start, end),
+        |far| {
+            let mut tools = Vec::new();
+            if start > TOLERANCE {
+                tools.push(relief_tool(uid, 20, relief, tangent, start, false, far)?);
+            }
+            if end > TOLERANCE {
+                tools.push(relief_tool(
+                    uid,
+                    30,
+                    relief,
+                    tangent,
+                    frame.width - end,
+                    true,
+                    far,
+                )?);
+            }
+            Ok(tools)
+        },
+        d.position == SheetPosition::Edge,
+        None,
+        "the flange's trim",
     )?;
     let mut axial = frame.to_operation;
     axial.origin[1] -= start;
-    let stationary = side(
-        chart(&state, d.boundary.panel)?,
-        &generated(ctx.uid, 13),
-        axial,
-    )?;
+    let stationary = side(chart(&state, d.boundary.panel)?, &tangent_piece, axial)?;
     let constructed = construction(&frame, tangent, start, &metrics);
     let moving = SheetPatch {
         domain: SheetDomainRef::Panel(PanelId {
             feature: ctx.uid,
             slot: 0,
         }),
-        regions: vec![rectangle(ctx.uid, 50, [0.0, 0.0], [length, width])?],
+        regions: vec![wall_region(ctx.uid, length, width, overhang, root)?],
         embedding: constructed.moving.clone(),
     };
     let moving_side = side(&moving, &generated(ctx.uid, 53), Isometry2::IDENTITY)?;
@@ -467,6 +754,11 @@ pub(crate) fn bend<K: Kernel>(
     ctx: &mut EvalContext<'_, K>,
 ) -> Result<FeatureOutput<K::Shape>, String> {
     let (mut state, rules) = read(ctx, d.body)?;
+    // A bend moves material the straight cuts it keeps were made through.
+    state.overlay_refusal("sheet Bend")?;
+    if d.resolved_mode() == BendPortMode::Double {
+        return double_bend(d, ctx, state, rules);
+    }
     let metrics = BendMetrics::new(d.angle, d.radius, &rules)?;
     let moving_body = d.moving_body.unwrap_or(d.body);
     if moving_body == d.body {
@@ -501,6 +793,7 @@ pub(crate) fn fold<K: Kernel>(
     ctx: &mut EvalContext<'_, K>,
 ) -> Result<FeatureOutput<K::Shape>, String> {
     let (mut state, rules) = read(ctx, d.body)?;
+    state.overlay_refusal("sheet Fold")?;
     let metrics = BendMetrics::new(d.angle, d.radius, &rules)?;
     let sketch = ctx.sketch(d.line.sketch)?;
     let crate::sketch::geometry::Curve2::Line { a, b } =
@@ -511,18 +804,17 @@ pub(crate) fn fold<K: Kernel>(
     };
     let patch = chart(&state, d.panel)?.clone();
     let (frame, parity) = plane(&patch)?;
-    let reference = state
-        .panels
-        .iter()
-        .find(|p| p.id == d.panel)
-        .map_or(frame, |p| p.frame);
     let world_a = sketch.frame.point(*a);
     let world_b = sketch.frame.point(*b);
-    if [world_a, world_b]
-        .iter()
-        .any(|p| dot(sub(*p, reference.origin), reference.normal()).abs() > TOLERANCE)
+    // On the front or the back surface of the panel
+    // (mitcad#280: the line lies across the thickness at the same place).
+    let material = scale(frame.normal(), parity.sign());
+    let depth = |p: [f64; 3]| dot(sub(p, frame.origin), material);
+    let (da, db) = (depth(world_a), depth(world_b));
+    if (da - db).abs() > TOLERANCE
+        || (da.abs() > TOLERANCE && (da - rules.thickness).abs() > TOLERANCE)
     {
-        return Err("fold line is not in the selected panel reference plane".into());
+        return Err("fold line is not on a surface of the selected panel".into());
     }
     let project = |p: [f64; 3]| {
         let delta = sub(p, frame.origin);
@@ -662,17 +954,14 @@ fn fold_panel<K: Kernel>(
         feature: ctx.uid,
         slot: 0,
     });
-    let tangent = metrics.offset(position);
+    let tangent = metrics.offset(position)?;
     let far_tangent = tangent + metrics.allowance;
     let (min, max) = extent(&old, frame.to_operation)?;
     let pad = margin(min, max);
     let outside = max[0] + pad;
     if min[1] < -TOLERANCE || max[1] > frame.width + TOLERANCE {
-        if !relief.depth.is_finite() || relief.depth < rules.thickness - TOLERANCE {
-            return Err(
-                "sheet endpoint relief must extend at least one thickness behind the tangent"
-                    .into(),
-            );
+        if !relief.depth.is_finite() || relief.depth <= TOLERANCE {
+            return Err("sheet endpoint relief must extend behind the tangent".into());
         }
         if !relief.width.is_finite() || relief.width <= TOLERANCE {
             return Err("sheet endpoint relief requires a positive explicit clearance".into());
@@ -1129,6 +1418,288 @@ fn positioned_bend<K: Kernel>(
     )
 }
 
+/// A sheet of planar panels with its front and back swapped (mitcad#280):
+/// each chart's frame moves to the other surface and its material runs the
+/// other way, so its material coordinates and boundaries stay. A sheet
+/// with bends is refused (their inner sides would change too).
+fn relabelled(mut s: SheetState, thickness: f64) -> Result<SheetState, String> {
+    if !s.bends.is_empty() {
+        return Err(
+            "the moving body's front surface lies on the other side, and its bends cannot take \
+             the stationary body's labels"
+                .into(),
+        );
+    }
+    for chart in &mut s.charts {
+        let SheetEmbedding::Plane {
+            front_frame,
+            front_to_back_sign,
+        } = &mut chart.embedding
+        else {
+            return Err("the moving body has a domain that is not planar".into());
+        };
+        let n = scale(front_frame.normal(), front_to_back_sign.sign() * thickness);
+        front_frame.origin = add(front_frame.origin, n);
+        *front_to_back_sign = match front_to_back_sign {
+            MaterialParity::Positive => MaterialParity::Negative,
+            MaterialParity::Negative => MaterialParity::Positive,
+        };
+    }
+    Ok(s)
+}
+
+/// How far (mm) the panels and boundaries a double bend joins may be from
+/// where its geometry needs them: placements read from stored geometry
+/// agree to rounding, far below it.
+const PLACED: f64 = 1e-6;
+
+/// A double bend (mitcad#280): two opposite bends of `|angle|` each (at
+/// most 90 degrees) with the inside radius `r` and a straight panel between
+/// them (a jog) join two parallel panels of separate bodies whose selected
+/// straight boundaries face each other and cover the same axial interval,
+/// their material on the same side (front surface to front surface). The
+/// first bend starts on the fixed boundary (`fixed`, default the
+/// stationary one), whose panel stays whole; with `h` the distance between
+/// the two panels' planes and `rm = r + t/2` the bends' middle radius, the
+/// straight between the bends is `L = (h - 2 rm (1 - cos a)) / sin a` long
+/// and the second bend ends `X = 2 rm sin a + L cos a` from the fixed
+/// boundary, where the other panel is cut back to (through the bends
+/// seamed to it along the cut, developed, as a flange's trim). The moving
+/// body is consumed. Between panels of one body the jog would close a loop
+/// of material, which is refused.
+fn double_bend<K: Kernel>(
+    d: &SheetBendDef<f64>,
+    ctx: &mut EvalContext<'_, K>,
+    mut state: SheetState,
+    rules: SheetRulesDef<f64>,
+) -> Result<FeatureOutput<K::Shape>, String> {
+    let moving_body = d.moving_body.unwrap_or(d.body);
+    if moving_body == d.body {
+        return Err(
+            "a double bend joins two separate sheet bodies: between panels of one body it \
+             would close a loop of material, which the sheet model does not develop"
+                .into(),
+        );
+    }
+    let (mut moving, moving_rules) = read(ctx, moving_body)?;
+    moving.overlay_refusal("sheet Bend")?;
+    if moving.owner != state.owner || moving.rules != state.rules || moving_rules != rules {
+        return Err("sheet Bend bodies must have the same owner and rule reference".into());
+    }
+    free(&state, &d.stationary)?;
+    free(&moving, &d.moving)?;
+    // The joined sheet has one front and back: a moving body whose front
+    // surface lies on the other side takes the stationary body's labels.
+    let normal = |s: &SheetState, r: &BoundaryRef| -> Result<[f64; 3], String> {
+        let (frame, parity) = plane(chart(s, r.panel)?)?;
+        Ok(scale(frame.normal(), parity.sign()))
+    };
+    if dot(normal(&state, &d.stationary)?, normal(&moving, &d.moving)?) < 0.0 {
+        moving = relabelled(moving, rules.thickness)?;
+    }
+    let theta = d.angle.abs();
+    if !theta.is_finite() || theta <= 1e-9 || theta > std::f64::consts::FRAC_PI_2 + 1e-12 {
+        return Err("a double bend's angle must be more than 0 and at most 90 degrees".into());
+    }
+    let theta = theta.min(std::f64::consts::FRAC_PI_2);
+    let radius = d.radius.unwrap_or(rules.bend_radius);
+    let thickness = rules.thickness;
+    // The fixed boundary (the first bend starts on it) and the one whose
+    // panel is cut back.
+    let fixed_moving = d.fixed == Some(DoubleBendFixed::Moving);
+    let (fixed_ref, cut_ref) = if fixed_moving {
+        (&d.moving, &d.stationary)
+    } else {
+        (&d.stationary, &d.moving)
+    };
+    let (f, c, fixed_side) = {
+        let (fs, cs) = if fixed_moving {
+            (&moving, &state)
+        } else {
+            (&state, &moving)
+        };
+        let f = port_frame(fs, fixed_ref)?;
+        let fixed_side = side(
+            chart(fs, fixed_ref.panel)?,
+            &boundary(fs, fixed_ref)?.piece,
+            f.to_operation,
+        )?;
+        (f, port_frame(cs, cut_ref)?, fixed_side)
+    };
+    let facing = dot(f.n, c.n);
+    if facing.abs() < 1.0 - 1e-9 {
+        return Err("a double bend joins parallel panels".into());
+    }
+    if facing < 0.0 {
+        return Err(
+            "the two panels' material sides are opposite: a double bend joins front surface to \
+             front surface"
+                .into(),
+        );
+    }
+    if dot(f.m, c.m) > -1.0 + 1e-9 {
+        return Err("the boundaries of a double bend must face each other".into());
+    }
+    let offset = sub(c.origin, f.origin);
+    let h = dot(offset, f.n);
+    if h.abs() <= PLACED {
+        return Err("the panels of a double bend lie in one plane".into());
+    }
+    // The cut boundary's axial interval in the fixed boundary's terms.
+    let a0 = dot(offset, f.e);
+    let a1 = a0 + c.width * dot(c.e, f.e);
+    if a0.min(a1).abs() > PLACED || (a0.max(a1) - f.width).abs() > PLACED {
+        return Err(format!(
+            "the boundaries of a double bend must cover the same axial interval ({:.4} to \
+             {:.4} mm against 0 to {:.4} mm)",
+            a0.min(a1),
+            a0.max(a1),
+            f.width
+        ));
+    }
+    let middle = radius + thickness / 2.0;
+    let rise = 2.0 * middle * (1.0 - theta.cos());
+    let straight = (h.abs() - rise) / theta.sin();
+    if straight <= PLACED {
+        return Err(format!(
+            "the panels are {:.4} mm apart: two bends of {:.4} degrees with the inside radius \
+             {radius:.4} mm rise {rise:.4} mm without a straight between them",
+            h.abs(),
+            theta.to_degrees()
+        ));
+    }
+    let run = 2.0 * middle * theta.sin() + straight * theta.cos();
+    let depth = run - dot(offset, f.m);
+    if depth < -PLACED {
+        return Err(format!(
+            "the second bend would end {:.4} mm short of the panel it joins",
+            -depth
+        ));
+    }
+    let piece = {
+        let cut_state = if fixed_moving {
+            &mut state
+        } else {
+            &mut moving
+        };
+        cut_back(
+            ctx,
+            cut_state,
+            thickness,
+            cut_ref,
+            &c,
+            -depth.max(0.0),
+            (0.0, 0.0),
+            |_| Ok(Vec::new()),
+            depth <= PLACED,
+            // (Only the material up to its boundary: past it, in the
+            // developed plane of the bends the cut crosses, lie other
+            // panels, a relief notch away.)
+            Some(1e-4),
+            "the double bend's cut",
+        )?
+    };
+    // The jog: the first bend from the fixed boundary towards the other
+    // panel's plane, the straight, the second bend back.
+    let sign = h.signum();
+    let first = BendMetrics::new(sign * theta, d.radius, &rules)?;
+    let built = construction(&f, 0.0, 0.0, &first);
+    let SheetEmbedding::Plane {
+        front_frame: jog_frame,
+        front_to_back_sign: jog_parity,
+    } = built.moving.clone()
+    else {
+        unreachable!()
+    };
+    let width = f.width;
+    let jog = SheetPatch {
+        domain: SheetDomainRef::Panel(PanelId {
+            feature: ctx.uid,
+            slot: 0,
+        }),
+        regions: vec![rectangle(ctx.uid, 50, [0.0, 0.0], [straight, width])?],
+        embedding: built.moving,
+    };
+    let jog_root = side(&jog, &generated(ctx.uid, 53), Isometry2::IDENTITY)?;
+    let jog_end = side(&jog, &generated(ctx.uid, 51), Isometry2::IDENTITY)?;
+    let at_end = PortFrame {
+        origin: jog_frame.point([straight, 0.0]),
+        m: jog_frame.x_axis,
+        e: jog_frame.y_axis,
+        n: scale(jog_frame.normal(), jog_parity.sign()),
+        to_operation: Isometry2 {
+            origin: [-straight, 0.0],
+            x_axis: [1.0, 0.0],
+            y_axis: [0.0, 1.0],
+        },
+        width,
+    };
+    let second = BendMetrics::new(-sign * theta, d.radius, &rules)?;
+    let back = construction(&at_end, 0.0, 0.0, &second);
+    // The second bend must end on the cut panel's new boundary.
+    let cut_state = if fixed_moving { &state } else { &moving };
+    let cut_patch = chart(cut_state, cut_ref.panel)?;
+    let (cut_plane, cut_parity) = plane(cut_patch)?;
+    let SheetEmbedding::Plane {
+        front_frame: landed,
+        front_to_back_sign: landed_parity,
+    } = &back.moving
+    else {
+        unreachable!()
+    };
+    let cut_n = scale(cut_plane.normal(), cut_parity.sign());
+    if dot(scale(landed.normal(), landed_parity.sign()), cut_n) < 1.0 - 1e-9
+        || dot(sub(landed.origin, cut_plane.origin), cut_n).abs() > PLACED
+        || (dot(sub(landed.origin, f.origin), f.m) - run).abs() > PLACED
+    {
+        return Err("the double bend does not end on the panel it joins".into());
+    }
+    let cut_axial = Isometry2 {
+        origin: [0.0, dot(sub(cut_plane.origin, landed.origin), f.e)],
+        x_axis: [0.0, dot(cut_plane.x_axis, f.e)],
+        y_axis: [0.0, dot(cut_plane.y_axis, f.e)],
+    };
+    let cut_side = side(cut_patch, &piece, cut_axial)?;
+    // The moving body's material joins the sheet.
+    for port in std::mem::take(&mut moving.joins) {
+        let token = state
+            .joins
+            .iter()
+            .map(|p| p.token)
+            .max()
+            .map_or(0, |v| v + 1);
+        state.joins.push(ShapePort { token, ..port });
+    }
+    state.bends.extend(moving.bends);
+    state.opened.extend(moving.opened);
+    state.lineage.extend(moving.lineage);
+    state.charts.extend(moving.charts);
+    add_bend_strip(
+        ctx,
+        &mut state,
+        &first,
+        built.cylinder,
+        fixed_side,
+        jog_root,
+        width,
+        None,
+        0,
+    )?;
+    state.charts.push(jog);
+    add_bend_strip(
+        ctx,
+        &mut state,
+        &second,
+        back.cylinder,
+        jog_end,
+        cut_side,
+        width,
+        None,
+        1,
+    )?;
+    publish(ctx, state, &rules, Some(moving_body))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1149,6 +1720,7 @@ mod tests {
             joins: Vec::new(),
             opened: Vec::new(),
             lineage: Vec::new(),
+            overlays: Vec::new(),
             invalidated: None,
             blockers: Vec::new(),
         }
@@ -1235,6 +1807,7 @@ mod tests {
                 allowance: 1.8 * std::f64::consts::PI,
                 inner: 3.0,
                 outer: 5.0,
+                extent: 5.0,
             };
             let result = construction(&frame, 0.0, 0.0, &metrics);
             assert_eq!(result.cylinder.centre, centre);

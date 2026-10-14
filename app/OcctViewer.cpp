@@ -28,6 +28,7 @@
 #include <cmath>
 #include <cstdlib>
 #include <initializer_list>
+#include <iterator>
 #include <limits>
 #include <map>
 #include <tuple>
@@ -111,6 +112,9 @@ const Quantity_Color kEdgeColor(0.12, 0.13, 0.15, Quantity_TOC_RGB);
 const Quantity_Color kSketchColor(0.10, 0.35, 0.85, Quantity_TOC_RGB);
 const Quantity_Color kConstrainedColor(0.08, 0.09, 0.11, Quantity_TOC_RGB);
 const Quantity_Color kCenterlineColor(0.25, 0.30, 0.40, Quantity_TOC_RGB);
+// The two above on a dark background (mitcad#253).
+const Quantity_Color kConstrainedColorDark(0.88, 0.90, 0.94, Quantity_TOC_RGB);
+const Quantity_Color kCenterlineColorDark(0.60, 0.66, 0.76, Quantity_TOC_RGB);
 const Quantity_Color kReferenceColor(0.55, 0.20, 0.70, Quantity_TOC_RGB);
 const Quantity_Color kConstructionColor(0.85, 0.50, 0.10, Quantity_TOC_RGB);
 const Quantity_Color kProfileFill(0.55, 0.70, 0.95, Quantity_TOC_RGB);
@@ -1518,19 +1522,14 @@ void OcctViewer::setSketchEntities(const std::vector<SketchEntityDisplay>& entit
     ++made;
     occ::handle<AIS_Shape> object = new AIS_Shape(entity.shape);
     const bool isPoint = entity.geometry == QStringLiteral("point");
-    const Quantity_Color& color = entity.reference      ? kReferenceColor
-                                  : entity.construction ? kConstructionColor
-                                  : entity.centerline   ? kCenterlineColor
-                                  : entity.constrained  ? kConstrainedColor
-                                                        : kSketchColor;
-    if (isPoint) {
-      setPointStyle(object, color, Aspect_TOM_O_POINT, 1.0);
-    } else {
-      setEdgeStyle(object, color, 2.0,
-                   entity.construction ? Aspect_TOL_DASH
-                   : entity.centerline ? Aspect_TOL_DOTDASH
-                                       : Aspect_TOL_SOLID);
-    }
+    SketchEntityLook look;
+    look.point = isPoint;
+    look.construction = entity.construction;
+    look.centerline = entity.centerline;
+    look.constrained = entity.constrained;
+    look.reference = entity.reference;
+    styleSketchEntity(object, look);
+    m_sketchEntityLooks[object.get()] = look;
     PickInfo info;
     info.item = {isPoint ? SelectKind::SketchPoint : SelectKind::SketchCurve, entity.sketch,
                  entity.id, entity.geometry};
@@ -1547,10 +1546,86 @@ void OcctViewer::setSketchEntities(const std::vector<SketchEntityDisplay>& entit
     }
   }
   for (const auto& [key, entry] : shown) {
+    m_sketchEntityLooks.erase(entry.second.get());
     remove(entry.second);
+  }
+  // For UI tests (mitcad#286): per shown sketch (and the occurrence placing
+  // it), how many of its entities take the fully constrained colour and how
+  // many the unconstrained blue; construction, centre lines and projected
+  // geometry have colours of their own and are not counted.
+  std::vector<std::pair<QString, std::pair<int, int>>> colours;
+  for (const SketchEntityDisplay& entity : entities) {
+    const QString shownAs = entity.occurrence.isEmpty()
+                                ? entity.sketch
+                                : QStringLiteral("%1 in %2").arg(entity.sketch, entity.occurrence);
+    auto counts = std::find_if(colours.begin(), colours.end(),
+                               [&shownAs](const auto& entry) { return entry.first == shownAs; });
+    if (counts == colours.end()) {
+      colours.emplace_back(shownAs, std::make_pair(0, 0));
+      counts = std::prev(colours.end());
+    }
+    if (entity.shape.IsNull() || entity.reference || entity.construction || entity.centerline) {
+      continue;
+    }
+    ++(entity.constrained ? counts->second.first : counts->second.second);
+  }
+  QStringList logged;
+  for (const auto& [shownAs, counts] : colours) {
+    logged << QStringLiteral("%1 %2 fully constrained, %3 unconstrained")
+                  .arg(shownAs)
+                  .arg(counts.first)
+                  .arg(counts.second);
+  }
+  const QString line = logged.isEmpty() ? QStringLiteral("none") : logged.join(QStringLiteral("; "));
+  if (line != m_loggedSketchColours) {
+    m_loggedSketchColours = line;
+    qDebug().noquote() << QStringLiteral("Sketch colours: %1").arg(line);
   }
   timing.setDetail(QStringLiteral("%1 entities, %2 new").arg(entities.size()).arg(made));
   sceneChanged();
+}
+
+void OcctViewer::styleSketchEntity(const occ::handle<AIS_Shape>& object, const SketchEntityLook& look) const {
+  const Quantity_Color& color = look.reference      ? kReferenceColor
+                                : look.construction ? kConstructionColor
+                                : look.centerline   ? (m_backgroundDark ? kCenterlineColorDark : kCenterlineColor)
+                                : look.constrained  ? (m_backgroundDark ? kConstrainedColorDark : kConstrainedColor)
+                                                    : kSketchColor;
+  if (look.point) {
+    setPointStyle(object, color, Aspect_TOM_O_POINT, 1.0);
+  } else {
+    setEdgeStyle(object, color, 2.0,
+                 look.construction ? Aspect_TOL_DASH
+                 : look.centerline ? Aspect_TOL_DOTDASH
+                                   : Aspect_TOL_SOLID);
+  }
+}
+
+void OcctViewer::restyleSketchEntities() {
+  // Only fully constrained geometry and centre lines change colour.
+  int constrained = 0;
+  int centerlines = 0;
+  for (const occ::handle<AIS_Shape>& object : m_sketchEntities) {
+    const auto look = m_sketchEntityLooks.find(object.get());
+    if (look == m_sketchEntityLooks.end() || look->second.reference || look->second.construction ||
+        !(look->second.centerline || look->second.constrained)) {
+      continue;
+    }
+    if (look->second.centerline) {
+      ++centerlines;
+    } else {
+      ++constrained;
+    }
+    styleSketchEntity(object, look->second);
+    m_context->Redisplay(object, false);
+  }
+  if (!m_sketchEntities.empty()) {
+    qDebug().noquote() << QStringLiteral("Sketch entities recoloured for a %1 background: %2 fully constrained, "
+                                         "%3 centre lines")
+                              .arg(m_backgroundDark ? QStringLiteral("dark") : QStringLiteral("light"))
+                              .arg(constrained)
+                              .arg(centerlines);
+  }
 }
 
 void OcctViewer::setDatums(const std::vector<DatumDisplay>& datums) {
@@ -1727,6 +1802,16 @@ void OcctViewer::setPickScope(SelectFilter kinds, SelectFilter expanded, PickTes
   sceneChanged();
 }
 
+void OcctViewer::setPickingSuspended(bool suspended) {
+  if (m_pickingSuspended == suspended) {
+    return;
+  }
+  m_pickingSuspended = suspended;
+  m_context->ClearDetected(false);
+  ResetPreviousMoveTo();
+  requestFrame();
+}
+
 SelectFilter OcctViewer::activeKinds() const {
   return m_scoped && (m_shiftHeld || m_contextPick) ? m_expandedFilter : m_filter;
 }
@@ -1773,6 +1858,36 @@ void OcctViewer::setHoverColor(const QColor& color) {
   for (const Prs3d_TypeOfHighlight type :
        {Prs3d_TypeOfHighlight_Dynamic, Prs3d_TypeOfHighlight_LocalDynamic}) {
     setHighlightStyle(m_context->HighlightStyle(type), occtColor(color), kHoverTransparency);
+  }
+  m_hoverColor = color;
+  sceneChanged();
+}
+
+void OcctViewer::setHoverChain(const TopoDS_Shape& shape) {
+  if (!m_hoverChain.IsNull()) {
+    m_context->Remove(m_hoverChain, false);
+    m_hoverChain.Nullify();
+  }
+  if (!shape.IsNull()) {
+    // As the hover draws a face, edge (setHighlightStyle): faces
+    // see-through in a colour light does not change, with their boundaries,
+    // and edges opaque, in the top layer, which keeps the scene's depth.
+    m_hoverChain = new AIS_Shape(shape);
+    const Quantity_Color color = occtColor(m_hoverColor);
+    bool faces = false;
+    for (TopExp_Explorer it(shape, TopAbs_FACE); it.More() && !faces; it.Next()) {
+      faces = true;
+    }
+    setEdgeStyle(m_hoverChain, color, 3.0);
+    if (faces) {
+      m_hoverChain->SetMaterial(flatMaterial(0.0f));
+      m_hoverChain->SetTransparency(kHoverTransparency);
+      m_hoverChain->Attributes()->ShadingAspect()->Aspect()->SetPolygonOffsets(Aspect_POM_Fill, 0.0f, -2.0f);
+      m_hoverChain->Attributes()->SetFaceBoundaryDraw(true);
+      m_hoverChain->Attributes()->SetFaceBoundaryAspect(new Prs3d_LineAspect(color, Aspect_TOL_SOLID, 2.0));
+    }
+    m_context->Display(m_hoverChain, faces ? AIS_Shaded : AIS_WireFrame, -1, false);
+    m_context->SetZLayer(m_hoverChain, Graphic3d_ZLayerId_Top);
   }
   sceneChanged();
 }
@@ -1988,6 +2103,12 @@ bool OcctViewer::accepts(const occ::handle<SelectMgr_EntityOwner>& owner) const 
   }
   if (owner->Selectable() == m_orientationCube) {
     return true;
+  }
+  // MoveTo also runs from paintGL in a model job's nested event loop.
+  // In particular, command predicates can query bodyShape() and must not
+  // reach the document while the worker owns it.
+  if (m_pickingSuspended) {
+    return false;
   }
   const auto item = itemFor(owner);
   if (!item || !activeKinds().testFlag(item->kind)) {
@@ -2748,6 +2869,7 @@ void OcctViewer::bindGestures() {
     gestures.Bind(middle, AIS_MouseGesture_Pan);
     break;
   case NavigationScheme::Trackpad:
+  case NavigationScheme::TrackpadShift:
     // The two-finger scroll is passed on as a drag (trackpadScroll).
     gestures.Bind(left | kScrollPan, AIS_MouseGesture_Pan);
     gestures.Bind(left | kScrollOrbit, AIS_MouseGesture_RotateOrbit);
@@ -2776,6 +2898,7 @@ void OcctViewer::setBackground(const QColor& top, const QColor& bottom, bool gra
   if ((paper.lightnessF() < 0.5f) != m_backgroundDark) {
     m_backgroundDark = !m_backgroundDark;
     updateOverlayIcons(); // the buttons over the view
+    restyleSketchEntities();
   }
   if (paper != m_paper) {
     m_paper = paper;
@@ -3597,7 +3720,8 @@ void OcctViewer::mouseMoveEvent(QMouseEvent* event) {
 
 void OcctViewer::wheelEvent(QWheelEvent* event) {
   QOpenGLWidget::wheelEvent(event);
-  if (m_navigation.scheme == NavigationScheme::Trackpad && isTrackpadScroll(event)) {
+  if ((m_navigation.scheme == NavigationScheme::Trackpad ||
+       m_navigation.scheme == NavigationScheme::TrackpadShift) && isTrackpadScroll(event)) {
     trackpadScroll(event);
     return;
   }
@@ -3614,9 +3738,10 @@ void OcctViewer::wheelEvent(QWheelEvent* event) {
   }
 }
 
-// The Trackpad scheme: a two-finger scroll pans, with Alt it orbits, with
-// Shift or Ctrl (Cmd on macOS) it zooms. Pan and orbit are one drag of the
-// left button (with keys no one presses, kScrollPan and kScrollOrbit) that
+// The trackpad schemes: a two-finger scroll pans, with the chosen orbit key
+// (Alt or Shift) it orbits, with the other key or Ctrl (Cmd on macOS) it
+// zooms. Pan and orbit are one drag of the left button (with keys no one
+// presses, kScrollPan and kScrollOrbit) that
 // lasts until the scroll pauses, momentum included: the view handles it as a
 // mouse drag, about the same centre and with the orbit's Z lock, and no
 // step between two frames is lost. Each event asks for a frame; it is not
@@ -3631,9 +3756,12 @@ void OcctViewer::trackpadScroll(QWheelEvent* event) {
     return;
   }
   const Qt::KeyboardModifiers keys = event->modifiers();
-  ScrollMode mode = (keys & (Qt::ShiftModifier | Qt::ControlModifier)) ? ScrollMode::Zoom
-                    : (keys & Qt::AltModifier)                         ? ScrollMode::Orbit
-                                                                       : ScrollMode::Pan;
+  const bool shiftOrbit = m_navigation.scheme == NavigationScheme::TrackpadShift;
+  const Qt::KeyboardModifier orbitKey = shiftOrbit ? Qt::ShiftModifier : Qt::AltModifier;
+  const Qt::KeyboardModifier zoomKey = shiftOrbit ? Qt::AltModifier : Qt::ShiftModifier;
+  ScrollMode mode = (keys & (zoomKey | Qt::ControlModifier)) ? ScrollMode::Zoom
+                    : (keys & orbitKey)                     ? ScrollMode::Orbit
+                                                            : ScrollMode::Pan;
   if (event->phase() == Qt::ScrollMomentum && m_scrollMode != ScrollMode::None) {
     mode = m_scrollMode; // the inertia goes on as it began, whatever the keys do now
   }

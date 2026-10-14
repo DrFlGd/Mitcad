@@ -88,6 +88,35 @@ private:
 constexpr double kTangentChainAngle = 1.0e-2;
 int follow_tangent_chains(const Shape& body, std::vector<int>& owner, const std::vector<char>& follows);
 
+// The rule of follow_tangent_chains, with the body's vertices and edge faces
+// mapped once: for chains asked edge by edge (the tangent chain query,
+// tangent_chain.hpp, mitcad#290) as for the dressups' selections.
+class EdgeContinuations {
+public:
+  explicit EdgeContinuations(const Shape& body);
+  // Whether the edge lies between two faces at an angle (an edge a dressup
+  // rounds); worked out once per edge.
+  bool sharp(int edge) const;
+  // The sharp edges that meet the edge end to end in the same direction
+  // (within kTangentChainAngle), the edge itself left out.
+  std::vector<int> next(int edge) const;
+
+private:
+  const Shape& m_body;
+  NCollection_IndexedDataMap<TopoDS_Shape, NCollection_List<TopoDS_Shape>, TopTools_ShapeMapHasher>
+      m_edgesOf;
+  EdgeFaces m_edgeFaces;
+  mutable std::vector<signed char> m_sharp; // -1: not worked out yet
+};
+
+// The faces plus every face connected to them through smooth edges
+// (tangent_closure), with the body's edge faces mapped once by the caller:
+// `ancestors` maps each edge of the body to its faces.
+std::vector<int> tangent_closure(
+    const Shape& body, std::vector<int> faces,
+    const NCollection_IndexedDataMap<TopoDS_Shape, NCollection_List<TopoDS_Shape>, TopTools_ShapeMapHasher>&
+        ancestors);
+
 // The plane of a planar face with its normal pointing out of the material;
 // null for other surfaces.
 std::optional<gp_Pln> face_plane(const TopoDS_Face& face);

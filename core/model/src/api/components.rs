@@ -264,10 +264,13 @@ impl<K: Kernel> Document<K> {
                         ));
                     }
                 };
+                let requested = self.active_component();
                 let (component, occurrence) =
                     self.create_component_with(name.as_deref(), transform, activate, policy)?;
-                json!({"component": component, "occurrence": occurrence,
-                       "name": self.assembly().name(component)})
+                let mut reply = json!({"component": component, "occurrence": occurrence,
+                                       "name": self.assembly().name(component)});
+                self.note_placed_beside(&mut reply, requested, component, "New Component");
+                reply
             }
             ComponentCommand::ComponentsFromBodies { bodies } => {
                 let made = self.components_from_bodies(&bodies)?;
@@ -287,8 +290,10 @@ impl<K: Kernel> Document<K> {
             }
             ComponentCommand::RenameComponent { component, name } => {
                 let uid = self.component_ref(&component)?;
-                self.rename_component(uid, &name)?;
-                json!({})
+                // Its only body, default-named, is renamed with it (mitcad#291).
+                let body = self.rename_component(uid, &name)?;
+                let renamed = body.map(|b| json!({"uid": b, "name": self.body_name(b)}));
+                json!({"renamed_body": renamed})
             }
             ComponentCommand::GroundOccurrence {
                 occurrence,

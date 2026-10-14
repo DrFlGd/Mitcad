@@ -154,6 +154,15 @@ target_sources(mitcad_geometry PRIVATE
 target_sources(mitcad_geometry PRIVATE
   src/face_copy.cpp
   include/mitcad/geometry/face_copy.hpp)
+# The tangent chains of a body's edges and faces, for the hover (mitcad#290).
+target_sources(mitcad_geometry PRIVATE
+  src/tangent_chain.cpp
+  include/mitcad/geometry/tangent_chain.hpp)
+# How a new feature's tool lies against bodies: Extrude's automatic
+# operation (mitcad#289).
+target_sources(mitcad_geometry PRIVATE
+  src/contact.cpp
+  include/mitcad/geometry/contact.hpp)
 target_include_directories(mitcad_geometry PUBLIC include)
 # Volumes and areas come from the analysis library's integrals, so that
 # every reported volume agrees (query.cpp, brep_import.cpp).
@@ -225,6 +234,20 @@ if(BUILD_TESTING)
   # Operations on bodies of thousands of faces, with the port's patch 0110
   # (mitcad#121).
   target_sources(test_geometry PRIVATE tests/test_large_bodies.cpp)
+  # Corners where a rounding ends, with the port's patches 0130 and later
+  # (mitcad#236).
+  target_sources(test_geometry PRIVATE tests/test_fillet_corners.cpp)
+  # Chamfers wider than a face beside them, with the port's patches 0140 and
+  # later (mitcad#240).
+  target_sources(test_geometry PRIVATE tests/test_chamfer_overflow.cpp)
+  # Roundings whose results were invalid or whose computation failed, with
+  # the port's patches 0150 and later (mitcad#239).
+  target_sources(test_geometry PRIVATE tests/test_fillet_results.cpp)
+  # Fillet contours that stop where their edges turn, with the port's patch
+  # 0180 (mitcad#241).
+  target_sources(test_geometry PRIVATE tests/test_fillet_chains.cpp)
+  # The tangent chains of a body's edges and faces (mitcad#290).
+  target_sources(test_geometry PRIVATE tests/test_tangent_chain.cpp)
   target_link_libraries(test_geometry PRIVATE mitcad_geometry_analysis)
   target_link_libraries(test_geometry PRIVATE mitcad_geometry mitcad_warnings)
   add_test(NAME geometry COMMAND test_geometry)

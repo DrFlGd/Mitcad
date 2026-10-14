@@ -67,6 +67,17 @@ ShapePtr import_body(const TopoDS_Shape& shape, const std::string& feature, int 
   return std::make_shared<Shape>(shape, named);
 }
 
+ShapePtr adopt_body(const Shape& source, const std::string& feature, int first_face) {
+  if (source.occt().IsNull()) {
+    throw std::invalid_argument("adopted body: the shape is empty");
+  }
+  return detail::run("adopted body", [&] {
+    ShapePtr adopted = import_body(source.occt(), feature, first_face);
+    adopted->keep_measures_of(source);
+    return adopted;
+  });
+}
+
 ShapePtr compound(const std::vector<const Shape*>& shapes) {
   BRep_Builder builder;
   TopoDS_Compound result;

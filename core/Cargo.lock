@@ -1351,19 +1351,23 @@ dependencies = [
 
 [[package]]
 name = "mitcad-3mf"
-version = "0.4.1"
+version = "0.5.0"
 dependencies = [
  "mitcad-zip",
  "roxmltree",
 ]
 
 [[package]]
+name = "mitcad-cfb"
+version = "0.5.0"
+
+[[package]]
 name = "mitcad-dxf"
-version = "0.4.1"
+version = "0.5.0"
 
 [[package]]
 name = "mitcad-f3d"
-version = "0.4.1"
+version = "0.5.0"
 dependencies = [
  "mitcad-model",
  "mitcad-zip",
@@ -1373,14 +1377,16 @@ dependencies = [
 
 [[package]]
 name = "mitcad-ffi"
-version = "0.4.1"
+version = "0.5.0"
 dependencies = [
  "cxx",
  "mitcad-f3d",
+ "mitcad-ifc",
  "mitcad-import",
  "mitcad-ipt",
  "mitcad-mcp",
  "mitcad-model",
+ "mitcad-rvt",
  "mitcad-update",
  "mitcad-vcs",
  "serde",
@@ -1389,7 +1395,7 @@ dependencies = [
 
 [[package]]
 name = "mitcad-freecad"
-version = "0.4.1"
+version = "0.5.0"
 dependencies = [
  "mitcad-zip",
  "roxmltree",
@@ -1398,12 +1404,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "mitcad-ifc"
+version = "0.5.0"
+dependencies = [
+ "mitcad-zip",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "mitcad-import"
-version = "0.4.1"
+version = "0.5.0"
 dependencies = [
  "mitcad-f3d",
  "mitcad-freecad",
+ "mitcad-ifc",
  "mitcad-model",
+ "mitcad-rvt",
  "mitcad-zip",
  "serde",
  "serde_json",
@@ -1411,9 +1428,10 @@ dependencies = [
 
 [[package]]
 name = "mitcad-ipt"
-version = "0.4.1"
+version = "0.5.0"
 dependencies = [
  "miniz_oxide",
+ "mitcad-cfb",
  "mitcad-f3d",
  "mitcad-import",
  "mitcad-model",
@@ -1424,14 +1442,14 @@ dependencies = [
 
 [[package]]
 name = "mitcad-mcp"
-version = "0.4.1"
+version = "0.5.0"
 dependencies = [
  "serde_json",
 ]
 
 [[package]]
 name = "mitcad-model"
-version = "0.4.1"
+version = "0.5.0"
 dependencies = [
  "miniz_oxide",
  "mitcad-3mf",
@@ -1443,12 +1461,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "mitcad-rvt"
+version = "0.5.0"
+dependencies = [
+ "miniz_oxide",
+ "mitcad-cfb",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "mitcad-solver"
-version = "0.4.1"
+version = "0.5.0"
 
 [[package]]
 name = "mitcad-update"
-version = "0.4.1"
+version = "0.5.0"
 dependencies = [
  "ed25519-dalek",
  "semver",
@@ -1459,14 +1487,14 @@ dependencies = [
 
 [[package]]
 name = "mitcad-usdz"
-version = "0.4.1"
+version = "0.5.0"
 dependencies = [
  "mitcad-zip",
 ]
 
 [[package]]
 name = "mitcad-vcs"
-version = "0.4.1"
+version = "0.5.0"
 dependencies = [
  "gix",
  "libc",
@@ -1479,7 +1507,7 @@ dependencies = [
 
 [[package]]
 name = "mitcad-zip"
-version = "0.4.1"
+version = "0.5.0"
 dependencies = [
  "miniz_oxide",
  "ruzstd",
@@ -1664,9 +1692,9 @@ dependencies = [
 
 [[package]]
 name = "rustls"
-version = "0.23.45"
+version = "0.23.46"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0d41d731c7d2f962d1ccc364cec258de3c0e93b38c2fb3ba97ac74513048d634"
+checksum = "48e13bd8c0e9365c43cfa5c9e8f9ad49d3c8444926c9aac819e0e4dc503c8fdf"
 dependencies = [
  "once_cell",
  "ring",
@@ -1716,9 +1744,9 @@ checksum = "cf54715a573b99ac80df0bc206da022bcd442c974952c7b9720069370852e21f"
 
 [[package]]
 name = "ruzstd"
-version = "0.8.3"
+version = "0.9.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a7c1c839d570d835527c9a5e4db7cb2198683a988cb9d7293fc8674e6bd58fc8"
+checksum = "69e4ce4a039f42bf25920b95667e4d789e98749ab11bbb8d2c2936f788421bb5"
 
 [[package]]
 name = "same-file"

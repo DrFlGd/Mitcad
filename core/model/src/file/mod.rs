@@ -106,11 +106,13 @@
 //! "don't ask again for this design") has `"hybrid_assembly": true`.
 //!
 //! Design policy (mitcad#220, `crate::policy`): `root_policy` and a
-//! component's `policy`, objects of the seven settings (`sketches`,
+//! component's `policy`, objects of the nine settings (`sketches`,
 //! `features`, `components`, `attach_to_others`,
-//! `attachments_from_others`, `reference_others`,
+//! `attachments_from_others`, `first_sketch_attaches`,
+//! `first_sketch_attachments_from_others`, `reference_others`,
 //! `references_from_others`), left out while they are the general
-//! defaults; a missing setting is its general default.
+//! defaults; a missing setting is its general default (the two
+//! first-sketch settings, mitcad#293, read as on).
 //!
 //! Named views (U5), when there are any: `views` (`name`, `eye`, `target`,
 //! `up`, `height`, `"perspective": true`).
@@ -426,10 +428,16 @@ pub(crate) fn load_state(json: &str) -> Result<(DocState, Vec<String>), FileErro
     let json = json.strip_prefix('\u{feff}').unwrap_or(json);
     let value: serde_json::Value =
         serde_json::from_str(json).map_err(|e| FileError::Syntax(e.to_string()))?;
-    match check_header(&value)? {
+    let (mut state, warnings) = match check_header(&value)? {
         1 => v1::load(json),
         _ => v2::load(value),
-    }
+    }?;
+    // Driven dimensions of older files get their reference parameters, and
+    // stored ones their kind (mitcad#231).
+    state
+        .settle_references()
+        .map_err(|e| FileError::Invalid(e.to_string()))?;
+    Ok((state, warnings))
 }
 
 /// The definition state of the design file at `path` (its text read by

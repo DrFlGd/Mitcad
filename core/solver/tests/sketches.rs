@@ -414,12 +414,14 @@ fn triangle_with_angles_and_lengths() {
         a: ab,
         b: ca,
         value: PI / 3.0,
+        supplement: None,
     })
     .unwrap();
     s.add_constraint(Angle {
         a: ab,
         b: bc,
         value: PI / 3.0,
+        supplement: None,
     })
     .unwrap();
     solve_ok(&mut s);

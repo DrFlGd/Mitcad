@@ -23,6 +23,7 @@
 //! faces at its ends. [`NamedState`] finds them among the faces of a history
 //! state, and [`NamedState::edge`] gives the edge's geometry.
 
+use crate::ids::{IdMap, IdSet, View};
 use std::collections::{HashMap, HashSet};
 
 use crate::asm::file::AsmFile;
@@ -93,7 +94,7 @@ pub fn attribute_names(toks: &[Token]) -> Option<Vec<AsmName>> {
 /// Reads the topology of a blob at a history state.
 struct Walker<'a> {
     file: &'a AsmFile,
-    view: Option<&'a HashMap<usize, Option<usize>>>,
+    view: Option<&'a View>,
 }
 
 impl<'a> Walker<'a> {
@@ -133,7 +134,7 @@ impl<'a> Walker<'a> {
         };
         let mut c = Cursor::new(&self.file.tokens, self.file.records[r].fields.start);
         let mut at = self.ptr(&mut c).flatten();
-        let mut seen = HashSet::new();
+        let mut seen = IdSet::default();
         while let Some(a) = at {
             if !seen.insert(a) {
                 break;
@@ -159,7 +160,7 @@ impl<'a> Walker<'a> {
     fn list(&self, first: Option<usize>, kind: &str) -> Vec<usize> {
         let mut out = Vec::new();
         let mut at = first;
-        let mut seen = HashSet::new();
+        let mut seen = IdSet::default();
         while let Some(e) = at {
             if !seen.insert(e) || self.base_type(e) != Some(kind) {
                 break;
@@ -203,9 +204,12 @@ pub struct NamedBody {
 }
 
 /// The bodies, faces and edges of a blob at a history state, with names.
+///
+/// It owns its view of the state, so that one naming of a state can be
+/// kept and shared by every lookup in it (mitcad#246).
 pub struct NamedState<'a> {
     file: &'a AsmFile,
-    view: Option<&'a HashMap<usize, Option<usize>>>,
+    view: Option<View>,
     pub bodies: Vec<NamedBody>,
     pub faces: Vec<NamedFace>,
     pub edges: Vec<NamedEdge>,
@@ -258,16 +262,19 @@ pub struct PlaneGeometry {
 impl<'a> NamedState<'a> {
     /// The state of a blob: `view` from [`crate::asm::history::History::view`]
     /// (`None`: the stored state).
-    pub fn new(file: &'a AsmFile, view: Option<&'a HashMap<usize, Option<usize>>>) -> Self {
-        let w = Walker { file, view };
+    pub fn new(file: &'a AsmFile, view: Option<View>) -> Self {
         let mut state = NamedState {
             file,
-            view,
+            view: None,
             bodies: Vec::new(),
             faces: Vec::new(),
             edges: Vec::new(),
         };
-        let mut edge_index: HashMap<usize, usize> = HashMap::new();
+        let w = Walker {
+            file,
+            view: view.as_ref(),
+        };
+        let mut edge_index: IdMap<usize> = IdMap::default();
         for (record, _) in convert::body_records(file) {
             if w.data(record).is_none() {
                 continue;
@@ -306,7 +313,18 @@ impl<'a> NamedState<'a> {
                 }
             }
         }
+        state.view = view;
+        // (A state may be kept and shared: without the lists' spare room.)
+        state.bodies.shrink_to_fit();
+        state.faces.shrink_to_fit();
+        state.edges.shrink_to_fit();
         state
+    }
+
+    /// How large the state is in memory, roughly: its faces, edges and the
+    /// entities its view changes (each about the same size).
+    pub fn size(&self) -> usize {
+        self.faces.len() + self.edges.len() + self.view.as_ref().map_or(0, |v| v.len()) + 1
     }
 
     fn face_edges(
@@ -315,7 +333,7 @@ impl<'a> NamedState<'a> {
         face: usize,
         fi: usize,
         body: usize,
-        edge_index: &mut HashMap<usize, usize>,
+        edge_index: &mut IdMap<usize>,
     ) {
         let Some(mut c) = w.cursor(face) else {
             return;
@@ -329,7 +347,7 @@ impl<'a> NamedState<'a> {
             let _next = w.ptr(&mut c);
             let first = w.ptr(&mut c).flatten();
             let mut at = first;
-            let mut seen = HashSet::new();
+            let mut seen = IdSet::default();
             while let Some(ce) = at {
                 if !seen.insert(ce) || w.base_type(ce) != Some("coedge") {
                     break;
@@ -754,7 +772,7 @@ impl<'a> NamedState<'a> {
             self.bodies[body].record,
             vertex,
             &Options::default(),
-            self.view,
+            self.view.as_ref(),
         )
         .map_err(|e| e.0)
     }
@@ -769,7 +787,7 @@ impl<'a> NamedState<'a> {
             body,
             f.entity,
             &Options::default(),
-            self.view,
+            self.view.as_ref(),
             64,
         )
         .map_err(|e| e.0)?;
@@ -871,7 +889,7 @@ impl<'a> NamedState<'a> {
             body,
             f.entity,
             &Options::default(),
-            self.view,
+            self.view.as_ref(),
             PLANE_SAMPLES,
         )
         .map_err(|e| e.0)?;
@@ -926,7 +944,7 @@ impl<'a> NamedState<'a> {
             body,
             f.entity,
             &Options::default(),
-            self.view,
+            self.view.as_ref(),
             SURFACE_SAMPLES,
         )
         .map_err(|e| e.0)?;
@@ -1003,7 +1021,14 @@ impl<'a> NamedState<'a> {
     pub fn surface_kind(&self, index: usize) -> String {
         let f = &self.faces[index];
         let body = self.bodies[f.body].record;
-        match convert::face_surface(self.file, body, f.entity, &Options::default(), self.view, 2) {
+        match convert::face_surface(
+            self.file,
+            body,
+            f.entity,
+            &Options::default(),
+            self.view.as_ref(),
+            2,
+        ) {
             Ok(face) => face.surface.kind().to_owned(),
             Err(e) => format!("({})", e.0),
         }
@@ -1032,6 +1057,63 @@ impl<'a> NamedState<'a> {
         }
     }
 
+    // Appearances (mitcad#228).
+
+    /// The key a body's record carries in its header's second field (the
+    /// design's body map names a body by it); None for `-1`.
+    pub fn body_key(&self, body: usize) -> Option<i64> {
+        let w = Walker {
+            file: self.file,
+            view: self.view.as_ref(),
+        };
+        let r = w.data(self.bodies[body].record)?;
+        match self
+            .file
+            .tokens
+            .get(self.file.records[r].fields.start + 1)?
+        {
+            Token::Int(k) | Token::Ptr(k) if *k >= 0 => Some(*k),
+            _ => None,
+        }
+    }
+
+    /// The GUID of a face's appearance assignment: the string after the
+    /// name `NEUTRON_Material_attrib_def` in one of its `ATTRIB_CUSTOM`
+    /// attributes (lower case, 36 characters).
+    pub fn face_appearance_guid(&self, face: usize) -> Option<String> {
+        let w = Walker {
+            file: self.file,
+            view: self.view.as_ref(),
+        };
+        let r = w.data(self.faces[face].entity)?;
+        let mut c = Cursor::new(&self.file.tokens, self.file.records[r].fields.start);
+        let mut at = w.ptr(&mut c).flatten();
+        let mut seen = HashSet::new();
+        while let Some(a) = at {
+            if !seen.insert(a) {
+                break;
+            }
+            let ar = w.data(a)?;
+            let rec = &self.file.records[ar];
+            if rec.base_type() != "attrib" {
+                break;
+            }
+            let fields = self.file.fields(ar);
+            if let Some(k) = fields
+                .iter()
+                .position(|t| matches!(t, Token::Str(s) if s == "NEUTRON_Material_attrib_def"))
+                && let Some(Token::Str(g)) =
+                    fields[k + 1..].iter().find(|t| matches!(t, Token::Str(_)))
+                && g.len() == 36
+            {
+                return Some(g.to_ascii_lowercase());
+            }
+            let mut c = Cursor::new(&self.file.tokens, rec.fields.start + 2);
+            at = w.ptr(&mut c).flatten();
+        }
+        None
+    }
+
     /// The middle points of up to `n` edges of a body (mm), spread over
     /// its edges.
     pub fn body_points(&self, body: usize, n: usize) -> Vec<P3> {
@@ -1051,9 +1133,14 @@ impl<'a> NamedState<'a> {
     pub fn edge(&self, index: usize) -> Result<EdgeGeometry, String> {
         let e = &self.edges[index];
         let body = self.bodies[e.body].record;
-        let (curve, t, transform, along) =
-            convert::edge_curve_along(self.file, body, e.entity, &Options::default(), self.view)
-                .map_err(|err| err.0)?;
+        let (curve, t, transform, along) = convert::edge_curve_along(
+            self.file,
+            body,
+            e.entity,
+            &Options::default(),
+            self.view.as_ref(),
+        )
+        .map_err(|err| err.0)?;
         let apply = |p: P3| match &transform {
             Some(tr) => brep::add(
                 [
@@ -1182,11 +1269,33 @@ pub(crate) fn point_inside(normal: P3, edges: &[&[P3]], guess: P3) -> P3 {
         let d = brep::sub(p, guess);
         (brep::dot(d, u), brep::dot(d, v))
     };
-    let segments: Vec<((f64, f64), (f64, f64))> = edges
+    let mut segments: Vec<((f64, f64), (f64, f64))> = edges
         .iter()
         .flat_map(|e| e.windows(2).map(|w| (flat(w[0]), flat(w[1]))))
         .filter(|(a, b)| a != b)
         .collect();
+    // An edge's end meets the next edge's start (or its own, a closed
+    // edge) only to rounding: close the gap, else a line through it misses
+    // the loop (mitcad#228: a hole's centre on the line through a circle's
+    // seam was taken for a point inside the face).
+    let extent = edges
+        .iter()
+        .flat_map(|e| e.iter())
+        .map(|p| brep::norm(brep::sub(*p, guess)))
+        .fold(0.0, f64::max);
+    for e in edges {
+        let Some(&end) = e.last() else { continue };
+        let nearest = edges
+            .iter()
+            .filter_map(|s| s.first())
+            .min_by(|a, b| brep::dist(**a, end).total_cmp(&brep::dist(**b, end)));
+        if let Some(&start) = nearest {
+            let d = brep::dist(start, end);
+            if d > 0.0 && d <= 1e-9 * (1.0 + extent) {
+                segments.push((flat(end), flat(start)));
+            }
+        }
+    }
     // Where a line at height y crosses the edges, in order along it (each
     // segment counts its lower end and not its upper one).
     let crossings = |y: f64| {
@@ -1252,6 +1361,41 @@ pub(crate) fn point_inside(normal: P3, edges: &[&[P3]], guess: P3) -> P3 {
 mod tests {
     use super::*;
     use crate::testdata;
+
+    /// A disc with a square hole round its centre, the circle one closed
+    /// edge whose ends meet only to rounding where the line through the
+    /// mean of the points crosses it: the point lies between the hole and
+    /// the circle, not in the hole (mitcad#228).
+    #[test]
+    fn a_closed_edges_seam_does_not_open_the_loop() {
+        let circle: Vec<P3> = (0..16)
+            .map(|i| {
+                let a = std::f64::consts::TAU * i as f64 / 15.0;
+                [0.8 * a.sin(), 0.0, 3.075 - 0.8 * a.cos()]
+            })
+            .map(|p| [if p[0].abs() < 1e-12 { 5e-16 } else { p[0] }, p[1], p[2]])
+            .enumerate()
+            .map(|(i, p)| if i == 15 { [-3.5e-16, p[1], p[2]] } else { p })
+            .collect();
+        let line = |a: P3, b: P3| -> Vec<P3> {
+            (0..16)
+                .map(|i| brep::add(a, brep::scale(brep::sub(b, a), i as f64 / 15.0)))
+                .collect()
+        };
+        let (l, r, b, t) = (-0.4, 0.4, 2.675, 3.475);
+        let square = [
+            line([l, 0.0, t], [r, 0.0, t]),
+            line([r, 0.0, t], [r, 0.0, b]),
+            line([r, 0.0, b], [l, 0.0, b]),
+            line([l, 0.0, b], [l, 0.0, t]),
+        ];
+        let mut edges: Vec<&[P3]> = vec![&circle];
+        edges.extend(square.iter().map(Vec::as_slice));
+        let p = point_inside([0.0, 1.0, 0.0], &edges, [0.0, 0.0, 3.065]);
+        let in_hole = p[0] > l && p[0] < r && p[2] > b && p[2] < t;
+        let in_disc = p[0].hypot(p[2] - 3.075) < 0.8;
+        assert!(in_disc && !in_hole, "{p:?}");
+    }
 
     /// A face with a hole round the mean of its edges' points (a ring):
     /// the point lies between the hole and the outside, and a convex face

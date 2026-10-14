@@ -16,6 +16,7 @@ JSON commands.
 | `core/freecad` (`mitcad-freecad`) | Rust | `.FCStd` reader: typed objects and properties, placements, links, sketches, spreadsheets, expressions. No geometry. |
 | `core/zip` (`mitcad-zip`) | Rust | Zip container for `.f3d` and `.FCStd` (stored, deflate, zstd; a writer for tests). |
 | `core/ipt` (`mitcad-ipt`) | Rust | `.ipt` part files: compound file container (MS-CFB), property sets (MS-OLEPS), the segment database, the B-rep record converted by `core/f3d`'s ASM code, the meshes of mesh features, the definitions segment (parameters, sketches, features) as the import's dump IR, and `.iam` assemblies (referenced files, occurrences, placements; [README](../core/ipt/README.md)). No geometry. |
+| `core/ifc` (`mitcad-ifc`) | Rust | IFC files (IFC2X3, IFC4, IFC4X3; `.ifczip`): an own ISO 10303-21 reader, units, the spatial structure, products and their placements, relationships, styles, and the shapes' representation items decoded (profiles, swept solids, booleans, breps, face sets, mapped items; [README](../core/ifc/README.md)). No geometry. |
 | `core/dxf` | Rust | DXF read and write. |
 | `core/3mf` (`mitcad-3mf`) | Rust | 3MF writer (one object of parts) and a checking reader for tests. |
 | `core/usdz` (`mitcad-usdz`) | Rust | USDZ writer: the binary USD layer (crate format 0.8.0, LZ4 and USD's integer coding written here, no USD library) of a scene of meshes, `Xform`s and `UsdPreviewSurface` materials, packed with its textures 64-byte aligned; a checking reader for tests (mitcad#123). |
@@ -29,7 +30,7 @@ JSON commands.
 | `tools/freecad-export` | Python, Bash | FreeCAD macros that make the FreeCAD import's reference models and dumps. |
 
 Dependencies point one way: `app` → `core/ffi` → `core/model` (with
-`solver`, `f3d`, `import`, `freecad`, `zip`, `3mf`, `usdz`, `vcs`, `ipt`; `update`
+`solver`, `f3d`, `import`, `freecad`, `zip`, `3mf`, `usdz`, `vcs`, `ipt`, `ifc`; `update`
 stands alone) and `core/ffi` → `geometry` → OCCT. The model reaches geometry only
 through the `Kernel` trait, so model tests run on a mock kernel.
 
@@ -141,8 +142,10 @@ design in a project.
   evaluated in parallel*). Its kernels must be `ImportKernel`s: `Send`,
   with shapes that threads may share (`Send + Sync`). Within the same
   `threads` (`Progress::helper`) the import reads the file's bodies
-  on several threads and builds the history's bodies ahead of the
-  replay (mitcad#103, *Work beside the replay*); the timeline items
+  on several threads, heals the large bodies of each history's first
+  state while the rest is read (mitcad#245), and builds the history's
+  bodies ahead of the replay (mitcad#103, *Work beside the replay*); the
+  timeline items
   themselves are replayed one after another.
 - **Memory:** an allocation that fails ends the process (Rust's cannot be
   caught; OCCT's `Standard_OutOfMemory` and `std::bad_alloc` inside a
@@ -290,9 +293,10 @@ design in a project.
   `constraint_row` query ([commands.md](../core/model/src/api/commands.md),
   "Assembly constraints").
 - **Design policy** (mitcad#220, `core/model/src/policy.rs`,
-  `document/policy.rs`): the root and each component have seven local
+  `document/policy.rs`): the root and each component have nine local
   settings (sketches, features, components; sketch attachment to and from
-  other components; references to and from them), in the definition state
+  other components, and of a component's first sketch, mitcad#293;
+  references to and from them), in the definition state
   and the design file. A new design (`Document::new_design`) has an
   Assembly root and an empty, active Part1; `Document::new` and designs
   without a stored policy have the general defaults. Every change a JSON
@@ -305,6 +309,18 @@ design in a project.
   not checked. Later move and reparent operations get the check by building
   their next state through `apply`/`apply_move`
   ([commands.md](../core/model/src/api/commands.md), "Design policy").
+  The one redirection: a new component (New Component, a feature's
+  new-component operation) that an owner's policy refuses is placed in the
+  nearest owner above that takes components, at the same place, and the
+  reply says so (`Document::component_parent_beside`, mitcad#292).
+- **Extrude's automatic operation** (mitcad#289,
+  `core/model/src/document/auto_operation.rs`): a preview asked for it
+  evaluates the extrusion as a new body, tries its tool against the
+  visible bodies of its component (boxes first, then
+  `Kernel::tool_contacts`, Join's contact test) and reports Join, Cut or
+  New Body with the bodies; the app takes the answer into the panel until
+  the user picks an operation ([commands.md](../core/model/src/api/commands.md),
+  "Extrude's automatic operation").
 
 ### Units
 
@@ -420,7 +436,8 @@ the `Shape` type.
   (`SetCheckInverted(false)`: the check built a point classifier of all
   of a solid's faces on one thread, every operation). The `.f3d` import
   heals a stored body of 256 faces or more only where it differs from
-  another history state of it built before (`brep::Healed`,
+  its build in the history state before (`brep::Healed`; that base is
+  fixed by the file, not by the order of the builds, mitcad#243;
   `core/import/README.md`). A shape of 64 faces or more finds
   its faces by a reference through an index of its face names, made the
   first time it is asked (`Shape::find_faces`); before, each lookup read
@@ -471,6 +488,13 @@ the `Shape` type.
   its optimal bounding box is its faces' boxes found on all cores (the
   same box as OCCT's `BRepBndLib::AddOptimal`): the `.f3d` import asked
   for the faces of the same large body dozens of times an extrusion.
+- A shape also keeps its edges' middles and curves once worked out
+  (`edge_middles`, `edge_geometries`) and a box that holds each face
+  (`face_boxes`, `Kernel::face_boxes`, on all cores; faces of offset,
+  swept and other surfaces get unbounded boxes): the `.f3d` import's
+  lookups of a face through a point pass over the faces whose box lies
+  farther than the tolerance, instead of measuring the point's distance
+  from each of a body's 23 000 faces (mitcad#119, [performance.md](performance.md)).
 - **Operations must not modify their inputs.** Several OCCT algorithms
   write into input sub-shapes (p-curves, tolerances), which made a feature
   give a different B-rep depending on what ran before. Merged booleans,
@@ -547,6 +571,18 @@ them through operations and derives edge names.
 - **Region:** sorted set of the outer loop's segments,
   `r{c1[c4,c2],c2[c1,c3],…}`. A key that no longer exists matches the
   region with the most curves in common and keeps the old key.
+- **Renamed faces** (mitcad#272, `core/model/src/features/renamed.rs`):
+  a sketch edit that gives a segment another neighbour renames its side
+  face. A face reference that finds no face takes the face of the same
+  feature and role whose key has the most curves in common (a side face:
+  the same own curve, then the most end curves in place; names in keys
+  alike), only when that face is unique: a tie fails with the candidates.
+  An edge finds its two faces so and takes the edges between them (one
+  with `#k`, all without); a vertex its faces. The reference keeps its
+  stored name and the feature warns (`… found as … after a change in
+  Sketch1`). Every feature that resolves a face, edge or vertex on a body
+  goes through this one resolver; face appearances use the same likeness
+  but take every tied face.
 - A face may carry several names. When a boolean splits a face, pieces get
   `#k` in geometric order; a reference without `#k` means all pieces.
   A face a fillet or chamfer consumes, where the blend runs along the
@@ -576,9 +612,19 @@ evaluation is not.
   perpendicular, tangent, equal, fix, midpoint, concentric, collinear,
   symmetric, smooth. **Dimensions:** distance (aligned, horizontal,
   vertical), length, angle, radius, diameter, arc length. A driving
-  dimension is bound to a parameter (`d<n>`); a driven one is display only.
+  dimension is bound to a parameter (`d<n>`); a driven one only measures,
+  into a read-only reference parameter that features after the sketch
+  can use (mitcad#231). A definition may name a user parameter as a
+  driven dimension's reference, which the sketch then takes over: the
+  importers map a source file's parameter of a driven dimension so
+  (mitcad#250).
 - **Stored positions** are the last solution and the next solve's start,
   so the same definition always gives the same geometry.
+- **Implied constraints:** a new constraint the others imply in full is
+  refused; one they imply only in part replaces the older geometric
+  constraints it makes redundant (never a dimension, a fixed entity or a
+  constraint on projected geometry), in one undo step (mitcad#287,
+  `SketchEdit::drop_implied`).
 
 Evaluation: resolve the frame; compute projections (linked ones follow
 their sources by topological name); solve from the stored positions;
@@ -623,7 +669,13 @@ source is gone, keeps its last geometry and is a warning on the sketch
 (`SketchOutput::follow`, mitcad#232). Projecting leaves out curves the
 same as another of the source; Clean Up Projections
 (`sketch/cleanup.rs`) removes repeats across projections and lines on
-another on request.
+another on request. The evaluation also lists, per projection that did not
+follow, its stale curves (`ProjectionFollow::stale`: matching none of the
+source's current curves); Clean Up Stale Projections (`sketch/stale.rs`,
+mitcad#252) removes those nothing uses, trims stale lines to the regions
+later features use (only when those keep their names and areas) and
+unlinks the projections that still cannot follow; it never links one
+again by geometry, as following would move its curves.
 
 Editing operations (trim, extend, offset, mirror, patterns, project,
 move/copy, fillet, chamfer, slots, polygons) are model commands producing
@@ -660,17 +712,33 @@ not recompute.
   declarative definition; the framework builds the panel, selections,
   preview and add/edit. Editing rolls back to before the feature,
   previews there, and on OK runs `edit_feature` as one undo step.
+  A feature's preview draws the design as the view shows it with the
+  command's result (`app/framework/PreviewBodies.hpp`, mitcad#266): shown
+  bodies keep their occurrences' placements, what the command makes comes
+  at the placements the report's `instances` give, and a body the view
+  hides stays hidden.
 - **Sketch mode** (`app/sketch/`): the app keeps the sketch in the form of
   the `sketch` query and does snapping, inference and hit testing itself;
   every change is a `sketch.*` command, one undo step per user action.
-  Tools use a custom cursor (`app/framework/Cursors`).
+  Tools use a custom cursor (`app/framework/Cursors`). Body edges and
+  vertices in the sketch plane, which the Dimension tool picks and the
+  Point tool snaps to, come from the model's `plane_geometry` query (the
+  coplanarity test is the model's, on the kernel's curves); they are
+  projected, linked, only by the action that makes something from them
+  (mitcad#256, mitcad#258).
 - **Browser, timeline, view** (`app/browser/`, `app/view/`): the model is
   read once per change; the view keeps AIS objects that did not change.
   Visibility is the model's: an unset sketch light bulb follows "hidden
   while a feature uses it" (`document/browser.rs`). The browser lists each
   feature under the sketches it uses (the `timeline` query's `sketches`,
   from the same references), and its selection and the timeline's follow
-  each other (mitcad#177).
+  each other (mitcad#177). The light bulbs of bodies, sketches,
+  construction geometry, components and their folders work in every mode;
+  during a command they run outside its undo range (a cancelled command
+  leaves them, a committed one is an undo step of its own after them;
+  `CommandSession::runVisibility`, mitcad#295). Create Sketch shows the
+  origin planes for its pick only while the design has no component but
+  the active one and a root without bodies (mitcad#294).
 - **Background computation** (`app/framework/ModelWorker`): the model runs
   on one long-lived worker thread (256 MB stack, OCCT crash handlers) as
   jobs, one at a time; opening, every model command, undo/redo and every
@@ -680,7 +748,10 @@ not recompute.
   triangulations into shared sub-shapes). The caller stays synchronous:
   50 ms blocked, then input queued, after 400 ms a modal progress dialog
   whose Cancel goes to the job's `RecomputeMonitor` (`JobControl` in the
-  bridge). Queries run on the UI thread between jobs; reads during a job
+  bridge). The wait cursor is a guard of the wait
+  (`app/framework/WaitCursor`, mitcad#268): restored once, by the dialog
+  or at the end, logged; one left on is cleared when the window is idle.
+  Queries run on the UI thread between jobs; reads during a job
   are refused (`ModelBusy`), and deferred work waits for idle
   (`MainWindow::whenIdle`). `MITCAD_COMPUTE_INLINE=1` runs jobs on the UI
   thread for debugging.
@@ -695,14 +766,26 @@ not recompute.
   before the session finishes. Legacy workflows keep their existing
   synchronous wait presentation through an injected handler.
 - **MCP** (`core/mcp`, `core/ffi/src/mcp.rs`, `app/mcp`): the live
-  application profile exposes `document_list`, `model_query` and
-  `model_command` against the window's actual `DocumentSession`. Each
-  connection has a Rust `LiveSession` for protocol state and a pending
-  request; it owns no detached document. The FFI prepares a validated tool
-  and wraps its completed result. Commands follow the ordinary window
-  workflow and run on the same model worker; queries require an idle
-  document. Active commands, drags, dialogs and edit locks guard access,
-  and replacing the document invalidates its handle. A listener binds only
+  application profile exposes `document_list`, `model_query`,
+  `model_command`, `document_save` and the application's own `ui_state`,
+  `ui_log`, `ui_screenshot`, `ui_select` and `ui_command` against the
+  window's actual `DocumentSession` (mitcad#265, `app/MainWindowMcp.cpp`,
+  `app/MainWindowMcpUi.cpp`). Each connection has a Rust `LiveSession` for
+  protocol state and a pending request; it owns no detached document. The
+  FFI prepares a validated tool and wraps its completed result. What MCP
+  allows follows each command's and query's class in the model's API
+  (`core/model/src/api/classes.rs`: model, file IO, remote, internal),
+  not a list of names. Commands follow the ordinary window workflow and run
+  on the same model worker; in an open sketch its own commands go through
+  `SketchOp` as the user's would, and an agent's undo steps are labelled
+  "(agent)". Queries are refused only while the model computes (a busy
+  result with when to retry); a command panel, drags, dialogs and edit
+  locks guard model commands, and replacing the document invalidates its
+  handle. `ui_command` runs registry commands through the panel's own
+  actions (`CommandSession::scriptInputs`) and closes any modal dialog it
+  opens (`mcp::ModalGuard`); `ui_log` reads a ring of the application's log
+  lines (`mcp/LogRing`). The project indicator says "Agent connected"
+  while an MCP session is initialized and can disconnect it. A listener binds only
   to IPv4 loopback on an allocated port; a private per-user discovery
   record supplies an instance ID and authentication token.
   `mitcad-cli mcp --connect` discovers and authenticates a running instance,
@@ -710,12 +793,27 @@ not recompute.
   the token on stdout. Bridge EOF leaves the GUI and unsaved document open.
   `--no-mcp` disables the listener. The separate headless `--workspace`
   mode retains its own documents and confined file tools ([mcp.md](mcp.md)).
+- **Logging** (`app/mcp/LogRing`, `app/framework/DebugLog`, mitcad#269):
+  one message handler for the whole run, installed by `main()` after the
+  UI test driver's and passing every message on to it: a ring of the
+  newest 5000 lines (live MCP's `ui_log`, the problem reports) whose sink
+  is the debug log. That writes the lines to a file while it is switched
+  on (Preferences' Diagnostics page, `--debug-log [FILE]`, `MITCAD_DEBUG_LOG`),
+  with a header (version, build, system, graphics, command line, design,
+  switches), flushed every second and at each warning, rolled over at
+  20 MB, the folder kept to 10 files and 200 MB.
 - **Imports** run in a separate process (`mitcad --import-worker`) so a
   kernel crash or hang only kills that process. Stop keeps what was
   imported (the worker reads `stop` on stdin); Cancel kills the process.
-  Inside it, the `.f3d` and `.ipt` imports guard their memory themselves
+  The `.f3d` import's one question (keep the imported bodies that match
+  the file's on a retry on its stored bodies, or replace them; mitcad#283)
+  goes through the job (`RecomputeMonitor::ask`): the worker prints it
+  (`import-ask`), the window asks the user and writes the answer to its
+  stdin. Inside it, the `.f3d` and `.ipt` imports guard their memory themselves
   (mitcad#80, mitcad#60): low on memory, they give up definitions and
-  finish with the file's bodies rather than end the process.
+  finish with the file's bodies rather than end the process. The IFC
+  import (mitcad#273) stops before its next element and reports the rest
+  as not imported.
 - **Rendering** (`app/render/`, in every build since mitcad#141; the
   configure stops without the prebuilt Cycles and Open Image Denoise):
   View > Rendered shows the visible bodies path traced by Cycles in the
@@ -872,6 +970,22 @@ or **Floating** (the default on macOS; `--chrome=docked|floating` overrides
 it). `MainWindow` builds either from the same panels, so object names and
 the positions the UI tests click are the same in both.
 
+Docked has a look of its own, `WindowStyle` (`app/framework/WindowStyle`,
+mitcad#251), the same on every platform and in both themes: the docks and
+the ribbon's toolbar are raised surfaces (slightly lighter than the window,
+rounded, 6 px apart: the main window's separators are the gap and paint
+nothing); each dock's title bar is a `PanelTitleBar` with its title in
+small grey capitals and float and close buttons that show while the mouse
+is over it (the timeline's is a strip at its left); one accent colour, the
+icons' action blue (`actionColor`), is the palette's Highlight and Accent,
+the selected rows' rounded bands (28 px rows, `stylePanelTree`), the
+timeline's selection and its marker's handle, and the ribbon's selected
+tab's pill; the Command panel's Autoselect has a section title instead of a
+group box. The colours (`windowColors`) follow the platform palette's theme
+and are set again when it changes. On Windows 11 the title bar takes the
+menu bar's colour, with Mica and rounded corners, and the font is Segoe UI
+Variable (`app/platform/WindowsFrame.hpp`).
+
 Floating is a full-window 3D view with the panels over it:
 
 - `TitleBar`: one toolbar-high row under the native title bar (the content
@@ -921,7 +1035,11 @@ ribbon's menus, the hidden native title, the glass child windows, the About
 panel and `captureOwnWindows` (the application's own windows as the window
 server shows them, for tests). `app/platform/macos/MacChrome.mm` implements
 them (Objective-C++, ARC); elsewhere they are inline stubs in the header, so
-portable code calls them without `#ifdef`. `Q_OS_MACOS` branches in portable
+portable code calls them without `#ifdef`. `app/platform/WindowsFrame.hpp`
+does the same for Windows (`mitcad::win`): the Docked window's Windows 11
+frame through `DwmSetWindowAttribute` (skipped before build 22000, decided
+at run time) and the Segoe UI Variable font, implemented in
+`app/platform/windows/WindowsFrame.cpp`. `Q_OS_MACOS` branches in portable
 files are for Qt-level behaviour only (the GL format, shortcuts).
 
 ## Design file
@@ -935,7 +1053,12 @@ are converted on open. Parametric geometry is not stored. Imported bodies
 live in base features as OCCT binary BRep, zlib + base64
 (`{"format": "occt", "compression": "zlib", "size": n, "data": "…"}`,
 `core/model/src/features/base.rs`); their faces are named
-`<feature>:import(<j>)`.
+`<feature>:import(<j>)`. A base feature added from shapes (an import, the
+`.f3d` import's fallbacks) is evaluated from those shapes the first time
+(`Kernel::adopt_shape`, mitcad#244): the body its data reads as, without
+reading the data back, sharing the shape's B-rep and keeping what was
+measured of it that does not depend on face names. Later evaluations read
+the data.
 
 **Design in a project** (format 3): a project is a folder with the
 marker `.mitcad/project.json`. Designs inside keep base-feature B-rep
@@ -1545,3 +1668,27 @@ as base features (`bodies_only`). The triangles of mesh features (kept in
 the graphics segment, not the B-rep record) come in as mesh bodies, base
 features after the replay; a part without bodies opens empty, with a
 warning.
+
+IFC building models (mitcad#273) come in through `core/ifc` (the reader:
+no geometry) and `mitcad-import`'s `ifc` module on the `Kernel` trait
+(`core/ffi/src/ifc_import.rs`; the `import_ifc` command): the spatial
+structure as components (storey planes, grid axes), each element's swept
+solids and booleans as features and its breps and face sets as bodies
+the kernel builds from their faces and triangles (`Kernel::boundary_body`,
+`Kernel::triangle_body`; the OCCT side reuses the B-rep builder of the
+other imports), all of one element in one command
+(`Document::add_features_with`: a building of thousands of elements is
+thousands of commands, not tens of thousands), types' shapes as
+components with occurrences, openings cut from their elements. The
+report accounts for every product of the file.
+
+`.rvt` projects and `.rfa` families (mitcad#274): `core/rvt` reads the
+container (the compound file module shared with `core/ipt` as the
+`mitcad-cfb` crate), the paged gzip streams, the metadata and the file's
+own serialisation schema, and walks the element records by that schema;
+`mitcad_import::rvt` brings a project's building elements in through the
+model's kernel (`primitive`, and `triangle_body` for saved meshes), one
+component per level, each element a body: its saved mesh or its box at its
+transform (`core/ffi/src/rvt_import.rs`; the `import_rvt` command), in
+the import process like the others, under the memory guard. The elements'
+real shapes are phase 2.

@@ -791,4 +791,39 @@ fn helices_turn_their_profiles_about_an_axis() {
         message.contains("the helix's pitch must be greater than zero"),
         "{message}"
     );
+    // Flat ends (mitcad#235): angles, passed in the order start flat, start
+    // transition, end transition, end flat; kept by saving and opening.
+    b.doc
+        .edit_feature(
+            uid,
+            &def(helix(
+                json!({"end": {"transition_angle": "90 deg", "flat_angle": "270 deg"}}),
+            )),
+        )
+        .unwrap();
+    assert_eq!(status(&b.doc, uid), FeatureStatus::Ok);
+    assert!(
+        last_spec(&b.doc).contains("left false ends 0 0 1.57")
+            && last_spec(&b.doc).contains(" 4.71"),
+        "{}",
+        last_spec(&b.doc)
+    );
+    let reopened = Document::from_json(&b.doc.to_json(), MockKernel::default()).unwrap();
+    assert!(feature_def(&reopened).get("end").is_some());
+    assert!(feature_def(&reopened).get("start").is_none());
+    let message = add(
+        &mut b.doc,
+        helix(json!({"start": {"transition_angle": "-10 deg", "flat_angle": 0}})),
+    )
+    .unwrap_err()
+    .to_string();
+    assert!(message.contains("start transition"), "{message}");
+    let message = add(
+        &mut b.doc,
+        helix(json!({"growth": 1, "construction": "freecad",
+                     "end": {"transition_angle": 1, "flat_angle": 1}})),
+    )
+    .unwrap_err()
+    .to_string();
+    assert!(message.contains("Mitcad's construction"), "{message}");
 }

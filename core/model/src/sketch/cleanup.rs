@@ -247,6 +247,18 @@ impl SketchEdit<'_> {
                 map.insert(p, *k);
             }
         }
+        // A kept line that runs the other way: the angle dimensions on the
+        // removed one keep their sides (mitcad#296).
+        let direction = |kind: &EntityKind| match kind {
+            EntityKind::Line { start, end, .. } => {
+                Some(sub(index.point(*end)?, index.point(*start)?))
+            }
+            _ => None,
+        };
+        let reversed = matches!(
+            (direction(&removed.kind), direction(&target.kind)),
+            (Some(r), Some(k)) if dot(r, k) < 0.0
+        );
         let removed_points = removed.kind.points();
         for e in &mut self.def.entities {
             if e.id == curve {
@@ -260,6 +272,9 @@ impl SketchEdit<'_> {
             remap(&mut c.kind, &map);
         }
         for d in &mut self.def.dimensions {
+            if reversed {
+                reverse_angle_ray(&mut d.kind, curve);
+            }
             remap_dimension(&mut d.kind, &map);
         }
         // Constraints and dimensions that now say nothing.
@@ -307,7 +322,7 @@ impl SketchEdit<'_> {
     }
 
     /// Whether a pattern, an offset or a text uses a curve.
-    fn used_by_others(&self, curve: EntityUid) -> bool {
+    pub(super) fn used_by_others(&self, curve: EntityUid) -> bool {
         self.def.patterns.iter().any(|p| {
             p.entities.iter().any(|r| r.uid() == curve)
                 || p.copies.iter().any(|c| {
@@ -329,7 +344,7 @@ impl SketchEdit<'_> {
 
     /// Whether anything but the curve `except` refers to a point: another
     /// curve, a constraint, a dimension, a pattern or a text.
-    fn referred_to(&self, point: EntityUid, except: EntityUid) -> bool {
+    pub(super) fn referred_to(&self, point: EntityUid, except: EntityUid) -> bool {
         let refers = |refs: Vec<Ref>| refs.iter().any(|r| r.uid() == point);
         self.def
             .entities
@@ -365,8 +380,29 @@ fn param(p0: P2, p1: P2, q: P2) -> f64 {
     dot(sub(p1, p0), sub(q, p0)) / length
 }
 
+/// An angle dimension with a side (mitcad#296) measuring from the other
+/// ray of `line`: for a line that is to run the other way.
+fn reverse_angle_ray(kind: &mut DimensionKind, line: EntityUid) {
+    if kind.angle_side().is_none() {
+        return;
+    }
+    if let DimensionKind::Angle {
+        a,
+        b,
+        reverse_a,
+        reverse_b,
+    } = kind
+    {
+        for (l, reverse) in [(*a, reverse_a), (*b, reverse_b)] {
+            if l == line {
+                *reverse = Some(!reverse.unwrap_or(false));
+            }
+        }
+    }
+}
+
 /// A dimension's entities replaced by `map`.
-fn remap_dimension(kind: &mut DimensionKind, map: &BTreeMap<EntityUid, EntityUid>) {
+pub(super) fn remap_dimension(kind: &mut DimensionKind, map: &BTreeMap<EntityUid, EntityUid>) {
     let m = |u: &mut EntityUid| {
         if let Some(c) = map.get(u) {
             *u = *c;
@@ -378,7 +414,7 @@ fn remap_dimension(kind: &mut DimensionKind, map: &BTreeMap<EntityUid, EntityUid
         | D::HorizontalDistance { a, b }
         | D::VerticalDistance { a, b }
         | D::LineDistance { a, b }
-        | D::Angle { a, b } => {
+        | D::Angle { a, b, .. } => {
             m(a);
             m(b);
         }

@@ -4,6 +4,7 @@
 #include <algorithm>
 #include <cmath>
 #include <stdexcept>
+#include <utility>
 
 #include <BRepAdaptor_Curve.hxx>
 #include <BRepAdaptor_Surface.hxx>
@@ -185,69 +186,93 @@ int follow_tangent_chains(const Shape& body, std::vector<int>& owner, const std:
   if (queue.empty()) {
     return 0;
   }
-  NCollection_IndexedDataMap<TopoDS_Shape, NCollection_List<TopoDS_Shape>, TopTools_ShapeMapHasher> edges_of;
-  TopExp::MapShapesAndUniqueAncestors(body.occt(), TopAbs_VERTEX, TopAbs_EDGE, edges_of);
-  const EdgeFaces edge_faces(body);
-  const auto sharp = [&](int edge) {
-    const std::vector<int> faces = edge_faces.at(edge);
-    if (faces.size() != 2) {
-      return false;
-    }
-    try {
-      OCC_CATCH_SIGNALS
-      return !is_smooth(body.edge(edge), body.face(faces[0]), body.face(faces[1]));
-    } catch (const Standard_Failure&) {
-      return false;
-    }
-  };
+  const EdgeContinuations continuations(body);
   int added = 0;
   while (!queue.empty()) {
     const int e = queue.back();
     queue.pop_back();
     const int s = owner[static_cast<std::size_t>(e)];
-    const TopoDS_Edge& edge = body.edge(e);
-    if (BRep_Tool::Degenerated(edge)) {
-      continue;
-    }
-    for (const TopoDS_Vertex& vertex : {TopExp::FirstVertex(edge), TopExp::LastVertex(edge)}) {
-      const int index = vertex.IsNull() ? 0 : edges_of.FindIndex(vertex);
-      if (index == 0) {
-        continue;
-      }
-      try {
-        OCC_CATCH_SIGNALS
-        const std::vector<gp_Vec> away = tangents_away(edge, vertex);
-        for (const TopoDS_Shape& next : edges_of(index)) {
-          const int o = body.edge_index(next);
-          if (o < 0 || o == e || owner[static_cast<std::size_t>(o)] >= 0 ||
-              BRep_Tool::Degenerated(TopoDS::Edge(next))) {
-            continue;
-          }
-          // The next edge runs on where its direction away from the
-          // vertex is the opposite of this one's.
-          bool continues = false;
-          for (const gp_Vec& out : tangents_away(TopoDS::Edge(next), vertex)) {
-            for (const gp_Vec& from : away) {
-              continues = continues || from.Angle(-out) <= kTangentChainAngle;
-            }
-          }
-          if (continues && sharp(o)) {
-            owner[static_cast<std::size_t>(o)] = s;
-            queue.push_back(o);
-            ++added;
-          }
-        }
-      } catch (const Standard_Failure&) {
+    for (const int o : continuations.next(e)) {
+      if (owner[static_cast<std::size_t>(o)] < 0) {
+        owner[static_cast<std::size_t>(o)] = s;
+        queue.push_back(o);
+        ++added;
       }
     }
   }
   return added;
 }
 
+EdgeContinuations::EdgeContinuations(const Shape& body)
+    : m_body(body), m_edgeFaces(body), m_sharp(static_cast<std::size_t>(body.edge_count()), -1) {
+  TopExp::MapShapesAndUniqueAncestors(body.occt(), TopAbs_VERTEX, TopAbs_EDGE, m_edgesOf);
+}
+
+bool EdgeContinuations::sharp(int edge) const {
+  signed char& known = m_sharp[static_cast<std::size_t>(edge)];
+  if (known < 0) {
+    known = 0;
+    const std::vector<int> faces = m_edgeFaces.at(edge);
+    if (faces.size() == 2) {
+      try {
+        OCC_CATCH_SIGNALS
+        known = is_smooth(m_body.edge(edge), m_body.face(faces[0]), m_body.face(faces[1])) ? 0 : 1;
+      } catch (const Standard_Failure&) {
+        known = 0;
+      }
+    }
+  }
+  return known == 1;
+}
+
+std::vector<int> EdgeContinuations::next(int e) const {
+  std::vector<int> found;
+  const TopoDS_Edge& edge = m_body.edge(e);
+  if (BRep_Tool::Degenerated(edge)) {
+    return found;
+  }
+  for (const TopoDS_Vertex& vertex : {TopExp::FirstVertex(edge), TopExp::LastVertex(edge)}) {
+    const int index = vertex.IsNull() ? 0 : m_edgesOf.FindIndex(vertex);
+    if (index == 0) {
+      continue;
+    }
+    try {
+      OCC_CATCH_SIGNALS
+      const std::vector<gp_Vec> away = tangents_away(edge, vertex);
+      for (const TopoDS_Shape& next : m_edgesOf(index)) {
+        const int o = m_body.edge_index(next);
+        if (o < 0 || o == e || BRep_Tool::Degenerated(TopoDS::Edge(next))) {
+          continue;
+        }
+        // The next edge runs on where its direction away from the
+        // vertex is the opposite of this one's.
+        bool continues = false;
+        for (const gp_Vec& out : tangents_away(TopoDS::Edge(next), vertex)) {
+          for (const gp_Vec& from : away) {
+            continues = continues || from.Angle(-out) <= kTangentChainAngle;
+          }
+        }
+        if (continues && sharp(o)) {
+          add_once(found, o);
+        }
+      }
+    } catch (const Standard_Failure&) {
+    }
+  }
+  return found;
+}
+
 std::vector<int> tangent_closure(const Shape& body, std::vector<int> faces) {
   NCollection_IndexedDataMap<TopoDS_Shape, NCollection_List<TopoDS_Shape>, TopTools_ShapeMapHasher>
       ancestors;
   TopExp::MapShapesAndUniqueAncestors(body.occt(), TopAbs_EDGE, TopAbs_FACE, ancestors);
+  return tangent_closure(body, std::move(faces), ancestors);
+}
+
+std::vector<int> tangent_closure(
+    const Shape& body, std::vector<int> faces,
+    const NCollection_IndexedDataMap<TopoDS_Shape, NCollection_List<TopoDS_Shape>, TopTools_ShapeMapHasher>&
+        ancestors) {
   for (std::size_t next = 0; next < faces.size(); ++next) {
     const TopoDS_Face& face = body.face(faces[next]);
     for (TopExp_Explorer it(face, TopAbs_EDGE); it.More(); it.Next()) {

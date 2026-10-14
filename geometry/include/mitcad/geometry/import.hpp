@@ -28,6 +28,15 @@ TopoDS_Shape read_brep_data(const char* data, std::size_t size);
 // "<feature>:import(<first_face + i>)".
 ShapePtr import_body(const TopoDS_Shape& shape, const std::string& feature, int first_face);
 
+// The body import_body makes of `source`'s B-rep data (brep_data, then
+// read_brep_data), made of `source` itself (mitcad#244): the same B-rep,
+// shared rather than written and read (the data holds every face, edge
+// and vertex with its geometry, tolerances and flags as they are, so the
+// faces come in the same order), named as import_body names it, and
+// keeping what was measured of `source` that does not depend on names
+// (Shape::keep_measures_of).
+ShapePtr adopt_body(const Shape& source, const std::string& feature, int first_face);
+
 // A compound of the shapes with their face names.
 ShapePtr compound(const std::vector<const Shape*>& shapes);
 

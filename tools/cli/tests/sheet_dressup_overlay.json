@@ -1,0 +1,17 @@
+[
+  {"comment":"SPDX-License-Identifier: MIT. An ordinary chamfer on a sheet kept as an overlay (mitcad#242): t=1, r=1, K=0.4. A 0.5 chamfer of the back edge y=20 of the 40 x 20 panel is not a change through the thickness: the sheet keeps it as an overlay (800 - 5). A flange on the edge y=0 rebuilds the sheet and the chamfer again (+ 30 pi + 400); Unfold is refused; a thickness edit (t=0.5) rebuilds it all: 400 - 5 + 12.5 pi + 200."},
+  {"cmd":"add_feature","def":{"type":"sheet_rules","thickness":1,"bend_radius":1,"allowance":{"type":"k_factor","k":0.4},"reference_side":"front","bend_relief":{"type":"rectangular","width":1,"depth":1},"corner_relief":{"type":"round","width":2,"depth":2}}},
+  {"cmd":"sketch.create"},
+  {"cmd":"sketch.add_rectangle","sketch":"F2","corner":[0,0],"width":40,"height":20},
+  {"cmd":"add_feature","def":{"type":"sheet_face","rules":"F1","profiles":[{"sketch":"F2","region":"r{c1[c4,c2],c2[c1,c3],c3[c2,c4],c4[c3,c1]}"}]}},
+  {"cmd":"add_feature","def":{"type":"chamfer","body":"F3.b0","edges":["E{F3:sheet_back(0)|F3:sheet_side0(F2:sheet_curve(c3[c2,c4]))}"],"size":{"type":"equal_distance","distance":0.5},"flip":false}},
+  {"expect":{"feature":"F4","status":"ok","body":"F3.b0","volume":795}},
+  {"expect":{"query":{"query":"sheet_state","body":"F3.b0"},"result":{"status":"valid","overlays":[{"feature":"F4","type":"change","removed":5}]}}},
+  {"cmd":"add_feature","def":{"type":"sheet_flange","body":"F3.b0","boundary":{"panel":{"feature":"F3","slot":0},"curve":{"type":"sketch","sketch":"F2","segment":"c1[c4,c2]"}},"angle":1.5707963267948966,"length":{"mode":"tangent","value":10},"position":"edge"}},
+  {"expect":{"feature":"F5","status":"ok","body":"F3.b0","volume":1289.2477796076938}},
+  {"cmd":"add_feature","def":{"type":"sheet_unfold","body":"F3.b0","stationary":{"feature":"F3","slot":0},"bends":[{"feature":"F5","slot":0}]}},
+  {"expect":{"feature":"F6","status":"error","error_contains":"a fillet or chamfer"}},
+  {"cmd":"undo"},
+  {"cmd":"edit_feature","uid":"F1","def":{"type":"sheet_rules","thickness":0.5,"bend_radius":1,"allowance":{"type":"k_factor","k":0.4},"reference_side":"front","bend_relief":{"type":"rectangular","width":1,"depth":1},"corner_relief":{"type":"round","width":2,"depth":2}}},
+  {"expect":{"feature":"F5","status":"ok","body":"F3.b0","volume":634.2699081698724}}
+]

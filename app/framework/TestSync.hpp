@@ -24,8 +24,11 @@ namespace mitcad {
 // key waits too, and once the progress dialog shows, ui_wait_idle waits
 // for the job.
 //
-// Linux (X11) only; elsewhere, and without the variable, nothing is
-// installed and watching costs nothing.
+// Linux (X11), and Windows, where the Windows UI test library posts the
+// Pause key to a window (tools/ui-windows-lib.ps1, Ui-Sync; Qt's event loop
+// keeps it with the other input while a job waits, mitcad#271); elsewhere,
+// and without the variable, nothing is installed and watching costs
+// nothing.
 class TestSync : public QObject, public QAbstractNativeEventFilter {
 public:
   // Installs the sync on the application when MITCAD_TEST_SYNC is set.

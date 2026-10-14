@@ -162,6 +162,69 @@ void test_a_hole_that_touches_the_outer_boundary() {
   CHECK(near(mass_properties(*one).volume, kPi * 100.0 * 2.0));
 }
 
+void test_holes_touching_tangentially() {
+  // mitcad#235. An arch over a line, with a round hole on the line where its
+  // two pieces meet (a ring of 1.75 and 2.75 mm cut by a line along the
+  // inner circle's bottom): the hole is tangent to both pieces at their
+  // vertex.
+  const auto arc = [](const char* name, double x, double y, double radius, double from, double to) {
+    Segment s;
+    s.name = name;
+    s.kind = SegmentKind::Arc;
+    s.center = gp_Pnt2d(x, y);
+    s.radius = radius;
+    s.start_angle = from;
+    s.end_angle = to;
+    return s;
+  };
+  // The values as the sketch solved them, a few ulps off round numbers.
+  const double reach = std::sqrt(2.75 * 2.75 - 1.75 * 1.75);
+  const Loop arch{{line("c1[c3,c2]", -43.021320343559651, -6.5000000000000098, -40.900000000000006,
+                        -6.5000000000000124),
+                   line("c2[c1,c3]", -40.900000000000006, -6.5000000000000124, -38.77867965644036,
+                        -6.5000000000000124),
+                   arc("c3[c2,c1]", -40.900000000000006, -4.7500000000000124, 2.7500000000000009,
+                       5.5934103063940874, 10.114552961554878)}};
+  const Region pierced{"r{c1,c2,c3}",
+                       {arch, Loop{{arc("c4[c1+c2,c1+c2]", -40.900000000000006, -4.7500000000000124,
+                                        1.7500000000000002, 4.7123889803846897, 10.995574287564276)}}}};
+  // On a plane off the origin, as the stored sketch has it.
+  Frame side;
+  side.origin = gp_Pnt(1, 6.5, -54.4);
+  side.x_axis = gp_Dir(0, 0, -1);
+  side.y_axis = gp_Dir(0, 1, 0);
+  const double segment = 2.75 * 2.75 * std::acos(1.75 / 2.75) - 1.75 * reach;
+  for (const Frame& frame : {Frame(), side}) {
+    const ProfileFace face = make_profile(frame, pierced);
+    CHECK(face.pinched);
+    CHECK(near(area_of(pierced, frame), kPi * (2.75 * 2.75 - 1.75 * 1.75) - segment, 1e-6));
+    ExtrudeFeatureSpec spec;
+    spec.feature = "F2";
+    spec.frame = frame;
+    spec.direction = frame.normal();
+    spec.regions = {pierced};
+    spec.side1.distance = 4.0;
+    const ShapePtr solid = extrude_feature(spec);
+    CHECK(near(mass_properties(*solid).volume, 4.0 * (kPi * (2.75 * 2.75 - 1.75 * 1.75) - segment), 1e-6));
+  }
+  // A hole of arcs whose vertex is where it touches the outer circle inside:
+  // a circle of 8 about (0, 3) holding a lens of a circle of 5 about the
+  // origin (tangent at (0, -5)) and one of 6.5 about (0, 3).
+  const Loop disc{{arc("c5[c5,c5]", 0, 3, 8, 1.5 * kPi, 3.5 * kPi)}};
+  // Where the circles of 5 and 6.5 cross: x^2 + y^2 = 25, x^2 + (y-3)^2 = 42.25.
+  const double y = (25.0 - 42.25 + 9.0) / 6.0;
+  const double x = std::sqrt(25.0 - y * y);
+  const double a5 = std::atan2(y, x);
+  const double a65 = std::atan2(y - 3.0, x);
+  const Loop lens{{arc("c6[c7,c7]", 0, 3, 6.5, a65 + 2.0 * kPi, kPi - a65 + 2.0 * kPi),
+                   arc("c7[c6,c7]", 0, 0, 5, kPi - a5, 1.5 * kPi),
+                   arc("c7[c7,c6]", 0, 0, 5, 1.5 * kPi, 2.0 * kPi + a5)}};
+  const Region holed{"r{c5}", {disc, lens}};
+  const ProfileFace inside = make_profile(Frame(), holed);
+  CHECK(inside.pinched);
+  CHECK(area_of(holed) > 0.0 && area_of(holed) < kPi * 64.0);
+}
+
 void test_profile_on_another_plane() {
   // The XZ plane seen from -Y: sketch x = X, sketch y = Z.
   Frame frame;
@@ -233,6 +296,7 @@ void profile_tests() {
   test_arcs_ellipses_and_splines();
   test_holes_and_orientation();
   test_a_hole_that_touches_the_outer_boundary();
+  test_holes_touching_tangentially();
   test_profile_on_another_plane();
   test_segments_meeting_within_the_sketch_tolerance();
   test_invalid_profiles();

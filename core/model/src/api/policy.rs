@@ -80,6 +80,10 @@ pub(crate) fn changed_policy(
             Setting::Components => &mut policy.components,
             Setting::AttachToOthers => &mut policy.attach_to_others,
             Setting::AttachmentsFromOthers => &mut policy.attachments_from_others,
+            Setting::FirstSketchAttaches => &mut policy.first_sketch_attaches,
+            Setting::FirstSketchAttachmentsFromOthers => {
+                &mut policy.first_sketch_attachments_from_others
+            }
             Setting::ReferenceOthers => &mut policy.reference_others,
             Setting::ReferencesFromOthers => &mut policy.references_from_others,
         };
@@ -189,6 +193,33 @@ impl<K: Kernel> Document<K> {
                             "violations": violations}));
         }
         Ok(Value::Array(out))
+    }
+
+    /// A reply's note that a new component went beside the owner that was
+    /// asked for, which takes no components (mitcad#292): `placed_in` (the
+    /// owner it went into), `instead_of` and `placement_warning`, the text
+    /// the application shows. Nothing when it went where asked.
+    pub(crate) fn note_placed_beside(
+        &self,
+        reply: &mut Value,
+        requested: ComponentUid,
+        made: ComponentUid,
+        what: &str,
+    ) {
+        let a = self.assembly();
+        let Some(placed_in) = a.occurrences_of(made).next().map(|o| o.parent) else {
+            return;
+        };
+        if placed_in == requested {
+            return;
+        }
+        reply["placed_in"] = json!(placed_in);
+        reply["instead_of"] = json!(requested);
+        reply["placement_warning"] = json!(format!(
+            "{} does not take components (its policy): {what} made in {} instead",
+            a.name(requested),
+            a.name(placed_in)
+        ));
     }
 
     /// The `sketch_supports` query: whose faces and planes a component's

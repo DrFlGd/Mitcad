@@ -1,0 +1,14 @@
+[
+  {"comment":"SPDX-License-Identifier: MIT. A cut ending on the seam of a folded bend (mitcad#280): t=1, r=1, K=0.4. A 40 x 20 panel with a 90-degree flange at its edge y=20 (tangent length 10): 800 + 30 pi + 400. A cut of the panel's 10 x 5 corner under the bend (x=0..10, y=15..20) ends on the seam without opening the bend: the panel loses 50, the bend keeps its whole width and the seam's rest is a free edge of the bend."},
+  {"cmd":"add_feature","def":{"type":"sheet_rules","thickness":1,"bend_radius":1,"allowance":{"type":"k_factor","k":0.4},"reference_side":"front","bend_relief":{"type":"rectangular","width":1,"depth":1},"corner_relief":{"type":"round","width":2,"depth":2}}},
+  {"cmd":"sketch.create"},
+  {"cmd":"sketch.add_rectangle","sketch":"F2","corner":[0,0],"width":40,"height":20},
+  {"cmd":"add_feature","def":{"type":"sheet_face","rules":"F1","profiles":[{"sketch":"F2","region":"r{c1[c4,c2],c2[c1,c3],c3[c2,c4],c4[c3,c1]}"}]}},
+  {"cmd":"add_feature","def":{"type":"sheet_flange","body":"F3.b0","boundary":{"panel":{"feature":"F3","slot":0},"curve":{"type":"sketch","sketch":"F2","segment":"c3[c2,c4]"}},"angle":1.5707963267948966,"length":{"mode":"tangent","value":10},"position":"edge"}},
+  {"expect":{"feature":"F4","status":"ok","body":"F3.b0","volume":1294.24777960769}},
+  {"cmd":"sketch.create"},
+  {"cmd":"sketch.add_rectangle","sketch":"F5","corner":[0,15],"width":10,"height":5},
+  {"cmd":"add_feature","def":{"type":"sheet_cut","body":"F3.b0","stationary":{"feature":"F3","slot":0},"open_bends":[],"profiles":[{"sketch":"F5","region":"r{c1[c4,c2],c2[c1,c3],c3[c2,c4],c4[c3,c1]}"}]}},
+  {"expect":{"feature":"F6","status":"ok","bodies":1,"body":"F3.b0","volume":1244.24777960769}},
+  {"expect":{"query":{"query":"sheet_state","body":"F3.b0"},"result":{"status":"valid"}}}
+]

@@ -2310,6 +2310,8 @@ impl<K: crate::ImportKernel> Importer<'_, K> {
     /// shape.
     fn removed_pieces(&mut self) -> Result<Vec<Piece<K::Shape>>, String> {
         let next = self.oracle.next_index();
+        // (Bodies kept within the tolerance as their stored ones, mitcad#285.)
+        let stored = self.stored_counterparts();
         let kernel = self.doc.kernel();
         let state: Vec<(crate::StoredBody<K::Shape>, Sig)> =
             self.oracle.state(kernel, next)?.to_vec();
@@ -2317,7 +2319,14 @@ impl<K: crate::ImportKernel> Importer<'_, K> {
             .doc
             .bodies()
             .iter()
-            .map(|b| (b.uid, b.shape.clone(), Sig::of(kernel, b.shape)))
+            .map(|b| {
+                let sig = stored.get(&b.uid).copied();
+                (
+                    b.uid,
+                    b.shape.clone(),
+                    sig.or_else(|| Sig::of(kernel, b.shape)),
+                )
+            })
             .collect();
         let mut used = vec![false; state.len()];
         let mut changed = Vec::new();
@@ -3066,12 +3075,19 @@ impl<K: crate::ImportKernel> Importer<'_, K> {
         if !self.oracle.enabled {
             return Err("its bodies were not decoded (no history to find them)".to_owned());
         }
+        // A body kept within the geometric tolerance of the state the replay
+        // is at stands for its stored body, which the next states hold
+        // exactly where the combine leaves it alone (mitcad#285).
+        let stored = self.stored_counterparts();
         let kernel = self.doc.kernel();
         let current: Vec<(BodyUid, Option<Sig>)> = self
             .doc
             .bodies()
             .iter()
-            .map(|b| (b.uid, Sig::of(kernel, b.shape)))
+            .map(|b| {
+                let sig = stored.get(&b.uid).copied();
+                (b.uid, sig.or_else(|| Sig::of(kernel, b.shape)))
+            })
             .collect();
         let mut candidates = Vec::new();
         for q in self.lookahead(3) {
@@ -3250,12 +3266,21 @@ impl<K: crate::ImportKernel> Importer<'_, K> {
         if !self.oracle.enabled {
             return Err("its source faces were not decoded (no history to find them)".to_owned());
         }
+        // (Bodies kept within the tolerance as their stored ones, mitcad#285.)
+        let stored = self.stored_counterparts();
         let kernel = self.doc.kernel();
         let bodies: Vec<(BodyUid, K::Shape, Option<Sig>)> = self
             .doc
             .bodies()
             .iter()
-            .map(|b| (b.uid, b.shape.clone(), Sig::of(kernel, b.shape)))
+            .map(|b| {
+                let sig = stored.get(&b.uid).copied();
+                (
+                    b.uid,
+                    b.shape.clone(),
+                    sig.or_else(|| Sig::of(kernel, b.shape)),
+                )
+            })
             .collect();
         let mut candidates: Vec<Candidate> = Vec::new();
         let mut last_error = None;
@@ -3408,13 +3433,22 @@ impl<K: crate::ImportKernel> Importer<'_, K> {
             .get("body")
             .and_then(reference)
             .and_then(|r| self.body_of(&r));
+        // (Bodies kept within the tolerance as their stored ones, mitcad#285.)
+        let stored = self.stored_counterparts();
         let kernel = self.doc.kernel();
         let bodies: Vec<(BodyUid, K::Shape, Option<Sig>)> = self
             .doc
             .bodies()
             .iter()
             .filter(|b| only.is_none_or(|o| o == b.uid))
-            .map(|b| (b.uid, b.shape.clone(), Sig::of(kernel, b.shape)))
+            .map(|b| {
+                let sig = stored.get(&b.uid).copied();
+                (
+                    b.uid,
+                    b.shape.clone(),
+                    sig.or_else(|| Sig::of(kernel, b.shape)),
+                )
+            })
             .collect();
         let mut candidates: Vec<Candidate> = Vec::new();
         let mut last_error = None;

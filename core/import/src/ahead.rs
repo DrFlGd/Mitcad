@@ -586,6 +586,71 @@ pub fn in_order<T: Send>(
     count: usize,
     threads: usize,
     f: impl Fn(usize) -> T + Sync,
+    consume: impl FnMut(usize, T),
+) {
+    in_order_sharing(count, threads, None, f, consume);
+}
+
+/// Threads that [`in_order_sharing`]'s workers share with work beside
+/// them (mitcad#245): the work takes one while it runs ([`Share::take`]),
+/// and the workers start no item while as many of them work as there are
+/// threads left, so that the two together stay within the threads.
+#[derive(Debug)]
+pub struct Share {
+    left: AtomicUsize,
+}
+
+/// A thread taken from a [`Share`], given back when dropped.
+#[derive(Debug)]
+pub struct Taken(Arc<Share>);
+
+impl Share {
+    pub fn new(threads: usize) -> Arc<Self> {
+        Arc::new(Self {
+            left: AtomicUsize::new(threads.max(1)),
+        })
+    }
+
+    /// One of the threads while more than `keep` are left (and at least
+    /// one): the workers keep those.
+    pub fn take(self: &Arc<Self>, keep: usize) -> Option<Taken> {
+        let keep = keep.max(1);
+        let mut n = self.left.load(Ordering::SeqCst);
+        loop {
+            if n <= keep {
+                return None;
+            }
+            match self
+                .left
+                .compare_exchange(n, n - 1, Ordering::SeqCst, Ordering::SeqCst)
+            {
+                Ok(_) => return Some(Taken(Arc::clone(self))),
+                Err(now) => n = now,
+            }
+        }
+    }
+
+    /// The threads left for the workers.
+    pub fn left(&self) -> usize {
+        self.left.load(Ordering::SeqCst)
+    }
+}
+
+impl Drop for Taken {
+    fn drop(&mut self) {
+        self.0.left.fetch_add(1, Ordering::SeqCst);
+    }
+}
+
+/// [`in_order`] with its threads shared with work beside it (`share`):
+/// while that work holds threads, fewer workers run (at least one). Items
+/// are claimed only by a worker that may run, so no item waits for a
+/// thread while the others go on without it.
+pub fn in_order_sharing<T: Send>(
+    count: usize,
+    threads: usize,
+    share: Option<&Share>,
+    f: impl Fn(usize) -> T + Sync,
     mut consume: impl FnMut(usize, T),
 ) {
     let threads = threads.min(count);
@@ -596,8 +661,9 @@ pub fn in_order<T: Send>(
         return;
     }
     let window = 2 * threads;
-    // The next item to start, and the items consumed.
-    let progress = std::sync::Mutex::new((0usize, 0usize));
+    // The next item to start, the items consumed, and the workers working
+    // on an item.
+    let progress = std::sync::Mutex::new((0usize, 0usize, 0usize));
     let moved = std::sync::Condvar::new();
     let lock = || {
         progress
@@ -622,18 +688,33 @@ pub fn in_order<T: Send>(
         loop {
             let k = {
                 let mut p = lock();
-                while p.0 < count && p.0 >= p.1 + window {
-                    p = moved
-                        .wait(p)
-                        .unwrap_or_else(std::sync::PoisonError::into_inner);
-                }
-                if p.0 >= count {
-                    return;
+                loop {
+                    if p.0 >= count {
+                        return;
+                    }
+                    if p.0 >= p.1 + window {
+                        p = moved
+                            .wait(p)
+                            .unwrap_or_else(std::sync::PoisonError::into_inner);
+                    } else if share.is_some_and(|s| p.2 >= s.left()) {
+                        // (A thread given back to the share is seen here.)
+                        p = moved
+                            .wait_timeout(p, Duration::from_millis(10))
+                            .unwrap_or_else(std::sync::PoisonError::into_inner)
+                            .0;
+                    } else {
+                        break;
+                    }
                 }
                 p.0 += 1;
+                p.2 += 1;
                 p.0 - 1
             };
             let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| f(k)));
+            lock().2 -= 1;
+            if share.is_some() {
+                moved.notify_all();
+            }
             if sender.send((k, result)).is_err() {
                 return;
             }

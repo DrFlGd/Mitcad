@@ -331,46 +331,65 @@ const DocumentSnapshot::Occurrence* BrowserController::occurrence(const QString&
 // ---------------------------------------------------------------------------
 // The browser
 
+// The light bulbs of bodies, their folders, sketches, construction geometry,
+// components and the Origin folder work in every mode (mitcad#295): while
+// Create Sketch asks for a plane, while sketching and during commands, whose
+// undo range they stay out of. A Flat Pattern and an analysis change as the
+// rest of the model does: outside commands.
+bool BrowserController::visibilityInEveryMode(const BrowserNode& node) {
+  switch (node.type) {
+  case BrowserNode::Type::Origin:
+  case BrowserNode::Type::Body:
+  case BrowserNode::Type::Sketch:
+  case BrowserNode::Type::Datum:
+  case BrowserNode::Type::Component:
+  case BrowserNode::Type::Bodies:
+  case BrowserNode::Type::Sketches:
+  case BrowserNode::Type::Construction:
+    return true;
+  default:
+    return false;
+  }
+}
+
 void BrowserController::toggleVisibility(const BrowserNode& node) {
   const bool show = !node.visible;
   const QString verb = show ? QStringLiteral("shown") : QStringLiteral("hidden");
-  if (node.type == BrowserNode::Type::Origin) {
-    m_host.setOriginShown(show);
-    qDebug().noquote() << QStringLiteral("Visibility %1: %2").arg(node.path, verb);
-    return;
-  }
-  if (!canChange(true)) {
+  if (!visibilityInEveryMode(node) && !canChange(true)) {
     return;
   }
   bool done = false;
+  // The light bulbs of every mode: one undo step, outside a command's.
+  QJsonArray commands;
+  QString label;
   switch (node.type) {
+  case BrowserNode::Type::Origin:
+    commands.append(cmd("set_origin_visible", {{QStringLiteral("visible"), show}}));
+    break;
   case BrowserNode::Type::Body:
-    done = m_host.runModelCommand(cmd("set_body_visible", {{QStringLiteral("uid"), node.uid},
-                                                           {QStringLiteral("visible"), show}}));
+    commands.append(cmd("set_body_visible", {{QStringLiteral("uid"), node.uid}, {QStringLiteral("visible"), show}}));
     break;
   case BrowserNode::Type::Sketch:
   case BrowserNode::Type::Datum:
-    done = m_host.runModelCommand(cmd("set_feature_visible", {{QStringLiteral("uid"), node.uid},
-                                                              {QStringLiteral("visible"), show}}));
+    commands.append(cmd("set_feature_visible", {{QStringLiteral("uid"), node.uid},
+                                                {QStringLiteral("visible"), show}}));
     break;
   case BrowserNode::Type::Component:
-    done = m_host.runModelCommand(cmd("set_occurrence_visible",
-                                      {{QStringLiteral("occurrence"), node.occurrence},
-                                       {QStringLiteral("visible"), show}}));
+    commands.append(cmd("set_occurrence_visible",
+                        {{QStringLiteral("occurrence"), node.occurrence}, {QStringLiteral("visible"), show}}));
     break;
   case BrowserNode::Type::Bodies: {
-    QJsonArray commands;
     const DocumentSnapshot::Component* component = m_snapshot.component(node.component);
     for (const QString& uid : component != nullptr ? component->bodies : QStringList()) {
       commands.append(cmd("set_body_visible", {{QStringLiteral("uid"), uid}, {QStringLiteral("visible"), show}}));
     }
-    done = m_host.runModelCommands(commands, show ? tr("Show Bodies") : tr("Hide Bodies"));
+    label = show ? tr("Show Bodies") : tr("Hide Bodies");
+    done = commands.isEmpty(); // an empty folder: nothing to change
     break;
   }
   case BrowserNode::Type::Sketches:
   case BrowserNode::Type::Construction: {
     const bool sketches = node.type == BrowserNode::Type::Sketches;
-    QJsonArray commands;
     for (const DocumentSnapshot::Feature& feature : m_snapshot.features) {
       if (feature.component == node.component && feature.isActive() &&
           (sketches ? feature.isSketch() : feature.isConstruction())) {
@@ -379,7 +398,8 @@ void BrowserController::toggleVisibility(const BrowserNode& node) {
       }
     }
     const QString what = sketches ? tr("Sketches") : tr("Construction");
-    done = m_host.runModelCommands(commands, (show ? tr("Show %1") : tr("Hide %1")).arg(what));
+    label = (show ? tr("Show %1") : tr("Hide %1")).arg(what);
+    done = commands.isEmpty();
     break;
   }
   case BrowserNode::Type::FlatPattern:
@@ -395,8 +415,14 @@ void BrowserController::toggleVisibility(const BrowserNode& node) {
   default:
     return;
   }
+  if (!commands.isEmpty()) {
+    done = m_host.runVisibilityCommands(commands, label);
+  }
   if (done) {
-    qDebug().noquote() << QStringLiteral("Visibility %1: %2").arg(node.path, verb);
+    const QString during = m_host.activeCommandName();
+    qDebug().noquote() << (during.isEmpty()
+                               ? QStringLiteral("Visibility %1: %2").arg(node.path, verb)
+                               : QStringLiteral("Visibility %1: %2 (during %3)").arg(node.path, verb, during));
   }
 }
 
@@ -441,8 +467,17 @@ void BrowserController::rename(const BrowserNode& node, const QString& name) {
   default:
     return;
   }
-  if (m_host.runModelCommand(command)) {
+  QJsonObject result;
+  if (m_host.runModelCommand(command, &result)) {
     qDebug().noquote() << QStringLiteral("Renamed %1 to %2").arg(node.name, name);
+    // A component's only, default-named body takes its name (mitcad#291);
+    // the browser and the timeline show it after the refresh.
+    const QJsonObject body = result.value(QStringLiteral("renamed_body")).toObject();
+    if (!body.isEmpty()) {
+      qDebug().noquote() << QStringLiteral("Renamed body %1 with its component to %2")
+                                .arg(body.value(QStringLiteral("uid")).toString(),
+                                     body.value(QStringLiteral("name")).toString());
+    }
   } else {
     m_browser->rebuild(m_snapshot, m_originShown);
   }

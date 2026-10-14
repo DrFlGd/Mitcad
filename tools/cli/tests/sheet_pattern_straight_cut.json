@@ -1,0 +1,21 @@
+[
+  {"comment":"SPDX-License-Identifier: MIT. A pattern of a straight cut kept as an overlay (mitcad#242): t=2, r=3, K=0.3, back reference; the 35 x 20 panel with a 15 mm flange at x=5 (2251.33). The straight cut of x=0..8, y=12..16 through the bend is an overlay (60.175 removed); a rectangular pattern of it 6 mm along -y cuts the same again at y=6..10 from the copy of its sketch plane, also an overlay of the sheet: 2141.152 - 60.175."},
+  {"cmd":"add_feature","def":{"type":"sheet_rules","thickness":2,"bend_radius":3,"allowance":{"type":"k_factor","k":0.3},"reference_side":"back","bend_relief":{"type":"rectangular","width":2,"depth":3},"corner_relief":{"type":"round","width":2,"depth":3}}},
+  {"cmd":"sketch.create"},
+  {"cmd":"sketch.add_rectangle","sketch":"F2","corner":[-30,0],"width":35,"height":20},
+  {"cmd":"add_feature","def":{"type":"sheet_face","rules":"F1","profiles":[{"sketch":"F2","region":"r{c1[c4,c2],c2[c1,c3],c3[c2,c4],c4[c3,c1]}"}]}},
+  {"cmd":"add_feature","def":{"type":"sheet_flange","body":"F3.b0","boundary":{"panel":{"feature":"F3","slot":0},"curve":{"type":"sketch","sketch":"F2","segment":"c2[c1,c3]"}},"angle":1.5707963267948966,"length":{"mode":"tangent","value":15},"position":"edge"}},
+  {"expect":{"feature":"F4","status":"ok","body":"F3.b0","volume":2251.3274122871835}},
+  {"cmd":"sketch.create"},
+  {"cmd":"sketch.add_rectangle","sketch":"F5","corner":[-10,5],"width":5,"height":5},
+  {"cmd":"add_feature","def":{"type":"sheet_cut","body":"F3.b0","mode":"straight","extent":{"type":"through_all"},"flip":true,"profiles":[{"sketch":"F5","region":"r{c1[c4,c2],c2[c1,c3],c3[c2,c4],c4[c3,c1]}"}]}},
+  {"expect":{"feature":"F6","status":"ok","body":"F3.b0","volume":2201.3274122871835}},
+  {"cmd":"sketch.create"},
+  {"cmd":"sketch.add_rectangle","sketch":"F7","corner":[0,12],"width":8,"height":4},
+  {"cmd":"add_feature","def":{"type":"sheet_cut","body":"F3.b0","mode":"straight","extent":{"type":"through_all"},"flip":true,"profiles":[{"sketch":"F7","region":"r{c1[c4,c2],c2[c1,c3],c3[c2,c4],c4[c3,c1]}"}]}},
+  {"expect":{"feature":"F8","status":"ok","body":"F3.b0","volume":2141.1523568475193}},
+  {"expect":{"query":{"query":"sheet_state","body":"F3.b0"},"result":{"status":"valid","overlays":[{"feature":"F8","removed":60.17505543966422}]}}},
+  {"cmd":"add_feature","def":{"type":"rectangular_pattern","objects":{"type":"features","features":["F8"]},"direction1":{"axis":{"origin":[0,0,0],"direction":[0,-1,0]},"quantity":2,"distance":6},"distance_type":"spacing","compute":"adjust","original_bodies":true}},
+  {"expect":{"feature":"F9","status":"ok","body":"F3.b0","volume":2080.977301407855}},
+  {"expect":{"query":{"query":"sheet_state","body":"F3.b0"},"result":{"status":"valid","overlays":[{"feature":"F8"},{"feature":"F9"}]}}}
+]

@@ -269,6 +269,16 @@ if(BUILD_TESTING)
   add_test(NAME cli.import_f3d_timeline COMMAND mitcad-cli import-f3d "${exchange}/bodies.f3d")
   set_tests_properties(cli.import_f3d_timeline PROPERTIES FIXTURES_REQUIRED cli_f3d PASS_REGULAR_EXPRESSION
     "bodies\\.f3d: 0 timeline items.*F1 Stored bodies \\(base\\): warning: Nothing replayed: the file's bodies come in as they are \\(F1\\).*Body1 \\(F1\\.b0\\): volume 1000\\.000 mm3")
+  # What retries on the file's exact state do with the bodies that match
+  # it (mitcad#283): keep or replace; anything else is refused.
+  add_test(NAME cli.import_f3d_retry_bodies
+    COMMAND mitcad-cli import-f3d "${exchange}/bodies.f3d" --retry-bodies replace)
+  set_tests_properties(cli.import_f3d_retry_bodies PROPERTIES FIXTURES_REQUIRED cli_f3d PASS_REGULAR_EXPRESSION
+    "bodies\\.f3d: 0 timeline items")
+  add_test(NAME cli.import_f3d_retry_bodies_refused
+    COMMAND mitcad-cli import-f3d "${exchange}/bodies.f3d" --retry-bodies ask)
+  set_tests_properties(cli.import_f3d_retry_bodies_refused PROPERTIES FIXTURES_REQUIRED cli_f3d
+    PASS_REGULAR_EXPRESSION "--retry-bodies needs keep or replace")
   # After an import whose geometry kernel hung (mitcad#82): the exit status
   # of the import (1 when every try hung, 0 when one finished) while the
   # threads the hang watchdog gave up still run, not a crash at exit.
@@ -396,6 +406,47 @@ if(BUILD_TESTING)
     COMMAND "${CMAKE_COMMAND}" "-DCLI=$<TARGET_FILE:mitcad-cli>" "-DRUNNER=$<TARGET_FILE:mitcad_run_parallel>"
             "-DWORK=${CMAKE_CURRENT_BINARY_DIR}/iam-corpus" -P "${CMAKE_CURRENT_SOURCE_DIR}/iam-corpus.cmake")
   set_tests_properties(iam.corpus PROPERTIES SKIP_REGULAR_EXPRESSION "iam corpus: skipped")
+
+  # The IFC import (mitcad#273): the reader's test building (written by
+  # mitcad-cli at the test, never kept), every product accounted for: the
+  # storeys as components, the wall's extrusion with its opening cut, the
+  # window type's two occurrences, the clipped column, the faceted cube and
+  # the tetrahedron mesh, with their volumes. Real files under
+  # MITCAD_IFC_CORPUS: ifc-corpus.cmake.
+  set(ifc "${CMAKE_CURRENT_BINARY_DIR}/ifc")
+  file(MAKE_DIRECTORY "${ifc}")
+  add_test(NAME cli.ifc_file COMMAND mitcad-cli import-ifc --write-test "${ifc}/building.ifc")
+  set_tests_properties(cli.ifc_file PROPERTIES FIXTURES_SETUP cli_ifc)
+  add_test(NAME cli.import_ifc COMMAND mitcad-cli import-ifc "${ifc}/building.ifc" --save "${ifc}/building.mitcad")
+  set_tests_properties(cli.import_ifc PROPERTIES FIXTURES_REQUIRED cli_ifc FIXTURES_SETUP cli_ifc_saved
+    PASS_REGULAR_EXPRESSION
+    "Imported building\\.ifc \\(IFC4 IFC4, view ReferenceView_V1\\.2, from Mitcad test\\): 16 products in 4 components.*outcomes: 1 axes, 4 component, 1 cut, 1 mesh, 2 not_imported, 2 occurrence, 4 parametric, 1 stored.*check: 1 of 1 element volumes agree.*#100 IFCWALL 'Wall A' 1WALL00000000000000000: parametric \\(1 bodies, 4 features, volume 2800000000\\.0 mm3\\).*#400 IFCCOLUMN 'Column' [^\n]*: parametric \\(1 bodies, 4 features, volume 400000000\\.0 mm3\\).*#500 [^\n]*: stored \\(1 bodies, 1 features, volume 1000000000\\.0 mm3\\).*#600 [^\n]*: mesh \\(1 bodies, 1 features, volume 166666666\\.7 mm3\\).*map #140 'Window type': 2 occurrences")
+  add_test(NAME cli.info_ifc COMMAND mitcad-cli info "${ifc}/building.mitcad")
+  set_tests_properties(cli.info_ifc PROPERTIES FIXTURES_REQUIRED cli_ifc_saved
+    PASS_REGULAR_EXPRESSION "Wall A 1WALL00000000000000000")
+  add_test(NAME ifc.corpus
+    COMMAND "${CMAKE_COMMAND}" "-DCLI=$<TARGET_FILE:mitcad-cli>" "-DWORK=${CMAKE_CURRENT_BINARY_DIR}/ifc-corpus"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/ifc-corpus.cmake")
+  set_tests_properties(ifc.corpus PROPERTIES SKIP_REGULAR_EXPRESSION "ifc corpus: skipped")
+  # The .rvt import (mitcad#274): the reader's test project (two levels, a
+  # column, a wall, a surface's saved mesh) one component per level, and
+  # its test family's metadata. The corpus's MIT-licensed project (by its
+  # content id under MITCAD_RVT_CORPUS): every building element on its
+  # level; skipped without the corpus.
+  add_test(NAME cli.rvt_files COMMAND test_exchange --write-rvt "${exchange}/project.rvt")
+  add_test(NAME cli.rfa_file COMMAND test_exchange --write-rfa "${exchange}/family.rfa")
+  set_tests_properties(cli.rvt_files cli.rfa_file PROPERTIES FIXTURES_SETUP cli_rvt)
+  add_test(NAME cli.import_rvt
+    COMMAND mitcad-cli import-rvt "${exchange}/project.rvt" --save "${exchange}/project.mitcad")
+  set_tests_properties(cli.import_rvt PROPERTIES FIXTURES_REQUIRED cli_rvt PASS_REGULAR_EXPRESSION
+    "project\\.rvt \\(rvt\\), saved by release 2024.*Imported 3 bodies: 1 saved meshes, 1 boxes at a family type's transform, 1 boxes.*Ground: 2 bodies.*Upper: 1 bodies")
+  add_test(NAME cli.import_rfa COMMAND mitcad-cli import-rvt "${exchange}/family.rfa")
+  set_tests_properties(cli.import_rfa PROPERTIES FIXTURES_REQUIRED cli_rvt PASS_REGULAR_EXPRESSION
+    "family\\.rfa \\(rfa\\), saved by release 2020.*family: Test Family & Co.*a family file: its metadata only")
+  add_test(NAME rvt.corpus
+    COMMAND "${CMAKE_COMMAND}" "-DCLI=$<TARGET_FILE:mitcad-cli>" "-DWORK=${CMAKE_CURRENT_BINARY_DIR}/rvt-corpus"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/rvt-corpus.cmake")
+  set_tests_properties(rvt.corpus PROPERTIES SKIP_REGULAR_EXPRESSION "rvt corpus: skipped")
 
   # FreeCAD .FCStd import: a small document made by the test (B-rep shapes
   # from mitcad-geomtool), imported against a reference, saved and opened.
@@ -608,6 +659,59 @@ if(BUILD_TESTING)
       COMMAND mitcad-cli run "${scripts}/${sheet_case}_reopen.json" --open "${sheet_file}")
     set_tests_properties(cli.${sheet_case}_reopen PROPERTIES FIXTURES_REQUIRED cli_${sheet_case})
   endforeach()
+  # A flange at the edge, the imports' flanges whose bend starts at the
+  # selected edge (mitcad#211).
+  add_test(NAME cli.sheet_flange_edge COMMAND mitcad-cli run "${scripts}/sheet_flange_edge.json")
+  # A simple hole through a sheet keeps it a sheet (mitcad#211).
+  add_test(NAME cli.sheet_hole COMMAND mitcad-cli run "${scripts}/sheet_hole.json")
+  # A flange whose trim reaches an existing bend's seam: adjacent flanges,
+  # a flange on a wall's side edge (mitcad#211).
+  add_test(NAME cli.sheet_flange_adjacent COMMAND mitcad-cli run "${scripts}/sheet_flange_adjacent.json")
+  add_test(NAME cli.sheet_flange_on_wall COMMAND mitcad-cli run "${scripts}/sheet_flange_on_wall.json")
+  # Hems up to 180 degrees, the side-tangent position, the outer-tangent
+  # datum and widths from the boundary's middle (mitcad#242).
+  add_test(NAME cli.sheet_flange_hem COMMAND mitcad-cli run "${scripts}/sheet_flange_hem.json")
+  # A face joined to a sheet in its panel's plane (mitcad#242).
+  add_test(NAME cli.sheet_face_join COMMAND mitcad-cli run "${scripts}/sheet_face_join.json")
+  # The sheet-domain adapter of ordinary features (mitcad#242).
+  add_test(NAME cli.sheet_adapter COMMAND mitcad-cli run "${scripts}/sheet_adapter.json")
+  # Mirrors and patterns of sheet features (mitcad#242).
+  add_test(NAME cli.sheet_mirror COMMAND mitcad-cli run "${scripts}/sheet_mirror.json")
+  add_test(NAME cli.sheet_mirror_flange COMMAND mitcad-cli run "${scripts}/sheet_mirror_flange.json")
+  add_test(NAME cli.sheet_corner_whole COMMAND mitcad-cli run "${scripts}/sheet_corner_whole.json")
+  # Ordinary fillets and chamfers on a sheet kept as overlays (mitcad#242).
+  add_test(NAME cli.sheet_dressup_overlay COMMAND mitcad-cli run "${scripts}/sheet_dressup_overlay.json")
+  # Coplanar panels of one face meeting along an arc (mitcad#242).
+  add_test(NAME cli.sheet_curved_seam COMMAND mitcad-cli run "${scripts}/sheet_curved_seam.json")
+  # Patterns and mirrors of features kept as sheet overlays (mitcad#242).
+  add_test(NAME cli.sheet_pattern_straight_cut COMMAND mitcad-cli run "${scripts}/sheet_pattern_straight_cut.json")
+  add_test(NAME cli.sheet_mirror_dressup COMMAND mitcad-cli run "${scripts}/sheet_mirror_dressup.json")
+  # Straight sheet cuts, through a bend kept as an overlay (mitcad#242).
+  set(sheet_file "${CMAKE_CURRENT_BINARY_DIR}/sheet_cut_straight.mitcad")
+  add_test(NAME cli.sheet_cut_straight
+    COMMAND mitcad-cli run "${scripts}/sheet_cut_straight.json" --save "${sheet_file}")
+  set_tests_properties(cli.sheet_cut_straight PROPERTIES FIXTURES_SETUP cli_sheet_cut_straight)
+  add_test(NAME cli.sheet_cut_straight_reopen
+    COMMAND mitcad-cli run "${scripts}/sheet_cut_straight_reopen.json" --open "${sheet_file}")
+  set_tests_properties(cli.sheet_cut_straight_reopen PROPERTIES FIXTURES_REQUIRED cli_sheet_cut_straight)
+  # Overhangs of a flange wider than its boundary from the bend's tangent
+  # line (the .ipt flanges', mitcad#242).
+  add_test(NAME cli.sheet_flange_overhang COMMAND mitcad-cli run "${scripts}/sheet_flange_overhang.json")
+  # Double bends between parallel panels, and mirrors of faces that make
+  # new sheet bodies (mitcad#280).
+  set(sheet_file "${CMAKE_CURRENT_BINARY_DIR}/sheet_double_bend.mitcad")
+  add_test(NAME cli.sheet_double_bend
+    COMMAND mitcad-cli run "${scripts}/sheet_double_bend.json" --save "${sheet_file}")
+  set_tests_properties(cli.sheet_double_bend PROPERTIES FIXTURES_SETUP cli_sheet_double_bend)
+  add_test(NAME cli.sheet_double_bend_reopen
+    COMMAND mitcad-cli run "${scripts}/sheet_double_bend_reopen.json" --open "${sheet_file}")
+  set_tests_properties(cli.sheet_double_bend_reopen PROPERTIES FIXTURES_REQUIRED cli_sheet_double_bend)
+  add_test(NAME cli.sheet_double_bend_mirror COMMAND mitcad-cli run "${scripts}/sheet_double_bend_mirror.json")
+  # A round past a short side, a fold line on the back surface and a cut
+  # ending on the seam of a folded bend (mitcad#280).
+  add_test(NAME cli.sheet_corner_round_past COMMAND mitcad-cli run "${scripts}/sheet_corner_round_past.json")
+  add_test(NAME cli.sheet_fold_back COMMAND mitcad-cli run "${scripts}/sheet_fold_back.json")
+  add_test(NAME cli.sheet_cut_on_seam COMMAND mitcad-cli run "${scripts}/sheet_cut_on_seam.json")
 endif()
 
 # Sheet Unfold, Refold and Flat Pattern (mitcad#208): actual L, U and Z
@@ -679,6 +783,12 @@ if(BUILD_TESTING)
       COMMAND mitcad-cli run "${scripts}/${sheet_case}_reopen.json" --open "${sheet_file}")
     set_tests_properties(cli.${sheet_case}_reopen PROPERTIES FIXTURES_REQUIRED cli_${sheet_case})
   endforeach()
+endif()
+
+# References that find faces, edges and vertices a sketch change renamed
+# (mitcad#272), through the OCCT kernel.
+if(BUILD_TESTING)
+  add_test(NAME cli.renamed_face_refs COMMAND mitcad-cli run "${scripts}/renamed_face_refs.json")
 endif()
 
 # mitcad-cli loads Qt's DLLs (mitcad-cli render): on Windows its tests find

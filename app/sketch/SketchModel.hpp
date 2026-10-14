@@ -64,8 +64,9 @@ struct DimensionData {
   QJsonObject json;
   QStringList refs;
   bool driven = false;
-  QString parameter;  // a driving dimension's parameter (d3)
+  QString parameter;  // a driving dimension's parameter or a driven one's reference (d3)
   QString expression; // its expression ("d1 / 2")
+  QString comment;    // its parameter's comment ("Sketch1 distance")
   double measured = 0.0; // mm or radians
   std::optional<V2> text; // where its value is shown, when placed
 };
@@ -113,6 +114,18 @@ struct OffsetData {
   bool derived = false;
 };
 
+// A linked projection of the sketch (the `sketch` query's `projections`): its
+// source and the entities made from it, which a tool reuses for another
+// dimension or point on the same body edge or vertex (mitcad#256).
+struct ProjectionData {
+  QString source;      // E{…}, V{…} or a face
+  QString body;        // empty: any body
+  QString occurrence;  // its link's source: where another component's geometry was picked
+  bool linked = false; // it has a link (geometry of another component)
+  QStringList entities;
+  bool stale = false; // it did not follow its source all the way (kept, lost, unfollowed, stale)
+};
+
 class SketchModel {
 public:
   // Reads a `sketch` query's answer; false when the sketch has no frame
@@ -127,6 +140,14 @@ public:
   // What the evaluation warns about (linked projections that could not
   // follow their sources, mitcad#232).
   QStringList warnings;
+  // The entities each warning is about, one list per warning (the query's
+  // `warning_entities`, mitcad#264): empty for a warning about nothing in
+  // particular.
+  std::vector<QStringList> warningEntities;
+  // Linked projections that do not follow their sources (kept, lost or with
+  // entities that found nothing): Clean Up Stale Projections tidies them,
+  // and the palette offers it (mitcad#252).
+  bool staleProjections = false;
   int dof = 0;
   std::vector<PointData> points;
   std::vector<CurveData> curves;
@@ -135,6 +156,7 @@ public:
   std::vector<TextData> texts;
   std::vector<PatternData> patterns;
   std::vector<OffsetData> offsets;
+  std::vector<ProjectionData> projections;
   std::vector<QStringList> conflicts;
 
   const PointData* point(const QString& id) const;
@@ -165,5 +187,8 @@ public:
 // The sketch point of a 3D frame point and back.
 V2 toSketch(const geometry::Frame& frame, const gp_Pnt& point);
 gp_Pnt toModel(const geometry::Frame& frame, const V2& point);
+// A curve from the model's JSON: an entity's `type` and its `geometry`
+// (as the `sketch` query gives them).
+Curve2 curveFromJson(const QString& type, const QJsonObject& geometry);
 
 } // namespace mitcad::sketch

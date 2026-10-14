@@ -5,7 +5,8 @@
 //! of fillets; each names its faces, so later features can refer to the
 //! edges a fillet made.
 //!
-//! The geometry kernel always follows tangent chains. What it cannot build
+//! The geometry kernel follows tangent chains (not past a vertex where the
+//! edges turn, unless the next edge is rounded too). What it cannot build
 //! (asymmetric and curvature continuous fillets that meet other rounded
 //! edges at a corner, for instance) fails with an "unsupported:" message
 //! (see [`super::face_refs`]).
@@ -443,13 +444,25 @@ impl<K: Kernel> Evaluate<K> for FilletDef {
     fn evaluate(&self, ctx: &mut EvalContext<'_, K>) -> Result<FeatureOutput<K::Shape>, String> {
         let (sizes, weights) = self.values(ctx)?;
         let shape = ctx.body(self.body)?;
-        for set in &self.sets {
-            ctx.require_edges(self.body, &shape, &set.edges)?;
-            require_faces(ctx, self.body, &shape, &set.faces)?;
-            require_faces(ctx, self.body, &shape, set.reference_face.as_slice())?;
+        // The names the kernel gets: a face or edge a sketch change renamed
+        // is found again (mitcad#272); the definition keeps its names.
+        let mut found = self.clone();
+        for set in &mut found.sets {
+            set.edges = ctx.require_edges(self.body, &shape, &set.edges)?;
+            set.faces = require_faces(ctx, self.body, &shape, &set.faces)?;
+            if let Some(face) = &set.reference_face {
+                set.reference_face = Some(ctx.face_on(self.body, &shape, face)?);
+            }
+            if let FilletSizeDef::Variable {
+                start_vertex: Some(vertex),
+                ..
+            } = &mut set.size
+            {
+                *vertex = ctx.vertex_on(&shape, vertex)?;
+            }
         }
         let uid = ctx.uid;
-        let rounded = self.apply(ctx, uid, &shape, &sizes, &weights)?;
+        let rounded = found.apply(ctx, uid, &shape, &sizes, &weights)?;
         Ok(FeatureOutput {
             changes: vec![BodyChange::Set(self.body, rounded)],
             ..FeatureOutput::default()

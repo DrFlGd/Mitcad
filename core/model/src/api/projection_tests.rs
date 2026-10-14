@@ -543,6 +543,76 @@ fn the_clean_up_merges_a_line_on_another_and_says_what_changes() {
 }
 
 #[test]
+fn the_clean_up_keeps_the_side_of_an_angle_on_a_line_that_ran_the_other_way() {
+    // As `with_two_sources`, the short edge projected from right to left.
+    let mut d = block();
+    command(
+        &mut d,
+        json!({"cmd": "sketch.create", "plane": {"face": FACE}}),
+    );
+    let edge = bottom_edge();
+    d.kernel()
+        .named_curves
+        .borrow_mut()
+        .insert(edge.clone(), line([50.0, 0.0], [10.0, 0.0]));
+    *d.kernel().curves.borrow_mut() = square(60.0, 0);
+    for source in [edge.as_str(), FACE] {
+        command(
+            &mut d,
+            json!({"cmd": "sketch.project", "sketch": "F3", "source": source, "body": "F2.b0", "linked": true}),
+        );
+    }
+    let s = sketch(&d, "F3");
+    let short = line_id(&s, [10.0, 0.0], [50.0, 0.0]);
+    let bottom = line_id(&s, [0.0, 0.0], [60.0, 0.0]);
+    let run = |id: &str| {
+        let g = &entity(&s, id)["geometry"];
+        g["end"][0].as_f64().unwrap() - g["start"][0].as_f64().unwrap()
+    };
+    assert!(run(&short) * run(&bottom) < 0.0, "{s}");
+    let slanted = command(
+        &mut d,
+        json!({"cmd": "sketch.add_line", "sketch": "F3", "start": [20, 10], "end": [30, 40]}),
+    );
+    let slanted = slanted["entities"]
+        .as_array()
+        .unwrap()
+        .last()
+        .unwrap()
+        .clone();
+    let added = command(
+        &mut d,
+        json!({"cmd": "sketch.add_dimension", "sketch": "F3", "driven": true,
+               "dimension": {"type": "angle", "a": short, "b": slanted,
+                             "reverse_a": false, "reverse_b": false}}),
+    );
+    let k = added["dimensions"][0].as_str().unwrap().to_owned();
+    let dimension = |d: &Document<MockKernel>| {
+        sketch(d, "F3")["dimensions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|x| x["id"] == k.as_str())
+            .unwrap()
+            .clone()
+    };
+    let before = dimension(&d)["measured"].as_f64().unwrap();
+    // Between the leftward ray and the slanted line: more than 90 degrees.
+    assert!(before > std::f64::consts::FRAC_PI_2, "{before}");
+    command(
+        &mut d,
+        json!({"cmd": "sketch.clean_up_projections", "sketch": "F3"}),
+    );
+    let after = dimension(&d);
+    assert_eq!(after["a"], bottom.as_str(), "{after}");
+    assert_eq!(after["reverse_a"], true, "{after}");
+    assert!(
+        close(after["measured"].as_f64().unwrap(), before),
+        "{after}"
+    );
+}
+
+#[test]
 fn a_projection_whose_curves_would_no_longer_meet_keeps_its_geometry() {
     // A rounded corner: a line, an arc and a line sharing their ends.
     let mut d = block();
@@ -595,6 +665,69 @@ fn a_projection_whose_curves_would_no_longer_meet_keeps_its_geometry() {
         "{s}"
     );
     assert_eq!(feature(&d, "F3")["status"], "warning");
+    // The warning carries the projection's entities (mitcad#264): the
+    // Sketch Palette selects them when it is clicked.
+    assert_eq!(
+        s["warning_entities"],
+        json!([["p1", "p2", "c3", "p4", "p5", "c6", "p7", "c8"]]),
+        "{s}"
+    );
+}
+
+#[test]
+fn each_warning_carries_the_entities_it_is_about() {
+    // A projection that keeps its geometry as a whole: all its entities,
+    // also after some of its curves were deleted (mitcad#264).
+    let mut d = block();
+    *d.kernel().curves.borrow_mut() = square(60.0, 0);
+    let corner = |p: [f64; 2], id: &str| json!({"id": id, "type": "point", "at": p, "fixed": true, "reference": true});
+    let edge = |id: &str, a: &str, b: &str| json!({"id": id, "type": "line", "start": a, "end": b, "fixed": true, "reference": true});
+    command(
+        &mut d,
+        json!({"cmd": "add_feature", "def": {"type": "sketch", "plane": {"face": FACE},
+               "entities": [
+                   corner([0.0, 0.0], "p1"),
+                   corner([60.0, 0.0], "p2"),
+                   edge("c3", "p1", "p2"),
+                   corner([60.0, 40.0], "p4"),
+                   edge("c5", "p2", "p4"),
+                   corner([0.0, 40.0], "p6"),
+                   edge("c7", "p4", "p6"),
+                   edge("c8", "p6", "p1")],
+               "projections": [{"source": FACE, "body": "F2.b0",
+                                "entities": ["p1", "p2", "c3", "p4", "c5", "p6", "c7", "c8"]}]}}),
+    );
+    assert_eq!(sketch(&d, "F3")["warning_entities"], json!([]));
+    command(
+        &mut d,
+        json!({"cmd": "sketch.remove", "sketch": "F3", "items": ["c8"]}),
+    );
+    // The face's corner chamfered: another shape, the projection is kept.
+    widen(
+        &mut d,
+        vec![
+            line([0.0, 0.0], [80.0, 0.0]),
+            line([80.0, 0.0], [80.0, 38.0]),
+            line([80.0, 38.0], [78.0, 40.0]),
+            line([78.0, 40.0], [0.0, 40.0]),
+            line([0.0, 40.0], [0.0, 0.0]),
+        ],
+    );
+    let s = sketch(&d, "F3");
+    assert_eq!(s["projections"][0]["kept"], true, "{s}");
+    let warnings = s["warnings"].as_array().unwrap();
+    let entities = s["warning_entities"].as_array().unwrap();
+    assert_eq!(warnings.len(), entities.len(), "{s}");
+    let at = warnings
+        .iter()
+        .position(|w| w.as_str().unwrap().contains("no longer match"))
+        .unwrap_or_else(|| panic!("no kept warning in {s}"));
+    assert_eq!(entities[at], s["projections"][0]["entities"], "{s}");
+    assert!(!entities[at].as_array().unwrap().is_empty(), "{s}");
+    assert!(
+        !entities[at].as_array().unwrap().contains(&json!("c8")),
+        "{s}"
+    );
 }
 
 #[test]
@@ -666,4 +799,239 @@ fn a_projection_of_an_earlier_version_follows_only_the_same_shape() {
         json!({"cmd": "sketch.project", "sketch": "F3", "source": FACE, "body": "F2.b0", "linked": true}),
     );
     assert_eq!(sketch(&d, "F3")["projections"][1]["by_geometry"], true);
+}
+
+// Clean Up Stale Projections (mitcad#252).
+
+/// The top face narrower (from x = 10) with a chamfer on the corner at
+/// (60, 40): an edge more.
+fn narrower() -> Vec<Curve3> {
+    vec![
+        line([10.0, 0.0], [60.0, 0.0]),
+        line([60.0, 0.0], [60.0, 38.0]),
+        line([60.0, 38.0], [58.0, 40.0]),
+        line([58.0, 40.0], [10.0, 40.0]),
+        line([10.0, 40.0], [10.0, 0.0]),
+    ]
+}
+
+/// A sketch on the top face with the face's outline projected as an
+/// earlier version or an import records it (no `by_geometry`), and
+/// `more` entities and `constraints` of the user's.
+fn with_an_old_outline(more: Value, constraints: Value) -> Document<MockKernel> {
+    let mut d = block();
+    *d.kernel().curves.borrow_mut() = square(60.0, 0);
+    let corner = |p: [f64; 2], id: &str| json!({"id": id, "type": "point", "at": p, "fixed": true, "reference": true});
+    let edge = |id: &str, a: &str, b: &str| json!({"id": id, "type": "line", "start": a, "end": b, "fixed": true, "reference": true});
+    let mut entities = vec![
+        corner([0.0, 0.0], "p1"),
+        corner([60.0, 0.0], "p2"),
+        edge("c3", "p1", "p2"),
+        corner([60.0, 40.0], "p4"),
+        edge("c5", "p2", "p4"),
+        corner([0.0, 40.0], "p6"),
+        edge("c7", "p4", "p6"),
+        edge("c8", "p6", "p1"),
+    ];
+    entities.extend(more.as_array().unwrap().iter().cloned());
+    command(
+        &mut d,
+        json!({"cmd": "add_feature", "def": {"type": "sketch", "plane": {"face": FACE},
+               "entities": entities, "constraints": constraints,
+               "projections": [{"source": FACE, "body": "F2.b0",
+                                "entities": ["p1", "p2", "c3", "p4", "c5", "p6", "c7", "c8"]}]}}),
+    );
+    d
+}
+
+/// The face becomes narrower with an edge more: the old outline keeps its
+/// geometry, and all its curves are stale.
+fn narrow(d: &mut Document<MockKernel>) {
+    *d.kernel().curves.borrow_mut() = narrower();
+    let changed = command(
+        d,
+        json!({"cmd": "set_parameter", "name": "d1", "value": 70}),
+    );
+    assert_eq!(changed["error"], Value::Null, "{changed}");
+    let s = sketch(d, "F3");
+    assert_eq!(s["projections"][0]["kept"], true, "{s}");
+    assert_eq!(
+        s["projections"][0]["stale"],
+        json!(["c3", "c5", "c7", "c8"]),
+        "{s}"
+    );
+}
+
+/// The key of the sketch's region of this area.
+fn region_of_area(s: &Value, area: f64) -> String {
+    s["regions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|r| close(r["area"].as_f64().unwrap(), area))
+        .unwrap_or_else(|| panic!("no region of {area} in {s}"))["key"]
+        .as_str()
+        .unwrap()
+        .to_owned()
+}
+
+/// An extrude of the sketch F3's region `key`; its uid.
+fn extrude(d: &mut Document<MockKernel>, key: &str) -> String {
+    let added = command(
+        d,
+        json!({"cmd": "add_feature", "def": {"type": "extrude",
+               "profiles": [{"sketch": "F3", "region": key}],
+               "extent": {"type": "distance", "distance": 5}, "operation": "join"}}),
+    );
+    added["uid"].as_str().unwrap().to_owned()
+}
+
+fn has_region(s: &Value, key: &str, area: f64) -> bool {
+    s["regions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|r| r["key"] == key && close(r["area"].as_f64().unwrap(), area))
+}
+
+#[test]
+fn the_stale_clean_up_removes_the_old_outline_and_trims_what_the_profile_uses() {
+    // The old outline of the face, which then changes shape (narrower, an
+    // edge more) and is projected again; an extrude uses the region of the
+    // new outline, named by the old curves where they lie on the new ones.
+    let mut d = with_an_old_outline(json!([]), json!([]));
+    narrow(&mut d);
+    command(
+        &mut d,
+        json!({"cmd": "sketch.project", "sketch": "F3", "source": FACE, "body": "F2.b0", "linked": true}),
+    );
+    // 50 x 40 less the chamfer.
+    let key = region_of_area(&sketch(&d, "F3"), 1998.0);
+    assert!(key.contains("c3[") && key.contains("c7["), "{key}");
+    let extrusion = extrude(&mut d, &key);
+    let cleaned = command(
+        &mut d,
+        json!({"cmd": "sketch.clean_up_stale_projections", "sketch": "F3"}),
+    );
+    // The old outline's left edge goes; its bottom, right and top edges
+    // bound the region and are trimmed to it (the old corner at (60, 40)
+    // parted); the old projection is unlinked.
+    let face = FACE.parse::<TopoName>().unwrap().to_string();
+    let mut stale = cleaned["stale"].clone();
+    let preview = stale.as_object_mut().unwrap().remove("preview").unwrap();
+    assert_eq!(
+        stale,
+        json!({"removed": ["c8"], "trimmed": ["c3", "c5", "c7"], "unlinked": [face],
+               "kept": [{"curve": "c3", "why": "region"}, {"curve": "c5", "why": "region"},
+                        {"curve": "c7", "why": "region"}]}),
+        "{cleaned}"
+    );
+    // What a preview shows: the left edge as it was, and the pieces cut off
+    // the bottom (its left end), the right (its top) and the top (both).
+    let near = |p: &Value, q: [f64; 2]| {
+        close(p[0].as_f64().unwrap(), q[0]) && close(p[1].as_f64().unwrap(), q[1])
+    };
+    let removed = preview["removed"].as_array().unwrap();
+    assert_eq!(removed.len(), 1, "{cleaned}");
+    assert_eq!(
+        (&removed[0]["curve"], &removed[0]["type"]),
+        (&json!("c8"), &json!("line"))
+    );
+    let g = &removed[0]["geometry"];
+    assert!(
+        near(&g["start"], [0.0, 40.0]) && near(&g["end"], [0.0, 0.0]),
+        "{cleaned}"
+    );
+    let cut = preview["cut"].as_array().unwrap();
+    let expected = [
+        ("c3", [0.0, 0.0], [10.0, 0.0]),
+        ("c5", [60.0, 40.0], [60.0, 38.0]),
+        ("c7", [60.0, 40.0], [58.0, 40.0]),
+        ("c7", [0.0, 40.0], [10.0, 40.0]),
+    ];
+    assert_eq!(cut.len(), expected.len(), "{cleaned}");
+    for (piece, (line, from, to)) in cut.iter().zip(expected) {
+        assert!(
+            piece["line"] == line && near(&piece["start"], from) && near(&piece["end"], to),
+            "{piece} is not {line} {from:?}-{to:?}"
+        );
+    }
+    let warnings = cleaned["warnings"].as_array().unwrap();
+    assert!(
+        warnings
+            .iter()
+            .any(|w| w.as_str().unwrap().starts_with("1 stale curve removed: c8")),
+        "{cleaned}"
+    );
+    assert!(
+        !warnings
+            .iter()
+            .any(|w| w.as_str().unwrap().contains("whose name changes")),
+        "{cleaned}"
+    );
+    let s = sketch(&d, "F3");
+    assert!(!has(&s, "c8"), "{s}");
+    assert_eq!(line_id(&s, [10.0, 0.0], [60.0, 0.0]), "c3", "{s}");
+    assert_eq!(line_id(&s, [60.0, 0.0], [60.0, 38.0]), "c5", "{s}");
+    assert_eq!(line_id(&s, [58.0, 40.0], [10.0, 40.0]), "c7", "{s}");
+    // The profile's region and its name stay; the sketch no longer warns.
+    assert!(has_region(&s, &key, 1998.0), "{s}");
+    assert_eq!(s["warnings"], json!([]), "{s}");
+    let projections = s["projections"].as_array().unwrap();
+    assert_eq!(projections.len(), 1, "{s}");
+    assert_eq!(projections[0]["by_geometry"], true, "{s}");
+    assert_eq!(feature(&d, "F3")["status"], "ok");
+    assert_eq!(feature(&d, &extrusion)["status"], "ok");
+    // Nothing left to clean up; one undo step brings it all back.
+    let error = rejected(
+        &mut d,
+        json!({"cmd": "sketch.clean_up_stale_projections", "sketch": "F3"}),
+    );
+    assert!(error.contains("nothing to clean up"), "{error}");
+    command(&mut d, json!({"cmd": "undo"}));
+    let s = sketch(&d, "F3");
+    assert!(has(&s, "c8"), "{s}");
+    assert_eq!(s["projections"].as_array().unwrap().len(), 2, "{s}");
+    assert_eq!(s["projections"][0]["kept"], true, "{s}");
+}
+
+#[test]
+fn a_stale_line_is_trimmed_to_the_users_line_that_bounds_the_profile() {
+    // A line of the user's across the old outline, its ends on the old
+    // bottom and top edges; an extrude uses the region right of it.
+    let mut d = with_an_old_outline(
+        json!([
+            {"id": "p9", "type": "point", "at": [20.0, 0.0]},
+            {"id": "p10", "type": "point", "at": [20.0, 40.0]},
+            {"id": "c11", "type": "line", "start": "p9", "end": "p10"}
+        ]),
+        json!([
+            {"id": "k12", "type": "coincident", "point": "p9", "entity": "c3"},
+            {"id": "k13", "type": "coincident", "point": "p10", "entity": "c7"}
+        ]),
+    );
+    let key = region_of_area(&sketch(&d, "F3"), 1600.0);
+    let extrusion = extrude(&mut d, &key);
+    narrow(&mut d);
+    assert_eq!(feature(&d, "F3")["status"], "warning");
+    let cleaned = command(
+        &mut d,
+        json!({"cmd": "sketch.clean_up_stale_projections", "sketch": "F3"}),
+    );
+    assert_eq!(cleaned["stale"]["removed"], json!(["c8"]), "{cleaned}");
+    // The bottom and top edges end at the user's line now; the right edge
+    // shares its corners with them and keeps its length.
+    assert_eq!(
+        cleaned["stale"]["trimmed"],
+        json!(["c3", "c7"]),
+        "{cleaned}"
+    );
+    let s = sketch(&d, "F3");
+    assert_eq!(line_id(&s, [20.0, 0.0], [60.0, 0.0]), "c3", "{s}");
+    assert_eq!(line_id(&s, [60.0, 40.0], [20.0, 40.0]), "c7", "{s}");
+    assert_eq!(line_id(&s, [60.0, 0.0], [60.0, 40.0]), "c5", "{s}");
+    assert!(has_region(&s, &key, 1600.0), "{s}");
+    assert_eq!(s["projections"], json!([]), "{s}");
+    assert_eq!(s["warnings"], json!([]), "{s}");
+    assert_eq!(feature(&d, &extrusion)["status"], "ok");
 }

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 //! Design policy (mitcad#220): what may be created in, and linked to and
 //! from, the root and each component. Every owner (the root counts as
-//! one) has seven settings of its own; nothing is inherited through the
+//! one) has nine settings of its own; nothing is inherited through the
 //! hierarchy.
 //!
 //! - Containment: sketches, modelling features and components placed
@@ -15,6 +15,11 @@
 //! - Sketch attachment: a sketch whose plane is another owner's face or
 //!   plane (its `plane_link`) needs both its own owner's
 //!   `attach_to_others` and the other owner's `attachments_from_others`.
+//!   An owner's first sketch (no sketch or modelling feature of the owner
+//!   precedes it in the timeline) may also attach with its owner's
+//!   `first_sketch_attaches` and the other owner's
+//!   `first_sketch_attachments_from_others` (mitcad#293): either setting of
+//!   a side allows that side.
 //! - References: every other link to another owner's geometry (linked
 //!   projections, extrude objects, combine and split tools, sweep bodies,
 //!   construction planes on faces) needs the consumer owner's
@@ -38,7 +43,7 @@ use crate::features::{FeatureDef, FeatureEntry};
 use crate::ids::{ComponentUid, FeatureUid, OccurrenceUid};
 use crate::links::OccurrenceLink;
 
-/// The seven settings of one owner.
+/// The nine settings of one owner.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Policy {
@@ -52,6 +57,16 @@ pub struct Policy {
     pub attach_to_others: bool,
     /// Other owners' sketches may attach to its faces and planes.
     pub attachments_from_others: bool,
+    /// Its first sketch may attach to another owner's face or plane, also
+    /// when `attach_to_others` is off (mitcad#293). A stored policy without
+    /// it reads it as on.
+    #[serde(default = "on")]
+    pub first_sketch_attaches: bool,
+    /// Other owners' first sketches may attach to its faces and planes,
+    /// also when `attachments_from_others` is off (mitcad#293). A stored
+    /// policy without it reads it as on.
+    #[serde(default = "on")]
+    pub first_sketch_attachments_from_others: bool,
     /// Its sketches and features may reference other owners' geometry.
     pub reference_others: bool,
     /// Other owners may reference its geometry.
@@ -66,14 +81,18 @@ impl Policy {
         components: true,
         attach_to_others: false,
         attachments_from_others: false,
+        first_sketch_attaches: true,
+        first_sketch_attachments_from_others: true,
         reference_others: true,
         references_from_others: true,
     };
-    /// Holds components, no sketches or modelling features of its own.
+    /// Holds components, no sketches or modelling features of its own;
+    /// takes other components' first sketches.
     pub const ASSEMBLY: Self = Self {
         sketches: false,
         features: false,
         components: true,
+        first_sketch_attaches: false,
         ..Self::GENERAL
     };
     /// Holds sketches and features, no child components.
@@ -92,6 +111,8 @@ impl Policy {
         Self {
             attach_to_others: self.attach_to_others,
             attachments_from_others: self.attachments_from_others,
+            first_sketch_attaches: self.first_sketch_attaches,
+            first_sketch_attachments_from_others: self.first_sketch_attachments_from_others,
             reference_others: self.reference_others,
             references_from_others: self.references_from_others,
             ..Self::GENERAL
@@ -112,7 +133,10 @@ impl Policy {
         }
     }
 
-    /// The preset this policy is, if any.
+    /// The preset this policy is, if any. Without sketches,
+    /// `first_sketch_attaches` governs nothing and is not compared: an
+    /// Assembly stored before the setting existed reads it as on and is
+    /// still one (mitcad#293).
     pub fn preset_name(&self) -> Option<&'static str> {
         [
             ("assembly", Self::ASSEMBLY),
@@ -120,7 +144,15 @@ impl Policy {
             ("defaults", Self::GENERAL),
         ]
         .into_iter()
-        .find(|(_, p)| p == self)
+        .find(|(_, p)| {
+            p == self
+                || (!self.sketches
+                    && *p
+                        == Self {
+                            first_sketch_attaches: p.first_sketch_attaches,
+                            ..*self
+                        })
+        })
         .map(|(name, _)| name)
     }
 
@@ -131,10 +163,17 @@ impl Policy {
             Setting::Components => self.components,
             Setting::AttachToOthers => self.attach_to_others,
             Setting::AttachmentsFromOthers => self.attachments_from_others,
+            Setting::FirstSketchAttaches => self.first_sketch_attaches,
+            Setting::FirstSketchAttachmentsFromOthers => self.first_sketch_attachments_from_others,
             Setting::ReferenceOthers => self.reference_others,
             Setting::ReferencesFromOthers => self.references_from_others,
         }
     }
+}
+
+/// The serde default of the first-sketch settings (mitcad#293).
+fn on() -> bool {
+    true
 }
 
 impl Default for Policy {
@@ -143,7 +182,7 @@ impl Default for Policy {
     }
 }
 
-/// One of the seven settings.
+/// One of the nine settings.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Setting {
     Sketches,
@@ -151,17 +190,21 @@ pub enum Setting {
     Components,
     AttachToOthers,
     AttachmentsFromOthers,
+    FirstSketchAttaches,
+    FirstSketchAttachmentsFromOthers,
     ReferenceOthers,
     ReferencesFromOthers,
 }
 
 impl Setting {
-    pub const ALL: [Self; 7] = [
+    pub const ALL: [Self; 9] = [
         Self::Sketches,
         Self::Features,
         Self::Components,
         Self::AttachToOthers,
         Self::AttachmentsFromOthers,
+        Self::FirstSketchAttaches,
+        Self::FirstSketchAttachmentsFromOthers,
         Self::ReferenceOthers,
         Self::ReferencesFromOthers,
     ];
@@ -174,6 +217,8 @@ impl Setting {
             Self::Components => "components",
             Self::AttachToOthers => "attach_to_others",
             Self::AttachmentsFromOthers => "attachments_from_others",
+            Self::FirstSketchAttaches => "first_sketch_attaches",
+            Self::FirstSketchAttachmentsFromOthers => "first_sketch_attachments_from_others",
             Self::ReferenceOthers => "reference_others",
             Self::ReferencesFromOthers => "references_from_others",
         }
@@ -249,6 +294,35 @@ fn links(def: &FeatureDef) -> Vec<(LinkKind, &OccurrenceLink)> {
     out
 }
 
+/// Whether a feature counts for an owner's first sketch: a sketch or a
+/// modelling feature before it makes a sketch not its first (mitcad#293).
+pub(crate) fn starts_owner<P>(def: &FeatureDef<P>) -> bool {
+    matches!(
+        containment(def),
+        Some(Setting::Sketches | Setting::Features)
+    )
+}
+
+/// The setting of `policy` that refuses one side of a link governed by
+/// `setting` (an outgoing or incoming attachment or reference), if any. A
+/// first sketch's attachment is also allowed by the side's first-sketch
+/// setting (mitcad#293); when both are off, that one is named.
+pub(crate) fn refused(policy: &Policy, setting: Setting, first: bool) -> Option<Setting> {
+    if policy.allows(setting) {
+        return None;
+    }
+    let first_sketch = match setting {
+        Setting::AttachToOthers => Some(Setting::FirstSketchAttaches),
+        Setting::AttachmentsFromOthers => Some(Setting::FirstSketchAttachmentsFromOthers),
+        _ => None,
+    };
+    match first_sketch.filter(|_| first) {
+        Some(s) if policy.allows(s) => None,
+        Some(s) => Some(s),
+        None => Some(setting),
+    }
+}
+
 /// Every violation of a design's content under the policies `policy_of`
 /// gives, one entry per offending link (a consumer with two links to the
 /// same owner is listed twice; [`unique`] lists it once).
@@ -258,9 +332,16 @@ pub(crate) fn violations(
     policy_of: &dyn Fn(ComponentUid) -> Policy,
 ) -> Vec<Violation> {
     let mut out = Vec::new();
+    // Owners with a sketch or modelling feature so far: a sketch of an
+    // owner not among them is its first (mitcad#293).
+    let mut started = BTreeSet::new();
     for f in features {
         let owner = f.component;
         let own = policy_of(owner);
+        let first = !started.contains(&owner);
+        if starts_owner(&f.def) {
+            started.insert(owner);
+        }
         if let Some(setting) = containment(&f.def)
             && !own.allows(setting)
         {
@@ -283,18 +364,18 @@ pub(crate) fn violations(
                 LinkKind::Reference => (Setting::ReferenceOthers, Setting::ReferencesFromOthers),
             };
             let object = PolicyObject::Feature(f.uid);
-            if !own.allows(outgoing) {
+            if let Some(setting) = refused(&own, outgoing, first) {
                 out.push(Violation {
                     owner,
-                    setting: outgoing,
+                    setting,
                     object,
                     other: Some(source),
                 });
             }
-            if !policy_of(source).allows(incoming) {
+            if let Some(setting) = refused(&policy_of(source), incoming, first) {
                 out.push(Violation {
                     owner: source,
-                    setting: incoming,
+                    setting,
                     object,
                     other: Some(owner),
                 });

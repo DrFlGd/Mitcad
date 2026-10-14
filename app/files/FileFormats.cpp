@@ -32,17 +32,25 @@ FileKind fileKind(const QString& path) {
   if (suffix == QStringLiteral("ipt") || suffix == QStringLiteral("iam")) {
     return FileKind::Ipt;
   }
+  if (suffix == QStringLiteral("ifc") || suffix == QStringLiteral("ifczip")) {
+    return FileKind::Ifc;
+  }
+  if (QStringList{QStringLiteral("rvt"), QStringLiteral("rfa"), QStringLiteral("rte"), QStringLiteral("rft")}.contains(
+          suffix)) {
+    return FileKind::Rvt;
+  }
   return FileKind::None;
 }
 
 namespace {
 
 // The CAD formats, one filter: designs with a history (FreeCAD, .f3d),
-// part and assembly files (.ipt, .iam), then STEP, IGES and BRep. Both
-// spellings of .FCStd, .ipt and .iam: name filters match case-sensitively
-// on Linux.
-const char* const kCad =
-    "*.FCStd *.fcstd *.f3d *.f3z *.ipt *.IPT *.iam *.IAM *.step *.stp *.iges *.igs *.brep *.brp";
+// part and assembly files (.ipt, .iam), IFC building models (.ifc,
+// .ifczip), building projects and families (.rvt, .rfa, .rte, .rft), then
+// STEP, IGES and BRep. Both spellings of .FCStd, .ipt, .iam, .ifc, .rvt
+// and .rfa: name filters match case-sensitively on Linux.
+const char* const kCad = "*.FCStd *.fcstd *.f3d *.f3z *.ipt *.IPT *.iam *.IAM *.ifc *.IFC *.ifczip *.rvt *.RVT *.rfa *.RFA "
+                         "*.rte *.rft *.step *.stp *.iges *.igs *.brep *.brp";
 const char* const kMesh = "*.stl *.obj";
 const char* const kDrawing = "*.dxf";
 

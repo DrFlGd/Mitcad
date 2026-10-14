@@ -102,6 +102,25 @@ void AutoselectPanel::setProfiles(const AutoselectProfiles& profiles) {
   setVisible(available());
 }
 
+void AutoselectPanel::setSectionTitle(QWidget* title) {
+  if (title == nullptr) {
+    return;
+  }
+  setAccessibleName(title->accessibleName().isEmpty() ? this->title() : title->accessibleName());
+  // No frame and no title of the group box's own: it paints nothing
+  // (paintEvent). Not a style sheet, which would fix the palette of the
+  // panel and its buttons at the theme it was set in.
+  m_section = true;
+  setTitle(QString());
+  setFlat(true);
+  auto* box = qobject_cast<QVBoxLayout*>(layout());
+  if (box != nullptr) {
+    box->setContentsMargins(0, 6, 0, 0);
+    box->setSpacing(4);
+    box->insertWidget(0, title);
+  }
+}
+
 void AutoselectPanel::setActive(bool active) {
   m_active = active;
   if (!available()) {
@@ -123,6 +142,13 @@ bool AutoselectPanel::eventFilter(QObject* watched, QEvent* event) {
     }
   }
   return QGroupBox::eventFilter(watched, event);
+}
+
+void AutoselectPanel::paintEvent(QPaintEvent* event) {
+  if (m_section) {
+    return; // the section title over the buttons is the panel's look
+  }
+  QGroupBox::paintEvent(event);
 }
 
 void AutoselectPanel::hideEvent(QHideEvent* event) {

@@ -567,9 +567,10 @@ impl HoleDef {
         let (points, normal) = match &self.placement {
             HolePlacement::Face { body, face, points } => {
                 let shape = ctx.body(*body)?;
+                let face = super::renamed::face_for(ctx, &shape, face)?;
                 let plane = ctx
                     .kernel
-                    .face_plane(&shape, face)
+                    .face_plane(&shape, &face)
                     .map_err(|e| e.to_string())?;
                 let on_plane = points
                     .iter()
@@ -592,19 +593,15 @@ impl HoleDef {
                 offset2,
             } => {
                 let shape = ctx.body(*body)?;
+                let face = super::renamed::face_for(ctx, &shape, face)?;
                 let plane = ctx
                     .kernel
-                    .face_plane(&shape, face)
+                    .face_plane(&shape, &face)
                     .map_err(|e| e.to_string())?;
                 let mut lines = Vec::new();
                 for edge in [edge1, edge2] {
-                    if ctx.kernel.count_edges(&shape, edge) == 0 {
-                        return Err(ctx.missing_edge(*body, edge));
-                    }
-                    let line = ctx.axis(&GeomRef::Edge {
-                        body: *body,
-                        edge: (**edge).clone(),
-                    })?;
+                    let edge = ctx.edge_on(*body, &shape, edge)?;
+                    let line = ctx.axis(&GeomRef::Edge { body: *body, edge })?;
                     lines.push(Axis {
                         origin: line.origin,
                         direction: line.direction,
@@ -768,6 +765,19 @@ impl<K: Kernel> Evaluate<K> for HoleDef {
                 })
             }
         };
+        // A simple hole through a sheet cuts its material domain, so the
+        // body stays a sheet (mitcad#211); its tool is still the hole's,
+        // which patterns and mirrors of it repeat.
+        let sheet_depth = match &end {
+            _ if thread.is_some() || !matches!(shape, HoleShape::Simple) || taper != 0.0 => None,
+            HoleEnd::Distance(d) => Some(Some(*d)),
+            HoleEnd::ThroughAll => Some(None),
+            HoleEnd::Target(_) => None,
+        };
+        let sheet_body = match participants.as_slice() {
+            [(body, _)] => Some(*body),
+            _ => None,
+        };
         let spec = HoleSpec {
             feature: ctx.uid,
             positions: &positions,
@@ -779,6 +789,13 @@ impl<K: Kernel> Evaluate<K> for HoleDef {
             taper,
         };
         let tool = ctx.kernel.hole_tool(&spec).map_err(|e| e.to_string())?;
+        if let (Some(depth), Some(body)) = (sheet_depth, sheet_body)
+            && let Some(mut output) =
+                crate::sheet::folded::cut::hole_cut(ctx, body, &positions, diameter, depth)?
+        {
+            output.tool = Some(tool);
+            return Ok(output);
+        }
         let mut output = apply_operation(ctx, Operation::Cut, participants, tool, "hole")?;
         let Some((thread, data)) = thread.filter(|(t, _)| t.modeled) else {
             return Ok(output);

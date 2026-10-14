@@ -79,7 +79,8 @@ PolicyDialog::PolicyDialog(Query query, const QString& component, QWidget* paren
   }
   layout->addLayout(presets);
   auto* presetHelp = new QLabel(tr("Assembly: components only. Part: sketches and features, no components. "
-                                   "Both refuse sketch attachment in both directions and allow references."),
+                                   "Both refuse sketch attachment in both directions, except a component's first "
+                                   "sketch, and allow references."),
                                 this);
   presetHelp->setWordWrap(true);
   layout->addWidget(presetHelp);
@@ -104,6 +105,15 @@ PolicyDialog::PolicyDialog(Query query, const QString& component, QWidget* paren
       {"attachments_from_others", QString(), tr("Allow sketch attac&hments from other components"),
        tr("Incoming: sketches of other components can lie on faces and planes of %1. Both sides must allow an "
           "attachment.")
+           .arg(m_name)},
+      // A component's first sketch, its start in context (mitcad#293).
+      {"first_sketch_attaches", QString(), tr("F&irst sketch may attach to other components"),
+       tr("Outgoing, first sketch only: the first sketch of %1 (no sketch or modelling feature of it before it) can "
+          "lie on faces and planes of other components, also when its sketches do not attach to others.")
+           .arg(m_name)},
+      {"first_sketch_attachments_from_others", QString(), tr("Allow first s&ketches of other components to attach"),
+       tr("Incoming, first sketches only: the first sketch of another component can lie on faces and planes of %1, "
+          "also when it allows no other sketch attachments.")
            .arg(m_name)},
       {"reference_others", tr("References"), tr("&Reference other components"),
        tr("Outgoing: sketches and features of %1 can keep links to other components' geometry (linked "

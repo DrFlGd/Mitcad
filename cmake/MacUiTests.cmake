@@ -24,7 +24,8 @@ if(APPLE AND BUILD_TESTING AND MITCAD_MACOS_UI_TESTS AND TARGET mitcad)
       COMMAND "${Python3_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/tools/ui-macos-mcp-test.py"
               "$<TARGET_FILE:mitcad>" "$<TARGET_FILE:mitcad-cli>" "${CMAKE_BINARY_DIR}/ui-macos-mcp"
               "${mitcad_mcp_test_ui}")
-    set_tests_properties(app.ui-macos-mcp PROPERTIES TIMEOUT 180 SKIP_RETURN_CODE 77 RUN_SERIAL TRUE
+    # With the live debugging flow (mitcad#265, tools/ui-mcp-live.py).
+    set_tests_properties(app.ui-macos-mcp PROPERTIES TIMEOUT 360 SKIP_RETURN_CODE 77 RUN_SERIAL TRUE
       ENVIRONMENT "PYTHONDONTWRITEBYTECODE=1")
   endif()
   find_program(BASH_EXECUTABLE bash)

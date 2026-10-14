@@ -60,6 +60,54 @@ pub struct HelixDef<P = ParamId> {
     pub operation: Operation,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub participants: Vec<BodyUid>,
+    /// How the helix starts and ends (mitcad#235): none for the pitch all
+    /// the way (see [`HelixEnd`]).
+    #[serde(
+        default = "super::pattern::none",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub start: Option<HelixEnd<P>>,
+    #[serde(
+        default = "super::pattern::none",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub end: Option<HelixEnd<P>>,
+}
+
+/// A flat end of a helix (mitcad#235), as a coil's: over `transition_angle` (an
+/// angle) the pitch changes linearly between the helix's and zero at the
+/// outer end, and over `flat_angle` (an angle) the profiles turn without rising,
+/// beyond the transition. Both come in addition to the helix's turns (its
+/// `revolutions` are those at the full pitch). With ends a growth follows
+/// the rise: the profiles move out by the growth for every pitch they rise.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct HelixEnd<P = ParamId> {
+    pub transition_angle: P,
+    pub flat_angle: P,
+}
+
+impl<P> HelixEnd<P> {
+    fn map_params<Q, E>(
+        &self,
+        f: &mut dyn FnMut(&str, &P) -> Result<Q, E>,
+        side: &str,
+    ) -> Result<HelixEnd<Q>, E> {
+        Ok(HelixEnd {
+            transition_angle: f(&format!("{side}.transition_angle"), &self.transition_angle)?,
+            flat_angle: f(&format!("{side}.flat_angle"), &self.flat_angle)?,
+        })
+    }
+}
+
+fn end_angle(value: f64, what: &str) -> Result<f64, String> {
+    if value >= 0.0 && value.is_finite() {
+        Ok(value)
+    } else {
+        Err(format!(
+            "the helix's {what} must be an angle of zero or more, got {value}"
+        ))
+    }
 }
 
 /// How a helix with a growth moves its profiles (mitcad#83).
@@ -95,6 +143,16 @@ impl<P> HelixDef<P> {
             construction: self.construction,
             operation: self.operation,
             participants: self.participants.clone(),
+            start: self
+                .start
+                .as_ref()
+                .map(|e| e.map_params(f, "start"))
+                .transpose()?,
+            end: self
+                .end
+                .as_ref()
+                .map(|e| e.map_params(f, "end"))
+                .transpose()?,
         })
     }
 
@@ -151,6 +209,17 @@ impl FeatureInfo for HelixDef {
         if let Some(g) = self.growth {
             finite_growth(value(g))?;
         }
+        for (side, end) in [("start", &self.start), ("end", &self.end)] {
+            if let Some(e) = end {
+                end_angle(value(e.transition_angle), &format!("{side} transition"))?;
+                end_angle(value(e.flat_angle), &format!("{side} flat"))?;
+            }
+        }
+        if self.construction == Some(HelixConstruction::Freecad)
+            && (self.start.is_some() || self.end.is_some())
+        {
+            return Err("a helix with flat ends is built by Mitcad's construction".to_owned());
+        }
         Ok(())
     }
 
@@ -192,6 +261,15 @@ impl<K: Kernel> Evaluate<K> for HelixDef {
             None => 0.0,
         };
         let bodies: Vec<K::Shape> = participants.iter().map(|(_, s)| s.clone()).collect();
+        let mut ends = [0.0; 4];
+        if let Some(e) = &self.start {
+            ends[0] = end_angle(ctx.param(e.flat_angle)?, "start flat")?;
+            ends[1] = end_angle(ctx.param(e.transition_angle)?, "start transition")?;
+        }
+        if let Some(e) = &self.end {
+            ends[2] = end_angle(ctx.param(e.transition_angle)?, "end transition")?;
+            ends[3] = end_angle(ctx.param(e.flat_angle)?, "end flat")?;
+        }
         let spec = HelixSpec {
             feature: ctx.uid,
             frame: sketch.frame,
@@ -205,6 +283,7 @@ impl<K: Kernel> Evaluate<K> for HelixDef {
             flip: self.flip,
             freecad: self.construction == Some(HelixConstruction::Freecad),
             bodies: &bodies,
+            ends,
         };
         let tool = ctx.kernel.helix(&spec).map_err(|e| e.to_string())?;
         apply_operation(ctx, self.operation, participants, tool, "helix")

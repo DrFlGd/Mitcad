@@ -142,6 +142,14 @@ ShapePtr coil(const CoilSpec& spec);
 // side as long as the pitch is also moved 0.1 um off the cylinder, into
 // the void a cut's profile faces or the material a join's faces, so that
 // the turns do not touch in an edge on it.
+//
+// Ends (mitcad#235; angles in radians, none by default): over a
+// `*_transition` the pitch changes linearly between zero at the outer end
+// and the full pitch, and over a `*_flat` the profiles turn without rising;
+// the start's flat comes first, then its transition, the `revolutions` at
+// the full pitch, the end's transition and flat. With ends the helix is
+// built as Mitcad's widening one (not with `freecad`), and a growth follows
+// the rise: the profiles move out by `growth` for every `pitch` they rise.
 struct HelixSweepSpec {
   std::string feature;
   Frame frame;
@@ -154,6 +162,10 @@ struct HelixSweepSpec {
   bool flip = false;
   bool freecad = false;
   std::vector<ShapePtr> bodies;
+  double start_flat = 0.0;
+  double start_transition = 0.0;
+  double end_transition = 0.0;
+  double end_flat = 0.0;
 };
 
 ShapePtr helix_sweep(const HelixSweepSpec& spec);

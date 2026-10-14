@@ -76,6 +76,8 @@ struct Face {
   bool reversed = false;
   bool double_sided = false;
   std::uint32_t first_loop = 0;
+  // A face without loops or point loops on a bounded surface (a B-spline)
+  // is the whole surface.
   std::uint32_t loop_count = 0;
   std::uint32_t first_point_loop = 0; // range in Body::point_loops
   std::uint32_t point_loop_count = 0;

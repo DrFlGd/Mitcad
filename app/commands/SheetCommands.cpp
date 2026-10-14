@@ -34,7 +34,8 @@ const Choices kLengthModes = {{QStringLiteral("tangent"), QStringLiteral("Tangen
                               {QStringLiteral("outer"), QStringLiteral("Outer Length")}};
 const Choices kPositions = {{QStringLiteral("bend_line"), QStringLiteral("Bend Line")},
                             {QStringLiteral("inside"), QStringLiteral("Inside")},
-                            {QStringLiteral("outside"), QStringLiteral("Outside")}};
+                            {QStringLiteral("outside"), QStringLiteral("Outside")},
+                            {QStringLiteral("edge"), QStringLiteral("At Edge")}};
 
 // --- Picks and semantic references
 

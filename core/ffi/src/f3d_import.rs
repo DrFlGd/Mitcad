@@ -115,21 +115,65 @@ pub struct StoredFile {
     /// data rather than building it again. Healing one body of 23 000 faces
     /// took 84 s, 74 s of it in one call of OCCT's, longer than a hang
     /// limit of 60 s: the next try got the body when the call returned.
-    builds: Mutex<HashMap<usize, SharedBuild>>,
+    /// (Shared with the bodies healed while the file is read, mitcad#245.)
+    builds: Arc<Mutex<HashMap<usize, SharedBuild>>>,
     /// Notified whenever a build in `builds` ends.
-    build_ended: Condvar,
+    build_ended: Arc<Condvar>,
     /// The bodies to build ahead of the replay, oldest state first
     /// ([`F3dGeometry::build_ahead`], mitcad#103).
     ahead: Mutex<std::collections::VecDeque<usize>>,
-    /// The last builds of large bodies of each blob that keep their healed
-    /// faces, with the blob (mitcad#181): the next state's build of a body
-    /// takes the faces it shares with them as healed there. Healing a body
-    /// of 5 000 faces took 25–45 s, a state of the history each.
-    healed: Mutex<Vec<(usize, SharedPtr<F3dBuilt>)>>,
+    /// Per variant, its base: the variant of the same body (record) in the
+    /// blob's state before the one it first appears in, when both are
+    /// large enough to reuse healed faces (mitcad#181). Its build takes
+    /// the faces it shares with the base's build as healed there. The base
+    /// is fixed by the file, not by which builds happen to exist, so the
+    /// bodies are the same with any number of threads (mitcad#243).
+    bases: Vec<Option<usize>>,
+    /// Per variant, the variants whose base it is.
+    heirs: Vec<Vec<usize>>,
+    /// What the builds of variants with heirs kept for their heirs' builds
+    /// (None: their build kept nothing), until the heirs are built or
+    /// released. Healing a body of 5 000 faces took 25–45 s, a state of
+    /// the history each.
+    healed: Arc<Mutex<HashMap<usize, Option<SharedPtr<F3dBuilt>>>>>,
 }
 
-/// How many builds of each blob [`StoredFile::healed`] keeps.
-const HEALED_PER_BLOB: usize = 3;
+/// The smallest body (faces) whose build reuses healed faces
+/// (`mitcad::brep::kMinReuseFaces`): smaller ones have no base.
+const REUSE_MIN_FACES: usize = 256;
+
+/// The bases and heirs of variants ([`StoredFile::bases`]) given each
+/// variant's record and face count, and each history blob's states (their
+/// variants, oldest state first).
+fn bases_of(
+    variants: &[(usize, usize)],
+    histories: &[Vec<&[usize]>],
+) -> (Vec<Option<usize>>, Vec<Vec<usize>>) {
+    let large = |v: usize| variants[v].1 >= REUSE_MIN_FACES;
+    let mut bases = vec![None; variants.len()];
+    let mut heirs = vec![Vec::new(); variants.len()];
+    for states in histories {
+        for pair in states.windows(2) {
+            let (before, after) = (pair[0], pair[1]);
+            for &v in after {
+                // (A variant is in consecutive states only: one in the
+                // state before is not new here.)
+                if before.contains(&v) || !large(v) {
+                    continue;
+                }
+                if let Some(&b) = before
+                    .iter()
+                    .find(|&&b| variants[b].0 == variants[v].0)
+                    .filter(|&&b| large(b))
+                {
+                    bases[v] = Some(b);
+                    heirs[b].push(v);
+                }
+            }
+        }
+    }
+    (bases, heirs)
+}
 
 /// A body's build shared by the tries of an import ([`StoredFile::builds`]).
 enum SharedBuild {
@@ -251,10 +295,21 @@ impl StoredFile {
             unchanged_items: HashSet::new(),
             item_starts: HashMap::new(),
             component_names,
-            builds: Mutex::new(HashMap::new()),
-            build_ended: Condvar::new(),
+            builds: Arc::new(Mutex::new(HashMap::new())),
+            build_ended: Arc::new(Condvar::new()),
             ahead: Mutex::new(std::collections::VecDeque::new()),
-            healed: Mutex::new(Vec::new()),
+            bases: Vec::new(),
+            heirs: Vec::new(),
+            healed: Arc::new(Mutex::new(HashMap::new())),
+        };
+        // The threads converting the bodies, shared with the large bodies
+        // healed while the file is read (mitcad#245), which take at most
+        // half of them.
+        let share = mitcad_import::Share::new(threads);
+        let mut early = Early {
+            keep: threads.div_ceil(2),
+            faces_left: EARLY_FACES,
+            builds: Vec::new(),
         };
         for blob in doc.body_blobs() {
             let data = doc
@@ -316,7 +371,49 @@ impl StoredFile {
                             })
                             .collect()
                     };
-                    mitcad_import::in_order(states, threads, convert_state, |k, converted| {
+                    // The oldest state with bodies is converted first, and
+                    // its large bodies are healed while the rest is read
+                    // (mitcad#245): the replay's first item asks for them.
+                    let first = (threads > 1)
+                        .then(|| {
+                            (0..states).rev().find(|&k| {
+                                let view = h.view(k);
+                                records.iter().any(|r| view.get(r) != Some(&None))
+                            })
+                        })
+                        .flatten();
+                    let first_bodies = first.map(|k| (k, convert_state(k)));
+                    let healing: Vec<(usize, Arc<EarlyBuild>)> = match &first_bodies {
+                        Some((_, bodies)) => {
+                            let source = Source {
+                                document: &geometry.document,
+                                blob: &b.entry,
+                                asm_version: &b.asm_version,
+                                history: true,
+                                history_step: 0,
+                            };
+                            early.start(&geometry.room(), &source, bodies, &share)
+                        }
+                        None => Vec::new(),
+                    };
+                    let first_bodies = Mutex::new(first_bodies);
+                    let convert = |k: usize| -> Vec<ConvertedBody> {
+                        let mut converted = first_bodies
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner);
+                        match converted.take() {
+                            Some((first, bodies)) if first == k => bodies,
+                            other => {
+                                *converted = other;
+                                drop(converted);
+                                convert_state(k)
+                            }
+                        }
+                    };
+                    // The distinct bodies of the oldest state with bodies,
+                    // as converted.
+                    let mut first_ids: Option<Vec<usize>> = None;
+                    let consume = |k: usize, converted: Vec<ConvertedBody>| {
                         let kept = distinct.len();
                         let after: &[usize] = newest_first.last().map_or(&[], |(_, ids)| ids);
                         let mut bodies: Vec<usize> = Vec::new();
@@ -352,7 +449,17 @@ impl StoredFile {
                         if let Some(s) = h.states.get(k) {
                             ops.push((s.id, newest_first.len() - 1));
                         }
-                    });
+                        if first == Some(k) {
+                            first_ids = newest_first.last().map(|(_, ids)| ids.clone());
+                        }
+                    };
+                    mitcad_import::in_order_sharing(
+                        states,
+                        threads,
+                        Some(&share),
+                        convert,
+                        consume,
+                    );
                     let count = newest_first.len();
                     b.ops = ops.into_iter().map(|(id, j)| (id, count - 1 - j)).collect();
                     // The variants in the order of the states, oldest first.
@@ -370,6 +477,13 @@ impl StoredFile {
                             })
                             .collect();
                         b.states.push((time, ids));
+                    }
+                    // The variants the bodies healed while reading are of.
+                    for (i, build) in healing {
+                        match first_ids.as_ref().and_then(|ids| variants[*ids.get(i)?]) {
+                            Some(v) => early.builds.push((v, build)),
+                            None => build.unwanted(),
+                        }
                     }
                     geometry.history.push(index);
                 }
@@ -412,8 +526,27 @@ impl StoredFile {
         if !geometry.merge_by_timeline(&results) {
             geometry.merge();
         }
+        geometry.link_bases();
+        geometry.take_early(early);
         geometry.trace_histories();
         Ok(geometry)
+    }
+
+    /// Gives each variant of a history blob its base ([`StoredFile::bases`]):
+    /// the variant of the same record in the blob's state before the one
+    /// it first appears in (a variant appears in consecutive states only).
+    fn link_bases(&mut self) {
+        let variants: Vec<(usize, usize)> = self
+            .variants
+            .iter()
+            .map(|v| (v.body.record, v.body.body.faces.len()))
+            .collect();
+        let histories: Vec<Vec<&[usize]>> = self
+            .history
+            .iter()
+            .map(|&h| self.blobs[h].states.iter().map(|(_, s)| &s[..]).collect())
+            .collect();
+        (self.bases, self.heirs) = bases_of(&variants, &histories);
     }
 
     /// Traces each history blob's component and operations, and the state
@@ -967,6 +1100,8 @@ impl StoredFile {
             history_step: 0,
         };
         let data = to_ffi(&source, &v.body);
+        // (Before the clock: waiting for the base is not this build's.)
+        let base = self.base_build(variant);
         let clock = Instant::now();
         BUILD_PROGRESS.with(|p| p.set(Some((clock, 0.0))));
         // A build longer than the hang limit that returns, for the tests
@@ -974,7 +1109,7 @@ impl StoredFile {
         if variant == 0 && std::env::var_os("MITCAD_IMPORT_STALL").is_some_and(|s| s == "slow") {
             std::thread::sleep(Duration::from_millis(1500));
         }
-        let (shape, how) = self.build_reusing(v.blob, &data);
+        let (shape, how) = self.build_reusing(variant, &data, base.as_ref());
         let seconds = clock.elapsed().as_secs_f64();
         let still = BUILD_PROGRESS
             .with(Cell::take)
@@ -991,28 +1126,94 @@ impl StoredFile {
         shape
     }
 
-    /// Builds a body of `blob` from its B-rep data with the faces it shares
-    /// with the blob's last builds ([`StoredFile::healed`]) as healed there
-    /// (mitcad#181), keeping this build for the next ones; the shape and,
-    /// for the trace, how many faces were taken (or why none) and whether
-    /// it was kept. As [`build_stored_body`] when an allocation failed.
-    fn build_reusing(
-        &self,
-        blob: usize,
-        data: &crate::brep_import::ffi::BrepBodyData,
-    ) -> (Option<SharedPtr<Shape>>, String) {
-        let mut bases = f3d_bases();
-        {
-            let healed = self
+    /// What the build of the base of `variant` ([`StoredFile::bases`])
+    /// kept for it (None: it has no base, or its base's build kept
+    /// nothing). Waits while another thread builds the base (ticking as
+    /// [`StoredFile::claim`] does), and builds the base itself when no
+    /// build of it kept anything for its heirs yet or any more (a state
+    /// the replay skipped, or one released): the base is the same whatever
+    /// the order of the builds, so the body is too (mitcad#243).
+    fn base_build(&self, variant: usize) -> Option<SharedPtr<F3dBuilt>> {
+        let base = self.bases[variant]?;
+        let mut builds = self
+            .builds
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        loop {
+            // (Under `builds`: a build records what it kept before it
+            // ends there.)
+            if let Some(kept) = self
                 .healed
                 .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            for (_, built) in healed.iter().filter(|(b, _)| *b == blob) {
-                f3d_bases_add(bases.pin_mut(), built);
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .get(&base)
+            {
+                return kept.clone();
+            }
+            match builds.get(&base) {
+                Some(SharedBuild::InProgress) => {
+                    let ticks = BUILD_TICKS.load(Ordering::Relaxed);
+                    builds = self
+                        .build_ended
+                        .wait_timeout(builds, Duration::from_millis(100))
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .0;
+                    if BUILD_TICKS.load(Ordering::Relaxed) != ticks {
+                        mitcad_import::tick();
+                    }
+                }
+                Some(_) => {
+                    // Built and handed on, but what it kept went with its
+                    // heirs' builds: built again for what it keeps.
+                    drop(builds);
+                    trace_body(self, base, "built again as the base of the next state");
+                    let _ = self.heal(base);
+                    builds = self
+                        .builds
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner);
+                }
+                None => {
+                    // Not built yet: built here, and handed on as a body
+                    // built ahead in case the replay asks for it.
+                    builds.insert(base, SharedBuild::InProgress);
+                    drop(builds);
+                    trace_body(self, base, "built as the base of the next state");
+                    let mut claimed = Claimed {
+                        file: self,
+                        variant: base,
+                        given: None,
+                    };
+                    claimed.given = Some(SharedBuild::Ready(self.heal(base)));
+                    drop(claimed);
+                    builds = self
+                        .builds
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner);
+                }
             }
         }
-        let built = match f3d_build_body_from(data, &bases) {
-            Ok(built) => built,
+    }
+
+    /// Builds a body (`variant`) from its B-rep data with the faces it
+    /// shares with its base's build (`base`) as healed there (mitcad#181),
+    /// keeping what its heirs' builds take from it
+    /// ([`StoredFile::healed`]); the shape and, for the trace, how many
+    /// faces were taken (or why none) and whether it was kept. As
+    /// [`build_stored_body`] when an allocation failed.
+    fn build_reusing(
+        &self,
+        variant: usize,
+        data: &crate::brep_import::ffi::BrepBodyData,
+        base: Option<&SharedPtr<F3dBuilt>>,
+    ) -> (Option<SharedPtr<Shape>>, String) {
+        let mut bases = f3d_bases();
+        if let Some(base) = base {
+            f3d_bases_add(bases.pin_mut(), base);
+        }
+        let keep = !self.heirs[variant].is_empty();
+        let built = match f3d_build_body_from(data, &bases, keep) {
+            Ok(built) => Some(built),
             Err(e) => {
                 if let Some(progress) = mitcad_import::current_progress() {
                     progress.low_memory(&format!(
@@ -1021,18 +1222,20 @@ impl StoredFile {
                         crate::memory::memory_use().describe()
                     ));
                 }
-                return (None, String::new());
+                None
             }
         };
-        let Some(b) = built.as_ref() else {
+        let built = built.filter(|b| b.as_ref().is_some_and(|b| !f3d_built_shape(b).is_null()));
+        let kept = built
+            .as_ref()
+            .filter(|b| b.as_ref().is_some_and(f3d_built_kept))
+            .cloned();
+        self.record_build(variant, keep.then_some(kept.clone()));
+        let Some(b) = built.as_ref().and_then(|b| b.as_ref()) else {
             return (None, String::new());
         };
         let shape = f3d_built_shape(b);
-        if shape.is_null() {
-            return (None, String::new());
-        }
         let reused = f3d_built_reused(b);
-        let kept = f3d_built_kept(b);
         let note = f3d_built_note(b);
         let mut how = String::new();
         if reused > 0 {
@@ -1041,23 +1244,28 @@ impl StoredFile {
         if !note.is_empty() {
             how.push_str(&format!(", {note}"));
         }
-        if kept {
-            how.push_str(", kept for the other states");
-            let mut healed = self
-                .healed
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            healed.push((blob, built.clone()));
-            // The oldest of the blob's go.
-            while healed.iter().filter(|(b, _)| *b == blob).count() > HEALED_PER_BLOB {
-                let oldest = healed
-                    .iter()
-                    .position(|(b, _)| *b == blob)
-                    .expect("counted");
-                healed.remove(oldest);
-            }
+        if kept.is_some() {
+            how.push_str(", kept for the next state");
         }
         (Some(shape), how)
+    }
+
+    /// Records the build of `variant`: what it kept for its heirs (`kept`;
+    /// None when it has none), and that its base's build is no longer
+    /// needed when this was the base's only heir.
+    fn record_build(&self, variant: usize, kept: Option<Option<SharedPtr<F3dBuilt>>>) {
+        let mut healed = self
+            .healed
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(kept) = kept {
+            healed.insert(variant, kept);
+        }
+        if let Some(base) = self.bases[variant]
+            && self.heirs[base].len() == 1
+        {
+            healed.remove(&base);
+        }
     }
 }
 
@@ -1079,6 +1287,274 @@ pub(crate) fn build_stored_body(
                 ));
             }
             None
+        }
+    }
+}
+
+// Large bodies healed while the file is read (mitcad#245).
+
+/// The smallest body (faces) healed while the file is read: smaller ones
+/// take the replay little time.
+const EARLY_MIN_FACES: usize = 1000;
+
+/// The faces of all bodies healed while the file is read: the shapes wait
+/// for the replay in memory.
+const EARLY_FACES: usize = 100_000;
+
+/// The builds of a file's bodies ([`StoredFile::builds`],
+/// [`StoredFile::build_ended`], [`StoredFile::healed`]), shared with the
+/// threads healing bodies while the file is read.
+#[derive(Clone)]
+struct Room {
+    builds: Arc<Mutex<HashMap<usize, SharedBuild>>>,
+    build_ended: Arc<Condvar>,
+    healed: Arc<Mutex<HashMap<usize, Option<SharedPtr<F3dBuilt>>>>>,
+}
+
+impl Room {
+    /// Hands a body healed while the file was read to the replay as the
+    /// build of `variant` (as a build ahead's, with what it kept for its
+    /// heirs when `keep`); one that did not build is left to the replay.
+    fn hand_over(&self, variant: usize, keep: bool, built: Option<SharedPtr<F3dBuilt>>) {
+        let shape = built
+            .as_ref()
+            .and_then(|b| b.as_ref())
+            .map(f3d_built_shape)
+            .filter(|s| !s.is_null());
+        // (What it kept first, as a build records it before it ends.)
+        if keep && shape.is_some() {
+            let kept = built.filter(|b| b.as_ref().is_some_and(f3d_built_kept));
+            self.healed
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .insert(variant, kept);
+        }
+        let mut builds = self
+            .builds
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        match shape {
+            Some(shape) => builds.insert(variant, SharedBuild::Ready(Some(shape))),
+            None => builds.remove(&variant),
+        };
+        drop(builds);
+        self.build_ended.notify_all();
+    }
+}
+
+/// Where a body healed while the file is read stands ([`EarlyBuild`]).
+enum EarlyState {
+    /// Being healed; its variant not known yet.
+    Healing,
+    /// Being healed for the variant (marked in progress in the builds).
+    Wanted { variant: usize, keep: bool },
+    /// Healed (None: it did not build); its variant not known yet.
+    Healed(Option<SharedPtr<F3dBuilt>>),
+    /// Not wanted (or handed over).
+    Unwanted,
+}
+
+/// A large body of a blob's oldest state with bodies, healed on a thread of
+/// its own while the rest of the file is read and handed to the replay as a
+/// body built ahead: the replay's first item asks for it, and healing the
+/// large bodies of a design took the first item as long as reading the
+/// whole file. It is built from the same data as the replay would build it
+/// (no base: no older state has the body), so the body is the same.
+struct EarlyBuild {
+    record: usize,
+    top_level: bool,
+    issues: Vec<String>,
+    skipped_faces: usize,
+    state: Mutex<EarlyState>,
+}
+
+impl EarlyBuild {
+    fn lock(&self) -> std::sync::MutexGuard<'_, EarlyState> {
+        self.state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    /// Whether `body` (the variant's) is the body this healed: the
+    /// conversion of the same state gives the same body; the rest of the
+    /// data built from must be the same too.
+    fn matches(&self, body: &ConvertedBody) -> bool {
+        body.record == self.record
+            && body.top_level == self.top_level
+            && body.issues == self.issues
+            && body.skipped_faces == self.skipped_faces
+    }
+
+    /// The healing ended (`built`).
+    fn healed(&self, built: Option<SharedPtr<F3dBuilt>>, room: &Room) {
+        let mut state = self.lock();
+        match std::mem::replace(&mut *state, EarlyState::Unwanted) {
+            EarlyState::Healing => *state = EarlyState::Healed(built),
+            EarlyState::Wanted { variant, keep } => {
+                drop(state);
+                room.hand_over(variant, keep, built);
+            }
+            EarlyState::Healed(_) | EarlyState::Unwanted => {}
+        }
+    }
+
+    /// The body is the build of `variant`: handed over when healed, and
+    /// marked in progress until then (a try asking for it waits).
+    fn want(&self, variant: usize, keep: bool, room: &Room) {
+        let mut state = self.lock();
+        match std::mem::replace(&mut *state, EarlyState::Unwanted) {
+            EarlyState::Healing => {
+                room.builds
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .insert(variant, SharedBuild::InProgress);
+                *state = EarlyState::Wanted { variant, keep };
+            }
+            EarlyState::Healed(built) => {
+                drop(state);
+                room.hand_over(variant, keep, built);
+            }
+            EarlyState::Wanted { .. } | EarlyState::Unwanted => {}
+        }
+    }
+
+    /// The body is no build's: dropped once healed.
+    fn unwanted(&self) {
+        *self.lock() = EarlyState::Unwanted;
+    }
+}
+
+/// The bodies healed while a file is read ([`StoredFile::new`]).
+struct Early {
+    /// The converting threads the healing leaves ([`mitcad_import::Share::take`]).
+    keep: usize,
+    /// The faces that may still be healed ([`EARLY_FACES`]).
+    faces_left: usize,
+    /// Those healing, by variant.
+    builds: Vec<(usize, Arc<EarlyBuild>)>,
+}
+
+impl Early {
+    /// Starts healing the large `bodies` of a blob's oldest state with
+    /// bodies, largest first, each on a thread taken from the converting
+    /// ones (`share`) while enough are left; the healings, by the index of
+    /// their body.
+    fn start(
+        &mut self,
+        room: &Room,
+        source: &Source,
+        bodies: &[ConvertedBody],
+        share: &Arc<mitcad_import::Share>,
+    ) -> Vec<(usize, Arc<EarlyBuild>)> {
+        let mut large: Vec<usize> = (0..bodies.len())
+            .filter(|&i| bodies[i].body.faces.len() >= EARLY_MIN_FACES)
+            .collect();
+        large.sort_by_key(|&i| std::cmp::Reverse(bodies[i].body.faces.len()));
+        let mut started = Vec::new();
+        for i in large {
+            let body = &bodies[i];
+            let faces = body.body.faces.len();
+            if faces > self.faces_left {
+                continue;
+            }
+            let Some(taken) = share.take(self.keep) else {
+                break;
+            };
+            let build = Arc::new(EarlyBuild {
+                record: body.record,
+                top_level: body.top_level,
+                issues: body.issues.clone(),
+                skipped_faces: body.skipped_faces,
+                state: Mutex::new(EarlyState::Healing),
+            });
+            let data = to_ffi(source, body);
+            let name = format!(
+                "{}#{} ({faces} faces)",
+                source.blob.rsplit('/').next().unwrap_or(source.blob),
+                body.record
+            );
+            let (healing, room) = (Arc::clone(&build), room.clone());
+            let counted = BuildingAhead::new();
+            let thread = std::thread::Builder::new()
+                .name("mitcad-import-bodies".to_owned())
+                .stack_size(mitcad_import::WORKER_STACK)
+                .spawn(move || {
+                    let _counted = counted;
+                    crate::kernel::exchange::ffi::catch_occt_crashes();
+                    let built = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                        heal_early(&data, &name)
+                    }))
+                    .ok()
+                    .flatten();
+                    drop(taken);
+                    healing.healed(built, &room);
+                });
+            if thread.is_ok() {
+                self.faces_left -= faces;
+                started.push((i, build));
+            }
+        }
+        started
+    }
+}
+
+/// Heals a body from its data as the replay's build of it would (no base;
+/// keeping what its heirs take, which leaves the body the same), measured
+/// as a body built ahead; None when it does not build or an allocation
+/// failed (the replay then builds it).
+fn heal_early(
+    data: &crate::brep_import::ffi::BrepBodyData,
+    name: &str,
+) -> Option<SharedPtr<F3dBuilt>> {
+    let clock = Instant::now();
+    BUILD_PROGRESS.with(|p| p.set(Some((clock, 0.0))));
+    let built = f3d_build_body_from(data, &f3d_bases(), true).ok()?;
+    let shape = built
+        .as_ref()
+        .map(f3d_built_shape)
+        .filter(|s| !s.is_null())?;
+    if let Some(s) = shape.as_ref() {
+        // (The shape keeps its measures for the replay.)
+        let _ = crate::kernel::query::ffi::mass_properties(s);
+    }
+    if std::env::var_os("MITCAD_IMPORT_TRACE").is_some() {
+        let seconds = clock.elapsed().as_secs_f64();
+        let still = BUILD_PROGRESS
+            .with(Cell::take)
+            .map_or(seconds, |(last, longest)| {
+                longest.max(last.elapsed().as_secs_f64())
+            });
+        let note = built.as_ref().map(f3d_built_note).unwrap_or_default();
+        eprintln!(
+            "import: body {name} healed while the file was read in {seconds:.2} s, \
+             at most {still:.2} s without progress{}{note}",
+            if note.is_empty() { "" } else { ", " }
+        );
+    }
+    Some(built)
+}
+
+impl StoredFile {
+    /// What the threads healing bodies share with the replay's builds.
+    fn room(&self) -> Room {
+        Room {
+            builds: Arc::clone(&self.builds),
+            build_ended: Arc::clone(&self.build_ended),
+            healed: Arc::clone(&self.healed),
+        }
+    }
+
+    /// Gives the bodies healed while the file was read to their variants
+    /// (once the bases and heirs are known): the body of a variant without
+    /// a base built from the same data; any other is dropped.
+    fn take_early(&self, early: Early) {
+        let room = self.room();
+        for (variant, build) in early.builds {
+            if self.bases[variant].is_none() && build.matches(&self.variants[variant].body) {
+                build.want(variant, !self.heirs[variant].is_empty(), &room);
+            } else {
+                build.unwanted();
+            }
         }
     }
 }
@@ -1296,12 +1772,12 @@ impl StoredGeometry<SharedPtr<Shape>> for F3dGeometry {
             }
         }
         file.release_ahead(&kept);
-        // The memory before the time: what the next builds would reuse
-        // goes too.
+        // What builds kept for heirs no later state has goes too (an heir
+        // asked for again builds its base again, mitcad#243).
         file.healed
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .clear();
+            .retain(|&b, _| file.heirs[b].iter().any(|&h| kept[h]));
         // (A body that did not build is not tried again.)
         for (built, kept) in self.built.iter_mut().zip(kept) {
             if !kept && matches!(built, Some(Some(_))) {
@@ -1438,6 +1914,57 @@ pub struct TimelineOptions {
     /// imported once and reused for every occurrence and level.
     #[serde(skip)]
     pub(crate) reference_cache: Option<crate::f3d_references::ReferenceCache>,
+    /// What a retry of an item on the file's exact state does with the
+    /// replay's bodies that match the state (mitcad#283,
+    /// `mitcad_import::RetryBodies`): `keep` (the default) or `replace`;
+    /// `ask`: the user is asked through the document's job the first time a
+    /// retry would replace a body that matches (the application's import
+    /// process, `JobControl::question`), kept without a job.
+    #[serde(default)]
+    pub retry_bodies: Option<RetryBodiesOption>,
+    /// The choice made of it, shared by the import's tries and the imports
+    /// of the documents it refers to.
+    #[serde(skip)]
+    pub(crate) retry_choice: Option<Arc<mitcad_import::RetryChoice>>,
+}
+
+/// [`TimelineOptions::retry_bodies`].
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RetryBodiesOption {
+    #[default]
+    Keep,
+    Replace,
+    Ask,
+}
+
+/// The import's choice for retries on the file's exact state (mitcad#283):
+/// asked through `job` where the option says so and there is one.
+fn retry_choice(
+    option: RetryBodiesOption,
+    job: Option<&Arc<RecomputeMonitor>>,
+) -> mitcad_import::RetryChoice {
+    use mitcad_import::{RetryBodies, RetryChoice};
+    match (option, job) {
+        (RetryBodiesOption::Replace, _) => RetryChoice::new(RetryBodies::Replace),
+        (RetryBodiesOption::Ask, Some(job)) => RetryChoice::ask(Box::new(JobQuestion(job.clone()))),
+        _ => RetryChoice::new(RetryBodies::Keep),
+    }
+}
+
+/// A question of the import to the user through the document's job: the
+/// application's import process prints it and passes the answer back
+/// (`app/files/F3dImport.cpp`).
+struct JobQuestion(Arc<RecomputeMonitor>);
+
+impl mitcad_import::AskUser for JobQuestion {
+    fn ask(&self, question: &str) {
+        self.0.ask(question);
+    }
+
+    fn answer(&self) -> Option<String> {
+        self.0.take_answer()
+    }
 }
 
 /// What a try of the import is told by the watchdog.
@@ -1657,7 +2184,7 @@ impl MemoryGuard {
         // of no import. The memory ran out, whatever it is now.
         if memory.failed_allocations != self.failed_allocations {
             self.failed_allocations = memory.failed_allocations;
-            progress.low_memory(&format!(
+            progress.low_memory_unattributed(&format!(
                 "an allocation in the geometry kernel failed, {text}"
             ));
             return;
@@ -1974,6 +2501,28 @@ impl Document {
         // the import's all the same. The job's monitor is the import's stop
         // request, not the document's (Document::without_job).
         let stop = self.0.monitor().cloned();
+        // The choice for retries on the file's exact state (mitcad#283), one
+        // for the import, its tries and the documents it refers to.
+        let mut options = options.clone();
+        if options.retry_choice.is_none() {
+            options.retry_choice = Some(Arc::new(retry_choice(
+                options.retry_bodies.unwrap_or_default(),
+                stop.as_ref(),
+            )));
+        }
+        let options = &options;
+        // For the application's UI test: the question asked at the start,
+        // as the first retry that would replace a matching body asks it.
+        if std::env::var_os("MITCAD_TEST_IMPORT_QUESTION").is_some()
+            && let Some(choice) = &options.retry_choice
+        {
+            choice.decide(
+                "the test question",
+                "The import's test question (MITCAD_TEST_IMPORT_QUESTION): keep the imported \
+                 bodies or replace them with the stored bodies?",
+                || !stop.as_ref().is_some_and(|s| s.is_cancelled()),
+            );
+        }
         self.without_job(|document| {
             let fresh = document.0.features().next().is_none() && document.0.undo_depth() == 0;
             match options.hang_limit.filter(|s| *s > 0.0) {
@@ -2214,6 +2763,16 @@ impl Document {
                 file: Some(prepared.label.clone()),
                 ..Default::default()
             }),
+            // The stored bodies keep the file's appearances (mitcad#228).
+            f3d: prepared
+                .dump
+                .as_ref()
+                .and_then(|d| d.f3d.as_ref())
+                .and_then(|f| f.appearance.clone())
+                .map(|a| mitcad_f3d::design::ir::DumpF3d {
+                    appearance: Some(a),
+                    ..Default::default()
+                }),
             ..Dump::default()
         };
         let dump = match &prepared.dump {
@@ -2238,6 +2797,7 @@ impl Document {
                 .geometric_tolerance
                 .filter(|t| t.is_finite() && *t > 0.0)
                 .unwrap_or(mitcad_import::DEFAULT_GEOMETRIC_TOLERANCE),
+            retry_bodies: options.retry_choice.clone(),
             learn: options
                 .learn
                 .clone()

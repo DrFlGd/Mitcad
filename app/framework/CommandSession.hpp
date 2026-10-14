@@ -9,6 +9,7 @@
 
 #include <QByteArray>
 #include <QHash>
+#include <QJsonArray>
 #include <QList>
 #include <QObject>
 #include <QPointer>
@@ -17,6 +18,7 @@
 #include <QTimer>
 
 #include <TopoDS_Shape.hxx>
+#include <gp_Trsf.hxx>
 
 #include "../OcctViewer.hpp"
 #include "Command.hpp"
@@ -26,6 +28,7 @@
 namespace mitcad {
 
 class ManipulatorOverlay;
+class ParameterPicker;
 
 // What a running command needs from the main window.
 //
@@ -109,6 +112,16 @@ public:
   // mode; framework/SelectionScope.hpp), null when there is none. Shift
   // widens a click to its empty rows, never beyond what the input takes.
   virtual const SelectionScope* commandScope() const { return nullptr; }
+  // Parameter names picked from the view into a value field (mitcad#250):
+  // the sketches the view shows (not one sketch mode edits), each with the
+  // placement of the occurrence that places it, and the feature command
+  // that edits a definition (the `feature` query's def; null: none).
+  struct ShownSketch {
+    QString uid;
+    gp_Trsf placement;
+  };
+  virtual std::vector<ShownSketch> shownSketches() const { return {}; }
+  virtual const CommandDef* featureEditor(const QJsonObject& /*def*/) const { return nullptr; }
 };
 
 // A feature command from start to OK or Cancel: its inputs' state and
@@ -177,6 +190,33 @@ public:
   void discard();
   // Puts the keyboard into a value input (by its key) of the panel.
   bool focusValue(const QString& key);
+  // A light bulb of the browser while the panel is open (mitcad#295;
+  // CommandSessionVisibility.cpp): runs the visibility commands as one undo
+  // step `label` outside the command's undo range. An applied sketch
+  // preview is taken back before and applied again after; what takes the
+  // range back later (Cancel, OK of an edit, an asynchronous checkpoint
+  // restored) runs the changes again, so they stay as the user set them and
+  // never go into the command's own undo step. The inputs stay selected;
+  // the preview is drawn again over the bodies shown now (computed again
+  // only when a body shown now was changed by the command and its result
+  // was not drawn). False when the model refuses them, or while an
+  // asynchronous command computes.
+  bool runVisibility(const QJsonArray& commands, const QString& label);
+
+  // Live MCP (mitcad#265, CommandSessionScript.cpp): an agent fills the
+  // inputs by their keys through the panel's own actions, as typing,
+  // choosing and checking would (a number or text for values and texts, a
+  // choice's value, a boolean for checks and flips, an object for cut
+  // targets); a selection input takes the items `read` makes of the JSON
+  // array's entries. False with the reason when a key or value does not
+  // fit; the inputs before it stay set.
+  using ItemReader = std::function<std::optional<SelectionItem>(const QJsonValue&, QString&)>;
+  bool scriptInputs(const QJsonObject& inputs, const ItemReader& read, QString& error);
+  // A preview waits or computes, or OK or Cancel is under way.
+  bool scriptBusy() const;
+  // The inputs as they are, whether OK can run (`ready`, else `message`),
+  // the last preview's outcome and the panel's messages (shownState).
+  QJsonObject scriptState();
 
 signals:
   void finished(bool committed);
@@ -220,7 +260,10 @@ private:
   void presenterDetached();
   bool asyncPresenterAvailable();
   void resumePendingCommit();
-  Preview previewFromReport(const QJsonObject& report);
+  // `shapeOf` gives the shapes of the bodies the command made or changed
+  // (by default the host's last preview: previewBodyShape).
+  Preview previewFromReport(const QJsonObject& report,
+                            const std::function<std::shared_ptr<geometry::Shape>(const std::string&)>& shapeOf = {});
   void acceptFeaturePreview(const QByteArray& key, const Built& built, const Preview& preview, bool cache);
   void commandSequenceAsync(const QJsonArray& commands, CommandHost::AsyncCompletion completion,
                             int index = 0, std::function<bool()> aborted = {});
@@ -303,6 +346,7 @@ private:
   QTimer m_previewTimer;
   bool m_previewOk = false;
   QJsonObject m_shownReport; // the report of the preview shown (toggles)
+  QString m_loggedPreviewBodies; // the bodies the last preview logged (mitcad#266)
   bool m_failed = false; // the model could not compute the preview
   QByteArray m_shownKey; // the command whose preview is shown
   bool m_previewCancelled = false; // ... or whose preview was cancelled
@@ -319,6 +363,85 @@ private:
   int m_appliedDepth = -1; // undo depth before an applied sketch preview
   QJsonValue m_sectionBefore; // the section shown before an inspection
   QJsonObject m_analysis; // the analysis edited (mitcad#41), else empty
+
+  // Parameter names picked from the view (mitcad#250;
+  // CommandSessionPicks.cpp): while a value field has the keyboard, the
+  // visible sketches' dimensions and the earlier features' values are
+  // labels in the view, and a click on one inserts its parameter's name
+  // there. A click in the view takes the keyboard before the view sees it,
+  // so the labels stay a moment after the field loses it.
+  void valueFocused(const QString& key, bool focused);
+  void showParameterLabels();
+  void hideParameterLabels();
+  void insertParameter(const QString& name);
+  // A value field's tooltip when the feature owns its parameter, as a
+  // sketch dimension's: "d3 = d1 / 2 → 20 mm (Sketch1 width)" (mitcad#250).
+  void describeParameter(const QString& key, const QString& rename, const QString& text, const QString& shown);
+  QString m_pickTarget;       // the value field that takes picked names
+  bool m_pickFocused = false; // ... and has the keyboard now
+  bool m_inserting = false;   // a name goes in now (the field takes the keyboard back)
+  QPointer<ParameterPicker> m_picker;
+  QHash<QString, QString> m_parameterComments; // by name, asked once
+
+  // The hover of a tangent chain (mitcad#290; CommandSessionHover.cpp):
+  // while the active input has one (InputDef::chainKinds) and its check is
+  // on, the hover shows the rest of the chain of the edge or face under the
+  // mouse. The chains of a body are asked once per command run (the
+  // model's `tangent_chains` query) and looked up on each hover; a query
+  // that fails leaves the hover on the one item.
+  void hovered(const SelectionItem& item);
+  void updateHoverChain();
+  // The chain of the item (its names), or the item alone.
+  QStringList hoverChain(const SelectionItem& item);
+  SelectionItem m_hovered;
+  // By "<body>/edges" or "<body>/faces": the chain of each member.
+  QHash<QString, QHash<QString, QStringList>> m_chains;
+  // The shown chain's shape (without the hovered item), by its item.
+  QString m_chainKey;
+  TopoDS_Shape m_chainShape;
+  QString m_loggedHover; // the hover's last log line
+
+  // Visibility changes while the panel is open (mitcad#295;
+  // CommandSessionVisibility.cpp), in their order, to run again where the
+  // command's undo range is taken back.
+  struct VisibilityChange {
+    QJsonArray commands;
+    QString label;
+  };
+  QVector<VisibilityChange> m_visibility;
+  int m_startDepth = -1; // the undo depth before an edit's roll-back (synchronous)
+  // The bodies the view shows ("F2.b0@O1"), read after a change; none read
+  // before the first one: every body counts as shown.
+  std::optional<QSet<QString>> m_shownBodies;
+  // Whether an input's item is highlighted: not on a body hidden meanwhile.
+  bool onShownBody(const SelectionItem& item) const;
+  // After a change: the preview again (applied again for a sketch command,
+  // else drawn again), the highlights and the active input's pick places.
+  void visibilityChanged(bool sketchPreviewTakenBack);
+  // The preview shown again from its cached result over the bodies shown
+  // now; false when that needs a body's result the cache does not have.
+  bool redrawPreview();
+  // Synchronous Cancel and OK of an edit: the roll-back and the changes
+  // after it taken back to m_startDepth, the changes run again there.
+  void settleVisibility();
+  // Runs the recorded changes again from `index` (asynchronous), each as
+  // one undo step; one the model refuses is skipped.
+  void reapplyVisibilityAsync(int index, CommandHost::AsyncCompletion completion);
+  void runVisibilityAsync(const QJsonArray& commands, const QString& label,
+                          CommandHost::AsyncCompletion completion);
+
+  // A new feature's operation chosen by the model (CommandDef::
+  // autoOperation, mitcad#289; CommandSessionAuto.cpp): while it is on,
+  // each preview asks for the choice ("auto_operation", commands.md) and
+  // its answer sets the inputs "operation" and "objects"; the user's own
+  // change of either turns it off for the rest of the command.
+  void startAutoOperation();
+  void addAutoOperation(QJsonObject& command) const;
+  // True when the answer changed the inputs: their own preview follows
+  // instead of the answer's.
+  bool takeAutoOperation(const QJsonObject& report);
+  void autoOperationOverruled(const QString& key);
+  bool m_autoOperation = false;
 };
 
 } // namespace mitcad

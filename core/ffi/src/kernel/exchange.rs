@@ -110,6 +110,9 @@ pub mod ffi {
         fn face_count(shape: &Shape) -> usize;
         /// OCCT binary B-rep of the shape.
         fn brep_data(shape: &Shape) -> Result<Vec<u8>>;
+        /// What `import_brep` reads of the shape's B-rep data, made of the
+        /// shape itself (mitcad#244).
+        fn adopt_body(feature: &str, shape: &Shape, first_face: u32) -> Result<SharedPtr<Shape>>;
         /// A compound of the shapes, with their face names.
         fn compound(shapes: &ShapeList) -> Result<SharedPtr<Shape>>;
         fn body_kind(shape: &Shape) -> BodyKind;
@@ -169,9 +172,12 @@ pub mod ffi {
         /// one of the bases' as they were healed there (the base that
         /// shares the most), and healing only the others; the body as a
         /// whole when less than half are shared or that is not valid.
+        /// `keep`: keep what the builds of other states can take from it
+        /// (the shape is the same either way).
         fn f3d_build_body_from(
             data: &BrepBodyData,
             bases: &F3dBases,
+            keep: bool,
         ) -> Result<SharedPtr<F3dBuilt>>;
         /// The body built (null when it does not build).
         fn f3d_built_shape(built: &F3dBuilt) -> SharedPtr<Shape>;

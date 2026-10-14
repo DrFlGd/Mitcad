@@ -151,6 +151,10 @@ pub struct MockKernel {
     /// Copies of added material that stand on nothing (`supported_copies`):
     /// their index among the copies of one call.
     pub unsupported: RefCell<BTreeSet<usize>>,
+    /// Body edges and vertices in a sketch's plane (mitcad#256): the
+    /// vertices `indexed_element` lists, by name and place, on any shape that
+    /// has faces.
+    pub vertices: RefCell<Vec<(String, [f64; 3])>>,
 }
 
 impl MockShape {
@@ -747,6 +751,34 @@ impl Kernel for MockKernel {
             .collect())
     }
 
+    /// The face pairs as named edges (mitcad#256), numbered where the same
+    /// faces meet more than once.
+    fn edges(&self, shape: &MockShape) -> Result<Vec<crate::kernel::EdgeInfo>, KernelError> {
+        let names: Vec<EdgeName> = shape
+            .edges
+            .iter()
+            .map(|(a, b)| EdgeName::new(a.clone(), b.clone()))
+            .collect();
+        Ok(names
+            .iter()
+            .enumerate()
+            .map(|(i, name)| {
+                let repeats = names.iter().filter(|n| *n == name).count();
+                let before = names[..i].iter().filter(|n| *n == name).count() as u32;
+                let named = if repeats > 1 {
+                    name.clone().with_index(before)
+                } else {
+                    name.clone()
+                };
+                crate::kernel::EdgeInfo {
+                    name: Some(named.to_string()),
+                    curve: "line".to_owned(),
+                    length: 0.0,
+                }
+            })
+            .collect())
+    }
+
     fn bounding_box(&self, shape: &MockShape) -> Result<Option<BoundingBox>, KernelError> {
         Ok(shape.bounds)
     }
@@ -784,7 +816,8 @@ impl Kernel for MockKernel {
     }
 
     // FreeCAD import: faces and edges in the shape's order, their curves as
-    // `curves_of` gives them; no vertices.
+    // `curves_of` gives them; vertices only as `vertices` lists them
+    // (mitcad#256).
     fn indexed_element(
         &self,
         shape: &MockShape,
@@ -801,7 +834,17 @@ impl Kernel for MockKernel {
                 .edges
                 .get(index)
                 .map(|(a, b)| crate::topo::TopoName::Edge(EdgeName::new(a.clone(), b.clone()))),
-            ElementKind::Vertex => None,
+            ElementKind::Vertex => {
+                if shape.faces.is_empty() {
+                    return Ok(None);
+                }
+                return Ok(self.vertices.borrow().get(index).map(|(name, at)| {
+                    crate::kernel::IndexedElement {
+                        name: Some(name.clone()),
+                        curves: vec![crate::kernel::Curve3::Point(*at)],
+                    }
+                }));
+            }
         };
         let Some(name) = name else {
             return Ok(None);
@@ -821,30 +864,7 @@ impl Kernel for MockKernel {
         first_face: u32,
     ) -> Result<(MockShape, u32), KernelError> {
         self.call("import")?;
-        let text = std::str::from_utf8(data).map_err(|_| KernelError::failed("not mock data"))?;
-        let (count, history) = text
-            .split_once(' ')
-            .ok_or_else(|| KernelError::failed("not mock data"))?;
-        let count: u32 = count
-            .parse()
-            .map_err(|_| KernelError::failed("not mock data"))?;
-        let face = |i: u32| FaceName::new(feature, "import", Some(RoleKey::Index(first_face + i)));
-        let shape = MockShape {
-            history: format!(
-                "import({feature}:{first_face}..{},{history})",
-                first_face + count
-            ),
-            faces: (0..count).map(face).collect(),
-            edges: (0..count)
-                .map(|i| (face(i), face((i + 1) % count)))
-                .collect(),
-            bounds: Some(BoundingBox {
-                min: [0.0; 3],
-                max: [10.0; 3],
-            }),
-            parts: Vec::new(),
-        };
-        Ok((shape, count))
+        read_mock_brep(feature, data, first_face)
     }
 
     fn brep_data(&self, shape: &MockShape) -> Result<Vec<u8>, KernelError> {
@@ -1769,8 +1789,14 @@ impl Kernel for MockKernel {
                 spec.flip
             )
         };
+        let ends = if spec.ends.iter().all(|a| *a == 0.0) {
+            String::new()
+        } else {
+            let angles: Vec<String> = spec.ends.iter().map(|a| number(*a)).collect();
+            format!(" ends {}", angles.join(" "))
+        };
         self.specs.borrow_mut().push(format!(
-            "helix {} axis {:?} {:?} pitch {} revolutions {} left {}{growth}",
+            "helix {} axis {:?} {:?} pitch {} revolutions {} left {}{growth}{ends}",
             spec.feature,
             spec.origin,
             spec.direction,
@@ -1815,6 +1841,7 @@ impl Kernel for MockKernel {
             edge_curves: self.edge_curves.clone(),
             vertex_points: self.vertex_points.clone(),
             middles: self.middles.clone(),
+            vertices: self.vertices.clone(),
             ..MockKernel::default()
         })
     }
@@ -1904,6 +1931,152 @@ impl Kernel for MockKernel {
             .map(|(i, (solid, _))| (!unsupported.contains(&i)).then(|| (*solid).clone()))
             .collect())
     }
+
+    /// The shape [`Kernel::import_brep`] reads from the shape's data,
+    /// counted as "adopt" (fails when `fail` has "adopt").
+    fn adopt_shape(
+        &self,
+        feature: FeatureUid,
+        shape: &MockShape,
+        first_face: u32,
+    ) -> Result<(MockShape, u32), KernelError> {
+        self.call("adopt")?;
+        read_mock_brep(feature, &self.brep_data(shape)?, first_face)
+    }
+
+    // Bodies from their boundaries and from triangles (mitcad#273): a body
+    // of a face per boundary face in the box of the vertices (a sheet when
+    // a shell has fewer than four faces, which closes none).
+    fn boundary_body(
+        &self,
+        body: &crate::boundary::BoundaryBody,
+    ) -> Result<(MockShape, crate::boundary::BoundaryReport), KernelError> {
+        self.call("boundary_body")?;
+        body.check().map_err(KernelError::Failed)?;
+        if body.faces.is_empty() {
+            return Err(KernelError::failed("a boundary without faces"));
+        }
+        let solid = body.shells.iter().all(|s| s.len() >= 4);
+        let mut shape = MockShape::imported(
+            if solid { "boundary" } else { "boundary,sheet" },
+            body.faces.len(),
+        );
+        shape.bounds = points_box(&body.vertices);
+        let report = crate::boundary::BoundaryReport {
+            solid,
+            valid: true,
+            faces: body.faces.len(),
+            ..Default::default()
+        };
+        Ok((shape, report))
+    }
+
+    fn triangle_body(
+        &self,
+        points: &[[f64; 3]],
+        triangles: &[[u32; 3]],
+    ) -> Result<MockShape, KernelError> {
+        self.call("triangle_body")?;
+        if triangles.is_empty()
+            || triangles
+                .iter()
+                .flatten()
+                .any(|i| *i as usize >= points.len())
+        {
+            return Err(KernelError::failed(
+                "no triangles, or an index out of range",
+            ));
+        }
+        let mut shape = MockShape::imported("mesh", 1);
+        shape.bounds = points_box(points);
+        Ok(shape)
+    }
+
+    /// By bounding boxes, counted as "tool_contacts" per body asked about:
+    /// boxes apart are apart, boxes that overlap in a volume with the
+    /// tool's centre inside the body's are inside, others touch.
+    fn tool_contacts(
+        &self,
+        tool: &MockShape,
+        bodies: &[&MockShape],
+    ) -> Result<Vec<crate::kernel::ToolContact>, KernelError> {
+        use crate::kernel::ToolContact;
+        let tool_box = tool
+            .bounds
+            .ok_or_else(|| KernelError::failed("a tool without bounds"))?;
+        let mut contacts = Vec::new();
+        for body in bodies {
+            self.call("tool_contacts")?;
+            let Some(b) = body.bounds else {
+                contacts.push(ToolContact::Apart);
+                continue;
+            };
+            let overlap: [f64; 3] = std::array::from_fn(|i| {
+                tool_box.max[i].min(b.max[i]) - tool_box.min[i].max(b.min[i])
+            });
+            let centre: [f64; 3] =
+                std::array::from_fn(|i| (tool_box.min[i] + tool_box.max[i]) / 2.0);
+            contacts.push(if overlap.iter().any(|o| *o < -1e-9) {
+                ToolContact::Apart
+            } else if overlap.iter().all(|o| *o > 1e-9)
+                && (0..3).all(|i| b.min[i] < centre[i] && centre[i] < b.max[i])
+            {
+                ToolContact::Inside
+            } else {
+                ToolContact::Touches
+            });
+        }
+        Ok(contacts)
+    }
+}
+
+/// The shape of mock B-rep data ("<faces> <history>"), face i named
+/// `<feature>:import(<first_face + i>)`, and its number of faces.
+fn read_mock_brep(
+    feature: FeatureUid,
+    data: &[u8],
+    first_face: u32,
+) -> Result<(MockShape, u32), KernelError> {
+    let text = std::str::from_utf8(data).map_err(|_| KernelError::failed("not mock data"))?;
+    let (count, history) = text
+        .split_once(' ')
+        .ok_or_else(|| KernelError::failed("not mock data"))?;
+    let count: u32 = count
+        .parse()
+        .map_err(|_| KernelError::failed("not mock data"))?;
+    let face = |i: u32| FaceName::new(feature, "import", Some(RoleKey::Index(first_face + i)));
+    let shape = MockShape {
+        history: format!(
+            "import({feature}:{first_face}..{},{history})",
+            first_face + count
+        ),
+        faces: (0..count).map(face).collect(),
+        edges: (0..count)
+            .map(|i| (face(i), face((i + 1) % count)))
+            .collect(),
+        bounds: Some(BoundingBox {
+            min: [0.0; 3],
+            max: [10.0; 3],
+        }),
+        parts: Vec::new(),
+    };
+    Ok((shape, count))
+}
+
+/// The box of points (None without points).
+fn points_box(points: &[[f64; 3]]) -> Option<BoundingBox> {
+    let first = *points.first()?;
+    let mut b = BoundingBox {
+        min: first,
+        max: first,
+    };
+    for p in points {
+        for (k, c) in p.iter().enumerate() {
+            b.min[k] = b.min[k].min(*c);
+            b.max[k] = b.max[k].max(*c);
+        }
+    }
+    Some(b)
 }
 
 /// A mock shape as the mock kernel stores it.

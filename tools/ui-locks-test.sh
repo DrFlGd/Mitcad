@@ -309,12 +309,16 @@ expect_d3 "$B/part.mitcad" 25.0 "Sam's design is Ada's version"
 ui_focus_main
 
 echo "--- 2. Ada asks, Sam declines"
+# Both marks before the request: Sam's Mitcad reads it at its next poll, which
+# on a loaded machine can come before this script has looked at Ada's log
+# again, so a mark set after "request sent" would be past Sam's dialog line.
+ui_instance sam
+ui_mark
 ui_instance ada
 ui_mark
 request ""
 ui_expect_new "Edit lock request sent: part.mitcad to Sam Other" "Ada's request sent" 20
 ui_instance sam
-ui_mark
 ui_expect_new "Edit lock request: Ada Tester asks to edit part.mitcad. [Release, Keep 15 More Minutes, Decline...]" \
   "Sam is asked" 20
 ui_focus_dialog '^Edit Access Request$'
@@ -347,11 +351,15 @@ ui_expect_new "Edit lock held: part.mitcad by Ada Tester" "held by Ada" 20
 ui_focus_dialog '^Edit Lock$'
 ui_step "continue read-only (Alt+C)"    ui_key alt+c
 ui_focus_main
+# Ada's mark before Sam asks (see section 2): her poll can read the request
+# before this script returns to her log.
+ui_instance ada
+ui_mark
+ui_instance sam
 ui_mark
 request ""
 ui_expect_new "Edit lock request sent: part.mitcad to Ada Tester" "Sam asks" 20
 ui_instance ada
-ui_mark
 ui_expect_new "Edit lock request: Sam Other asks to edit part.mitcad." "Ada is asked" 20
 ui_instance sam
 ui_stop_app

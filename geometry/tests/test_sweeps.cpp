@@ -679,6 +679,64 @@ void test_growing_helices() {
   CHECK(throws_with([&] { helix_sweep(spec); }, "narrows into its axis"));
 }
 
+// Flat ends (mitcad#235). A 1 x h rectangle from 5 to 6 out (on XZ, the
+// axis Z), pitch 4, 2 turns, then a transition of a quarter turn and a flat
+// part of three quarters: 3 turns in all, and the rise is 8 + 4 / 2 pi *
+// (pi / 2) / 2 = 8.5. Every section in a plane through the axis is the
+// union of the profile's copies there, so the volume is 5.5 times the
+// integral of their union's height over a turn.
+void test_helices_with_flat_ends() {
+  HelixSweepSpec spec;
+  spec.feature = "F1";
+  spec.frame.x_axis = gp_Dir(1, 0, 0);
+  spec.frame.y_axis = gp_Dir(0, 0, 1);
+  spec.axis = gp_Ax1(gp_Pnt(0, 0, 0), gp_Dir(0, 0, 1));
+  spec.pitch = 4;
+  spec.revolutions = 2;
+  spec.end_transition = kPi / 2;
+  spec.end_flat = 1.5 * kPi;
+  // Half a millimetre high: the copies do not meet.
+  spec.regions = {rectangle(1, 5, 0, 1, 0.5)};
+  const ShapePtr low = helix_sweep(spec);
+  CHECK_NEAR_TOL(precise_volume(*low), 0.5 * 5.5 * 6 * kPi, 1e-6);
+  CHECK(near(bounding_box(*low).max.Z(), 9.0, 1e-6));
+  const std::optional<gp_Pnt> cap = face_center(*low, "F1:end(");
+  CHECK(cap && cap->Distance(gp_Pnt(5.5, 0, 8.75)) < 1e-6);
+  // Two millimetres high: the flat part passes through the last turn
+  // (pieces fused). Over the first quarter turn the three copies are apart
+  // (6); then the flat copy at 8.5 meets the one a turn before it once that
+  // reaches 8.5 - 2, at 1.25 pi: 2 + (10.5 - (4 + 2 theta / pi)).
+  spec.regions = {rectangle(1, 5, 0, 1, 2)};
+  const ShapePtr tall = helix_sweep(spec);
+  CHECK(BRepCheck_Analyzer(tall->occt()).IsValid());
+  CHECK_NEAR_TOL(precise_volume(*tall), 5.5 * (6 * 1.25 * kPi + 3.9375 * kPi), 1e-6);
+  CHECK(near(bounding_box(*tall).max.Z(), 10.5, 1e-6));
+  CHECK(faces_with(*tall, "F1:start(") == 1 && faces_with(*tall, "F1:end(") == 1);
+  // A start of the same kind and a growth that follows the rise: 1 out per
+  // pitch of rise, so the end cap is 8.5 / 4 further out, and the flat
+  // parts stay where they are (the start cap's centre a full turn round
+  // from where the rise begins).
+  spec.regions = {rectangle(1, 5, 0, 1, 0.5)};
+  spec.start_flat = 1.5 * kPi;
+  spec.start_transition = kPi / 2;
+  spec.end_transition = 0;
+  spec.end_flat = 0;
+  spec.growth = 1;
+  const ShapePtr grown = helix_sweep(spec);
+  const std::optional<gp_Pnt> end = face_center(*grown, "F1:end(");
+  CHECK(end && end->Distance(gp_Pnt(5.5 + 8.5 / 4, 0, 8.75)) < 1e-6);
+  // The volume: the profile's area times its centre's path round the
+  // axis, 3 turns at 5.5 and then, from the transition on, moving out with
+  // the rise.
+  CHECK(precise_volume(*grown) > 0.5 * 5.5 * 6 * kPi);
+  spec.growth = 0;
+  spec.freecad = true;
+  CHECK(throws_with([&] { helix_sweep(spec); }, "Mitcad's construction"));
+  spec.freecad = false;
+  spec.start_flat = -1;
+  CHECK(throws_with([&] { helix_sweep(spec); }, "must not be negative"));
+}
+
 // A polygon c1..cn through the points (sketch coordinates).
 Region polygon(const std::vector<gp_Pnt2d>& points) {
   Region region;
@@ -1274,6 +1332,7 @@ void sweeps_tests() {
   guarded("coils", test_coils);
   guarded("helices", test_helices);
   guarded("growing helices", test_growing_helices);
+  guarded("helices with flat ends", test_helices_with_flat_ends);
   guarded("helices on cylinders", test_helices_on_cylinders);
   guarded("lofts", test_lofts);
   guarded("ribs", test_ribs);

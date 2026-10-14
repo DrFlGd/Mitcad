@@ -266,6 +266,48 @@ impl<'s, S> NewFaces<'s, S> {
     }
 }
 
+/// How far apart (mm) the faces of two solids lie where they differ
+/// (mitcad#283: whether a body of the replay is a body of the file's state
+/// within [`tolerance`]): the faces of each that the other does not have
+/// ([`Kernel::new_faces`]), their points measured against the other's faces.
+/// 0 when each has the other's faces. Stops measuring once it is beyond
+/// [`tolerance`]. Err when the kernel cannot tell.
+pub(crate) fn body_distance<K: Kernel>(
+    kernel: &K,
+    a: &K::Shape,
+    b: &K::Shape,
+) -> Result<f64, KernelError> {
+    let mut worst: f64 = 0.0;
+    for (from, to) in [(a, b), (b, a)] {
+        let faces = kernel.new_faces(&[to], from, POINTS)?;
+        crate::tick();
+        let measured = faces.iter().filter(|f| !f.points.is_empty()).count();
+        let each = (ALL_POINTS / measured.max(1)).clamp(FEWEST, POINTS);
+        let points: Vec<[f64; 3]> = faces
+            .iter()
+            .flat_map(|f| {
+                let (n, take) = (f.points.len(), f.points.len().min(each));
+                (0..take).map(move |k| f.points[k * n / take])
+            })
+            .collect();
+        if points.is_empty() {
+            continue;
+        }
+        // (A distance that could not be measured is infinite.)
+        let largest = kernel
+            .boundary_distances(to, &points)?
+            .into_iter()
+            .map(|d| if d.is_nan() { f64::INFINITY } else { d })
+            .fold(0.0, f64::max);
+        crate::tick();
+        worst = worst.max(largest);
+        if worst > tolerance() {
+            break;
+        }
+    }
+    Ok(worst)
+}
+
 /// A body for the check: its uid in the replay (None for the file's), its
 /// signature and its shape.
 pub(crate) type Body<S> = (Option<BodyUid>, Sig, S);
@@ -407,7 +449,18 @@ impl<K: crate::ImportKernel> crate::Importer<'_, K> {
         if o > history::DIFFERENT {
             return Err(crate::changes_otherwise(&change, current));
         }
-        let volume = change.difference_volume(current);
+        // How far its change is from the file's: as the faces each side
+        // changed bound them, where the kernel tells (a face the change
+        // left alone then adds none of its integration's noise: a loft's
+        // spline face came out 0.3 mm³ different in two measures of one
+        // shape, mitcad#235), less what the changed faces' edge tolerances
+        // leave open; else by the bodies' volumes.
+        let volume = states
+            .and_then(|s| self.changed_faces(name, before, s))
+            .map_or_else(
+                || change.difference_volume(current),
+                |(ours, theirs, slack)| ((ours - theirs).abs() - slack).max(0.0),
+            );
         let verdict = states.and_then(|s| self.geometric(name, before, s, volume));
         match verdict {
             Some(Verdict::Agrees(why)) => Ok(Taken {
@@ -421,6 +474,42 @@ impl<K: crate::ImportKernel> crate::Importer<'_, K> {
             None if o <= history::CHANGE => Ok(Taken { off, faces: None }),
             None => Err(crate::changes_otherwise(&change, current)),
         }
+    }
+
+    /// The item's change and the file's as the faces each changed bound
+    /// them ([`mitcad_model::Kernel::changed_volume`]): the replay's bodies
+    /// `before` the item to the document's now, and the file's state the
+    /// bodies before it stand for to its state; with the slack the changed
+    /// faces' edges leave on both sides, mm³. None where the kernel or a
+    /// state cannot tell.
+    fn changed_faces(
+        &mut self,
+        name: &str,
+        before: &[(BodyUid, K::Shape)],
+        states: States,
+    ) -> Option<(f64, f64, f64)> {
+        let kernel = self.doc.kernel();
+        let after: Vec<K::Shape> = self.doc.bodies().iter().map(|b| b.shape.clone()).collect();
+        let ours_before: Vec<&K::Shape> = before.iter().map(|(_, s)| s).collect();
+        let ours_after: Vec<&K::Shape> = after.iter().collect();
+        let (ours, our_slack) = kernel.changed_volume(&ours_before, &ours_after).ok()?;
+        let mut state = |index: usize| -> Option<Vec<K::Shape>> {
+            let bodies = self.oracle.state(kernel, index).ok()?;
+            Some(bodies.iter().map(|(b, _)| b.shape.clone()).collect())
+        };
+        let reference = match states.before {
+            Some(s) => state(s)?,
+            None => Vec::new(),
+        };
+        let target = state(states.after)?;
+        let theirs_before: Vec<&K::Shape> = reference.iter().collect();
+        let theirs_after: Vec<&K::Shape> = target.iter().collect();
+        let (theirs, their_slack) = kernel.changed_volume(&theirs_before, &theirs_after).ok()?;
+        trace!(
+            "{name}: by the faces each changed, {ours:.4} mm³ against the file's {theirs:.4} \
+             (slack {our_slack:.4} and {their_slack:.4})"
+        );
+        Some((ours, theirs, our_slack + their_slack))
     }
 
     /// How the item at `at` in the report was taken by its change.

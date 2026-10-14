@@ -1,0 +1,140 @@
+Mitcad's patch to OCCT 8.0.1, under OCCT's licence:
+SPDX-License-Identifier: LGPL-2.1-only WITH OCCT-exception-1.0
+
+Fillets and chamfers: a stripe's OnSame end whose prolonged edge runs along
+a seam of the opposite face (mitcad#263).
+
+The case: a lug inside a bore, its top's concave edge with the bore's
+wall chamfered or rounded as wide as the top (0140), the lug ending at the
+bore's seam. ChFi3d_Builder::PerformOneCorner prolongs the edge between the
+lug's end and the wall (left from the seam by the join of the lug, used
+once by the wall but keeping both p-curves) up to the blend's contact:
+
+- the prolongation's p-curve on the wall was taken from the edge's p-curve
+  for its orientation, not for the wall's use of it: the prolongation lay
+  on the seam's other side, where the blend covers the wall. It is now
+  taken as the wall uses the edge;
+- the seam above the corner's vertex was not cut: the wall kept the seam
+  along the prolongation on both sides, and its wire intersected itself.
+  Where the prolongation runs along a seam of the opposite face from the
+  corner's vertex, the seam is now cut at the prolongation's end and its
+  part along it kept on neither side (ChFi3d_CutSeamAlongCurve).
+
+Before, the blend of the case gave a self-intersecting wire.
+
+diff --git a/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_C1.cxx b/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_C1.cxx
+index b253ca49..b6526905 100644
+--- a/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_C1.cxx
++++ b/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_C1.cxx
+@@ -80,6 +80,7 @@
+ #include <TopAbs_Orientation.hxx>
+ #include <TopAbs_ShapeEnum.hxx>
+ #include <TopExp.hxx>
++#include <GeomAPI_ProjectPointOnCurve.hxx>
+ #include <TopExp_Explorer.hxx>
+ #include <TopoDS.hxx>
+ #include <TopoDS_Edge.hxx>
+@@ -1076,6 +1077,79 @@ static void ChFi3d_CapAcrossFaceBeyond(TopOpeBRepDS_DataStructure&             D
+   }
+ }
+ 
++//=======================================================================
++// function : ChFi3d_CutSeamAlongCurve
++// purpose  : Where the curve C on [U1, U2], from the corner's vertex V to
++//            the point Ip of the stripe's end, runs along a seam of F that
++//            has V as a vertex (the face at the end meets F along the seam:
++//            a lug in a bore ending at the bore's seam), the seam is cut at
++//            the curve's end with its part along the curve kept on neither
++//            side: the curve bounds F there on one side, the blend covers
++//            the other.
++//=======================================================================
++
++static void ChFi3d_CutSeamAlongCurve(TopOpeBRepDS_DataStructure&    DStr,
++                                     const TopoDS_Face&             F,
++                                     const TopoDS_Vertex&           V,
++                                     const occ::handle<Geom_Curve>& C,
++                                     const double                   U1,
++                                     const double                   U2,
++                                     const int                      Ip,
++                                     const double                   Tol)
++{
++  if (C.IsNull() || U2 - U1 <= Precision::PConfusion())
++  {
++    return;
++  }
++  TopoDS_Face FF = F;
++  FF.Orientation(TopAbs_FORWARD);
++  for (TopExp_Explorer ex(FF, TopAbs_EDGE); ex.More(); ex.Next())
++  {
++    const TopoDS_Edge& E = TopoDS::Edge(ex.Current());
++    if (BRep_Tool::Degenerated(E) || !BRep_Tool::IsClosed(E, FF))
++    {
++      continue;
++    }
++    TopoDS_Vertex V1, V2;
++    TopExp::Vertices(E, V1, V2);
++    if (!V.IsSame(V1) && !V.IsSame(V2))
++    {
++      continue;
++    }
++    double                        f = 0., l = 0.;
++    const occ::handle<Geom_Curve> CE = BRep_Tool::Curve(E, f, l);
++    if (CE.IsNull())
++    {
++      continue;
++    }
++    bool along = true;
++    for (int i = 1; i <= 4 && along; i++)
++    {
++      GeomAPI_ProjectPointOnCurve aPr(C->Value(U1 + (U2 - U1) * i / 4.), CE, f, l);
++      along = aPr.NbPoints() > 0 && aPr.LowerDistance() <= Tol;
++    }
++    if (!along)
++    {
++      continue;
++    }
++    GeomAPI_ProjectPointOnCurve aPr(C->Value(U2), CE, f, l);
++    const double                w = aPr.LowerDistanceParameter();
++    if (w <= f + Precision::PConfusion() || w >= l - Precision::PConfusion())
++    {
++      return;
++    }
++    // (Along the edge the part from V to the cut goes: a transition into
++    // the kept part, as from V's side the edge comes to the cut.)
++    const bool               fromFirst = V.IsSame(V1) && !(V.IsSame(V2) && BRep_Tool::Parameter(V2, E) < w);
++    const TopAbs_Orientation anOr      = fromFirst ? TopAbs_FORWARD : TopAbs_REVERSED;
++    TopoDS_Edge              EF        = E;
++    EF.Orientation(TopAbs_FORWARD);
++    const int IE = DStr.AddShape(EF);
++    DStr.ChangeShapeInterferences(IE).Append(ChFi3d_FilPointInDS(anOr, IE, Ip, w));
++    return;
++  }
++}
++
+ //=================================================================================================
+ 
+ void ChFi3d_Builder::PerformOneCorner(const int Index, const bool thePrepareOnSame)
+@@ -2001,7 +2075,9 @@ void ChFi3d_Builder::PerformOneCorner(const int Index, const bool thePrepareOnSa
+     }
+     else
+     {
+-    Hc = BRep_Tool::CurveOnSurface(Arcprol, Fop, Ubid, Ubid);
++    // (On Fop the p-curve of the prolonged edge as Fop uses it: an edge
++    // left from a seam, used once, keeps both its p-curves.)
++    Hc = BRep_Tool::CurveOnSurface(TopoDS::Edge(Arcprol.Oriented(OArcprolop)), Fop, Ubid, Ubid);
+     if (Hc.IsNull())
+     {
+       throw Standard_ConstructionError("Failed to get p-curve of edge");
+@@ -2166,6 +2242,12 @@ void ChFi3d_Builder::PerformOneCorner(const int Index, const bool thePrepareOnSa
+       int icc    = stripe->IndexPoint(isfirst, IFopArc);
+       interfprol = ChFi3d_FilPointInDS(TopAbs_REVERSED, IZob, icc, Ufin);
+       DStr.ChangeCurveInterferences(IZob).Append(interfprol);
++      // A seam of Fop along which the curve runs from the corner's vertex
++      // (a lug ending at the seam of the bore it stands in): the curve
++      // takes the seam's place on the side of Fop the prolonged edge
++      // bounds, the blend covers the other side, so the seam is cut where
++      // the curve ends and its part along the curve dropped.
++      ChFi3d_CutSeamAlongCurve(DStr, Fop, Vtx, zob3d, Udeb, Ufin, icc, tolapp3d);
+ #ifdef VARIANT1
+       {
+         if (IFopArc == 1)

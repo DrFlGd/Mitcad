@@ -1,0 +1,550 @@
+// SPDX-License-Identifier: MIT
+#include "WindowStyle.hpp"
+
+#include <algorithm>
+#include <utility>
+
+#include <QAbstractButton>
+#include <QAbstractItemView>
+#include <QApplication>
+#include <QBoxLayout>
+#include <QDockWidget>
+#include <QEnterEvent>
+#include <QEvent>
+#include <QFontMetrics>
+#include <QItemSelectionModel>
+#include <QMainWindow>
+#include <QMenuBar>
+#include <QModelIndex>
+#include <QPainter>
+#include <QPen>
+#include <QProxyStyle>
+#include <QSizePolicy>
+#include <QStyle>
+#include <QStyleFactory>
+#include <QToolBar>
+#include <QTreeView>
+#include <QtLogging>
+
+#include "AutoselectPanel.hpp"
+#include "Theme.hpp"
+#include "../platform/WindowsFrame.hpp"
+
+namespace mitcad {
+namespace {
+
+constexpr int kButton = 22; // a panel's float and close buttons
+constexpr int kTitleLeft = 12;
+constexpr int kTitleRight = 6;
+
+QColor withAlpha(QColor color, int alpha) {
+  color.setAlpha(alpha);
+  return color;
+}
+
+// A raised surface: the panels and the toolbar.
+void paintSurface(QWidget* widget, const QRect& rect) {
+  QPainter painter(widget);
+  painter.setRenderHint(QPainter::Antialiasing);
+  painter.setPen(Qt::NoPen);
+  painter.setBrush(windowColors().surface);
+  painter.drawRoundedRect(QRectF(rect), panel::kRadius, panel::kRadius);
+}
+
+// The main window's own style: the separators between the docks are the
+// panels' gap and show the window behind them (they still resize the docks).
+// Its children keep the application's style.
+class GapStyle : public QProxyStyle {
+public:
+  explicit GapStyle(QStyle* base) : QProxyStyle(base) {}
+
+  int pixelMetric(PixelMetric metric, const QStyleOption* option, const QWidget* widget) const override {
+    if (metric == PM_DockWidgetSeparatorExtent) {
+      return panel::kGap;
+    }
+    return QProxyStyle::pixelMetric(metric, option, widget);
+  }
+
+  void drawPrimitive(PrimitiveElement element, const QStyleOption* option, QPainter* painter,
+                     const QWidget* widget) const override {
+    if (element == PE_IndicatorDockWidgetResizeHandle) {
+      return;
+    }
+    QProxyStyle::drawPrimitive(element, option, painter, widget);
+  }
+};
+
+// A panel's float or close button: a small glyph in the quiet text colour,
+// a rounded fill under the mouse.
+class TitleButton : public QAbstractButton {
+public:
+  enum class Glyph { Float, Close };
+
+  TitleButton(Glyph glyph, QWidget* parent) : QAbstractButton(parent), m_glyph(glyph) {
+    setFocusPolicy(Qt::NoFocus);
+    setAttribute(Qt::WA_Hover);
+    setFixedSize(kButton, kButton);
+  }
+
+  QSize sizeHint() const override { return QSize(kButton, kButton); }
+
+protected:
+  void paintEvent(QPaintEvent*) override {
+    QPainter painter(this);
+    painter.setRenderHint(QPainter::Antialiasing);
+    const WindowColors colors = windowColors(palette());
+    const bool hot = isDown() || underMouse();
+    if (hot) {
+      painter.setPen(Qt::NoPen);
+      painter.setBrush(withAlpha(colors.text, isDown() ? 46 : 26));
+      painter.drawRoundedRect(QRectF(rect()), 5, 5);
+    }
+    QPen pen(hot ? colors.text : colors.secondaryText, 1.2);
+    pen.setCapStyle(Qt::RoundCap);
+    pen.setJoinStyle(Qt::RoundJoin);
+    painter.setPen(pen);
+    painter.setBrush(Qt::NoBrush);
+    const QPointF center = QRectF(rect()).center();
+    if (m_glyph == Glyph::Float) {
+      painter.drawRoundedRect(QRectF(center.x() - 4.5, center.y() - 4.5, 9, 9), 1.5, 1.5);
+    } else {
+      painter.drawLine(center + QPointF(-3.5, -3.5), center + QPointF(3.5, 3.5));
+      painter.drawLine(center + QPointF(3.5, -3.5), center + QPointF(-3.5, 3.5));
+    }
+  }
+
+private:
+  Glyph m_glyph;
+};
+
+} // namespace
+
+WindowColors windowColors(const QPalette& palette) {
+  WindowColors colors;
+  colors.dark = isDarkPalette(palette);
+  colors.accent = actionColor(palette);
+  if (colors.dark) {
+    colors.window = QColor(0x14, 0x15, 0x18);
+    colors.surface = QColor(0x1f, 0x20, 0x24);
+    colors.raised = QColor(0x2a, 0x2c, 0x31);
+    colors.text = QColor(0xe6, 0xe8, 0xec);
+    colors.secondaryText = QColor(0xa3, 0xaa, 0xb4);
+    colors.titleText = QColor(0x7f, 0x86, 0x92);
+    colors.line = QColor(0xff, 0xff, 0xff, 18);
+    colors.accentText = QColor(0x0b, 0x12, 0x20);
+  } else {
+    colors.window = QColor(0xe4, 0xe7, 0xec);
+    colors.surface = QColor(0xf8, 0xf9, 0xfb);
+    colors.raised = QColor(0xe9, 0xec, 0xf1);
+    colors.text = QColor(0x1d, 0x20, 0x26);
+    colors.secondaryText = QColor(0x4c, 0x52, 0x5c);
+    colors.titleText = QColor(0x6b, 0x72, 0x7d);
+    colors.line = QColor(0x00, 0x00, 0x00, 22);
+    colors.accentText = QColor(0xff, 0xff, 0xff);
+  }
+  return colors;
+}
+
+QFont panelTitleFont(const QFont& font) {
+  QFont title = font;
+  if (title.pointSizeF() > 0) {
+    title.setPointSizeF(title.pointSizeF() * 0.85);
+  } else if (title.pixelSize() > 0) {
+    title.setPixelSize(std::max(9, title.pixelSize() * 85 / 100));
+  }
+  title.setWeight(QFont::DemiBold);
+  title.setLetterSpacing(QFont::PercentageSpacing, 108);
+  return title;
+}
+
+void paintPanelRowBand(QPainter* painter, const QStyleOptionViewItem& option, const QModelIndex& index) {
+  if (index.column() != 0 || !option.state.testFlag(QStyle::State_Selected)) {
+    return;
+  }
+  // Across the whole row: the branch's arrow and every column.
+  int width = option.rect.right() + 1;
+  if (const auto* view = qobject_cast<const QAbstractItemView*>(option.widget)) {
+    width = view->viewport()->width();
+  }
+  const QRectF band(panel::kRowInset, option.rect.top() + 1, std::max(0, width - 2 * panel::kRowInset),
+                    option.rect.height() - 2);
+  // The action blue (mitcad#230) from the application palette's theme, not
+  // from the tree's Highlight and Accent (transparent, stylePanelTree). It
+  // stays translucent so that the branch's arrow, painted before, shows
+  // through; strong enough to read as blue over the Windows 11 style's faint
+  // grey there, also in an inactive window.
+  QColor fill = actionColor();
+  fill.setAlphaF(option.state.testFlag(QStyle::State_Active) ? 0.30f : 0.24f);
+  painter->save();
+  painter->setRenderHint(QPainter::Antialiasing);
+  painter->setPen(Qt::NoPen);
+  painter->setBrush(fill);
+  painter->drawRoundedRect(band, panel::kRowRadius, panel::kRowRadius);
+  painter->restore();
+}
+
+QStyleOptionViewItem panelRowOption(const QStyleOptionViewItem& option) {
+  QStyleOptionViewItem plain = option;
+  plain.state &= ~(QStyle::State_Selected | QStyle::State_HasFocus);
+  return plain;
+}
+
+void stylePanelTree(QTreeView* tree) {
+  if (tree == nullptr) {
+    return;
+  }
+  tree->setFrameShape(QFrame::NoFrame);
+  tree->setAttribute(Qt::WA_MacShowFocusRect, false);
+  // Only these roles are the tree's own (a palette made afresh resolves
+  // none), so that the rest follows the theme. No style sheet: Qt's style
+  // sheet style sets a widget's whole palette as it is when polished, and
+  // draws a styled ::item through the common style with that palette's Text,
+  // which kept the light theme's dark text after a switch to the dark theme.
+  //
+  // The band is the selection (paintPanelRowBand); the style's own marks of
+  // it are transparent: the view paints the background in front of a row,
+  // under its branch's arrow (PE_PanelItemViewRow), with the row's selected
+  // state, where the Windows 11 style draws a short bar in the palette's
+  // Accent at the tree's left edge, and other styles fill it with Highlight.
+  QPalette palette;
+  palette.setColor(QPalette::Base, Qt::transparent);
+  palette.setColor(QPalette::AlternateBase, Qt::transparent);
+  palette.setColor(QPalette::Highlight, Qt::transparent);
+  palette.setColor(QPalette::Accent, Qt::transparent);
+  tree->setPalette(palette);
+  tree->viewport()->setAutoFillBackground(false);
+  // A band reaches over the branch's arrow, which the view does not repaint
+  // with a row whose selection changes.
+  if (QItemSelectionModel* selection = tree->selectionModel()) {
+    QWidget* viewport = tree->viewport();
+    QObject::connect(selection, &QItemSelectionModel::selectionChanged, viewport, [viewport] { viewport->update(); });
+  }
+}
+
+void PanelRowDelegate::paint(QPainter* painter, const QStyleOptionViewItem& option, const QModelIndex& index) const {
+  paintPanelRowBand(painter, option, index);
+  QStyledItemDelegate::paint(painter, panelRowOption(option), index);
+}
+
+QSize PanelRowDelegate::sizeHint(const QStyleOptionViewItem& option, const QModelIndex& index) const {
+  QSize size = QStyledItemDelegate::sizeHint(option, index);
+  size.setHeight(std::max(size.height(), panel::kRowHeight));
+  return size;
+}
+
+QWidget* PanelRowDelegate::createEditor(QWidget* parent, const QStyleOptionViewItem& option,
+                                        const QModelIndex& index) const {
+  // The tree's base colour is transparent (stylePanelTree).
+  QWidget* editor = QStyledItemDelegate::createEditor(parent, option, index);
+  if (editor != nullptr) {
+    editor->setPalette(QApplication::palette());
+    editor->setAutoFillBackground(true);
+  }
+  return editor;
+}
+
+// ---------------------------------------------------------------------------
+// Titles
+
+SectionTitle::SectionTitle(const QString& text, QWidget* parent) : QWidget(parent), m_text(text) {
+  setObjectName(QStringLiteral("sectionTitle"));
+  setAccessibleName(text);
+  setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Fixed);
+}
+
+QSize SectionTitle::sizeHint() const {
+  const QFontMetrics metrics(panelTitleFont(font()));
+  return QSize(metrics.horizontalAdvance(m_text.toUpper()) + 2, metrics.height() + 6);
+}
+
+QSize SectionTitle::minimumSizeHint() const { return QSize(0, sizeHint().height()); }
+
+void SectionTitle::changeEvent(QEvent* event) {
+  QWidget::changeEvent(event);
+  if (event->type() == QEvent::FontChange) {
+    updateGeometry();
+  }
+  if (event->type() == QEvent::PaletteChange || event->type() == QEvent::ApplicationPaletteChange) {
+    update();
+  }
+}
+
+void SectionTitle::paintEvent(QPaintEvent*) {
+  QPainter painter(this);
+  painter.setFont(panelTitleFont(font()));
+  painter.setPen(windowColors(palette()).titleText);
+  const QString text = painter.fontMetrics().elidedText(m_text.toUpper(), Qt::ElideRight, width());
+  painter.drawText(rect().adjusted(0, 0, 0, -2), Qt::AlignLeft | Qt::AlignBottom, text);
+}
+
+PanelTitleBar::PanelTitleBar(QDockWidget* dock) : QWidget(dock), m_dock(dock) {
+  setObjectName(QStringLiteral("panelTitle"));
+  auto* floatButton = new TitleButton(TitleButton::Glyph::Float, this);
+  floatButton->setObjectName(QStringLiteral("panelFloat"));
+  floatButton->setAccessibleName(tr("Float"));
+  connect(floatButton, &QAbstractButton::clicked, dock, [dock] { dock->setFloating(!dock->isFloating()); });
+  auto* closeButton = new TitleButton(TitleButton::Glyph::Close, this);
+  closeButton->setObjectName(QStringLiteral("panelClose"));
+  closeButton->setAccessibleName(tr("Close"));
+  closeButton->setToolTip(tr("Close the panel (View menu shows it again)"));
+  connect(closeButton, &QAbstractButton::clicked, dock, &QWidget::close);
+  m_float = floatButton;
+  m_close = closeButton;
+  for (QAbstractButton* button : {m_float, m_close}) {
+    // Hidden while the mouse is elsewhere, without moving the title.
+    QSizePolicy policy = button->sizePolicy();
+    policy.setRetainSizeWhenHidden(true);
+    button->setSizePolicy(policy);
+  }
+  QBoxLayout* layout = nullptr;
+  if (vertical()) {
+    layout = new QVBoxLayout(this);
+    layout->setContentsMargins(2, panel::kGap, 2, panel::kGap);
+  } else {
+    layout = new QHBoxLayout(this);
+    layout->setContentsMargins(kTitleLeft, 0, kTitleRight, 0);
+    layout->addStretch();
+  }
+  layout->setSpacing(2);
+  layout->addWidget(m_float, 0, Qt::AlignCenter);
+  layout->addWidget(m_close, 0, Qt::AlignCenter);
+  if (vertical()) {
+    layout->addStretch();
+  }
+  connect(dock, &QDockWidget::featuresChanged, this, [this] {
+    updateButtons();
+    updateGeometry();
+  });
+  connect(dock, &QDockWidget::topLevelChanged, this, [this] { updateButtons(); });
+  connect(dock, &QWidget::windowTitleChanged, this, [this] {
+    updateGeometry();
+    update();
+  });
+  updateButtons();
+}
+
+bool PanelTitleBar::vertical() const { return m_dock->features().testFlag(QDockWidget::DockWidgetVerticalTitleBar); }
+
+QSize PanelTitleBar::sizeHint() const {
+  if (vertical()) {
+    return QSize(panel::kStripWidth, 2 * kButton + 2 + 2 * panel::kGap);
+  }
+  const QFontMetrics metrics(panelTitleFont(font()));
+  return QSize(kTitleLeft + metrics.horizontalAdvance(m_dock->windowTitle().toUpper()) + 8 + 2 * kButton + 2 + kTitleRight,
+               panel::kTitleHeight);
+}
+
+QSize PanelTitleBar::minimumSizeHint() const {
+  if (vertical()) {
+    return QSize(panel::kStripWidth, kButton + 2 * panel::kGap);
+  }
+  return QSize(kTitleLeft + 2 * kButton + 2 + kTitleRight, panel::kTitleHeight);
+}
+
+void PanelTitleBar::updateButtons() {
+  const QDockWidget::DockWidgetFeatures features = m_dock->features();
+  m_float->setVisible(m_hovered && features.testFlag(QDockWidget::DockWidgetFloatable));
+  m_close->setVisible(m_hovered && features.testFlag(QDockWidget::DockWidgetClosable));
+  m_float->setToolTip(m_dock->isFloating() ? tr("Dock the panel") : tr("Float the panel"));
+}
+
+void PanelTitleBar::changeEvent(QEvent* event) {
+  QWidget::changeEvent(event);
+  if (event->type() == QEvent::FontChange) {
+    updateGeometry();
+  }
+  if (event->type() == QEvent::PaletteChange || event->type() == QEvent::ApplicationPaletteChange) {
+    update();
+  }
+}
+
+void PanelTitleBar::enterEvent(QEnterEvent* event) {
+  QWidget::enterEvent(event);
+  m_hovered = true;
+  updateButtons();
+}
+
+void PanelTitleBar::leaveEvent(QEvent* event) {
+  QWidget::leaveEvent(event);
+  m_hovered = false;
+  updateButtons();
+}
+
+void PanelTitleBar::paintEvent(QPaintEvent*) {
+  if (vertical()) {
+    return; // a strip of the panel's surface, with the buttons
+  }
+  QPainter painter(this);
+  painter.setFont(panelTitleFont(font()));
+  painter.setPen(windowColors(palette()).titleText);
+  const QRect area(kTitleLeft, 0, std::max(0, width() - kTitleLeft - kTitleRight - 2 * kButton - 2 - 8), height());
+  const QString text =
+      painter.fontMetrics().elidedText(m_dock->windowTitle().toUpper(), Qt::ElideRight, area.width());
+  painter.drawText(area, Qt::AlignLeft | Qt::AlignVCenter, text);
+}
+
+// ---------------------------------------------------------------------------
+// The window
+
+void WindowStyle::install(QMainWindow* window) {
+  if (window != nullptr && window->findChild<WindowStyle*>(QString(), Qt::FindDirectChildrenOnly) == nullptr) {
+    new WindowStyle(window);
+  }
+}
+
+WindowStyle::WindowStyle(QMainWindow* window) : QObject(window), m_window(window) {
+  setObjectName(QStringLiteral("windowStyle"));
+  // Segoe UI Variable on Windows 11; elsewhere the platform's font stays.
+  m_font = win::uiFontFamily();
+  if (!m_font.isEmpty()) {
+    QFont font = QApplication::font();
+    font.setFamilies({m_font});
+    QApplication::setFont(font);
+  }
+  // The gap to the window's sides; the menu bar's and the status bar's
+  // colour is the window's, so they read as before.
+  window->setContentsMargins(panel::kGap, 0, panel::kGap, 0);
+  auto* gaps = new GapStyle(QStyleFactory::create(QApplication::style()->name()));
+  gaps->setParent(this);
+  window->setStyle(gaps);
+  for (QDockWidget* dock : window->findChildren<QDockWidget*>(QString(), Qt::FindDirectChildrenOnly)) {
+    styleDock(dock);
+  }
+  if (auto* bar = window->findChild<QToolBar*>(QStringLiteral("ribbonToolbar"), Qt::FindDirectChildrenOnly)) {
+    styleToolBar(bar);
+  }
+  // The Command panel's Autoselect: a section title instead of the group
+  // box's frame.
+  if (auto* autoselect = window->findChild<AutoselectPanel*>()) {
+    autoselect->setSectionTitle(new SectionTitle(autoselect->title()));
+  }
+  window->installEventFilter(this);
+  // The theme's palette changes reach the window's children (the menu bar
+  // is always there, also when the system shows the menus).
+  if (QMenuBar* bar = window->menuBar()) {
+    bar->installEventFilter(this);
+  }
+  apply();
+}
+
+void WindowStyle::styleDock(QDockWidget* dock) {
+  // The timeline is low: its title is a strip at its left, without text.
+  const bool strip = dock->objectName() == QLatin1String("timelineDock");
+  if (strip) {
+    dock->setFeatures(dock->features() | QDockWidget::DockWidgetVerticalTitleBar);
+  }
+  dock->setTitleBarWidget(new PanelTitleBar(dock));
+  dock->setAutoFillBackground(false);
+  if (QWidget* content = dock->widget()) {
+    // Inside the rounded surface.
+    content->setContentsMargins(strip ? QMargins(0, panel::kGap, 8, panel::kGap)
+                                      : QMargins(panel::kGap, 0, panel::kGap, 8));
+  }
+  dock->installEventFilter(this);
+  m_docks.append(dock);
+}
+
+void WindowStyle::styleToolBar(QToolBar* bar) {
+  m_toolBar = bar;
+  // The gap below the surface, to the panels; the window shows around it.
+  bar->setAutoFillBackground(false);
+  bar->setContentsMargins(0, 0, 0, panel::kGap);
+  bar->installEventFilter(this);
+}
+
+bool WindowStyle::eventFilter(QObject* watched, QEvent* event) {
+  switch (event->type()) {
+  case QEvent::Paint:
+    if (auto* dock = qobject_cast<QDockWidget*>(watched)) {
+      paintSurface(dock, dock->rect());
+    } else if (watched == m_toolBar.data()) {
+      // The surface instead of the style's tool bar panel and handle.
+      paintSurface(m_toolBar, m_toolBar->rect().adjusted(0, 0, 0, -panel::kGap));
+      return true;
+    }
+    break;
+  case QEvent::ApplicationPaletteChange:
+  case QEvent::PaletteChange:
+    // The theme may have changed (apply() does nothing when the colours of
+    // the application palette's theme are set already).
+    if (m_window != nullptr && (watched == m_window.data() || watched == m_window->menuBar())) {
+      apply();
+    }
+    break;
+  case QEvent::Show:
+  case QEvent::WinIdChange:
+    if (watched == m_window.data() && (event->type() == QEvent::Show || m_shown)) {
+      m_shown = true;
+      applyFrame();
+    }
+    break;
+  default:
+    break;
+  }
+  return QObject::eventFilter(watched, event);
+}
+
+void WindowStyle::apply() {
+  if (m_window == nullptr) {
+    return;
+  }
+  const WindowColors colors = windowColors();
+  const QString applied = QStringLiteral("Window style: %1, window %2, panels %3, accent %4, font %5")
+                              .arg(colors.dark ? QStringLiteral("dark") : QStringLiteral("light"), colors.window.name(),
+                                   colors.surface.name(), colors.accent.name(),
+                                   m_font.isEmpty() ? QStringLiteral("the platform's") : m_font);
+  if (applied == m_applied) {
+    return;
+  }
+  m_applied = applied;
+  qInfo().noquote() << applied;
+
+  // The window's own roles; a palette made afresh resolves none, so the
+  // rest follows the theme. Its children inherit them: the accent colour is
+  // the selection's (Highlight) and the focus's (Accent).
+  QPalette window;
+  window.setColor(QPalette::Window, colors.window);
+  window.setColor(QPalette::Highlight, colors.accent);
+  window.setColor(QPalette::HighlightedText, colors.accentText);
+  window.setColor(QPalette::Accent, colors.accent);
+  window.setColor(QPalette::Link, colors.accent);
+  m_window->setPalette(window);
+  // The panels and the toolbar: what fills a background in them is the
+  // surface.
+  QPalette surface;
+  surface.setColor(QPalette::Window, colors.surface);
+  m_docks.removeIf([](const QPointer<QDockWidget>& dock) { return dock.isNull(); });
+  for (QDockWidget* dock : std::as_const(m_docks)) {
+    dock->setPalette(surface);
+    dock->update();
+  }
+  if (m_toolBar != nullptr) {
+    m_toolBar->setPalette(surface);
+    m_toolBar->update();
+  }
+  // The menu bar shows the window's colour (it inherits Window; the Windows
+  // 11 style paints no background of its own there, and its menus' names
+  // get a rounded highlight): no style sheet, which would fix the palette of
+  // the bar and its menus at the theme it was set in.
+  applyFrame();
+}
+
+void WindowStyle::applyFrame() {
+  // Only on the window's native window as it is: winId() would create one,
+  // also while the window goes (its native window is destroyed at the end,
+  // with a WinIdChange; DWM then answered E_HANDLE).
+  if (m_window == nullptr || !m_shown || m_window->internalWinId() == 0 ||
+      !m_window->testAttribute(Qt::WA_WState_Created)) {
+    return;
+  }
+  const WindowColors colors = windowColors();
+  // The title bar in the menu bar's colour (Windows 11; nothing elsewhere).
+  // Logged at every application: at the show and at each change of theme.
+  const QString frame = win::applyWindowFrame(m_window.data(), colors.window, colors.text);
+  if (frame.isEmpty()) {
+    return;
+  }
+  qInfo().noquote() << QStringLiteral("Window frame: %1").arg(frame);
+}
+
+} // namespace mitcad

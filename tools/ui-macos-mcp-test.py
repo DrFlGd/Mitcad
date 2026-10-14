@@ -1,12 +1,21 @@
 # SPDX-License-Identifier: MIT
 """Actual GUI/CLI localhost MCP integration; run only in the macOS VM.
 
+Besides discovery, authentication and the model tools, the live debugging
+flow of tools/ui-mcp-live.py (mitcad#265) runs against a GUI that opened a
+design whose sketch has a projection that no longer follows: queries and
+sketch.add_line with the sketch open, ui_state with the palette's warning,
+ui_select, ui_screenshot (the native window as the window server composes
+it), ui_command Clean Up Stale Projections and Finish Sketch,
+document_save and ui_log, through the native or the Qt frontend.
+
 Usage: python3 ui-macos-mcp-test.py <app> <cli> <build-output> [native|qt]
 The in-process TestDriver verifies the GUI model and native history without
 Accessibility permission. All discovery, settings and documents are private.
 """
 
 import copy
+import importlib.util
 import json
 import os
 from pathlib import Path
@@ -24,7 +33,18 @@ import time
 PROTOCOL = "2025-11-25"
 TIMEOUT = 20
 FRAME_LIMIT = 8 * 1024 * 1024
-LIVE_TOOLS = {"document_list", "model_query", "model_command"}
+
+
+def load_live():
+    """The live debugging flow shared with the Linux test (ui-mcp-live.py)."""
+    spec = importlib.util.spec_from_file_location("ui_mcp_live", Path(__file__).with_name("ui-mcp-live.py"))
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+LIVE = load_live()
+LIVE_TOOLS = LIVE.LIVE_TOOLS
 BOX = {"cmd": "add_feature", "def": {
     "type": "box", "plane": {"type": "origin", "plane": "xy"},
     "corner": [0, 0], "length": 30, "width": 20, "height": 10,
@@ -196,7 +216,11 @@ def body_volume(bridge, document):
     return len(bodies), sum(body["volume"] for body in bodies)
 
 
-def check_png(path):
+def check_png(path, gui, following_gate):
+    # QImage creates the destination before it finishes encoding the PNG.
+    # The next TestDriver step is reached only after saving has returned.
+    marker = ": expect-file '${MITCAD_MCP_TEST_WORK}/" + following_gate + "'"
+    wait_for(lambda: marker in gui.log_text(), "GUI screenshot saved: " + path.name, gui)
     header = path.read_bytes()[:24]
     check(header[:8] == b"\x89PNG\r\n\x1a\n", "GUI screenshot is not PNG")
     width, height = struct.unpack(">II", header[16:24])
@@ -290,8 +314,7 @@ def run(app, cli, out, ui):
             bridge.tool("model_command", {"document": document, "command": BOX})
             check(body_volume(bridge, document) == (1, 6000), "CLI edited a separate model instead of the GUI")
             (work / "create").touch()
-            wait_for(lambda: (out / "created.png").exists(), "GUI creation assertions", gui)
-            check_png(out / "created.png")
+            check_png(out / "created.png", gui, "edit")
             bridge.finish()
             check(gui.process.poll() is None, "Bridge EOF closed the GUI")
 
@@ -324,8 +347,7 @@ def run(app, cli, out, ui):
             reconnect.tool("model_command", {"document": document, "command": edit})
             check(body_volume(reconnect, document) == (1, 9000), "GUI box was not edited")
             (work / "edit").touch()
-            wait_for(lambda: (out / "edited.png").exists(), "GUI edit assertions", gui)
-            check_png(out / "edited.png")
+            check_png(out / "edited.png", gui, "replace")
 
             # Valid definitions can commit despite an OCCT geometry failure.
             # The applied/error distinction and GUI undo must both survive RPC.
@@ -396,7 +418,7 @@ def run(app, cli, out, ui):
             check(second.process.returncode == 0 and "TestDriver: FAIL" not in second.log_text(), second.log_text())
 
             (work / "replace").touch()
-            wait_for(lambda: (out / "replaced.png").exists(), "GUI New replacement", gui)
+            check_png(out / "replaced.png", gui, "finish")
             replacement = reconnect.tool("document_list", {})["documents"][0]["document"]
             check(replacement != document, "New reused a stale GUI document handle")
             reconnect.tool("model_command", {"document": document, "command": BOX}, error=True)
@@ -424,7 +446,29 @@ def run(app, cli, out, ui):
             (work / "disabled-finish").touch()
             disabled.process.wait(timeout=TIMEOUT)
             check(disabled.process.returncode == 0, disabled.log_text())
-            print("PASS: live GUI MCP discovery, authentication, bridge, model, UI, EOF and input limits")
+
+            # The live debugging flow (mitcad#265) on a design whose sketch F4
+            # holds a projection that no longer follows its face.
+            debug = work / "debug"
+            debug.mkdir()
+            design = LIVE.make_design(cli, debug, env)
+            debug_script = "expect-ever 'View area'\nexpect-file '${MITCAD_MCP_TEST_WORK}/debug-finish' 300\nquit\n"
+            debugger = Gui(app, env, out, "debug", debug_script, ui, ("--open", str(design)))
+            guis.append(debugger)
+            wait_for(lambda: len(public_instances(cli, env)) == 1, "the debugging GUI's discovery", debugger)
+            live = LIVE.Bridge(cli, env, out / "debug-bridge.stderr.log")
+            bridges.append(live)
+            live.initialize()
+            LIVE.run_flow(live, design)
+            live.finish()
+            wait_for(lambda: "Agent disconnected" in debugger.log_text(), "the agent's disconnection", debugger)
+            check("Agent connected" in debugger.log_text(), "The GUI did not say an agent was connected")
+            (work / "debug-finish").touch()
+            debugger.process.wait(timeout=TIMEOUT)
+            check(debugger.process.returncode == 0 and "TestDriver: FAIL" not in debugger.log_text(),
+                  debugger.log_text())
+            print("PASS: live GUI MCP discovery, authentication, bridge, model, UI, EOF and input limits, "
+                  "and the live debugging flow")
         finally:
             for bridge in bridges:
                 bridge.stop()

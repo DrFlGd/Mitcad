@@ -139,15 +139,19 @@ pub(crate) struct Clock {
     started: Instant,
     /// The dump's work so far, and when the clock started.
     paused: Option<(Arc<AtomicU64>, u64)>,
+    /// The time the import waited for the user's answer so far
+    /// (`Importer::waited`, mitcad#283), and when the clock started.
+    waited: (Arc<AtomicU64>, u64),
 }
 
 impl Clock {
     pub(crate) fn elapsed(&self) -> Duration {
-        let elapsed = self.started.elapsed();
+        let since = |(total, at): &(Arc<AtomicU64>, u64)| {
+            Duration::from_nanos(total.load(Ordering::Relaxed).saturating_sub(*at))
+        };
+        let elapsed = self.started.elapsed().saturating_sub(since(&self.waited));
         match &self.paused {
-            Some((paused, at)) => elapsed.saturating_sub(Duration::from_nanos(
-                paused.load(Ordering::Relaxed).saturating_sub(*at),
-            )),
+            Some(paused) => elapsed.saturating_sub(since(paused)),
             None => elapsed,
         }
     }
@@ -178,6 +182,10 @@ impl<K: crate::ImportKernel> Importer<'_, K> {
                 let at = s.paused.load(Ordering::Relaxed);
                 (Arc::clone(&s.paused), at)
             }),
+            waited: (
+                Arc::clone(&self.waited),
+                self.waited.load(Ordering::Relaxed),
+            ),
         }
     }
 
@@ -972,14 +980,20 @@ mod tests {
     #[test]
     fn the_clock_leaves_the_dumps_work_out() {
         let paused = Arc::new(AtomicU64::new(5));
+        let waited = Arc::new(AtomicU64::new(7));
         let clock = Clock {
             started: Instant::now() - Duration::from_secs(10),
             paused: Some((Arc::clone(&paused), 5)),
+            waited: (Arc::clone(&waited), 7),
         };
         assert!(clock.elapsed() >= Duration::from_secs(10));
         paused.fetch_add(4_000_000_000, Ordering::Relaxed);
         let left = clock.elapsed();
         assert!(left >= Duration::from_secs(6) && left < Duration::from_secs(7));
+        // Nor the time the import waited for the user's answer (mitcad#283).
+        waited.fetch_add(2_000_000_000, Ordering::Relaxed);
+        let left = clock.elapsed();
+        assert!(left >= Duration::from_secs(4) && left < Duration::from_secs(5));
         paused.fetch_add(60_000_000_000, Ordering::Relaxed);
         assert_eq!(clock.elapsed(), Duration::ZERO);
     }

@@ -1,0 +1,14 @@
+[
+  {"comment":"SPDX-License-Identifier: MIT. A mirror of an ordinary chamfer kept as an overlay (mitcad#242): t=1, r=1, K=0.4. The 0.5 chamfer of the back edge y=20 of the 40 x 20 panel is an overlay (800 - 5); its mirror about y=10 chamfers the back edge y=0 and is kept as an overlay too (790), so a flange on the edge x=40 rebuilds the sheet with both: 790 + 15 pi + 200."},
+  {"cmd":"add_feature","def":{"type":"sheet_rules","thickness":1,"bend_radius":1,"allowance":{"type":"k_factor","k":0.4},"reference_side":"front","bend_relief":{"type":"rectangular","width":1,"depth":1},"corner_relief":{"type":"round","width":2,"depth":2}}},
+  {"cmd":"sketch.create"},
+  {"cmd":"sketch.add_rectangle","sketch":"F2","corner":[0,0],"width":40,"height":20},
+  {"cmd":"add_feature","def":{"type":"sheet_face","rules":"F1","profiles":[{"sketch":"F2","region":"r{c1[c4,c2],c2[c1,c3],c3[c2,c4],c4[c3,c1]}"}]}},
+  {"cmd":"add_feature","def":{"type":"chamfer","body":"F3.b0","edges":["E{F3:sheet_back(0)|F3:sheet_side0(F2:sheet_curve(c3[c2,c4]))}"],"size":{"type":"equal_distance","distance":0.5},"flip":false}},
+  {"expect":{"feature":"F4","status":"ok","body":"F3.b0","volume":795}},
+  {"cmd":"add_feature","def":{"type":"mirror","objects":{"type":"features","features":["F4"]},"plane":{"origin":[0,10,0],"normal":[0,1,0],"x_axis":[1,0,0]},"combine":false,"compute":"adjust","original_bodies":true}},
+  {"expect":{"feature":"F5","status":"ok","body":"F3.b0","volume":790}},
+  {"expect":{"query":{"query":"sheet_state","body":"F3.b0"},"result":{"status":"valid","overlays":[{"feature":"F4","type":"change","removed":5},{"feature":"F4","type":"change","removed":5}]}}},
+  {"cmd":"add_feature","def":{"type":"sheet_flange","body":"F3.b0","boundary":{"panel":{"feature":"F3","slot":0},"curve":{"type":"sketch","sketch":"F2","segment":"c2[c1,c3]"}},"angle":1.5707963267948966,"length":{"mode":"tangent","value":10},"position":"edge"}},
+  {"expect":{"feature":"F6","status":"ok","body":"F3.b0","volume":1037.1238898038469}}
+]

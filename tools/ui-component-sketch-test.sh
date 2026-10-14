@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: MIT
 # check-all sources: app/sketch app/browser
+# check-all sources: core/model/src/document/policy.rs core/model/src/api/policy.rs app/MainWindow.cpp
 # Sketches and the timeline in a design of two components side by side,
 # through the real UI (mitcad#98, mitcad#99, mitcad#100):
 #   - With Cover active, a sketch on the top face of Part's block: linked
@@ -12,6 +13,8 @@
 #     with a projection of it works as well (what failed before, leaving
 #     Project with nothing to project).
 #   - The project file keeps the links.
+#   - New Component on Part, which takes no components: made beside it, in
+#     the root, with the warning (mitcad#292).
 #
 # Runs headless on Xvfb (see ui-test-lib.sh).
 # Usage: tools/ui-component-sketch-test.sh [screenshot.png]
@@ -68,7 +71,8 @@ project_top_face() {
 # Part:1 (O1, C1): Sketch1 (F1) 30 x 20, Extrude1 (F2) 10 up: Body1
 # (F2.b0). Cover:1 (O2, C2), empty and active, beside it in the root.
 # Sketches on another component's face need both sides' design policy
-# (mitcad#220): Part takes attachments, Cover and the root may attach.
+# (mitcad#220): Part takes attachments, Cover and the root may attach. Part
+# takes no components (mitcad#292).
 cat > "$WORK/model.json" << 'EOF'
 [
   {"cmd": "create_component", "name": "Part"},
@@ -79,7 +83,7 @@ cat > "$WORK/model.json" << 'EOF'
     "extent": {"type": "distance", "distance": 10}, "operation": "new_body"}},
   {"cmd": "activate_component", "component": "Root"},
   {"cmd": "create_component", "name": "Cover"},
-  {"cmd": "set_policy", "component": "Part", "policy": {"attachments_from_others": true}},
+  {"cmd": "set_policy", "component": "Part", "policy": {"attachments_from_others": true, "components": false}},
   {"cmd": "set_policy", "component": "Cover", "policy": {"attach_to_others": true}},
   {"cmd": "set_policy", "component": "Root", "policy": {"attach_to_others": true}}
 ]
@@ -155,5 +159,24 @@ grep -q "Recompute failed" "$UI_LOG" && ui_fail "a recompute failed"
 save
 expect_file '[f.get("component") for f in doc["features"]], doc["features"][2]["plane_link"]' \
   "(['C1', 'C1', None], {'source': 'O1'})" "the root's sketch linked to Part:1"
+
+echo "--- New Component on Part, which takes no components (mitcad#292)"
+ui_mark
+ui_step "right-click Part:1"             ui_click_logged "Browser Root/Part:1" 3
+ui_step "choose New Component"           ui_menu_choose "New Component"
+ui_expect_new "Placement warning: Part does not take components (its policy): New Component made in Root instead" \
+  "made beside Part, in the root, with the warning"
+ui_expect_new "New component in Part" "a new component"
+for _ in 1 2 3 4 5 6 7 8; do
+  tail -n +$((UI_MARK + 1)) "$UI_LOG" | grep -qE "Browser radio Root/Component[0-9]+:1 at" && break
+  ui_browser_wheel down
+done
+tail -n +$((UI_MARK + 1)) "$UI_LOG" | grep -qE "Browser radio Root/Component[0-9]+:1 at" ||
+  ui_fail "the new component has no row in the root"
+tail -n +$((UI_MARK + 1)) "$UI_LOG" | grep -qE "Browser radio Root/Part:1/Component[0-9]+:1 at" &&
+  ui_fail "the new component went under Part"
+echo "ok   its row is in the root, not under Part"
+save
+expect_file '[o["parent"] for o in doc["occurrences"]]' "['C0', 'C0']" "both occurrences in the root"
 
 ui_finish "UI component sketch test"

@@ -1,0 +1,23 @@
+[
+  {"comment":"SPDX-License-Identifier: MIT. The sheet-domain adapter of ordinary features (mitcad#242): t=1, r=1, K=0.4. An ordinary extrusion cutting a 10 x 4 window through the 40 x 20 panel leaves a sheet (volume 760) whose panel has the window as a hole; a flange after it rebuilds the sheet from its domains with the window (760 + 15 pi + 200); a thickness edit re-derives it again (t=0.5: 380 + 6.25 pi + 100); a boss joined below the panel adds material, which no sheet domain holds: the sheet meaning is lost with the adapter's reason."},
+  {"cmd":"add_feature","def":{"type":"sheet_rules","thickness":1,"bend_radius":1,"allowance":{"type":"k_factor","k":0.4},"reference_side":"front","bend_relief":{"type":"rectangular","width":1,"depth":1},"corner_relief":{"type":"round","width":2,"depth":2}}},
+  {"cmd":"sketch.create"},
+  {"cmd":"sketch.add_rectangle","sketch":"F2","corner":[0,0],"width":40,"height":20},
+  {"cmd":"add_feature","def":{"type":"sheet_face","rules":"F1","profiles":[{"sketch":"F2","region":"r{c1[c4,c2],c2[c1,c3],c3[c2,c4],c4[c3,c1]}"}]}},
+  {"cmd":"sketch.create"},
+  {"cmd":"sketch.add_rectangle","sketch":"F4","corner":[10,5],"width":10,"height":4},
+  {"cmd":"add_feature","def":{"type":"extrude","profiles":[{"sketch":"F4","region":"r{c1[c4,c2],c2[c1,c3],c3[c2,c4],c4[c3,c1]}"}],"extent":{"type":"through_all","both_sides":false},"flip":false,"operation":"cut","participants":["F3.b0"]}},
+  {"expect":{"feature":"F5","status":"ok","body":"F3.b0","volume":760}},
+  {"expect":{"query":{"query":"sheet_state","body":"F3.b0"},"result":{"status":"valid","charts":[{"domain":{"kind":"panel","id":{"feature":"F3","slot":0}},"regions":[{"loops":[{},{}]}]}]}}},
+  {"cmd":"add_feature","def":{"type":"sheet_flange","body":"F3.b0","boundary":{"panel":{"feature":"F3","slot":0},"curve":{"type":"sketch","sketch":"F2","segment":"c2[c1,c3]"}},"angle":1.5707963267948966,"length":{"mode":"tangent","value":10},"position":"edge"}},
+  {"expect":{"feature":"F6","status":"ok","body":"F3.b0","volume":1007.1238898038469,"min":[0,0,0],"max":[42,20,12]}},
+  {"expect":{"query":{"query":"sheet_state","body":"F3.b0"},"result":{"status":"valid"}}},
+  {"cmd":"edit_feature","uid":"F1","def":{"type":"sheet_rules","thickness":0.5,"bend_radius":1,"allowance":{"type":"k_factor","k":0.4},"reference_side":"front","bend_relief":{"type":"rectangular","width":1,"depth":1},"corner_relief":{"type":"round","width":2,"depth":2}}},
+  {"expect":{"feature":"F6","status":"ok","body":"F3.b0","volume":499.6349540849362}},
+  {"cmd":"undo"},
+  {"cmd":"sketch.create"},
+  {"cmd":"sketch.add_rectangle","sketch":"F7","corner":[2,2],"width":4,"height":4},
+  {"cmd":"add_feature","def":{"type":"extrude","profiles":[{"sketch":"F7","region":"r{c1[c4,c2],c2[c1,c3],c3[c2,c4],c4[c3,c1]}"}],"extent":{"type":"distance","distance":3},"flip":true,"operation":"join","participants":["F3.b0"]}},
+  {"expect":{"feature":"F8","status":"ok","body":"F3.b0","volume":1055.1238898038469}},
+  {"expect":{"query":{"query":"sheet_state","body":"F3.b0"},"result":{"status":"invalid","invalidated":{"feature":"F8"}}}}
+]

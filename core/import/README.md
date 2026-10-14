@@ -49,6 +49,7 @@ Entry points:
 | `suppressed.rs` | Items suppressed in the file as suppressed features with their definitions (mitcad#180, *Items suppressed in the file* below). |
 | `references.rs` | Components of other documents filled from those documents' own imports, and the captured positions inside them (mitcad#196, *Components of other documents* below). |
 | `reference_folder.rs` | Where the files of the documents a design refers to are: the reference folder next to it, folders and files given, an `.f3z` package's designs (by its `DesignDescription.json`, mitcad#229), the GUIDs the files' manifests list (mitcad#196). |
+| `appearances.rs` | The file's appearances and physical materials on the replayed bodies and faces (*Appearances and materials* below, mitcad#228). |
 
 ### The history as the reference
 
@@ -101,7 +102,9 @@ Matching rules:
   that brings no body, stays as before), failed in the file: an extrusion
   that found no body to cut. It is
   skipped with a placeholder (`failed in the file: …`), and the bodies
-  stay as the items before left them, with no base feature (mitcad#156).
+  stay as the items before left them, with no base feature (mitcad#156);
+  only a body that differs from the state by more than the geometric
+  tolerance is brought to it (mitcad#285).
   The file stores no failure state of its own for it: the three state
   bytes of the item tail and its health object are those of a healthy
   item. An operation that changed a body (a feature that computed with a
@@ -125,11 +128,13 @@ Matching rules:
   closer).
 - When an extrusion, or copies the history guessed (patterns and mirrors
   without decoded inputs), still gives its state only approximately, a
-  base feature right after it brings the bodies to the state exactly (a
-  warning names it): the item stays parametric, but its difference does
-  not reach later items, where it keeps a later state (a split, a
-  mirror, the stored design) from matching. Other approximations (fillets
-  stored as splines) are carried on.
+  base feature right after it brings the bodies that differ from the
+  state by more than the geometric tolerance (0.01 mm) to it (a warning
+  names it): the item stays parametric, but its difference does not
+  reach later items, where it keeps a later state (a split, a mirror, the
+  stored design) from matching. A body within the tolerance, the item's
+  own among them, stays as the replay made it (mitcad#285). Other
+  approximations (fillets stored as splines) are carried on.
 - An item that gives no state on bodies carrying such an approximation
   (beyond 1e-5 from the state before it) is tried again, in half the
   time, after a base feature brings them to that state exactly (a warning
@@ -414,6 +419,16 @@ A dimension's parameter also says whether the dimension is driven
 (`isDriving: false`), and an offset dimension's flags whether it measures
 a diameter about a line (`SketchLinearDiameterDimension`): sketches with
 such dimensions keep their points once the parameters are known.
+
+A driven dimension whose parameter the file has (and the import created)
+gets that parameter as its read-only reference (mitcad#250, `reference`
+in commands.md's *Values*): the parameter becomes the sketch's, with the
+value the sketch measures, and expressions that use it follow; no
+reference of the dimension's own is made beside it. The .ipt import's
+driven dimensions between projected geometry with a parameter in the
+part's table, and the FreeCAD import's named reference constraints, come
+in the same way. Where the model refuses it (a feature before the sketch
+uses the parameter), the sketch is added without these references.
 
 ### Sketch patterns, offsets and polygons
 
@@ -1300,9 +1315,11 @@ again before more is mapped.
   body of the file: out of memory", the import is low on memory), and
   the memory guard takes a process count that moved since its last
   measure (`geometry::failed_allocations`) as low memory ("an
-  allocation in the geometry kernel failed"), also for failures on
-  threads of no import. An operation on another thread at the same time
-  is not failed by them.
+  allocation in the geometry kernel failed"; when the operation that
+  failed reports it later, as it does when the guard polls first, the
+  report tells the operation's words), also for failures on threads of
+  no import. An operation on another thread at the same time is not
+  failed by them.
   `MITCAD_TEST_OCCT_ALLOCATION_FAILS=<operation>` (or `heal`) makes one
   fail and be caught inside for the tests.
 
@@ -1494,10 +1511,11 @@ item:
   surface, its loops' edges, their curves and vertices; a part whose key
   the body has twice is left out), as healing left them (what its
   `ShapeBuild_ReShape` put in their place, an edge it split as the chain of
-  its pieces, a seam it added to a closed face with the face). The next
-  state's build of the same blob (`StoredFile::healed`, the last three builds
-  of each blob) takes the faces it shares with the build that shares the
-  most as copies of those healed there, builds the others from its data,
+  its pieces, a seam it added to a closed face with the face). The build
+  of the body in the next state that changes it takes the faces it shares
+  with that build (its base: the same ASM record in the blob's state
+  before, `StoredFile::bases`) as copies of those healed there, builds the
+  others from its data,
   heals only those with ShapeFix (their edges made same-parameter and their
   vertex tolerances fixed where they meet the copies) and checks the whole
   body: when fewer than half of the faces are shared or the result is not a
@@ -1505,6 +1523,14 @@ item:
   states' signatures stay the same (103 of 104 identical in the 116-item
   design, the other within 5 · 10⁻³ mm³ of 600 000), and a state of 4 500–
   5 200 faces takes 2–7 s instead of 25–45 s (4 300–4 900 faces taken).
+  The base is fixed by the file, not by which builds exist (mitcad#243):
+  a build waits for its base's build on another thread, and builds the
+  base itself when no build of it kept anything yet or any more (a state
+  the replay skipped, or released); what a build kept goes when its heir
+  is built or no later state has it. Before, the next build took the
+  blob's last three builds, which with threads depended on the timing of
+  the builds ahead: a body could be healed as a whole in one run and from
+  shared faces in another, an edge apart.
 - **The body the file continues keeps its id.** A base feature that takes a
   history state paired each new body with the nearest old one; stored bodies
   now carry their ASM record (`StoredBody::lineage`, the same in every state
@@ -1607,6 +1633,172 @@ are roundings the geometry kernel fails with inputs as the file's
 (mitcad#121) and a guide-surface sweep along a 720-face thread that OCCT
 fails.
 
+### Large designs, fifth round (mitcad#119)
+
+A profile of a 256-item design with stored bodies of 14 662 and 23 430
+faces and what it changed are in [docs/performance.md](../../docs/performance.md):
+the checker's two quadratic steps on those bodies (port patches 0120 and
+0121), face lookups through a point that pass over faces by their boxes
+(`Kernel::face_boxes`), the edges of bodies kept within a budget of edges,
+sketch snaps that project only the edges near each linked curve, face
+counts from the shape's own map, and a quicker hash of entity indices and
+circle seams worked out in parallel while reading. The design imports in
+82 s instead of 149 s with eight threads and 169 s instead of 301 s with
+one, with the same reports.
+
+### Fallbacks without a B-rep round trip (mitcad#244)
+
+A fallback's base feature holds the stored bodies as B-rep data. It used
+to write each body's data and read it back to evaluate the feature, which
+also named every face again and measured and checked the read body anew:
+on the large design above about 2 s per fallback on its two large bodies.
+Now the base feature's first evaluation adopts the shape the data was
+written from (`Kernel::adopt_shape`; `Document::add_base_features` hands
+the shapes to the evaluation beside their data): the same faces in the
+same order with the names the data would get, sharing the stored body's
+B-rep instead of a copy, and keeping what was measured of it that does
+not depend on names (volume, box, face measures and boxes, edge curves,
+the checker's verdict). The data is still written, for the design file;
+an evaluation later (a design opened from its file) reads it. On that
+design the reports are byte for byte the same; the import took 156 s
+instead of 170 s with one thread and 76 s instead of 86 s with eight, and
+its peak memory went from 2.5 to 1.9 GB and from 3.5 to 2.9 GB.
+
+A retry of an item on the exact state before it replaced every body of
+the replay, also those it already had; it keeps them now (next section).
+
+### Retries on the file's exact state (mitcad#283)
+
+An item whose definitions give no state on the replay's bodies is tried
+again on the history's state before it exactly (in half its time), when
+the bodies before it carry an earlier item's approximation (they are the
+state's only within the matching tolerance), or when it is a fillet or
+chamfer the geometry kernel failed on them (the stored state's edges are
+split otherwise, and a rounding that fails on one builds on the other);
+also an item the history names no state for, on bodies that carry an
+approximation (`retry.rs`).
+
+The replay's bodies that are already the state's were imported
+correctly, and they stay: those that measure as a body of the state
+(`Sig::same`), and those near one (`Sig::matches`) whose faces lie on its
+faces within the geometric tolerance (`geometric_tolerance`, 0.01 mm:
+the faces each has and the other lacks, `Kernel::new_faces`, measured
+against the other's faces, `geometric::body_distance`). Only the bodies
+that differ from the state (and the state's bodies the replay lacks, and
+its sheets) are brought to it by a base feature, and the item is tried
+there. Where nothing differs there is no retry: an item that still fails
+takes the file's bodies as any item that fails (*Fallback*), and the
+bodies before it stay parametric. Before mitcad#283 the retry replaced the
+bodies the replay had within the tolerance (and, for a fillet or chamfer
+the kernel failed on bodies that were the state's exactly, every body).
+
+Replacing those bodies too is the user's choice (`import_f3d`'s
+`retry_bodies`, `mitcad-cli import-f3d --retry-bodies keep|replace`;
+`Options::retry_bodies`): `keep` (the default, also of the corpus tests),
+`replace` (as before), or, in the application, `ask`: the first time a
+retry would replace a body that matches, after the retry keeping them
+gave no state, the import asks through the document's job
+(`RecomputeMonitor::ask`, `RetryChoice`), and the answer holds for the
+rest of the import, its later tries (after a hang) and the documents it
+refers to. While the question waits the import ticks its watchdog.
+
+The report's item gets `exact_retry`: the state, `keep` or `replace`,
+the replay's bodies `kept` and `replaced` (`<name> (<uid>)`), and whether
+the item `matched` there (else the replacement was undone, or none was
+made); the text report a line under the item. The design's
+`retry_question` names the item asked at and the answer.
+
+Checked on a design of 256 items (content id `0b758b01`): its six
+retries gave no state before either (all fell back), so the outcomes are
+the same (220 parametric of 256, 31 of 31 final bodies exact); the retries
+now keep the bodies within 0.01 mm (0.2–2 µm here) and replace only those
+off by more (0.17 mm, 2.1 mm). On five smaller designs whose fillet
+gave its state only on the stored bodies (content ids `59a1e52b`,
+`7aa27c24`, `3a5fe9db`, `e4424061`, `4fe294cf`), the fillet now takes the
+file's bodies by default, the bodies before it staying parametric: those
+bodies are the file's within 0–3.4 µm, but an earlier item split their
+faces otherwise (a revolution's or extrusion's face in two, a chamfer's
+faces; one more face than the stored body, nine more on one), or the
+fillet runs over an earlier fillet's own surfaces (one design), and the
+geometry kernel fails the fillet on the replay's edges. What these need is
+the fillet building on the replay's split faces (or the replay's faces
+merged where the file has one), not the stored bodies.
+
+### Fallbacks keep the bodies imported correctly (mitcad#285)
+
+Every other base feature that brings the replay's bodies to a history
+state or to the stored design keeps the bodies that match it as the
+retry above does (`Stay::Matching`, `Importer::pair_within`): an item's
+fallback, the pending items' bodies (one at a time or in one step with an
+item), the state after an approximate extrusion or a guessed pattern or
+mirror, the state at an item that failed in the file, and the stored
+bodies at the end. A body that is the state's body exactly, or whose
+faces lie on it within the geometric tolerance, was imported correctly and
+stays as the replay made it, parametric; only the bodies that differ by
+more (the bodies of the items that failed among them) are replaced.
+Before, each of these replaced every body that was not the state's
+exactly. The bodies kept carry their difference on: the distance the
+replay carries from the state is measured after such a fallback.
+
+What found bodies of the next states by their measures exactly now
+treats a body kept within the tolerance as its stored body
+(`Importer::stored_counterparts`), which a later state that leaves it
+alone holds exactly: the combines, splits, removals and fillet edges
+guessed from the bodies the next states change (a combine took a kept
+body for its target before). Moving bodies into a new component takes
+the same body, else the nearest within the matching tolerance.
+
+Checked on 27 designs whose items take these paths (content ids, items
+parametric before → after): `0b758b01` 220 → 220 of 256 (final bodies
+31 of 31 within the tolerance, 29 of them exactly; the two others are
+the replay's own, kept), `b596234a` 53 → 55 of 66 (the component move
+and an extrusion after it now find the replay's bodies), `a1c980ab`
+22 → 22 of 26 (a combine that fell back is now parametric, an extrusion
+falls back, below), `f9d6d78a` 68 → 67 of 78, `9e53857a` 24 → 23 of 28,
+`ad0df696` 13 → 12 of 14, and the other 21 the same; 1278 → 1277 of
+1502 items in all, with 29 base features that bring bodies instead of 44.
+What now falls back:
+
+- An extrusion that joins a small cylinder to a body a chamfer made 2.6 µm
+  off the file's (the chamfer's body has one face more than the stored
+  one, 1.5 · 10⁻⁵ of its volume): on the replay's body the tool stays
+  apart from it (it comes in as a solid of its own); the join's near-contact
+  fusing reaches 1 · 10⁻⁵ mm only. Needs the join to fuse within the
+  import's geometric tolerance where the tool touches nothing, or the
+  chamfer's face as the file splits it.
+- A join of an extrusion on a body whose faces each lie on the file's (no
+  face off; its volume 1.8 · 10⁻⁵ off, the stored faces' measure): the
+  geometry kernel's boolean gives an invalid face (intersecting wires) on
+  the replay's body and a valid result on the stored one. Needs the join
+  retried with a fuzzy value when its result is invalid.
+- A base feature of the file whose state is the one before it: it was
+  counted parametric because its fallback replaced a body of the replay
+  that was 1.4 µm off (one face more than the stored body); nothing
+  replaces that body now, and the item is skipped as one that changes
+  nothing in the history.
+
+### Faces the replay split where the files have one (mitcad#284)
+
+The extra faces of those five designs had three causes. A revolution or
+extrusion joined onto a cylinder of the same radius left two faces of one
+cylinder where their seams lay half a turn apart: the face merge after the
+boolean failed to rebuild the merged face's seam (OCCT port patch 0220);
+the faces now merge, as in the files. A chamfer as wide as a ring beside
+its edge gave the edges along the ring's far circle p-curves half a turn
+off (a tolerance of the ring's diameter) and a rounding of them failed;
+and a rounding as high as a boss's wall left a sliver of the wall (built
+0.1 % smaller): both are fixed by the port's patches 0144 to 0149
+(mitcad#263). Checked by content id (features parametric, all verified
+against the file's history; final bodies within 1e-5 of the file's):
+
+| design | before | after | what still falls back, and why |
+|---|---|---|---|
+| `59a1e52b` | 12 / 13 | 13 / 13 | |
+| `4fe294cf` | 23 / 24 | 24 / 24 | |
+| `3a5fe9db` | 24 / 25 | 23 / 25 | the boss's foot is now rounded exactly (its wall vanishes, as in the file); rounding its top edge then, between the top and the foot's torus, fails in OCCT's walk for any radius (a boss with an exact foot rounding reproduces it); a chamfer as wide as a face is still built 0.1 % smaller, and a later rounding fails at a vertex beside its sliver |
+| `7aa27c24` | 12 / 13 | 12 / 13 | the chamfer of a pocket's floor edges takes away both faces of its edges (the wall and a ledge, both 1.5 wide): OCCT builds it only 0.1 % smaller, and the rounding after it fails on the slivers |
+| `e4424061` | 7 / 8 | 7 / 8 | the replay is the file's within 0.5 µm (the file's edges there carry that as their tolerance); the rounding of a square hole's vertical edges fails in OCCT's walk at their upper ends on an earlier rounding's corner torus, and builds on the stored body |
+
 ### Work beside the replay
 
 The timeline's items are replayed one after another; with `threads`
@@ -1629,7 +1821,33 @@ above one the work that does not depend on the replay runs beside it
   24 earlier ones per blob, until each input is found): naming all of
   them at once on every thread ran the largest design of the backup
   corpus out of a 4 GB limit before the import began (an allocation of
-  Rust's, which ends the process, mitcad#132).
+  Rust's, which ends the process, mitcad#132). A named state is shared
+  (mitcad#246): the items and threads that look in it take one naming
+  while it is kept, the two or three states used last are kept, the
+  whole circles the circle seams read after the items are taken when
+  their states are named, and a fillet's face selections name the
+  earlier states one at a time. Naming each state only once would mean
+  keeping about twelve states of a large design, half a gigabyte more at
+  the import's peak ([History states named once](../../docs/performance.md#history-states-named-once-mitcad246)).
+- **The first state's large bodies healed while reading** (mitcad#245).
+  The replay's first item asks for a history's oldest state with bodies,
+  and healing its large bodies took as long as reading the file. The
+  conversion of a history blob therefore converts that state first, and
+  each of its bodies of 1 000 faces or more (largest first, 100 000 faces
+  in all) is healed on a thread taken from the converting ones
+  (`mitcad_import::Share`; at most half of them, while the conversion
+  goes on with the others: `in_order_sharing` starts an item only on a
+  thread left) while the rest of the file is read. The healing is the
+  replay's build of that body: from the same data, without a base (no
+  older state has the body), keeping what its heirs take (which leaves
+  the body as it is; what it kept is handed on only when the body has
+  heirs), measured as a body built ahead. Once the file's variants and
+  bases are known, the body goes to its variant as a build in progress or
+  built ahead (`StoredFile::take_early`); a try asking for it waits for it
+  and ticks the watchdog with its progress, and its thread counts in
+  `abandoned_imports()`. A body that does not build, or whose variant is
+  not the converted one, is left to the replay. With one converting
+  thread nothing is healed while reading.
 - **The history's bodies built ahead.** When the replay asks for a
   history state, the bodies of the next four states that it has not built
   yet are built (healed) and measured on other threads
@@ -2646,7 +2864,8 @@ their class (`core/f3d/src/design/classes.rs`, `ITEM_TYPES` and
   follow them) and mesh bodies (`MeshFeature`; meshes are left out).
 - **Changes bodies, not translated**: the history states stand in for
   them (fallback), with the reason in the report. Sheet metal flanges
-  (`FlangeFeature`), embosses (`EmbossFeature`), electronics boards
+  (`FlangeFeature`) the decoder does not read (*Sheet metal* below),
+  embosses (`EmbossFeature`), electronics boards
   (`PCBFeature`), moved faces (`MoveFaceFeature`) and drafts
   (`DraftFeature`), whose inputs are not decoded; components mirrored into new ones (`MirrorComponent`) and bodies derived
   from other designs (`DerivedContext`). Copies and cuts of bodies
@@ -2660,6 +2879,154 @@ their class (`core/f3d/src/design/classes.rs`, `ITEM_TYPES` and
 
 Items of classes still unknown keep the type `?<default name>`
 ("unknown timeline item").
+
+### Sheet metal
+
+Sheet-metal items (mitcad#211) of the `.f3d` and the `.ipt` import
+(`src/sheet.rs`) come from the decoders as the dump's sheet items
+(`SCHEMA.md`, *Sheet metal*) and replay as Mitcad's native sheet
+features (`commands.md`, *Sheet rules and base Face*, *Folded sheet
+features*), each checked against its own history state as any other item:
+
+- **A face** (the `.f3d` base flange, the `.ipt` face that makes a new
+  body): `sheet_face` of its sketch's regions (those its decoded loops
+  select, else those of its measured profile), the material on the side of
+  the sketch's plane the decoder gives (the reference side `front` along
+  Mitcad's sketch normal, `back` against it), with the rules: the first
+  face of a rule of the file makes a `sheet_rules` feature named
+  `Sheet rules <rule>` in the face's item (its own timeline row, before
+  the face), and later faces of that rule and side use it. The rules'
+  values are the file's parameters (the thickness parameter, the bend
+  radius and reliefs as expressions of it), so a changed thickness
+  rebuilds the sheet. The rule's inputs the decoder did not read (the
+  relief shapes; the corner relief's depth, which the files have no field
+  for and Mitcad does not use) make the item `inferred`, with a note.
+- **A flange on one edge** (`sheet_flange`): the `.f3d` edge flange's edge
+  is found in the replay by its geometry (its names found in the
+  history), and `sheet_reference` names the panel boundary it lies on;
+  the flange turns towards the side of the face the edge was selected on,
+  to the other side when its flip byte is set; position (`inside`,
+  `outside`), length datum (`inner`, `outer`, `tangent`), angle, length
+  and radius are read (`read`). The `.ipt` flange's edges are read by
+  their topological names (mitcad#242, `core/ipt/README.md`, *Topological
+  names*): the decoder finds each in the ASM history state the flange
+  starts from and gives its ends; the import finds the edge of its replay
+  there and `sheet_reference` names its boundary. Its position and length
+  datum are told from the stored path (which must start towards one of
+  the edges read) and the length's points (`inferred`: the file's own
+  fields for them are not found); a width extent of the file (offsets from
+  the edge's two ends) becomes the flange's `offsets`, the start offset
+  the one at the boundary's axial start.
+  An `.f3d` flange on several edges is one `sheet_flange` per edge in its
+  item. Bend position `tangent` (4, the bend tangent to the side face) is
+  Mitcad's position `side_tangent` and height datum 3 its length mode
+  `outer_tangent` (mitcad#242: both measured from the bend's outer extent,
+  defined up to the 180-degree hems) *(verified: the hems on two edges and
+  the 90-degree flanges of both designs give their states)*. Widths are
+  measured from the edge's midpoint: `EdgeWidth` both ways, `EdgeWidth_1`
+  towards the file's edge's start point and `EdgeWidth_2` towards its end,
+  as the flange's `width` (`middle`), which may be wider than the edge
+  *(verified: the partial flanges of both designs, one wider than its
+  edge, give their states)*.
+- **A cut** (`.ipt`, mitcad#242): `sheet_cut` of mode `straight` (the
+  file's cut with neither of its two sheet options set goes straight along
+  the sketch's normal, through a bend too) with the file's extent and
+  direction, when it goes into the material at least the thickness
+  *(verified: the two cuts reaching a bend give their states, one within
+  7e-7 of the volume)*. Where it crosses a bend the model keeps it as an
+  overlay of the sheet. A cut with its slot-31 option (across the bends,
+  mitcad#280) is a developed `sheet_cut` with every bend opened, the panel
+  whose surface holds the sketch staying *(verified: the one such cut)*;
+  one with the slot-33 option is not translated.
+- **Ordinary items on a sheet** (mitcad#242): an extrusion, hole, mirror,
+  library feature or fallback whose result is the sheet's material changed
+  through its thickness keeps the sheet valid (the model's sheet-domain
+  adapter, `commands.md`), so the sheet items after it replay natively.
+- **Corner rounds and chamfers** (`.ipt`): each edge set's edges read by
+  their names (mitcad#242) and found in the replay as an external dump's
+  fingerprints are, each a corner of a panel's contour by
+  `sheet_reference`, as `sheet_corner_round` / `sheet_corner_chamfer`
+  (`read`). An edge not found by its name makes the item fall back with
+  the edge and the reason; the history state is not searched for others.
+- **Bends** (`.ipt`, mitcad#242, mitcad#280): its two edges read by their
+  names and found in the replay. Edges of parallel panels of two sheet
+  bodies with the bend record's kinds 3 and 5 are a double bend:
+  `sheet_bend` of port mode `double`, two 45-degree bends, the radius its
+  parameter, the fixed edge the one the stored axis and direction point
+  away from its panel's material, the body the file's bend works on kept
+  *(verified: the corpus's four bends, each joining a strip of a joined
+  face to a flange's wall)*. Edges of panels of one sheet body that meet at
+  no seam would close a loop and are refused; other kinds, and a single
+  bend between two bodies (its angle and sides not decoded: none in the
+  test files), are not translated.
+- **Folds** (`.ipt`, mitcad#280): enumeration 1 with both first booleans
+  false is `sheet_fold` at position `edge` on the sketch line lying on the
+  decoded line, of the panel whose surface holds it, the material right of
+  the line (seen along the sketch's normal) staying and the other side
+  turning against the sketch's normal; other options are not decoded
+  (`core/ipt/README.md`).
+- **A face joined to the sheet** (`.ipt`, mitcad#242): its material lies
+  along the decoded direction from its sketch's plane, against it for the
+  plate's side 1. Where that slab is a panel's (the sketch on the panel's
+  front or back surface), the face is a `sheet_face` joined to the sheet
+  body, which adds its regions to the panel it touches (`read`) *(verified:
+  the two joined faces the corpora reach with a valid sheet; #211 took
+  them for double bends because it did not read the side)*. A face whose
+  bend part lists nothing and whose material lies in no panel's plane
+  touches no material of the sheet: its regions are new sheet bodies with
+  the sheet's rules (mitcad#280) *(verified: the corpus's joined face of
+  two strips, which double bends join to the sheet after it)*. A face bent
+  onto the sheet (its bend part's items not decoded) falls back with that
+  reason. No pairs of edges are offered as candidates.
+- **Holes** through a sheet: Mitcad's simple hole through a planar panel
+  cuts the sheet's material domain (`commands.md`, *hole*), so the body
+  stays a sheet for the items after it.
+- A sheet item on a body whose sheet is no longer valid (an earlier item
+  fell back and its base feature replaced the body, or an ordinary
+  feature changed it) is not translated: it falls back, its note naming
+  the item that first took the sheet meaning away (`its sheet body … is no
+  longer a valid sheet: <item> took its sheet meaning away`; the sheet
+  state keeps that first item, `commands.md`, *sheet_state*). It is never
+  replayed as an ordinary cut, rounding or chamfer instead.
+
+The stream's records (*From the descriptions to the decoder*, cadmpeg's
+*BaseFlange* and *EdgeFlange* layouts; `core/f3d/src/design/build/sheet.rs`):
+
+| Record | Fields read |
+|---|---|
+| Base flange (`7AFA0A65…`, `Face<n>`) | its profile's sketch and loops; its thickness (f64 at offset 123, the rule's) *(verified: both designs)* |
+| Edge flange (`7AFA0A65…`, `EdgeFlange<n>`) | found by the marked angle and height owners `p` (the holders of `FlangeAngle` and `FlangeHeight`): before them `u32` bend position (1 outside, 2 inside, 3 adjacent, 4 tangent to the side face), `u32` edge count, a wrapper reference per edge, the settings reference, `u32` height datum (1 inner, 2 outer, 3 tangent to the bend's outer surface *(verified, mitcad#242)*); after them a `u32`, at `p + 26` a flip byte (0, 1) *(verified: two flanges of each design, one flipped, give their states)*, at `p + 37` the inside bend radius (f64, cm); width owners `EdgeWidth`, `EdgeWidth_1`/`_2` (distances from the edge's midpoint, mitcad#242) |
+| Sheet-metal rule (`B42ED662…`) | expressions with their values in order (bend radius, relief width, relief depth, two more), five GUID texts, the corner relief size, the K-factor (f64, four bytes after the corner relief size's value), the material, the thickness text and a reference to the thickness parameter *(seen: one rule; the order of the relief fields is taken from their default expressions)* |
+
+Edge recipes of some flanges have names with a nonzero word after their
+operations (`0x04000102`, `0x04000022`, `0x04000042`): the recipe reader
+reads it over, as the blobs' own names have a word there
+(`core/f3d/src/design/recipe.rs`; the design corpus comparison is
+unchanged).
+
+A flange whose trim reaches an earlier bend's seam (flanges on adjacent
+edges, a flange on the side edge of a wall) trims that bend too, developed
+(`commands.md`, *Folded sheet features*) *(verified: the `.f3d` designs'
+two-edge flange on the walls' side edges and the `.ipt` multi-edge
+flanges below give their states)*. An `.ipt` flange on several edges is
+one `sheet_flange` per edge read by its name, in the file's order, with
+the inputs its path gives (the edges on the surface the path's edge is
+on); every edge must be read, or the flange is not translated
+(mitcad#242; the candidate search among the panel's boundaries #211 used
+until then is gone). A rounding or chamfer of the file whose every edge is a
+corner of a valid sheet's panel is tried first as sheet corners (the same
+geometry, the body stays a sheet).
+
+Not translated yet, with the reason in each item's note:
+- faces bent onto the sheet (their bend part's items not decoded);
+- `.ipt` flanges on several edges with corner settings of their own (the
+  corners their walls make, `core/ipt/README.md`, *Corner settings*);
+- `.ipt` bends closing a loop of material, bends of other kinds, folds
+  with other options or across holes (Mitcad's fold needs one
+  uninterrupted line), cuts with the slot-33 option;
+- `.f3d` widths other than those above (an `EdgeOffset_1`), the `.f3d`
+  hem items (`Hem…` roles), the `adjacent` position,
+  bends and folds.
 
 ### Light bulbs
 
@@ -2695,6 +3062,187 @@ An occurrence the file hides is hidden in Mitcad
 (`set_occurrence_visible`); one inside a component placed several times
 (one occurrence in Mitcad, a path per placement in the file) follows its
 first path.
+
+### Appearances and materials
+
+The file's appearances and physical materials (mitcad#228): the decoder
+reads them into `_f3d.appearance` (`mitcad_f3d::design::appearance`,
+`mitcad_f3d::protein`; SCHEMA.md §2), and `appearances.rs` gives them to
+the replayed bodies and faces after the replay (commands.md, *Appearances
+and materials of the file*). `mitcad-f3d-inspect assets <file> [-v]` lists
+a document's assets, `appearances <file> [--json]` what the design gives
+its bodies and faces, `blob-bodies <file> <blob>` a blob's bodies with
+their keys and their faces' appearance GUIDs.
+
+**The asset packages.** `ProteinAssets.BlobParts/*.protein` is a ZIP
+archive (deflated) in the document's ZIP, one folder per asset set:
+`Schemas/*.xml` (the property schemas) and `AssetData/`
+(`InstanceProperties.bin`, `DefinitionIteratorProperties.bin`,
+`AssetTableOfContents.bin`). Both `.bin` streams are paged, as the
+published description has it:
+
+```text
+stream   u32 page size P (136) | 12 bytes | pages of P bytes
+page     u32 | u16 P − 8 | u16 1    the first page of a record (its body whole)
+         u32 | u16 P − 8 | u16 0    a further page
+         ffffffff | u16 used | u16  the last page: the first `used` bytes
+```
+
+An instance record is `str schema | str asset GUID | str asset name | str
+library id` (`str`: u32 length, ASCII) and then the values of the
+schema's properties — its own and those of the schemas it is based on
+(`<Base val=…>`), a derived schema's property in place of the base's of
+the same id — in byte order of their ids, without the library id (in the
+header), those marked `readonly` and those marked `definitionIteratorData`.
+Values: Boolean u8; Integer and Choice u32; Float f64, with a `unit`
+attribute u32 unit tag and f64; Distance u32 unit tag and f64; String,
+Uuid and URL `str`; Color four f64 (RGBA in [0, 1]); Reference nothing;
+TextureURI u8 kind, then kind 0 u32 n and n `str` (library resources),
+kind 1 one `str` (a file name); a property with `allowmultiplevalues`
+(not TextureURI) u32 n and n values. A property with
+`allowconnectedassets` ends with u8 0, or u8 1, u8 1, u32 n and n `str`
+GUIDs of the texture assets connected to it. A unit tag is `class << 12 |
+unit`: lengths `0x200d` cm, `0x200e` mm, `0x2016` inch; density `0x11001`
+kg/m³. A texture's schema (based on `TextureMap2dSchema`) writes one of
+its two map channel integers less: the record decodes to its end without
+`texture_MapChannel_ID_Advanced`. A description record is `str schema |
+u8 | str name given | str asset name | u32 version` and, for version 2,
+`str category | str | str description`, then u32 n keywords and u32 n
+preview paths; the descriptions come in the instances' order (an edited
+copy of a library appearance names another asset in its description, so
+they are joined by position). Every record of every package of the
+corpora and the reference models decodes to its exact end (5 558 assets
+in 16 schemas: the opaque, metal and transparent shaders and their older
+generic, metal, plastic, ceramic and glazing forms, physical materials,
+structural and thermal aspects, bitmap and bump textures).
+
+The name a person gave an appearance (`Custom Blue`) is the description's
+name where it is no library preset; a library appearance's display name is
+not in the file (the library resolves its preset), so the import names it
+by its description (`Paint - enamel red glossy`, `Steel - satin`). A
+texture's image is a library resource, not in the file either.
+
+**The design stream.** A body's record (class `D3937028`, its object id
+the body's entity `E`, its name `0_E`) names the body's physical material
+and its appearance, and lists the faces with appearances of their own;
+names are
+
+```text
+name     str16 token | str16 library | (u32 0 | str16 name given) | str16 preset
+body     … u8 1 | u32 n | n × face | … | str16 browser node GUID | … |
+         material name | ref (CD57BC48) | ref E + 1 | str16 body name |
+         … | appearance name | f32 0 | f32 1 | …
+face     str16 face GUID | 4 × f32 RGBA | u8 1 | u8 1 | 9 × u8 0 | u8 form |
+         appearance name | f32 0 | f32 1
+```
+
+The token is the asset's GUID; the asset it names is the token's own or
+the one of the token with `_Post2015` suffixes (an appearance kept for the
+newer shaders beside the older one under the token), the one whose name is
+the preset first. Libraries are upper-case GUIDs (`BA5EE55E-…`
+appearances, `C1EEA57C-…` physical materials and the appearances they
+bring, `314DE259-…` the generic one, older ones). A name whose asset is a
+physical material (`PhysMatSchema`) is the body's material; the other one
+not in a face entry its appearance. Face references (class `BFB592FE`,
+a face input) that carry an appearance give it as `… | appearance name |
+f32 0 | f32 1 | str16 face GUID`; those of faces the body's record does
+not list are added to the body whose face carries the GUID. An override
+(class `10506394`) names its component and occurrence (references) before
+`4 × f32 | u8 1 | u8 1 | 10 bytes | appearance name`; one without an
+occurrence is the component's own (the root's).
+
+**Joins.** The body map (classes `74CA4562`, `40DCC3F4`: `u32 n | n ×
+(u64 selector, u64 entity) | ref | 0–4 zero bytes | str16 blob name` to
+the record's end) gives each entity its blob and selector. The selector is
+the key a body's record carries (its header's second field) where a body
+of the blob has it, else its position among the blob's last top-level
+bodies, as many as the body map names: a snapshot blob (`.smb`) saves the
+faces the design refers to as bodies before the design's (the faces' GUIDs
+put the design's bodies there in all 38 snapshot blobs that showed it).
+The body's ASM record in the blob is the stored body's (`StoredBody::source`,
+`blob#record`), which the final comparison matched with a replayed body. A
+face's GUID is the string after `NEUTRON_Material_attrib_def` in an
+`ATTRIB_CUSTOM` attribute of the face in the blob's stored state
+(`NamedState::face_appearance_guid`); every face of the body carrying it
+(copies and pieces carry it too) gives a fingerprint as a feature's face
+input does (points inside faces of extruded and revolved curves since
+mitcad#228, `names/surface.rs`; a planar face's point no longer falls into
+a hole where the line through the mean of its edge points runs through
+the seam of a closed edge, whose ends met only to rounding:
+`names::point_inside` closes such gaps).
+
+**Parameters.** The base colour is the shader's colour property
+(`opaque_albedo`, `metal_f0`, `transparent_color`, `generic_diffuse`, …;
+`common_Tint_color` where its tint is on), as stored (its colour space
+sRGB; a linear one encoded); roughness `surface_roughness` (generic: 1 −
+glossiness); metals metalness 1; an opaque surface's index of refraction
+from its reflectance `f0 = ((n − 1)/(n + 1))²`; transparent: transmission
+1 and its own index. Translucency, emission, bump, normal and cut-out
+images and texture images are listed as notes.
+
+**Materials.** A physical material's density is its structural aspect's
+`structural_Density` (kg/m³); Mitcad's material is set where its name is
+the file material's description up to the first comma or the last part of
+its classification (also with a grade after it, `Aluminum 6061`; ABS
+written out), and its density the file's within 2 %.
+
+#### Against the reference models
+
+The appearance variant models (`MITCAD_F3D_MODELS`, `diff_appearance_*`,
+13 designs, 15 bodies) against their API dumps:
+
+| | achieved / target |
+|---|---|
+| bodies with the file's appearance | 15 / 15 |
+| faces with their own appearance | 1 / 1 |
+| occurrence overrides applied | 1 / 1 |
+| bodies with the file's material recorded | 15 / 15 |
+| bodies with Mitcad's material set (steel, aluminium) | 15 / 15 |
+| colours within ΔE 1 (CIE76) of the dump's colour property | 15 / 16 |
+
+The one colour off is the textured oak: its colour is the image (the
+dump's colour property is null; the stored colour, white, comes in).
+The largest difference elsewhere is ΔE 0.44 (the stored values against the
+dump's 8-bit ones).
+
+The body and face colours of all reference models' STEP exports (475
+models) against the decoded appearances: 574 / 576 within ΔE 1, the two
+others the textured oak and the occurrence override (its body's own
+appearance is decoded; the import gives it the override); 10 entries
+have no counterpart (models without bodies, and body records of bodies the
+export leaves out, which the import leaves out too).
+
+#### On the corpora
+
+The corpus (`MITCAD_F3D_CORPUS`, 48 designs) and the owner's design
+backup (499 designs), imported with `--time-limit 60` (items after it
+take the file's bodies; the appearances join the stored bodies either
+way):
+
+| | achieved / target |
+|---|---|
+| the stored design's solids with the file's appearance | 5 726 / 5 741 |
+| faces with their own appearance | 3 088 / 3 088 |
+| solids with the file's material recorded (with its density) | 5 719 / 5 719 |
+| solids with Mitcad's material set | 4 482 / 5 719 |
+| occurrence overrides applied | 40 / 58 |
+
+- The 15 solids without: no body record names them. 7 are bodies of a
+  history blob's stored state without a key, which the body map does not
+  name (each beside a keyed body of the same faces, in 5 designs); 8 are
+  bodies of a snapshot blob whose body map is empty (one design and its
+  copy). Whether the stored design holds them at all is open: the import
+  takes every top-level body of the stored state.
+- The materials not set are ones Mitcad's library does not have (a generic
+  electronic component material of 6 020 kg/m³ on 1 120 bodies,
+  polyoxymethylene, PC/ABS blends, …); they are listed with their density.
+- 18 overrides are on components placed several times (Mitcad keeps one
+  appearance per body).
+- 4 face references name faces the stored design no longer has; 4 566
+  body records are of bodies the stored design does not hold (a snapshot
+  blob's copies, bodies taken by later operations).
+- Notes: translucency (18 appearances), bump and normal maps (20),
+  texture images for the colour (8) and the roughness (5).
 
 ### Crashes
 
@@ -4071,11 +4619,33 @@ wide as the rounding (a closed edge, a ring face 2.48 mm wide rounded by
 2.5 mm: the result has the volume it had before and 15 faces fewer than the
 file's); in two the kernel's contour follows a tangent continuation the
 file's rounding did not take (the file's next state lost exactly the
-selected edges; the kernel cannot round the selection alone); in three the
+selected edges; the kernel cannot round the selection alone; done in
+mitcad#241, below); in three the
 volume is within 1.5 % of the file's with other new faces (blend surfaces
 and corners); in eight it is 4 to 77 % off; in two (chamfers, with the file's
 number of faces) the volume removed is too large.
 These go to the kernel work (mitcad#121); none is decoding.
+
+*The longer tangent chain (mitcad#241).* Both items (two designs of one
+project: a ring-shaped part, and a post in an assembly) round
+edges whose next edges turn from them (0.74 degrees along the top of a
+ring where a corner cylinder of radius 1 meets it; 4.2 degrees up the
+corners of a post whose walls are drafted by 3 degrees above a vertical
+part), while the faces across the vertex go on tangentially within OCCT's
+0.1 rad, so OCCT's contour ran on over the turned edges. The file's chain
+stops there and the face beyond the crease, extended, cuts the rounding.
+With the OCCT port's patch 0180 Mitcad's fillets stop their contours at
+such turns unless the next edge is rounded too, the face beyond cuts the
+rounding where the crease is concave (both items), and the vertex left
+between two pieces of that face's edge is removed: both items are
+parametric and verified against the file's next state, the ring's
+rounding a torus with circles for its contacts as in the file, and the
+final bodies as before (the ring's within 5e-9 of the file's volume). In
+the assembly a later fillet of the post (a slot's edges up the vertical
+wall, turning at the same crease) became parametric too. A chamfer after
+it that the file shows no change for, whose edges now resolve on that
+replayed rounding and fail, falls back where it was skipped (its stored
+body is the same state).
 
 #### Sketch texts (mitcad#186)
 
@@ -4421,6 +4991,153 @@ traces of the import (the backup corpus repeats some designs of
   cannot touch, chamfer overflow), which the follow-up tickets of
   mitcad#121 take one by one.
 
+  The 48 that stop at the corner where a rounding ends were traced one by
+  one in mitcad#236 (patch 0130 of [the
+  port](../../third_party/vcpkg-ports/README.md)). Grouped by where the
+  corner code stops, with the file's body reached (within 1e-5, the same
+  faces) / specs:
+
+  | Where the corner stops | File's body / specs | Cause |
+  |---|---|---|
+  | the end face's intersection with the blend (`PerformOneCorner`) | 1 / 5 | a rounding whose faces come tangent at its end vertex stopped a little short of it and could not be capped (1, fixed by 0130: the end is moved to the vertex and the rounding ends in a point there, as in the file); the wall's top rounded where the wall turns tangentially into a concave corner of the rounding's radius, the floor's contact running into that corner's foot before the end (3, one part in three files); the blend's face turning tangentially into an earlier rounding at the end (1) |
+  | the vertex's edge not found in the walk round the vertex | 0 / 7 | where the rounding's radius equals a neighbouring rounding's, the end section lies on that rounding and no contact ends on an edge (2, one part in two files); after an overflow the faces the blend runs on do not reach the vertex as the walk expects (a narrow face at the end consumed by a radius of 20, a top face tapering to the vertex, a sliver of 0.05 mm², 3); at a five-edge vertex of a concave rounding the walk finds no edge left on a face (2, one part, not traced further) |
+  | the cap crosses another rounding's cap on the face at the end | 0 / 6 | two roundings end at the two ends of a short edge that is not rounded, and their caps cross on the face at the end (4, one part in two files): the file intersects the two blends with each other and trims both with that face, an end of two curves, while OCCT's stripe ends in one curve; a radius of 100 on a body of 20 (1); edges of 0.6 micrometres at the vertex (1) |
+  | no cap written (`OnSame` end) | 0 / 5 | the contact on the face at the side ends half a radius short of the face at the end (the walk stops where the other contact meets that face's edge, 1); concave roundings of ribs narrower than the radius whose wall contact runs into a window of the wall (1); a conical face at the end (2, one part in two files); not traced further (1) |
+  | the intersection at the end through several faces | 0 / 7 | the walk round the vertex took the wrong one of two edges that a torus and a cylinder share (3, one part in three files; corrected in a trial, the next corner then stops where the top face turns tangentially into that torus and the blend's contact runs off the top before the end); a rounding rolling on the edge of a pocket's island after an overflow (2); a torus at the end (1); faces of 0.07 mm² with edges of 6 micrometres (1) |
+  | an `OnSame` end with no point on an edge | 0 / 3 | a concave rounding at the foot of a small cylinder's end face (a lens 2.5 high) wider than the face: it overflows the face, and neither contact ends on an edge (one part in three files) |
+  | others | 0 / 15 (1 now within 1e-3) | corners of two roundings that both overflow a 1 mm rim (3); corner patches of several roundings after an overflow, whose face beyond holds neither the vertex nor the edge (3, and 2 where a consumed face leaves a constraint of zero length); ends degenerate to 1e-10 at a vertex whose 4-edge corners then fail (3); a notch of 0.1 mm (1); exceptions inside OCCT's intersections and projections (2, one of them now built by 0130 but 15 % off the file's change); the edge beside the end not crossing the face at the end (1) |
+
+  Every group left needs a new construction in OCCT's corners, mostly
+  after an edge overflow; none covers more than one part.
+
+  The invalid results (27), the contact lines crossing on a face (8) and
+  the exceptions in a rounding's computation (14) were traced in
+  mitcad#239 (patches 0150 to 0153 of [the
+  port](../../third_party/vcpkg-ports/README.md)); the first failing step
+  is found with a dump of the fillet's data structure before the
+  topological build. With the file's body reached (within 1e-5, the same
+  faces) / within 1e-3 / specs:
+
+  | Group | Reached / near / specs | Cause |
+  |---|---|---|
+  | invalid results | 1 / 2 / 27 | fixed: a closed rounding rolling on an edge from a vertex where a seam starts, whose seam was cut (0152, the file's body); a corner on an end face split in two faces of one plane (0151, the volume exact, the file splits the two faces along another line: one face more); a corner beside a side face split along an edge in the face at the end (0150, the file's four roundings exactly, its stored state is a different body). Left: the tip of an outline where the chain ends at both vertices of a 0.57 mm edge and runs over a corner arc of the rounding's radius (3, one part); walked blends on stored spline faces whose approximation degenerates (edges of 8.8 mm tolerance, 3, one part); two roundings meeting at the vertices at both ends (two-stripe corners) that leave blend faces of 0.04 mm² (2, not traced further); walked blends of short edges at 4-edge vertices extended far past their spine (2); corners where one contact point is not on an edge (2, and a rib outline with 0.12 mm edges at the corners, 3, one part); concave and convex roundings on both sides of a rib narrower than both, the file's concave one riding on the convex one's torus (1); a concave arc turning tangentially into a convex one at the rounding's end (2); a face of zero width (two coincident circles) at the chain's vertices (1); a radius of 100 between two cylinders ending at 4-edge vertices (1); a corner over several surface data leaving a blend face of zero area (1); chamfers, not traced (3) |
+  | contact lines crossing on a face | 0 / 0 / 8 | two roundings 5.8 apart with radius 4, whose blend cylinders the file trims against each other (2); a corner's projection exception, then one contact ending on another's (3, one part); contacts coinciding where a rib is exactly two radii wide: 0153 makes the blends meet where the face between is a strip (a plate's two edges rounded to a full round), but here the rib's top is one face with the ring's top, which would need the ring's edge across the rib's root (2, the file's states unreadable in the dump); coinciding over part of a full circle and an arc (1) |
+  | exceptions in a rounding's computation | 0 / 0 / 14 | the contact on one face stands still while the ball pivots about it, where the rounding meets a convex corner rounded with the same radius (the file puts a sphere patch there): the walk sets no transition on that side (11, 9 distinct); a walked piece of zero width along the chain's last edge, whose faces are tangent there, inside the faces (not an extension, so the stripe fails; it would have to end where the faces become tangent, 2); a rational section's weights (1) |
+
+  The pivoting ball is the largest group: OCCT has no blend for a contact
+  standing still, and the file's sphere patch replaces part of the
+  earlier rounding.
+
+  Chamfers wider than a face (mitcad#240, patches 0140 to 0143 of [the
+  port](../../third_party/vcpkg-ports/README.md)): of the 7 specs (5
+  distinct inputs), all 7 build now, 4 the file's body (MATCH: a step
+  ring's rim chamfered as wide as the ring, the rim in two arcs; a
+  hexagonal prism's foot under a disc whose chamfers cross beyond the
+  disc's rim, twice; a lug in a bore as wide as its chamfer) and 3 within
+  1e-3 (NEAR) where the stored next state differs from the stored input
+  elsewhere too (a rib's top; other features' chamfers), the chamfer faces
+  themselves the file's (the cone areas of four boss feet within 0.5 mm²
+  of the file's). Causes, each fixed in the port: the hatching of a contact
+  lying on a circular or closed face edge (moved across the boundary,
+  domains across the start of a closed line), a closed contact along a
+  closed edge not stored on that edge; a chamfer's OnSame end whose second
+  contact meets the face at the end beyond its edge, looked for on the
+  bounded face; a chamfer that adds material running a little past its
+  face's outline, where the faces beyond must grow down to it (their edges
+  prolonged) instead of being cut back; and two chamfers whose contacts
+  cross beyond their common face, where the face beyond cuts both.
+  Imported again with the port before and after (the ten files of the
+  specs' designs and of those whose chamfers fell back with "chamfer
+  failed" in a recent run): 5 of the 8 such chamfers and 2 fillets now
+  parametric, nothing lost, the final bodies as before; 3 chamfers still
+  fail (not among the specs, not traced).
+
+  Rolling on an edge (mitcad#237, patches 0170 to 0172 of [the
+  port](../../third_party/vcpkg-ports/README.md)): the blend rolling on
+  an edge is now the rolling ball (as 0075 for two faces), turns about
+  the edge's ends, and where its contact leaves its face before the end
+  is walked on and cut by the face at the end. Of the 15 specs of the
+  class (13 distinct inputs) none reaches the file's body; traced, most
+  are not a ball rolling on an edge in the file: a rounding of a narrow
+  step that the file builds as two tangent tori of opposite curvature
+  eating the floor (3); a thin rim whose other rounding fails in the walk
+  between two faces (the bridge of mitcad#238) and whose rolling part
+  reaches a vertex where the next edge turns towards the ball, so that
+  the ball touches it before the vertex (3); a notched rim, the file's
+  torus kept over the notches and cut by their faces (2); a ledge
+  narrower than the radius at a corner of smaller radius, the file's
+  straight blend extended and cut by the corner's wall (2); a floor with
+  a hole under the contact, the file's blend cut by the hole (1); a start
+  where the ball does not rest on the edge but on the face beside it, with
+  no start between the two faces either (3, one of radius 129); a fine
+  rim whose rolling piece fails in the approximation (1). Of the 38 specs
+  that built through the blend on an edge, one more reaches the file's
+  body (a corner whose rounding is coaxial with the circle it rolls on),
+  one is closer (7.9e-5 to 3.7e-7, the file's face in three pieces) and
+  the others are as before.
+
+  The walks between two faces were traced further (mitcad#238, patch 0160
+  of the [port](../../third_party/vcpkg-ports/README.md): a walk over a
+  hole whose rim is rounded more sharply than the ball goes on over it on
+  the face's own surface and the rim cuts it). Of the 16 (12): in 9 (8)
+  the ball would have to pass a face it cannot touch onto the face beyond
+  it (a corner rounded with 0.5 or 1 under a rounding of 1 or 1.2 along
+  the top edges, a corner pocket of radius 1.25 under a rounding of 3,
+  roundings of 0.5 at both ends of the edge under a rounding of 1): at one
+  section the ball touches three faces, the pieces before and after it end
+  on different arcs of that ball, and the rolling ball leaves the gap
+  between them over the face it cannot touch open (the file's body closes
+  it with faces of its own), so there is no rolling-ball construction to
+  make; they still fail, the last one now at its end corner. In 2 (1) the
+  contact crosses such a hole, but the stripe's start overflowed an earlier
+  rounding all round a closed edge, a face that nothing cuts loose (the
+  result kept it), so the walk over the hole is not taken there. In 3 (1)
+  both contacts leave their faces at one section; 2 (2) are chamfers whose
+  contact crosses a cylinder's seam where the other contact lies on its
+  face's edge. The 249 measured the same way give the same classes with and
+  without 0160 (on top of 0130–0153 and 0170–0172: 70 MATCH, 45 NEAR, 1 OFF,
+  133 failing); nothing is lost.
+
+  The 2 (1) whose start overflowed an earlier rounding all round a closed
+  edge (mitcad#261, patch 0190 of the
+  [port](../../third_party/vcpkg-ports/README.md)) now reach the file's body
+  within 1e-3 (NEAR: 7.3889 mm³ removed where the file removes 7.3902, the
+  walked blend in four pieces where the file has one torus). The earlier
+  rounding vanishes once its neighbours are cut; what kept it was the
+  walk over the hole's rim, whose piece ended 0.011 mm off the walked
+  section where the contact on the cylinder crosses the cylinder's seam,
+  so that the seam kept its piece under the blend, and with it the
+  cylinder's lower part and the earlier rounding. The other 6 specs of
+  mitcad#107's class "no start or the walk fails on wide faces" give the
+  same results with and without 0190 (3 the file's body, 3 failing at
+  their end corners).
+
+  The ball turning about a standing contact (mitcad#239, patch 0200 of the
+  [port](../../third_party/vcpkg-ports/README.md)): where a rounding runs
+  past a corner rounded with the ball's own radius, its contact on the
+  face across the corner stands still and the blend is a piece of the
+  ball's sphere, as the file's sphere patches. On stored (spline) faces
+  OCCT's walk did not build it: the line got no transition on the
+  standing side (`Standard_DomainError`), that side's twist flag was
+  numerical noise, and the blend's orientation was taken at its point
+  side. With 0200 the sphere pieces build in all 11 specs (9 distinct
+  inputs; in one, three of its four), where a result can be compared the
+  file's spheres (four of radius 0.1, 0.011 mm² each).
+  Reached the file's body / within 1e-3 / specs: 0 / 1 / 11 (0 / 1 / 9
+  distinct). The others stop after the sphere pieces, at causes of other
+  classes:
+
+  | Specs (distinct) | Where they stop now |
+  |---|---|
+  | 1 (1) | within 1e-3: the file's four spheres; a corner of three roundings at another vertex is OCCT's corner patch, not the file's (8.6e-5 mm³, 3 % of the change) |
+  | 3 (3) | one part: a later stripe's extension, rolling past its face on a cylinder's own unbounded surface (0076), stops on that surface's seam, an edge without vertices (`Standard_NullObject` in `ChFi3d_FilCommonPoint`); handled in a trial, the result has self-intersecting wires: the contact on the top of the analytic piece before the sphere starts 24 mm off, where the torus' contact circle, which the mirror-image half of the outline shares, first enters the top face (SplitKPart's hatch domain, not cut at the piece's start) |
+  | 3 (2) | one part with two pointed tips: the check for crossing contact lines (`ChFi3d_StripeEdgeInter`) finds two stripes' contacts on the top overlapping; one stripe's extension for the corner where the two meet runs 15.9 along the whole other side and is not cut back on the top |
+  | 2 (1) | a pocket whose inner corner, drafted, is rounded with 0.42 at the floor under a ball of 0.5: the ball cannot touch that rounding and should bridge it (the class of mitcad#238); the walks stop on both sides ("Chaining is impossible") |
+  | 1 (1) | the corners where two stripes meet next to their sphere pieces (`PerformTwoCorner`, `PerformMoreThreeCorner`): a contact p-curve on the common face has no tangent there (`LProp_NotDefined` in `CalculBatten`) |
+  | 1 (1) | three of four corners build; at the fourth the chain ends just before the corner and the extension past its end starts inside the turn with both contacts on their faces' boundaries; the walk makes no step |
+
+  The 84 specs that built before give the same results with 0200.
+
 - **Edge names several edges fit** ("n edges fit the names"): 118 edges
   in 25 items. The recipe's tail after its type string, `i32 -1 | i32 -1
   | u32 n` then per vertex of the edge a record of entity indices
@@ -4516,8 +5233,9 @@ it (*What the history settles*).
 | Work planes, axes, points: placement frames, solved axis, point data (cadmpeg) | read (planes: frame, definition and, since mitcad#178, the entities they are measured from; axes partly) | construction axes without decoded geometry are skipped; axes are fixed (their inputs are not read) |
 | Joint origins, joints, as-built joints, assembly operand frames, alignment owners (cadmpeg) | read | mitcad#66; the description's alignment lanes agree with our owner order |
 | Mirror and patterns: seed groups, counts, angle, axis record (origin and displacement), plane group (cadmpeg) | read | the axis record is our `_f3d_axis` (mitcad#96) |
-| Sheet metal base flange, edge flange, hem (cadmpeg) | not read | Mitcad has no sheet metal |
-| Canvas, decal, mesh bodies, body visibility and appearance, materials, unit systems, bounding box caches, display meshes (both) | not read (display meshes: read) | not needed by the timeline import |
+| Appearance and material assets (`.protein` packages: page framing, instance records by schema, descriptions), body presentation records, per-face assignments, body map (cadmpeg) | **read** (mitcad#228) | *Appearances and materials*; every record of the corpora decodes to its end |
+| Canvas, decal, mesh bodies, body visibility, unit systems, bounding box caches, display meshes (both) | not read (display meshes: read) | not needed by the timeline import |
+| Sheet metal base flange, edge flange, hem (cadmpeg) | base and edge flanges read (mitcad#211); hems not | *Sheet metal*: the edge flange's flip byte and height datum 3 are ours |
 | ACT segment, browser segment (both) | not read | |
 
 #### Fillets and chamfers against the descriptions

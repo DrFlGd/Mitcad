@@ -85,6 +85,9 @@ New-Item -ItemType Directory -Force $printTemp | Out-Null
 $env:TMP = $printTemp
 $env:TEMP = $printTemp
 $slicerArgs = Join-Path $script:UiOut 'slicer-args.txt'
+# Not the arguments of an earlier run's last print, which the first
+# Slicer-Arguments would take before the slicer wrote its own (mitcad#271).
+Remove-Item -Force $slicerArgs, "$slicerArgs.part" -ErrorAction SilentlyContinue
 $slicerScript = Join-Path $script:UiOut 'fake-slicer.ps1'
 Set-Content -Encoding ascii $slicerScript (@'
 [IO.File]::WriteAllLines('ARGS.part', [string[]]$args)

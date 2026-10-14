@@ -218,10 +218,23 @@ impl<K: Kernel> Evaluate<K> for BaseDef {
                     crate::file::BREP_DIR
                 )
             })?;
-            let (shape, faces) = ctx
-                .kernel
-                .import_brep(ctx.uid, data, first_face)
-                .map_err(|e| format!("body {i}: {e}"))?;
+            // A body being added from a shape adopts that shape: the body
+            // its data reads as, without writing and reading the B-rep
+            // (mitcad#244); otherwise, or where the kernel cannot, the
+            // data is read.
+            let adopted = ctx
+                .env
+                .written_from
+                .iter()
+                .find(|(brep, _)| brep.is(&body.brep))
+                .and_then(|(_, shape)| ctx.kernel.adopt_shape(ctx.uid, shape, first_face).ok());
+            let (shape, faces) = match adopted {
+                Some(adopted) => adopted,
+                None => ctx
+                    .kernel
+                    .import_brep(ctx.uid, data, first_face)
+                    .map_err(|e| format!("body {i}: {e}"))?,
+            };
             first_face += faces;
             shapes.push(shape);
         }
@@ -459,6 +472,12 @@ impl Brep {
     /// The data; None for a reference.
     pub fn data(&self) -> Option<&[u8]> {
         self.0.bytes.as_deref()
+    }
+
+    /// Whether `other` is this very data (a clone of it), not only equal
+    /// data.
+    pub(crate) fn is(&self, other: &Brep) -> bool {
+        Arc::ptr_eq(&self.0, &other.0)
     }
 
     /// Whether this is a reference without its data.

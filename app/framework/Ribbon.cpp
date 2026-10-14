@@ -24,6 +24,7 @@
 
 #include "CommandRegistry.hpp"
 #include "Theme.hpp"
+#include "WindowStyle.hpp"
 #include "platform/MacChrome.hpp"
 
 namespace mitcad {
@@ -199,6 +200,99 @@ protected:
   }
 };
 
+// The workspace tabs of the Classic presentation, the Docked chrome's
+// (mitcad#251): small semibold names, the selected one on a pill of the
+// window's accent colour; SKETCH's name in the accent colour.
+class PillTabBar : public QTabBar {
+public:
+  explicit PillTabBar(QWidget* parent = nullptr) : QTabBar(parent) {
+    setDrawBase(false);
+    setExpanding(false);
+    setFocusPolicy(Qt::NoFocus);
+    setUsesScrollButtons(false);
+    setMouseTracking(true);
+    setAttribute(Qt::WA_Hover);
+  }
+
+protected:
+  QSize tabSizeHint(int index) const override {
+    const QFontMetrics metrics(tabFont());
+    return QSize(metrics.horizontalAdvance(tabText(index)) + 24, metrics.height() + 10);
+  }
+  QSize minimumTabSizeHint(int index) const override { return tabSizeHint(index); }
+
+  void leaveEvent(QEvent* event) override {
+    QTabBar::leaveEvent(event);
+    update();
+  }
+  void mouseMoveEvent(QMouseEvent* event) override {
+    QTabBar::mouseMoveEvent(event);
+    update();
+  }
+
+  void paintEvent(QPaintEvent*) override {
+    QPainter painter(this);
+    painter.setRenderHint(QPainter::Antialiasing);
+    const WindowColors colors = windowColors(palette());
+    const int hovered = tabAt(mapFromGlobal(QCursor::pos()));
+    painter.setFont(tabFont());
+    for (int i = 0; i < count(); ++i) {
+      const QRectF pill = QRectF(tabRect(i)).adjusted(1.5, 2.5, -1.5, -2.5);
+      const bool selected = i == currentIndex();
+      painter.setPen(Qt::NoPen);
+      if (selected) {
+        QColor fill = colors.accent;
+        fill.setAlphaF(0.16f);
+        painter.setBrush(fill);
+        painter.drawRoundedRect(pill, pill.height() / 2, pill.height() / 2);
+      } else if (i == hovered && isEnabled()) {
+        QColor fill = colors.text;
+        fill.setAlpha(18);
+        painter.setBrush(fill);
+        painter.drawRoundedRect(pill, pill.height() / 2, pill.height() / 2);
+      }
+      const bool sketch = tabData(i).toInt() == 1;
+      QColor text = colors.secondaryText;
+      if (sketch || selected) {
+        // The accent on the pill, lighter on a dark theme to be read there.
+        text = colors.dark ? colors.accent.lighter(130) : colors.accent;
+      }
+      if (selected && !sketch && colors.dark) {
+        text = QColor(0xd6, 0xe7, 0xff);
+      }
+      painter.setPen(text);
+      painter.drawText(tabRect(i), Qt::AlignCenter, tabText(i));
+    }
+  }
+
+private:
+  QFont tabFont() const {
+    QFont small = font();
+    if (small.pointSizeF() > 0) {
+      small.setPointSizeF(small.pointSizeF() * 0.9);
+    }
+    small.setWeight(QFont::DemiBold);
+    small.setLetterSpacing(QFont::PercentageSpacing, 105);
+    return small;
+  }
+};
+
+// A line between two groups of the Classic presentation: a hairline of the
+// surface's (WindowStyle) instead of a sunken frame.
+class GroupSeparator : public QWidget {
+public:
+  explicit GroupSeparator(QWidget* parent = nullptr) : QWidget(parent) {
+    setFixedWidth(5);
+    setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Expanding);
+  }
+
+protected:
+  void paintEvent(QPaintEvent*) override {
+    QPainter painter(this);
+    painter.fillRect(QRect(width() / 2, 4, 1, height() - 8), windowColors(palette()).line);
+  }
+};
+
 QToolButton* commandButton(QAction* action, bool mac) {
   QToolButton* button = nullptr;
   if (mac) {
@@ -337,10 +431,8 @@ Ribbon::Ribbon(CommandRegistry& registry, Presentation presentation, QWidget* pa
     setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
   } else {
     layout->setContentsMargins(4, 2, 4, 2);
-    m_tabs = new QTabBar;
-    m_tabs->setDrawBase(false);
-    m_tabs->setExpanding(false);
-    m_tabs->setFocusPolicy(Qt::NoFocus);
+    // The Docked chrome's pills (mitcad#251).
+    m_tabs = new PillTabBar;
     layout->addWidget(m_tabs);
   }
   layout->addWidget(m_pages);
@@ -393,10 +485,7 @@ QWidget* Ribbon::createPage(const QString& tab) {
   QList<GroupInfo>& infos = m_groupsOfPage[page];
   for (const QString& group : groups(tab)) {
     if (!first && !mac) {
-      auto* line = new QFrame;
-      line->setFrameShape(QFrame::VLine);
-      line->setFrameShadow(QFrame::Sunken);
-      row->addWidget(line);
+      row->addWidget(new GroupSeparator);
     }
     first = false;
     GroupInfo info;

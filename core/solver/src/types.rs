@@ -199,13 +199,16 @@ pub enum Constraint {
         line: EntityId,
         value: f64,
     },
-    /// Angle between two lines in radians, in the quadrant where the lines
-    /// are when the dimension is added (the one whose angle is closest to
-    /// `value`).
+    /// Angle between two lines in radians. `supplement` says which angle:
+    /// `Some(false)` the one between their directions (start to end),
+    /// `Some(true)` its supplement (between `a`'s direction and `b`'s
+    /// reversed), `None` the one of the two closest to `value` where the
+    /// lines are when the dimension is added.
     Angle {
         a: EntityId,
         b: EntityId,
         value: f64,
+        supplement: Option<bool>,
     },
     /// Radius of a circle or arc.
     Radius {

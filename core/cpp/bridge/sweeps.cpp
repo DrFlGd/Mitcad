@@ -257,6 +257,10 @@ std::shared_ptr<geometry::Shape> helix_solid(rust::Str feature, const Frame& fra
   spec.growth = input.growth;
   spec.flip = input.flip;
   spec.freecad = input.freecad;
+  spec.start_flat = input.ends[0];
+  spec.start_transition = input.ends[1];
+  spec.end_transition = input.ends[2];
+  spec.end_flat = input.ends[3];
   for (std::size_t i = 0; i < bodies.size(); ++i) {
     spec.bodies.push_back(body_at(bodies, i));
   }

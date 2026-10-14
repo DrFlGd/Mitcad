@@ -3,7 +3,8 @@
 # check-all sources: app/commands app/sketch
 # Cuts a hole through a block with the extrude Cut operation through the real
 # UI: sketch and extrude a block, sketch a circle over it, extrude the circle
-# with Operation = Cut, check the removed volume, undo.
+# with Operation = Cut (chosen automatically: the tool goes into the block,
+# mitcad#289), check the removed volume, undo.
 #
 # Runs headless on Xvfb (see ui-test-lib.sh).
 # Usage: tools/ui-cut-test.sh [screenshot.png]
@@ -37,13 +38,11 @@ ui_expect_log "Added circle" "circle created"
 ui_step "finish sketch (Ctrl+Enter)"     ui_key ctrl+Return
 
 # Extrude starts with the newest unused profile: the circle. The tool goes
-# 30 mm up from the sketch plane, through the 20 mm block.
+# 30 mm up from the sketch plane, through the 20 mm block: it goes into the
+# block, so Extrude chooses Cut itself (mitcad#289).
 ui_step "extrude (E)"                    ui_key e
 ui_step "type the distance"              xdotool type "30"
-# The Operation box of the command panel, where the app logged it.
-ui_step "open the operation list"        ui_click_logged "Panel Extrude input operation"
-ui_step "choose Cut"                     ui_key Down Down Return
-ui_expect_log "Extrude: Operation = Cut" "Cut operation chosen"
+ui_expect_log "Extrude: automatic Operation = Cut" "Cut chosen: the tool goes into the block"
 if [ -n "$SHOT" ]; then
   ui_capture "$SHOT"
 fi

@@ -8,6 +8,7 @@
 #include <algorithm>
 #include <cstddef>
 #include <utility>
+#include <vector>
 
 #include <QApplication>
 #include <QCheckBox>
@@ -35,10 +36,12 @@
 #include "framework/ChromeStyle.hpp"
 #include "framework/Command.hpp"
 #include "framework/CommandRegistry.hpp"
+#include "framework/DebugLog.hpp"
 #include "framework/Dialogs.hpp"
 #include "framework/TestSync.hpp"
 #include "report/CrashHandler.hpp"
 #include "report/ReportDialogs.hpp"
+#include "mcp/LogRing.hpp"
 #include "render/RenderDevice.hpp"
 
 // The Rust panic hook's sink (core/ffi/src/panic_note.rs).
@@ -51,6 +54,8 @@ namespace {
 constexpr int kKeptReports = 20;
 // Recent actions kept for reports.
 constexpr int kActions = 32;
+// The log ring's newest lines a report offers (mitcad#269).
+constexpr int kReportLogLines = 150;
 // Whether the start offers the crashes of earlier runs.
 bool g_offerEarlier = true;
 
@@ -249,20 +254,33 @@ bool ReportCenter::previewAndSend(const report::Report& report, const QImage& sc
       section.text = report::mask(section.text, context);
     }
   }
+  // The log ring's newest lines (mitcad#269), left out unless the user
+  // checks them; the debug log's latest file likewise.
+  const std::vector<mcp::LogLine> recent = mcp::logLines(0, kReportLogLines);
+  if (!recent.empty()) {
+    QStringList lines;
+    for (const mcp::LogLine& line : recent) {
+      lines << mcp::formatLogLine(line);
+    }
+    masked.sections << report::Section{QStringLiteral("log"), QStringLiteral("Recent log"),
+                                       report::mask(lines.join(QLatin1Char('\n')), context), false, true, true};
+  }
+  const QString logFile = DebugLog::instance().latestFile();
   const QString tracker = issueTracker();
   const QUrl trackerUrl(tracker);
   const QString destination = trackerUrl.host().isEmpty() ? tracker : trackerUrl.host();
-  report::ReportPreviewDialog dialog(masked, screenshot, destination, parent);
+  report::ReportPreviewDialog dialog(masked, screenshot, destination, parent, logFile);
   prepareModal(&dialog);
   if (execDialog(&dialog) != QDialog::Accepted) {
     qInfo().noquote() << QStringLiteral("Report not sent: the preview was cancelled");
     return false;
   }
-  deliver(dialog.report(), dialog.screenshot(), parent);
+  deliver(dialog.report(), dialog.screenshot(), parent, dialog.logFile());
   return true;
 }
 
-void ReportCenter::deliver(const report::Report& report, const QImage& screenshot, QWidget* parent) {
+void ReportCenter::deliver(const report::Report& report, const QImage& screenshot, QWidget* parent,
+                           const QString& logFile) {
   const QString body = report::reportBody(report, QApplication::applicationVersion());
   const report::IssueLink link = report::issueLink(issueTracker(), report.title, body);
   QStringList included;
@@ -297,6 +315,10 @@ void ReportCenter::deliver(const report::Report& report, const QImage& screensho
       notes << tr("The screenshot is saved as %1: drag it into the form to attach it.")
                    .arg(QDir::toNativeSeparators(path));
     }
+  }
+  if (!logFile.isEmpty()) {
+    qInfo().noquote() << QStringLiteral("Report debug log: %1").arg(logFile);
+    notes << tr("The debug log is %1: drag it into the form to attach it.").arg(QDir::toNativeSeparators(logFile));
   }
   openExternalUrl(link.url);
   if (notes.isEmpty()) {

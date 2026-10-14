@@ -94,7 +94,9 @@ they do not change the DOF count.
 
 `side`, `flip` and `sigma` (and internal vs external tangency) are chosen from
 the geometry when the constraint is added and stored, so later dimension
-changes cannot mirror the geometry.
+changes cannot mirror the geometry. An angle's `flip` is -1 when its
+`supplement` is `Some(true)`, 1 for `Some(false)`, and for `None` whichever
+of the two angles is closer to the value (mitcad#296).
 
 Residuals are lengths (mm). Direction-only residuals (unit vectors, angles)
 are multiplied by the sketch size `scale` (bounding box diagonal, at least

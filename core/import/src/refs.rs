@@ -88,24 +88,46 @@ const PLANES_KEPT: usize = 64;
 
 type Planes = Arc<Vec<(FaceName, Plane)>>;
 
+/// How many edges of bodies an import keeps ([`edges_of`]), the oldest
+/// bodies' going first: a large body's edges take megabytes, and each
+/// lookup reads the edges of every body (with fewer kept than a design's
+/// bodies, each lookup found every body's edges again).
+const EDGES_KEPT: usize = 2_000_000;
+
+/// A named edge of a body with its middle, unit tangent there, length and
+/// ends where known ([`ReplayEdges`]).
+type BodyEdge = (EdgeName, Vec3, Vec3, f64, Option<[Vec3; 2]>);
+
+/// A body's named edges.
+type BodyEdges = Arc<Vec<BodyEdge>>;
+
 std::thread_local! {
     /// The planar faces found by the import running on this thread, by
     /// body version, the latest last ([`KeptPlanes`]).
     static KEPT: std::cell::RefCell<Option<Vec<(u128, Planes)>>> =
         const { std::cell::RefCell::new(None) };
+    /// The bodies' edges likewise (mitcad#119).
+    static KEPT_EDGES: std::cell::RefCell<Option<Vec<(u128, BodyEdges)>>> =
+        const { std::cell::RefCell::new(None) };
 }
 
-/// Keeps the planar faces found on this thread until dropped
-/// ([`crate::import_design`]): every sketch looks for its plane among the
-/// faces of all bodies, and on bodies of thousands of faces that took
-/// seconds a sketch while the bodies stayed the same (mitcad#103). A
-/// version names one shape of the document (its feature, definition and
-/// inputs).
+/// Keeps the planar faces and the edges found on this thread until
+/// dropped ([`crate::import_design`]): every sketch looks for its plane
+/// among the faces of all bodies, and on bodies of thousands of faces that
+/// took seconds a sketch while the bodies stayed the same (mitcad#103);
+/// every rounding found its edges among those of all bodies, which on a
+/// design with bodies of 60 000 edges took a third of a second each time
+/// (mitcad#119). A version names one shape of the document (its feature,
+/// definition and inputs).
 pub(crate) struct KeptPlanes(bool);
 
 impl KeptPlanes {
     pub fn new() -> Self {
-        KeptPlanes(KEPT.with(|k| k.borrow_mut().replace(Vec::new()).is_none()))
+        let outer = KEPT.with(|k| k.borrow_mut().replace(Vec::new()).is_none());
+        if outer {
+            KEPT_EDGES.with(|k| k.borrow_mut().replace(Vec::new()));
+        }
+        KeptPlanes(outer)
     }
 }
 
@@ -114,8 +136,46 @@ impl Drop for KeptPlanes {
         // (An import inside an import keeps the outer one's.)
         if self.0 {
             KEPT.with(|k| k.borrow_mut().take());
+            KEPT_EDGES.with(|k| k.borrow_mut().take());
         }
     }
+}
+
+/// Drops the edges kept on this thread (when memory gets tight); they are
+/// found again when asked for.
+pub(crate) fn release_kept_edges() {
+    KEPT_EDGES.with(|k| {
+        if let Some(kept) = k.borrow_mut().as_mut() {
+            kept.clear();
+        }
+    });
+}
+
+/// The edges of the body whose shape has `version`: kept ones, or found by
+/// `find` (and kept while [`KeptPlanes`] is).
+fn edges_of(version: u128, find: impl FnOnce() -> Vec<BodyEdge>) -> BodyEdges {
+    let kept = KEPT_EDGES.with(|k| {
+        let mut k = k.borrow_mut();
+        let kept = k.as_mut()?;
+        let i = kept.iter().position(|(v, _)| *v == version)?;
+        let entry = kept.remove(i);
+        let edges = Arc::clone(&entry.1);
+        kept.push(entry);
+        Some(edges)
+    });
+    if let Some(edges) = kept {
+        return edges;
+    }
+    let edges = Arc::new(find());
+    KEPT_EDGES.with(|k| {
+        if let Some(kept) = k.borrow_mut().as_mut() {
+            kept.push((version, Arc::clone(&edges)));
+            while kept.len() > 1 && kept.iter().map(|(_, e)| e.len()).sum::<usize>() > EDGES_KEPT {
+                kept.remove(0);
+            }
+        }
+    });
+    edges
 }
 
 /// The planar faces of the body whose shape has `version`: kept ones, or
@@ -451,6 +511,26 @@ pub fn resolve_face_by_plane<K: Kernel>(
     best.map(|(_, b, f)| (b, f))
 }
 
+// Faces passed over by their boxes (mitcad#119).
+
+/// The boxes of a body's `count` faces ([`Kernel::face_boxes`]); None when
+/// the kernel gives none (or not one per face): every face is measured.
+fn face_boxes<K: Kernel>(kernel: &K, shape: &K::Shape, count: usize) -> Option<Vec<[Vec3; 2]>> {
+    kernel.face_boxes(shape).ok().filter(|b| b.len() == count)
+}
+
+/// Whether face `k`'s box lies farther than `within` from `point`, so the
+/// face does too: the lookups through a point measured the point's distance
+/// from every face of a body (a body of 23 000 faces took a tenth of a
+/// large design's replay).
+fn beyond(boxes: &Option<Vec<[Vec3; 2]>>, k: usize, point: Vec3, within: f64) -> bool {
+    let Some([low, high]) = boxes.as_ref().and_then(|b| b.get(k)) else {
+        return false;
+    };
+    let gap = |i: usize| (low[i] - point[i]).max(point[i] - high[i]).max(0.0);
+    (0..3).map(|i| gap(i).powi(2)).sum::<f64>().sqrt() > within
+}
+
 /// [`resolve_face`] among the bodies `keep` keeps (mitcad#161: those of
 /// the component the decoder found the face in): through the point within
 /// [`EXACT`], else within the [`geometric_tolerance`].
@@ -479,8 +559,12 @@ pub fn resolve_face_where<K: Kernel>(
         let Ok(faces) = kernel.faces(body.shape) else {
             continue;
         };
-        for face in faces {
+        let boxes = face_boxes(kernel, body.shape, faces.len());
+        for (k, face) in faces.into_iter().enumerate() {
             if surface.is_some_and(|s| !same_surface_kind(s, &face.surface)) {
+                continue;
+            }
+            if beyond(&boxes, k, point, wide) {
                 continue;
             }
             let Some(name) = face.names.first().and_then(|n| n.parse::<FaceName>().ok()) else {
@@ -546,8 +630,12 @@ pub fn face_resolved_uniquely<K: Kernel>(
         let Ok(faces) = kernel.faces(body.shape) else {
             return false;
         };
-        for face in faces {
+        let boxes = face_boxes(kernel, body.shape, faces.len());
+        for (k, face) in faces.into_iter().enumerate() {
             if surface.is_some_and(|s| !same_surface_kind(s, &face.surface)) {
+                continue;
+            }
+            if beyond(&boxes, k, point, wide) {
                 continue;
             }
             let Some(name) = face.names.first().and_then(|n| n.parse::<FaceName>().ok()) else {
@@ -628,8 +716,12 @@ pub fn face_pieces<K: Kernel>(doc: &Document<K>, body: BodyUid, fp: &Fingerprint
     };
     // (position of the first point on it, name)
     let mut found: Vec<(usize, FaceName)> = Vec::new();
-    for face in faces {
+    let boxes = face_boxes(kernel, shape, faces.len());
+    for (k, face) in faces.into_iter().enumerate() {
         if surface.is_some_and(|s| !same_surface_kind(s, &face.surface)) {
+            continue;
+        }
+        if points.iter().all(|&p| beyond(&boxes, k, p, 1e-3)) {
             continue;
         }
         let Some(name) = face.names.first().and_then(|n| n.parse::<FaceName>().ok()) else {
@@ -1559,10 +1651,13 @@ pub fn compare_bodies<K: Kernel>(
             volume_difference: None,
             max_deviation: None,
             relative_difference: None,
+            source: body.source.clone(),
+            uid: None,
         };
         if let Some(i) = pair {
             let (uid, name, shape, mine) = &bodies[i];
             report.mitcad = Some(format!("{uid} {name}"));
+            report.uid = Some(*uid);
             report.mitcad_volume = Some(mine.volume);
             report.volume_difference = Some((mine.volume - sig.volume) / sig.volume);
             let small = |s: &K::Shape| kernel.faces(s).is_ok_and(|f| f.len() <= 300);
@@ -1628,6 +1723,31 @@ pub struct ReplayEdges(
     Vec<Option<[Vec3; 2]>>,
 );
 
+/// A body's named edges with their middles, tangents, lengths and ends
+/// ([`ReplayEdges::of`]).
+fn body_edges<K: Kernel>(kernel: &K, shape: &K::Shape) -> Vec<BodyEdge> {
+    let curves: std::collections::HashMap<String, [Vec3; 2]> = kernel
+        .edge_geometries(shape)
+        .unwrap_or_default()
+        .into_iter()
+        .filter_map(|(name, curve)| {
+            let ends = match curve {
+                mitcad_model::datum::CurveGeometry::Line { start, end }
+                | mitcad_model::datum::CurveGeometry::Circle { start, end, .. }
+                | mitcad_model::datum::CurveGeometry::Other { start, end, .. } => [start, end],
+            };
+            Some((name?, ends))
+        })
+        .collect();
+    edge_middles(kernel, shape)
+        .into_iter()
+        .map(|(name, mid, tangent, length)| {
+            let ends = curves.get(&name.to_string()).copied();
+            (name, mid, tangent, length, ends)
+        })
+        .collect()
+}
+
 impl ReplayEdges {
     pub fn of<K: Kernel>(doc: &Document<K>) -> Self {
         let kernel = doc.kernel();
@@ -1635,24 +1755,14 @@ impl ReplayEdges {
         let mut ends = Vec::new();
         for body in doc.bodies() {
             crate::tick();
-            let curves: std::collections::HashMap<String, [Vec3; 2]> = kernel
-                .edge_geometries(body.shape)
-                .unwrap_or_default()
-                .into_iter()
-                .filter_map(|(name, curve)| {
-                    let ends = match curve {
-                        mitcad_model::datum::CurveGeometry::Line { start, end }
-                        | mitcad_model::datum::CurveGeometry::Circle { start, end, .. }
-                        | mitcad_model::datum::CurveGeometry::Other { start, end, .. } => {
-                            [start, end]
-                        }
-                    };
-                    Some((name?, ends))
-                })
-                .collect();
-            for (name, mid, tangent, length) in edge_middles(kernel, body.shape) {
-                ends.push(curves.get(&name.to_string()).copied());
-                out.push((body.uid, name, mid, tangent, length));
+            // Kept by the body's version (mitcad#119).
+            let edges = match doc.body_version(body.uid) {
+                Some(version) => edges_of(version, || body_edges(kernel, body.shape)),
+                None => Arc::new(body_edges(kernel, body.shape)),
+            };
+            for (name, mid, tangent, length, end) in edges.iter() {
+                ends.push(*end);
+                out.push((body.uid, name.clone(), *mid, *tangent, *length));
             }
         }
         ReplayEdges(out, ends)
@@ -2802,6 +2912,19 @@ pub fn first_face_on_left<K: Kernel>(
 mod dressup_tests {
     use super::*;
     use mitcad_f3d::design::ir::FingerprintF3d;
+
+    /// A face is passed over only when its box lies farther than the
+    /// tolerance from the point (mitcad#119); without boxes none is.
+    #[test]
+    fn faces_beyond_their_boxes_are_passed_over() {
+        let boxes = Some(vec![[[0.0, 0.0, 0.0], [1.0, 1.0, 1.0]]]);
+        assert!(!beyond(&boxes, 0, [0.5, 0.5, 0.5], 1e-3));
+        assert!(!beyond(&boxes, 0, [1.0005, 0.5, 0.5], 1e-3));
+        assert!(beyond(&boxes, 0, [1.002, 0.5, 0.5], 1e-3));
+        assert!(beyond(&boxes, 0, [1.0008, 1.0008, 1.0008], 1e-3));
+        assert!(!beyond(&None, 0, [9.0, 9.0, 9.0], 1e-3));
+        assert!(!beyond(&boxes, 1, [9.0, 9.0, 9.0], 1e-3));
+    }
 
     fn edges(list: &[(&str, &str, Vec3, Vec3, f64)]) -> ReplayEdges {
         ReplayEdges(

@@ -404,4 +404,18 @@ pub struct BoundaryRef {
 pub enum BendPortMode {
     VirtualSharp,
     TangentPorts,
+    /// Two opposite bends and a straight between them (a jog) joining two
+    /// parallel panels of separate bodies (mitcad#280).
+    Double,
+}
+
+/// Which boundary of a double bend keeps its panel whole (the first bend
+/// starts on it); the other panel is cut back to where the second bend
+/// ends (mitcad#280).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DoubleBendFixed {
+    #[default]
+    Stationary,
+    Moving,
 }

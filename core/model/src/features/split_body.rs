@@ -20,9 +20,7 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
-use super::face_refs::{
-    Resolved, check_tool, kernel_error, map_offset, require_faces, resolve_tool,
-};
+use super::face_refs::{Resolved, check_tool, kernel_error, map_offset, resolve_tool};
 use super::geom_ref::{GeomRef, Want};
 use super::pattern::none;
 use super::{
@@ -245,11 +243,8 @@ fn split_tool<K: Kernel>(
         .map_err(|e| format!("tool {body}: {e}"))?;
     Ok(match tool {
         GeomRef::Face { face, .. } => {
-            require_faces(ctx, body, &shape, std::slice::from_ref(face))?;
-            Resolved::Face {
-                shape,
-                face: face.clone(),
-            }
+            let face = ctx.face_on(body, &shape, face)?;
+            Resolved::Face { shape, face }
         }
         _ => Resolved::Body { shape },
     })

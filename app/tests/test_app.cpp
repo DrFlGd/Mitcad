@@ -110,6 +110,20 @@ void shortcutBindingTests() {
   QList<ShortcutBinding> defaults = fixed;
   defaults.append(removeSketch);
   CHECK(shortcutConflicts(defaults).isEmpty());
+  // Create Sketch's Alt+S (mitcad#267) beside the reserved keys and the
+  // S keys of the registry's defaults: Command Search (S) and Save with
+  // Description (Ctrl+Alt+S). The whole registry's defaults are checked by
+  // the UI tests (tools/ui-command-test.sh: no "Conflicting saved
+  // shortcuts" line, Alt+S starts Create Sketch).
+  {
+    QList<ShortcutBinding> withSketch = defaults;
+    withSketch.append(make("sketch.create", ModelShortcutContext, QKeySequence(Qt::ALT | Qt::Key_S)));
+    withSketch.append(make("tools.search", AllShortcutContexts, QKeySequence(Qt::Key_S)));
+    withSketch.append(make("file.save_version", AllShortcutContexts,
+                           QKeySequence(Qt::CTRL | Qt::ALT | Qt::Key_S)));
+    CHECK(shortcutConflicts(withSketch).isEmpty());
+    CHECK(QKeySequence(Qt::ALT | Qt::Key_S).toString(QKeySequence::PortableText) == QStringLiteral("Alt+S"));
+  }
   removeSketch.contexts = ModelShortcutContext;
   defaults.back() = removeSketch;
   CHECK(!shortcutConflicts(defaults).isEmpty());
@@ -1795,6 +1809,10 @@ int eventFilterGuardTests();
 int moveOccurrenceTests();
 int selectionScopeTests();
 int iconColourTests();
+int previewBodiesTests();
+int debugLogTests();
+int waitCursorTests();
+int sketchSnapTests();
 
 int main(int argc, char* argv[]) {
   QApplication app(argc, argv);
@@ -1832,6 +1850,10 @@ int main(int argc, char* argv[]) {
     failures += moveOccurrenceTests();
     failures += selectionScopeTests();
     failures += iconColourTests();
+    failures += previewBodiesTests();
+    failures += debugLogTests();
+    failures += waitCursorTests();
+    failures += sketchSnapTests();
   }
   if (failures != 0) {
     std::fprintf(stderr, "%d check(s) failed\n", failures);

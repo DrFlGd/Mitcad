@@ -883,6 +883,13 @@ pub fn revolve_design(major: u8, extent: u16, angle: f64) -> Vec<([u8; 16], Vec<
 /// height): pitch `d0` = 2 mm, height `d1` = 10 mm, turns `d2` = 5 and
 /// taper `d3` = 0.
 pub fn coil_design(major: u8, kind: u16) -> Vec<([u8; 16], Vec<u8>)> {
+    coil_design_on(major, kind, false)
+}
+
+/// [`coil_design`], in a part of two bodies (`Solid1`, `Solid2`) with the
+/// coil's list of bodies (slot 19) naming `Solid2` and a flat end (slots 10
+/// to 15) when `bodies`.
+pub fn coil_design_on(major: u8, kind: u16, bodies: bool) -> Vec<([u8; 16], Vec<u8>)> {
     let mut w = DesignWriter::new(major);
     let length = w.unit(LENGTH, 1.0);
     let mm = w.unit(METRE, 1e-3);
@@ -924,7 +931,7 @@ pub fn coil_design(major: u8, kind: u16) -> Vec<([u8; 16], Vec<u8>)> {
     let op = w.enumeration(ENUM_OPERATION, 5, 2);
     let patch = w.patch(&[]);
     let coil_type = w.enumeration(crate::features::COIL_TYPE, 4, kind);
-    let (coil, node) = w.feature(&[
+    let mut slots = vec![
         Some(op),
         Some(patch),
         Some(axis),
@@ -935,7 +942,35 @@ pub fn coil_design(major: u8, kind: u16) -> Vec<([u8; 16], Vec<u8>)> {
         Some(d1),
         Some(d2),
         Some(d3),
-    ]);
+    ];
+    if bodies {
+        // A natural start (its angles unused) and a flat end: a quarter
+        // turn's transition (d6) and three quarters flat (d7).
+        let natural = w.boolean(false);
+        let flat = w.boolean(true);
+        let angle = |w: &mut DesignWriter, name: &str, degrees: f64| {
+            let n = w.number(degrees, deg);
+            w.parameter(name, angle_unit, n, degrees.to_radians())
+        };
+        let unused = angle(&mut w, "d4", 90.0);
+        let unused2 = angle(&mut w, "d5", 90.0);
+        let transition = angle(&mut w, "d6", 90.0);
+        let flat_angle = angle(&mut w, "d7", 270.0);
+        slots.extend([
+            Some(natural),
+            Some(unused),
+            Some(unused2),
+            Some(flat),
+            Some(transition),
+            Some(flat_angle),
+        ]);
+        w.body("Solid1", 1);
+        let solid2 = w.body("Solid2", 2);
+        let list = w.list_of(crate::features::BODIES, &[solid2]);
+        slots.resize(19, None);
+        slots.push(Some(list));
+    }
+    let (coil, node) = w.feature(&slots);
     w.label(coil, "Coil1", &[sketch], [1; 16]);
     w.top.push(coil);
     w.states(&[(node, 2, 1)]);
@@ -1723,5 +1758,129 @@ pub fn combine_design(major: u8, more: bool) -> Vec<([u8; 16], Vec<u8>)> {
         states.extend([(n4, 3, 4), (n5, 4, 5)]);
     }
     w.states(&states);
+    w.finish()
+}
+
+// Sheet metal (mitcad#211).
+
+/// A sheet-metal part: the user parameters of a sheet-metal style
+/// (`Thickness` = 1 mm, `BendRadius`, `BendReliefWidth` and
+/// `BendReliefDepth` of it, `CornerReliefSize` = 4 mm), the cube's sketch
+/// of a 1 cm square on the XY plane and a sheet-metal face of it (a group
+/// record whose label shows the sketch and its plate): the plate selects
+/// the square as its path, its material along +z (`direction`), `d2` =
+/// `Thickness` thick, a new body; the state table names state 1 for the
+/// plate. `side` is the plate's side enumeration.
+pub fn sheet_face_design(
+    major: u8,
+    direction: [f64; 3],
+    side: u16,
+    faces: usize,
+) -> Vec<([u8; 16], Vec<u8>)> {
+    let mut w = DesignWriter::new(major);
+    let length = w.unit(LENGTH, 1.0);
+    let mm = w.unit(METRE, 1e-3);
+    let n = w.number(0.1, mm);
+    let thickness = w.parameter("Thickness", length, n, 0.1);
+    for name in ["BendRadius", "BendReliefWidth"] {
+        let t = w.node(0x05, &[thickness]);
+        w.parameter(name, length, t, 0.1);
+    }
+    let n = w.number(0.05, mm);
+    w.parameter("BendReliefDepth", length, n, 0.05);
+    let n = w.number(0.4, mm);
+    w.parameter("CornerReliefSize", length, n, 0.4);
+    let n = w.number(1.0, mm);
+    let d0 = w.parameter("d0", length, n, 1.0);
+    let n = w.number(1.0, mm);
+    let d1 = w.parameter("d1", length, n, 1.0);
+    let t = w.node(0x05, &[thickness]);
+    let d2 = w.parameter("d2", length, t, 0.1);
+
+    let sketch = w.sketch();
+    let identity = [
+        [1.0, 0.0, 0.0, 0.0],
+        [0.0, 1.0, 0.0, 0.0],
+        [0.0, 0.0, 1.0, 0.0],
+        [0.0, 0.0, 0.0, 1.0],
+    ];
+    let transform = w.transform(identity);
+    let normal = w.direction([0.0, 0.0, 1.0]);
+    let corners = [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]];
+    let points: Vec<usize> = corners.iter().map(|&c| w.sketch_point(sketch, c)).collect();
+    let lines: Vec<usize> = (0..4)
+        .map(|i| w.sketch_line(sketch, points[i], points[(i + 1) % 4], 0))
+        .collect();
+    let mut entities = points.clone();
+    entities.extend(&lines);
+    entities.push(w.sketch_constraint(HORIZONTAL, None, &[Some(lines[0])]));
+    entities.push(w.sketch_constraint(VERTICAL, None, &[Some(lines[1])]));
+    entities.push(w.sketch_constraint(HORIZONTAL, None, &[Some(lines[2])]));
+    entities.push(w.sketch_constraint(VERTICAL, None, &[Some(lines[3])]));
+    entities.push(w.sketch_constraint(
+        DISTANCE,
+        Some(d0),
+        &[None, Some(points[0]), Some(points[1])],
+    ));
+    entities.push(w.sketch_constraint(
+        DISTANCE,
+        Some(d1),
+        &[None, Some(points[1]), Some(points[2])],
+    ));
+    w.finish_sketch(sketch, &entities, transform, normal);
+    w.label(sketch, "Sketch1", &[], [0; 16]);
+
+    // The plates' paths: the square, as a profile selection is kept. A
+    // second face of the same sketch follows the first.
+    let mut states = Vec::new();
+    for k in 1..=faces {
+        let path = w.selection(&square_sheet(), 4);
+        w.records[path].0 = crate::sheet::PATH_SELECTION;
+        let dir = w.direction(direction);
+        let side = w.enumeration(crate::sheet::PLATE_SIDE, 2, side);
+        let op = w.enumeration(ENUM_OPERATION, 5, 1);
+        let mut slots = vec![Some(path), Some(dir), Some(side), Some(d2)];
+        slots.resize(16, None);
+        slots.push(Some(op));
+        let (plate, node) = w.feature(&slots);
+        w.label(plate, &format!("Plate{k}"), &[], [0; 16]);
+        let group = w.header(None);
+        let face = w.push(crate::sheet::FACE_GROUP, group);
+        w.label(face, &format!("Face{k}"), &[face, sketch, plate], [0; 16]);
+        w.top.push(face);
+        states.push((node, k as i64 + 1, k as i64));
+    }
+    w.states(&states);
+    w.finish()
+}
+
+/// A sketch on the XY plane of two points projected from the model, 1 cm
+/// apart along x, and the distance `d0` (10 mm, in the part's table)
+/// between them: geometry projected from the model holds it, so the
+/// dimension is driven. The user parameter `Gap` is `d0`. The sketch is the
+/// only item (mitcad#250).
+pub fn driven_reference_design(major: u8) -> Vec<([u8; 16], Vec<u8>)> {
+    let mut w = DesignWriter::new(major);
+    let length = w.unit(LENGTH, 1.0);
+    let mm = w.unit(METRE, 1e-3);
+    let n = w.number(1.0, mm);
+    let d0 = w.parameter("d0", length, n, 1.0);
+    let named = w.node(0x05, &[d0]);
+    w.parameter("Gap", length, named, 1.0);
+    let sketch = w.sketch();
+    let identity = [
+        [1.0, 0.0, 0.0, 0.0],
+        [0.0, 1.0, 0.0, 0.0],
+        [0.0, 0.0, 1.0, 0.0],
+        [0.0, 0.0, 0.0, 1.0],
+    ];
+    let transform = w.transform(identity);
+    let normal = w.direction([0.0, 0.0, 1.0]);
+    let a = w.projected_point(sketch, [1.0, 0.0]);
+    let b = w.projected_point(sketch, [2.0, 0.0]);
+    let distance = w.sketch_constraint(DISTANCE, Some(d0), &[None, Some(a), Some(b)]);
+    w.finish_sketch(sketch, &[a, b, distance], transform, normal);
+    w.label(sketch, "Sketch1", &[], [0; 16]);
+    w.top.push(sketch);
     w.finish()
 }

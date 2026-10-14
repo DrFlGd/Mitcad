@@ -241,15 +241,20 @@ CommandPanel::CommandPanel(const CommandDef& def, const CommandState& state, boo
   }
   layout->addLayout(m_form);
 
-  m_result = new QLabel;
+  // In the panel before it is shown: shown without a parent, the label
+  // would be a window of its own for a moment, which takes the activation
+  // from the main window, and when it goes the system may hand it to
+  // another application's window, so that Enter no longer reaches the
+  // command's OK (mitcad#255).
+  m_result = new QLabel(this);
   m_result->setObjectName(QStringLiteral("commandResult"));
   m_result->setWordWrap(true);
   m_result->setTextFormat(Qt::RichText);
   m_result->setTextInteractionFlags(Qt::TextSelectableByMouse);
   m_result->setFrameShape(QFrame::StyledPanel);
   m_result->setMargin(4);
-  m_result->setVisible(static_cast<bool>(def.inspect));
   layout->addWidget(m_result);
+  m_result->setVisible(static_cast<bool>(def.inspect));
 
   // Errors and hints (mitcad#198): within the panel's width however long
   // their words, scrolling after a few lines, hidden when there is none.
@@ -400,7 +405,8 @@ CommandPanel::Row* CommandPanel::createRow(const InputDef& input, const QString&
     row.edit = new QLineEdit(scope.text(input.id));
     if (input.type == InputDef::Type::Value) {
       row.edit->setToolTip(input.tooltip.isEmpty()
-                               ? tr("A value or an expression, such as 20, 2 in or d1 * 2")
+                               ? tr("A value or an expression, such as 20, 2 in or d1 * 2; a click on a "
+                                    "dimension or a value in the view inserts its name")
                                : input.tooltip);
     } else {
       row.edit->setToolTip(input.tooltip);
@@ -409,6 +415,7 @@ CommandPanel::Row* CommandPanel::createRow(const InputDef& input, const QString&
             [this, key](const QString& text) { emit textEdited(key, text); });
     if (input.type == InputDef::Type::Value) {
       connect(row.edit, &QLineEdit::editingFinished, this, [this, key] { emit valueCommitted(key); });
+      row.edit->installEventFilter(this); // its keyboard focus (mitcad#250)
     }
     field = row.edit;
     break;
@@ -690,6 +697,28 @@ void CommandPanel::refreshRow(Row& row, const CommandState& scope, const Command
     if (row.edit->text() != scope.text(id)) {
       row.edit->setText(scope.text(id));
     }
+    // The parameter the field edits, after its label: "Distance (d5)"
+    // (mitcad#231).
+    if (const QString name = scope.parameterName(id); row.label != nullptr && !name.isEmpty()) {
+      const QString text = QStringLiteral("%1 (%2)").arg(input.label, name);
+      if (row.label->text() != text) {
+        row.label->setText(text);
+        qDebug().noquote() << QStringLiteral("Panel %1 label: %2").arg(m_def.name, text);
+      }
+      // What the parameter is, as a sketch dimension's tooltip says
+      // (mitcad#250): its name, expression, value and comment.
+      const QString about = scope.parameterTooltip(id);
+      const QString tip = (about.isEmpty() ? QStringLiteral("%1 = %2").arg(name, scope.text(id)) : about) +
+                          QLatin1Char('\n') +
+                          tr("Type name = value to rename it; a click on a dimension or a value in the view "
+                             "inserts its name");
+      if (row.edit->toolTip() != tip) {
+        row.edit->setToolTip(tip);
+        if (!about.isEmpty()) {
+          qDebug().noquote() << QStringLiteral("Panel %1 tooltip %2: %3").arg(m_def.name, row.key, about);
+        }
+      }
+    }
     break;
   case InputDef::Type::Choice: {
     const QSignalBlocker block(row.combo);
@@ -949,6 +978,35 @@ void CommandPanel::logLayout() const {
   // Wider than the page would cut its right side off (mitcad#198).
   const QWidget* page = parentWidget() != nullptr ? parentWidget() : this;
   qDebug().noquote() << QStringLiteral("Panel %1 width %2 of %3").arg(m_def.name).arg(width()).arg(page->width());
+}
+
+bool CommandPanel::eventFilter(QObject* watched, QEvent* event) {
+  if (event->type() == QEvent::FocusIn || event->type() == QEvent::FocusOut) {
+    for (const auto& row : m_rows) {
+      if (row->edit == watched && row->input->type == InputDef::Type::Value) {
+        auto call = CommandPresenter::actions().valueFocused;
+        if (call) {
+          call(row->key, event->type() == QEvent::FocusIn);
+        }
+        break;
+      }
+    }
+  }
+  return QWidget::eventFilter(watched, event);
+}
+
+bool CommandPanel::insertIntoValue(const QString& key, const QString& text) {
+  Row* row = m_byKey.value(key);
+  if (row == nullptr || row->edit == nullptr || !row->field->isVisibleTo(this)) {
+    return false;
+  }
+  // Back where it was: the cursor stays where the view's click left it.
+  row->edit->setFocus(Qt::OtherFocusReason);
+  row->edit->insert(text);
+  const QString now = row->edit->text();
+  qDebug().noquote() << QStringLiteral("Panel %1 input %2: inserted %3, now %4").arg(m_def.name, key, text, now);
+  emit textEdited(key, now);
+  return true;
 }
 
 } // namespace mitcad

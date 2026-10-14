@@ -290,6 +290,46 @@ void test_primitives_name_their_faces() {
   CHECK(throws_with([&] { primitive(torus); }, "too large"));
 }
 
+// A body adopted from a shape (mitcad#244) is the body its B-rep data reads
+// as: the same faces in the same order with the same names, sharing the
+// shape's B-rep, with what was measured of the shape that does not depend
+// on names.
+void test_adopted_bodies_are_their_data_read() {
+  const ShapePtr block = extrude("F2", {rectangle(1, -10, 5, 60, 40), circle(5, 80, 0, 5)}, 0, 20);
+  const MassProperties props = mass_properties(*block);
+  bounding_box(*block);
+  block->set_checked_valid(true);
+  CHECK(!edge_middles(*block).empty());
+
+  const std::string data = brep_data(block->occt());
+  const ShapePtr read = import_body(read_brep_data(data.data(), data.size()), "F9", 3);
+  const ShapePtr adopted = adopt_body(*block, "F9", 3);
+  CHECK(adopted->occt().IsEqual(block->occt()));
+  CHECK(!read->occt().IsSame(block->occt()));
+  CHECK(adopted->face_count() == read->face_count());
+  for (int i = 0; i < read->face_count(); ++i) {
+    CHECK(adopted->face_names(i) == read->face_names(i));
+  }
+  CHECK(adopted->edge_count() == read->edge_count());
+  for (int i = 0; i < read->edge_count(); ++i) {
+    CHECK(adopted->edge_name(i) == read->edge_name(i));
+  }
+  CHECK(adopted->face_names(0).front() == face_name("F9", "import", "3"));
+  // Measures carried over; edge middles carry names and are made anew.
+  CHECK(adopted->measured() == block->measured());
+  CHECK(adopted->bounds() == block->bounds());
+  CHECK(adopted->checked_valid() == std::optional<bool>(true));
+  CHECK(!read->checked_valid().has_value());
+  CHECK(adopted->kept_edge_middles() == nullptr);
+  CHECK(near(mass_properties(*read).volume, props.volume, 1e-9));
+  const std::vector<EdgeMiddle> middles = edge_middles(*adopted);
+  const std::vector<EdgeMiddle> read_middles = edge_middles(*read);
+  CHECK(middles.size() == read_middles.size());
+  for (std::size_t i = 0; i < middles.size() && i < read_middles.size(); ++i) {
+    CHECK(middles[i].name == read_middles[i].name);
+  }
+}
+
 } // namespace
 
 void transform_tests() {
@@ -299,6 +339,7 @@ void transform_tests() {
   test_unions_keep_names();
   test_tools_of_faces();
   test_primitives_name_their_faces();
+  test_adopted_bodies_are_their_data_read();
 }
 
 } // namespace test

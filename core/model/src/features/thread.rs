@@ -364,17 +364,13 @@ impl<K: Kernel> Evaluate<K> for ThreadDef {
         let mut internal = None;
         for face in &self.faces {
             let shape = ctx.body(face.body)?;
-            if ctx
-                .kernel
-                .count_faces(&shape, &face.face)
-                .map_err(|e| e.to_string())?
-                == 0
-            {
-                return Err(format!("body {} has no face {}", face.body, face.face));
-            }
+            // A face a sketch change renamed is found again (mitcad#272).
+            let found = ctx.face_or(&shape, &face.face, || {
+                format!("body {} has no face {}", face.body, face.face)
+            })?;
             let cylinder = ctx
                 .kernel
-                .face_cylinder(&shape, &face.face)
+                .face_cylinder(&shape, &found)
                 .map_err(|e| e.to_string())?;
             if internal.is_some_and(|i| i != cylinder.internal) {
                 return Err("the faces of a thread must all be internal or all external".to_owned());
@@ -399,8 +395,8 @@ impl<K: Kernel> Evaluate<K> for ThreadDef {
                 ));
             }
             match bodies.iter_mut().find(|(uid, _, _)| *uid == face.body) {
-                Some((_, _, faces)) => faces.push(face.face.clone()),
-                None => bodies.push((face.body, shape, vec![face.face.clone()])),
+                Some((_, _, faces)) => faces.push(found),
+                None => bodies.push((face.body, shape, vec![found])),
             }
         }
         let mut output = FeatureOutput::default();

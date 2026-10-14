@@ -390,6 +390,7 @@ pub(crate) fn origin_frame(r: &mut impl Resolver, geometry: &GeomRef) -> Result<
         GeomRef::Datum(uid) => Ok(datum_frame(r.datum(*uid)?)),
         GeomRef::Face { body, face } => {
             let shape = r.shape(*body)?;
+            let face = &crate::features::renamed::face_for(r, &shape, face)?;
             let kernel = r.kernel();
             let surface = kernel
                 .face_geometry(&shape, face)
@@ -413,6 +414,7 @@ pub(crate) fn origin_frame(r: &mut impl Resolver, geometry: &GeomRef) -> Result<
         }
         GeomRef::Edge { body, edge } => {
             let shape = r.shape(*body)?;
+            let edge = &crate::features::renamed::edge_for(r, &shape, edge)?;
             use crate::datum::CurveGeometry as C;
             match r
                 .kernel()
@@ -882,6 +884,8 @@ pub(crate) struct StepResolver<'a, K: Kernel> {
     pub datums: &'a BTreeMap<FeatureUid, Versioned<Datum>>,
     pub sketches: &'a BTreeMap<FeatureUid, Versioned<Arc<SketchOutput>>>,
     pub features: &'a [Arc<FeatureEntry>],
+    /// Warnings of names found after a sketch change (mitcad#272).
+    pub renamed: Vec<String>,
 }
 
 impl<K: Kernel> Resolver for StepResolver<'_, K> {
@@ -922,6 +926,14 @@ impl<K: Kernel> Resolver for StepResolver<'_, K> {
             .get(&uid)
             .map(|s| s.value.clone())
             .ok_or_else(|| format!("{} has no result", self.name(uid)))
+    }
+
+    fn renamed(&mut self, what: &str, stored: &str, found: &str, maker: FeatureUid) {
+        let message =
+            crate::features::renamed::warning(self.features, what, &stored, &found, maker);
+        if !self.renamed.contains(&message) {
+            self.renamed.push(message);
+        }
     }
 }
 
@@ -982,7 +994,7 @@ pub(crate) fn apply<K: Kernel>(
     entry: &FeatureEntry,
     components: &BTreeMap<ComponentUid, Arc<BodyState<K::Shape>>>,
     done: &mut Recomputed<K::Shape>,
-) -> Result<(), String> {
+) -> Result<Vec<String>, String> {
     let assembly = &state.assembly;
     let params = &state.parameters;
     let component = entry.component;
@@ -1005,8 +1017,11 @@ pub(crate) fn apply<K: Kernel>(
         done.joints
             .groups
             .push((entry.uid, component, group.occurrences.clone()));
-        return Ok(());
+        return Ok(Vec::new());
     }
+    // What the geometry found under other names after a sketch change
+    // (mitcad#272): the feature's warnings.
+    let renamed = std::cell::RefCell::new(Vec::<String>::new());
     // An origin's frame in the component its path ends in.
     let local = |origin: &JointOrigin| -> Result<Transform, String> {
         let at = path_component(assembly, component, &origin.occurrence.0)?;
@@ -1018,8 +1033,11 @@ pub(crate) fn apply<K: Kernel>(
             datums: &done.datums,
             sketches: &done.sketches,
             features: &state.features,
+            renamed: Vec::new(),
         };
-        let mut local = origin_frame(&mut resolver, &origin.geometry)?;
+        let frame = origin_frame(&mut resolver, &origin.geometry);
+        renamed.borrow_mut().append(&mut resolver.renamed);
+        let mut local = frame?;
         if let Some(o) = &origin.frame_override {
             local = apply_override(&local, o)?;
         }
@@ -1041,8 +1059,11 @@ pub(crate) fn apply<K: Kernel>(
                     datums: &done.datums,
                     sketches: &done.sketches,
                     features: &state.features,
+                    renamed: Vec::new(),
                 };
-                resolve_geo(&mut resolver, origin).map_err(|e| format!("{label}: {key}: {e}"))
+                let resolved = resolve_geo(&mut resolver, origin);
+                renamed.borrow_mut().append(&mut resolver.renamed);
+                resolved.map_err(|e| format!("{label}: {key}: {e}"))
             };
             let a = geo("a", &row.a)?;
             let a2 = row.a2.as_ref().map(|o| geo("a2", o)).transpose()?;
@@ -1098,7 +1119,7 @@ pub(crate) fn apply<K: Kernel>(
                 placements: changes,
             },
         );
-        return Ok(());
+        return Ok(renamed.take());
     }
 
     let (kind, slide, limits, position, a_path, b_path) = match &entry.def {
@@ -1113,7 +1134,7 @@ pub(crate) fn apply<K: Kernel>(
         FeatureDef::AsBuiltJoint(j) => {
             (j.kind, j.slide_axis, &j.limits, &j.position, &j.a.0, &j.b.0)
         }
-        _ => return Ok(()),
+        _ => return Ok(renamed.take()),
     };
     path_component(assembly, component, a_path).map_err(|e| format!("a: {e}"))?;
     path_component(assembly, component, b_path).map_err(|e| format!("b: {e}"))?;
@@ -1195,7 +1216,7 @@ pub(crate) fn apply<K: Kernel>(
             placements: changes,
         },
     );
-    Ok(())
+    Ok(renamed.take())
 }
 
 /// After recompute: each joint's frames and values where the occurrences

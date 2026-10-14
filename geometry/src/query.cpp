@@ -327,7 +327,12 @@ std::vector<EdgeInfo> edge_infos(const Shape& shape) {
 }
 
 std::vector<EdgeMiddle> edge_middles(const Shape& shape) {
-  return detail::run("edges", [&] {
+  // Kept by the shape once worked out (Shape::kept_edge_middles); kept only
+  // when the run did not fail.
+  if (const auto kept = std::static_pointer_cast<const std::vector<EdgeMiddle>>(shape.kept_edge_middles())) {
+    return *kept;
+  }
+  auto middles = std::make_shared<const std::vector<EdgeMiddle>>(detail::run("edges", [&] {
     std::vector<EdgeMiddle> middles;
     for (int i = 0; i < shape.edge_count(); ++i) {
       const std::string& name = shape.edge_name(i);
@@ -354,7 +359,89 @@ std::vector<EdgeMiddle> edge_middles(const Shape& shape) {
       middles.push_back({name, point, tangent.Normalized(), length});
     }
     return middles;
-  });
+  }));
+  shape.keep_edge_middles(middles);
+  return *middles;
+}
+
+namespace {
+
+// Whether OCCT's box of the face (BRepBndLib::Add from its geometry) holds
+// all of it: the boxes of analytic and polynomial surfaces over the face's
+// parameters, and a plane's from its edges' curves, are the curves' or
+// surfaces' own or those of their poles; others are sampled.
+bool box_holds_face(const TopoDS_Face& face) {
+  switch (BRepAdaptor_Surface(face, false).GetType()) {
+  case GeomAbs_Cylinder:
+  case GeomAbs_Cone:
+  case GeomAbs_Sphere:
+  case GeomAbs_Torus:
+  case GeomAbs_BezierSurface:
+  case GeomAbs_BSplineSurface:
+    return true;
+  case GeomAbs_Plane:
+    for (TopExp_Explorer it(face, TopAbs_EDGE); it.More(); it.Next()) {
+      const TopoDS_Edge& edge = TopoDS::Edge(it.Current());
+      if (!BRep_Tool::IsGeometric(edge)) {
+        continue;
+      }
+      switch (BRepAdaptor_Curve(edge).GetType()) {
+      case GeomAbs_Line:
+      case GeomAbs_Circle:
+      case GeomAbs_Ellipse:
+      case GeomAbs_BezierCurve:
+      case GeomAbs_BSplineCurve:
+        break;
+      default:
+        return false;
+      }
+    }
+    return true;
+  default:
+    return false;
+  }
+}
+
+} // namespace
+
+std::vector<std::array<double, 6>> face_boxes(const Shape& shape) {
+  if (const std::shared_ptr<const Shape::FaceBoxes> kept = shape.kept_face_boxes()) {
+    return *kept;
+  }
+  auto boxes = std::make_shared<const Shape::FaceBoxes>(detail::run("face boxes", [&] {
+    std::vector<TopoDS_Face> each;
+    for (int i = 0; i < shape.face_count(); ++i) {
+      each.push_back(shape.face(i));
+    }
+    constexpr double kUnbounded = 1e100;
+    Shape::FaceBoxes found(each.size(), {-kUnbounded, -kUnbounded, -kUnbounded, kUnbounded, kUnbounded,
+                                         kUnbounded});
+    OSD_Parallel::For(
+        0, static_cast<int>(each.size()),
+        [&](int i) {
+          const auto k = static_cast<std::size_t>(i);
+          try {
+            if (!box_holds_face(each[k])) {
+              return;
+            }
+            Bnd_Box box;
+            BRepBndLib::Add(each[k], box, false);
+            if (box.IsVoid() || box.IsOpen()) {
+              return;
+            }
+            box.Enlarge(Precision::Confusion());
+            double x0 = 0, y0 = 0, z0 = 0, x1 = 0, y1 = 0, z1 = 0;
+            box.Get(x0, y0, z0, x1, y1, z1);
+            found[k] = {x0, y0, z0, x1, y1, z1};
+          } catch (...) {
+            // (An unbounded box: the face is measured as before.)
+          }
+        },
+        each.size() < 8);
+    return found;
+  }));
+  shape.keep_face_boxes(boxes);
+  return *boxes;
 }
 
 namespace {
@@ -468,6 +555,94 @@ std::vector<NewFace> new_faces(const std::vector<TopoDS_Shape>& before, const To
         result.push_back({key.area, inside_points(face, count)});
       }
     }
+    return result;
+  });
+}
+
+namespace {
+
+// The faces of `of` (each as it is used, with its orientation) that are
+// not faces of `in`, as new_faces tells them: not the same face, nor one on
+// the same kind of surface with the same area and centre.
+std::vector<TopoDS_Face> faces_not_in(const std::vector<TopoDS_Shape>& of, const std::vector<TopoDS_Shape>& in) {
+  NCollection_Map<TopoDS_Shape, TopTools_ShapeMapHasher> kept;
+  for (const TopoDS_Shape& shape : in) {
+    for (TopExp_Explorer it(shape, TopAbs_FACE); it.More(); it.Next()) {
+      kept.Add(it.Current());
+    }
+  }
+  std::vector<TopoDS_Face> others;
+  for (const TopoDS_Shape& shape : of) {
+    for (TopExp_Explorer it(shape, TopAbs_FACE); it.More(); it.Next()) {
+      if (!kept.Contains(it.Current())) {
+        others.push_back(TopoDS::Face(it.Current()));
+      }
+    }
+  }
+  if (others.empty()) {
+    return others;
+  }
+  std::vector<FaceKey> keys;
+  for (NCollection_Map<TopoDS_Shape, TopTools_ShapeMapHasher>::Iterator it(kept); it.More(); it.Next()) {
+    keys.push_back(face_key(TopoDS::Face(it.Key())));
+  }
+  std::sort(keys.begin(), keys.end(), [](const FaceKey& a, const FaceKey& b) { return a.area < b.area; });
+  std::vector<TopoDS_Face> result;
+  for (const TopoDS_Face& face : others) {
+    const FaceKey key = face_key(face);
+    const double slack = 1e-7 * std::max(std::abs(key.area), 1.0);
+    auto it = std::lower_bound(keys.begin(), keys.end(), key.area - slack,
+                               [](const FaceKey& k, double area) { return k.area < area; });
+    bool found = false;
+    for (; it != keys.end() && it->area <= key.area + slack && !found; ++it) {
+      found = same_face(*it, key);
+    }
+    if (!found) {
+      result.push_back(face);
+    }
+  }
+  return result;
+}
+
+// A third of each edge's length times its tolerance beyond 1e-7 mm times
+// its distance from `at`: the volume a strip as wide as the tolerance along
+// the edge may add to a face's integral about `at`.
+double edge_slack(const std::vector<TopoDS_Face>& faces, const gp_Pnt& at) {
+  constexpr double kTight = 1e-7;
+  double slack = 0.0;
+  for (const TopoDS_Face& face : faces) {
+    for (TopExp_Explorer it(face, TopAbs_EDGE); it.More(); it.Next()) {
+      const TopoDS_Edge& edge = TopoDS::Edge(it.Current());
+      const double loose = BRep_Tool::Tolerance(edge) - kTight;
+      if (loose <= 0.0 || BRep_Tool::Degenerated(edge)) {
+        continue;
+      }
+      const BRepAdaptor_Curve curve(edge);
+      const double length = GCPnts_AbscissaPoint::Length(curve);
+      const gp_Pnt middle = curve.Value((curve.FirstParameter() + curve.LastParameter()) / 2.0);
+      slack += length * loose * middle.Distance(at) / 3.0;
+    }
+  }
+  return slack;
+}
+
+} // namespace
+
+ChangedVolume changed_volume(const std::vector<TopoDS_Shape>& before, const std::vector<TopoDS_Shape>& after) {
+  return detail::run("changed volume", [&] {
+    Bnd_Box box;
+    for (const TopoDS_Shape& shape : after) {
+      BRepBndLib::Add(shape, box);
+    }
+    for (const TopoDS_Shape& shape : before) {
+      BRepBndLib::Add(shape, box);
+    }
+    const gp_Pnt at = box.IsVoid() ? gp::Origin() : gp_Pnt((box.CornerMin().XYZ() + box.CornerMax().XYZ()) / 2.0);
+    const std::vector<TopoDS_Face> added = faces_not_in(after, before);
+    const std::vector<TopoDS_Face> removed = faces_not_in(before, after);
+    ChangedVolume result;
+    result.volume = analysis::faces_volume(added, at).Mass() - analysis::faces_volume(removed, at).Mass();
+    result.slack = edge_slack(added, at) + edge_slack(removed, at);
     return result;
   });
 }

@@ -11,6 +11,7 @@
 #include <BRepBuilderAPI_MakeEdge.hxx>
 #include <BRepBuilderAPI_MakeFace.hxx>
 #include <BRepBuilderAPI_MakeWire.hxx>
+#include <BRepTools_ReShape.hxx>
 #include <BRepTools_WireExplorer.hxx>
 #include <ElCLib.hxx>
 #include <BRep_Builder.hxx>
@@ -279,22 +280,94 @@ std::optional<TopoDS_Wire> touching_hole_wire(const Frame& frame, const Loop& ho
     if (s == nullptr) {
       continue;
     }
-    const gp_Circ circle(axes_at(frame, s->center, s->kind == SegmentKind::Circle ? s->rotation : 0.0),
-                         s->radius);
-    double from = ElCLib::Parameter(circle, point);
-    double to = from + kTwoPi;
-    if (s->kind == SegmentKind::Arc) {
-      from = s->start_angle;
-      to = end_after(s->start_angle, s->end_angle);
-    }
+    // The circle's own start at the vertex, so that the edge runs over its
+    // parameters 0 to 2 pi: an edge past 2 pi (a touch at 270 degrees, as
+    // the sketch's arc gives it) made OCCT's face check clip its pcurve's
+    // range and take the wires for crossing (mitcad#235).
+    const gp_Circ about(axes_at(frame, s->center, 0.0), s->radius);
+    const gp_Circ circle(axes_at(frame, s->center, ElCLib::Parameter(about, point)), s->radius);
     const occ::handle<Geom_Circle> curve = new Geom_Circle(circle);
-    BRepBuilderAPI_MakeEdge maker(curve, vertex, vertex, from, to);
+    BRepBuilderAPI_MakeEdge maker(curve, vertex, vertex, 0.0, kTwoPi);
     const TopoDS_Edge edge = edge_from(maker, *s);
     BRepBuilderAPI_MakeWire wire(edge);
     names.emplace_back(edge, s->name);
     return wire.Wire();
   }
   return std::nullopt;
+}
+
+// The tolerance of a vertex where a hole touches the outer boundary: where
+// two curves touch tangentially (a circle on a line, a circle inside
+// another), OCCT's face check finds them within its intersection tolerance
+// (1e-10) for some micrometres on both sides of the point and takes the
+// wires for crossing unless that lies within the shared vertex's tolerance
+// (mitcad#235: 2e-5 mm for a circle of 1.75 mm on a line, 5e-5 mm for
+// circles of 5 and 8 mm).
+constexpr double kTouchTolerance = 1e-4;
+
+// The hole's wire with its vertices that lie on vertices of the outer wire
+// (within kTouchGap) replaced by those (a hole of arcs whose vertex is where
+// it touches the outer circle inside, mitcad#235): wires meeting at
+// separate vertices at one place make a face with intersecting wires. The
+// names follow the edges. False when no vertex is shared.
+bool share_touching_vertices(TopoDS_Wire& hole, const TopoDS_Wire& outer,
+                             std::vector<std::pair<TopoDS_Edge, std::string>>& names) {
+  std::vector<TopoDS_Vertex> targets;
+  for (TopExp_Explorer it(outer, TopAbs_VERTEX); it.More(); it.Next()) {
+    targets.push_back(TopoDS::Vertex(it.Current()));
+  }
+  occ::handle<BRepTools_ReShape> reshape = new BRepTools_ReShape();
+  bool shared = false;
+  ShapeMap seen;
+  for (TopExp_Explorer it(hole, TopAbs_VERTEX); it.More(); it.Next()) {
+    const TopoDS_Vertex vertex = TopoDS::Vertex(it.Current());
+    if (seen.Contains(vertex)) {
+      continue;
+    }
+    seen.Add(vertex);
+    const gp_Pnt point = BRep_Tool::Pnt(vertex);
+    for (const TopoDS_Vertex& target : targets) {
+      if (target.IsSame(vertex)) {
+        break;
+      }
+      if (BRep_Tool::Pnt(target).Distance(point) <= kTouchGap) {
+        reshape->Replace(vertex.Oriented(TopAbs_FORWARD), target.Oriented(TopAbs_FORWARD));
+        shared = true;
+        break;
+      }
+    }
+  }
+  if (!shared) {
+    return false;
+  }
+  for (auto& [edge, name] : names) {
+    const TopoDS_Shape image = reshape->Apply(edge);
+    if (!image.IsNull() && image.ShapeType() == TopAbs_EDGE) {
+      edge = TopoDS::Edge(image);
+    }
+  }
+  hole = TopoDS::Wire(reshape->Apply(hole));
+  return true;
+}
+
+// Gives the vertices the outer wire shares with holes kTouchTolerance.
+void widen_touching_vertices(const std::vector<TopoDS_Wire>& wires) {
+  if (wires.size() < 2) {
+    return;
+  }
+  ShapeMap outer;
+  for (TopExp_Explorer it(wires.front(), TopAbs_VERTEX); it.More(); it.Next()) {
+    outer.Add(it.Current());
+  }
+  BRep_Builder builder;
+  for (std::size_t i = 1; i < wires.size(); ++i) {
+    for (TopExp_Explorer it(wires[i], TopAbs_VERTEX); it.More(); it.Next()) {
+      const TopoDS_Vertex& vertex = TopoDS::Vertex(it.Current());
+      if (outer.Contains(vertex) && BRep_Tool::Tolerance(vertex) < kTouchTolerance) {
+        builder.UpdateVertex(vertex, kTouchTolerance);
+      }
+    }
+  }
 }
 
 // The region's face from its segments as they are.
@@ -308,13 +381,19 @@ ProfileFace exact_profile(const Frame& frame, const Region& region) {
     if (i > 0) {
       touching = touching_hole_wire(frame, region.loops[i], wires.front(), names);
     }
-    pinched = pinched || touching.has_value();
     TopoDS_Wire wire = touching ? *touching : make_wire(frame, region.loops[i], names);
+    if (i > 0 && !touching && share_touching_vertices(wire, wires.front(), names)) {
+      touching = wire;
+    }
+    pinched = pinched || touching.has_value();
     // Material on the left: the outer boundary counter-clockwise, holes clockwise.
     if (is_clockwise(plane, wire) == (i == 0)) {
       wire = TopoDS::Wire(wire.Reversed());
     }
     wires.push_back(wire);
+  }
+  if (pinched) {
+    widen_touching_vertices(wires);
   }
   BRepBuilderAPI_MakeFace maker(plane, wires.front(), true);
   for (std::size_t i = 1; i < wires.size(); ++i) {

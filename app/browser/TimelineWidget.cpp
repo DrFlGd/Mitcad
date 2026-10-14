@@ -40,6 +40,7 @@
 #include "../framework/Dialogs.hpp"
 #include "../framework/GlassCard.hpp"
 #include "../framework/Icons.hpp"
+#include "../framework/PlaceWatcher.hpp"
 #include "../framework/Theme.hpp"
 #include "../platform/MacChrome.hpp"
 
@@ -71,14 +72,11 @@ const QColor kErrorFill(0xfb, 0xd5, 0xd5);
 const QColor kErrorBorder(0xd0, 0x20, 0x20);
 const QColor kWarningFill(0xff, 0xf1, 0xc2);
 const QColor kWarningBorder(0xd0, 0xa0, 0x00);
-const QColor kSelectedFill(0xd6, 0xe6, 0xfb);
-const QColor kSelectedBorder(0x1f, 0x7a, 0xff);
 const QColor kHoverFill(0xe9, 0xf1, 0xfc);
 const QColor kMarkerColor(0x2b, 0x3a, 0x4a);
 // The same on a dark palette (fills that the light ones would glare among).
 const QColor kErrorFillDark(0x5c, 0x2b, 0x30);
 const QColor kWarningFillDark(0x57, 0x4a, 0x20);
-const QColor kSelectedFillDark(0x26, 0x44, 0x70);
 const QColor kHoverFillDark(0x34, 0x3c, 0x48);
 const QColor kMarkerColorDark(0xc8, 0xd0, 0xda); // on a dark theme's background (mitcad#14)
 const QColor kMarkerHandle(0xe0, 0x7b, 0x1a);
@@ -88,21 +86,27 @@ const QColor kGroupBand(0x7d, 0x8c, 0x9e); // over an open group's features (P9)
 const QColor kFoundBorder(0xff, 0x7a, 0x00); // a match of the search (mitcad#179), light or dark
 
 // The colours of the strip's cells and marker. Docked: the fixed ones above
-// (light or dark). Floating: derived from the palette and the Theme's colours,
-// so that they sit on the card's material and follow the accent colour.
+// (light or dark), with the selection and the marker's handle in the window's
+// one accent colour (mitcad#251). Floating: derived from the palette and the
+// Theme's colours, so that they sit on the card's material and follow the
+// accent colour; the handle stays orange.
 struct StripColors {
   QColor errorFill, errorBorder, warningFill, warningBorder, selectedFill, selectedBorder, hoverFill, marker;
   QColor found = kFoundBorder;
+  QColor handle = kMarkerHandle;
 };
 
 StripColors stripColors(const QPalette& palette) {
   const bool dark = isDarkPalette(palette);
   if (chromeStyle() != ChromeStyle::Floating) {
-    return {dark ? kErrorFillDark : kErrorFill,       kErrorBorder,
-            dark ? kWarningFillDark : kWarningFill,   kWarningBorder,
-            dark ? kSelectedFillDark : kSelectedFill, kSelectedBorder,
-            dark ? kHoverFillDark : kHoverFill,       dark ? kMarkerColorDark : kMarkerColor,
-            kFoundBorder};
+    const QColor accent = actionColor(palette);
+    QColor selected = accent;
+    selected.setAlphaF(dark ? 0.30f : 0.18f);
+    return {dark ? kErrorFillDark : kErrorFill,     kErrorBorder,
+            dark ? kWarningFillDark : kWarningFill, kWarningBorder,
+            selected,                               accent,
+            dark ? kHoverFillDark : kHoverFill,     dark ? kMarkerColorDark : kMarkerColor,
+            kFoundBorder,                           accent};
   }
   const auto tint = [](QColor color, qreal alpha) {
     color.setAlphaF(static_cast<float>(alpha));
@@ -558,7 +562,7 @@ protected:
     painter.setPen(QPen(colors.marker, 2.0));
     painter.drawLine(QPointF(x, 4), QPointF(x, kTop + kItem - 1)); // square caps
     painter.setPen(QPen(colors.marker, 1.0));
-    painter.setBrush(kMarkerHandle);
+    painter.setBrush(colors.handle);
     painter.drawRoundedRect(QRectF(x - 3.5, 1.5, 7, 8), 1.5, 1.5);
     // Where a dragged feature would go.
     if (m_dragItem && m_dropIndex >= 0 && m_dropIndex != m_press) {
@@ -966,6 +970,9 @@ TimelineWidget::TimelineWidget(const CommandContext& model, QWidget* parent)
   });
   connect(scrollBar, &QScrollBar::valueChanged, this,
           [this] { QTimer::singleShot(0, this, &TimelineWidget::logLayout); });
+  // Its places are logged again when it moves in the window (a banner or
+  // another panel makes room above or beside it).
+  new PlaceWatcher(this, [this] { logLayout(); });
 
   m_editor = new QLineEdit(m_strip);
   m_editor->hide();
@@ -1012,12 +1019,12 @@ void TimelineWidget::applyPalette() {
   m_searchPrevious->setIcon(playbackIcon(*style(), QStyle::SP_ArrowLeft, palette()));
   m_searchNext->setIcon(playbackIcon(*style(), QStyle::SP_ArrowRight, palette()));
   m_strip->update();
-  const QString colours = QStringLiteral("Timeline colours: %1, marker %2, buttons %3, window %4")
+  const QString colours = QStringLiteral("Timeline colours: %1, marker %2, buttons %3, window %4, handle %5")
                               .arg(darkPalette(palette()) ? QStringLiteral("dark") : QStringLiteral("light"),
                                    markerColor(palette()).name(),
                                    darkPalette(palette()) ? palette().color(QPalette::ButtonText).name()
                                                           : QStringLiteral("the style's"),
-                                   palette().color(QPalette::Window).name());
+                                   palette().color(QPalette::Window).name(), stripColors(palette()).handle.name());
   if (colours != m_loggedColours) {
     m_loggedColours = colours;
     qDebug().noquote() << colours;

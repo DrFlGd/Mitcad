@@ -208,6 +208,7 @@ pub fn convert<P>(shapes: Vec<LegacyShape<P>>, size: &dyn Fn(&P) -> Option<f64>)
                         id: constraint_id(),
                         kind: DimensionKind::Length { line },
                         value: Some(value),
+                        reference: None,
                         text: None,
                     });
                 }
@@ -235,6 +236,7 @@ pub fn convert<P>(shapes: Vec<LegacyShape<P>>, size: &dyn Fn(&P) -> Option<f64>)
                     id: constraint_id(),
                     kind: DimensionKind::Diameter { curve },
                     value: Some(diameter),
+                    reference: None,
                     text: None,
                 });
             }

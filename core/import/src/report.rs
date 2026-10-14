@@ -99,6 +99,65 @@ pub struct ItemReport {
     /// The Mitcad component it went into, when not the root (F6).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub component: Option<String>,
+    /// Its retry on the file's state before it exactly, when it had one:
+    /// the bodies kept and replaced (mitcad#283).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub exact_retry: Option<RetryReport>,
+}
+
+/// An item's retry on the file's state before it exactly (mitcad#283,
+/// `crate::retry`).
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct RetryReport {
+    /// The history state.
+    pub state: usize,
+    /// How the bodies that match the state were treated: `keep` or
+    /// `replace`.
+    pub bodies: crate::RetryBodies,
+    /// The replay's bodies that stayed: they match the state (exactly or
+    /// within the geometric tolerance) and stay parametric.
+    pub kept: Vec<String>,
+    /// The replay's bodies the state's stored bodies replaced for the retry.
+    pub replaced: Vec<String>,
+    /// Whether the item gave its state on them; else the replacement was
+    /// undone (or none was made: nothing differed).
+    pub matched: bool,
+}
+
+impl RetryReport {
+    /// One line for the text report.
+    pub fn text(&self) -> String {
+        let list = |bodies: &[String]| {
+            if bodies.is_empty() {
+                "none".to_owned()
+            } else {
+                bodies.join(", ")
+            }
+        };
+        format!(
+            "retry on state {} ({}): kept {}; replaced {}; {}",
+            self.state,
+            self.bodies.as_str(),
+            list(&self.kept),
+            list(&self.replaced),
+            if self.matched {
+                "it gave its state"
+            } else if self.replaced.is_empty() {
+                "nothing to replace: not tried again"
+            } else {
+                "no state there either"
+            }
+        )
+    }
+}
+
+/// The user's answer to the question what retries on the file's exact
+/// state do with the bodies that match it (mitcad#283).
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct RetryQuestionReport {
+    /// The item the question came at.
+    pub item: String,
+    pub answer: crate::RetryBodies,
 }
 
 #[derive(Debug, Clone, Default, Serialize)]
@@ -152,6 +211,13 @@ pub struct BodyReport {
     /// (|A − B| + |B − A|) / max(|A|, |B|) from the boolean differences.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub relative_difference: Option<f64>,
+    /// The stored body's blob and record (`StoredBody::source`), and the
+    /// Mitcad body matched to it: what the appearances join on
+    /// (mitcad#228).
+    #[serde(skip)]
+    pub source: String,
+    #[serde(skip)]
+    pub uid: Option<mitcad_model::BodyUid>,
 }
 
 #[derive(Debug, Clone, Default, Serialize)]
@@ -195,6 +261,13 @@ pub struct DesignReport {
     /// came in.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub references: Vec<ReferenceReport>,
+    /// The file's appearances and physical materials (mitcad#228).
+    #[serde(skip_serializing_if = "crate::appearances::AppearanceReport::is_empty")]
+    pub appearances: crate::appearances::AppearanceReport,
+    /// The user's answer, when the import asked what retries on the file's
+    /// exact state do with the bodies that match it (mitcad#283).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub retry_question: Option<RetryQuestionReport>,
 }
 
 /// A document a design refers to (mitcad#196; filled in by the caller that
@@ -560,6 +633,33 @@ impl DesignReport {
                 r.text(&mut out, 0);
             }
         }
+        let a = &self.appearances;
+        if !a.is_empty() {
+            let _ = writeln!(
+                out,
+                "  appearances: bodies {}/{}, faces {}/{}, occurrence overrides {}/{}; {} \
+                 appearances made; materials set {}/{} ({} materials, Mitcad's for {}); {} \
+                 body records of bodies not in the stored design",
+                a.bodies_set,
+                a.bodies,
+                a.faces_set,
+                a.faces,
+                a.overrides_set,
+                a.overrides,
+                a.appearances.len(),
+                a.materials_set,
+                a.materials,
+                a.physical_materials.len(),
+                a.physical_materials
+                    .iter()
+                    .filter(|m| m.mitcad.is_some())
+                    .count(),
+                a.not_in_design
+            );
+            for g in &a.gaps {
+                let _ = writeln!(out, "    {g}");
+            }
+        }
         let b = &self.light_bulbs;
         if b.sketch_bulbs + b.construction_bulbs > 0 {
             let _ = writeln!(
@@ -658,6 +758,18 @@ impl DesignReport {
                 item.note
                     .as_deref()
                     .map_or(String::new(), |n| format!(": {n}"))
+            );
+            if let Some(retry) = &item.exact_retry {
+                let _ = writeln!(out, "       {}", retry.text());
+            }
+        }
+        if let Some(q) = &self.retry_question {
+            let _ = writeln!(
+                out,
+                "  asked at {} what retries on the file's exact state do with the bodies that \
+                 match it: {}",
+                q.item,
+                q.answer.as_str()
             );
         }
         for body in &self.bodies {

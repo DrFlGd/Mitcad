@@ -11,6 +11,11 @@
 // every point of a rolling-ball rounding lies at the radius from that
 // curve. Between a plate and a tilted rod or cone OCCT's sections missed it
 // by up to 0.014 (radius 2); the rolling ball's by the approximation only.
+//
+// With patches 0170 to 0172 (mitcad#237) the same holds for a ball that
+// rolls on an edge, where the face is narrower than the radius: its centre
+// lies at the radius from the other face and from the edge, and where the
+// edge ends the ball turns about its end, its centre on the sphere round it.
 
 #include <algorithm>
 #include <cmath>
@@ -18,25 +23,36 @@
 
 #include <BRepAdaptor_Surface.hxx>
 #include <BRepAlgoAPI_Common.hxx>
+#include <BRepAlgoAPI_Cut.hxx>
 #include <BRepAlgoAPI_Fuse.hxx>
+#include <BRepBuilderAPI_MakeFace.hxx>
+#include <BRepBuilderAPI_MakePolygon.hxx>
 #include <BRepCheck_Analyzer.hxx>
 #include <BRepClass_FaceClassifier.hxx>
 #include <BRepFilletAPI_MakeFillet.hxx>
 #include <BRepPrimAPI_MakeBox.hxx>
 #include <BRepPrimAPI_MakeCone.hxx>
 #include <BRepPrimAPI_MakeCylinder.hxx>
+#include <BRepPrimAPI_MakePrism.hxx>
 #include <BRepTools.hxx>
 #include <BRep_Tool.hxx>
 #include <GeomAPI_IntSS.hxx>
 #include <GeomAPI_ProjectPointOnCurve.hxx>
+#include <Geom_Circle.hxx>
 #include <Geom_ConicalSurface.hxx>
 #include <Geom_CylindricalSurface.hxx>
 #include <Geom_Plane.hxx>
+#include <Geom_ToroidalSurface.hxx>
+#include <Geom_TrimmedCurve.hxx>
+#include <NCollection_IndexedMap.hxx>
 #include <ShapeUpgrade_UnifySameDomain.hxx>
+#include <TopExp.hxx>
 #include <TopExp_Explorer.hxx>
+#include <TopTools_ShapeMapHasher.hxx>
 #include <TopoDS.hxx>
 #include <gp_Ax2.hxx>
 #include <gp_Ax3.hxx>
+#include <gp_Circ.hxx>
 #include <gp_Cone.hxx>
 #include <gp_Cylinder.hxx>
 
@@ -136,13 +152,13 @@ std::vector<occ::handle<Geom_Curve>> meeting(const occ::handle<Geom_Surface>& a,
   return curves;
 }
 
-// Rounds the top edge of `body` with `radius` and checks the rounding
-// against the centre curve where `offset_plane` meets `offset_side`.
-void check_rolling_ball(const TopoDS_Shape& body, double radius, const occ::handle<Geom_Surface>& offset_plane,
-                        const occ::handle<Geom_Surface>& offset_side) {
-  const TopoDS_Edge edge = edge_on_top(body);
+// Rounds `edge` of `body` with `radius` and checks the rounding against the
+// centre curves `centre`.
+void check_rounding(const TopoDS_Shape& body, const TopoDS_Edge& edge, double radius,
+                    const std::vector<occ::handle<Geom_Curve>>& centre) {
   CHECK(!edge.IsNull());
-  if (edge.IsNull()) {
+  CHECK(!centre.empty());
+  if (edge.IsNull() || centre.empty()) {
     return;
   }
   BRepFilletAPI_MakeFillet rounding(body);
@@ -153,11 +169,6 @@ void check_rolling_ball(const TopoDS_Shape& body, double radius, const occ::hand
     return;
   }
   CHECK(BRepCheck_Analyzer(rounding.Shape()).IsValid());
-  const std::vector<occ::handle<Geom_Curve>> centre = meeting(offset_plane, offset_side);
-  CHECK(!centre.empty());
-  if (centre.empty()) {
-    return;
-  }
   int samples = 0;
   const double miss = largest_miss(rounding.Shape(), centre, radius, samples);
   CHECK(samples > 100);
@@ -165,6 +176,33 @@ void check_rolling_ball(const TopoDS_Shape& body, double radius, const occ::hand
     std::fprintf(stderr, "rolling ball missed by %.3g\n", miss);
   }
   CHECK(miss < 2e-5);
+}
+
+// Rounds the top edge of `body` with `radius` and checks the rounding
+// against the centre curve where `offset_plane` meets `offset_side`.
+void check_rolling_ball(const TopoDS_Shape& body, double radius, const occ::handle<Geom_Surface>& offset_plane,
+                        const occ::handle<Geom_Surface>& offset_side) {
+  check_rounding(body, edge_on_top(body), radius, meeting(offset_plane, offset_side));
+}
+
+// The edge of `shape` (not degenerated) whose middle `pick` accepts; null
+// unless there is exactly one.
+template <class Pick>
+TopoDS_Edge the_edge(const TopoDS_Shape& shape, Pick pick) {
+  NCollection_IndexedMap<TopoDS_Shape, TopTools_ShapeMapHasher> edges;
+  TopExp::MapShapes(shape, TopAbs_EDGE, edges);
+  TopoDS_Edge found;
+  int count = 0;
+  for (int i = 1; i <= edges.Extent(); ++i) {
+    const TopoDS_Edge& edge = TopoDS::Edge(edges(i));
+    double f = 0.0, l = 0.0;
+    const occ::handle<Geom_Curve> curve = BRep_Tool::Curve(edge, f, l);
+    if (!curve.IsNull() && pick(curve->Value((f + l) / 2))) {
+      found = edge;
+      ++count;
+    }
+  }
+  return count == 1 ? found : TopoDS_Edge();
 }
 
 void test_rounding_between_a_plate_and_a_tilted_rod_is_a_rolling_ball() {
@@ -220,6 +258,62 @@ void test_rounding_between_a_plate_and_a_tilted_cone_is_a_rolling_ball() {
   check_rolling_ball(body, radius, plane, side);
 }
 
+void test_rounding_rolling_on_a_skew_edge_is_a_rolling_ball() {
+  // A rib on a plate whose far side tapers (0.5 to 2.5 thick over 40); its
+  // near top edge rounded with 3. The rib is thinner than the radius: the
+  // ball touches the near side and rolls on the far top edge, which is skew
+  // to the rounded edge (patch 0170). Its centre runs where the near side's
+  // offset (the plane y = 12.5) meets the tube of radius 3 round the far
+  // top edge. Where that edge ends, the ball turns about its end (0171), its
+  // centre on the sphere of radius 3 round it, until the end face cuts it.
+  // OCCT's sections, in the guide's normal plane, missed it by 6.5e-4.
+  const double radius = 3.0;
+  const TopoDS_Shape plate = BRepPrimAPI_MakeBox(gp_Pnt(0, 0, 0), gp_Pnt(40, 20, 5)).Shape();
+  BRepBuilderAPI_MakePolygon outline(gp_Pnt(0, 9.5, 5), gp_Pnt(40, 9.5, 5), gp_Pnt(40, 12, 5), gp_Pnt(0, 10, 5),
+                                     true);
+  const TopoDS_Face foot = BRepBuilderAPI_MakeFace(outline.Wire());
+  const TopoDS_Shape rib = BRepPrimAPI_MakePrism(foot, gp_Vec(0, 0, 10)).Shape();
+  const TopoDS_Shape body = unify(BRepAlgoAPI_Fuse(plate, rib).Shape());
+  const TopoDS_Edge edge = the_edge(body, [](const gp_Pnt& m) {
+    return std::abs(m.Y() - 9.5) < 1e-6 && std::abs(m.Z() - 15) < 1e-6;
+  });
+  const occ::handle<Geom_Surface> side = new Geom_Plane(gp_Ax3(gp_Pnt(0, 9.5 + radius, 0), gp::DY()));
+  const occ::handle<Geom_Surface> tube =
+    new Geom_CylindricalSurface(gp_Ax3(gp_Pnt(0, 10, 15), gp_Dir(40, 2, 0)), radius);
+  std::vector<occ::handle<Geom_Curve>> centre = meeting(side, tube);
+  // The turn: the circle where the sphere round (40, 12, 15) meets that
+  // plane, below the top and before the end face (x from 39.9 to 40).
+  const double r = std::sqrt(radius * radius - 0.5 * 0.5);
+  const occ::handle<Geom_Circle> turn =
+    new Geom_Circle(gp_Circ(gp_Ax2(gp_Pnt(40, 12.5, 15), gp::DY(), gp::DX()), r));
+  centre.push_back(new Geom_TrimmedCurve(turn, kPi / 2, std::acos(-0.1 / r)));
+  check_rounding(body, edge, radius, centre);
+}
+
+void test_rounding_rolling_on_a_rim_past_its_face_is_a_rolling_ball() {
+  // A post of radius 8 with a round pocket of radius 5.5 centred at
+  // (0, 12) cut down to z = 5: the pocket's floor is a lens between its
+  // wall and the post's rim, at most 1.5 wide. The floor's edge at the wall
+  // rounded with 2: the ball touches the wall and rolls on the rim, its
+  // centre where the wall's offset (radius 3.5) meets the tube of radius 2
+  // round the rim (0170). Near the lens's tips the ball's contact leaves
+  // the wall across the edge where wall and post meet, while the ball still
+  // rolls on the rim until it reaches the post's side: there the rounding
+  // is cut by the post's side and ends in a point on the rim (0172). Before,
+  // the rounding was invalid; OCCT's sections missed the ball by 0.29.
+  const double radius = 2.0;
+  const TopoDS_Shape post = BRepPrimAPI_MakeCylinder(gp_Ax2(gp::Origin(), gp::DZ()), 8.0, 30.0).Shape();
+  const TopoDS_Shape pocket = BRepPrimAPI_MakeCylinder(gp_Ax2(gp_Pnt(0, 12, 5), gp::DZ()), 5.5, 30.0).Shape();
+  const TopoDS_Shape body = unify(BRepAlgoAPI_Cut(post, pocket).Shape());
+  const TopoDS_Edge edge = the_edge(body, [](const gp_Pnt& m) {
+    return std::abs(m.Z() - 5) < 1e-6 && std::abs(m.Distance(gp_Pnt(0, 12, 5)) - 5.5) < 1e-6;
+  });
+  const occ::handle<Geom_Surface> wall =
+    new Geom_CylindricalSurface(gp_Ax3(gp_Pnt(0, 12, 0), gp::DZ()), 5.5 - radius);
+  const occ::handle<Geom_Surface> tube = new Geom_ToroidalSurface(gp_Ax3(gp_Pnt(0, 0, 5), gp::DZ()), 8.0, radius);
+  check_rounding(body, edge, radius, meeting(wall, tube));
+}
+
 } // namespace
 
 void fillet_rolling_ball_tests() {
@@ -228,6 +322,10 @@ void fillet_rolling_ball_tests() {
   guarded("test_rounding_of_a_tilted_rods_top_is_a_rolling_ball", test_rounding_of_a_tilted_rods_top_is_a_rolling_ball);
   guarded("test_rounding_between_a_plate_and_a_tilted_cone_is_a_rolling_ball",
           test_rounding_between_a_plate_and_a_tilted_cone_is_a_rolling_ball);
+  guarded("test_rounding_rolling_on_a_skew_edge_is_a_rolling_ball",
+          test_rounding_rolling_on_a_skew_edge_is_a_rolling_ball);
+  guarded("test_rounding_rolling_on_a_rim_past_its_face_is_a_rolling_ball",
+          test_rounding_rolling_on_a_rim_past_its_face_is_a_rolling_ball);
 }
 
 } // namespace test

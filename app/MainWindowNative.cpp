@@ -564,7 +564,9 @@ void MainWindow::refreshNativeWindow() {
                                    row.node.type == BrowserNode::Type::Feature ||
                                    (row.node.type == BrowserNode::Type::NamedView && row.node.uid.startsWith(QStringLiteral("named:"))));
       item.hasVisibility = row.node.hasEye;
-      item.canToggleVisibility = row.node.hasEye && canToggleVisibility;
+      // Bodies, sketches, construction and components in every mode (mitcad#295).
+      item.canToggleVisibility =
+          row.node.hasEye && (canToggleVisibility || BrowserController::visibilityInEveryMode(row.node));
       item.visible = row.node.visible;
       item.checked = row.node.visible;
       rows.append(item);
@@ -671,6 +673,7 @@ bool MainWindow::modelCommandAsync(const QJsonObject& request, QObject* context,
                                                                const DocumentSession::AsyncResult& result) {
     if (result.succeeded()) {
       reportRecompute(result.answer, static_cast<double>(clock.nsecsElapsed()) / 1.0e6);
+      notePlacement(result.answer);
       m_locks->activity();
     } else if (result.cancelled) {
       showHint(tr("Computation cancelled."));

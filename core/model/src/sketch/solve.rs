@@ -16,7 +16,9 @@ use mitcad_solver::{
 // Equal spacing (mitcad#221).
 use mitcad_solver::{Anchor as SolverAnchor, SpacingMode as SolverSpacing};
 
-use super::geometry::{Curve2, Nurbs, P2, angle_after, cross, dist, dot, norm, sub, unit};
+use super::geometry::{
+    Curve2, Nurbs, P2, angle_after, angle_on_side, cross, dist, dot, norm, sub, unit,
+};
 use super::pattern::{Binding, BindingKind};
 use super::{Constraint, ConstraintKind, ConstraintUid, DimensionKind, Entity, EntityKind, Ref};
 use super::{SpacingMode, spacing};
@@ -512,10 +514,12 @@ impl Built {
                 line: c(*line)?,
                 value,
             },
-            D::Angle { a, b } => S::Angle {
+            D::Angle { a, b, .. } => S::Angle {
                 a: c(*a)?,
                 b: c(*b)?,
                 value,
+                // Reversing both rays keeps the angle.
+                supplement: kind.angle_side().map(|[ra, rb]| ra != rb),
             },
             D::Radius { curve } => S::Radius {
                 entity: c(*curve)?,
@@ -814,13 +818,11 @@ pub fn measure(kind: &DimensionKind, solved: &Solved) -> Option<f64> {
             let (a, b) = line(l)?;
             dist(a, b)
         }
-        D::Angle { a, b } => {
-            let (a0, a1) = line(a)?;
-            let (b0, b1) = line(b)?;
-            dot(unit(sub(a1, a0)), unit(sub(b1, b0)))
-                .clamp(-1.0, 1.0)
-                .acos()
-        }
+        D::Angle { a, b, .. } => angle_on_side(
+            line(a)?,
+            line(b)?,
+            kind.angle_side().unwrap_or([false, false]),
+        ),
         D::Radius { curve } => radius(curve)?,
         D::Diameter { curve } => 2.0 * radius(curve)?,
         D::ArcLength { arc } => match solved.curves.get(arc)? {

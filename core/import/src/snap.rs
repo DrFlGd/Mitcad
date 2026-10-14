@@ -134,25 +134,147 @@ fn projections(
     high: P,
     margin: f64,
 ) -> Vec<(usize, Curve2)> {
+    // Edges whose reach misses the window are left out before projecting;
+    // their projections would miss it too.
     let mut out = Vec::new();
     for (i, edge) in edges.iter().enumerate() {
+        if reach(edge, frame).is_some_and(|(lo, hi)| misses(lo, hi, low, high, margin)) {
+            continue;
+        }
         let Some(curve) = model_curve(edge) else {
             continue;
         };
         for p in project(std::slice::from_ref(&curve), frame) {
             let Projected::Curve(c) = p else { continue };
             let (lo, hi) = c.bounds();
-            if hi[0] < low[0] - margin
-                || lo[0] > high[0] + margin
-                || hi[1] < low[1] - margin
-                || lo[1] > high[1] + margin
-            {
+            if misses(lo, hi, low, high, margin) {
                 continue;
             }
             out.push((i, c));
         }
     }
     out
+}
+
+/// A box in the sketch's coordinates that holds an edge's projection: a
+/// line's projected ends, a circle's projected centre with its radius
+/// around (a projection brings no point farther from the centre); None for
+/// the curves no projection here matches.
+fn reach(edge: &CurveGeometry, frame: &SketchFrame) -> Option<(P, P)> {
+    let in_sketch = |p: &[f64; 3]| -> P {
+        let d = sub3(*p, frame.origin);
+        [dot3(d, frame.x_axis), dot3(d, frame.y_axis)]
+    };
+    match edge {
+        CurveGeometry::Line { start, end } => {
+            let (a, b) = (in_sketch(start), in_sketch(end));
+            Some((
+                [a[0].min(b[0]), a[1].min(b[1])],
+                [a[0].max(b[0]), a[1].max(b[1])],
+            ))
+        }
+        CurveGeometry::Circle { center, radius, .. } => {
+            let c = in_sketch(center);
+            let r = radius.abs();
+            Some(([c[0] - r, c[1] - r], [c[0] + r, c[1] + r]))
+        }
+        CurveGeometry::Other { .. } => None,
+    }
+}
+
+/// Whether the box (`lo`, `hi`) misses the box (`low`, `high`) grown by
+/// `margin`.
+fn misses(lo: P, hi: P, low: P, high: P, margin: f64) -> bool {
+    hi[0] < low[0] - margin
+        || lo[0] > high[0] + margin
+        || hi[1] < low[1] - margin
+        || lo[1] > high[1] + margin
+}
+
+/// The edges' projections that [`projections`] gives, found for one curve
+/// at a time (mitcad#119): only the edges whose [`reach`] comes near the
+/// curve are projected, each once. A sketch over a body of 115 000 edges
+/// projected most of them for each of its linked curves' window.
+struct Projector<'e> {
+    edges: &'e [CurveGeometry],
+    frame: &'e SketchFrame,
+    /// The window [`projections`] keeps projections in: low, high, margin.
+    window: (P, P, f64),
+    /// The edges with a reach in the window, by the reach's low x.
+    by_x: Vec<(f64, usize, (P, P))>,
+    /// Each edge's projections in the window, once projected.
+    done: HashMap<usize, Vec<Curve2>>,
+}
+
+impl<'e> Projector<'e> {
+    fn new(
+        edges: &'e [CurveGeometry],
+        frame: &'e SketchFrame,
+        low: P,
+        high: P,
+        margin: f64,
+    ) -> Self {
+        let mut by_x: Vec<(f64, usize, (P, P))> = edges
+            .iter()
+            .enumerate()
+            .filter_map(|(i, e)| {
+                let (lo, hi) = reach(e, frame)?;
+                (!misses(lo, hi, low, high, margin)).then_some((lo[0], i, (lo, hi)))
+            })
+            .collect();
+        by_x.sort_by(|a, b| a.0.total_cmp(&b.0).then(a.1.cmp(&b.1)));
+        Projector {
+            edges,
+            frame,
+            window: (low, high, margin),
+            by_x,
+            done: HashMap::new(),
+        }
+    }
+
+    /// How many edges reach the window.
+    fn reaching(&self) -> usize {
+        self.by_x.len()
+    }
+
+    /// The projections in the window whose bounds come within `pad` of the
+    /// box (`lo`, `hi`), each with its edge's index, in the order of
+    /// [`projections`] (by edge, then as projected).
+    fn near(&mut self, lo: P, hi: P, pad: f64) -> Vec<(usize, Curve2)> {
+        let end = self.by_x.partition_point(|(x, _, _)| *x <= hi[0] + pad);
+        let mut found: Vec<usize> = self.by_x[..end]
+            .iter()
+            .filter(|(_, _, (rlo, rhi))| !misses(*rlo, *rhi, lo, hi, pad))
+            .map(|(_, i, _)| *i)
+            .collect();
+        found.sort_unstable();
+        let (low, high, margin) = self.window;
+        let mut out = Vec::new();
+        for i in found {
+            let curves = self.done.entry(i).or_insert_with(|| {
+                let Some(curve) = model_curve(&self.edges[i]) else {
+                    return Vec::new();
+                };
+                project(std::slice::from_ref(&curve), self.frame)
+                    .into_iter()
+                    .filter_map(|p| match p {
+                        Projected::Curve(c) => {
+                            let (clo, chi) = c.bounds();
+                            (!misses(clo, chi, low, high, margin)).then_some(c)
+                        }
+                        Projected::Point(_) => None,
+                    })
+                    .collect()
+            });
+            for c in curves.iter() {
+                let (clo, chi) = c.bounds();
+                if !misses(clo, chi, lo, hi, pad) {
+                    out.push((i, c.clone()));
+                }
+            }
+        }
+        out
+    }
 }
 
 /// What a snapped curve changes: points to put elsewhere (by entity id)
@@ -365,14 +487,27 @@ pub(crate) fn sources(
         return Vec::new();
     };
     let margin = dist(low, high) + 1.0;
-    // Each edge's projection near the curves, with the edge's index.
-    let projected = projections(edges, frame, low, high, margin);
+    // Each edge's projection near the curves, with the edge's index; for
+    // each curve only those whose boxes come near its points, which alone
+    // can fit it (mitcad#119: a sketch on a body of 115 000 edges fitted
+    // each linked curve to every projection, most of a large design's
+    // sketch time). The pad is looser than the fit's, so the same edges are
+    // found in the same order.
+    let mut projector = Projector::new(edges, frame, low, high, margin);
+    let mut all: Option<Vec<(usize, Curve2)>> = None;
+    let pad = 2.0 * SNAP;
     let mut out = Vec::new();
     for (i, e) in parts.entities.iter().enumerate() {
         if e["reference"] != json!(true) || e["type"].as_str().is_none_or(|t| t == "point") {
             continue;
         }
-        let mut found: Vec<usize> = projected
+        let near = match entity_box(e, &view) {
+            Some((lo, hi)) => projector.near(lo, hi, pad),
+            None => all
+                .get_or_insert_with(|| projections(edges, frame, low, high, margin))
+                .clone(),
+        };
+        let mut found: Vec<usize> = near
             .iter()
             .filter(|(_, c)| fit(e, &view, std::slice::from_ref(c)).is_some())
             .map(|(edge, _)| *edge)
@@ -486,20 +621,21 @@ pub(crate) fn snap_linked_keeping(
         return Snapped::default();
     };
     let extent = dist(low, high);
-    let indexed = projections(edges, frame, low, high, extent + 1.0);
+    // The projections near each linked curve, projected as asked
+    // (mitcad#119; [`Projector`]).
+    let mut projector = Projector::new(edges, frame, low, high, extent + 1.0);
     if crate::tracing() {
         eprintln!(
-            "import:   snap: {} linked curves, {} edges, {} projected near",
+            "import:   snap: {} linked curves, {} edges, {} reaching near",
             linked.len(),
             edges.len(),
-            indexed.len()
+            projector.reaching()
         );
     }
-    if indexed.is_empty() {
+    if projector.reaching() == 0 {
         return Snapped::default();
     }
-    let projected: Vec<Curve2> = indexed.iter().map(|(_, c)| c.clone()).collect();
-    let boxes: Vec<(P, P)> = indexed.iter().map(|(_, c)| c.bounds()).collect();
+    let mut all: Option<Vec<(usize, Curve2)>> = None;
     // Each linked curve's fits, the projection rule's edge first: the first
     // one that keeps the points already placed and the regions is taken.
     let mut changes: Vec<(usize, Option<usize>, Vec<Change>)> = Vec::new();
@@ -509,26 +645,21 @@ pub(crate) fn snap_linked_keeping(
             .find(|(entity, _)| *entity == i)
             .map(|(_, edge)| *edge);
         // Only the projections that come near the curve's points.
-        let near_box = entity_box(&parts.entities[i], &view);
-        let near = |n: usize| {
-            near_box.is_none_or(|(lo, hi)| {
-                let (clo, chi) = boxes[n];
-                !(chi[0] < lo[0] - SNAP
-                    || clo[0] > hi[0] + SNAP
-                    || chi[1] < lo[1] - SNAP
-                    || clo[1] > hi[1] + SNAP)
-            })
+        let near = match entity_box(&parts.entities[i], &view) {
+            Some((lo, hi)) => projector.near(lo, hi, SNAP),
+            None => all
+                .get_or_insert_with(|| projections(edges, frame, low, high, extent + 1.0))
+                .clone(),
         };
-        let order = (0..indexed.len())
-            .filter(|n| Some(indexed[*n].0) == first)
-            .chain((0..indexed.len()).filter(|n| Some(indexed[*n].0) != first))
-            .filter(|n| near(*n));
+        let order = near
+            .iter()
+            .filter(|(k, _)| Some(*k) == first)
+            .chain(near.iter().filter(|(k, _)| Some(*k) != first));
         // (Two edges' projections may differ by nanometres: each is an
         // option of its own, since the points already placed are matched
         // to that closeness.)
         let mut options: Vec<Change> = Vec::new();
-        for n in order {
-            let (k, c) = &indexed[n];
+        for (k, c) in order {
             if let Some(mut change) = fit(&parts.entities[i], &view, std::slice::from_ref(c)) {
                 change.edge = *k;
                 options.push(change);
@@ -537,6 +668,11 @@ pub(crate) fn snap_linked_keeping(
         if !options.is_empty() {
             changes.push((i, first, options));
         } else if crate::tracing() {
+            let projected: Vec<Curve2> = all
+                .get_or_insert_with(|| projections(edges, frame, low, high, extent + 1.0))
+                .iter()
+                .map(|(_, c)| c.clone())
+                .collect();
             eprintln!(
                 "import:   snap: {} {} found no edge: {}",
                 parts.entities[i]["type"],

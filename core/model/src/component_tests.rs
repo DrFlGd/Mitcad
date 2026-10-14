@@ -979,3 +979,96 @@ fn make_unique_copies_the_component_of_one_occurrence() {
     assert_eq!(doc.assembly().occurrences_of(part).count(), 2);
     assert!(doc.make_unique(OccurrenceUid(999)).is_err());
 }
+
+#[test]
+fn renaming_a_component_renames_its_only_default_named_body() {
+    // mitcad#291: Plate's one body, Body1, takes the component's new name.
+    let mut doc = Document::new(MockKernel::default());
+    command(
+        &mut doc,
+        json!({"cmd": "create_component", "name": "Plate"}),
+    );
+    let (_, body) = small_block(&mut doc);
+    assert_eq!(doc.body_name(body), "Body1");
+    let depth = doc.undo_depth();
+    let reply = command(
+        &mut doc,
+        json!({"cmd": "rename_component", "component": "Plate", "name": "Bracket"}),
+    );
+    assert_eq!(
+        reply["renamed_body"],
+        json!({"uid": body, "name": "Bracket"})
+    );
+    assert_eq!(doc.body_name(body), "Bracket");
+    assert_eq!(doc.undo_depth(), depth + 1);
+    // One undo step takes both names back.
+    assert_eq!(doc.undo().unwrap(), "Rename Plate to Bracket");
+    assert_eq!(doc.body_name(body), "Body1");
+    assert_eq!(doc.assembly().name(ComponentUid(1)), "Plate");
+    doc.redo().unwrap();
+    assert_eq!(doc.body_name(body), "Bracket");
+    // Named with the component, the body's name is no longer a default
+    // one: a later rename leaves it.
+    let reply = command(
+        &mut doc,
+        json!({"cmd": "rename_component", "component": "Bracket", "name": "Holder"}),
+    );
+    assert_eq!(reply["renamed_body"], Value::Null);
+    assert_eq!(doc.body_name(body), "Bracket");
+}
+
+#[test]
+fn renaming_a_component_leaves_named_bodies_two_bodies_the_root_and_taken_names() {
+    let rename = |doc: &mut Document<MockKernel>, component: &str, name: &str| {
+        command(
+            doc,
+            json!({"cmd": "rename_component", "component": component, "name": name}),
+        )["renamed_body"]
+            .clone()
+    };
+    // A body the user named.
+    let mut doc = Document::new(MockKernel::default());
+    command(
+        &mut doc,
+        json!({"cmd": "create_component", "name": "Plate"}),
+    );
+    let (_, body) = small_block(&mut doc);
+    doc.rename_body(body, "Top plate").unwrap();
+    assert_eq!(rename(&mut doc, "Plate", "Bracket"), Value::Null);
+    assert_eq!(doc.body_name(body), "Top plate");
+
+    // Two bodies.
+    let mut doc = Document::new(MockKernel::default());
+    command(
+        &mut doc,
+        json!({"cmd": "create_component", "name": "Plate"}),
+    );
+    let (_, first) = small_block(&mut doc);
+    let (_, second) = small_block(&mut doc);
+    assert_eq!(rename(&mut doc, "Plate", "Bracket"), Value::Null);
+    assert_eq!(
+        (doc.body_name(first), doc.body_name(second)),
+        ("Body1".to_owned(), "Body2".to_owned())
+    );
+
+    // The root.
+    let mut doc = Document::new(MockKernel::default());
+    let (_, body) = small_block(&mut doc);
+    assert_eq!(rename(&mut doc, "Root", "Assembly"), Value::Null);
+    assert_eq!(doc.body_name(body), "Body1");
+
+    // A name another body already has.
+    let mut doc = Document::new(MockKernel::default());
+    let (_, root_body) = small_block(&mut doc);
+    doc.rename_body(root_body, "Bracket").unwrap();
+    command(
+        &mut doc,
+        json!({"cmd": "create_component", "name": "Plate"}),
+    );
+    let (_, body) = small_block(&mut doc);
+    let default = doc.body_name(body);
+    assert!(default.starts_with("Body"), "{default}");
+    assert_eq!(rename(&mut doc, "Plate", "Bracket"), Value::Null);
+    assert_eq!(doc.body_name(body), default);
+    assert_eq!(doc.assembly().name(ComponentUid(1)), "Bracket");
+}

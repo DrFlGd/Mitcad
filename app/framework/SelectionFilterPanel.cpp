@@ -195,8 +195,12 @@ void SelectionFilterPanel::showEvent(QShowEvent* event) {
 
 void SelectionFilterPanel::changeEvent(QEvent* event) {
   QWidget::changeEvent(event);
-  if (event->type() == QEvent::PaletteChange) {
-    refresh(); // the symbols in the text colour of a dark or light palette
+  // The symbols in the text colour of a dark or light palette. Only while
+  // shown (showEvent refreshes): the panel's menu hides it before handing
+  // it back, and at the exit that new parent's palette came while the
+  // window it asks for the scope was being destroyed (mitcad#270).
+  if (event->type() == QEvent::PaletteChange && isVisible()) {
+    refresh();
   }
 }
 

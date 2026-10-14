@@ -168,6 +168,10 @@ pub mod sheet_relief;
 pub use sheet_relief::SheetCornerReliefDef;
 // The faces a pattern's optimized compute option copies.
 mod face_copy;
+// Faces, edges and vertices found again after a sketch change (mitcad#272).
+pub(crate) mod renamed;
+#[cfg(test)]
+mod renamed_tests;
 
 use crate::assembly::Assembly;
 use crate::datum::Datum;
@@ -568,6 +572,9 @@ pub(crate) struct Env<'a, S> {
     pub components: &'a BTreeMap<ComponentUid, Arc<BodyState<S>>>,
     /// Every occurrence's placement at this point of the timeline.
     pub placements: &'a BTreeMap<OccurrenceUid, Transform>,
+    /// B-rep data of base features being added and the shapes it was
+    /// written from (mitcad#244, `recompute::Cache::written_from`).
+    pub written_from: &'a [(Brep, S)],
 }
 
 /// Inputs of an evaluating feature. Every read is recorded, so the
@@ -882,20 +889,17 @@ impl<'a, K: Kernel> EvalContext<'a, K> {
         format!("the body has no edge {edge}")
     }
 
-    /// Checks that every edge resolves on the shape.
+    /// Checks that every edge resolves on the shape and gives the names
+    /// the kernel gets: each edge's own, or that of the edge between the
+    /// faces a sketch change renamed, with a warning (`renamed.rs`,
+    /// mitcad#272).
     pub fn require_edges(
-        &self,
+        &mut self,
         body: BodyUid,
         shape: &K::Shape,
         edges: &[EdgeName],
-    ) -> Result<(), String> {
-        match edges
-            .iter()
-            .find(|edge| self.kernel.count_edges(shape, edge) == 0)
-        {
-            Some(edge) => Err(self.missing_edge(body, edge)),
-            None => Ok(()),
-        }
+    ) -> Result<Vec<EdgeName>, String> {
+        self.edges_on(body, shape, edges)
     }
 }
 

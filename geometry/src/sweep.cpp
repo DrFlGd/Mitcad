@@ -52,6 +52,7 @@
 
 #include "face_select.hpp"
 #include "history.hpp"
+#include "spine.hpp"
 #include "util.hpp"
 
 namespace mitcad::geometry::detail {
@@ -879,6 +880,139 @@ ShapePtr closing_taper(const Shape& solid, const std::vector<bool>& leaned, cons
   return namer.shape();
 }
 
+// The draft of the leaned faces (below; a closing cone or convex prism
+// built as it closes).
+ShapePtr tapered_draft(const Shape& solid, const std::vector<bool>& leaned, const gp_Pln& neutral,
+                       const gp_Dir& pull, double angle);
+
+// The near cap of a tapered prism: the face that is no side and lies on the
+// neutral plane; -1 when there is none.
+int near_cap_of(const Shape& solid, const std::vector<bool>& leaned, const gp_Pln& neutral,
+                const gp_Dir& pull) {
+  int near = -1;
+  double near_height = std::numeric_limits<double>::infinity();
+  for (int i = 0; i < solid.face_count(); ++i) {
+    if (leaned[static_cast<std::size_t>(i)]) {
+      continue;
+    }
+    const BRepAdaptor_Surface surface(solid.face(i));
+    if (surface.GetType() != GeomAbs_Plane) {
+      continue;
+    }
+    const double height = std::abs(gp_Vec(neutral.Location(), surface.Plane().Location()).Dot(gp_Vec(pull)));
+    if (height < near_height) {
+      near_height = height;
+      near = i;
+    }
+  }
+  const double scale = std::max(1.0, diagonal(bounds_of(solid.occt())));
+  return near_height <= 1.0e-9 * scale ? near : -1;
+}
+
+// A taper of a profile with holes, as its outline's taper less its holes'
+// (mitcad#235): every hole leans the other way, so that where the outline
+// narrows the holes widen. The draft leans the walls of a ring into each
+// other until they cross (a 50 degree taper closes a ring of 1 mm within
+// half a millimetre) and gives an invalid solid; as the difference, the ring
+// ends where its walls meet, a ridge, as the extrusion does in the stored
+// designs. Null when the near cap has no holes.
+ShapePtr holed_taper(const Shape& solid, const std::vector<bool>& leaned, const gp_Pln& neutral,
+                     const gp_Dir& pull, double angle, const NameList& caps) {
+  const int near = near_cap_of(solid, leaned, neutral, pull);
+  if (near < 0) {
+    return nullptr;
+  }
+  const TopoDS_Face& cap = solid.face(near);
+  const TopoDS_Wire outer = BRepTools::OuterWire(cap);
+  std::vector<TopoDS_Wire> holes;
+  for (TopExp_Explorer w(cap, TopAbs_WIRE); w.More(); w.Next()) {
+    if (!w.Current().IsSame(outer)) {
+      holes.push_back(TopoDS::Wire(w.Current()));
+    }
+  }
+  if (outer.IsNull() || holes.empty()) {
+    return nullptr;
+  }
+  double height = 0.0;
+  for (TopExp_Explorer v(solid.occt(), TopAbs_VERTEX); v.More(); v.Next()) {
+    const gp_Pnt p = BRep_Tool::Pnt(TopoDS::Vertex(v.Current()));
+    height = std::max(height, gp_Vec(neutral.Location(), p).Dot(gp_Vec(pull)));
+  }
+  if (!(height > Precision::Confusion())) {
+    return nullptr;
+  }
+  // The names of the side face each edge of the cap sweeps, and of the caps.
+  NCollection_IndexedDataMap<TopoDS_Shape, NCollection_List<TopoDS_Shape>, TopTools_ShapeMapHasher>
+      faces_of;
+  TopExp::MapShapesAndAncestors(solid.occt(), TopAbs_EDGE, TopAbs_FACE, faces_of);
+  const auto names_of = [&solid](const TopoDS_Shape& face) {
+    const int index = solid.face_index(face);
+    return index >= 0 ? solid.face_names(index) : NameList{};
+  };
+  NameList near_names = solid.face_names(near);
+  NameList far_names;
+  for (int i = 0; i < solid.face_count(); ++i) {
+    if (i != near && !leaned[static_cast<std::size_t>(i)]) {
+      const NameList& names = solid.face_names(i);
+      far_names.insert(far_names.end(), names.begin(), names.end());
+    }
+  }
+  const gp_Pln plane = BRepAdaptor_Surface(cap).Plane();
+  // The prism of one loop as a region of its own, its sides named as the
+  // solid's.
+  const auto prism_of = [&](const TopoDS_Wire& loop) {
+    TopoDS_Wire wire = loop;
+    BRepBuilderAPI_MakeFace made(plane, wire, true);
+    if (!made.IsDone()) {
+      throw std::runtime_error("a loop of the tapered profile does not bound a region");
+    }
+    TopoDS_Face face = made.Face();
+    if (BRepTopAdaptor_FClass2d(face, Precision::Confusion()).PerformInfinitePoint() == TopAbs_IN) {
+      wire = TopoDS::Wire(loop.Reversed());
+      face = BRepBuilderAPI_MakeFace(plane, wire, true).Face();
+    }
+    BRepPrimAPI_MakePrism maker(face, gp_Vec(pull) * height);
+    maker.Build();
+    if (!maker.IsDone()) {
+      throw std::runtime_error("the extrusion of a profile failed");
+    }
+    FaceNamer namer(maker.Shape());
+    for (TopExp_Explorer e(wire, TopAbs_EDGE); e.More(); e.Next()) {
+      const int index = faces_of.FindIndex(e.Current());
+      if (index == 0) {
+        continue;
+      }
+      for (const TopoDS_Shape& side : faces_of.FindFromIndex(index)) {
+        if (side.IsSame(cap)) {
+          continue;
+        }
+        for (const std::string& name : names_of(side)) {
+          namer.generated(maker, e.Current(), name);
+        }
+      }
+    }
+    for (const std::string& name : near_names) {
+      namer.add(maker.FirstShape(), name);
+    }
+    for (const std::string& name : far_names) {
+      namer.add(maker.LastShape(), name);
+    }
+    return namer.shape();
+  };
+  const ShapePtr outline = tapered(*prism_of(outer), neutral, pull, angle, caps);
+  std::vector<ShapePtr> leaned_holes;
+  for (const TopoDS_Wire& hole : holes) {
+    leaned_holes.push_back(tapered(*prism_of(hole), neutral, pull, -angle, caps));
+  }
+  const ShapePtr result = with_holes(outline, leaned_holes, "the taper");
+  GProp_GProps volume;
+  BRepGProp::VolumeProperties(result->occt(), volume);
+  if (!(volume.Mass() > Precision::Confusion())) {
+    throw std::invalid_argument("the taper closes the profile at its start");
+  }
+  return result;
+}
+
 } // namespace
 
 ShapePtr tapered(const Shape& solid, const gp_Pln& neutral, const gp_Dir& pull, double angle,
@@ -891,6 +1025,38 @@ ShapePtr tapered(const Shape& solid, const gp_Pln& neutral, const gp_Dir& pull, 
           return std::find(names.begin(), names.end(), name) != names.end();
         });
   }
+  // A profile with holes: the draft, else (where it fails, or its walls
+  // cross) the outline's taper less the holes'.
+  const int near = near_cap_of(solid, leaned, neutral, pull);
+  int loops = 0;
+  if (near >= 0) {
+    for (TopExp_Explorer w(solid.face(near), TopAbs_WIRE); w.More(); w.Next()) {
+      ++loops;
+    }
+  }
+  if (loops < 2) {
+    return tapered_draft(solid, leaned, neutral, pull, angle);
+  }
+  try {
+    ShapePtr drafted = tapered_draft(solid, leaned, neutral, pull, angle);
+    if (!drafted->occt().IsNull() && is_valid(drafted->occt())) {
+      return drafted;
+    }
+  } catch (const Cancelled&) {
+    throw;
+  } catch (const std::invalid_argument&) {
+  } catch (const std::runtime_error&) {
+  }
+  if (ShapePtr holed = holed_taper(solid, leaned, neutral, pull, angle, caps)) {
+    return holed;
+  }
+  throw std::runtime_error("the taper failed; the angle may close the profile");
+}
+
+namespace {
+
+ShapePtr tapered_draft(const Shape& solid, const std::vector<bool>& leaned, const gp_Pln& neutral,
+                       const gp_Dir& pull, double angle) {
   if (ShapePtr closed = closing_cone(solid, leaned, neutral, pull, angle)) {
     return closed;
   }
@@ -926,6 +1092,8 @@ ShapePtr tapered(const Shape& solid, const gp_Pln& neutral, const gp_Dir& pull, 
   }
   return namer.shape();
 }
+
+} // namespace
 
 std::vector<TopoDS_Face> target_faces(const Target& target) {
   if (!target.body) {

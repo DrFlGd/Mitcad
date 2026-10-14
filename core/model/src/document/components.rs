@@ -262,7 +262,10 @@ impl<K: Kernel> Document<K> {
     }
 
     /// Makes an empty component placed in the active component, and
-    /// activates it when asked (New Component).
+    /// activates it when asked (New Component). While policy checks are on,
+    /// an active component whose policy takes no components has it placed
+    /// in the nearest owner above that does (mitcad#292,
+    /// `Document::component_parent_beside`).
     pub fn create_component(
         &mut self,
         name: Option<&str>,
@@ -282,8 +285,14 @@ impl<K: Kernel> Document<K> {
         policy: crate::policy::Policy,
     ) -> Result<(ComponentUid, OccurrenceUid), ModelError> {
         check_transform(&transform)?;
-        let parent = self.state.assembly.active;
-        self.state.editable(parent)?;
+        let active = self.state.assembly.active;
+        self.state.editable(active)?;
+        // An active component that takes no components: beside it, where
+        // it shows (mitcad#292).
+        let (parent, transform) = match self.component_parent_beside(active) {
+            Some((parent, placement)) => (parent, placement.after(&transform)),
+            None => (active, transform),
+        };
         self.apply(|state| {
             let name = match name {
                 Some(name) => {
@@ -611,11 +620,20 @@ impl<K: Kernel> Document<K> {
         })
     }
 
-    pub fn rename_component(&mut self, uid: ComponentUid, name: &str) -> Result<(), ModelError> {
+    /// Renames a component. A component (not the root) whose only body
+    /// still has a default name (`Body<n>`) gives the body its new name too,
+    /// unless another body has that name (mitcad#291): one undo step.
+    /// Returns the body renamed with it.
+    pub fn rename_component(
+        &mut self,
+        uid: ComponentUid,
+        name: &str,
+    ) -> Result<Option<BodyUid>, ModelError> {
         self.state.require_component(uid)?;
         if self.state.assembly.name(uid) == name {
-            return Ok(());
+            return Ok(None);
         }
+        let body = self.body_renamed_with(uid, name);
         self.apply_with(|state| {
             state.check_component_name(name, uid)?;
             let label = format!("Rename {} to {name}", state.assembly.name(uid));
@@ -624,8 +642,27 @@ impl<K: Kernel> Document<K> {
             } else if let Some(c) = state.assembly.component_mut(uid) {
                 c.name = name.to_owned();
             }
-            Ok((label, (), false))
+            if let Some(body) = body {
+                state.body_names.insert(body, name.to_owned());
+            }
+            Ok((label, body, false))
         })
+    }
+
+    /// The body that a component's rename to `name` renames too: its only
+    /// body, while that has a default name and no other body is `name`.
+    fn body_renamed_with(&self, uid: ComponentUid, name: &str) -> Option<BodyUid> {
+        if uid.is_root() || name.trim().is_empty() {
+            return None;
+        }
+        let bodies = self.component_bodies(uid);
+        let [body] = bodies[..] else {
+            return None;
+        };
+        let names = super::display_names(&self.state, &self.result);
+        let default = names.get(&body).is_some_and(|n| is_default_body_name(n));
+        let taken = names.iter().any(|(other, n)| *other != body && n == name);
+        (default && !taken).then_some(body)
     }
 
     /// Grounds an occurrence (fixes it in place) or frees it.
@@ -1324,4 +1361,10 @@ fn digest(text: &str) -> String {
         hash = hash.wrapping_mul(0x0100_0000_01b3);
     }
     format!("{hash:016x}")
+}
+
+/// Whether a body name is a generated one, `Body<n>` (mitcad#291).
+fn is_default_body_name(name: &str) -> bool {
+    name.strip_prefix("Body")
+        .is_some_and(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()))
 }

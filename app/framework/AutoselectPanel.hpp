@@ -37,6 +37,9 @@ public:
   void setProfiles(const AutoselectProfiles& profiles);
   void setActive(bool active);
   bool available() const { return m_active && m_profiles.available(); }
+  // The Docked chrome (mitcad#251): `title` (a section title) over the
+  // buttons instead of the group box's frame and title. The panel takes it.
+  void setSectionTitle(QWidget* title);
 
 signals:
   void toggleRequested(const mitcad::Selection& candidates);
@@ -46,6 +49,7 @@ signals:
 protected:
   bool eventFilter(QObject* watched, QEvent* event) override;
   void hideEvent(QHideEvent* event) override;
+  void paintEvent(QPaintEvent* event) override;
 
 private:
   void clearPreview();
@@ -53,6 +57,7 @@ private:
   std::array<QPushButton*, 4> m_buttons;
   bool m_active = false;
   int m_preview = -1;
+  bool m_section = false; // setSectionTitle: no frame of its own
 };
 
 } // namespace mitcad

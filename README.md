@@ -10,8 +10,9 @@ Linux and macOS (Apple Silicon, macOS 14.4 or newer), licensed under the
 - **Visual workflow:** a tabbed toolbar, command panels with live preview
   and drag handles, a model browser, a timeline and command search.
 - **Support for multiple CAD formats:** FreeCAD and `.f3d` designs open
-  with their history, `.ipt` parts with their bodies; STEP, IGES, BRep,
-  STL, OBJ, DXF and 3MF import and export; USDZ export
+  with their history, `.ipt` parts with their bodies, IFC building models
+  with their storeys and elements; STEP, IGES, BRep, STL, OBJ, DXF and 3MF
+  import and export; USDZ export
   ([the table below](#support-for-multiple-cad-formats)).
 - **3D printing:** bodies straight to a slicer (Bambu Studio, OrcaSlicer,
   PrusaSlicer, UltiMaker Cura).
@@ -32,6 +33,7 @@ well. It is free to use, change and share under the MIT licence.
 | FreeCAD (`.FCStd`) | Open, Import | – | Features, sketches and parameters |
 | `.f3d`, `.f3z` | Open, Import | – | Features, sketches and parameters |
 | `.ipt` (parts) | Open, Import | – | Bodies only, for now |
+| IFC (`.ifc`, `.ifczip`) | Open, Import: storeys as components, elements as features, bodies and meshes | – | Swept solids and their cuts as features |
 | STEP (`.step`, `.stp`) | Bodies | Bodies (AP214 or AP242) | – |
 | IGES (`.iges`, `.igs`) | Bodies | Bodies | – |
 | BRep (`.brep`, `.brp`) | Bodies | Bodies | – |

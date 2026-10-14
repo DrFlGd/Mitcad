@@ -8,10 +8,12 @@ import json
 import os
 from pathlib import Path
 import queue
+import socket
 import subprocess
 import sys
 import tempfile
 import threading
+import time
 import unittest
 
 
@@ -25,6 +27,23 @@ BOX = {"cmd": "add_feature", "def": {
     "type": "box", "plane": {"type": "origin", "plane": "xy"},
     "corner": [0, 0], "length": 30, "width": 20, "height": 10,
     "operation": "new_body"}}
+
+
+def make_private(path, directory):
+    """Make a discovery path private as the app does (LocalEndpoint.cpp).
+
+    On Unix the owner-only mode bits; on Windows the owner set to this user
+    and a protected DACL granting only this user and SYSTEM, which mode bits
+    cannot express (WindowsEndpointSecurity.cpp checks the ACL).
+    """
+    if os.name != "nt":
+        path.chmod(0o700 if directory else 0o600)
+        return
+    user = subprocess.run(["whoami"], capture_output=True, text=True, check=True).stdout.strip()
+    inherit = "(OI)(CI)" if directory else ""
+    subprocess.run(["icacls", str(path), "/setowner", user], capture_output=True, check=True)
+    subprocess.run(["icacls", str(path), "/inheritance:r", "/grant:r", f"{user}:{inherit}F",
+                    "/grant:r", f"*S-1-5-18:{inherit}F"], capture_output=True, check=True)
 
 
 class Session:
@@ -137,6 +156,55 @@ class McpTest(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory(prefix="session-", dir=WORK)
         self.addCleanup(self.temp.cleanup)
         self.workspace = Path(self.temp.name)
+
+    def test_connect_waits_for_busy_live_discovery(self):
+        discovery = self.workspace / "discovery"
+        discovery.mkdir(mode=0o700)
+        make_private(discovery, True)
+        instance, token = "1" * 32, "a" * 64
+        errors = []
+        accepted = []
+        with socket.socket() as listener:
+            listener.bind(("127.0.0.1", 0))
+            listener.listen()
+            listener.settimeout(3)
+            record = discovery / (instance + ".json")
+            record.write_text(json.dumps({"protocol": 1, "host": "127.0.0.1",
+                                         "port": listener.getsockname()[1], "pid": os.getpid(),
+                                         "instance": instance, "token": token}), encoding="utf-8")
+            make_private(record, False)
+
+            def serve():
+                try:
+                    for index in range(2):
+                        connection, _ = listener.accept()
+                        with connection:
+                            connection.settimeout(5)
+                            with connection.makefile("rb") as source:
+                                auth = json.loads(source.readline())
+                                if auth != {"mitcadAuth": token}:
+                                    raise AssertionError("Unexpected authentication frame")
+                                if index == 0:
+                                    # A live GUI can be busy longer than the listing probe's 500 ms.
+                                    time.sleep(0.8)
+                                connection.sendall(b'{"authenticated":true}\n')
+                                accepted.append(index)
+                                if index == 1:
+                                    source.read()
+                except Exception as error:
+                    errors.append(error)
+
+            server = threading.Thread(target=serve, daemon=True)
+            server.start()
+            env = dict(os.environ, MITCAD_MCP_DISCOVERY_DIR=str(discovery))
+            result = subprocess.run([CLI, "mcp", "--connect"], env=env, input=b"",
+                                    capture_output=True, timeout=TIMEOUT)
+            server.join(timeout=5)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertFalse(server.is_alive(), "Discovery server did not finish")
+        self.assertFalse(errors, errors)
+        self.assertEqual(accepted, [0, 1])
+        self.assertEqual(result.stdout, b"")
 
     def test_cli_arguments(self):
         for args in ([], ["--workspace"], ["--workspace", str(self.workspace / "missing")],

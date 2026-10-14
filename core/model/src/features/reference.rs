@@ -131,24 +131,35 @@ impl ExtentObject {
                         .map_err(|e| e.to_string())
                         .map(|n| n > 0)
                 };
+                let mut found = face.clone();
                 if !has(ctx, &shape)? {
-                    // A pattern's copy: the face as the original found it,
+                    // A face a sketch change renamed (mitcad#272), else a
+                    // pattern's copy: the face as the original found it,
                     // where the original itself took it away (a join up to
                     // the face of the body it joins).
-                    let before = match ctx.objects_before {
-                        Some(original) if !links.contains_key(body) => {
-                            ctx.body_before(original, *body)
+                    match super::renamed::find_face(ctx.kernel, &shape, face) {
+                        Ok(Some(renamed)) => {
+                            ctx.found_renamed("face", face, &renamed, face.feature);
+                            found = renamed;
                         }
-                        _ => None,
-                    };
-                    match before {
-                        Some(earlier) if has(ctx, &earlier)? => shape = earlier,
-                        _ => return Err(format!("body {body} has no face {face}")),
+                        Err(super::renamed::Lost::Ambiguous(message)) => return Err(message),
+                        _ => {
+                            let before = match ctx.objects_before {
+                                Some(original) if !links.contains_key(body) => {
+                                    ctx.body_before(original, *body)
+                                }
+                                _ => None,
+                            };
+                            match before {
+                                Some(earlier) if has(ctx, &earlier)? => shape = earlier,
+                                _ => return Err(format!("body {body} has no face {face}")),
+                            }
+                        }
                     }
                 }
                 Target::Face {
                     body: shape,
-                    face: face.clone(),
+                    face: found,
                     extend: !chained,
                 }
             }

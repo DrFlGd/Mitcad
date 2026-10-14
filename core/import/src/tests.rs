@@ -226,6 +226,15 @@ struct TestKernel {
     /// Whether solids without copies of a pattern all measure the same, so
     /// that only patterns tell extrusions of different regions apart.
     alike: bool,
+    /// Whether the kernel lists the faces a body has and others lack
+    /// (`Kernel::new_faces`): by their names without feature numbers, a
+    /// point each (see face_point), so that a skewed body lies on the
+    /// stored one (mitcad#283).
+    lists_new_faces: bool,
+    /// Whether the solids this kernel's fillets make come out 3e-4 larger
+    /// (as `skew` for extrusions): an approximation of the file's own kind
+    /// that the bodies after them carry (mitcad#283).
+    skew_fillets: bool,
     /// Runs in each kernel call of this name ("extrude_feature",
     /// "offset_faces", "mass_properties") before it is made: a call that
     /// blocks or takes long (mitcad#68, mitcad#69, mitcad#71, mitcad#82).
@@ -419,7 +428,11 @@ impl Kernel for TestKernel {
         sets: &[FilletSet<'_>],
         rolling: bool,
     ) -> Result<MockShape, KernelError> {
-        self.mock.fillet(feature, body, sets, rolling)
+        let mut shape = self.mock.fillet(feature, body, sets, rolling)?;
+        if self.skew_fillets {
+            shape.history.push('~');
+        }
+        Ok(shape)
     }
 
     fn chamfer(
@@ -709,6 +722,30 @@ impl Kernel for TestKernel {
             .collect())
     }
 
+    fn new_faces(
+        &self,
+        before: &[&MockShape],
+        after: &MockShape,
+        _count: usize,
+    ) -> Result<Vec<mitcad_model::NewFace>, KernelError> {
+        if !self.lists_new_faces {
+            return Err(KernelError::Unsupported("new faces"));
+        }
+        let had: BTreeSet<String> = before
+            .iter()
+            .flat_map(|s| s.faces.iter().map(|f| without_uids(&f.to_string())))
+            .collect();
+        Ok(after
+            .faces
+            .iter()
+            .filter(|f| !had.contains(&without_uids(&f.to_string())))
+            .map(|f| mitcad_model::NewFace {
+                area: 1.0,
+                points: vec![face_point(f)],
+            })
+            .collect())
+    }
+
     // Definitions evaluated ahead (mitcad#95): the same settings; not with
     // the hooks of a test that counts or blocks calls.
     fn fork(&self) -> Option<Self> {
@@ -722,6 +759,8 @@ impl Kernel for TestKernel {
             face_listing: self.face_listing,
             skew: self.skew,
             alike: self.alike,
+            lists_new_faces: self.lists_new_faces,
+            skew_fillets: self.skew_fillets,
             on_call: Default::default(),
             out_of_memory: Default::default(),
             slow: self.slow,
@@ -2532,6 +2571,8 @@ fn pattern_provenance_marks_only_omitted_dressup_inputs() {
         notes: Default::default(),
         suppressed: Default::default(),
         made_ahead: HashMap::new(),
+        exact_pairs: None,
+        waited: Default::default(),
         sources: None,
         linker: None,
         focus_paths: HashMap::new(),
@@ -3779,12 +3820,11 @@ fn extrusion_of(region: &str) -> Value {
            "extent": {"type": "distance", "distance": 10}, "operation": "new_body"})
 }
 
-#[test]
-fn an_approximate_extrusion_does_not_carry_its_difference() {
-    // Mitcad's extrusions come out 3e-4 larger than the file's (as regions
-    // next to the file's would): the closest one is kept, and a base
-    // feature brings the bodies to the file's state after it, so that the
-    // final bodies are the stored ones exactly.
+/// Extrude1 of [`SMALL`] imported on a kernel whose extrusions come out
+/// 3e-4 larger than the file's (as regions next to the file's would), which
+/// lists new faces with `lists_new_faces` (so it can tell that the larger
+/// body's faces lie on the file's within the geometric tolerance).
+fn approximate_extrusion(lists_new_faces: bool) -> (DesignReport, Document<TestKernel>) {
     let items = vec![
         two_rectangles(0),
         extrude(1, 0, "NewBodyFeatureOperation", "d2"),
@@ -3797,6 +3837,7 @@ fn an_approximate_extrusion_does_not_carry_its_difference() {
     };
     let mut doc = Document::new(TestKernel {
         skew: true,
+        lists_new_faces,
         ..TestKernel::default()
     });
     let report = import_design(
@@ -3805,6 +3846,47 @@ fn an_approximate_extrusion_does_not_carry_its_difference() {
         &mut geometry,
         &Options::default(),
     );
+    (report, doc)
+}
+
+#[test]
+fn an_approximate_extrusion_keeps_its_body_within_the_tolerance() {
+    // The closest extrusion is kept. Its body's faces lie on the file's
+    // within the geometric tolerance: it was imported correctly and stays
+    // (mitcad#285), no base feature replaces it.
+    let (report, doc) = approximate_extrusion(true);
+    let text = report.text();
+    assert_eq!(report.items[1].outcome, Outcome::Parametric, "{text}");
+    assert_eq!(report.items[1].verified, Some(true));
+    assert!(
+        !doc.features().any(|f| matches!(f.def, FeatureDef::Base(_))),
+        "{text}"
+    );
+    assert!(
+        !report
+            .warnings
+            .iter()
+            .any(|w| w.contains("brings the bodies")),
+        "{text}"
+    );
+    assert_eq!(report.bodies.len(), 1);
+    assert!(
+        report.bodies[0]
+            .mitcad
+            .as_deref()
+            .is_some_and(|m| m.starts_with("F2.b0")),
+        "{text}"
+    );
+}
+
+#[test]
+fn an_approximate_extrusion_does_not_carry_its_difference() {
+    // Where the kernel cannot tell the extrusion's faces to lie on the
+    // file's, its body differs: a base feature brings that body to the
+    // file's state after it, so that the final bodies are the stored ones
+    // exactly. (Before mitcad#285 this happened to a body within the
+    // tolerance too, as above.)
+    let (report, doc) = approximate_extrusion(false);
     assert_eq!(
         report.items[1].outcome,
         Outcome::Parametric,
@@ -3828,7 +3910,7 @@ fn an_approximate_extrusion_does_not_carry_its_difference() {
         report
             .warnings
             .iter()
-            .any(|w| w.contains("brings the bodies to the file's state after Extrude1")),
+            .any(|w| w.contains("brings the bodies that differ to the file's state after Extrude1")),
         "{}",
         report.text()
     );
@@ -5793,6 +5875,49 @@ fn a_definition_cut_short_for_lack_of_memory_falls_back_and_the_import_goes_on()
 }
 
 #[test]
+fn the_failed_operation_names_a_failed_allocation_the_guard_saw_first() {
+    // The memory guard polls on its own thread: it can count a failed
+    // allocation before the operation that failed reports it. The report
+    // tells the operation's words, once, and not those of a later low;
+    // also when the guard saw the memory recover meanwhile (a failed
+    // allocation leaves the memory as it was).
+    let progress = crate::Progress::new();
+    progress.low_memory_unattributed("an allocation in the geometry kernel failed (test)");
+    progress.low_memory("building a body of the file: out of memory (test)");
+    progress.low_memory("extrude: out of memory (test)");
+    assert_eq!(progress.memory_lows(), 1);
+    let (memory, _) = progress.first_low_memory().expect("low");
+    assert_eq!(memory, "building a body of the file: out of memory (test)");
+    let progress = crate::Progress::new();
+    progress.low_memory_unattributed("an allocation in the geometry kernel failed (test)");
+    progress.memory_recovered();
+    progress.low_memory("extrude: out of memory (test)");
+    assert!(progress.is_memory_low());
+    let (memory, _) = progress.first_low_memory().expect("low");
+    assert_eq!(memory, "extrude: out of memory (test)");
+    // A first low the memory guard measured is not renamed.
+    let progress = crate::Progress::new();
+    progress.low_memory("9.9 GiB of 10.0 GiB (test)");
+    progress.low_memory("extrude: out of memory (test)");
+    progress.name_failed_allocation("fillet: out of memory (test)");
+    let (memory, _) = progress.first_low_memory().expect("low");
+    assert_eq!(memory, "9.9 GiB of 10.0 GiB (test)");
+    // A worker's operation names the failure, before or after the guard
+    // counted it, without making the import low on memory itself.
+    let progress = crate::Progress::new();
+    progress.name_failed_allocation("extrude: out of memory (test)");
+    assert!(!progress.is_memory_low());
+    progress.low_memory_unattributed("an allocation in the geometry kernel failed (test)");
+    let (memory, _) = progress.first_low_memory().expect("low");
+    assert_eq!(memory, "extrude: out of memory (test)");
+    let progress = crate::Progress::new();
+    progress.low_memory_unattributed("an allocation in the geometry kernel failed (test)");
+    progress.name_failed_allocation("extrude: out of memory (test)");
+    let (memory, _) = progress.first_low_memory().expect("low");
+    assert_eq!(memory, "extrude: out of memory (test)");
+}
+
+#[test]
 fn the_next_item_waits_for_the_memory_guard_to_see_the_memory_recover() {
     // The memory guard measures the process every so often: it sees the
     // memory recover after the definition cut short only a little later,
@@ -6384,6 +6509,9 @@ mod suppressed_tests;
 
 // Components of other documents filled from their documents (mitcad#196).
 mod reference_tests;
+
+// Retries on the file's exact state keep the matching bodies (mitcad#283).
+mod retry_tests;
 
 /// The learning dump (mitcad#96): the item the history settled is written
 /// with its candidates and answer in the file's terms.
@@ -6992,6 +7120,8 @@ fn a_split_in_two_operations_made_the_new_bodies_of_both() {
         notes: Default::default(),
         suppressed: Default::default(),
         made_ahead: HashMap::new(),
+        exact_pairs: None,
+        waited: Default::default(),
         sources: None,
         linker: None,
         focus_paths: HashMap::new(),
@@ -7100,6 +7230,8 @@ fn named_participants_alone_when_the_history_changed_only_them() {
             notes: Default::default(),
             suppressed: Default::default(),
             made_ahead: HashMap::new(),
+            exact_pairs: None,
+            waited: Default::default(),
             sources: None,
             linker: None,
             focus_paths: HashMap::new(),
@@ -7535,82 +7667,6 @@ fn items_that_make_components_together_each_take_one() {
 }
 
 #[test]
-fn a_fillet_that_fails_on_the_replay_is_tried_on_the_stored_state_before_it() {
-    // The replay's bodies are the state before the fillet within the
-    // tolerance, but the fillet does not build on them (its edge is the
-    // stored state's: the replay's edges are split otherwise, as the
-    // geometry kernel's rounding can fail on one and build on the other).
-    // It is tried again on the stored state before it, and gives its own
-    // state there.
-    use mitcad_model::FilletSize;
-    let mut items = vec![
-        rectangle_sketch(0),
-        extrude(1, 0, "NewBodyFeatureOperation", "d2"),
-    ];
-    let kernel = TestKernel {
-        edge_points: true,
-        ..TestKernel::default()
-    };
-    let mut reference = Document::new(TestKernel::default());
-    import_design(
-        &mut reference,
-        &timeline_dump(items.clone()),
-        &mut NoGeometry,
-        &Options::default(),
-    );
-    let block = shapes(&reference);
-    // The stored state's block as a base feature has it, and its fillet.
-    let data = kernel.brep_data(&block[0]).unwrap();
-    let (stored, _) = kernel.import_brep(FeatureUid(9), &data, 0).unwrap();
-    let edge = EdgeName::new(stored.faces[0].clone(), stored.faces[1].clone());
-    let set = FilletSet {
-        edges: std::slice::from_ref(&edge),
-        faces: &[],
-        size: FilletSize::Constant { radius: 2.0 },
-        tangent_chain: true,
-        curvature: false,
-        weight: 0.0,
-    };
-    let filleted = kernel
-        .fillet(FeatureUid(10), &stored, &[set], true)
-        .unwrap();
-    let p = edge_point(&stored.faces[0], &stored.faces[1]);
-    items.push(
-        json!({"index": 2, "name": "Fillet1", "objectType": "FilletFeature",
-        "detail": {"edgeSets": [{"radius": param("d5", "2 mm", 0.2, "mm"), "edges": [{
-            "kind": "edge", "length": 0.1, "mid_point": p.map(|x| x / 10.0)
-        }]}]}}),
-    );
-    let mut geometry = TestGeometry {
-        states: vec![Vec::new(), block, vec![filleted]],
-        items: HashMap::from([(1, 1), (2, 2)]),
-        ..TestGeometry::default()
-    };
-    let mut doc = Document::new(kernel);
-    let report = import_design(
-        &mut doc,
-        &timeline_dump(items),
-        &mut geometry,
-        &Options::default(),
-    );
-    assert_eq!(
-        report.items[2].outcome,
-        Outcome::Parametric,
-        "{}",
-        report.text()
-    );
-    assert_eq!(report.items[2].verified, Some(true), "{}", report.text());
-    assert!(
-        report
-            .warnings
-            .iter()
-            .any(|w| w.contains("to the file's state before Fillet1")),
-        "{}",
-        report.text()
-    );
-}
-
-#[test]
 fn a_fillet_with_edge_references_the_file_lost_says_so() {
     // The file names an edge that is not in the model where the fillet was
     // made (no edge lies between the faces it names): the application that
@@ -7732,6 +7788,49 @@ fn in_order_passes_a_panic_on() {
         );
     });
     assert!(caught.is_err());
+}
+
+#[test]
+fn in_order_shares_its_threads_with_work_beside_it() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    let share = crate::Share::new(4);
+    let a = share.take(1).expect("four left");
+    let b = share.take(1).expect("three left");
+    let c = share.take(1).expect("two left");
+    assert!(share.take(1).is_none(), "the workers keep one");
+    drop(c);
+    assert_eq!(share.left(), 2);
+    // Two threads taken: at most two workers at once, until one is given
+    // back half way.
+    let (running, most, done) = (
+        AtomicUsize::new(0),
+        AtomicUsize::new(0),
+        AtomicUsize::new(0),
+    );
+    let given = std::sync::Mutex::new(Some(a));
+    let mut seen = Vec::new();
+    crate::in_order_sharing(
+        40,
+        4,
+        Some(&share),
+        |k| {
+            let now = running.fetch_add(1, Ordering::SeqCst) + 1;
+            if done.load(Ordering::SeqCst) < 20 {
+                most.fetch_max(now, Ordering::SeqCst);
+            }
+            std::thread::sleep(std::time::Duration::from_millis(2));
+            running.fetch_sub(1, Ordering::SeqCst);
+            if done.fetch_add(1, Ordering::SeqCst) + 1 == 20 {
+                given.lock().unwrap().take();
+            }
+            k * 2
+        },
+        |k, twice| seen.push((k, twice)),
+    );
+    assert!(most.load(Ordering::SeqCst) <= 2, "{most:?}");
+    assert_eq!(seen, (0..40).map(|k| (k, k * 2)).collect::<Vec<_>>());
+    drop(b);
+    assert_eq!(share.left(), 4);
 }
 
 #[test]
@@ -9103,4 +9202,277 @@ fn the_files_base_feature_is_its_stored_bodies() {
     let uid: FeatureUid = item.features[0].parse().unwrap();
     assert_eq!(doc.feature(uid).unwrap().def.type_name(), "base");
     assert_eq!(doc.import_note(uid), None, "{}", report.text());
+}
+
+// Appearances and materials (mitcad#228).
+
+/// The stored bodies as the file's blob holds them: `BREP.test.smbh#7`,
+/// `#8`, ... (the decoder's body map names them so).
+struct BlobGeometry(TestGeometry);
+
+impl StoredGeometry<MockShape> for BlobGeometry {
+    fn state_count(&mut self) -> usize {
+        self.0.state_count()
+    }
+
+    fn state(&mut self, index: usize) -> Result<Vec<StoredBody<MockShape>>, String> {
+        Ok(self
+            .0
+            .state(index)?
+            .into_iter()
+            .enumerate()
+            .map(|(k, mut b)| {
+                b.source = format!("BREP.test.smbh#{}", 7 + k);
+                b
+            })
+            .collect())
+    }
+
+    fn item_state(&mut self, index: i64) -> Option<usize> {
+        self.0.item_state(index)
+    }
+
+    fn final_bodies(&mut self) -> Result<Vec<StoredBody<MockShape>>, String> {
+        let last = self.0.state_count() - 1;
+        self.state(last)
+    }
+}
+
+/// The decoder's appearance data of one body: a red paint, the steel
+/// material, and one face (`point`, cm) in the steel's satin look.
+fn appearance_data(point: [f64; 3]) -> Value {
+    let paint = "23303B60-6683-46D0-BC5B-B92F9F3CA4E8_Post2015";
+    let satin = "703A8DBC-1CFC-4F45-A969-681245623F44_Post2015";
+    json!({
+        "assets": [
+            {"id": paint, "schema": "PrismOpaqueSchema", "name": "Prism-093",
+             "ui_name": "Prism-093", "description": "Paint - enamel red glossy",
+             "properties": {"opaque_albedo": [0.7674, 0.206, 0.1517, 1.0],
+                            "opaque_albedo_colorspace": 1, "opaque_f0": 0.06027025,
+                            "surface_roughness": 0.0775, "opaque_translucency": false}},
+            {"id": satin, "schema": "PrismMetalSchema",
+             "name": "PrismMaterial-018_physmat_aspects:Prism-256", "ui_name": "Prism-256",
+             "description": "Steel - satin",
+             "properties": {"metal_f0": [0.6262, 0.6262, 0.6262, 1.0],
+                            "surface_roughness": 0.2646}},
+            {"id": "4177D984-5662-4715-B8AF-E5D65A04EDEE", "schema": "PhysMatSchema",
+             "name": "PrismMaterial-018", "description": "Steel, mill finish",
+             "properties": {"physmat_classification": "Metal.Ferrous.Carbon Steel"},
+             "connections": {"physmat_aspects": ["F3981BFD-5548-497A-A042-21FC315C9862"]}},
+            {"id": "F3981BFD-5548-497A-A042-21FC315C9862", "schema": "StructuralMetalSchema",
+             "name": "PhysicalMetal_124",
+             "properties": {"structural_Density": {"unit": 69633, "value": 7850.0}}}
+        ],
+        "bodies": [{
+            "entity": 300, "name": "Block", "blob": "BREP.test.smbh", "selector": 0,
+            "record": 7,
+            "appearance": {"token": "23303B60-6683-46D0-BC5B-B92F9F3CA4E8", "asset": paint,
+                           "preset": "Prism-093"},
+            "material": {"token": "4177D984-5662-4715-B8AF-E5D65A04EDEE",
+                         "asset": "4177D984-5662-4715-B8AF-E5D65A04EDEE",
+                         "preset": "PrismMaterial-018"},
+            "faces": [{"guid": "0438b4bf-d97c-4f0d-9ef2-713f87b07603",
+                       "appearance": {"asset": satin},
+                       "faces": [{"point_on_face": point}]}]
+        }]
+    })
+}
+
+/// The file's appearances and material come in on the replay's body
+/// (matched with the stored body the body map names) and on its face
+/// (found through the stored face's point); each asset makes one document
+/// appearance with the asset's parameters on Mitcad's set.
+#[test]
+fn appearances_and_materials_come_in_on_bodies_and_faces() {
+    let (items, geometry) = block_history(Vec::new());
+    let kernel = || TestKernel {
+        face_listing: true,
+        ..TestKernel::default()
+    };
+    // A face of the block, as the stored design has it.
+    let mut reference = Document::new(kernel());
+    let mut g = BlobGeometry(block_history(Vec::new()).1);
+    import_design(
+        &mut reference,
+        &timeline_dump(items.clone()),
+        &mut g,
+        &Options::default(),
+    );
+    let body = reference.bodies()[0].shape.clone();
+    let face = body.faces[0].clone();
+    let point = face_point(&face).map(|x| x / 10.0);
+
+    let mut source = serde_json::to_value(timeline_dump(items)).unwrap();
+    source["_f3d"] = json!({"appearance": appearance_data(point)});
+    let mut doc = Document::new(kernel());
+    let mut geometry = BlobGeometry(geometry);
+    let report = import_design(&mut doc, &dump(source), &mut geometry, &Options::default());
+    let a = &report.appearances;
+    assert_eq!((a.bodies_set, a.bodies), (1, 1), "{}", report.text());
+    assert_eq!((a.faces_set, a.faces), (1, 1), "{}", report.text());
+    assert_eq!((a.materials_set, a.materials), (1, 1), "{}", report.text());
+    assert!(a.gaps.is_empty(), "{:?}", a.gaps);
+    assert_eq!(a.physical_materials[0].density, Some(7850.0));
+    assert!(report.text().contains("appearances: bodies 1/1, faces 1/1"));
+
+    let uid = doc.bodies()[0].uid;
+    let attributes = doc.body_attributes(uid);
+    assert_eq!(attributes.material.as_deref(), Some("steel"));
+    let id = attributes.appearance.clone().unwrap();
+    assert_eq!(id, "f3d_paint_enamel_red_glossy");
+    let red = doc.appearance(&id).unwrap();
+    assert_eq!(red.name, "Paint - enamel red glossy");
+    assert_eq!(red.base_color, [0.7674, 0.206, 0.1517]);
+    assert_eq!(red.metalness, 0.0);
+    assert!((red.ior - 1.6506).abs() < 1e-3, "{}", red.ior);
+    assert!((red.roughness - 0.0775).abs() < 1e-12);
+    // The face, and the faces the test kernel takes for pieces of it (its
+    // faces all have one normal).
+    let faces = &attributes.face_appearances;
+    assert_eq!(
+        faces.get(&face.to_string()).map(String::as_str),
+        Some("f3d_steel_satin")
+    );
+    assert!(faces.values().all(|a| a == "f3d_steel_satin"));
+    let satin = doc.appearance("f3d_steel_satin").unwrap();
+    assert_eq!(satin.metalness, 1.0);
+    assert_eq!(satin.base_color, [0.6262; 3]);
+    assert_eq!(doc.custom_appearances().len(), 2);
+}
+
+/// A dimension the file keeps driven, whose parameter the file has (`d4`):
+/// that parameter becomes the dimension's reference (mitcad#250), owned by
+/// the sketch with the value the sketch measures, instead of a user
+/// parameter beside a reference of the dimension's own; `half` = `d4 / 2`
+/// follows it.
+#[test]
+fn a_driven_dimensions_parameter_of_the_file_is_its_reference() {
+    use mitcad_model::expr::ParamKind;
+    let mut sketch = rectangle_sketch(0);
+    sketch["detail"]["dimensions"].as_array_mut().unwrap().push(
+        json!({"id": "d1", "type": "SketchLinearDimension", "isDriving": false,
+                     "parameter": param("d4", "20 mm", 2.0, "mm"),
+                     "props": {"orientation": "VerticalDimensionOrientation"},
+                     "refs": {"entities": ["p1", "p2"]}, "textPosition": [5.0, 1.0, 0.0]}),
+    );
+    let source = dump(json!({
+        "schema": "mitcad-f3d-dump", "schema_version": 2,
+        "source": {"mode": "f3d_stream", "file": "driven.f3d"},
+        "parameters": {
+            "user": [{"name": "half", "expression": "d4 / 2", "value": 1.0, "unit": "mm"}],
+            "model": [
+                {"name": "d1", "expression": "40 mm", "value": 4.0, "unit": "mm",
+                 "createdBy": {"kind": "sketch_dimension", "sketch": "Sketch1",
+                               "sketch_timeline_index": 0, "id": "d0"}},
+                {"name": "d4", "expression": "20 mm", "value": 2.0, "unit": "mm",
+                 "createdBy": {"kind": "sketch_dimension", "sketch": "Sketch1",
+                               "sketch_timeline_index": 0, "id": "d1"}}
+            ]
+        },
+        "timeline": {"items": [sketch]}
+    }));
+    let mut doc = Document::new(MockKernel::default());
+    let report = import(&mut doc, &source);
+    assert!(
+        report.parameters.mismatched.is_empty(),
+        "{:?}",
+        report.parameters
+    );
+    let def = doc.query(r#"{"query": "feature", "uid": "F1"}"#).unwrap();
+    let def: Value = serde_json::from_str(&def).unwrap();
+    let driven: Vec<&Value> = def["def"]["dimensions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|d| d["driven"] == true)
+        .collect();
+    assert_eq!(driven.len(), 1, "{def}\n{}", report.text());
+    assert_eq!(driven[0]["reference"], "d4", "{def}");
+    let params = doc.parameters();
+    let d4 = params.find("d4").unwrap();
+    assert_eq!(params.get(d4).unwrap().kind(), ParamKind::Reference);
+    assert_eq!(params.owner(d4), Some(FeatureUid(1)));
+    assert!((params.value(d4).unwrap() - 20.0).abs() < 1e-9);
+    let half = params.find("half").unwrap();
+    assert!((params.value(half).unwrap() - 10.0).abs() < 1e-9);
+    let references = params
+        .iter()
+        .filter(|p| p.kind() == ParamKind::Reference)
+        .count();
+    assert_eq!(references, 1);
+    // The driving width's parameter is the sketch's model parameter.
+    assert_eq!(
+        params.get(params.find("d1").unwrap()).unwrap().kind(),
+        ParamKind::Model
+    );
+}
+
+/// A sketch definition without its driven dimensions' references, as an
+/// import falls back on when the model refuses one (mitcad#250).
+#[test]
+fn sketch_definitions_lose_their_references_for_the_fallback() {
+    let def = json!({"type": "sketch", "dimensions": [
+        {"id": "k1", "type": "length", "line": "c1", "value": "d1"},
+        {"id": "k2", "type": "length", "line": "c2", "driven": true, "reference": "d4"}]});
+    assert!(crate::sketch::has_references(&def));
+    let plain = crate::sketch::without_references(&def);
+    assert!(!crate::sketch::has_references(&plain));
+    assert_eq!(plain["dimensions"][1]["driven"], true);
+    assert_eq!(plain["dimensions"][0]["value"], "d1");
+}
+
+/// Angle dimensions take their side from the file (mitcad#296): the sector
+/// of the lines' extensions their value is shown in, when its angle is the
+/// file's value, else the neighbouring sector nearer to the text.
+#[test]
+fn an_angle_dimensions_side_comes_from_the_file() {
+    // A trapezoid's corner: the bottom c0 from the corner to the right, the
+    // side c1 from up right down to the corner; inside, 63.43 degrees.
+    let p = |id: &str, x: f64, y: f64| json!({"id": id, "xyz": [x, y, 0.0]});
+    let line = |id: &str, a: &str, b: &str| json!({"id": id, "type": "SketchLine", "startSketchPoint": a, "endSketchPoint": b});
+    let inner = 2.0f64.atan();
+    let angle = |id: &str, value: f64, text: [f64; 2]| {
+        json!({"id": id, "type": "SketchAngularDimension", "isDriving": false,
+               "parameter": param(id, "", value, "deg"),
+               "refs": {"lineOne": "c0", "lineTwo": "c1"}, "textPosition": [text[0], text[1], 0.0]})
+    };
+    let sketch = json!({
+        "index": 0, "name": "Sketch1", "objectType": "Sketch",
+        "detail": {
+            "referencePlane": {"kind": "construction_plane", "name": "XY", "origin": "XY"},
+            "model_frame": {"sketch_to_model": [[1.0, 0.0, 0.0, 0.0], [0.0, 1.0, 0.0, 0.0],
+                                                [0.0, 0.0, 1.0, 0.0], [0.0, 0.0, 0.0, 1.0]]},
+            "points": [p("p0", 0.0, 0.0), p("p1", 4.0, 0.0), p("p2", 1.0, 2.0)],
+            "curves": [line("c0", "p0", "p1"), line("c1", "p2", "p0")],
+            "dimensions": [
+                // Inside the corner.
+                angle("d0", inner, [0.6, 0.6]),
+                // Between the bottom's extension and the side.
+                angle("d1", std::f64::consts::PI - inner, [-0.2, 0.6]),
+                // The supplement shown inside, near the bottom: the sector
+                // below the bottom.
+                angle("d2", std::f64::consts::PI - inner, [0.6, 0.3]),
+                // A value neither angle has: no side.
+                angle("d3", 0.5, [0.6, 0.6])
+            ]
+        }
+    });
+    let source = dump(json!({
+        "schema": "mitcad-f3d-dump", "schema_version": 2,
+        "source": {"mode": "f3d_stream", "file": "angles.f3d"},
+        "parameters": {"user": [], "model": []},
+        "timeline": {"items": [sketch]}
+    }));
+    let mut doc = Document::new(MockKernel::default());
+    let report = import(&mut doc, &source);
+    let def = doc.query(r#"{"query": "feature", "uid": "F1"}"#).unwrap();
+    let def: Value = serde_json::from_str(&def).unwrap();
+    let dimensions = def["def"]["dimensions"].as_array().unwrap();
+    assert_eq!(dimensions.len(), 4, "{def}\n{}", report.text());
+    let side = |d: &Value| (d.get("reverse_a").cloned(), d.get("reverse_b").cloned());
+    let given = |a: bool, b: bool| (Some(json!(a)), Some(json!(b)));
+    assert_eq!(side(&dimensions[0]), given(false, true), "{def}");
+    assert_eq!(side(&dimensions[1]), given(true, true), "{def}");
+    assert_eq!(side(&dimensions[2]), given(false, false), "{def}");
+    assert_eq!(side(&dimensions[3]), (None, None), "{def}");
 }

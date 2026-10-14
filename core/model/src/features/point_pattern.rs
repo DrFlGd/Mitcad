@@ -285,6 +285,9 @@ impl<K: Kernel> Resolver for PointResolver<'_, '_, K> {
     fn sketch(&mut self, uid: FeatureUid) -> Result<Arc<SketchOutput>, String> {
         self.ctx.sketch(uid)
     }
+    fn renamed(&mut self, what: &str, stored: &str, found: &str, maker: FeatureUid) {
+        self.ctx.found_renamed(what, &stored, &found, maker);
+    }
 }
 
 fn point<K: Kernel>(

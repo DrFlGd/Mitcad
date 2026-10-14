@@ -11,15 +11,18 @@
 #include <vector>
 
 #include <BRepAdaptor_Curve.hxx>
+#include <BRepAdaptor_Surface.hxx>
 #include <BRepAlgoAPI_Common.hxx>
 #include <BRepAlgoAPI_Cut.hxx>
 #include <BRepAlgoAPI_Fuse.hxx>
 #include <BRepBuilderAPI_MakeEdge.hxx>
 #include <BRepBuilderAPI_MakeFace.hxx>
 #include <BRepBuilderAPI_MakePolygon.hxx>
+#include <BRepBuilderAPI_MakeVertex.hxx>
 #include <BRepBuilderAPI_MakeWire.hxx>
 #include <BRepBuilderAPI_Transform.hxx>
 #include <BRepCheck_Analyzer.hxx>
+#include <BRepExtrema_DistShapeShape.hxx>
 #include <BRepFilletAPI_MakeChamfer.hxx>
 #include <BRepFilletAPI_MakeFillet.hxx>
 #include <BRepGProp.hxx>
@@ -1300,9 +1303,10 @@ void test_chamfer_round_a_ring_past_the_side_is_cut_by_it() {
   const TopoDS_Shape side = BRepPrimAPI_MakeBox(gp_Pnt(0, -10, -10), gp_Pnt(100, 10, 110)).Shape();
   CHECK_NEAR_TOL(volume_of(chamfered), volume_of(body) + volume_of(BRepAlgoAPI_Common(frustum, side).Shape()),
                  1e-9);
-  // The ring's side gone, the chamfer in three pieces: two beside the
-  // block's side and one it cuts.
-  CHECK(faces_of(chamfered) == faces_of(body) + 2);
+  // The ring's side gone, the chamfer one face: its pieces beside the
+  // block's side and the one it cuts are one cone, joined across the
+  // closed spine's start (patch 0146; three faces before).
+  CHECK(faces_of(chamfered) == faces_of(body));
 }
 
 // An inside corner between a wall N (the side y = 0 of a plate 2 thick under
@@ -1365,6 +1369,200 @@ void test_corner_rounding_beside_a_rounded_top_edge_is_cut_by_the_top() {
   }
 }
 
+// A hole near a rounded edge whose rim is rounded more sharply than the
+// rounding: the contact on the face of the hole crosses the hole's mouth,
+// where the ball cannot touch the rim (it bends towards the ball more
+// sharply than the ball). The walked blend runs on over the mouth on the
+// face's own surface and the rim cuts it (mitcad#238). Exact check: the
+// rounding removes from the body what the ball's corner region holds.
+// The edge of a shape that passes nearest to p.
+TopoDS_Edge edge_through(const TopoDS_Shape& shape, const gp_Pnt& p) {
+  TopoDS_Edge best;
+  double nearest = 1e100;
+  for (TopExp_Explorer e(shape, TopAbs_EDGE); e.More(); e.Next()) {
+    const TopoDS_Edge& edge = TopoDS::Edge(e.Current());
+    if (BRep_Tool::Degenerated(edge)) {
+      continue;
+    }
+    BRepExtrema_DistShapeShape distance(BRepBuilderAPI_MakeVertex(p).Vertex(), edge);
+    if (distance.IsDone() && distance.Value() < nearest) {
+      nearest = distance.Value();
+      best = edge;
+    }
+  }
+  return best;
+}
+
+// OCCT's fillet of the edge through a point; the result, valid, or a null
+// shape.
+TopoDS_Shape occt_fillet_through(const TopoDS_Shape& shape, const gp_Pnt& on_edge, double radius) {
+  BRepFilletAPI_MakeFillet maker(shape);
+  maker.Add(radius, edge_through(shape, on_edge));
+  maker.Build();
+  if (!maker.IsDone() || !BRepCheck_Analyzer(maker.Shape()).IsValid()) {
+    return TopoDS_Shape();
+  }
+  return maker.Shape();
+}
+
+TopoDS_Shape rim_rounded_hole(const TopoDS_Shape& body, const gp_Ax2& axis, double bore, double rim, double depth) {
+  gp_Ax2 tool = axis;
+  tool.Translate(gp_Vec(axis.Direction()) * -1.0);
+  const TopoDS_Shape hole = BRepPrimAPI_MakeCylinder(tool, bore, depth + 2.0).Shape();
+  const TopoDS_Shape holed = BRepAlgoAPI_Cut(body, hole).Shape();
+  // (The rim: the hole's edge on the face its axis starts on.)
+  BRepFilletAPI_MakeFillet rounding(holed);
+  rounding.Add(rim, edge_through(holed, axis.Location().Translated(gp_Vec(axis.XDirection()) * bore)));
+  rounding.Build();
+  CHECK(rounding.IsDone());
+  return rounding.IsDone() ? rounding.Shape() : TopoDS_Shape();
+}
+
+void test_rounding_over_a_hole_with_a_rounded_rim_is_cut_by_the_rim() {
+  // A block's top front edge rounded with 3; a hole of radius 1.5 down
+  // from the top 4.6 behind the front, its rim rounded with 0.5: the mouth
+  // reaches 2.6 from the front, over the contact on the top (3), the bore
+  // (from 3.1) stays behind it. The analytic blend is split at the hole;
+  // the gap over it is walked. The rim's seam in front (the rim cuts the
+  // blend across it; its end under the blend goes) or behind the hole.
+  const TopoDS_Shape block = BRepPrimAPI_MakeBox(gp_Pnt(0, 0, 0), gp_Pnt(40, 20, 10)).Shape();
+  const TopoDS_Shape corner = BRepPrimAPI_MakeBox(gp_Pnt(-1, 0, 7), gp_Pnt(41, 3, 10)).Shape();
+  const TopoDS_Shape ball = BRepPrimAPI_MakeCylinder(gp_Ax2(gp_Pnt(-2, 3, 7), gp_Dir(1, 0, 0)), 3, 44).Shape();
+  const TopoDS_Shape region = BRepAlgoAPI_Cut(corner, ball).Shape();
+  for (const double seam : {-1.0, 1.0}) {
+    const TopoDS_Shape body =
+        rim_rounded_hole(block, gp_Ax2(gp_Pnt(20, 4.6, 10), gp_Dir(0, 0, -1), gp_Dir(0, seam, 0)), 1.5, 0.5, 10);
+    if (body.IsNull()) {
+      continue;
+    }
+    const TopoDS_Shape rounded = occt_fillet_through(body, gp_Pnt(5, 0, 10), 3.0);
+    CHECK(!rounded.IsNull());
+    if (rounded.IsNull()) {
+      continue;
+    }
+    CHECK_NEAR_TOL(volume_of(rounded), volume_of(BRepAlgoAPI_Cut(body, region).Shape()), 1e-6);
+  }
+}
+
+void test_closed_walked_rounding_over_a_hole_with_a_rounded_rim_is_cut_by_the_rim() {
+  // A disc of radius 17, 3 thick, its bottom edge rounded with 1 (its
+  // cylinder made a surface of revolution: the blend is walked round the
+  // closed edge). A hole of radius 0.9 through it, 15 from the axis, its
+  // bottom rim rounded with 0.5: the mouth reaches 16.4 from the axis, over
+  // the contact on the bottom (16), the bore (to 15.9) stays inside it.
+  const TopoDS_Shape disc = BRepPrimAPI_MakeCylinder(gp_Ax2(gp_Pnt(0, 0, 0), gp_Dir(0, 1, 0)), 17, 3).Shape();
+  const TopoDS_Shape holed =
+      rim_rounded_hole(disc, gp_Ax2(gp_Pnt(-15, 0, 0), gp_Dir(0, 1, 0), gp_Dir(-1, 0, 0)), 0.9, 0.5, 3);
+  if (holed.IsNull()) {
+    return;
+  }
+  const TopoDS_Shape body = ShapeCustom::ConvertToRevolution(holed);
+  const TopoDS_Shape rounded = occt_fillet_through(body, gp_Pnt(17, 0, 0), 1.0);
+  CHECK(!rounded.IsNull());
+  if (rounded.IsNull()) {
+    return;
+  }
+  const TopoDS_Shape outer = BRepPrimAPI_MakeCylinder(gp_Ax2(gp_Pnt(0, -1, 0), gp_Dir(0, 1, 0)), 18, 2).Shape();
+  const TopoDS_Shape inner = BRepPrimAPI_MakeCylinder(gp_Ax2(gp_Pnt(0, -2, 0), gp_Dir(0, 1, 0)), 16, 4).Shape();
+  const TopoDS_Shape tube = BRepPrimAPI_MakeTorus(gp_Ax2(gp_Pnt(0, 1, 0), gp_Dir(0, 1, 0)), 16, 1).Shape();
+  const TopoDS_Shape band = BRepPrimAPI_MakeCylinder(gp_Ax2(gp_Pnt(0, 0, 0), gp_Dir(0, 1, 0)), 18, 1).Shape();
+  const TopoDS_Shape region =
+      BRepAlgoAPI_Cut(BRepAlgoAPI_Common(BRepAlgoAPI_Cut(outer, inner).Shape(), band).Shape(), tube).Shape();
+  CHECK_NEAR_TOL(volume_of(rounded), volume_of(BRepAlgoAPI_Cut(body, region).Shape()), 1e-5);
+}
+
+// The direction at angle a (degrees) from +z about +y.
+gp_Dir around_y(double a) {
+  const double r = a * kPi / 180.0;
+  return gp_Dir(std::sin(r), 0, std::cos(r));
+}
+
+// A disc of radius 17, 1.5 thick about +y, its bottom edge rounded with 1,
+// turned down to radius 16.9 (the turned cylinder's seam at +z, the disc's,
+// which the rounding's torus takes, at disc_seam degrees about +y): the
+// earlier rounding meets the cylinder at a sharp angle 0.564 above the
+// bottom. A hole of radius 1 through it whose centre lies 14.6955 from the
+// axis at hole degrees, its bottom rim rounded with 0.5 (the rim's seam at
+// rim_seam degrees from outwards): the rim reaches 16.1955 from the axis,
+// into the earlier rounding. (The cylinder made first, its face comes first
+// in the body, as in the files' bodies.)
+TopoDS_Shape turned_disc(bool hole, double hole_at, double disc_seam, double rim_seam) {
+  const gp_Dir up(0, 1, 0);
+  const TopoDS_Shape disc = BRepPrimAPI_MakeCylinder(gp_Ax2(gp_Pnt(0, 0, 0), up, around_y(disc_seam)), 17, 1.5).Shape();
+  BRepFilletAPI_MakeFillet first(disc);
+  first.Add(1.0, edge_through(disc, gp_Pnt(17, 0, 0)));
+  first.Build();
+  CHECK(first.IsDone());
+  if (!first.IsDone()) {
+    return TopoDS_Shape();
+  }
+  TopoDS_Shape body =
+      BRepAlgoAPI_Common(BRepPrimAPI_MakeCylinder(gp_Ax2(gp_Pnt(0, -1, 0), up, gp_Dir(0, 0, 1)), 16.9, 4).Shape(),
+                         first.Shape())
+          .Shape();
+  if (hole) {
+    const gp_Pnt centre = gp_Pnt(0, 0, 0).Translated(gp_Vec(around_y(hole_at)) * 14.6955);
+    const gp_Dir out = around_y(hole_at + rim_seam);
+    const gp_Ax2 axis(centre.Translated(gp_Vec(0, -1, 0)), up, out);
+    // (The rim: the ring under its torus, then the bore.)
+    const TopoDS_Shape flare =
+        BRepAlgoAPI_Cut(BRepPrimAPI_MakeCylinder(axis, 1.5, 1.5).Shape(),
+                        BRepPrimAPI_MakeTorus(gp_Ax2(centre.Translated(gp_Vec(0, 0.5, 0)), up, out), 1.5, 0.5).Shape())
+            .Shape();
+    const TopoDS_Shape bore = BRepPrimAPI_MakeCylinder(axis, 1.0, 4).Shape();
+    body = BRepAlgoAPI_Cut(body, BRepAlgoAPI_Fuse(flare, bore).Shape()).Shape();
+  }
+  return body;
+}
+
+void test_closed_rounding_consumes_an_earlier_rounding_over_a_rounded_rim() {
+  // The edge between the turned cylinder and the earlier rounding rounded
+  // with 1: the ball touches the cylinder and the bottom (centre 15.9 from
+  // the axis, 1 above the bottom), so the start overflows the earlier
+  // rounding, which lies wholly between the contacts all round the closed
+  // edge and vanishes. Over the hole the contact on the bottom crosses the
+  // rim, which the ball cannot touch (0.5 under a ball of 1): the blend is
+  // walked over the mouth and the rim cuts it (mitcad#261, port patch
+  // 0190). The hole beside the closed edge's start; on the turned
+  // cylinder's seam, where the contact on the cylinder crosses that seam
+  // inside the walk over the mouth (the disc's seam out of the way); and
+  // with no hole (the earlier rounding vanished before the patch already).
+  // Exact check: the rounding removes from the body what the ball's corner
+  // region round the bottom edge holds (within the walked blend's
+  // approximation).
+  struct Case {
+    bool hole;
+    double hole_at, disc_seam, rim_seam;
+  };
+  for (const Case& c : {Case{true, 3.45, 0.0, 0.0}, Case{true, 0.0, -30.0, 10.0}, Case{false, 0.0, 0.0, 0.0}}) {
+    const TopoDS_Shape body = turned_disc(c.hole, c.hole_at, c.disc_seam, c.rim_seam);
+    if (body.IsNull()) {
+      continue;
+    }
+    const double y = 1.0 - std::sqrt(1.0 - 0.9 * 0.9);
+    // (Through the edge away from the seams.)
+    const TopoDS_Shape rounded = occt_fillet_through(body, gp_Pnt(16.9, y, 0), 1.0);
+    CHECK(!rounded.IsNull());
+    if (rounded.IsNull()) {
+      continue;
+    }
+    const gp_Dir up(0, 1, 0);
+    const TopoDS_Shape outer = BRepPrimAPI_MakeCylinder(gp_Ax2(gp_Pnt(0, 0, 0), up), 17.9, 1).Shape();
+    const TopoDS_Shape inner = BRepPrimAPI_MakeCylinder(gp_Ax2(gp_Pnt(0, -1, 0), up), 15.9, 3).Shape();
+    const TopoDS_Shape tube = BRepPrimAPI_MakeTorus(gp_Ax2(gp_Pnt(0, 1, 0), up), 15.9, 1).Shape();
+    const TopoDS_Shape region = BRepAlgoAPI_Cut(BRepAlgoAPI_Cut(outer, inner).Shape(), tube).Shape();
+    GProp_GProps got, expected;
+    BRepGProp::VolumeProperties(rounded, got, 1e-9);
+    BRepGProp::VolumeProperties(BRepAlgoAPI_Cut(body, region).Shape(), expected, 1e-9);
+    CHECK_NEAR_TOL(got.Mass(), expected.Mass(), 1e-4);
+    // No face left on the earlier rounding's torus (major radius 16).
+    for (TopExp_Explorer f(rounded, TopAbs_FACE); f.More(); f.Next()) {
+      const BRepAdaptor_Surface s(TopoDS::Face(f.Current()));
+      CHECK(s.GetType() != GeomAbs_Torus || std::abs(s.Torus().MajorRadius() - 16.0) > 1e-6);
+    }
+  }
+}
+
 void fillet_overflow_tests() {
   guarded("test_rounding_rolls_on_a_bevels_far_edge", test_rounding_rolls_on_a_bevels_far_edge);
   guarded("test_concave_rounding_rolls_on_a_strips_far_edge", test_concave_rounding_rolls_on_a_strips_far_edge);
@@ -1405,6 +1603,12 @@ void fillet_overflow_tests() {
           test_chamfer_round_a_ring_past_the_side_is_cut_by_it);
   guarded("test_corner_rounding_beside_a_rounded_top_edge_is_cut_by_the_top",
           test_corner_rounding_beside_a_rounded_top_edge_is_cut_by_the_top);
+  guarded("test_rounding_over_a_hole_with_a_rounded_rim_is_cut_by_the_rim",
+          test_rounding_over_a_hole_with_a_rounded_rim_is_cut_by_the_rim);
+  guarded("test_closed_walked_rounding_over_a_hole_with_a_rounded_rim_is_cut_by_the_rim",
+          test_closed_walked_rounding_over_a_hole_with_a_rounded_rim_is_cut_by_the_rim);
+  guarded("test_closed_rounding_consumes_an_earlier_rounding_over_a_rounded_rim",
+          test_closed_rounding_consumes_an_earlier_rounding_over_a_rounded_rim);
 }
 
 } // namespace test

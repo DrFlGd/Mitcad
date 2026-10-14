@@ -141,10 +141,10 @@ impl<K: Kernel> Evaluate<K> for DraftDef {
             None => None,
         };
         let shape = ctx.body(self.body)?;
-        require_faces(ctx, self.body, &shape, &self.faces)?;
+        let faces = require_faces(ctx, self.body, &shape, &self.faces)?;
         let plane = resolve_tool(ctx, &self.plane, self.offset, None)?;
         let spec = DraftSpec {
-            faces: &self.faces,
+            faces: &faces,
             plane: plane.input(),
             angle,
             angle2,

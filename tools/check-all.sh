@@ -57,7 +57,7 @@
 #   --ctest-jobs N  ctest's parallel tests (default: the cores / 4).
 #   --corpus MODE   the corpus group: f3d.corpus*, f3d.models_loft (the
 #                   reference models replayed), freecad.corpus,
-#                   ipt.corpus and iam.corpus, after
+#                   ipt.corpus, iam.corpus and ifc.corpus, after
 #                   ctest's other tests, several at once, each importing
 #                   several files at once in child processes (mitcad#70).
 #                   "always", "never",
@@ -128,13 +128,15 @@ UI_TIMEOUT=${UI_TIMEOUT:-1800}
 # main.cpp), how they are built, and the import's crates' resolved
 # dependencies (cargo tree; not Cargo.toml and Cargo.lock, which change for
 # crates of other parts too).
-CORPUS_TESTS='^(f3d\.corpus|f3d\.models_loft$|freecad\.corpus$|ipt\.corpus$|iam\.corpus$)'
+CORPUS_TESTS='^(f3d\.corpus|f3d\.models_loft$|freecad\.corpus$|ipt\.corpus$|iam\.corpus$|ifc\.corpus$)'
 CORPUS_SOURCES=(core/f3d core/import core/freecad core/zip core/ipt core/tests
   core/ffi/src/kernel core/ffi/src/*_import.rs core/ffi/src/ipt_history.rs core/ffi/src/exchange.rs
   core/ffi/src/memory.rs core/cpp core/CMakeLists.txt geometry tools/cli/import.cpp tools/cli/import.hpp
   tools/cli/CMakeLists.txt tools/cli/fcstd-corpus.cmake tools/cli/ipt-corpus.cmake tools/cli/iam-corpus.cmake
   CMakeLists.txt rust-toolchain.toml vcpkg.json third_party/vcpkg-ports)
-CORPUS_CRATES=(mitcad-import mitcad-f3d mitcad-freecad mitcad-ipt mitcad-zip)
+# The IFC import (mitcad#273).
+CORPUS_SOURCES+=(core/ifc tools/cli/ifc-corpus.cmake)
+CORPUS_CRATES=(mitcad-import mitcad-f3d mitcad-freecad mitcad-ipt mitcad-zip mitcad-ifc)
 CORPUS_PASSED=${XDG_CACHE_HOME:-$HOME/.cache}/mitcad/corpus-passed
 # The build files every UI test depends on, what the application is built
 # from (which the smoke set depends on), the smoke set, and the test
@@ -385,7 +387,7 @@ corpus_dependencies() {
 
 corpus_fingerprint() {
   local dir dirs=()
-  IFS=: read -ra dirs <<< "${MITCAD_FCSTD_CORPUS:-}:${MITCAD_IPT_CORPUS:-}"
+  IFS=: read -ra dirs <<< "${MITCAD_FCSTD_CORPUS:-}:${MITCAD_IPT_CORPUS:-}:${MITCAD_IFC_CORPUS:-}"
   dirs+=("${MITCAD_F3D_CORPUS:-$HOME/f3d-corpus}" "${MITCAD_F3D_MODELS:-$HOME/f3d-models}")
   {
     files_digest "${CORPUS_SOURCES[@]}"

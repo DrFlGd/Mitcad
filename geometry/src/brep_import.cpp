@@ -22,6 +22,7 @@
 #include <BRepAdaptor_Surface.hxx>
 #include <BRepBndLib.hxx>
 #include <BRepBuilderAPI_Copy.hxx>
+#include <BRepBuilderAPI_MakeFace.hxx>
 #include <BRepCheck.hxx>
 #include <BRepCheck_Analyzer.hxx>
 #include <BRepCheck_Result.hxx>
@@ -39,6 +40,7 @@
 #include <GeomAPI_ProjectPointOnSurf.hxx>
 #include <Geom_BSplineCurve.hxx>
 #include <Geom_BSplineSurface.hxx>
+#include <Geom_BoundedSurface.hxx>
 #include <Geom_Circle.hxx>
 #include <Geom_ConicalSurface.hxx>
 #include <Geom_CylindricalSurface.hxx>
@@ -805,6 +807,15 @@ TopoDS_Shape build_topology(const Body& body, const BuildOptions& options, Build
     surface_used[f.surface] = true;
     TopoDS_Face face;
     builder.MakeFace(face, surface, tol);
+    // No loops on a bounded surface (a B-spline): the whole surface, with
+    // its seams. (Healing bounds surfaces periodic both ways so.)
+    const bool bounded = !Handle(Geom_BoundedSurface)::DownCast(surface).IsNull();
+    if (f.loop_count == 0 && f.point_loop_count == 0 && bounded && !(surface->IsUPeriodic() && surface->IsVPeriodic())) {
+      BRepBuilderAPI_MakeFace whole(surface, tol);
+      if (whole.IsDone()) {
+        face = whole.Face();
+      }
+    }
     bool complete = true;
     for (std::uint32_t l = f.first_loop; l < f.first_loop + f.loop_count && l < body.loops.size(); ++l) {
       const Loop& lp = body.loops[l];

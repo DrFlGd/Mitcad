@@ -1,0 +1,52 @@
+[
+  {"comment": "Face and edge references found again after a sketch change renamed their faces (mitcad#272), through the OCCT kernel. Sketch1: a 60 x 40 outline (c7 bottom, c8 right, c9 top, c10 left) whose corner at (0, 40) is rounded by the arc c11 (radius 5), with circles of radius 5 at the three other corners (c12 at the origin, c13, c14), extruded 10 mm from the region inside the outline and outside the circles (Extrude1 F2, Body1)."},
+  {"cmd": "add_feature", "def": {"type": "sketch", "plane": "xy", "entities": [
+    {"id": "p1", "type": "point", "at": [0, 0]},
+    {"id": "p2", "type": "point", "at": [60, 0]},
+    {"id": "p3", "type": "point", "at": [60, 40]},
+    {"id": "p4", "type": "point", "at": [5, 40]},
+    {"id": "p5", "type": "point", "at": [0, 35]},
+    {"id": "p6", "type": "point", "at": [5, 35]},
+    {"id": "c7", "type": "line", "start": "p1", "end": "p2"},
+    {"id": "c8", "type": "line", "start": "p2", "end": "p3"},
+    {"id": "c9", "type": "line", "start": "p3", "end": "p4"},
+    {"id": "c10", "type": "line", "start": "p5", "end": "p1"},
+    {"id": "c11", "type": "arc", "center": "p6", "start": "p4", "end": "p5"},
+    {"id": "c12", "type": "circle", "center": "p1", "radius": 5},
+    {"id": "c13", "type": "circle", "center": "p2", "radius": 5},
+    {"id": "c14", "type": "circle", "center": "p3", "radius": 5}]}},
+  {"cmd": "add_feature", "def": {"type": "extrude",
+    "profiles": [{"sketch": "F1", "region": "r{c7[c12,c13],c8[c13,c14],c9[c14,c11],c10[c11,c12],c11[c9,c10],c12[c7,c10],c13[c8,c7],c14[c9,c8]}"}],
+    "extent": {"type": "distance", "distance": 10}, "operation": "new_body"}},
+  {"expect": {"feature": "Extrude1", "status": "ok", "body": "Body1",
+    "has_edge": "E{F2:side(c14[c9,c8])|F2:side(c9[c14,c11])}"}},
+  {"expect": {"body": "Body1", "has_edge": "E{F2:side(c10[c11,c12])|F2:side(c12[c7,c10])}"}},
+
+  {"comment": "Fillet1 (F3) rounds the two vertical edges where the circles meet the lines next to the arc (c9 at c14, c10 at c12)."},
+  {"cmd": "add_feature", "def": {"type": "fillet", "body": "F2.b0", "radius": 1, "edges": [
+    "E{F2:side(c14[c9,c8])|F2:side(c9[c14,c11])}",
+    "E{F2:side(c10[c11,c12])|F2:side(c12[c7,c10])}"]}},
+  {"expect": {"feature": "Fillet1", "status": "ok", "body": "Body1",
+    "has_face": "F3:fillet(E{F2:side(c14[c9,c8])|F2:side(c9[c14,c11])})"}},
+  {"expect": {"body": "Body1", "has_face": "F3:fillet(E{F2:side(c10[c11,c12])|F2:side(c12[c7,c10])})"}},
+
+  {"comment": "The arc goes and a circle of diameter 12 (c15) takes its place at the corner: c9 and c10 now end on c15, so their faces are renamed (c9[c14,c15], c10[c15,c12]) and the fillet's stored edges no longer exist under their names."},
+  {"cmd": "sketch.remove", "sketch": "F1", "items": ["c11"]},
+  {"cmd": "sketch.add_circle", "sketch": "F1", "center": [0, 40], "diameter": 12},
+  {"expect": {"feature": "Extrude1", "status": "ok", "body": "Body1",
+    "no_edge": "E{F2:side(c14[c9,c8])|F2:side(c9[c14,c11])}"}},
+
+  {"comment": "The fillet finds both edges between the faces it finds, rounds the same edges and warns."},
+  {"expect": {"feature": "Fillet1", "status": "warning",
+    "error_contains": "edge E{F2:side(c14[c9,c8])|F2:side(c9[c14,c11])} found as E{F2:side(c14[c9,c8])|F2:side(c9[c14,c15])} after a change in Sketch1",
+    "body": "Body1", "has_face": "F3:fillet(E{F2:side(c14[c9,c8])|F2:side(c9[c14,c15])})"}},
+  {"expect": {"feature": "Fillet1",
+    "error_contains": "edge E{F2:side(c10[c11,c12])|F2:side(c12[c7,c10])} found as E{F2:side(c10[c15,c12])|F2:side(c12[c7,c10])} after a change in Sketch1",
+    "body": "Body1", "has_face": "F3:fillet(E{F2:side(c10[c15,c12])|F2:side(c12[c7,c10])})"}},
+
+  {"comment": "Undone, the stored names find their edges again: no warning."},
+  {"cmd": "undo"},
+  {"cmd": "undo"},
+  {"expect": {"feature": "Fillet1", "status": "ok", "body": "Body1",
+    "has_face": "F3:fillet(E{F2:side(c14[c9,c8])|F2:side(c9[c14,c11])})"}}
+]

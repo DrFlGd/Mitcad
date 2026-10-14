@@ -476,3 +476,27 @@ fn a_monitor_within_others_stops_with_them_or_at_its_deadline() {
     assert!(start.elapsed() >= Duration::from_millis(30));
     assert_eq!(value(&b.doc, "d3"), 35.0);
 }
+
+#[test]
+fn a_job_asks_its_user_and_takes_the_answer_once() {
+    // mitcad#283: the import asks; the thread that shows the progress sees
+    // the question until it answers; the job takes the answer once.
+    let job = RecomputeMonitor::new();
+    assert_eq!(job.question(), None);
+    // An answer without a question is dropped.
+    job.answer("keep");
+    assert_eq!(job.take_answer(), None);
+    job.ask("Keep the bodies?");
+    assert_eq!(job.question().as_deref(), Some("Keep the bodies?"));
+    assert_eq!(job.take_answer(), None);
+    job.answer("replace");
+    assert_eq!(job.question(), None);
+    assert_eq!(job.take_answer().as_deref(), Some("replace"));
+    assert_eq!(job.take_answer(), None);
+    // A new question drops an answer not taken.
+    job.ask("First?");
+    job.answer("keep");
+    job.ask("Second?");
+    assert_eq!(job.take_answer(), None);
+    assert_eq!(job.question().as_deref(), Some("Second?"));
+}

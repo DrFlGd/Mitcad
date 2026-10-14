@@ -1,0 +1,197 @@
+Mitcad's patch to OCCT 8.0.1, under OCCT's licence:
+SPDX-License-Identifier: LGPL-2.1-only WITH OCCT-exception-1.0
+
+Fillets and chamfers: 0073's pieces of an analytic blend that are one face,
+on a spine closed by one edge (mitcad#263).
+
+The case: a boss under a plate chamfered past the plate's rounded corner
+(0142); the file has the chamfer's cone as one face, cut by the plate's
+sides. 0073 joins a run of pieces that leaves the faces of a piece and
+comes back to them, consecutive in the spine's parameters, on one surface.
+On a closed spine:
+
+- the piece across the spine's start holds its spine parameters a period
+  on, so the run's pieces did not follow each other: the gap between them
+  is now taken modulo the period;
+- the run may go on across the spine's start, from the last pieces round
+  to the first ones (the boss's seam in the gap): runs are followed round
+  a spine closed by its one edge, and each joined piece takes the surface
+  of the piece before it in its run, in the order of the run, with no
+  run making a loop;
+- the joined pieces' p-curves on the blend surface go on from the piece
+  before's, in its period (ChFi3d_PCurvesOnSurfAfter), as one face needs.
+
+Before, the cone of the case came in four or five faces.
+
+diff --git a/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_2.cxx b/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_2.cxx
+index 610133a8..506a3516 100644
+--- a/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_2.cxx
++++ b/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_2.cxx
+@@ -6722,6 +6722,50 @@ static bool ChFi3d_SameAnalyticSurface(const occ::handle<Geom_Surface>& S1, cons
+   }
+ }
+ 
++//=======================================================================
++// function : ChFi3d_PCurvesOnSurfAfter
++// purpose  : Moves the p-curves on the blend surface S of SD (a piece put
++//            on the surface of Prev, the piece before it) by whole periods
++//            of S so that they go on from Prev's: SD's start comes to
++//            Prev's end.
++//=======================================================================
++
++static void ChFi3d_PCurvesOnSurfAfter(const occ::handle<ChFiDS_SurfData>& SD,
++                                      const occ::handle<ChFiDS_SurfData>& Prev,
++                                      const occ::handle<Geom_Surface>&    S)
++{
++  if (S.IsNull() || (!S->IsUPeriodic() && !S->IsVPeriodic()))
++  {
++    return;
++  }
++  for (int s = 1; s <= 2; s++)
++  {
++    ChFiDS_FaceInterference&       FI = SD->ChangeInterference(s);
++    const ChFiDS_FaceInterference& FP = Prev->Interference(s);
++    if (FI.PCurveOnSurf().IsNull() || FP.PCurveOnSurf().IsNull())
++    {
++      continue;
++    }
++    const gp_Pnt2d a = FP.PCurveOnSurf()->Value(FP.LastParameter());
++    const gp_Pnt2d b = FI.PCurveOnSurf()->Value(FI.FirstParameter());
++    double         du = 0., dv = 0.;
++    if (S->IsUPeriodic())
++    {
++      du = std::round((a.X() - b.X()) / S->UPeriod()) * S->UPeriod();
++    }
++    if (S->IsVPeriodic())
++    {
++      dv = std::round((a.Y() - b.Y()) / S->VPeriod()) * S->VPeriod();
++    }
++    if (du != 0. || dv != 0.)
++    {
++      occ::handle<Geom2d_Curve> aMoved = occ::down_cast<Geom2d_Curve>(FI.PCurveOnSurf()->Copy());
++      aMoved->Translate(gp_Vec2d(du, dv));
++      FI.ChangePCurveOnSurf() = aMoved;
++    }
++  }
++}
++
+ void ChFi3d_Builder::PerformSetOfKPart(occ::handle<ChFiDS_Stripe>& Stripe, const bool Simul)
+ {
+   TopOpeBRepDS_DataStructure&      DStr  = myDS->ChangeDS();
+@@ -6900,37 +6944,92 @@ void ChFi3d_Builder::PerformSetOfKPart(occ::handle<ChFiDS_Stripe>& Stripe, const
+       // and the pieces on either side of it, whose contacts lie on the
+       // same faces, are one surface: one face, with no edges between them
+       // (as a blend over a hole of its face is one face with the hole cut).
+-      NCollection_Array1<bool> aJoin(1, std::max(1, LSD.Length()));
+-      aJoin.Init(false);
+-      for (int a = 1; !Simul && a < LSD.Length(); a++)
++      // On a spine closed by its one edge a run may go on across the
++      // spine's start, from the last pieces round to the first ones.
++      const int  nbsd   = LSD.Length();
++      const bool aRound = Spine->IsPeriodic() && Spine->NbEdges() == 1;
++      const auto at     = [nbsd](const int i) { return ((i - 1) % nbsd + nbsd) % nbsd + 1; };
++      // The piece before a joined one in its run.
++      NCollection_Array1<int> aJoinPrev(1, std::max(1, nbsd));
++      aJoinPrev.Init(0);
++      for (int a = 1; !Simul && a <= nbsd && (aRound || a < nbsd); a++)
+       {
+         const occ::handle<ChFiDS_SurfData>& A = LSD.Value(a);
+         for (int s = 1; s <= 2; s++)
+         {
+-          int b = a + 1;
+-          while (b <= LSD.Length() && LSD.Value(b)->Index(3 - s) == A->Index(3 - s)
+-                 && LSD.Value(b)->Index(s) != A->Index(s))
++          const int bmax = aRound ? a + nbsd : nbsd;
++          int       b    = a + 1;
++          while (b <= bmax && LSD.Value(at(b))->Index(3 - s) == A->Index(3 - s)
++                 && LSD.Value(at(b))->Index(s) != A->Index(s))
+           {
+             b++;
+           }
+-          if (b == a + 1 || b > LSD.Length() || LSD.Value(b)->Index(1) != A->Index(1)
+-              || LSD.Value(b)->Index(2) != A->Index(2))
++          if (b == a + 1 || b > bmax || LSD.Value(at(b))->Index(1) != A->Index(1)
++              || LSD.Value(at(b))->Index(2) != A->Index(2))
+           {
+             continue;
+           }
+           bool aSame = true;
+           for (int i = a + 1; i <= b && aSame; i++)
+           {
+-            const occ::handle<ChFiDS_SurfData>& P = LSD.Value(i - 1);
+-            const occ::handle<ChFiDS_SurfData>& Q = LSD.Value(i);
+-            aSame = P->Orientation() == Q->Orientation()
+-                    && std::abs(P->LastSpineParam() - Q->FirstSpineParam()) <= Precision::PConfusion()
++            const occ::handle<ChFiDS_SurfData>& P = LSD.Value(at(i - 1));
++            const occ::handle<ChFiDS_SurfData>& Q = LSD.Value(at(i));
++            // (On a closed spine the piece across its start holds parameters
++            // a period on.)
++            double aGap = P->LastSpineParam() - Q->FirstSpineParam();
++            if (Spine->IsPeriodic())
++            {
++              aGap -= std::round(aGap / Spine->Period()) * Spine->Period();
++            }
++            aSame = P->Orientation() == Q->Orientation() && std::abs(aGap) <= Precision::PConfusion()
+                     && ChFi3d_SameAnalyticSurface(DStr.Surface(P->Surf()).Surface(),
+                                                   DStr.Surface(Q->Surf()).Surface());
+           }
+           for (int i = a + 1; i <= b && aSame; i++)
+           {
+-            aJoin(i) = true;
++            // (Not A itself, which a run round the whole spine comes back
++            // to, nor a piece the one before already comes from: the runs
++            // round a closed spine make no loop.)
++            if (at(i) == a || aJoinPrev(at(i)) != 0)
++            {
++              continue;
++            }
++            int k = at(i - 1);
++            for (int n = 0; k != 0 && k != at(i) && n < nbsd; n++)
++            {
++              k = aJoinPrev(k);
++            }
++            if (k != at(i))
++            {
++              aJoinPrev(at(i)) = at(i - 1);
++            }
++          }
++        }
++      }
++      // Each joined piece takes the surface of the piece before it, in the
++      // order of its run; on one face its p-curves on the blend go on from
++      // that piece's, in its period (the piece across the start of a closed
++      // spine holds them a period on).
++      {
++        NCollection_Array1<bool> aDone(1, std::max(1, nbsd));
++        for (int i = 1; i <= nbsd; i++)
++        {
++          aDone(i) = aJoinPrev(i) == 0;
++        }
++        for (bool aMore = true; aMore;)
++        {
++          aMore = false;
++          for (int i = 1; i <= nbsd; i++)
++          {
++            if (aDone(i) || !aDone(aJoinPrev(i)))
++            {
++              continue;
++            }
++            const occ::handle<ChFiDS_SurfData>& P = LSD.Value(aJoinPrev(i));
++            LSD.ChangeValue(i)->ChangeSurf(P->Surf());
++            ChFi3d_PCurvesOnSurfAfter(LSD.Value(i), P, DStr.Surface(P->Surf()).Surface());
++            aDone(i) = true;
++            aMore    = true;
+           }
+         }
+       }
+@@ -6941,10 +7040,6 @@ void ChFi3d_Builder::PerformSetOfKPart(occ::handle<ChFiDS_Stripe>& Stripe, const
+         {
+           SimulKPart(curSD);
+         }
+-        else if (aJoin(j))
+-        {
+-          curSD->ChangeSurf(LSD.Value(j - 1)->Surf());
+-        }
+         SeqSurf.Append(curSD);
+         if (!Simul)
+         {

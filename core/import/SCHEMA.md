@@ -196,6 +196,22 @@ convert values as follows:
   dumps are external dumps kept outside the repository
   (`MITCAD_F3D_MODELS`, [docs/development.md](../../docs/development.md)).
 
+The stream decoder's `_f3d.appearance` (mitcad#228;
+`mitcad_f3d::design::ir::AppearanceData`, README *Appearances and
+materials*) holds the appearances and physical materials: `assets` (the
+assets used, their textures and their materials' aspects: `id`, `schema`,
+`name`, `library`, `ui_name`, `category`, `description`, `properties`
+by id — colours as RGBA arrays, quantities as `{"unit", "value"}`,
+texture paths as `{"kind", "paths"}` — and `connections`), `bodies`
+(`entity`, `name`, `blob`, `selector`, `record`: the body's ASM record in
+the blob; `appearance` and `material` as `{"token", "library", "preset",
+"display", "asset"}`; `faces`: the faces with their own, each `guid`,
+`appearance`, `color`, `faces` (fingerprints in the stored design, cm) or
+`why`), `faces` (face references whose face the stored design does not
+have), `occurrences` (overrides: `object_id`, `component`, `appearance`)
+and `warnings`. External dumps have none; the import then sets no
+appearances.
+
 Readers keep unknown keys in each record (a dump survives read and write
 unchanged) and do not check `schema`.
 
@@ -681,6 +697,27 @@ field (`read`, `inferred`, `unknown`); it is not part of this design IR.
 It describes an accepted candidate's inputs independently of geometric
 verification or the candidate's history-only `guess` policy. See
 `README.md`, *Input decoding audit*.
+
+Sheet metal (mitcad#211): the `.ipt` decoder's `SheetMetalFaceFeature`,
+`SheetMetalFlangeFeature` and `CutFeature` items and the stream decoder's
+`FlangeFeature` items carry `detail.sheet`, an object of one `kind`
+(lengths in cm, angles in radians, parameters as parameter references):
+
+| `kind` | Keys |
+|---|---|
+| `face` | `operation` (`NewBodyFeatureOperation`, `JoinFeatureOperation`), `profile` (profile references as an extrusion's; `_f3d_profile_loops` where the stream decoder reads them), `direction` (the unit vector the material lies along from the sketch's plane, unless `side` is 1) or `along_sketch_normal: true` (along the file's sketch normal), `side` (`.ipt`: 0, or 1 for the material against `direction`), `thickness`, `rules` |
+| `flange` | `operation`, `edges` (how many edges it is on), `angle`, `length`, `radius` (a parameter, or `{value}` when the rule's radius is stored as a number), `participantBodies`; either (`.ipt`) `path` (points across the middle of the edge, from the stationary tangent line through the bend to the flange's end), `length_datum` and `length_end` (the points its length is measured between), `edge_list` (the edges read by their names, mitcad#242: edge references with `start_point`, `end_point`, `mid_point` and `length` from the history state the flange starts from, each with a `width_extent` `{type: "offsets", from, to, offset_from, offset_to}` where the file has one: the ends of the edge, cm, and the offsets measured from them) and `edge_errors` (why an edge was not read), or (`.f3d`) `edge` (an edge reference with its geometry), `position` (`inside`, `outside`, `adjacent`, `tangent`), `length_mode` (`inner`, `outer`, `tangent`), `flip`, `widths` (the width owners: `{role, parameter}`) |
+| `cut` | `operation`, `profile`, `extentType`, `extentOne` and `direction` as an extrusion's, `participantBodies`, `options` (`.ipt`: the two booleans of the sheet-metal cut, slots 31 and 33) |
+| `corner_round`, `corner_chamfer` (`.ipt`) | `dressup` (a fillet's or chamfer's detail; each edge set's `edges` the edges read by their names, as `edge_list`'s, mitcad#242), `edge_errors`, `participantBodies` |
+| `bend` (`.ipt`, mitcad#242) | `edges`, `edge_list`, `edge_errors` (its two edges), `radius`, `thickness`, `participantBodies` |
+| `fold` (`.ipt`, mitcad#242) | `angle`, `radius`, `line` (`{point, direction}`, cm), `kind_enumeration` and `flags` (not decoded), `participantBodies` |
+
+`rules` is the rule the body follows: `name`, `thickness`, `bend_radius`,
+`bend_relief` and `corner_relief` (`type`, `width`, `depth`), `k_factor`
+(`{value}`), each a parameter reference or `{expression, value}` (an
+expression of the file's parameters); `inferred` lists the inputs that are
+not read from the file, with why. A sheet item the decoder could not read
+has `detail._sheet_error` instead.
 
 ### 5.4 steps
 

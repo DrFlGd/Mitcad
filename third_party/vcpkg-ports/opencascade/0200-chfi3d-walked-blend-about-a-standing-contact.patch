@@ -1,0 +1,90 @@
+Mitcad's patch to OCCT 8.0.1, under OCCT's licence:
+SPDX-License-Identifier: LGPL-2.1-only WITH OCCT-exception-1.0
+
+Fillets: a walked blend whose contact on one face stands still while the
+ball turns about it (mitcad#239).
+
+Where a rounding runs past a corner that was rounded with the ball's own
+radius (a box's vertical edge rounded with r, then its top edges with r;
+the floor of a pocket whose inner corners are rounded with r), the ball's
+centre stays on that corner's axis: its contact on the face across the
+corner (the top, the floor) stands at one point while the other contact
+sweeps round the corner. The blend there is the ball's own sphere, whose
+side on that face is a point. Where the walk builds it (the faces are not
+both elementary, so no analytic piece is made), the walk never set the
+line's transition on the standing side (its contact curve has no
+direction, BRepBlend_Line::TransitionOnS* threw Standard_DomainError in
+StoreData or ComputeData), the standing side's twist flag was the sign of
+numerical noise (the piece was then rebuilt as a filling surface), and the
+orientation of the blend against the face was taken from the blend's
+normal at the point side, which is null (StoreData failed).
+
+- BRepBlend_Walking::TestArret: a contact whose tangent is below 1e-3 of
+  the other's stands still; it is not twisted, and its transition is
+  computed with the guide's tangent for its direction (the direction the
+  contacts beside it on its face move).
+- ChFi3d_Builder::StoreData: where the blend's normal at its side 1 is
+  null (the side is a point), the orientation is taken with the normal a
+  hundredth of the section inside.
+
+The point side is then stored as 0171 stores the side of a ball turning
+about the end of an edge (ChFi3d_FilDS): a degenerated edge of the blend's
+face, no edge on the face.
+
+Upstream: local to the walk's transitions and StoreData's orientation; a
+moving contact is unchanged.
+diff --git a/src/ModelingAlgorithms/TKFillet/BRepBlend/BRepBlend_Walking.cxx b/src/ModelingAlgorithms/TKFillet/BRepBlend/BRepBlend_Walking.cxx
+index 46eeed6..bf10104 100644
+--- a/src/ModelingAlgorithms/TKFillet/BRepBlend/BRepBlend_Walking.cxx
++++ b/src/ModelingAlgorithms/TKFillet/BRepBlend/BRepBlend_Walking.cxx
+@@ -836,6 +836,32 @@ Blend_Status BRepBlend_Walking::TestArret(Blend_Function&    Function,
+       {
+         loctwist2 = true;
+       }
++      // A contact that stands still while the other moves (the ball turning
++      // about it, where the other face is rounded with the ball's radius)
++      // has no direction of its own: it is not twisted, and its transition
++      // is the one it would have moving along the guide, as the contacts
++      // beside it on its face do.
++      const double vmax = std::max(V1.Magnitude(), V2.Magnitude());
++      if (!hguide.IsNull() && vmax > Precision::Confusion())
++      {
++        gp_Pnt pg;
++        gp_Vec tg;
++        hguide->D1(param, pg, tg);
++        if (tg.Magnitude() > gp::Resolution())
++        {
++          tg.Normalize();
++          if (V1.Magnitude() <= 1.e-3 * vmax)
++          {
++            V1        = tg * vmax;
++            loctwist1 = false;
++          }
++          else if (V2.Magnitude() <= 1.e-3 * vmax)
++          {
++            V2        = tg * vmax;
++            loctwist2 = false;
++          }
++        }
++      }
+     }
+ 
+     if (TestDefl && check)
+diff --git a/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_6.cxx b/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_6.cxx
+index 10897e8..b38abbb 100644
+--- a/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_6.cxx
++++ b/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_6.cxx
+@@ -1017,6 +1017,13 @@ bool ChFi3d_Builder::StoreData(occ::handle<ChFiDS_SurfData>&         Data,
+ 
+     Surf->D1(UFirst, aParam, P, Du2, Dv2);
+     Du2.Cross(Dv2);
++    if (Du2.Magnitude() <= tolget3d && Du1.Magnitude() > tolget3d)
++    {
++      // The side is a point (the ball turns about its contact there): the
++      // blend's normal a little inside the section, nearly the face's.
++      Surf->D1(UFirst + 0.01 * (ULast - UFirst), aParam, P, Du2, Dv2);
++      Du2.Cross(Dv2);
++    }
+ 
+     if (Du1.Magnitude() <= tolget3d || Du2.Magnitude() <= tolget3d)
+     {

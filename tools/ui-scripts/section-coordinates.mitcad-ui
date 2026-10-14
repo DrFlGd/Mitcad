@@ -8,11 +8,15 @@ expect-model-bodies 1 4000
 expect-shown-body F2.b0 O1 4000 0 0 100 20 20 110
 expect-shown-body F2.b0 O2 4000 30 0 100 50 20 110
 mark
+expect-picking-on-job begin_command
 native-action inspect.section
+expect-log 'Picking suspended during begin_command \(busy\)'
 click-pick 'face F2\.b0/F2:end\('
 expect-log 'Section Analysis Faces/Plane: 1 face'
 expect-shown-body F2.b0 O1 4000 0 0 100 20 20 110
+expect-picking-on-job inspection
 native-type input_offset '-5'
+expect-log 'Picking suspended during inspection \(busy\)'
 expect-shown-body F2.b0 O1 2000 0 0 100 20 20 105
 expect-shown-body F2.b0 O2 2000 30 0 100 50 20 105
 expect-log 'Section caps: 2 face\(s\)'

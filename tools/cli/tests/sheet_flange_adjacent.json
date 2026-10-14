@@ -1,0 +1,15 @@
+[
+  {"comment":"SPDX-License-Identifier: MIT. Flanges on two adjacent edges (mitcad#211). The second flange's inside trim (5 mm, its outer setback) reaches the first flange's bend seam: the trim goes on through that bend, which ends where the panel now ends. Volume: panel 35 x 80 x 2 less 35 x 5 x 2, walls 15 x 2 x 80 and 15 x 2 x 35, bends 4*pi per mm over 75 and 35 mm = 8700 + 440*pi."},
+  {"cmd":"add_feature","def":{"type":"sheet_rules","thickness":2,"bend_radius":3,"allowance":{"type":"k_factor","k":0.3},"reference_side":"front","bend_relief":{"type":"rectangular","width":2,"depth":3},"corner_relief":{"type":"round","width":2,"depth":3}}},
+  {"cmd":"sketch.create"},
+  {"cmd":"sketch.add_rectangle","sketch":"F2","corner":[0,0],"width":40,"height":80},
+  {"cmd":"add_feature","def":{"type":"sheet_face","rules":"F1","profiles":[{"sketch":"F2","region":"r{c1[c4,c2],c2[c1,c3],c3[c2,c4],c4[c3,c1]}"}]}},
+  {"cmd":"add_feature","def":{"type":"sheet_flange","body":"F3.b0","boundary":{"panel":{"feature":"F3","slot":0},"curve":{"type":"sketch","sketch":"F2","segment":"c2[c1,c3]"}},"angle":1.5707963267948966,"length":{"mode":"outer","value":20},"position":"inside"}},
+  {"cmd":"add_feature","def":{"type":"sheet_flange","body":"F3.b0","boundary":{"panel":{"feature":"F3","slot":0},"curve":{"type":"sketch","sketch":"F2","segment":"c3[c2,c4]"}},"angle":1.5707963267948966,"length":{"mode":"outer","value":20},"position":"inside"}},
+  {"expect":{"feature":"F5","status":"ok","bodies":1}},
+  {"expect":{"body":"F3.b0","volume":10082.3007675795,"min":[0,0,0],"max":[40,80,20]}},
+  {"expect":{"query":{"query":"sheet_state","body":"F3.b0"},"result":{"body":"F3.b0","status":"valid"}}},
+  {"comment":"The thickness changed: both flanges and the bend's end follow."},
+  {"cmd":"edit_feature","uid":"F1","def":{"type":"sheet_rules","thickness":1,"bend_radius":3,"allowance":{"type":"k_factor","k":0.3},"reference_side":"front","bend_relief":{"type":"rectangular","width":2,"depth":3},"corner_relief":{"type":"round","width":2,"depth":3}}},
+  {"expect":{"feature":"F5","status":"ok","bodies":1}}
+]

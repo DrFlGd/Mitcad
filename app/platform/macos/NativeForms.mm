@@ -9,6 +9,7 @@
 #include <vector>
 
 #include <QHash>
+#include <QJsonObject>
 #include <QTextDocument>
 #include <QTimer>
 #include <QtLogging>
@@ -192,6 +193,13 @@ public:
         if (qtString(row.edit.stringValue) != scope.text(input.id)) {
           row.edit.stringValue = nativeString(scope.text(input.id));
         }
+        // What the feature's own parameter is, as a sketch dimension's
+        // tooltip says (mitcad#250).
+        if (input.type == InputDef::Type::Value && !scope.parameterTooltip(input.id).isEmpty()) {
+          row.edit.toolTip = nativeString(scope.parameterTooltip(input.id) + QLatin1Char('\n') +
+                                          QObject::tr("Type name = value to rename it; a click on a dimension "
+                                                      "or a value in the view inserts its name"));
+        }
         break;
       case InputDef::Type::Choice:
         refreshChoices(row, scope);
@@ -288,6 +296,22 @@ public:
 
   void setOkEnabled(bool enabled) override { m_ok.enabled = enabled; }
 
+  // What the controls show, for live MCP (mitcad#265).
+  QJsonObject shownState() const override {
+    QJsonObject notes;
+    for (auto it = m_notes.cbegin(); it != m_notes.cend(); ++it) {
+      if (!it.value().first.isEmpty()) {
+        notes.insert(it.key(), QJsonObject{{QStringLiteral("error"), it.value().first}});
+      } else if (!it.value().second.isEmpty()) {
+        notes.insert(it.key(), QJsonObject{{QStringLiteral("hint"), it.value().second}});
+      }
+    }
+    return {{QStringLiteral("message"), m_message.hidden ? QString() : qtString(m_message.stringValue)},
+            {QStringLiteral("result"), m_result.hidden ? QString() : qtString(m_result.stringValue)},
+            {QStringLiteral("ok_enabled"), static_cast<bool>(m_ok.enabled)},
+            {QStringLiteral("notes"), notes}};
+  }
+
   QColor colorOf(const QString& key) const override {
     if (m_colors.contains(key)) {
       return m_colors.value(key);
@@ -318,6 +342,29 @@ public:
     }
     [m_root.window makeFirstResponder:row->edit];
     [row->edit selectText:nil];
+    editing(key, true);
+    return true;
+  }
+
+  bool insertIntoValue(const QString& key, const QString& text) override {
+    const Row* row = findRow(key);
+    if (row == nullptr || row->edit == nil || !shown(*row) || m_root.window == nil) {
+      return false;
+    }
+    // The field takes the keyboard back; the name goes at the end of its
+    // text (AppKit selects all of it when it takes the keyboard).
+    NSTextField* field = row->edit;
+    [m_root.window makeFirstResponder:field];
+    NSText* editor = field.currentEditor;
+    if (editor == nil) {
+      return false;
+    }
+    editor.selectedRange = NSMakeRange(editor.string.length, 0);
+    [editor replaceCharactersInRange:editor.selectedRange withString:nativeString(text)];
+    editing(key, true);
+    qDebug().noquote() << QStringLiteral("Panel %1 input %2: inserted %3, now %4")
+                              .arg(m_def.name, key, text, qtString(field.stringValue));
+    textChanged(field);
     return true;
   }
 
@@ -398,6 +445,9 @@ public:
 
   void textChanged(NSTextField* field) {
     if (!inputEnabled(qtString(field.identifier))) { return; }
+    // AppKit tells of a field's editing as it is typed in: the first edit
+    // is when it took the keyboard (mitcad#250).
+    if (m_editingKey != qtString(field.identifier)) { editing(qtString(field.identifier), true); }
     auto call = actions().textEdited;
     if (call) { call(qtString(field.identifier), qtString(field.stringValue)); }
   }
@@ -406,6 +456,14 @@ public:
     if (!inputEnabled(qtString(field.identifier))) { return; }
     auto call = actions().valueCommitted;
     if (call) { call(qtString(field.identifier)); }
+    if (m_editingKey == qtString(field.identifier)) { editing(m_editingKey, false); }
+  }
+
+  // A value field took the keyboard or lost it (mitcad#250).
+  void editing(QString key, bool focused) {
+    m_editingKey = focused ? key : QString();
+    auto call = actions().valueFocused;
+    if (call) { call(key, focused); }
   }
 
   bool textCommand(NSTextField* field, SEL command) {
@@ -786,6 +844,7 @@ private:
   QHash<QString, int> m_listColors;
   QHash<QString, QPair<QString, QString>> m_notes;
   QString m_active;
+  QString m_editingKey; // the value field AppKit edits (mitcad#250)
   QTimer m_logTimer;
 };
 

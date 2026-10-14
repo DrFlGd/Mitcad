@@ -28,7 +28,7 @@ impl Topology {
         }
         let w = Walker {
             file: state.file,
-            view: state.view,
+            view: state.view.as_ref(),
         };
         let edge_index: HashMap<usize, usize> = state
             .edges
@@ -382,8 +382,8 @@ mod tests {
         file.tokens[token] = Token::Ptr(-1);
         assert!(Topology::read(&NamedState::new(&file, None), 0).is_err());
         file.tokens[token] = original;
-        let view = HashMap::from([(16, None)]);
-        assert!(Topology::read(&NamedState::new(&file, Some(&view)), 0).is_err());
+        let view: crate::ids::View = [(16, None)].into_iter().collect();
+        assert!(Topology::read(&NamedState::new(&file, Some(view)), 0).is_err());
         file.complete = false;
         assert!(Topology::read(&NamedState::new(&file, None), 0).is_err());
     }
@@ -402,9 +402,9 @@ mod tests {
         copy.in_history = true;
         let copied_record = file.records.len();
         file.records.push(copy);
-        let view = HashMap::from([(16, Some(copied_record))]);
+        let view: crate::ids::View = [(16, Some(copied_record))].into_iter().collect();
         assert_eq!(
-            NamedState::new(&file, Some(&view))
+            NamedState::new(&file, Some(view.clone()))
                 .edge_endpoint_face_cycles(0, 0)
                 .unwrap(),
             expected
@@ -412,7 +412,7 @@ mod tests {
         // Field 5 is the partner pointer. Only the history copy changes.
         file.tokens[start + 5] = Token::Ptr(-1);
         assert!(
-            NamedState::new(&file, Some(&view))
+            NamedState::new(&file, Some(view.clone()))
                 .edge_endpoint_face_cycles(0, 0)
                 .is_err()
         );

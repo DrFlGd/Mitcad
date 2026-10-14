@@ -1,0 +1,153 @@
+Mitcad's patch to OCCT 8.0.1, under OCCT's licence:
+SPDX-License-Identifier: LGPL-2.1-only WITH OCCT-exception-1.0
+
+Fillets: two roundings whose contact lines on the face between their
+edges are one line, the face exactly as wide as the two roundings
+together (mitcad#239). Example: a plate 1.5 thick whose two top edges are
+rounded with 0.75 (a full round). 0013 and 0016 handle contacts that
+overlap; here they coincide, so neither applied: the corner of the second
+rounding found its cap touching the first one's cap tangentially at their
+common end point (a short intersection segment, taken as a crossing:
+"fillets have too big radiuses"), and the check of the stripes'
+interferences failed the same way (ChFi3d_StripeEdgeInter).
+
+- ChFi3d_Builder::Compute, after the stripes are computed: a pair of
+  stripes each with one surface data on a face (not rolling on an edge),
+  their contact lines there the same curve from the same start point
+  (sameContact both ways), the face a strip between their spine edges
+  (its other edges join a vertex of each), is recorded as 0016 records a
+  stripe rolling on another's contact line (myRideStripes etc., the face
+  standing for the support). ApplyRides then makes the two blends meet on
+  the line and drops the face, as for 0016.
+- PerformOneCorner: a cap whose intersection with another cap or blend
+  trace on the face at the end is a short segment at the cap's own end
+  point (within 1e-3, the two tangent there) is not a crossing, as a
+  single point there already was not.
+diff --git a/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder.cxx b/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder.cxx
+index 11134cb..64a188b 100644
+--- a/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder.cxx
++++ b/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder.cxx
+@@ -1063,6 +1063,91 @@ void ChFi3d_Builder::Compute()
+   if (done)
+   {
+     RemoveCoincidentStripes();
++    // Two stripes whose contact lines on a face between their edges are
++    // one line (the face exactly as wide as the two roundings together):
++    // the blends meet on that line and the face vanishes, as where the
++    // later one rolls on the earlier one's contact line (ApplyRides, the
++    // face itself standing for the support).
++    const double tolc = 10. * tolapp3d;
++    for (NCollection_List<occ::handle<ChFiDS_Stripe>>::Iterator itA(myListStripe); itA.More();
++         itA.Next())
++    {
++      const occ::handle<ChFiDS_Stripe>& A = itA.Value();
++      if (A->SetOfSurfData().IsNull() || myDroppedStripes.Contains(A) || myRideStripes.Contains(A))
++      {
++        continue;
++      }
++      NCollection_List<occ::handle<ChFiDS_Stripe>>::Iterator itB = itA;
++      for (itB.Next(); itB.More(); itB.Next())
++      {
++        const occ::handle<ChFiDS_Stripe>& B = itB.Value();
++        if (B->SetOfSurfData().IsNull() || myDroppedStripes.Contains(B) || myRideStripes.Contains(B)
++            || myRideOn.Contains(B))
++        {
++          continue;
++        }
++        for (int i = 1; i <= A->SetOfSurfData()->Length(); i++)
++        {
++          const occ::handle<ChFiDS_SurfData>& a = A->SetOfSurfData()->Value(i);
++          for (int ka = 1; ka <= 2; ka++)
++          {
++            if (a->Index(ka) <= 0 || a->IsOnCurve(ka))
++            {
++              continue;
++            }
++            const TopoDS_Face            F = TopoDS::Face(DStr.Shape(a->Index(ka)));
++            occ::handle<ChFiDS_SurfData> SA, SB;
++            int                          onA = 0, onB = 0;
++            if (!findRideSurfData(DStr, A, F, SA, onA) || !findRideSurfData(DStr, B, F, SB, onB)
++                || SB->IsOnCurve(onB))
++            {
++              continue;
++            }
++            const TopoDS_Edge EA = spineEdgeOf(A->Spine(), F);
++            const TopoDS_Edge EB = spineEdgeOf(B->Spine(), F);
++            if (EA.IsNull() || EB.IsNull() || EA.IsSame(EB)
++                || !sameContact(DStr, SA, onA, SB, onB, tolc)
++                || !sameContact(DStr, SB, onB, SA, onA, tolc)
++                || SB->Vertex(true, onB).Point().Distance(SA->Vertex(true, onA).Point()) > tolc)
++            {
++              continue;
++            }
++            // F vanishes: its other edges join a vertex of EA to one of EB.
++            bool strip = true;
++            for (TopExp_Explorer ex(F, TopAbs_EDGE); ex.More() && strip; ex.Next())
++            {
++              const TopoDS_Edge& E = TopoDS::Edge(ex.Current());
++              if (E.IsSame(EA) || E.IsSame(EB) || BRep_Tool::Degenerated(E))
++              {
++                continue;
++              }
++              bool toA = false, toB = false;
++              for (TopExp_Explorer exv(E, TopAbs_VERTEX); exv.More(); exv.Next())
++              {
++                for (TopExp_Explorer exa(EA, TopAbs_VERTEX); exa.More(); exa.Next())
++                {
++                  toA = toA || exa.Current().IsSame(exv.Current());
++                }
++                for (TopExp_Explorer exb(EB, TopAbs_VERTEX); exb.More(); exb.Next())
++                {
++                  toB = toB || exb.Current().IsSame(exv.Current());
++                }
++              }
++              strip = toA && toB;
++            }
++            if (!strip)
++            {
++              continue;
++            }
++            myRideStripes.Append(B);
++            myRideOn.Append(A);
++            myRideFaces.Append(F);
++            myRideEdges.Append(TopoDS_Edge());
++            myRideSupports.Append(F);
++          }
++        }
++      }
++    }
+   }
+ 
+ #ifdef OCCT_DEBUG // perf
+diff --git a/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_C1.cxx b/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_C1.cxx
+index 3740181..9ee77b2 100644
+--- a/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_C1.cxx
++++ b/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_C1.cxx
+@@ -1794,9 +1794,25 @@ void ChFi3d_Builder::PerformOneCorner(const int Index, const bool thePrepareOnSa
+     // other's contact line, share their end point there: not a crossing.)
+     const gp_Pnt2d aCorkEnds[2] = {Pc->Value(Udeb), Pc->Value(Ufin)};
+     auto           crossesCork  = [&](const Geom2dInt_GInter& theInter) {
+-      if (theInter.NbSegments() > 0)
++      // (Nor two corks tangent at that shared end point: the intersection
++      // is then a short segment there.)
++      for (int is = 1; is <= theInter.NbSegments(); is++)
+       {
+-        return true;
++        const IntRes2d_IntersectionSegment& aSeg = theInter.Segment(is);
++        if (!aSeg.HasFirstPoint() || !aSeg.HasLastPoint())
++        {
++          return true;
++        }
++        const gp_Pnt2d aP1 = aSeg.FirstPoint().Value(), aP2 = aSeg.LastPoint().Value();
++        bool           atEnd = false;
++        for (const gp_Pnt2d& aE : aCorkEnds)
++        {
++          atEnd = atEnd || (aP1.Distance(aE) <= 1.e-3 && aP2.Distance(aE) <= 1.e-3);
++        }
++        if (!atEnd)
++        {
++          return true;
++        }
+       }
+       for (int ip = 1; ip <= theInter.NbPoints(); ip++)
+       {

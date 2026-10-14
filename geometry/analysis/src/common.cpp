@@ -266,6 +266,16 @@ GProp_GProps surface_properties(const TopoDS_Shape& shape, bool skip_shared) {
   return sum_of_faces(faces, at, Integral::Surface);
 }
 
+GProp_GProps faces_volume(const std::vector<TopoDS_Face>& faces, const gp_Pnt& at) {
+  std::vector<TopoDS_Face> bounding;
+  for (const TopoDS_Face& face : faces) {
+    if (face.Orientation() == TopAbs_FORWARD || face.Orientation() == TopAbs_REVERSED) {
+      bounding.push_back(face);
+    }
+  }
+  return sum_of_faces(bounding, at, Integral::Volume);
+}
+
 TopoDS_Shape oriented_solids(const TopoDS_Shape& shape) {
   BRep_Builder builder;
   TopoDS_Compound compound;

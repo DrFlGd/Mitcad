@@ -501,8 +501,18 @@ ctest `app.ui-windows` and `app.ui-windows-workflow` (configured with
 `MITCAD_AUTOSAVE_DIR`. An SSH session runs in session 0 without an input
 desktop: `SendInput` and UI Automation do not work, so the tests post
 window messages, and popups (command search, menus) are unavailable, so
-commands go through shortcuts. See
+commands go through shortcuts. As on Linux, a step waits for the app's
+answer to the sync key (`MITCAD_TEST_SYNC`; the library posts Pause), and
+a key's modifiers stay in the keyboard state until the app logs that it
+took the key (`MITCAD_LOG_KEYS`): while a model job runs, Qt keeps the
+input for later. See
 [tools/ui-windows-lib.ps1](../tools/ui-windows-lib.ps1).
+
+Not a test: `tools/ui-windows-window-shots.ps1 -App <mitcad.exe> -Out <dir>`
+saves screenshots of the whole main window in the Docked chrome on the light
+and the dark theme (the demo block, a feature selected, Extrude's panel
+open), through the test driver in the same session, for comparing the
+window's look before and after a change.
 
 ### macOS UI tests
 
@@ -888,8 +898,11 @@ The headless server is implemented in `core/mcp` (stdio protocol and
 catalog), `core/ffi/src/mcp.rs` (native CAD tools and workspace paths),
 and `tools/cli/mcp.cpp` (command-line entry). Live GUI access adds
 `app/mcp/LiveServer.*`, the shared private endpoint discovery in
-`app/mcp/LocalEndpoint.*`, `app/MainWindowMcp.cpp` and the CLI's
-`tools/cli/mcp-connect.*` stdio bridge. The CLI dispatches MCP
+`app/mcp/LocalEndpoint.*`, `app/MainWindowMcp.cpp`, the application's own
+tools in `app/MainWindowMcpUi.cpp` (mitcad#265) and the CLI's
+`tools/cli/mcp-connect.*` stdio bridge. Which commands and queries MCP
+allows follows their class in `core/model/src/api/classes.rs`; its unit
+tests (in `core.model`) fail for a command or query without one. The CLI dispatches MCP
 before configuring global component libraries, and suppresses OCCT's
 stdout message printers. User setup and modeling examples:
 [mcp.md](mcp.md).
@@ -901,6 +914,10 @@ and building with the usual preset, run:
 ctest --preset dev -R '^(cli\.mcp|core\.mcp)$' --output-on-failure
 # In the isolated macOS VM with a logged-in window server:
 ctest --preset dev -R '^app\.ui-macos-mcp$' --output-on-failure
+# In the Windows VM, configured with MITCAD_MESA_DIR (session 0):
+ctest --preset dev -R '^app\.ui-windows-mcp$' --output-on-failure
+# In the Linux environment, on Xvfb:
+tools/check-all.sh --only ui-mcp
 ```
 
 `core.mcp` uses the Cargo build fixture that CTest includes automatically.
@@ -922,6 +939,16 @@ notification and file-operation refusals, geometry errors with applied
 mutations, undo, full-width integer IDs, malformed/oversized frames,
 reconnect, EOF retention and GUI New invalidating old handles. It runs
 serially with the other Mac GUI tests and needs no Accessibility permission.
+
+The live debugging flow (mitcad#265,
+[tools/ui-mcp-live.py](../tools/ui-mcp-live.py)) runs in `app.ui-macos-mcp`
+and in the Linux UI test `ui-mcp` (`tools/ui-mcp-test.sh`) against a design
+whose sketch holds a projection that no longer follows: queries and
+`sketch.add_line` with the sketch open, `ui_state`, `ui_select`,
+`ui_screenshot`, `ui_command` (Clean Up Stale Projections, Finish Sketch),
+`document_save` and `ui_log`. `app.ui-windows-mcp`
+(`tools/ui-windows-mcp-test.ps1`) drives the same flow from PowerShell
+through `mitcad-cli.exe mcp --connect` in the Windows VM's session 0.
 
 Follow the focused checks with `tools/check-all.sh` in the Linux isolated
 environment and the documented Windows and macOS builds with CTest.

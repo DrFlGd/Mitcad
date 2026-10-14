@@ -1,0 +1,281 @@
+Mitcad's patch to OCCT 8.0.1, under OCCT's licence:
+SPDX-License-Identifier: LGPL-2.1-only WITH OCCT-exception-1.0
+
+Fillets: the corner where a rounding ends (OnDiff) when the face at the end
+is split in two faces of one plane, each holding one of the arcs the
+rounding's ends lie on (mitcad#239). Example: a pad on a side wall, its
+foot a face of its own beside the bottom face; the concave edge between
+the wall and the pad's bevelled end is rounded wider than the bevel, so
+the ball rolls on the pad's top edge, and the rounding ends on the wall's
+bottom edge (bottom face) and at the pad's bottom vertex (the pad's foot
+face). No face held both arcs, the corner went to the intersection at the
+end, which built a curve on the face at the end from the wrong edge's
+geometry, and the topological build gave unorientable faces.
+
+- ChFi3d_CoplanarSplitEndFace (PerformOneCorner, OnDiff, after FindFace
+  and ChFi3d_ObstacleEndOnFace fail): where exactly one of the two arcs
+  holds the corner's vertex, the faces of the two arcs beside the blend's
+  own faces are planes of one plane facing the same way and both hold the
+  vertex (an end point at a vertex is first given another edge at that
+  vertex bounding the face its side touches and the coplanar face), the
+  cap goes on the face of the arc without the vertex, and the part of the
+  other arc between its end point and the vertex, cut off that arc as
+  under the blend, becomes an edge between the two faces. The cap's
+  orientation is taken from the arc on the face it goes on. Elsewhere
+  nothing changes.
+diff --git a/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_C1.cxx b/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_C1.cxx
+index 52ba975d..369b56f2 100644
+--- a/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_C1.cxx
++++ b/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_C1.cxx
+@@ -1152,6 +1152,147 @@ static void ChFi3d_CutSeamAlongCurve(TopOpeBRepDS_DataStructure&    DStr,
+   }
+ }
+ 
++//=======================================================================
++// function : ChFi3d_CoplanarSplitEndFace
++// purpose  : OnDiff end of a SurfData whose two points lie on arcs with no
++//            face in common: the face at the end is split in two faces of
++//            one plane, one holding each arc (e.g. a pad's foot face beside
++//            the main face, the blend rolling on the pad's edge). Where
++//            exactly one arc holds the corner's vertex Vtx (side ZSide),
++//            both faces are planes of one plane, hold Vtx and face the same
++//            way, the cap goes on the face of the other arc (Fv), and the
++//            part of the arc of ZSide between its point and Vtx becomes the
++//            edge between the two faces (on Fz, that arc's face).
++//=======================================================================
++
++static bool ChFi3d_CoplanarSplitEndFace(const TopOpeBRepDS_DataStructure&   DStr,
++                                        const occ::handle<ChFiDS_SurfData>& Fd,
++                                        ChFiDS_CommonPoint&                 CV1,
++                                        ChFiDS_CommonPoint&                 CV2,
++                                        const TopoDS_Vertex&                Vtx,
++                                        const ChFiDS_Map&                   VEMap,
++                                        const ChFiDS_Map&                   EFMap,
++                                        TopoDS_Face&                        Fv,
++                                        TopoDS_Face&                        Fz,
++                                        int&                                ZSide)
++{
++  ZSide = 0;
++  if (!CV1.IsOnArc() || !CV2.IsOnArc() || !EFMap.Contains(CV1.Arc()) || !EFMap.Contains(CV2.Arc()))
++  {
++    return false;
++  }
++  auto hasShape = [](const TopoDS_Shape& S, const TopoDS_Shape& Sub, const TopAbs_ShapeEnum T) {
++    for (TopExp_Explorer ex(S, T); ex.More(); ex.Next())
++    {
++      if (ex.Current().IsSame(Sub))
++      {
++        return true;
++      }
++    }
++    return false;
++  };
++  const bool on1 = hasShape(CV1.Arc(), Vtx, TopAbs_VERTEX);
++  const bool on2 = hasShape(CV2.Arc(), Vtx, TopAbs_VERTEX);
++  if (on1 == on2)
++  {
++    return false;
++  }
++  const int                 s   = on1 ? 1 : 2;
++  const ChFiDS_CommonPoint& CVs = s == 1 ? CV1 : CV2;
++  ChFiDS_CommonPoint&       CVo = s == 1 ? CV2 : CV1;
++  const TopoDS_Shape&       F1  = DStr.Shape(Fd->Index(1));
++  const TopoDS_Shape&       F2  = DStr.Shape(Fd->Index(2));
++  // The face of an arc beside the blend's own faces, holding Vtx, planar.
++  auto endFace = [&](const TopoDS_Edge& E, TopoDS_Face& F, gp_Pln& P) {
++    for (NCollection_List<TopoDS_Shape>::Iterator It(EFMap(E)); It.More(); It.Next())
++    {
++      const TopoDS_Face& G = TopoDS::Face(It.Value());
++      if (G.IsSame(F1) || G.IsSame(F2) || !hasShape(G, Vtx, TopAbs_VERTEX))
++      {
++        continue;
++      }
++      BRepAdaptor_Surface aS(G, false);
++      if (aS.GetType() != GeomAbs_Plane)
++      {
++        continue;
++      }
++      if (!F.IsNull())
++      {
++        return false; // not unique
++      }
++      F = G;
++      P = aS.Plane();
++      if (G.Orientation() == TopAbs_REVERSED)
++      {
++        P.SetAxis(P.Axis().Reversed());
++      }
++    }
++    return !F.IsNull();
++  };
++  TopoDS_Face Fs;
++  gp_Pln      Ps;
++  if (!endFace(CVs.Arc(), Fs, Ps))
++  {
++    return false;
++  }
++  const double aTolS = BRep_Tool::Tolerance(Fs) + Precision::Confusion();
++  // The other face: of the other arc, or, the other point being a vertex,
++  // of another edge at that vertex bounding the face that point's side of
++  // the blend touches (the point is then given that edge).
++  auto coplanar = [&](const TopoDS_Edge& E, TopoDS_Face& F) {
++    gp_Pln P;
++    if (!endFace(E, F, P) || F.IsSame(Fs))
++    {
++      F.Nullify();
++      return false;
++    }
++    const double aTol = std::max(aTolS, BRep_Tool::Tolerance(F) + Precision::Confusion());
++    if (Ps.Axis().Direction().Dot(P.Axis().Direction()) < 1. - 1.e-9 || P.Distance(Ps.Location()) > aTol
++        || P.Distance(BRep_Tool::Pnt(Vtx)) > aTol)
++    {
++      F.Nullify();
++      return false;
++    }
++    return true;
++  };
++  TopoDS_Face Fo;
++  if (!coplanar(CVo.Arc(), Fo))
++  {
++    if (!CVo.IsVertex() || !VEMap.Contains(CVo.Vertex()))
++    {
++      return false;
++    }
++    const TopoDS_Face& Fn = TopoDS::Face(DStr.Shape(Fd->Index(3 - s)));
++    const TopoDS_Edge  Eold = CVo.Arc();
++    for (NCollection_List<TopoDS_Shape>::Iterator itE(VEMap(CVo.Vertex())); itE.More(); itE.Next())
++    {
++      const TopoDS_Edge& E = TopoDS::Edge(itE.Value());
++      if (E.IsSame(Eold) || BRep_Tool::Degenerated(E) || !EFMap.Contains(E)
++          || !hasShape(Fn, E, TopAbs_EDGE) || !coplanar(E, Fo))
++      {
++        continue;
++      }
++      // The transition through the arcs is the same: only the arc's
++      // orientation on the face changes.
++      TopAbs_Orientation Tr = CVo.TransitionOnArc();
++      if (ChFi3d_OrientationInFace(Eold, Fn) != ChFi3d_OrientationInFace(E, Fn))
++      {
++        Tr = TopAbs::Reverse(Tr);
++      }
++      CVo.SetArc(CVo.Tolerance(), E, BRep_Tool::Parameter(CVo.Vertex(), E), Tr);
++      break;
++    }
++    if (Fo.IsNull())
++    {
++      return false;
++    }
++  }
++  Fv    = Fo;
++  Fz    = Fs;
++  ZSide = s;
++  return true;
++}
++
+ //=================================================================================================
+ 
+ void ChFi3d_Builder::PerformOneCorner(const int Index, const bool thePrepareOnSame)
+@@ -1222,6 +1363,10 @@ void ChFi3d_Builder::PerformOneCorner(const int Index, const bool thePrepareOnSa
+   bool        FopBeyond = false;
+   TopoDS_Face Fconsumed;
+   TopoDS_Face Fv, Fad, Fop;
++  // (OnDiff on a face at the end split in two of one plane: the side whose
++  // arc's part up to the vertex becomes their common edge, on face Fz.)
++  int         ZSide = 0;
++  TopoDS_Face Fz;
+   TopoDS_Edge Arcpiv, Arcprol, Arcspine;
+   if (isfirst)
+   {
+@@ -1505,6 +1650,11 @@ void ChFi3d_Builder::PerformOneCorner(const int Index, const bool thePrepareOnSa
+       }
+     }
+     if (!inters)
++    {
++      inters =
++        ChFi3d_CoplanarSplitEndFace(DStr, Fd, CV1, CV2, Vtx, myVEMap, myEFMap, Fv, Fz, ZSide);
++    }
++    if (!inters)
+     {
+       PerformIntersectionAtEnd(Index);
+       return;
+@@ -1663,7 +1813,9 @@ void ChFi3d_Builder::PerformOneCorner(const int Index, const bool thePrepareOnSa
+   }
+   int                IShape = DStr.AddShape(Fv);
+   TopAbs_Orientation Et     = TopAbs_FORWARD;
+-  if (IFadArc == 1)
++  // (On a face at the end split in two, Fv holds the arc of the side other
++  // than ZSide.)
++  if (ZSide == 0 ? IFadArc == 1 : ZSide == 2)
+   {
+     TopExp_Explorer Exp;
+     for (Exp.Init(Fv.Oriented(TopAbs_FORWARD), TopAbs_EDGE); Exp.More(); Exp.Next())
+@@ -2009,6 +2161,69 @@ void ChFi3d_Builder::PerformOneCorner(const int Index, const bool thePrepareOnSa
+     DStr.ChangeCurveInterferences(Icurv2).Append(interfprol);
+   }
+ 
++  if (ZSide != 0)
++  {
++    // The face at the end is split in two faces of one plane: the part of
++    // the arc of side ZSide between its point and Vtx (cut off it as under
++    // the blend) becomes the edge between them, on Fz as on that arc and
++    // on Fv the other way.
++    const ChFiDS_CommonPoint&     CVz = ZSide == 1 ? CV1 : CV2;
++    const TopoDS_Edge&            Ez  = CVz.Arc();
++    double                        ef = 0., el = 0.;
++    const occ::handle<Geom_Curve> Cz = BRep_Tool::Curve(Ez, ef, el);
++    if (Cz.IsNull())
++    {
++      throw Standard_ConstructionError("OneCorner : edge without a curve");
++    }
++    const double wv = BRep_Tool::Parameter(Vtx, Ez), wc = CVz.ParameterOnArc();
++    if (std::abs(wv - wc) <= Precision::PConfusion())
++    {
++      throw Standard_Failure("OneCorner : the point is at the vertex");
++    }
++    const double                  w1 = std::min(wv, wc), w2 = std::max(wv, wc);
++    TopAbs_Orientation            Oz = TopAbs_FORWARD;
++    for (ex.Init(Fz.Oriented(TopAbs_FORWARD), TopAbs_EDGE); ex.More(); ex.Next())
++    {
++      if (ex.Current().IsSame(Ez))
++      {
++        Oz = ex.Current().Orientation();
++        break;
++      }
++    }
++    TopoDS_Face FzF = Fz, FvF = Fv;
++    FzF.Orientation(TopAbs_FORWARD);
++    FvF.Orientation(TopAbs_FORWARD);
++    double                          pf = 0., pl = 0.;
++    const occ::handle<Geom2d_Curve> PCz = BRep_Tool::CurveOnSurface(Ez, FzF, pf, pl);
++    const occ::handle<Geom2d_Curve> PCv = BRep_Tool::CurveOnSurface(Ez, FvF, pf, pl);
++    if (PCz.IsNull() || PCv.IsNull())
++    {
++      throw Standard_ConstructionError("Failed to get p-curve of edge");
++    }
++    const int IZ =
++      DStr.AddCurve(TopOpeBRepDS_Curve(new Geom_TrimmedCurve(Cz, w1, w2),
++                                       std::max(BRep_Tool::Tolerance(Ez), tolapp3d)));
++    const int IFz = DStr.AddShape(Fz);
++    DStr.ChangeShapeInterferences(IFz).Append(
++      ChFi3d_FilCurveInDS(IZ, IFz, new Geom2d_TrimmedCurve(PCz, w1, w2), Oz));
++    DStr.ChangeShapeInterferences(IShape).Append(
++      ChFi3d_FilCurveInDS(IZ, IShape, new Geom2d_TrimmedCurve(PCv, w1, w2), TopAbs::Reverse(Oz)));
++    const int IVz = DStr.AddShape(Vtx);
++    const int IPz = stripe->IndexPoint(isfirst, ZSide);
++    if (wv < wc)
++    {
++      DStr.ChangeCurveInterferences(IZ).Append(ChFi3d_FilVertexInDS(TopAbs_FORWARD, IZ, IVz, w1));
++      DStr.ChangeCurveInterferences(IZ).Append(
++        ChFi3d_FilPointInDS(TopAbs_REVERSED, IZ, IPz, w2, CVz.IsVertex()));
++    }
++    else
++    {
++      DStr.ChangeCurveInterferences(IZ).Append(
++        ChFi3d_FilPointInDS(TopAbs_FORWARD, IZ, IPz, w1, CVz.IsVertex()));
++      DStr.ChangeCurveInterferences(IZ).Append(ChFi3d_FilVertexInDS(TopAbs_REVERSED, IZ, IVz, w2));
++    }
++  }
++
+   ChFi3d_EnlargeBox(HBs, Pc, Udeb, Ufin, box1, box2);
+ 
+   if (onsame && inters)

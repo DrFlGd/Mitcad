@@ -18,10 +18,16 @@ bool isDarkPalette(const QPalette& palette = QGuiApplication::palette());
 
 // Colours for text on the palette's window or base: dark red, amber and blue
 // on a light palette, lighter ones on a dark palette. The accent colour is
-// the system's on macOS (the palette's Accent role).
+// the system's on macOS (the palette's Accent role, which the Docked chrome
+// sets to the action colour), the action colour elsewhere.
 QColor errorColor(const QPalette& palette = QGuiApplication::palette());
 QColor warningColor(const QPalette& palette = QGuiApplication::palette());
 QColor accentColor(const QPalette& palette = QGuiApplication::palette());
+
+// The icons' action blue (mitcad#230): #5aa2ff on a dark palette, #1a6ee0
+// on a light one. The Docked chrome's one accent colour (mitcad#251), for
+// the selection, the focus and the timeline's marker.
+QColor actionColor(const QPalette& palette = QGuiApplication::palette());
 
 // The material of the cards that float over the 3D view (macOS): a
 // translucent fill (the window colour, about 85% opaque on a light palette,

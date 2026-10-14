@@ -159,7 +159,7 @@ impl States {
             let mut newer: Vec<(usize, ConvertedBody)> = Vec::new();
             let mut ops: Vec<(i64, usize)> = Vec::new();
             // The view of step k, grown state by state (as `History::view`).
-            let mut view: HashMap<usize, Option<usize>> = HashMap::new();
+            let mut view = mitcad_f3d::ids::View::default();
             let steps = if rolled { h.states.len() } else { 0 };
             for k in 0..=steps {
                 if let Some(state) = k.checked_sub(1).and_then(|j| h.states.get(j)) {

@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: MIT
 # check-all sources: app/browser app/framework/HybridAssembly.cpp
+# check-all sources: core/model/src/document/components.rs core/model/src/api/components.rs
 # The browser (U3) through the real UI, on a part with a component placed
 # 40 mm along X:
 #   - The rows' layout (mitcad#10): a compact width; each light bulb just
@@ -8,8 +9,9 @@
 #     radio button right after its name.
 #   - Light bulbs hide and show a body, a sketch, a plane and an occurrence;
 #     the project file keeps them, undo takes them back.
-#   - Rename in place (double-click, the context menu), activate a component
-#     with its radio button.
+#   - Rename in place (double-click, the context menu; a component's only,
+#     default-named body is renamed with it, mitcad#291), activate a
+#     component with its radio button.
 #   - Selecting a row selects in the view; a face of the placed body is
 #     picked in the view with its occurrence, and Find in Browser selects
 #     its body's row.
@@ -146,11 +148,14 @@ ui_step "type Bracket, Enter"            xdotool type --delay 40 "Bracket"
 ui_key Return
 ui_expect_new "Renamed Component1:1 to Bracket" "Component1 is Bracket"
 ui_expect_new "Browser radio Root/Bracket:1 at" "its occurrence is Bracket:1"
+# Its only body, Body2, had a default name: renamed with it (mitcad#291).
+ui_expect_new "Renamed body F3.b0 with its component to Bracket" "Body2 renamed with its component"
+ui_expect_new "Browser Root/Bracket:1/Bodies/Bracket at" "the browser shows the body's new name"
 ui_mark
 ui_step "activate Bracket (radio)"       ui_click_logged "Browser radio Root/Bracket:1"
 ui_expect_new "Activated Bracket" "Bracket active"
 save
-expect_file 'doc.get("active_component"), [b["name"] for b in doc["bodies"]]' "('C1', ['Plate', 'Body2'])" \
+expect_file 'doc.get("active_component"), [b["name"] for b in doc["bodies"]]' "('C1', ['Plate', 'Bracket'])" \
   "the active component and the new names in the file"
 ui_mark
 ui_step "activate Root (radio)"          ui_click_logged "Browser radio Root"
@@ -168,16 +173,16 @@ ui_expect_new "Browser selected: nothing" "a face has no row"
 ui_mark
 ui_step "right-click Body2 in the view"  ui_click_logged "Body F3.b0 in O1" 3
 ui_step "choose Find in Browser"         ui_menu_choose "Find in Browser"
-ui_expect_new "Browser selected: Root/Bracket:1/Bodies/Body2" "Find in Browser selected its row"
+ui_expect_new "Browser selected: Root/Bracket:1/Bodies/Bracket" "Find in Browser selected its row"
 ui_mark
 ui_step "click the component's plane"    ui_click_logged "Browser Root/Bracket:1/Construction/Plane2"
 ui_expect_new "Selected: 1 plane [plane F5 in O1]" "a datum of the placed component, with its occurrence"
 
 echo "--- Isolate"
 ui_mark
-ui_step "right-click Body2's row"        ui_click_logged "Browser Root/Bracket:1/Bodies/Body2" 3
+ui_step "right-click the body's row"        ui_click_logged "Browser Root/Bracket:1/Bodies/Bracket" 3
 ui_step "choose Isolate"                 ui_menu_choose "Isolate"
-ui_expect_new "Bodies shown: F3.b0 in O1" "only Body2 shown"
+ui_expect_new "Bodies shown: F3.b0 in O1" "only Bracket's body shown"
 # Saved in the document (P9), and back when it opens.
 save
 expect_file 'doc["display"]' "{'isolated': [{'body': 'F3.b0', 'occurrence': 'O1'}]}" "the isolation saved"
@@ -185,7 +190,7 @@ ui_stop_app
 ui_start_app --open "$FILE"
 ui_expect_log "Bodies shown: F3.b0 in O1" "still isolated after opening the file"
 ui_mark
-ui_step "right-click Body2's row"        ui_click_logged "Browser Root/Bracket:1/Bodies/Body2" 3
+ui_step "right-click the body's row"        ui_click_logged "Browser Root/Bracket:1/Bodies/Bracket" 3
 ui_step "choose Unisolate"               ui_menu_choose "Unisolate"
 ui_expect_new "Bodies shown: F2.b0, F3.b0 in O1" "all shown again"
 
@@ -247,6 +252,12 @@ ui_focus_dialog '^Hybrid Assembly$'
 ui_step "continue as is (Alt+O)"         ui_key alt+o
 ui_focus_main
 ui_expect_new "New component in Root" "a new component"
+# The new row is the last: below the rows in sight when the tree is taller
+# than the panel, so scroll down until the app logs it.
+for _ in 1 2 3 4 5 6 7 8; do
+  tail -n +$((UI_MARK + 1)) "$UI_LOG" | grep -qE "Browser radio Root/Component[0-9]+:1 at" && break
+  ui_browser_wheel down
+done
 tail -n +$((UI_MARK + 1)) "$UI_LOG" | grep -qE "Browser radio Root/Component[0-9]+:1 at" ||
   ui_fail "the new component has no row"
 echo "ok   its row is there"

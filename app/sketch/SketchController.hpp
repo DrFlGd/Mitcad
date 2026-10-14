@@ -10,6 +10,8 @@
 #include <functional>
 #include <memory>
 #include <optional>
+#include <utility>
+#include <vector>
 
 #include <QHash>
 #include <QJsonObject>
@@ -28,6 +30,7 @@
 #include "SketchModel.hpp"
 #include "SketchSnap.hpp"
 
+class QLabel;
 class QLineEdit;
 
 namespace mitcad {
@@ -72,6 +75,9 @@ enum EntityFilter : unsigned {
   PickPoints = 1u << 0,
   PickCurves = 1u << 1,
   PickAll = PickPoints | PickCurves,
+  // Also the body edges and vertices in the sketch plane (mitcad#256), by
+  // their BodyGeometry ids; the sketch's own entities win ties.
+  PickBody = 1u << 2,
 };
 
 class SketchController;
@@ -89,17 +95,27 @@ public:
   QJsonObject command(const QString& name) const;
   // Runs a command; false, keeping the model's reason, when it is refused.
   bool run(const QJsonObject& command, QJsonObject* result = nullptr);
-  // A command that may be refused, such as an inferred constraint: the
-  // refusal is only logged.
+  // A command that may be refused, such as a constraint a snap or an
+  // inference adds: the action goes on without it, and the reason is shown
+  // as a hint when the action ends (mitcad#287).
   bool attempt(const QJsonObject& command);
   // An existing point where the cursor snapped to one (made at the origin
-  // when it snapped there), else the position.
+  // when it snapped there; a body vertex's projected point, mitcad#258), else
+  // the position.
   QJsonValue pointInput(const Snap& snap);
-  // The constraints that keep `point` where it snapped.
+  // The constraints that keep `point` where it snapped (on a body vertex or
+  // at a body edge's middle: on the projected vertex or edge, projected
+  // first).
   void constrain(const QString& point, const Snap& snap);
   void addConstraint(const QJsonObject& constraint);
   // A dimension with a typed value; refused ones are left out.
   void addDimension(const QJsonObject& dimension, const QString& value);
+  // A body edge or vertex in the sketch plane projected into the sketch,
+  // linked, for the dimension or point the action makes from it; or the
+  // entities of an existing projection of the same source that still match
+  // it, and within one action the projection made before (mitcad#256,
+  // mitcad#258). Empty when the model refused the projection (error()).
+  ProjectedItem projectBody(const BodyItem& item);
   // The sketch after the commands so far.
   const SketchModel& model();
   const QString& error() const { return m_error; }
@@ -109,12 +125,20 @@ public:
   void rollback();
 
 private:
+  // Logs the constraints a new one replaced (mitcad#287) and keeps them
+  // for the hint at the end.
+  void noteImplied(const QJsonObject& command, const QJsonObject& answer);
+
   SketchController& m_c;
   int m_depth = 0;
   QString m_label;
   QString m_error;
+  // What the action is to tell when it ends: refused attempts, constraints
+  // a new one replaced (mitcad#287).
+  QStringList m_notices;
   bool m_finished = false;
   bool m_stale = false;
+  QHash<QString, ProjectedItem> m_projected; // by source, body and occurrence
 };
 
 class SketchController : public QObject {
@@ -138,6 +162,7 @@ public:
     m_paused = paused;
     if (!paused) {
       setSpacingPreview({});
+      setStalePreview({});
     }
   }
   // Turns the view to look at the sketch plane.
@@ -163,6 +188,12 @@ public:
   void deleteSelection();
   void toggleConstruction();
   void toggleCenterline();
+  // Convert to Sketch Geometry (mitcad#257): the selected projected curves
+  // and points into ordinary free sketch geometry; whether the selection
+  // holds any (the command is enabled only then).
+  void convertProjected();
+  bool selectionHasProjected() const;
+  void updateConvertAction();
   void toggleFixed();
   void editDimension(const QString& id);
 
@@ -183,6 +214,11 @@ public:
   // it (on its normal's side), so that the sketch is not hidden.
   bool hideAbove() const { return m_hideAbove; }
   void setHideAbove(bool on);
+  // What a dimension shows (mitcad#231): its value, its parameter's name or
+  // both; a UI preference (QSettings sketch/dimensionText), not in the design.
+  enum class DimensionText { Value, Name, NameValue };
+  DimensionText dimensionTextMode() const { return m_dimensionText; }
+  void setDimensionTextMode(DimensionText mode);
 
   // --- Auto constraints while drawing (mitcad#189): the session of the
   // active drawing tool, which the palette's Auto constraint section shows.
@@ -222,6 +258,10 @@ public:
   const Snap& snapped() const { return m_snap; }
   const QPointF& cursor() const { return m_cursor; }
   bool cursorInView() const { return m_cursorValid; }
+  // The pointer's place in sketch coordinates and the document's length
+  // unit ("x 12.00, y -29.00 mm"; where a tool snaps it), while the pointer
+  // is over the sketch plane; empty otherwise (mitcad#254).
+  const QString& pointerText() const { return m_pointerText; }
   // The point or curve under a view position.
   QString entityAt(const QPointF& screen, unsigned filter = PickAll) const;
   // Highlights for picking tools.
@@ -241,6 +281,10 @@ public:
   std::optional<std::pair<QString, V2>> textOverride() const { return m_textOverride; }
   void refreshView();
   void hint(const QString& message);
+  // A hint about what an action did (a constraint refused or replaced,
+  // mitcad#287), logged, and kept in front of the next prompt hint so a
+  // tool's prompt does not hide it at once.
+  void notice(const QString& message);
   void error(const QString& message);
 
   // Values typed in the view.
@@ -256,7 +300,10 @@ public:
   void setLive(const QString& id, double value);
   // A value editor at a view position (a dimension's value).
   void openValueEditor(const QPointF& at, const QString& text, FieldSpec::Kind kind,
-                       std::function<void(const QString&)> accept);
+                       std::function<void(const QString&)> accept,
+                       const QString& name = QString());
+  // Inserts a parameter's name at the open value editor's cursor.
+  void insertIntoEditor(const QString& name);
   bool valueEditorOpen() const { return m_editor != nullptr; }
 
   // Evaluates an expression; the expression the model takes ("20 mm") and
@@ -278,6 +325,38 @@ public:
   // (its preview's chain is drawn numbered, in the order the model keeps).
   void setSpacingPreview(const QStringList& anchors);
   const QStringList& spacingPreview() const { return m_spacingPreview; }
+
+  // Clean Up Stale Projections (mitcad#252): what its preview removes and
+  // trims, from the command's answer (an empty object: nothing). The
+  // overlay draws the removed curves as they were and the pieces cut off in
+  // the remove colour, and highlights the trimmed lines, until the panel
+  // ends.
+  struct StalePreview {
+    std::vector<Curve2> removed;
+    QStringList trimmed;
+    std::vector<std::pair<V2, V2>> cut;
+    bool empty() const { return removed.empty() && trimmed.isEmpty() && cut.empty(); }
+  };
+  void setStalePreview(const QJsonObject& answer);
+  const StalePreview& stalePreview() const { return m_stalePreview; }
+
+  // Selects curves and points of the edited sketch by id, in place of the
+  // selection, as clicks would (Delete and the other selection commands
+  // take them); ids the sketch lacks are left out. With `reveal` the view
+  // pans to them when none is in sight, its zoom kept unless they do not
+  // fit; `fit` zooms to them anyway (SketchReveal.cpp: the Sketch Palette's
+  // warnings, mitcad#264; live MCP's ui_select, mitcad#265). Returns how
+  // many it selected.
+  int selectEntities(const QStringList& ids, bool reveal, bool fit = false);
+  // Body edges and vertices in the sketch plane (mitcad#256, mitcad#258), for
+  // the tool that picks or snaps to them: the model's plane_geometry query,
+  // read once per tool session and again after the document changed.
+  const BodyGeometry& bodyGeometry();
+  // As last read, for drawing (no query).
+  const BodyGeometry& bodyGeometryShown() const { return m_body; }
+  // Changes whenever the sketch is read again (a tool's view of it is
+  // stale then).
+  int modelRevision() const { return m_modelRevision; }
 
 signals:
   // The sketch or its status changed (the palette shows the DOF).
@@ -327,6 +406,7 @@ private:
   QString m_unit = QStringLiteral("mm");
   double m_unitScale = 1.0; // mm per unit
   QString m_status;         // last logged status
+  QString m_loggedProjections; // the linked projections last logged
   QString m_loggedView;     // last logged view placement
   SketchOverlay* m_overlay = nullptr;
   std::unique_ptr<SketchTool> m_tool;
@@ -348,6 +428,18 @@ private:
   Snap m_snap;
   QPointF m_cursor;
   bool m_cursorValid = false;
+  // The last notice(), until the next prompt hint has shown it.
+  QString m_notice;
+  // The pointer's place (pointerText()), the last one shown, and the one
+  // last logged ("Sketch pointer x 12.00, y -29.00 mm", once the pointer
+  // rests: logPointer()).
+  QString m_pointerText;
+  QString m_movedPointer;
+  QString m_loggedPointer;
+  QTimer m_pointerTimer;
+  QString pointerTextAt(const V2& at) const;
+  void setPointerText(const QString& text);
+  void logPointer();
   QString m_hover;
   QStringList m_picked;
   QString m_hoverAnnotation;
@@ -374,12 +466,32 @@ private:
   QPointer<QLineEdit> m_editor;
   FieldSpec::Kind m_editorKind = FieldSpec::Kind::Length;
   std::function<void(const QString&)> m_editorAccept;
+  QPointer<QLabel> m_editorLabel; // "d3 =" before the editor (mitcad#231)
+  QString m_editorDimension;       // the dimension it edits
+  QString m_editorText;            // the text it opened with
+  QString m_tooltipDimension;      // the dimension whose tooltip is shown
+  // Logs what each dimension shows ("Dimension texts: k5 d1 = 60.00, ...").
+  void logDimensionTexts() const;
+  // Shows the tooltip of the dimension under the pointer (empty: none).
+  void showDimensionTooltip(const QString& dimension, const QPointF& at);
+  DimensionText m_dimensionText = DimensionText::Value;
 
   // Equal spacing (mitcad#221): a running panel's objects, and the chains
   // last logged (by constraint).
   QStringList m_spacingPreview;
   QHash<QString, QString> m_loggedSpacings;
   void logSpacings();
+
+  // Clean Up Stale Projections' preview (mitcad#252).
+  StalePreview m_stalePreview;
+
+  // Body edges and vertices in the sketch plane (mitcad#256): what was read,
+  // for which sketch, document revision and tool session.
+  BodyGeometry m_body;
+  QString m_bodyKey;
+  QString m_revision; // the document's, when the sketch was read
+  int m_toolSession = 0;
+  int m_modelRevision = 0;
 };
 
 } // namespace sketch

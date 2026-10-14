@@ -29,6 +29,8 @@
 //! }
 //! ```
 
+// Appearances and materials of bodies and faces (mitcad#228).
+pub mod appearance;
 pub mod build;
 pub mod classes;
 pub mod decode;
@@ -226,7 +228,11 @@ pub fn decode_streams(doc: &F3dFile, label: &str) -> Result<FileDesign, String> 
         });
     };
     let design = Design::parse(&s.meta, s.bulk).map_err(|e| format!("{label}: {e}"))?;
-    let dump = design.dump(label, &s.segment_dir);
+    let mut dump = design.dump(label, &s.segment_dir);
+    // The appearances and materials (mitcad#228); their faces and the
+    // bodies' records in the blobs come with the inputs.
+    dump.f3d.get_or_insert_with(Default::default).appearance =
+        Some(appearance::decode(&design.segment, doc));
     Ok(FileDesign {
         label: label.to_string(),
         dump: Some(dump),
@@ -243,6 +249,9 @@ pub fn decode_streams(doc: &F3dFile, label: &str) -> Result<FileDesign, String> 
 pub fn resolve_inputs(design: &mut FileDesign, doc: &F3dFile, threads: usize) {
     if let Some(dump) = &mut design.dump {
         inputs::resolve_on(dump, doc, threads);
+        if let Some(a) = dump.f3d.as_mut().and_then(|f| f.appearance.as_mut()) {
+            appearance::resolve(a, doc);
+        }
     }
 }
 

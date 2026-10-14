@@ -51,6 +51,82 @@ pub fn unit(a: P2) -> P2 {
     if n > 0.0 { scale(a, 1.0 / n) } else { a }
 }
 
+/// The rays of an angle dimension between the lines `a` and `b` (start,
+/// end) on a side (mitcad#296): the lines' unit directions, reversed where
+/// `side` says.
+pub fn angle_rays(a: (P2, P2), b: (P2, P2), side: [bool; 2]) -> (P2, P2) {
+    let ray = |(s, e): (P2, P2), reverse: bool| {
+        let d = unit(sub(e, s));
+        if reverse { scale(d, -1.0) } else { d }
+    };
+    (ray(a, side[0]), ray(b, side[1]))
+}
+
+/// The angle between the lines `a` and `b` (start, end) on a side, 0 to π
+/// (see [`angle_rays`]).
+pub fn angle_on_side(a: (P2, P2), b: (P2, P2), side: [bool; 2]) -> f64 {
+    let (da, db) = angle_rays(a, b, side);
+    dot(da, db).clamp(-1.0, 1.0).acos()
+}
+
+/// Where the lines `a` and `b` (start, end), extended, meet; None for
+/// parallel lines.
+pub fn line_crossing(a: (P2, P2), b: (P2, P2)) -> Option<P2> {
+    let (da, db) = (sub(a.1, a.0), sub(b.1, b.0));
+    let c = cross(da, db);
+    if c.abs() <= 1e-12 * norm(da) * norm(db) {
+        return None;
+    }
+    Some(add(a.0, scale(da, cross(sub(b.0, a.0), db) / c)))
+}
+
+/// The side of an angle dimension between the lines `a` and `b` (start,
+/// end) whose sector holds `at` (mitcad#296): of the four sectors the lines'
+/// extensions make where they meet, the one `at` is in, bounded by the rays
+/// `±(end - start)`. None for parallel lines.
+pub fn angle_side_at(a: (P2, P2), b: (P2, P2), at: P2) -> Option<[bool; 2]> {
+    let corner = line_crossing(a, b)?;
+    let (da, db) = (sub(a.1, a.0), sub(b.1, b.0));
+    let c = cross(da, db);
+    // `at - corner = s da + t db`.
+    let v = sub(at, corner);
+    Some([cross(v, db) / c < 0.0, cross(da, v) / c < 0.0])
+}
+
+/// The side of an angle dimension between the lines `a` and `b` (start,
+/// end) that measures `value` (radians, within `tol`) with its value shown
+/// at `at` (mitcad#296): the sector `at` is in when its angle is `value`,
+/// else the neighbouring sector nearer to `at` when the supplement is.
+/// Without `at`, the sector between the directions or a neighbour. None
+/// for parallel lines and a value neither angle has.
+pub fn angle_side_for(
+    a: (P2, P2),
+    b: (P2, P2),
+    value: f64,
+    at: Option<P2>,
+    tol: f64,
+) -> Option<[bool; 2]> {
+    let corner = line_crossing(a, b)?;
+    let side = match at {
+        Some(at) => angle_side_at(a, b, at)?,
+        None => [false, false],
+    };
+    if (angle_on_side(a, b, side) - value).abs() <= tol {
+        return Some(side);
+    }
+    let near = |s: [bool; 2]| {
+        let (da, db) = angle_rays(a, b, s);
+        at.map_or(0.0, |at| dot(add(da, db), sub(at, corner)))
+    };
+    let (first, second) = ([!side[0], side[1]], [side[0], !side[1]]);
+    let next = if near(second) > near(first) {
+        second
+    } else {
+        first
+    };
+    ((angle_on_side(a, b, next) - value).abs() <= tol).then_some(next)
+}
+
 /// `end` moved past `start` by whole turns, so `start < end <= start + 2π`.
 pub fn angle_after(start: f64, end: f64) -> f64 {
     if !start.is_finite() || !end.is_finite() {

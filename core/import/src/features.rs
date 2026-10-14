@@ -382,7 +382,16 @@ impl<K: crate::ImportKernel> Importer<'_, K> {
                         def["frame"] = serde_json::to_value(f).expect("serializes");
                     }
                     let depth = self.doc.undo_depth();
-                    match self.add(&def, name) {
+                    let added = match self.add(&def, name) {
+                        // The model refuses a file's parameter as a driven
+                        // dimension's reference (a feature before the sketch
+                        // uses it): the dimensions get their own (mitcad#250).
+                        Err(_) if sketch::has_references(&def) => {
+                            self.add(&sketch::without_references(&def), name)
+                        }
+                        other => other,
+                    };
+                    match added {
                         Ok(uid) => {
                             let output = self.doc.sketch_output(uid);
                             // Linked curves the file keeps inconsistent among
@@ -1627,14 +1636,31 @@ impl<K: crate::ImportKernel> Importer<'_, K> {
         let Some(object_type) = item.object_type() else {
             return Err("unknown timeline item (type not decoded)".to_owned());
         };
+        // Sheet-metal items the decoder read (mitcad#211).
+        if let Some(Detail::Other(map)) = &item.detail
+            && let Some(sheet) = map.get("sheet").and_then(Value::as_object)
+        {
+            return self.sheet_item(index, item, sheet);
+        }
+        if let Some(Detail::Other(map)) = &item.detail
+            && let Some(e) = map.get("_sheet_error").and_then(Value::as_str)
+        {
+            return Err(format!("a sheet-metal item not decoded: {e}"));
+        }
         if let Some(reason) = not_translated(object_type) {
             return Err(reason.to_owned());
         }
         match (&item.detail, object_type) {
             (Some(Detail::Extrude(d)), _) => self.extrude(index, item, d),
             (Some(Detail::Revolve(d)), _) => self.revolve(index, d),
-            (Some(Detail::Fillet(d)), _) => self.fillet(d),
-            (Some(Detail::Chamfer(d)), _) => self.chamfer(d),
+            (Some(Detail::Fillet(d)), _) => {
+                let c = self.fillet(d)?;
+                Ok(self.dressups_on_sheets(c, true))
+            }
+            (Some(Detail::Chamfer(d)), _) => {
+                let c = self.chamfer(d)?;
+                Ok(self.dressups_on_sheets(c, false))
+            }
             // Sweeps, pipes and lofts (F3).
             (Some(Detail::Sweep(d)), _) => self.sweep(index, d),
             (Some(Detail::Pipe(d)), _) => self.pipe(index, d),
@@ -4099,7 +4125,11 @@ impl<K: crate::ImportKernel> Importer<'_, K> {
             .map(|m| Reference::from_map(m.clone()));
         let axes = self.revolve_axes(&axis, &info)?;
         let operation = Self::operation(d.operation.as_deref());
-        let participant_options = self.participant_options(index, &None, operation, info.uid);
+        // The bodies the file names (mitcad#235): without them all bodies
+        // came first, and on a body of hundreds of faces that try alone
+        // ran out of memory.
+        let participant_options =
+            self.participant_options(index, &d.participant_bodies, operation, info.uid);
         // A quotient of two parameters: by their names, else their values.
         let ratio = |a: &Option<Reference>, b: &Option<Reference>| -> Option<Value> {
             match (self.value(a)?, self.value(b)?) {
@@ -4125,40 +4155,112 @@ impl<K: crate::ImportKernel> Importer<'_, K> {
             ),
             other => return Err(format!("coil type {other:?} is not supported")),
         };
-        if !Self::is_zero(&d.angle) {
-            return Err("a tapered coil is not supported".to_owned());
+        // A taper (mitcad#235): the coil on a cone of that half angle, the
+        // profiles moving out (or in) by the pitch times its tangent for
+        // every pitch they rise; which way is not decoded, out first.
+        let growths: Vec<Option<Value>> = if Self::is_zero(&d.angle) {
+            vec![None]
+        } else {
+            let angle = self.value_or(&d.angle, "taper")?;
+            let tangent = param(&d.angle).and_then(|p| p.value).map(f64::tan);
+            [1.0, -1.0]
+                .into_iter()
+                .map(|sign: f64| match (&pitch, &angle) {
+                    (Value::String(p), Value::String(a)) => Some(json!(format!(
+                        "{}{p} * tan({a})",
+                        if sign < 0.0 { "-" } else { "" }
+                    ))),
+                    _ => Some(json!(sign * pitch.as_f64()? * tangent?)),
+                })
+                .collect()
+        };
+        if growths.iter().any(Option::is_none) && growths.len() > 1 {
+            return Err("the taper's growth could not be given".to_owned());
+        }
+        // Flat ends (mitcad#235): their transition and flat angles. Mitcad's
+        // turns are those at the full pitch; the file's may count the ends
+        // too (not decoded): as given first, then less the ends' angles.
+        let end_of = |key: &str| -> Option<Value> {
+            let e = d.other.get(key)?.as_object()?;
+            let r = |k: &str| {
+                e.get(k)
+                    .and_then(Value::as_object)
+                    .map(|m| Reference::from_map(m.clone()))
+            };
+            Some(
+                json!({"transition_angle": self.value(&r("transition"))?, "flat_angle": self.value(&r("flat"))?}),
+            )
+        };
+        let (start_end, end_end) = (end_of("startEnd"), end_of("endEnd"));
+        let mut turn_options = vec![revolutions.clone()];
+        if start_end.is_some() || end_end.is_some() {
+            let angles: f64 = ["startEnd", "endEnd"]
+                .iter()
+                .filter_map(|k| d.other.get(*k))
+                .flat_map(|e| ["transition", "flat"].map(|k| e[k]["value"].as_f64()))
+                .map(|v| v.unwrap_or(0.0))
+                .sum();
+            let given = match &revolutions {
+                Value::String(_) => None,
+                v => v.as_f64(),
+            }
+            .or_else(|| {
+                (d.coil_type.as_deref() == Some("PitchAndRevolutionCoilType"))
+                    .then(|| param(&d.revolutions).and_then(|p| p.value))
+                    .flatten()
+            });
+            if let Some(n) = given {
+                let fewer = n - angles / std::f64::consts::TAU;
+                if fewer > 0.0 {
+                    turn_options.push(json!(fewer));
+                }
+            }
         }
         // The direction along the axis the decoder read (`flip`) first.
         let reversed = d.other.get("flip").and_then(Value::as_bool) == Some(true);
         let mut candidates = Vec::new();
         for set in &sets {
             for (axis, axis_guess) in &axes {
-                for (k, (left_handed, flip)) in [
-                    (false, reversed),
-                    (true, reversed),
-                    (false, !reversed),
-                    (true, !reversed),
-                ]
-                .into_iter()
-                .enumerate()
-                {
-                    let profiles: Vec<Value> = set
-                        .keys
-                        .iter()
-                        .map(|r| json!({"sketch": info.uid.to_string(), "region": r}))
-                        .collect();
-                    let def = json!({"type": "helix", "profiles": profiles, "axis": axis,
-                        "pitch": pitch, "revolutions": revolutions,
+                for (g, growth) in growths.iter().enumerate() {
+                    for (n, turns) in turn_options.iter().enumerate() {
+                        for (k, (left_handed, flip)) in [
+                            (false, reversed),
+                            (true, reversed),
+                            (false, !reversed),
+                            (true, !reversed),
+                        ]
+                        .into_iter()
+                        .enumerate()
+                        {
+                            let profiles: Vec<Value> = set
+                                .keys
+                                .iter()
+                                .map(|r| json!({"sketch": info.uid.to_string(), "region": r}))
+                                .collect();
+                            let mut def = json!({"type": "helix", "profiles": profiles, "axis": axis,
+                        "pitch": pitch, "revolutions": turns,
                         "left_handed": left_handed, "flip": flip, "operation": operation});
-                    let mut c = Candidate::new(def);
-                    c.guess = set.guess || *axis_guess || k > 0;
-                    if last_sketch || c.guess {
-                        c.input_provenance = InputProvenance::Inferred;
+                            if let Some(growth) = growth {
+                                def["growth"] = growth.clone();
+                                def["construction"] = json!("mitcad");
+                            }
+                            if let Some(e) = &start_end {
+                                def["start"] = e.clone();
+                            }
+                            if let Some(e) = &end_end {
+                                def["end"] = e.clone();
+                            }
+                            let mut c = Candidate::new(def);
+                            c.guess = set.guess || *axis_guess || k > 0 || g > 0 || n > 0;
+                            if last_sketch || c.guess {
+                                c.input_provenance = InputProvenance::Inferred;
+                            }
+                            if last_sketch {
+                                c.note = Some("the sketch is the last one before it".to_owned());
+                            }
+                            candidates.extend(with_participants(&c, &participant_options));
+                        }
                     }
-                    if last_sketch {
-                        c.note = Some("the sketch is the last one before it".to_owned());
-                    }
-                    candidates.extend(with_participants(&c, &participant_options));
                 }
             }
         }
@@ -4335,7 +4437,7 @@ impl<K: crate::ImportKernel> Importer<'_, K> {
 
     // Fillets and chamfers.
 
-    fn fillet(&mut self, d: &FilletDetail) -> Result<Vec<Candidate>, String> {
+    pub(crate) fn fillet(&mut self, d: &FilletDetail) -> Result<Vec<Candidate>, String> {
         let sets = d.edge_sets.clone().unwrap_or_default();
         if sets.is_empty() {
             return Err("no edge sets decoded".to_owned());
@@ -4475,7 +4577,7 @@ impl<K: crate::ImportKernel> Importer<'_, K> {
         Ok(candidates)
     }
 
-    fn chamfer(&mut self, d: &ChamferDetail) -> Result<Vec<Candidate>, String> {
+    pub(crate) fn chamfer(&mut self, d: &ChamferDetail) -> Result<Vec<Candidate>, String> {
         let mut sets = d.edge_sets.clone().unwrap_or_default();
         if sets.is_empty() && d.edges.is_some() {
             // Retired form: one set of `edges`.
@@ -4702,13 +4804,22 @@ impl<K: crate::ImportKernel> Importer<'_, K> {
             seen = std::mem::take(&mut g.seen);
             skip = g.states;
         }
-        // The edges the next states lost.
+        // The edges the next states lost. (Bodies kept within the tolerance
+        // as their stored ones, mitcad#285.)
+        let stored = self.stored_counterparts();
         let kernel = self.doc.kernel();
         let bodies: Vec<(BodyUid, K::Shape, Option<Sig>)> = self
             .doc
             .bodies()
             .iter()
-            .map(|b| (b.uid, b.shape.clone(), Sig::of(kernel, b.shape)))
+            .map(|b| {
+                let sig = stored.get(&b.uid).copied();
+                (
+                    b.uid,
+                    b.shape.clone(),
+                    sig.or_else(|| Sig::of(kernel, b.shape)),
+                )
+            })
             .collect();
         let mut candidates = Vec::new();
         let mut last_error = None;

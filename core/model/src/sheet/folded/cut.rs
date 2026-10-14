@@ -316,6 +316,142 @@ pub(super) fn rebind(
     None
 }
 
+/// A seam to material outside the cut plane whose side in the plane the
+/// cut shortened (mitcad#280: a cut ending on the seam's line, removing
+/// material on the cut side only): the seam over the one stretch of its
+/// line that boundary still has, the other side's boundary keeping the rest
+/// as a free edge. None when the boundary no longer lies along the seam in
+/// one stretch.
+fn shortened(
+    before: &SheetState,
+    after: &SheetState,
+    port: &ShapePort,
+    cut_first: bool,
+) -> Option<ShapePort> {
+    use crate::sketch::geometry::{dist, dot, sub};
+    let (cut, other) = if cut_first {
+        (&port.first, &port.second)
+    } else {
+        (&port.second, &port.first)
+    };
+    // The other side lies outside the cut plane: it must be unchanged.
+    let regions = |s: &SheetState| {
+        s.charts
+            .iter()
+            .find(|p| p.domain == other.boundary.domain)
+            .map(|p| p.regions.clone())
+    };
+    if regions(before).is_none() || regions(before) != regions(after) {
+        return None;
+    }
+    let old = before
+        .charts
+        .iter()
+        .filter(|p| p.domain == cut.boundary.domain)
+        .flat_map(|p| &p.regions)
+        .flat_map(|r| &r.loops)
+        .flat_map(|l| &l.edges)
+        .find(|e| e.piece == cut.boundary.piece)?;
+    let (p0, p1) = (
+        old.curve.point(cut.span.first).ok()?,
+        old.curve.point(cut.span.last).ok()?,
+    );
+    let d = sub(p1, p0);
+    let len = dot(d, d);
+    if len <= 0.0 {
+        return None;
+    }
+    let s = |q: [f64; 2]| dot(sub(q, p0), d) / len;
+    let off = |q: [f64; 2]| {
+        let t = s(q);
+        dist(q, [p0[0] + t * d[0], p0[1] + t * d[1]])
+    };
+    let axial = |side: &ShapePortSide, t: f64| side.axial.offset + side.axial.scale * t;
+    let (a0, a1) = (axial(cut, cut.span.first), axial(cut, cut.span.last));
+    let mut found = None;
+    for edge in after
+        .charts
+        .iter()
+        .filter(|p| p.domain == cut.boundary.domain)
+        .flat_map(|p| &p.regions)
+        .flat_map(|r| &r.loops)
+        .flat_map(|l| &l.edges)
+        .filter(|e| e.piece.curve == cut.boundary.piece.curve)
+    {
+        let SegmentGeometry::Line { start, end } = edge.curve.geometry else {
+            continue;
+        };
+        let (q0, q1) = (
+            edge.curve.point(edge.curve.range.first).ok()?,
+            edge.curve.point(edge.curve.range.last).ok()?,
+        );
+        if off(q0) > TOLERANCE || off(q1) > TOLERANCE {
+            continue;
+        }
+        let (lo, hi) = (s(q0).min(s(q1)).max(0.0), s(q0).max(s(q1)).min(1.0));
+        if hi - lo <= 1e-9 {
+            continue;
+        }
+        if found.is_some() {
+            return None;
+        }
+        // The edge's own parameters at the stretch's ends.
+        let e = sub(end, start);
+        let t = |s: f64| {
+            let q = [p0[0] + s * d[0], p0[1] + s * d[1]];
+            dot(sub(q, start), e) / dot(e, e)
+        };
+        let (t_lo, t_hi) = (t(lo), t(hi));
+        let (x_lo, x_hi) = (a0 + (a1 - a0) * lo, a0 + (a1 - a0) * hi);
+        let scale = (x_hi - x_lo) / (t_hi - t_lo);
+        let cut_side = ShapePortSide {
+            boundary: BoundaryPieceRef {
+                domain: cut.boundary.domain,
+                piece: edge.piece.clone(),
+            },
+            span: ParamSpan {
+                first: t_lo,
+                last: t_hi,
+            },
+            axial: AxialMap {
+                offset: x_lo - scale * t_lo,
+                scale,
+            },
+        };
+        let param = |x: f64| (x - other.axial.offset) / other.axial.scale;
+        let other_side = ShapePortSide {
+            span: ParamSpan {
+                first: param(x_lo),
+                last: param(x_hi),
+            },
+            ..other.clone()
+        };
+        let interval = if port.axial_interval.first <= port.axial_interval.last {
+            ParamSpan {
+                first: x_lo.min(x_hi),
+                last: x_lo.max(x_hi),
+            }
+        } else {
+            ParamSpan {
+                first: x_lo.max(x_hi),
+                last: x_lo.min(x_hi),
+            }
+        };
+        let (first, second) = if cut_first {
+            (cut_side, other_side)
+        } else {
+            (other_side, cut_side)
+        };
+        found = Some(ShapePort {
+            token: port.token,
+            axial_interval: interval,
+            first,
+            second,
+        });
+    }
+    found
+}
+
 /// The result of [`developed_cut`]: the input configuration with the cut
 /// material, possibly disconnected.
 pub(crate) struct CutOutcome {
@@ -400,10 +536,21 @@ pub(crate) fn developed_cut<K: Kernel>(
         .iter()
         .filter(|p| !(inside(p.first.boundary.domain) && inside(p.second.boundary.domain)))
     {
-        let (Some(first), Some(second)) = (
+        let rebound = match (
             rebind(&before, &work, &port.first),
             rebind(&before, &work, &port.second),
-        ) else {
+        ) {
+            (Some(first), Some(second)) => Some(ShapePort {
+                first,
+                second,
+                ..port.clone()
+            }),
+            // The cut ends on the seam and shortened it on the cut side
+            // only (mitcad#280): the rest of the other side's boundary
+            // becomes a free edge.
+            _ => shortened(&before, &work, port, inside(port.first.boundary.domain)),
+        };
+        let Some(rebound) = rebound else {
             let (cut, folded) = if inside(port.first.boundary.domain) {
                 (port.first.boundary.domain, port.second.boundary.domain)
             } else {
@@ -419,11 +566,7 @@ pub(crate) fn developed_cut<K: Kernel>(
                 }
             ));
         };
-        joins.push(ShapePort {
-            first,
-            second,
-            ..port.clone()
-        });
+        joins.push(rebound);
     }
     let first_token = joins.iter().map(|p| p.token).max().map_or(0, |v| v + 1);
     for (next, port) in (first_token..).zip(&result.ports) {
@@ -469,13 +612,14 @@ pub(crate) fn developed_cut<K: Kernel>(
 /// sketch lies on that panel's front or back surface (with the bends
 /// developed the panel does not move, so its input chart serves).
 fn sketch_tools<K: Kernel>(
-    d: &SheetCutDef,
+    d: &SheetCutDef<f64>,
+    stationary: PanelId,
     ctx: &mut EvalContext<'_, K>,
     state: &SheetState,
     thickness: f64,
 ) -> Result<Vec<MaterialRegion>, String> {
-    let fixed = SheetDomainRef::Panel(d.stationary);
-    let (frame, parity) = plane(chart(state, d.stationary)?)?;
+    let fixed = SheetDomainRef::Panel(stationary);
+    let (frame, parity) = plane(chart(state, stationary)?)?;
     let f = frame.normal().map(|v| v * parity.sign());
     let mut tools = Vec::new();
     let mut sketches: Vec<FeatureUid> = d.profiles.iter().map(|p| p.sketch).collect();
@@ -530,20 +674,102 @@ fn sketch_tools<K: Kernel>(
     Ok(tools)
 }
 
+/// A simple hole through a sheet as a cut of its material domain
+/// (mitcad#211): when `body` is a valid sheet and every axis starts on the
+/// front or back surface of one planar panel, normal to it and into the
+/// material, as deep as the sheet at least (`depth` None: through all),
+/// its circles are removed from the panel's plane as `sheet_cut` removes
+/// regions, so the body stays a sheet whose later features use its
+/// domains. `None` where it does not apply (the hole is then an ordinary
+/// cut, which leaves the body's sheet meaning invalid).
+pub(crate) fn hole_cut<K: Kernel>(
+    ctx: &mut EvalContext<'_, K>,
+    body: BodyUid,
+    positions: &[crate::kernel::Axis],
+    diameter: f64,
+    depth: Option<f64>,
+) -> Result<Option<FeatureOutput<K::Shape>>, String> {
+    if ctx.sheet(body).is_none_or(|s| s.value.status() != "valid") {
+        return Ok(None);
+    }
+    let Ok((state, rules)) = read(ctx, body) else {
+        return Ok(None);
+    };
+    let thickness = rules.thickness;
+    if depth.is_some_and(|d| d < thickness - TOLERANCE) || positions.is_empty() {
+        return Ok(None);
+    }
+    let mut found = None;
+    for patch in &state.charts {
+        let SheetDomainRef::Panel(id) = patch.domain else {
+            continue;
+        };
+        let Ok((frame, parity)) = plane(patch) else {
+            continue;
+        };
+        let n = frame.normal().map(|c| c * parity.sign());
+        let on = positions.iter().all(|a| {
+            let q = dot(sub(a.origin, frame.origin), n);
+            let into = dot(a.direction, n);
+            (q.abs() <= 1e-6 && into > 1.0 - 1e-9)
+                || ((q - thickness).abs() <= 1e-6 && into < -1.0 + 1e-9)
+        });
+        if on {
+            found = Some((id, frame));
+            break;
+        }
+    }
+    let Some((panel, frame)) = found else {
+        return Ok(None);
+    };
+    let mut tools = Vec::new();
+    for (k, a) in positions.iter().enumerate() {
+        let o = sub(a.origin, frame.origin);
+        let center = [dot(o, frame.x_axis), dot(o, frame.y_axis)];
+        tools.push(MaterialRegion::from_legacy(&SheetRegion {
+            loops: vec![SheetLoop {
+                segments: vec![SheetSegment {
+                    id: SheetCurveId::Generated {
+                        feature: ctx.uid,
+                        slot: k as u32,
+                    },
+                    geometry: SegmentGeometry::Circle {
+                        center,
+                        radius: diameter / 2.0,
+                        start: 0.0,
+                    },
+                }],
+            }],
+        })?);
+    }
+    // A hole the sheet's domains cannot take (one reaching a bend) is an
+    // ordinary cut, as before.
+    let Ok(outcome) = developed_cut(ctx, &state, thickness, panel, &[], &tools, "the hole") else {
+        return Ok(None);
+    };
+    if !outcome.used_tools {
+        return Ok(None);
+    }
+    Ok(publish_pieces(ctx, outcome.state, &rules, None).ok())
+}
+
 pub(crate) fn cut<K: Kernel>(
-    d: &SheetCutDef,
+    d: &SheetCutDef<f64>,
     ctx: &mut EvalContext<'_, K>,
 ) -> Result<FeatureOutput<K::Shape>, String> {
     let (state, rules) = read(ctx, d.body)?;
     if d.profiles.is_empty() {
         return Err("no profiles selected".into());
     }
-    let tools = sketch_tools(d, ctx, &state, rules.thickness)?;
+    let stationary = d
+        .stationary
+        .ok_or("a developed sheet cut names its stationary panel")?;
+    let tools = sketch_tools(d, stationary, ctx, &state, rules.thickness)?;
     let outcome = developed_cut(
         ctx,
         &state,
         rules.thickness,
-        d.stationary,
+        stationary,
         &d.open_bends,
         &tools,
         "the cut",
@@ -552,4 +778,335 @@ pub(crate) fn cut<K: Kernel>(
         ctx.warn("the cut profiles do not reach the sheet material");
     }
     publish_pieces(ctx, outcome.state, &rules, None)
+}
+
+/// A straight sheet cut (mitcad#242): the profiles swept along the
+/// sketch's normal (against it with `flip`) from the sketch's plane, as
+/// far as the extent, are cut from the folded sheet. Where the result is
+/// still the sheet's material changed through its thickness (the cut stays
+/// in panels normal to its direction), the domains are re-derived from it
+/// as for an ordinary feature, so the cut is an ordinary domain edit. Where
+/// it crosses a bend or an inclined panel its walls follow the sweep, which
+/// the domains cannot hold: the cut is kept as an overlay of the sheet,
+/// cut from the solid every later sheet feature rebuilds.
+pub(crate) fn straight_cut<K: Kernel>(
+    d: &SheetCutDef<f64>,
+    ctx: &mut EvalContext<'_, K>,
+) -> Result<FeatureOutput<K::Shape>, String> {
+    let (frame, profiles) = straight_profiles(d, ctx)?;
+    let direction = frame.normal().map(|v| if d.flip { -v } else { v });
+    straight_cut_on(ctx, d.body, frame, profiles, direction, d.extent.as_ref())
+}
+
+/// A straight cut's sketch frame and its profiles in it.
+pub(crate) fn straight_profiles<K: Kernel>(
+    d: &SheetCutDef<f64>,
+    ctx: &mut EvalContext<'_, K>,
+) -> Result<
+    (
+        crate::profile::SketchFrame,
+        Vec<(crate::topo::RegionKey, SheetRegion)>,
+    ),
+    String,
+> {
+    let sketch_uid = d.profiles.first().ok_or("no profiles selected")?.sketch;
+    let sketch = ctx.sketch(sketch_uid)?;
+    let frame = sketch.frame;
+    let mut profiles = Vec::new();
+    for profile in &d.profiles {
+        let region = sketch
+            .resolve_region(&profile.region)
+            .ok_or_else(|| format!("cut profile {} is unavailable", profile.region))?;
+        profiles.push((
+            profile.region.clone(),
+            SheetRegion {
+                loops: region
+                    .loops
+                    .iter()
+                    .map(|l| SheetLoop {
+                        segments: l
+                            .segments
+                            .iter()
+                            .map(|s| SheetSegment {
+                                id: SheetCurveId::Sketch {
+                                    sketch: sketch_uid,
+                                    segment: s.key.clone(),
+                                },
+                                geometry: s.geometry.clone(),
+                            })
+                            .collect(),
+                    })
+                    .collect(),
+            },
+        ));
+    }
+    Ok((frame, profiles))
+}
+
+/// The straight cut of `profiles` in `frame` along `direction` from the
+/// frame's plane on the sheet `body` (also the copies a pattern or mirror
+/// makes, [`crate::sheet::replay`]).
+pub(crate) fn straight_cut_on<K: Kernel>(
+    ctx: &mut EvalContext<'_, K>,
+    body: BodyUid,
+    frame: crate::profile::SketchFrame,
+    profiles: Vec<(crate::topo::RegionKey, SheetRegion)>,
+    direction: [f64; 3],
+    extent: Option<&crate::features::sheet_cut::SheetCutExtent<f64>>,
+) -> Result<FeatureOutput<K::Shape>, String> {
+    use crate::features::sheet_cut::SheetCutExtent;
+    let (mut state, rules) = read(ctx, body)?;
+    let current = ctx.body(body)?;
+    let end = match extent {
+        Some(SheetCutExtent::Distance { distance }) => {
+            if !distance.is_finite() || *distance <= TOLERANCE {
+                return Err("a straight sheet cut's distance must be positive".into());
+            }
+            *distance
+        }
+        Some(SheetCutExtent::ThroughAll) => {
+            let bounds = ctx
+                .kernel
+                .bounding_box(&current)
+                .map_err(|e| e.to_string())?
+                .ok_or("the sheet has no extent")?;
+            let reach = bounds
+                .corners()
+                .map(|c| dot(sub(c, frame.origin), direction))
+                .fold(f64::NEG_INFINITY, f64::max);
+            if reach <= 0.0 {
+                return Err("the sheet lies behind the straight cut's sketch".into());
+            }
+            reach * 1.25 + 1.0
+        }
+        None => return Err("a straight sheet cut needs an extent".into()),
+    };
+    let mut overlay = SheetOverlay {
+        feature: ctx.uid,
+        kind: SheetOverlayKind::Straight {
+            frame,
+            profiles,
+            direction,
+            start: 0.0,
+            end,
+        },
+        removed: 0.0,
+    };
+    let tool = straight_tool(ctx, &overlay)?;
+    let cut = ctx
+        .kernel
+        .boolean(crate::kernel::BooleanOp::Cut, &[&current], &tool)
+        .map_err(|e| e.to_string())?;
+    let mut output = FeatureOutput::default();
+    if !cut.touched.first().copied().unwrap_or(false) {
+        ctx.warn("the cut profiles do not reach the sheet material");
+        output.changes.push(BodyChange::Set(body, current));
+        state.shape_generation.clear();
+        output.sheets.insert(body, SheetChange::Set(state));
+        return Ok(output);
+    }
+    let [piece] = cut.pieces.as_slice() else {
+        return Err(format!(
+            "the straight cut leaves {} pieces of the sheet",
+            cut.pieces.len()
+        ));
+    };
+    let result = piece.shape.clone();
+    let volume = |shape: &K::Shape| -> Result<f64, String> {
+        Ok(ctx
+            .kernel
+            .mass_properties(shape)
+            .map_err(|e| e.to_string())?
+            .volume)
+    };
+    overlay.removed = volume(&current)? - volume(&result)?;
+    let warnings = ctx.warnings.len();
+    let derived =
+        crate::sheet::rederive::rederive_from(ctx, state.clone(), &rules, &current, &result);
+    ctx.warnings.truncate(warnings);
+    let mut next = match derived {
+        Ok(derived) => derived,
+        Err(_) => {
+            state.overlays.push(overlay);
+            state
+        }
+    };
+    next.shape_generation.clear();
+    output.changes.push(BodyChange::Set(body, result));
+    output.sheets.insert(body, SheetChange::Set(next));
+    Ok(output)
+}
+
+/// The tool of a straight cut kept as an overlay.
+fn straight_tool<K: Kernel>(
+    ctx: &EvalContext<'_, K>,
+    overlay: &SheetOverlay,
+) -> Result<K::Shape, String> {
+    let SheetOverlayKind::Straight {
+        frame,
+        profiles,
+        direction,
+        start,
+        end,
+    } = &overlay.kind
+    else {
+        return Err("not a straight cut".into());
+    };
+    let regions: Vec<crate::profile::ProfileRegion> = profiles
+        .iter()
+        .map(|(key, region)| crate::profile::ProfileRegion {
+            key: key.clone(),
+            loops: region
+                .loops
+                .iter()
+                .map(|l| crate::profile::ProfileLoop {
+                    segments: l
+                        .segments
+                        .iter()
+                        .map(|s| crate::profile::ProfileSegment {
+                            key: match &s.id {
+                                SheetCurveId::Sketch { segment, .. } => segment.clone(),
+                                SheetCurveId::Generated { .. } => {
+                                    "c1".parse().expect("a segment key")
+                                }
+                            },
+                            geometry: s.geometry.clone(),
+                        })
+                        .collect(),
+                })
+                .collect(),
+        })
+        .collect();
+    ctx.kernel
+        .extrude(&crate::kernel::ExtrudeSpec {
+            feature: overlay.feature,
+            frame: *frame,
+            regions: &regions,
+            direction: *direction,
+            start: *start,
+            end: *end,
+        })
+        .map_err(|e| e.to_string())
+}
+
+/// The pieces of material a feature removed and added.
+pub(crate) type Change<S> = (Vec<S>, Vec<S>);
+
+/// The material an earlier feature changed in `body`: the pieces it
+/// removed and those it added (exact booleans of the body before it and
+/// its result), moved by `placement`.
+pub(crate) fn feature_change<K: Kernel>(
+    ctx: &mut EvalContext<'_, K>,
+    feature: FeatureUid,
+    body: BodyUid,
+    placement: &crate::transform::Transform,
+) -> Result<Change<K::Shape>, String> {
+    let name = ctx.feature_name(feature);
+    let before = ctx
+        .body_before(feature, body)
+        .ok_or_else(|| format!("{name} has no body before it"))?;
+    let after = ctx
+        .env
+        .history
+        .iter()
+        .find(|r| r.uid == feature)
+        .and_then(|r| r.shape_set(body))
+        .cloned()
+        .ok_or_else(|| format!("{name} has no result"))?;
+    let volume = |shape: &K::Shape| -> Result<f64, String> {
+        Ok(ctx
+            .kernel
+            .mass_properties(shape)
+            .map_err(|e| e.to_string())?
+            .volume)
+    };
+    let least = 1e-9 * volume(&before)?.abs().max(1.0);
+    let mut removed = Vec::new();
+    let mut added = Vec::new();
+    for (into, from, less) in [
+        (&mut removed, &before, &after),
+        (&mut added, &after, &before),
+    ] {
+        let difference = ctx
+            .kernel
+            .boolean(crate::kernel::BooleanOp::Cut, &[from], less)
+            .map_err(|e| e.to_string())?;
+        for piece in difference.pieces {
+            if volume(&piece.shape)? > least {
+                into.push(if placement.is_identity() {
+                    piece.shape
+                } else {
+                    ctx.kernel
+                        .transform_shape(&piece.shape, placement, None)
+                        .map_err(|e| e.to_string())?
+                });
+            }
+        }
+    }
+    Ok((removed, added))
+}
+
+/// A rebuilt sheet with its overlays made on it again, in order. An
+/// overlay that would remove more than it did when it was made (material
+/// added after it, in its way) is refused.
+pub(crate) fn with_overlays<K: Kernel>(
+    ctx: &mut EvalContext<'_, K>,
+    state: &SheetState,
+    mut shape: K::Shape,
+) -> Result<K::Shape, String> {
+    use crate::kernel::BooleanOp;
+    let volume = |ctx: &EvalContext<'_, K>, shape: &K::Shape| -> Result<f64, String> {
+        Ok(ctx
+            .kernel
+            .mass_properties(shape)
+            .map_err(|e| e.to_string())?
+            .volume)
+    };
+    for overlay in &state.overlays {
+        let tools: Vec<(BooleanOp, K::Shape)> = match &overlay.kind {
+            SheetOverlayKind::Straight { .. } => {
+                vec![(BooleanOp::Cut, straight_tool(ctx, overlay)?)]
+            }
+            SheetOverlayKind::Change { placement } => {
+                let (removed, added) = feature_change(ctx, overlay.feature, state.body, placement)?;
+                removed
+                    .into_iter()
+                    .map(|s| (BooleanOp::Cut, s))
+                    .chain(added.into_iter().map(|s| (BooleanOp::Join, s)))
+                    .collect()
+            }
+        };
+        let before = volume(ctx, &shape)?;
+        for (operation, tool) in tools {
+            let result = ctx
+                .kernel
+                .boolean(operation, &[&shape], &tool)
+                .map_err(|e| e.to_string())?;
+            if !result.touched.first().copied().unwrap_or(false) {
+                continue;
+            }
+            let pieces: Vec<_> = result
+                .pieces
+                .into_iter()
+                .filter(|p| !p.sources.is_empty())
+                .collect();
+            let [piece] = pieces.as_slice() else {
+                return Err(format!(
+                    "the overlay of {} leaves {} pieces of the rebuilt sheet",
+                    overlay.feature,
+                    pieces.len()
+                ));
+            };
+            shape = piece.shape.clone();
+        }
+        let after = volume(ctx, &shape)?;
+        if before - after > overlay.removed + 1e-6 * overlay.removed.abs().max(1.0) {
+            return Err(format!(
+                "{} would also change material added after it ({:.6} mm3 more)",
+                overlay.feature,
+                before - after - overlay.removed
+            ));
+        }
+    }
+    Ok(shape)
 }

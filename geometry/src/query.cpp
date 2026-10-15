@@ -17,6 +17,12 @@
 #include <BRep_Tool.hxx>
 #include <Bnd_Box.hxx>
 #include <GCPnts_AbscissaPoint.hxx>
+#include <Geom_BSplineCurve.hxx>
+#include <Geom_BezierCurve.hxx>
+#include <Geom_Line.hxx>
+#include <Geom_RectangularTrimmedSurface.hxx>
+#include <Geom_SurfaceOfLinearExtrusion.hxx>
+#include <Geom_TrimmedCurve.hxx>
 #include <GProp_GProps.hxx>
 #include <NCollection_Map.hxx>
 #include <OSD_Parallel.hxx>
@@ -402,6 +408,88 @@ bool box_holds_face(const TopoDS_Face& face) {
   }
 }
 
+// A box that holds a face of a surface of linear extrusion (mitcad#311),
+// where OCCT's box is sampled: the face's parameters along the curve and
+// the direction are those of its boundary, so the face lies in the hull of
+// the curve's stretch (its ends for a line, the poles of its segment for a
+// B-spline or Bezier curve) moved to both ends of the face's stretch along
+// the direction. False for other faces and other curves. The parameters
+// are widened by a millionth of their span and the box by the face's
+// largest tolerance.
+bool extrusion_box(const TopoDS_Face& face, Bnd_Box& box) {
+  Handle(Geom_Surface) surface = BRep_Tool::Surface(face);
+  if (const auto trimmed = Handle(Geom_RectangularTrimmedSurface)::DownCast(surface)) {
+    surface = trimmed->BasisSurface();
+  }
+  const auto extrusion = Handle(Geom_SurfaceOfLinearExtrusion)::DownCast(surface);
+  if (extrusion.IsNull()) {
+    return false;
+  }
+  double u0 = 0.0, u1 = 0.0, v0 = 0.0, v1 = 0.0;
+  BRepTools::UVBounds(face, u0, u1, v0, v1);
+  if (!std::isfinite(u0) || !std::isfinite(u1) || !std::isfinite(v0) || !std::isfinite(v1) ||
+      u1 < u0 || v1 < v0) {
+    return false;
+  }
+  const double du = (u1 - u0) * 1e-6 + Precision::PConfusion();
+  const double dv = (v1 - v0) * 1e-6 + Precision::PConfusion();
+  u0 -= du;
+  u1 += du;
+  v0 -= dv;
+  v1 += dv;
+  Handle(Geom_Curve) curve = extrusion->BasisCurve();
+  while (const auto trimmed = Handle(Geom_TrimmedCurve)::DownCast(curve)) {
+    curve = trimmed->BasisCurve();
+  }
+  std::vector<gp_Pnt> hull;
+  if (const auto line = Handle(Geom_Line)::DownCast(curve)) {
+    hull = {line->Value(u0), line->Value(u1)};
+  } else if (const auto spline = Handle(Geom_BSplineCurve)::DownCast(curve)) {
+    const auto copy = Handle(Geom_BSplineCurve)::DownCast(spline->Copy());
+    const double first = copy->FirstParameter();
+    const double last = copy->LastParameter();
+    if (!copy->IsPeriodic()) {
+      // The curve's own poles hold all of it.
+      const double a = std::max(u0, first);
+      const double b = std::min(u1, last);
+      if (b - a > Precision::PConfusion() && (a > first || b < last)) {
+        copy->Segment(a, b);
+      }
+    } else if (u1 - u0 < copy->Period()) {
+      copy->Segment(u0, u1);
+    }
+    for (int i = 1; i <= copy->NbPoles(); ++i) {
+      hull.push_back(copy->Pole(i));
+    }
+  } else if (const auto bezier = Handle(Geom_BezierCurve)::DownCast(curve)) {
+    const auto copy = Handle(Geom_BezierCurve)::DownCast(bezier->Copy());
+    const double a = std::max(u0, copy->FirstParameter());
+    const double b = std::min(u1, copy->LastParameter());
+    if (b - a > Precision::PConfusion() && (a > copy->FirstParameter() || b < copy->LastParameter())) {
+      copy->Segment(a, b);
+    }
+    for (int i = 1; i <= copy->NbPoles(); ++i) {
+      hull.push_back(copy->Pole(i));
+    }
+  } else {
+    return false;
+  }
+  const gp_Vec along(extrusion->Direction());
+  for (const gp_Pnt& p : hull) {
+    box.Add(p.Translated(along * v0));
+    box.Add(p.Translated(along * v1));
+  }
+  double tolerance = BRep_Tool::Tolerance(face);
+  for (TopExp_Explorer it(face, TopAbs_EDGE); it.More(); it.Next()) {
+    tolerance = std::max(tolerance, BRep_Tool::Tolerance(TopoDS::Edge(it.Current())));
+  }
+  for (TopExp_Explorer it(face, TopAbs_VERTEX); it.More(); it.Next()) {
+    tolerance = std::max(tolerance, BRep_Tool::Tolerance(TopoDS::Vertex(it.Current())));
+  }
+  box.Enlarge(tolerance);
+  return !box.IsVoid();
+}
+
 } // namespace
 
 std::vector<std::array<double, 6>> face_boxes(const Shape& shape) {
@@ -421,11 +509,14 @@ std::vector<std::array<double, 6>> face_boxes(const Shape& shape) {
         [&](int i) {
           const auto k = static_cast<std::size_t>(i);
           try {
-            if (!box_holds_face(each[k])) {
-              return;
-            }
             Bnd_Box box;
-            BRepBndLib::Add(each[k], box, false);
+            if (extrusion_box(each[k], box)) {
+              // (Its own box, above.)
+            } else if (!box_holds_face(each[k])) {
+              return;
+            } else {
+              BRepBndLib::Add(each[k], box, false);
+            }
             if (box.IsVoid() || box.IsOpen()) {
               return;
             }

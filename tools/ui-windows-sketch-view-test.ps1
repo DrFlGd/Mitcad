@@ -6,7 +6,8 @@
 #   2. A rectangle from the origin, its width and height typed: fully
 #      constrained.
 #   3. The dark background recolours its fully constrained lines light, the
-#      light one dark again (mitcad#253).
+#      light one dark again (mitcad#253), their halos with them
+#      (mitcad#302).
 #   4. Clicks at known sketch points (no tool): the view reports their
 #      sketch coordinates in mm (mitcad#254).
 #   5. Outside sketch editing the shown sketch keeps the fully constrained
@@ -35,6 +36,12 @@ function Expect-Recoloured([string]$Background) {
   $count = Ui-LastMatch "Sketch entities recoloured for a $Background background: (\d+) fully constrained"
   if (-not $count -or [int]$count -lt 4) { Ui-Fail "$Background background: $count fully constrained entities recoloured, expected 4 or more" }
   Write-Host "ok   $count fully constrained entities recoloured for the $Background background"
+  # Their halos took the background's tone too (mitcad#302).
+  $halos = Ui-LastMatch 'Sketch halos: (\d+ (?:dark|light))$'
+  if ($halos -notmatch "^(\d+) $Background$" -or [int]$Matches[1] -lt 4) {
+    Ui-Fail "$Background background: the last halos are '$halos', expected 4 or more $Background"
+  }
+  Write-Host "ok   halos for the $Background background: $halos"
 }
 
 # Sketch-Colours "F1" (a regex: "F1 in O1", "F1(?: in O\d+)?"): the counts

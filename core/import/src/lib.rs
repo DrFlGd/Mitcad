@@ -912,6 +912,12 @@ pub fn import_design_with<K: ImportKernel>(
     let _planes = refs::KeptPlanes::new();
     // The lookups' and the geometric check's tolerance (mitcad#224).
     let _tolerance = refs::GeometricTolerance::set(options.geometric_tolerance);
+    // The joins fuse within the same tolerance where they fail exactly
+    // (mitcad#298): a body kept within it (mitcad#285) is the file's, and a
+    // tool the file joins to it joins it here too. The design keeps it.
+    if options.geometric_tolerance > 0.0 && options.geometric_tolerance.is_finite() {
+        let _ = doc.set_join_tolerance(Some(options.geometric_tolerance));
+    }
     // The threads beside the import's own share `threads` (mitcad#103).
     if let Some(p) = &options.progress {
         p.set_threads(options.threads);

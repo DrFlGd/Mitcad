@@ -1,0 +1,23 @@
+[
+  {"comment":"SPDX-License-Identifier: MIT"},
+  {"comment":"Texture map sets (mitcad#313): an appearance with every map embedded and its source, a second one reusing an image by its digest; texture_maps_reopened.json opens the saved design."},
+  {"cmd":"sketch.create"},
+  {"cmd":"sketch.add_rectangle","sketch":"F1","corner":[0,0],"width":20,"height":20},
+  {"cmd":"add_feature","def":{"type":"extrude","profiles":[{"sketch":"F1","region":"r{c1[c4,c2],c2[c1,c3],c3[c2,c4],c4[c3,c1]}"}],"extent":{"type":"distance","distance":20},"operation":"new_body"}},
+  {"cmd":"create_appearance","id":"oak","name":"Oak","texture":{
+    "path":"oak_diff_2k.png","size":[300,300],"data":"iVBORw0KGgoAAAANSUhEUgECAw==",
+    "normal":{"path":"oak_nor_gl_2k.png","data":"iVBORw0KGgoAAAANSUhEUgICAw=="},
+    "roughness":{"path":"oak_rough_2k.png","data":"iVBORw0KGgoAAAANSUhEUgMCAw=="},
+    "metalness":{"path":"oak_metal_2k.png","data":"iVBORw0KGgoAAAANSUhEUgQCAw=="},
+    "occlusion":{"path":"oak_ao_2k.png","data":"iVBORw0KGgoAAAANSUhEUgUCAw=="},
+    "source":{"id":"polyhaven","asset":"oak_veneer_01","resolution":"2k","license":"CC0-1.0","url":"https://polyhaven.com/a/oak_veneer_01"}}},
+  {"cmd":"create_appearance","id":"stained","name":"Stained Oak","texture":{
+    "path":"stained.png","data":"iVBORw0KGgoAAAANSUhEUgECAw==",
+    "roughness":{"path":"oak_rough_2k.png","embedded":true,"image_sha256":"32f698ef89fc99ced975ad34fd776f5da81dc838c4be8edec9144e18d588f493"}}},
+  {"cmd":"set_body_appearance","uid":"F2.b0","appearance":"oak"},
+  {"expect":{"query":{"query":"appearance_image","id":"oak"},"result":{"format":"png","sha256":"4d4c1af556c184561c5a6d322cfed3ab35a8a30bdc3c3d8a10428f921790ff9f"}}},
+  {"expect":{"query":{"query":"appearance_image","id":"oak","map":"normal"},"result":{"data":"iVBORw0KGgoAAAANSUhEUgICAw==","sha256":"6d289af3273dcb9d9ac95e863655a4e3d87d07019fb9d216f7bf0e34d69ac315"}}},
+  {"expect":{"query":{"query":"appearance_image","id":"oak","map":"occlusion"},"result":{"sha256":"5cdc6bb214169739b9d7187f2f114ff390f8cb33b5509e150801659c1fc4e0c0"}}},
+  {"expect":{"query":{"query":"appearance_image","id":"stained","map":"roughness"},"result":{"sha256":"32f698ef89fc99ced975ad34fd776f5da81dc838c4be8edec9144e18d588f493"}}},
+  {"expect":{"query":{"query":"bodies"},"result":[{"uid":"F2.b0","appearance":"oak"}]}}
+]

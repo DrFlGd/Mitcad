@@ -302,10 +302,7 @@ pub(crate) fn apply_tool<K: Kernel>(
         return Err(format!("there is no body to {verb}"));
     }
     let targets: Vec<&K::Shape> = participants.iter().map(|(_, s)| s).collect();
-    let result = ctx
-        .kernel
-        .boolean(op, &targets, tool)
-        .map_err(|e| e.to_string())?;
+    let result = ctx.boolean(op, &targets, tool).map_err(|e| e.to_string())?;
     if !result.touched.iter().any(|t| *t) {
         return Err(match op {
             BooleanOp::Join => format!("the {what} does not touch any participant body"),

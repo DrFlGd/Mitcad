@@ -335,6 +335,29 @@ struct Patch<'a> {
     periodic: [bool; 2],
 }
 
+/// A ruled surface's point at `u` between its curves' points.
+fn ruled(a: P3, b: P3, u: f64) -> P3 {
+    brep::add(brep::scale(a, 1.0 - u), brep::scale(b, u))
+}
+
+/// An extrusion's point `v` along `dir` from its curve's point.
+fn extruded(c: P3, dir: P3, v: f64) -> P3 {
+    brep::add(c, brep::scale(dir, v))
+}
+
+/// A surface of revolution's point: its curve's point turned by `u` round
+/// the axis (Rodrigues).
+fn turned(c: P3, origin: P3, axis: P3, u: f64) -> P3 {
+    let k = brep::normalize(axis);
+    let p = brep::sub(c, origin);
+    let (s, c) = u.sin_cos();
+    let turned = brep::add(
+        brep::add(brep::scale(p, c), brep::scale(brep::cross(k, p), s)),
+        brep::scale(k, brep::dot(k, p) * (1.0 - c)),
+    );
+    brep::add(origin, turned)
+}
+
 impl<'a> Patch<'a> {
     fn new(surface: &'a Surface, edges: &[&[P3]]) -> Result<Self, String> {
         let even = |(a, b): (f64, f64), n: usize| -> Vec<f64> {
@@ -431,27 +454,58 @@ impl<'a> Patch<'a> {
     fn eval(&self, u: f64, v: f64) -> P3 {
         match self.surface {
             Surface::BSpline(b) => b.eval(u, v),
-            Surface::Ruled { from, to } => brep::add(
-                brep::scale(from.eval(v), 1.0 - u),
-                brep::scale(to.eval(v), u),
-            ),
-            Surface::Extrusion { curve, dir } => brep::add(curve.eval(u), brep::scale(*dir, v)),
+            Surface::Ruled { from, to } => ruled(from.eval(v), to.eval(v), u),
+            Surface::Extrusion { curve, dir } => extruded(curve.eval(u), *dir, v),
+            Surface::Revolution {
+                curve,
+                origin,
+                axis,
+            } => turned(curve.eval(v), *origin, *axis, u),
+            _ => [f64::NAN; 3],
+        }
+    }
+
+    /// The points of the grid, `us` outside, `vs` inside: [`Patch::eval`]
+    /// at each, with each curve point the grid lines share taken once
+    /// (mitcad#311: evaluating a curve costs as much as the rest).
+    fn grid(&self) -> Vec<P3> {
+        match self.surface {
+            Surface::Ruled { from, to } => {
+                let at: Vec<(P3, P3)> = self
+                    .vs
+                    .iter()
+                    .map(|&v| (from.eval(v), to.eval(v)))
+                    .collect();
+                self.us
+                    .iter()
+                    .flat_map(|&u| at.iter().map(move |&(a, b)| ruled(a, b, u)))
+                    .collect()
+            }
+            Surface::Extrusion { curve, dir } => self
+                .us
+                .iter()
+                .flat_map(|&u| {
+                    let c = curve.eval(u);
+                    self.vs.iter().map(move |&v| extruded(c, *dir, v))
+                })
+                .collect(),
             Surface::Revolution {
                 curve,
                 origin,
                 axis,
             } => {
-                // The curve's point turned by u round the axis (Rodrigues).
-                let k = brep::normalize(*axis);
-                let p = brep::sub(curve.eval(v), *origin);
-                let (s, c) = u.sin_cos();
-                let turned = brep::add(
-                    brep::add(brep::scale(p, c), brep::scale(brep::cross(k, p), s)),
-                    brep::scale(k, brep::dot(k, p) * (1.0 - c)),
-                );
-                brep::add(*origin, turned)
+                let at: Vec<P3> = self.vs.iter().map(|&v| curve.eval(v)).collect();
+                self.us
+                    .iter()
+                    .flat_map(|&u| at.iter().map(move |&c| turned(c, *origin, *axis, u)))
+                    .collect()
             }
-            _ => [f64::NAN; 3],
+            _ => self
+                .us
+                .iter()
+                .flat_map(|&u| self.vs.iter().map(move |&v| (u, v)))
+                .map(|(u, v)| self.eval(u, v))
+                .collect(),
         }
     }
 
@@ -475,11 +529,9 @@ impl<'a> Patch<'a> {
 
     /// The parameters of the surface point nearest `p`, from the grid
     /// point nearest it.
-    fn invert(&self, grid: &[P3], p: P3) -> (f64, f64) {
+    fn invert(&self, grid: &Nearest<'_>, p: P3) -> (f64, f64) {
         let nv = self.vs.len();
-        let k = (0..grid.len())
-            .min_by(|&a, &b| brep::dist(grid[a], p).total_cmp(&brep::dist(grid[b], p)))
-            .unwrap_or(0);
+        let k = grid.nearest(p);
         let (mut u, mut v) = (self.us[k / nv], self.vs[k % nv]);
         // Newton steps on the distance (Gauss-Newton: the normal
         // equations of the tangent plane).
@@ -507,16 +559,165 @@ impl<'a> Patch<'a> {
     }
 }
 
+/// The points of a [`Patch`]'s grid in cubic cells, for the grid point
+/// nearest a point (mitcad#311). The same one as a search through every
+/// grid point, the first of several equally near: a B-spline face's grid
+/// has up to 2000 × 2000 points, and searching all of them for each of its
+/// edge points took most of the time of reading a design with appearances
+/// on such faces.
+struct Nearest<'g> {
+    grid: &'g [P3],
+    /// The lowest corner of the cells and their edge.
+    low: P3,
+    size: f64,
+    /// The cells along each axis.
+    dims: [i64; 3],
+    /// (cell, grid index) of the finite grid points, sorted.
+    cells: Vec<(u64, u32)>,
+}
+
+/// The rings of cells searched round a point before [`Nearest`] goes
+/// through every grid point instead (a point far from the surface).
+const NEAREST_RINGS: i64 = 48;
+
+impl<'g> Nearest<'g> {
+    fn new(grid: &'g [P3]) -> Self {
+        let finite = |p: &P3| p.iter().all(|c| c.is_finite());
+        let mut low = [f64::INFINITY; 3];
+        let mut high = [f64::NEG_INFINITY; 3];
+        for p in grid.iter().filter(|p| finite(p)) {
+            for k in 0..3 {
+                low[k] = low[k].min(p[k]);
+                high[k] = high[k].max(p[k]);
+            }
+        }
+        let mut nearest = Nearest {
+            grid,
+            low,
+            size: 0.0,
+            dims: [0; 3],
+            cells: Vec::new(),
+        };
+        let count = grid.iter().filter(|p| finite(p)).count();
+        if count == 0 || grid.len() > u32::MAX as usize {
+            return nearest;
+        }
+        // Cells about as wide as the grid's spacing: the grid lies on a
+        // surface, so its points spread over an area, not a volume.
+        let extent = (0..3).map(|k| high[k] - low[k]).fold(0.0, f64::max);
+        let mut size = (extent / (count as f64).sqrt()).max(extent * 1e-9);
+        if size <= 0.0 || !size.is_finite() {
+            // All the points in one place.
+            size = 1.0;
+        }
+        let dims = |size: f64| -> [i64; 3] {
+            std::array::from_fn(|k| ((high[k] - low[k]) / size).floor() as i64 + 1)
+        };
+        // At most 2^21 cells along an axis, so that a cell's number fits.
+        while dims(size).iter().any(|&d| d > 1 << 21) {
+            size *= 2.0;
+        }
+        nearest.size = size;
+        nearest.dims = dims(size);
+        let mut cells: Vec<(u64, u32)> = grid
+            .iter()
+            .enumerate()
+            .filter(|(_, p)| finite(p))
+            .map(|(i, &p)| (nearest.key(nearest.cell(p)), i as u32))
+            .collect();
+        cells.sort_unstable();
+        nearest.cells = cells;
+        nearest
+    }
+
+    /// The cell of a point, clamped to the cells.
+    fn cell(&self, p: P3) -> [i64; 3] {
+        std::array::from_fn(|k| {
+            (((p[k] - self.low[k]) / self.size).floor() as i64).clamp(0, self.dims[k] - 1)
+        })
+    }
+
+    fn key(&self, c: [i64; 3]) -> u64 {
+        ((c[0] as u64) << 42) | ((c[1] as u64) << 21) | c[2] as u64
+    }
+
+    /// Every grid point, the first of the nearest.
+    fn nearest_of_all(&self, p: P3) -> usize {
+        (0..self.grid.len())
+            .min_by(|&a, &b| brep::dist(self.grid[a], p).total_cmp(&brep::dist(self.grid[b], p)))
+            .unwrap_or(0)
+    }
+
+    /// The index of the grid point nearest `p` (the first of several
+    /// equally near).
+    fn nearest(&self, p: P3) -> usize {
+        if self.cells.is_empty() || !p.iter().all(|c| c.is_finite()) {
+            return self.nearest_of_all(p);
+        }
+        let c = self.cell(p);
+        // (distance, index)
+        let mut best: Option<(f64, usize)> = None;
+        for r in 0..=NEAREST_RINGS {
+            // The cells r apart from the point's (in the largest of the
+            // three directions).
+            let range = |k: usize| (c[k] - r).max(0)..=(c[k] + r).min(self.dims[k] - 1);
+            for x in range(0) {
+                for y in range(1) {
+                    let on_ring = (x - c[0]).abs() == r || (y - c[1]).abs() == r;
+                    for z in range(2) {
+                        if !on_ring && (z - c[2]).abs() != r {
+                            continue;
+                        }
+                        let key = self.key([x, y, z]);
+                        let start = self.cells.partition_point(|&(k, _)| k < key);
+                        for &(k, i) in &self.cells[start..] {
+                            if k != key {
+                                break;
+                            }
+                            let i = i as usize;
+                            let d = brep::dist(self.grid[i], p);
+                            let better = match best {
+                                None => true,
+                                Some((bd, bi)) => match d.total_cmp(&bd) {
+                                    std::cmp::Ordering::Less => true,
+                                    std::cmp::Ordering::Equal => i < bi,
+                                    std::cmp::Ordering::Greater => false,
+                                },
+                            };
+                            if better {
+                                best = Some((d, i));
+                            }
+                        }
+                    }
+                }
+            }
+            // Every point in a farther ring is at least r cells away (the
+            // point lies in its own cell or beyond the cells on its side;
+            // one cell less for rounding at the cells' walls).
+            if let Some((d, i)) = best
+                && d < (r as f64 - 1.0) * self.size
+            {
+                return i;
+            }
+            if (0..3).all(|k| c[k] - r <= 0 && c[k] + r >= self.dims[k] - 1) {
+                // Every cell seen; the grid's points that are not finite
+                // come after any finite one.
+                if let Some((_, i)) = best {
+                    return i;
+                }
+                break;
+            }
+        }
+        self.nearest_of_all(p)
+    }
+}
+
 /// [`point_inside_face`] of a free-form surface: the point inside the
 /// face's outline in the surface's parameters farthest from it.
 fn free_form(surface: &Surface, edges: &[&[P3]]) -> Result<Inside, String> {
     let patch = Patch::new(surface, edges)?;
-    let grid: Vec<P3> = patch
-        .us
-        .iter()
-        .flat_map(|&u| patch.vs.iter().map(move |&v| (u, v)))
-        .map(|(u, v)| patch.eval(u, v))
-        .collect();
+    let grid = patch.grid();
+    let grid = Nearest::new(&grid);
     let mut flat: Vec<Vec<[f64; 2]>> = edges
         .iter()
         .map(|e| {
@@ -752,6 +953,100 @@ mod tests {
         let r = x.hypot(y);
         assert!((r - (5.0 + z)).abs() < 1e-6, "{:?}", inside.point);
         assert!((0.2..1.8).contains(&z), "{:?}", inside.point);
+    }
+
+    /// The cells find the grid point a search through all of them finds
+    /// (the first of equally near ones), for points on, near and far from
+    /// a curved grid, a flat one and one with points that are not finite
+    /// (mitcad#311).
+    #[test]
+    fn the_nearest_grid_point_is_that_of_a_full_search() {
+        let mut seed: u64 = 0x2545_f491_4f6c_dd1d;
+        let mut random = move || {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            (seed >> 11) as f64 / (1u64 << 53) as f64
+        };
+        let wave: Vec<P3> = (0..60)
+            .flat_map(|i| (0..40).map(move |j| (i as f64 / 7.0, j as f64 / 5.0)))
+            .map(|(u, v)| [u, v, (u * 1.3).sin() * v.cos()])
+            .collect();
+        let flat: Vec<P3> = (0..30)
+            .flat_map(|i| (0..30).map(move |j| [i as f64 * 0.5, j as f64 * 0.5, 0.0]))
+            .collect();
+        let mut holes = wave.clone();
+        for k in (0..holes.len()).step_by(7) {
+            holes[k] = [f64::NAN; 3];
+        }
+        let doubled: Vec<P3> = flat.iter().chain(flat.iter()).copied().collect();
+        for grid in [&wave, &flat, &holes, &doubled] {
+            let nearest = Nearest::new(grid);
+            let mut points: Vec<P3> = grid.iter().step_by(13).copied().collect();
+            for _ in 0..300 {
+                let scale = [1.0, 10.0, 1000.0][points.len() % 3];
+                points.push([
+                    (random() - 0.3) * scale,
+                    (random() - 0.3) * scale,
+                    (random() - 0.5) * scale,
+                ]);
+            }
+            // Points half way between grid points (ties).
+            points.push([0.25, 0.25, 0.0]);
+            points.push([1.0, 1.25, 0.0]);
+            for p in points {
+                assert_eq!(nearest.nearest(p), nearest.nearest_of_all(p), "{p:?}");
+            }
+        }
+    }
+
+    /// The grid built with each curve point once is the grid of the
+    /// surface's points, bit for bit (mitcad#311).
+    #[test]
+    fn a_patch_grid_is_its_points() {
+        let params: Vec<f64> = (0..=40).map(|i| i as f64 / 10.0).collect();
+        let wave = |z: f64| Curve::Interpolated {
+            params: params.clone(),
+            points: params.iter().map(|&t| [t, t.sin(), z + 0.1 * t]).collect(),
+        };
+        let edges = [vec![
+            [1.0, 0.8, 0.0],
+            [3.0, 0.1, 0.0],
+            [3.0, 0.1, 2.0],
+            [1.0, 0.8, 2.0],
+        ]];
+        let refs: Vec<&[P3]> = edges.iter().map(Vec::as_slice).collect();
+        for surface in [
+            Surface::Extrusion {
+                curve: wave(0.0),
+                dir: [0.0, 0.3, 1.0],
+            },
+            Surface::Revolution {
+                curve: wave(0.0),
+                origin: [0.0, -2.0, 0.0],
+                axis: [0.0, 0.0, 1.0],
+            },
+            Surface::Ruled {
+                from: wave(0.0),
+                to: wave(1.0),
+            },
+        ] {
+            let patch = Patch::new(&surface, &refs).unwrap();
+            let each: Vec<P3> = patch
+                .us
+                .iter()
+                .flat_map(|&u| patch.vs.iter().map(move |&v| (u, v)))
+                .map(|(u, v)| patch.eval(u, v))
+                .collect();
+            let grid = patch.grid();
+            assert_eq!(grid.len(), each.len());
+            for (a, b) in grid.iter().zip(&each) {
+                assert!(
+                    a.iter().zip(b).all(|(x, y)| x.to_bits() == y.to_bits()),
+                    "{a:?} {b:?}"
+                );
+            }
+        }
     }
 
     #[test]

@@ -349,7 +349,8 @@ int runImportWorker(int argc, char* argv[]) {
                             // An item's definitions evaluated in parallel
                             // (mitcad#95): the logical cores, at most 8.
                             {QStringLiteral("threads"), importThreads()}};
-  if (!freecad && !ipt && !ifc && !rvt) {
+  // (A building project's: the linked models' files chosen, mitcad#275.)
+  if (!freecad && !ipt && !ifc) {
     for (auto it = moreOptions.begin(); it != moreOptions.end(); ++it) {
       command.insert(it.key(), it.value());
     }
@@ -434,6 +435,8 @@ void F3dImport::start() {
     // Whether a retry on the file's stored bodies replaces imported bodies
     // that match them: asked when it comes to that (mitcad#283).
     m_options.insert(QStringLiteral("retry_bodies"), QStringLiteral("ask"));
+  } else if (isRvtFile(m_path)) {
+    m_options = askRvtLinks();
   }
   m_dialog = new ImportProgress(
       m_window, [this] { stop(); }, [this] { cancel(); });
@@ -531,6 +534,53 @@ QJsonObject F3dImport::askReferences() {
   }
   if (!skipped.isEmpty()) {
     options.insert(QStringLiteral("skipped_references"), skipped);
+  }
+  return options;
+}
+
+QJsonObject F3dImport::askRvtLinks() {
+  QJsonObject files;
+  QStringList asked;
+  QString folder = QFileInfo(m_path).absolutePath();
+  const QString project = QFileInfo(m_path).fileName();
+  for (;;) {
+    // Listed again after each chosen file (the links are found by name).
+    QJsonObject listed;
+    try {
+      const QJsonObject options{{QStringLiteral("list_links"), true}, {QStringLiteral("link_files"), files}};
+      listed = parseObject(new_document()->import_rvt(rustStr(m_path.toUtf8()), rustStr(compactJson(options))));
+    } catch (const std::exception& e) {
+      // The import itself says what is wrong with the file.
+      qInfo().noquote() << QStringLiteral("Import links of %1 not listed: %2").arg(project, QString::fromUtf8(e.what()));
+      break;
+    }
+    QString missing;
+    for (const QJsonValue& value : listed.value(QStringLiteral("links")).toArray()) {
+      const QJsonObject link = value.toObject();
+      const QString name = link.value(QStringLiteral("file")).toString();
+      if (!link.value(QStringLiteral("found")).isString() && !name.isEmpty() && !asked.contains(name)) {
+        missing = name;
+        break;
+      }
+    }
+    if (missing.isEmpty()) {
+      break;
+    }
+    asked.append(missing);
+    qInfo().noquote() << QStringLiteral("Links dialog: %1 of %2").arg(missing, project);
+    const QString file = dialogChooseFile(m_window, tr("Find the Linked Model %1").arg(missing), folder,
+                                          tr("Building projects (*.rvt)"), tr("&Use"), tr("&Skip"));
+    if (file.isEmpty()) {
+      qInfo().noquote() << QStringLiteral("Links dialog: skipped");
+      continue;
+    }
+    files.insert(missing, file);
+    folder = QFileInfo(file).absolutePath();
+    qInfo().noquote() << QStringLiteral("Links dialog: chose %1").arg(QFileInfo(file).fileName());
+  }
+  QJsonObject options;
+  if (!files.isEmpty()) {
+    options.insert(QStringLiteral("link_files"), files);
   }
   return options;
 }

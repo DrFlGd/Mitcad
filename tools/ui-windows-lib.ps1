@@ -214,6 +214,19 @@ public static class UiInput {
         if (modified) ReleaseModifiers(hwnd);
     }
 
+    // Modifiers held for mouse input (Ui-ClickWith, a Ctrl+click): Qt reads
+    // them with GetKeyState while it handles the buttons' messages, as for
+    // a key. Unhold once the messages are posted: the app takes them first.
+    public static void Hold(IntPtr hwnd, bool ctrl, bool shift, bool alt) {
+        Note = "";
+        SetModifiers(hwnd, ctrl, shift, alt);
+    }
+
+    public static void Unhold(IntPtr hwnd) {
+        Sync(hwnd);
+        ReleaseModifiers(hwnd);
+    }
+
     const uint WM_NULL = 0, SMTO_NORMAL = 0;
 
     // Returns once the window's thread has handled the messages posted to it
@@ -666,6 +679,29 @@ function Ui-LoggedAt([string]$Text) {
 function Ui-ClickLogged([string]$Text, [int]$Button = 1) {
   $at = Ui-LoggedAt $Text
   Ui-Click $at[0] $at[1] $Button
+}
+
+# Ui-ClickWith "ctrl" x y: a left click with modifiers held ("ctrl",
+# "shift", "ctrl+shift"), such as a Ctrl+click that adds a browser row to
+# the selection; the button messages carry them too (MK_CONTROL, MK_SHIFT).
+function Ui-ClickWith([string]$Modifiers, [int]$X, [int]$Y) {
+  $mods = @($Modifiers -split '\+')
+  $ctrl = $mods -contains 'ctrl'
+  $shift = $mods -contains 'shift'
+  $alt = $mods -contains 'alt'
+  $held = 0
+  if ($ctrl) { $held = $held -bor 0x08 }
+  if ($shift) { $held = $held -bor 0x04 }
+  [UiInput]::Hold($script:UiWindow, $ctrl, $shift, $alt)
+  try {
+    [UiInput]::Move($script:UiWindow, $X, $Y, $held)
+    Start-Sleep -Milliseconds 80
+    [UiInput]::Button($script:UiWindow, 0x201, $X, $Y, ($held -bor 0x01))
+    Start-Sleep -Milliseconds 60
+    [UiInput]::Button($script:UiWindow, 0x202, $X, $Y, $held)
+  } finally {
+    [UiInput]::Unhold($script:UiWindow)
+  }
 }
 
 # Ui-WheelLogged "text" steps: wheel steps over a logged place, such as a

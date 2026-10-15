@@ -148,6 +148,7 @@ void RenderMode::setEnabled(bool enabled) {
   m_meshFiles.clear();
   m_sentEnvironment.clear();
   m_missingTextures.clear();
+  m_sentLooks.clear();
   m_frame = render::Frame();
   if (m_message) {
     m_message->hide();
@@ -306,9 +307,20 @@ void RenderMode::sendScene() {
     // again, another placement or material are not meshed again.
     render::MeshData mesh;
     bool hasMesh = false;
+    // A triangulation wound the other way, turned round by meshOf
+    // (mitcad#319).
+    const auto logTurned = [&id](const render::MeshData& made) {
+      if (made.turned > 0) {
+        qDebug().noquote() << QStringLiteral("Render mesh %1: %2 of %3 triangles turned to face outwards")
+                                  .arg(QString::fromStdString(id))
+                                  .arg(made.turned)
+                                  .arg(made.indices.size() / 3);
+      }
+    };
     auto cached = m_shapeMeshes.find(shape);
     if (cached == m_shapeMeshes.end()) {
       mesh = render::meshOf(shape);
+      logTurned(mesh);
       hasMesh = true;
       ++meshed;
       ShapeMesh entry;
@@ -322,9 +334,11 @@ void RenderMode::sendScene() {
       continue; // nothing to render
     }
     auto held = m_workerMeshes.find(key);
+    const bool workerHolds = held != m_workerMeshes.end();
     if (held == m_workerMeshes.end()) {
       if (!hasMesh) { // the worker forgot it
         mesh = render::meshOf(shape);
+        logTurned(mesh);
         ++meshed;
       }
       held = m_workerMeshes.emplace(key, WorkerMesh{bytesOf(mesh), sequence}).first;
@@ -360,16 +374,34 @@ void RenderMode::sendScene() {
                               .arg(QString::fromStdString(id),
                                    body.appearance.id.isEmpty() ? QStringLiteral("default") : body.appearance.id,
                                    faceLog.isEmpty() ? QString() : QStringLiteral(", ") + faceLog.join(QStringLiteral(", ")));
+    // A material swapped on a body the worker shows (mitcad#319): which
+    // body, the looks, and whether its mesh was reused, so that a report of
+    // a wrong render can be read from the log.
+    const QString look = QStringLiteral("%1 (transmission %2, opacity %3)%4")
+                             .arg(body.appearance.id.isEmpty() ? QStringLiteral("default") : body.appearance.id)
+                             .arg(double(entry.material.transmission))
+                             .arg(double(entry.material.opacity))
+                             .arg(faceLog.isEmpty() ? QString() : QStringLiteral(", ") + faceLog.join(QStringLiteral(", ")));
+    const auto sent = m_sentLooks.find(id);
+    if (sent != m_sentLooks.end() && sent->second != look) {
+      qDebug().noquote() << QStringLiteral("Render material swap %1: %2 -> %3; mesh %4")
+                                .arg(QString::fromStdString(id), sent->second, look,
+                                     workerHolds ? QStringLiteral("reused (the worker holds it)")
+                                     : hasMesh  ? QStringLiteral("meshed again")
+                                                : QStringLiteral("sent again"));
+    }
+    m_sentLooks[id] = look;
     update.bodies.push_back(std::move(entry));
   }
-  // Textures whose images are missing: the base colour, and a message.
+  // Texture images that are missing: the base colour, a map left out
+  // (mitcad#314), and a message.
   const QStringList missing = render::missingTextures(looks);
   const QString missingText = missing.join(QStringLiteral("; "));
   if (missingText != m_missingTextures) {
     m_missingTextures = missingText;
     if (!missing.isEmpty()) {
       qInfo().noquote() << QStringLiteral("Render textures not drawn: %1").arg(missingText);
-      showMessage(tr("Rendering: a texture is not drawn, its base colour is shown instead (%1).").arg(missingText));
+      showMessage(tr("Rendering: a texture image is not drawn (%1).").arg(missingText));
     }
   }
   update.released = forgetMeshes();
@@ -573,6 +605,15 @@ void RenderMode::showFrame() {
                             .arg(qRound(covered.top() * scaleY))
                             .arg(qRound((covered.right() + 1) * scaleX))
                             .arg(qRound((covered.bottom() + 1) * scaleY));
+  // How bright what it covers is (UI tests tell a body rendered black from
+  // one lit, mitcad#319).
+  int opaque = 0;
+  const double brightness = render::coveredBrightness(m_frame.pixels.data(), width, height, &opaque);
+  qDebug().noquote() << QStringLiteral("Render brightness view %1 samples %2: %3 over %4 pixels")
+                            .arg(m_frame.info.view)
+                            .arg(m_frame.info.samples)
+                            .arg(brightness, 0, 'f', 3)
+                            .arg(opaque);
 }
 
 bool RenderMode::displayFrame() {

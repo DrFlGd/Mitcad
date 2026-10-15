@@ -1,0 +1,84 @@
+Mitcad's patch to OCCT 8.0.1, under OCCT's licence:
+SPDX-License-Identifier: LGPL-2.1-only WITH OCCT-exception-1.0
+
+Fillets: a rounding's end cut by the faces at the end continued past
+their bounds on the side of its second contact (mitcad#236).
+
+A wall's foot rounded along the floor up to where a hole in the floor
+beside the wall begins (the hole's side and a 45 degree chamfer of its
+corner at the wall): the floor's contact meets the hole's side, while the
+wall's contact runs on along the wall. The bodies stored in the .f3d files
+cut the blend with the hole's side and chamfer continued up through it,
+the wall's contact ending where the chamfer's plane meets it. In
+PerformIntersectionAtEnd the end of the second contact (OnSame on the
+stripe's second face) was sought on the last face's bounded surface
+(fillets; chamfers since 0143 take it unbounded), so no point was found
+("pb intersection Face - Fi").
+
+- For fillets the end is now sought on that face's unbounded surface
+  where the bounded one gives none (the point lies on the prolongation of
+  the face's edge at the vertex).
+
+Upstream: new.
+diff --git a/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_C1.cxx b/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_C1.cxx
+index 579caa1..722da5a 100644
+--- a/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_C1.cxx
++++ b/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_C1.cxx
+@@ -4871,20 +4871,43 @@ void ChFi3d_Builder::PerformIntersectionAtEnd(const int Index)
+       const occ::handle<Geom_Curve>& c3df = DStr.Curve(Fi2.LineIndex()).Curve();
+       double                         Ufi  = Fi1.Parameter(isfirst);
+       ChFiDS_FaceInterference&       Fi   = Fd->ChangeInterferenceOnS2();
+-      if (!IntersUpdateOnSame(HGs,
+-                              HBs,
+-                              c3df,
+-                              F2,
+-                              F,
+-                              Edge[nb],
+-                              Vtx,
+-                              isfirst,
+-                              10 * tolapp3d, // in
+-                              Fi,
+-                              CV2,
+-                              pfac2,
+-                              Ufi))
+-      { // out
++      bool isInters = IntersUpdateOnSame(HGs,
++                                         HBs,
++                                         c3df,
++                                         F2,
++                                         F,
++                                         Edge[nb],
++                                         Vtx,
++                                         isfirst,
++                                         10 * tolapp3d, // in
++                                         Fi,
++                                         CV2,
++                                         pfac2,
++                                         Ufi); // out
++      if (!isInters && !isChamfer && !prolface[nb - 1])
++      {
++        // A fillet's contact on F2 may as well cross the face's surface
++        // past the face's bounds, on the prolongation of its edge at the
++        // vertex: a fillet along the foot of a wall that runs on past the
++        // corner, where a hole in the floor beside the wall begins, is cut
++        // by the hole's side faces continued up through the fillet.
++        Bs.Initialize(Face[nb - 1], false);
++        isInters = IntersUpdateOnSame(HGs,
++                                      HBs,
++                                      c3df,
++                                      F2,
++                                      F,
++                                      Edge[nb],
++                                      Vtx,
++                                      isfirst,
++                                      10 * tolapp3d,
++                                      Fi,
++                                      CV2,
++                                      pfac2,
++                                      Ufi);
++      }
++      if (!isInters)
++      {
+         throw Standard_Failure("IntersectionAtEnd: pb intersection Face - Fi");
+       }
+       Fi2 = Fi;

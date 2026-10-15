@@ -57,6 +57,11 @@ private:
   // file's folder is searched for the other missing ones. Returns the
   // import's options: the chosen files and the skipped documents.
   QJsonObject askReferences();
+  // A building project's linked models (mitcad#275) not found next to it:
+  // a file dialog for each, naming the linked file, whose Cancel skips it
+  // (its component stays empty). Returns the import's options: the
+  // chosen files by the links' file names.
+  QJsonObject askRvtLinks();
   void readProgress();
   // The worker's question (mitcad#283): keep the imported bodies that
   // match the file's or replace them with the stored ones; the answer goes

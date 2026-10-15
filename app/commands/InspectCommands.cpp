@@ -181,7 +181,7 @@ Inspection measureShapes(const SelectionItem& first, const SelectionItem* second
     }
     parts << lines.join(QStringLiteral("<br>"));
   }
-  result.text = parts.join(QStringLiteral("<hr>"));
+  result.text = parts.join(QStringLiteral("<br><br>"));
   result.log = log.join(QStringLiteral(", "));
   return result;
 }
@@ -271,7 +271,7 @@ CommandDef measureCommand() {
       }
       parts << lines.join(QStringLiteral("<br>"));
     }
-    result.text = parts.join(QStringLiteral("<hr>"));
+    result.text = parts.join(QStringLiteral("<br><br>"));
     result.log = log.join(QStringLiteral(", "));
     return result;
   };

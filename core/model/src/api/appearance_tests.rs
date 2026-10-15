@@ -663,10 +663,12 @@ fn texture_images_are_embedded_kept_and_saved() {
         sha
     );
 
-    // Saved in the design file, and read back.
+    // Saved in the design file, once for both (mitcad#313), and read back.
     let saved = doc.to_json();
     let file: Value = serde_json::from_str(&saved).unwrap();
-    assert_eq!(file["appearances"][0]["texture"]["data"], data);
+    assert_eq!(file["images"], json!([{"sha256": sha, "data": data}]));
+    assert_eq!(file["appearances"][0]["texture"]["image"], sha);
+    assert_eq!(file["appearances"][1]["texture"]["image"], sha);
     assert!(file["appearances"][0]["texture"].get("embedded").is_none());
     let loaded = Document::from_json(&saved, MockKernel::default()).unwrap();
     assert_eq!(loaded.to_json(), saved);

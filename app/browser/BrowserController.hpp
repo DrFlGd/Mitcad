@@ -76,6 +76,7 @@ private:
   // the feature rows under sketches (mitcad#177). Their features are
   // selected in the timeline too.
   void pickRows(const Selection& items, const QStringList& features);
+  void pickRowsOfTree(const Selection& items, const QStringList& features);
   // Selects the items; the browser shows the rows of these features too.
   void pick(const Selection& items, const QStringList& features);
   // What selecting features selects: their sketches, datums or bodies, or
@@ -147,6 +148,7 @@ private:
   int m_markerStart = 0;
   // While a pick of features runs: the features whose browser rows show it.
   bool m_picking = false;
+  bool m_fromTree = false; // the pick came from the browser's rows (mitcad#318)
   QStringList m_pickedFeatures;
   // The selection shown in the browser, and the features whose rows show it.
   Selection m_shownItems;

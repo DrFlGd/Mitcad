@@ -827,3 +827,107 @@ fn helices_turn_their_profiles_about_an_axis() {
     .to_string();
     assert!(message.contains("Mitcad's construction"), "{message}");
 }
+
+#[test]
+fn a_helix_whose_boolean_fails_is_retried_with_shifted_seams() {
+    // mitcad#235: a helix's cut that fails is retried once with the seams of
+    // the helix's pieces shifted by a sixth of a turn; one that works is
+    // built once, as before.
+    let (mut b, _) = with_path();
+    let cut = |revolutions: f64| {
+        json!({"type": "helix", "profiles": [{"sketch": "F4", "region": "r{c1}"}],
+               "axis": "y", "pitch": 5, "revolutions": revolutions, "operation": "cut"})
+    };
+    let shift = format!(" shift {}", 1.0 / 6.0);
+    // Fails with the first layout of pieces, works with shifted seams.
+    b.doc
+        .kernel()
+        .boolean_fail_tools
+        .borrow_mut()
+        .insert("helix(F5)".to_owned());
+    let uid = add(&mut b.doc, cut(3.0)).unwrap();
+    assert_eq!(uid.to_string(), "F5");
+    assert_eq!(status(&b.doc, uid), FeatureStatus::Ok);
+    assert_eq!(b.doc.kernel().count("helix"), 2);
+    assert_eq!(b.doc.kernel().count("cut"), 2);
+    assert!(last_spec(&b.doc).ends_with(&shift), "{}", last_spec(&b.doc));
+    let warnings = b.doc.warnings(uid).join("; ");
+    assert!(
+        warnings.contains("shifted by a sixth of a turn")
+            && warnings.contains("tool Boolean failed"),
+        "{warnings}"
+    );
+    let histories: Vec<String> = b
+        .doc
+        .bodies()
+        .iter()
+        .map(|v| v.shape.history.clone())
+        .collect();
+    assert!(
+        histories
+            .iter()
+            .any(|h| h.contains(&format!("helix(F5{shift})"))),
+        "{histories:?}"
+    );
+    // One whose boolean works is built once, without a shift or a warning.
+    b.doc.kernel().boolean_fail_tools.borrow_mut().clear();
+    b.doc.edit_feature(uid, &def(cut(3.5))).unwrap();
+    assert_eq!(status(&b.doc, uid), FeatureStatus::Ok);
+    assert_eq!(b.doc.kernel().count("helix"), 3);
+    assert!(!last_spec(&b.doc).contains("shift"));
+    assert!(b.doc.warnings(uid).is_empty());
+    // When the shifted one fails too, the first failure stands.
+    b.doc.kernel().fail.borrow_mut().insert("cut");
+    b.doc.edit_feature(uid, &def(cut(4.0))).unwrap();
+    assert!(
+        error(&b.doc, uid).contains("cut failed"),
+        "{}",
+        error(&b.doc, uid)
+    );
+    assert_eq!(b.doc.kernel().count("helix"), 5);
+    b.doc.kernel().fail.borrow_mut().clear();
+    // A boolean that ran out of memory is not retried.
+    b.doc.kernel().out_of_memory.borrow_mut().insert("cut");
+    b.doc.edit_feature(uid, &def(cut(4.5))).unwrap();
+    assert!(error(&b.doc, uid).contains("out of memory"));
+    assert_eq!(b.doc.kernel().count("helix"), 6);
+    b.doc.kernel().out_of_memory.borrow_mut().clear();
+    // A definition with the shift (the `.ipt` import's retried coils) is
+    // built with it, keeps it when saved and is not shifted again.
+    let mut shifted = cut(5.0);
+    shifted["piece_shift"] = json!(1.0 / 6.0);
+    b.doc.edit_feature(uid, &def(shifted.clone())).unwrap();
+    assert_eq!(status(&b.doc, uid), FeatureStatus::Ok);
+    assert!(last_spec(&b.doc).ends_with(&shift), "{}", last_spec(&b.doc));
+    let file: Value = serde_json::from_str(&b.doc.to_json()).unwrap();
+    let stored = file["features"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|f| f["type"] == "helix")
+        .unwrap()
+        .clone();
+    assert_eq!(stored["piece_shift"], json!(1.0 / 6.0));
+    b.doc.kernel().fail.borrow_mut().insert("cut");
+    shifted["revolutions"] = json!(5.5);
+    b.doc.edit_feature(uid, &def(shifted.clone())).unwrap();
+    assert_eq!(b.doc.kernel().count("helix"), 8);
+    b.doc.kernel().fail.borrow_mut().clear();
+    // Without one the field is left out; a third of a turn is too much.
+    b.doc.edit_feature(uid, &def(cut(3.0))).unwrap();
+    let file: Value = serde_json::from_str(&b.doc.to_json()).unwrap();
+    assert!(
+        file["features"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|f| f.get("piece_shift").is_none())
+    );
+    shifted["piece_shift"] = json!(1.0 / 3.0);
+    let message = b
+        .doc
+        .edit_feature(uid, &def(shifted))
+        .map(|_| error(&b.doc, uid))
+        .unwrap_or_else(|e| e.to_string());
+    assert!(message.contains("piece shift"), "{message}");
+}

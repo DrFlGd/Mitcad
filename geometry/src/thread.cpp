@@ -13,6 +13,7 @@
 #include <BRepAlgoAPI_Cut.hxx>
 #include <BRepAlgoAPI_Fuse.hxx>
 #include <BRepBuilderAPI_MakeEdge.hxx>
+#include <BRepBuilderAPI_MakeFace.hxx>
 #include <BRepBuilderAPI_MakePolygon.hxx>
 #include <BRepBuilderAPI_MakeWire.hxx>
 #include <BRepClass3d_SolidClassifier.hxx>
@@ -20,6 +21,7 @@
 #include <BRepOffset_MakeOffset.hxx>
 #include <BRepOffsetAPI_MakePipeShell.hxx>
 #include <BRepPrimAPI_MakeCylinder.hxx>
+#include <BRepPrimAPI_MakeRevol.hxx>
 #include <BRep_Builder.hxx>
 #include <Geom2d_Line.hxx>
 #include <Geom_CylindricalSurface.hxx>
@@ -303,11 +305,114 @@ TopoDS_Shape radial_band(const Shape& body, const std::string& face, double face
   return band;
 }
 
+// The end chamfers of one face (mitcad#304), in the thread's axis terms:
+// whether its low and high end are to get one, the cone's radius at the
+// end and the tangent of its angle to the axis, and the names of the cones.
+struct EndChamfers {
+  bool low = false;
+  bool high = false;
+  double radius = 0.0;
+  double tan = 1.0;
+  std::string low_name;
+  std::string high_name;
+};
+
+// The solid an end chamfer takes away at `at` along the thread's axis (the
+// low end with `side` -1, the high end with +1): for an external thread
+// what lies outside the cone that widens from `radius` at the end into the
+// material up to `outer`, for an internal one what lies inside the cone
+// that narrows from `radius` down to `inner`; from a little beyond the end.
+TopoDS_Shape chamfer_tool(const Thread& t, double at, double side, const EndChamfers& c, double inner, double outer) {
+  // At `u` into the material from the end, at a radius.
+  const auto point = [&](double u, double radius) {
+    return t.origin.Translated(gp_Vec(t.along) * (at - side * u) + gp_Vec(t.reference) * radius);
+  };
+  BRepBuilderAPI_MakePolygon section;
+  if (t.internal) {
+    const double beyond = 0.1 * t.pitch;
+    section.Add(point(-beyond, inner));
+    section.Add(point(-beyond, c.radius + beyond * c.tan));
+    section.Add(point((c.radius - inner) / c.tan, inner));
+  } else {
+    const double beyond = std::min(0.1 * t.pitch, 0.5 * c.radius / c.tan);
+    section.Add(point(-beyond, c.radius - beyond * c.tan));
+    section.Add(point(-beyond, outer));
+    section.Add(point((outer - c.radius) / c.tan, outer));
+  }
+  section.Close();
+  BRepBuilderAPI_MakeFace face(section.Wire(), true);
+  if (!face.IsDone()) {
+    throw std::runtime_error("the thread's end chamfer could not be built");
+  }
+  BRepPrimAPI_MakeRevol revol(face.Face(), gp_Ax1(t.origin, t.along), kTwoPi);
+  if (!revol.IsDone()) {
+    throw std::runtime_error("the thread's end chamfer could not be built");
+  }
+  return revol.Shape();
+}
+
+// How far into the material a chamfer's cone reaches the radius `material`
+// (the face, or the thread's crest where that lies further into it), and
+// checks that the cone cuts it.
+double chamfer_depth(const Thread& t, const EndChamfers& c, double material, const std::string& face) {
+  const double depth = (t.internal ? c.radius - material : material - c.radius) / c.tan;
+  if (depth <= kSame) {
+    std::ostringstream text;
+    text << "the thread's chamfer diameter " << 2.0 * c.radius << " must be "
+         << (t.internal ? "larger" : "smaller") << " than the diameter " << 2.0 * material << " of face " << face;
+    throw std::invalid_argument(text.str());
+  }
+  return depth;
+}
+
+// The chamfers at the free ends of the thread's part from `from` to `to`
+// cut out of `body` (`free_low`, `free_high`: nothing lies beyond those
+// ends); `inner` and `outer` bound the material at the face.
+ShapePtr cut_chamfers(ShapePtr body, const Thread& t, double from, double to, const EndChamfers& c, bool free_low,
+                      bool free_high, double inner, double outer, double material, const std::string& face) {
+  const bool low = c.low && free_low;
+  const bool high = c.high && free_high;
+  if (!low && !high) {
+    return body;
+  }
+  const double depth = chamfer_depth(t, c, material, face);
+  if ((low ? depth : 0.0) + (high ? depth : 0.0) >= to - from - kSame) {
+    throw std::invalid_argument("the thread's end chamfers on face " + face + " are deeper than the thread is long");
+  }
+  if (low) {
+    body = detail::local_boolean(*body, chamfer_tool(t, from, -1.0, c, inner, outer), detail::LocalOperation::Cut,
+                                 c.low_name)
+               .shape;
+  }
+  if (high) {
+    body = detail::local_boolean(*body, chamfer_tool(t, to, 1.0, c, inner, outer), detail::LocalOperation::Cut,
+                                 c.high_name)
+               .shape;
+  }
+  return body;
+}
+
+// A cosmetic thread's end chamfers on one face: no profile, only the cones
+// at its free ends.
+ShapePtr chamfer_face(const Shape& body, const Thread& t, double from, double to, const EndChamfers& c,
+                      const std::string& face) {
+  if (!c.low && !c.high) {
+    return std::make_shared<Shape>(body);
+  }
+  const double margin = 0.1 * t.pitch;
+  const double inner = t.internal ? std::max(t.face_radius - margin, 0.5 * t.face_radius) : c.radius;
+  const double outer = t.internal ? c.radius : t.face_radius + margin;
+  const bool free_low = from <= kSame && !material_past(body.occt(), t, from, -1.0, inner, outer);
+  const bool free_high = to >= t.length - kSame && !material_past(body.occt(), t, to, 1.0, inner, outer);
+  return cut_chamfers(std::make_shared<Shape>(body), t, from, to, c, free_low, free_high, inner, outer,
+                      t.face_radius, face);
+}
+
 // One face's thread on the body: the teeth added where the face lies
-// inside the crest, then the grooves (and what lies beyond the crest)
-// removed.
+// inside the crest, the end chamfers cut, then the grooves (and what lies
+// beyond the crest) removed.
 ShapePtr thread_face(const Shape& body, const std::string& face_reference, const Thread& t, double from, double to,
-                     const std::string& name) {
+                     const EndChamfers& chamfers, const std::string& name) {
   const double margin = 0.1 * t.pitch;
   // The face inside the crest: the band between them is filled first,
   // over the face itself (its pieces moved out to the crest, along the
@@ -328,10 +433,20 @@ ShapePtr thread_face(const Shape& body, const std::string& face_reference, const
   // run out by a pitch.
   const double inner = t.internal ? std::max(0.0, std::min(face, t.crest()) - margin) : t.minor_radius;
   const double outer = t.internal ? t.major_radius : std::max(face, t.crest()) + margin;
-  if (from <= kSame && !material_past(current->occt(), t, from, -1.0, inner, outer)) {
+  const bool free_low = from <= kSame && !material_past(current->occt(), t, from, -1.0, inner, outer);
+  const bool free_high = to >= t.length - kSame && !material_past(current->occt(), t, to, 1.0, inner, outer);
+  // The end chamfers, before the grooves: the first turn starts on the cone.
+  if (chamfers.low || chamfers.high) {
+    const double material = t.internal ? std::min(face, t.crest()) : std::max(face, t.crest());
+    const double tool_inner = t.internal ? std::max(material - margin, 0.5 * material) : chamfers.radius;
+    const double tool_outer = t.internal ? chamfers.radius : material + margin;
+    current = cut_chamfers(current, t, from, to, chamfers, free_low, free_high, tool_inner, tool_outer, material,
+                           face_reference);
+  }
+  if (free_low) {
     from -= t.pitch;
   }
-  if (to >= t.length - kSame && !material_past(current->occt(), t, to, 1.0, inner, outer)) {
+  if (free_high) {
     to += t.pitch;
   }
 
@@ -390,18 +505,30 @@ ShapePtr modeled_thread(const Shape& body, const ThreadSpec& spec) {
     throw std::invalid_argument("no faces to thread");
   }
   detail::require_positive("thread pitch", spec.pitch);
-  detail::require_positive("thread major diameter", spec.major);
-  detail::require_positive("thread minor diameter", spec.minor);
-  detail::require_positive("thread pitch diameter", spec.pitch_diameter);
-  detail::require_finite("thread angle", spec.angle);
-  if (!(spec.minor < spec.pitch_diameter && spec.pitch_diameter < spec.major)) {
-    throw std::invalid_argument("the thread's diameters must grow from the minor to the pitch to the major one");
+  if (spec.groove) {
+    detail::require_positive("thread major diameter", spec.major);
+    detail::require_positive("thread minor diameter", spec.minor);
+    detail::require_positive("thread pitch diameter", spec.pitch_diameter);
+    detail::require_finite("thread angle", spec.angle);
+    if (!(spec.minor < spec.pitch_diameter && spec.pitch_diameter < spec.major)) {
+      throw std::invalid_argument("the thread's diameters must grow from the minor to the pitch to the major one");
+    }
+    // The 60-degree flanks meet H/2 = 0.433 P on either side of the pitch
+    // diameter: the crests and roots must lie within that.
+    const double reach = 0.4330127 * spec.pitch;
+    if (spec.major - spec.pitch_diameter >= 2.0 * reach || spec.pitch_diameter - spec.minor >= 2.0 * reach) {
+      throw std::invalid_argument("the thread's diameters are too far apart for its pitch");
+    }
   }
-  // The 60-degree flanks meet H/2 = 0.433 P on either side of the pitch
-  // diameter: the crests and roots must lie within that.
-  const double reach = 0.4330127 * spec.pitch;
-  if (spec.major - spec.pitch_diameter >= 2.0 * reach || spec.pitch_diameter - spec.minor >= 2.0 * reach) {
-    throw std::invalid_argument("the thread's diameters are too far apart for its pitch");
+  if (spec.chamfer) {
+    detail::require_finite("thread chamfer angle", spec.chamfer_angle);
+    detail::require_positive("thread chamfer diameter", spec.chamfer_diameter);
+    if (!(spec.chamfer_angle > 0.0 && spec.chamfer_angle < kTwoPi / 4.0)) {
+      throw std::invalid_argument("the thread's chamfer angle must be between 0 and 90 degrees to the axis");
+    }
+    if (spec.chamfer_ends.size() != spec.faces.size()) {
+      throw std::invalid_argument("the thread's chamfer ends must be given for each face");
+    }
   }
   if (!spec.full_length) {
     detail::require_positive("thread length", spec.length);
@@ -420,14 +547,17 @@ ShapePtr modeled_thread(const Shape& body, const ThreadSpec& spec) {
   }
   return detail::run("thread", [&] {
     ShapePtr current = std::make_shared<Shape>(body);
-    for (const std::string& face : spec.faces) {
+    for (std::size_t k = 0; k < spec.faces.size(); ++k) {
+      const std::string& face = spec.faces[k];
       const CylinderFace cylinder = face_cylinder(*current, face);
-      check_clearance(spec, cylinder.internal);
-      if (!cylinder.internal && cylinder.radius <= spec.minor / 2.0 - spec.radial_clearance + kSame) {
-        throw std::invalid_argument("face " + face + " is too thin for the thread");
-      }
-      if (cylinder.internal && cylinder.radius >= spec.major / 2.0 + spec.radial_clearance - kSame) {
-        throw std::invalid_argument("face " + face + " is too wide for the thread");
+      if (spec.groove) {
+        check_clearance(spec, cylinder.internal);
+        if (!cylinder.internal && cylinder.radius <= spec.minor / 2.0 - spec.radial_clearance + kSame) {
+          throw std::invalid_argument("face " + face + " is too thin for the thread");
+        }
+        if (cylinder.internal && cylinder.radius >= spec.major / 2.0 + spec.radial_clearance - kSame) {
+          throw std::invalid_argument("face " + face + " is too wide for the thread");
+        }
       }
       const double tolerance = 1.0e-6;
       double from = 0.0;
@@ -447,13 +577,28 @@ ShapePtr modeled_thread(const Shape& body, const ThreadSpec& spec) {
         to = std::min(to, cylinder.length);
       }
       const Thread thread = thread_of(cylinder, spec);
+      EndChamfers chamfers;
+      if (spec.chamfer) {
+        chamfers.low = spec.chamfer_ends[k].low;
+        chamfers.high = spec.chamfer_ends[k].high;
+        chamfers.radius = spec.chamfer_diameter / 2.0;
+        chamfers.tan = std::tan(spec.chamfer_angle);
+        chamfers.low_name = face_name(spec.feature, "thread_chamfer_low", face);
+        chamfers.high_name = face_name(spec.feature, "thread_chamfer_high", face);
+      }
       if (!thread.along.IsEqual(cylinder.axis.Direction(), 1.0e-9)) {
         // Measured along the thread's axis.
         std::swap(from, to);
         from = cylinder.length - from;
         to = cylinder.length - to;
+        std::swap(chamfers.low, chamfers.high);
+        std::swap(chamfers.low_name, chamfers.high_name);
       }
-      current = thread_face(*current, face, thread, from, to, face_name(spec.feature, "thread", face));
+      if (spec.groove) {
+        current = thread_face(*current, face, thread, from, to, chamfers, face_name(spec.feature, "thread", face));
+      } else {
+        current = chamfer_face(*current, thread, from, to, chamfers, face);
+      }
     }
     // Number the pieces of split names, and check the faces that changed.
     detail::FaceNamer namer(current->occt());

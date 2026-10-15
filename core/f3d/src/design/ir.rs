@@ -1121,6 +1121,13 @@ record! {
         /// design when it was selected (cm), as the slot that holds the
         /// entity carries it (`decode::slot_contexts`).
         "context" => context: Mat4,
+        /// An edge input: the curve of the edge as the input saw it, which
+        /// the input stores beside its recipe (mitcad#306,
+        /// [`super::curve`]): `Line3D`, `Arc3D` or `NurbsCurve3D` (cm).
+        "curves" => curves: Vec<Geometry>,
+        /// An edge found: how it lies to its stored curve
+        /// ([`super::curve::CurveFit::describe`]).
+        "curve_fit" => curve_fit: String,
     }
 }
 

@@ -8,7 +8,9 @@
 #      its entry for a community index.
 #   2. Libraries: the default sources removed (they are not fetched), a
 #      fastener library made by the generator (v1.0.0, then v1.1.0 with
-#      wider M5 heads) and a community index added by URL and fetched.
+#      wider M5 heads) and a community index added by URL, not fetched.
+#   2b. Insert from Library (mitcad#317): empty, its text says to press
+#      Update; Update fetches both sources and lists the parts.
 #   3. Insert from Library: a search for 4762, the older version v1.0.0,
 #      the default size M5x16, linked: its volume; a nut copied.
 #   4. Library Parts: the screw still at v1.0.0 with a newer version
@@ -18,6 +20,9 @@
 #   5. Community Library: the index's library without a licence hidden
 #      until asked for; Get Library fetches it after a question; its
 #      component inserted with no licence named.
+#   6. A source that is no library: Fetch All in Libraries... and Update in
+#      the browser fetch the others and report it in one warning; Update
+#      searches again and keeps the selected part.
 #
 # Runs headless on Xvfb (see ui-test-lib.sh).
 # Usage: tools/ui-library-test.sh
@@ -110,13 +115,27 @@ for url in "$LIB" "$INDEX"; do
   ui_focus_dialog '^Libraries$'
 done
 ui_expect_new "Library source added: $INDEX" "the sources added"
-ui_step "Fetch All (Alt+F)"                ui_key alt+f
+ui_step "close (Alt+C)"                    ui_key alt+c
+ui_focus_main
+
+echo "--- 2b. Insert from Library: empty until Update (mitcad#317)"
+ui_mark
+ui_step "Insert from Library (command search)" ui_command "Insert from Library"
+ui_focus_dialog '^Insert from Library$'
+ui_expect_new "Library search '': 0 components, 0 libraries" "nothing listed before a fetch"
+ui_expect_new "Library browser empty: nothing fetched yet, press Update" "the empty list says to press Update"
+ui_mark
+ui_step "Update (Alt+U)"                   ui_key alt+u
+ui_expect_new "Library browser update: 2 enabled source(s)" "Update fetches the enabled sources"
 ui_expect_new "Library fetched: library Mitcad metric fasteners (mitcad-fasteners) from $LIB; versions v1.1.0 (" \
   "the fastener library fetched" 30
 ui_expect_new "Library fetched: index Test index () from $INDEX" "the index fetched" 30
-ui_expect_new "Library source $LIB (on): Mitcad metric fasteners (mitcad-fasteners); versions v1.1.0" \
-  "the source shows the library"
-ui_step "close (Alt+C)"                    ui_key alt+c
+ui_expect_new "Library fetch of 2 source(s): 0 failed" "no failures"
+ui_expect_new "Library browser selected mitcad-fasteners/" "the results list the library's parts"
+tail -n +$((UI_MARK + 1)) "$UI_LOG" | grep -qE "^Library search '': [1-9][0-9]* components" ||
+  ui_fail "no components listed after Update"
+echo "ok   the search ran again with the parts"
+ui_step "close (Escape)"                   ui_key Escape
 ui_focus_main
 
 echo "--- 3. Insert from Library"
@@ -198,6 +217,44 @@ ui_step "Insert (Alt+I)"                   ui_key alt+i
 ui_focus_main
 ui_expect_new "Inserted component Boss bracket (linked) from test-brackets " "the community part inserted"
 ui_expect_new "licence none" "no licence recorded"
+
+echo "--- 6. A broken source: one warning (Fetch All and Update, mitcad#317)"
+BROKEN=$WORK/no-such-library
+ui_mark
+ui_step "Libraries (command search)"       ui_command "Libraries..."
+ui_focus_dialog '^Libraries$'
+ui_step "Add URL (Alt+A)"                  ui_key alt+a
+ui_focus_dialog '^Add Library$'
+ui_step "a folder that is no library"      eval 'ui_type_text "$BROKEN"; ui_key Return'
+ui_focus_dialog '^Libraries$'
+ui_expect_new "Library source added: $BROKEN" "the broken source added"
+ui_step "Fetch All (Alt+F)"                ui_key alt+f
+ui_expect_new "Library fetch failed: $BROKEN: " "its fetch fails" 30
+ui_expect_new "Library fetch of 4 source(s): 1 failed" "the others fetched" 30
+ui_expect_new "Library source $LIB (on): Mitcad metric fasteners (mitcad-fasteners); versions v1.1.0" \
+  "the sources shown again"
+ui_focus_dialog '^Fetch Libraries$'
+ui_step "close the warning (Return)"       ui_key Return
+ui_focus_dialog '^Libraries$'
+ui_step "close (Alt+C)"                    ui_key alt+c
+ui_focus_main
+ui_mark
+ui_step "Insert from Library (command search)" ui_command "Insert from Library"
+ui_focus_dialog '^Insert from Library$'
+ui_step "search 4762"                      xdotool type --delay 40 "4762"
+ui_expect_new "Library browser selected mitcad-fasteners/iso4762: version v1.1.0 (" "the screw selected"
+ui_mark
+ui_step "Update (Alt+U)"                   ui_key alt+u
+ui_expect_new "Library browser update: 4 enabled source(s)" "Update fetches every enabled source"
+ui_expect_new "Library fetch failed: $BROKEN: " "the broken one fails" 30
+ui_expect_new "Library fetch of 4 source(s): 1 failed" "one failure" 30
+ui_expect_new "Library search '4762': 1 components" "the search ran again"
+ui_expect_new "Library browser kept the selection component|" "the selection kept"
+ui_focus_dialog '^Fetch Libraries$'
+ui_step "close the warning (Return)"       ui_key Return
+ui_focus_dialog '^Insert from Library$'
+ui_step "close (Escape)"                   ui_key Escape
+ui_focus_main
 
 ui_stop_app
 ui_finish "component libraries and the community library"

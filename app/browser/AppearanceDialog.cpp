@@ -23,9 +23,13 @@
 #include <QLabel>
 #include <QLineEdit>
 #include <QListWidget>
+#include <QListView>
+#include <QMessageBox>
 #include <QPixmap>
 #include <QPushButton>
 #include <QSignalBlocker>
+#include <QStackedWidget>
+#include <QTimer>
 #include <QToolButton>
 #include <QVBoxLayout>
 #include <QtLogging>
@@ -34,6 +38,8 @@
 #include "../framework/Icons.hpp"
 #include "../framework/TestSync.hpp"
 #include "../framework/Theme.hpp"
+#include "../materials/TextureBrowser.hpp"
+#include "../materials/TextureUse.hpp"
 #include "DocumentHost.hpp"
 
 namespace mitcad {
@@ -65,16 +71,40 @@ QString number(double value) { return QString::number(value, 'g', 6); }
 AppearanceDialog::AppearanceDialog(DocumentHost& host, QWidget* parent) : QDialog(parent), m_host(host) {
   setWindowTitle(tr("Appearances"));
   setWindowIcon(themeIcon(QStringLiteral("appearance")));
-  resize(700, 760);
+  resize(820, 780);
   auto* layout = new QVBoxLayout(this);
   auto* columns = new QHBoxLayout;
   layout->addLayout(columns, 1);
 
+  // The browser (mitcad#315): the appearances or a texture source, a search
+  // and a category.
+  auto* left = new QVBoxLayout;
+  columns->addLayout(left, 1);
+  m_source = new QComboBox;
+  m_source->setToolTip(tr("Where to look: the appearances of the library and this design, or a texture source"));
+  left->addWidget(m_source);
+  auto* searchRow = new QHBoxLayout;
+  m_search = new QLineEdit;
+  m_search->setPlaceholderText(tr("Search"));
+  m_search->setClearButtonEnabled(true);
+  m_category = new QComboBox;
+  m_category->setToolTip(tr("Show one category only"));
+  searchRow->addWidget(m_search, 1);
+  searchRow->addWidget(m_category);
+  left->addLayout(searchRow);
+  m_pages = new QStackedWidget;
+  left->addWidget(m_pages, 1);
+  m_searchTimer = new QTimer(this);
+  m_searchTimer->setSingleShot(true);
+  m_searchTimer->setInterval(250);
+
   m_list = new QListWidget;
   m_list->setIconSize(QSize(kIconSize, kIconSize));
   m_list->setSelectionMode(QAbstractItemView::SingleSelection);
-  m_list->setMinimumWidth(220);
-  columns->addWidget(m_list, 1);
+  m_list->setMinimumWidth(300);
+  m_pages->addWidget(m_list);
+  m_textures = new TextureBrowser;
+  m_pages->addWidget(m_textures);
 
   auto* right = new QVBoxLayout;
   columns->addLayout(right, 1);
@@ -259,7 +289,277 @@ AppearanceDialog::AppearanceDialog(DocumentHost& host, QWidget* parent) : QDialo
       change(QStringLiteral("name"), m_name->text().trimmed());
     }
   });
+  // Texture sources (mitcad#315).
+  connect(m_source, &QComboBox::currentIndexChanged, this, [this] {
+    if (!m_building) {
+      sourceChosen();
+    }
+  });
+  connect(m_category, &QComboBox::currentIndexChanged, this, [this] {
+    if (!m_building) {
+      runSearch();
+    }
+  });
+  connect(m_search, &QLineEdit::textChanged, this, [this] { m_searchTimer->start(); });
+  connect(m_search, &QLineEdit::returnPressed, this, [this] {
+    m_searchTimer->stop();
+    runSearch();
+  });
+  connect(m_searchTimer, &QTimer::timeout, this, &AppearanceDialog::runSearch);
+  connect(m_textures, &TextureBrowser::useRequested, this, &AppearanceDialog::useTexture);
+  connect(m_textures, &TextureBrowser::placesChanged, this,
+          [this] { TestSync::singleShot(0, this, [this] { logLayout(); }); });
+  loadSources();
   setTargets({});
+  refresh();
+}
+
+AppearanceDialog::~AppearanceDialog() = default;
+
+void AppearanceDialog::showEvent(QShowEvent* event) {
+  QDialog::showEvent(event);
+  // Preferences may have changed the texture folders meanwhile.
+  if (TextureSettings::load() != m_textureSettings) {
+    loadSources();
+  }
+}
+
+void AppearanceDialog::resizeEvent(QResizeEvent* event) {
+  QDialog::resizeEvent(event);
+  TestSync::singleShot(0, this, [this] { logLayout(); });
+}
+
+void AppearanceDialog::loadSources() {
+  const QString shown = currentSource() != nullptr ? currentSource()->id() : QString();
+  m_textureSettings = TextureSettings::load();
+  // The browser lets go of the old sources first; a Use still fetching from
+  // one never answers.
+  m_textures->search(nullptr, QString(), QString());
+  m_using = false;
+  m_textures->setBusy(QString());
+  m_sources = makeTextureSources(m_textureSettings);
+  m_building = true;
+  m_source->clear();
+  m_source->addItem(themeIcon(QStringLiteral("appearance")), tr("Appearances: Library and This Design"));
+  int index = 0;
+  for (std::size_t i = 0; i < m_sources.size(); ++i) {
+    m_source->addItem(m_sources[i]->name(), m_sources[i]->id());
+    if (m_sources[i]->id() == shown) {
+      index = static_cast<int>(i) + 1;
+    }
+  }
+  m_source->setCurrentIndex(index);
+  m_building = false;
+  QStringList ids;
+  for (const auto& source : m_sources) {
+    ids << source->id();
+  }
+  qDebug().noquote() << QStringLiteral("Appearances texture sources: %1 (%2 folders)")
+                            .arg(ids.isEmpty() ? QStringLiteral("none") : ids.join(QStringLiteral(", ")))
+                            .arg(m_textureSettings.folders.size());
+  sourceChosen();
+}
+
+TextureSource* AppearanceDialog::currentSource() const {
+  const int index = m_source != nullptr ? m_source->currentIndex() - 1 : -1;
+  return index >= 0 && index < static_cast<int>(m_sources.size()) ? m_sources[std::size_t(index)].get() : nullptr;
+}
+
+void AppearanceDialog::sourceChosen() {
+  TextureSource* source = currentSource();
+  if (source != nullptr && source->usesNetwork() && !m_textureSettings.allowNetwork) {
+    // Nothing goes to the network before the user allows it.
+    const auto answer =
+        sheetQuestion(this, tr("Texture Sources on the Internet"),
+                      tr("%1 is searched on the internet. Allow texture sources on the internet? (Preferences, "
+                         "Textures changes this later.)")
+                          .arg(source->name()),
+                      QMessageBox::Yes | QMessageBox::No, QMessageBox::No);
+    if (answer != QMessageBox::Yes) {
+      const QSignalBlocker block(m_source);
+      m_source->setCurrentIndex(m_shownSource);
+      return;
+    }
+    m_textureSettings.allowNetwork = true;
+    TextureSettings saved = TextureSettings::load();
+    saved.allowNetwork = true;
+    saved.save();
+    qDebug().noquote() << "Appearances: texture sources on the internet allowed";
+  }
+  m_shownSource = m_source->currentIndex();
+  m_pages->setCurrentIndex(source != nullptr ? 1 : 0);
+  qDebug().noquote() << QStringLiteral("Appearances source: %1")
+                            .arg(source != nullptr ? source->id() : QStringLiteral("appearances"));
+  showCategories();
+  runSearch();
+}
+
+void AppearanceDialog::showCategories() {
+  const QString kept = m_category->currentData().toString();
+  const auto fill = [this, kept](const QStringList& names) {
+    m_building = true;
+    m_category->clear();
+    m_category->addItem(tr("All Categories"), QString());
+    for (const QString& name : names) {
+      m_category->addItem(name, name);
+    }
+    m_category->setCurrentIndex(std::max(0, m_category->findData(kept)));
+    m_building = false;
+  };
+  TextureSource* source = currentSource();
+  if (source == nullptr) {
+    fill({tr("Library"), tr("This Design")});
+    return;
+  }
+  fill({});
+  const QString id = source->id();
+  source->categories(this, [this, fill, id](const QStringList& names, const QString& error) {
+    TextureSource* now = currentSource();
+    if (now == nullptr || now->id() != id) {
+      return;
+    }
+    if (!error.isEmpty()) {
+      m_textures->setMessage(error, true);
+      return;
+    }
+    const QString before = m_category->currentData().toString();
+    fill(names);
+    if (m_category->currentData().toString() != before) {
+      runSearch();
+    }
+  });
+}
+
+void AppearanceDialog::runSearch() {
+  m_searchTimer->stop();
+  TextureSource* source = currentSource();
+  if (source == nullptr) {
+    filterList();
+    return;
+  }
+  m_textures->search(source, m_search->text().trimmed(), m_category->currentData().toString());
+}
+
+void AppearanceDialog::filterList() {
+  // The appearances whose name has every word typed, in the category.
+  const QStringList words = m_search->text().toLower().split(QLatin1Char(' '), Qt::SkipEmptyParts);
+  const int category = m_category->currentIndex(); // 0 all, 1 the library, 2 this design
+  QListWidgetItem* header = nullptr;
+  bool headerUsed = false;
+  int shown = 0;
+  for (int i = 0; i < m_list->count(); ++i) {
+    QListWidgetItem* item = m_list->item(i);
+    const QString id = item->data(kIdRole).toString();
+    if (id.isEmpty()) {
+      if (header != nullptr) {
+        header->setHidden(!headerUsed);
+      }
+      header = item;
+      headerUsed = false;
+      continue;
+    }
+    const Appearance* a = findAppearance(m_appearances, id);
+    const QString name = item->text().toLower();
+    bool visible = std::all_of(words.cbegin(), words.cend(), [&name](const QString& w) { return name.contains(w); });
+    if (a != nullptr && category == 1) {
+      visible = visible && a->library;
+    } else if (a != nullptr && category == 2) {
+      visible = visible && !a->library;
+    }
+    item->setHidden(!visible);
+    headerUsed = headerUsed || visible;
+    shown += visible ? 1 : 0;
+  }
+  if (header != nullptr) {
+    header->setHidden(!headerUsed);
+  }
+  if (!words.isEmpty() || category != 0) {
+    qDebug().noquote() << QStringLiteral("Appearances filtered \"%1\" (%2): %3 shown")
+                              .arg(m_search->text().trimmed(), m_category->currentText())
+                              .arg(shown);
+  }
+  TestSync::singleShot(0, this, [this] { logLayout(); });
+}
+
+void AppearanceDialog::useTexture(const TextureAsset& asset, const QString& resolution) {
+  TextureSource* source = currentSource();
+  if (source == nullptr || m_using || !canChange()) {
+    return;
+  }
+  m_using = true;
+  m_message->clear();
+  const QString sourceId = source->id();
+  qDebug().noquote() << QStringLiteral("Texture fetching %1 %2 %3")
+                            .arg(sourceId, asset.recorded(),
+                                 resolution.isEmpty() ? QStringLiteral("original") : resolution);
+  m_textures->setBusy(tr("Fetching %1...").arg(asset.name));
+  source->fetch(
+      asset, resolution, this,
+      [this, name = asset.name](qint64 done, qint64 total) {
+        m_textures->setBusy(total > 0 ? tr("Fetching %1: %2 of %3...")
+                                            .arg(name, textureBytesText(done), textureBytesText(total))
+                                      : tr("Fetching %1: %2...").arg(name, textureBytesText(done)));
+      },
+      [this, sourceId, asset](const TextureFiles& files, const QString& error) {
+        finishUse(sourceId, asset, files, error);
+      });
+}
+
+void AppearanceDialog::finishUse(const QString& sourceId, const TextureAsset& asset, const TextureFiles& files,
+                                 const QString& error) {
+  m_using = false;
+  m_textures->setBusy(QString());
+  const auto refuse = [this](const QString& why) {
+    m_message->setText(why);
+    m_textures->setMessage(why, true);
+    qDebug().noquote() << QStringLiteral("Texture not used: %1").arg(why);
+  };
+  if (!error.isEmpty()) {
+    refuse(error);
+    return;
+  }
+  if (!canChange()) {
+    return;
+  }
+  // A new name: "Oak veneer", "Oak veneer 2", ...
+  QString name = asset.name.trimmed().isEmpty() ? tr("Texture") : asset.name.trimmed();
+  const QString stem = name;
+  for (int n = 2; std::any_of(m_appearances.begin(), m_appearances.end(),
+                              [&name](const Appearance& other) { return other.name == name; });
+       ++n) {
+    name = QStringLiteral("%1 %2").arg(stem).arg(n);
+  }
+  QJsonArray listed;
+  try {
+    listed = m_host.model().queryArray(QStringLiteral("appearances"));
+  } catch (const std::exception& e) {
+    refuse(QString::fromUtf8(e.what()));
+    return;
+  }
+  const TextureUse use = textureUseCommand(sourceId, asset, files, name, embeddedImageDigests(listed));
+  if (!use.error.isEmpty()) {
+    refuse(use.error);
+    return;
+  }
+  QJsonObject result;
+  if (!m_host.runModelCommand(use.command, &result)) {
+    refuse(m_host.lastError());
+    return;
+  }
+  m_message->clear();
+  m_current = result.value(QStringLiteral("id")).toString();
+  qDebug().noquote() << QStringLiteral("Texture used: %1 %2 %3 as %4 (%5 maps; %6 images embedded, %7 shared)")
+                            .arg(sourceId, asset.recorded(),
+                                 files.resolution.isEmpty() ? QStringLiteral("original") : files.resolution,
+                                 m_current)
+                            .arg(files.maps.size())
+                            .arg(use.sent)
+                            .arg(use.shared);
+  m_textures->setMessage(m_targets.isEmpty()
+                             ? tr("%1 is now an appearance of this design.").arg(name)
+                             : tr("%1 is now an appearance of this design: Assign gives it to the selection.")
+                                   .arg(name),
+                         false);
   refresh();
 }
 
@@ -484,6 +784,8 @@ void AppearanceDialog::refresh() {
     }
   }
   m_building = false;
+  // The search and the category (mitcad#315) hide what does not match.
+  filterList();
   select(m_current);
   showCurrent();
   showFaces();
@@ -768,6 +1070,7 @@ void AppearanceDialog::showTexture(const Appearance* a, bool editable) {
   m_textureProjection->setCurrentIndex(texture.planar ? 1 : 0);
   m_textureEmbed->setChecked(texture.embedded);
   m_building = false;
+  m_textureInfo->setToolTip(QString());
   if (!has) {
     m_textureInfo->setText(editable ? tr("No texture: choose a PNG or JPEG image for the base colour.") : QString());
   } else if (!texture.missing.isEmpty()) {
@@ -777,6 +1080,65 @@ void AppearanceDialog::showTexture(const Appearance* a, bool editable) {
   } else {
     m_textureInfo->setText((texture.embedded ? tr("The image is embedded in the design. ") : QString()) +
                            tr("The rendered view draws the texture; the shaded view shows the base colour."));
+  }
+  if (!has) {
+    return;
+  }
+  // The set's other maps and where it came from (mitcad#313, mitcad#315).
+  QStringList maps;
+  for (const QString& map : textureSetMapNames()) {
+    if (map != QLatin1String("base_color") && texture.json.value(map).isObject()) {
+      maps << map;
+    }
+  }
+  const QJsonObject source = texture.json.value(QStringLiteral("source")).toObject();
+  QStringList lines;
+  if (!maps.isEmpty()) {
+    lines << tr("Maps: base colour, %1%2.")
+                 .arg(maps.join(QStringLiteral(", ")), texture.embedded ? tr(" (embedded)") : QString());
+  }
+  if (!source.isEmpty()) {
+    QString from = source.value(QStringLiteral("asset")).toString();
+    QString sourceName = source.value(QStringLiteral("id")).toString();
+    for (const auto& known : m_sources) {
+      if (known->id() == sourceName) {
+        sourceName = known->name();
+      }
+    }
+    QStringList details;
+    for (const char* key : {"resolution", "license"}) {
+      const QString value = source.value(QLatin1String(key)).toString();
+      if (!value.isEmpty()) {
+        details << value;
+      }
+    }
+    lines << tr("From %1: %2%3.")
+                 .arg(sourceName, from,
+                      details.isEmpty() ? QString() : QStringLiteral(" (%1)").arg(details.join(QStringLiteral(", "))));
+    const QString url = source.value(QStringLiteral("url")).toString();
+    if (!url.isEmpty()) {
+      lines.last() += QLatin1Char(' ') + url;
+    }
+  }
+  if (!lines.isEmpty() && texture.missing.isEmpty()) {
+    // In the place of the general line, which becomes its tooltip, so the
+    // dialog stays as high as before.
+    m_textureInfo->setToolTip(m_textureInfo->text());
+    m_textureInfo->setText(lines.join(QLatin1Char('\n')));
+  }
+  const QString logged =
+      QStringLiteral("Appearance %1 texture: %2, maps %3, source %4")
+          .arg(a->id, texture.embedded ? QStringLiteral("embedded") : QStringLiteral("file"),
+               maps.isEmpty() ? QStringLiteral("none") : maps.join(QLatin1Char(' ')),
+               source.isEmpty() ? QStringLiteral("none")
+                                : QStringLiteral("%1 %2 %3")
+                                      .arg(source.value(QStringLiteral("id")).toString(),
+                                           source.value(QStringLiteral("asset")).toString(),
+                                           source.value(QStringLiteral("resolution")).toString())
+                                      .trimmed());
+  if (logged != m_loggedTexture) {
+    m_loggedTexture = logged;
+    qDebug().noquote() << logged;
   }
 }
 
@@ -906,13 +1268,26 @@ void AppearanceDialog::logLayout() {
     return QStringLiteral("%1,%2").arg(global.x()).arg(global.y());
   };
   QStringList lines;
-  for (int i = 0; i < m_list->count(); ++i) {
+  for (int i = 0; m_pages->currentWidget() == m_list && i < m_list->count(); ++i) {
     QListWidgetItem* item = m_list->item(i);
     const QString id = item->data(kIdRole).toString();
     const QRect rect = m_list->visualItemRect(item);
-    if (!id.isEmpty() && m_list->viewport()->rect().contains(rect.center())) {
+    if (!id.isEmpty() && !item->isHidden() && m_list->viewport()->rect().contains(rect.center())) {
       lines << QStringLiteral("Appearances item %1 at %2").arg(id, at(m_list->viewport(), rect.center()));
     }
+  }
+  // The browser (mitcad#315).
+  lines << QStringLiteral("Appearances source at %1").arg(at(m_source, m_source->rect().center()));
+  lines << QStringLiteral("Appearances search at %1").arg(at(m_search, m_search->rect().center()));
+  lines << QStringLiteral("Appearances category at %1").arg(at(m_category, m_category->rect().center()));
+  if (m_pages->currentWidget() == m_textures) {
+    for (const auto& [name, center] : m_textures->assetsInSight()) {
+      lines << QStringLiteral("Appearances texture %1 at %2").arg(name, at(m_textures->view()->viewport(), center));
+    }
+    QWidget* resolution = m_textures->resolutionBox();
+    QWidget* use = m_textures->useButton();
+    lines << QStringLiteral("Appearances resolution at %1").arg(at(resolution, resolution->rect().center()));
+    lines << QStringLiteral("Appearances use at %1").arg(at(use, use->rect().center()));
   }
   lines << QStringLiteral("Appearances field name at %1").arg(at(m_name, m_name->rect().center()));
   for (const NumberField& field : std::as_const(m_numbers)) {

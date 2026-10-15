@@ -195,7 +195,10 @@ design in a project.
 - **Appearances** (mitcad#46, `core/model/src/appearance.rs`): physically
   based parameter sets (base colour, metalness, roughness, specular,
   transmission, IOR, coat, emission, opacity, and a texture for the base
-  colour: an image file or one embedded in the design file, mitcad#53).
+  colour: an image file or one embedded in the design file, mitcad#53,
+  with normal, roughness, metalness and occlusion maps and the set's
+  source, mitcad#313; an embedded image is kept once per design by its
+  SHA-256, shared in memory and in the file).
   The library is built into the model; a document's own appearances are
   in the definition state and the design file, changed by undoable
   commands that recompute nothing. Bodies refer to one by id, and so do
@@ -203,7 +206,12 @@ design in a project.
   appearance overrides the body's and follows the face as other face
   references do). The shaded view uses the display colour (the base
   colour) of bodies and faces, the rendered view every parameter and the
-  texture.
+  texture with all its maps (mitcad#314). View > Component Colors
+  temporarily overrides body and face colours in the shaded and wireframe
+  views with a stable colour per owning component (shared by its
+  occurrences). This user preference does not
+  change appearances, exports or the document. Enabling it leaves the
+  rendered view; entering the rendered view turns component colours off.
 - **Render settings** (mitcad#47, `core/model/src/render_settings.rs`):
   how the rendered view lights and shows the design, per document: the
   environment (a built-in studio or outdoor setup, or an HDR image), the
@@ -862,6 +870,27 @@ not recompute.
   (`analysis_shape` `flat_pattern`), and its DXF is written by the model from
   the evaluated outline (`export_flat_pattern_dxf`, [sheet-metal.md](sheet-metal.md)).
 - **Updates** (`app/update/`): see [updates.md](updates.md).
+- **Texture sources** (`app/materials/`, mitcad#315): where Edit
+  Appearances finds sets of texture maps. Each source is one class behind
+  `TextureSource` (asynchronous categories, search, thumbnails and fetch;
+  answers delivered on the GUI thread, dropped when the asking object is
+  gone) and one line in `textureSourceRegistry()`; `FolderTextureSource`
+  scans the folders of Preferences › Textures on a worker thread. The
+  browser (`TextureBrowser`, a `QListView` grid with thumbnails asked for
+  as they come into sight) sits in `AppearanceDialog`; Use turns the
+  fetched files into one `create_appearance` with every image embedded
+  (`textureUseCommand`), so the model never sees a source, the network or
+  the cache (`textures/<source>/<asset>/<resolution>/` in the local data
+  folder, `MITCAD_TEXTURES_DIR`), and a design never needs them to open.
+  `PolyHavenTextureSource` (mitcad#313) is the online one: Poly Haven's
+  public API, the list of textures, each texture's list of files and the
+  thumbnails kept in the cache (so the service is not asked again and
+  again), the chosen resolution's maps downloaded and checked. Its
+  requests go through a `TextureFetcher` given to it (`TextureFetcher.hpp`):
+  Qt Network in the application (HTTPS only, User-Agent
+  `Mitcad/<version>`, nothing while Preferences does not allow the
+  network), fixture files for UI tests (`MITCAD_TEXTURE_FIXTURES`), a fake
+  with recorded answers in the unit tests, so no test uses the network.
 - **Feedback and error reports** (`app/report/`, mitcad#61, mitcad#62):
   Help › Send Feedback and the reports offered after a crash or an
   internal error share one path: a `report::Report` of sections, masked
@@ -914,6 +943,12 @@ not recompute.
   draws every role in the outline colour and the whole icon at 34 %.
 
 ## Window layouts and the macOS layer
+
+The Qt idle selection card uses the model's single-item `measure` query for
+up to eight selected faces, edges or bodies. Results are cached until the
+selection changes or the scene refreshes, so edits and undo invalidate them.
+Full topological references remain in the tooltip. Floating cards size their
+active page independently of the hidden sketch palette.
 
 With `MITCAD_MACOS_NATIVE_UI=ON`, macOS starts the AppKit frontend by
 default. `--ui=qt` selects the retained Qt frontend; `--chrome` also selects
@@ -1682,13 +1717,19 @@ thousands of commands, not tens of thousands), types' shapes as
 components with occurrences, openings cut from their elements. The
 report accounts for every product of the file.
 
-`.rvt` projects and `.rfa` families (mitcad#274): `core/rvt` reads the
-container (the compound file module shared with `core/ipt` as the
-`mitcad-cfb` crate), the paged gzip streams, the metadata and the file's
-own serialisation schema, and walks the element records by that schema;
-`mitcad_import::rvt` brings a project's building elements in through the
-model's kernel (`primitive`, and `triangle_body` for saved meshes), one
-component per level, each element a body: its saved mesh or its box at its
-transform (`core/ffi/src/rvt_import.rs`; the `import_rvt` command), in
-the import process like the others, under the memory guard. The elements'
-real shapes are phase 2.
+`.rvt` projects and `.rfa` families (mitcad#274, mitcad#275): `core/rvt`
+reads the container (the compound file module shared with `core/ipt` as
+the `mitcad-cfb` crate), the paged gzip streams, the metadata and the
+file's own serialisation schema, and walks the element records by that
+schema; its `building` module reads the building elements' parameters
+(location curves, joins, layers, boundary loops, sections, cut loops,
+grids, links). `mitcad_import::rvt` brings a project in through the
+model's kernel, one component per level with its construction plane:
+walls, floors, roofs, columns, beams and stair runs rebuilt as features
+(the IFC import's feature builder, one command per element), each checked
+against the IFC export of the same project when one is given (by
+GlobalId) or else its stored box and undone when it disagrees; every other
+element a body of its saved mesh or its box at its transform; linked
+models in components of their own (`core/ffi/src/rvt_import.rs`; the
+`import_rvt` command), in the import process like the others, under the
+memory guard.

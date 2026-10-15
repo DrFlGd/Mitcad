@@ -115,6 +115,15 @@ const Quantity_Color kCenterlineColor(0.25, 0.30, 0.40, Quantity_TOC_RGB);
 // The two above on a dark background (mitcad#253).
 const Quantity_Color kConstrainedColorDark(0.88, 0.90, 0.94, Quantity_TOC_RGB);
 const Quantity_Color kCenterlineColorDark(0.60, 0.66, 0.76, Quantity_TOC_RGB);
+// The halo under fully constrained geometry and centre lines (mitcad#302):
+// a wider line in the opposite tone, so that the line stands out over a
+// body's face as well as over the background. Near the background's own
+// tone, so that on the empty background the line looks as it did (sRGB:
+// the colours above are linear and show lighter).
+const Quantity_Color kSketchHaloDark(0.13, 0.14, 0.16, Quantity_TOC_sRGB);
+const Quantity_Color kSketchHaloLight(0.98, 0.98, 0.99, Quantity_TOC_sRGB);
+constexpr double kSketchLineWidth = 2.0;
+constexpr double kSketchHaloWidth = 6.0;
 const Quantity_Color kReferenceColor(0.55, 0.20, 0.70, Quantity_TOC_RGB);
 const Quantity_Color kConstructionColor(0.85, 0.50, 0.10, Quantity_TOC_RGB);
 const Quantity_Color kProfileFill(0.55, 0.70, 0.95, Quantity_TOC_RGB);
@@ -844,6 +853,12 @@ OcctViewer::OcctViewer(QWidget* parent) : QOpenGLWidget(parent) {
   inSight.SetName("visible edges");
   inSight.SetClearDepth(false);
   m_viewer->InsertLayerAfter(m_edgeLayer, inSight, m_hiddenLayer);
+  // The halos of sketch entities (mitcad#302): drawn just before the top
+  // layer that holds the entities, against the scene's depth as they are.
+  Graphic3d_ZLayerSettings sketchHalos;
+  sketchHalos.SetName("sketch halos");
+  sketchHalos.SetClearDepth(false);
+  m_viewer->InsertLayerBefore(m_sketchHaloLayer, sketchHalos, Graphic3d_ZLayerId_Top);
   // The rendered view (docs/rendering.md, "Overlays in depth"): the bodies
   // in a layer of their own, then the rendered image over the whole view
   // without depth (it covers their colour, their depth stays), then the
@@ -1160,7 +1175,8 @@ void OcctViewer::setBodies(const std::vector<BodyDisplay>& bodies) {
     if (existing != m_bodies.end() && existing->second.style == style &&
         existing->second.object->Shape().IsEqual(shape) &&
         sameTransformation(existing->second.placement.Transformation(), body.placement.Transformation()) &&
-        existing->second.color == body.color && sameFaceColors(existing->second.faceLooks, body.faceLooks)) {
+        existing->second.component == body.component && existing->second.color == body.color &&
+        sameFaceColors(existing->second.faceLooks, body.faceLooks)) {
       BodyEntry entry = existing->second;
       entry.shape = body.shape; // the same geometry may come with new names
       entry.ghosted = ghosted;
@@ -1183,6 +1199,7 @@ void OcctViewer::setBodies(const std::vector<BodyDisplay>& bodies) {
     }
     BodyEntry entry;
     entry.uid = body.uid;
+    entry.component = body.component;
     entry.occurrence = body.occurrence;
     entry.shape = body.shape;
     entry.style = style;
@@ -1218,6 +1235,7 @@ std::vector<BodyDisplay> OcctViewer::shownBodies() const {
     }
     BodyDisplay body;
     body.uid = entry.uid;
+    body.component = entry.component;
     body.shape = entry.shape;
     body.placement = entry.placement;
     body.occurrence = entry.occurrence;
@@ -1402,7 +1420,25 @@ void OcctViewer::applyBackground() {
 
 void OcctViewer::showBody(BodyEntry& entry) {
   const TopoDS_Shape& shape = entry.shape->occt();
-  entry.object = makeBody(*entry.shape, entry.style, entry.color, entry.faceLooks, m_visualStyle, m_paper);
+  QColor color = entry.color;
+  const bool componentColors = m_componentColors && entry.style != BodyDisplay::Style::New;
+  if (componentColors) {
+    // Stable across visibility changes and sessions; consecutive component
+    // ids get hues separated by the golden angle. Unknown ids use a stable hash.
+    const QString component = QString::fromStdString(entry.component);
+    bool numeric = false;
+    quint32 index = component.mid(1).toUInt(&numeric);
+    if (!numeric) {
+      index = 0;
+      for (const unsigned char ch : entry.component) {
+        index = index * 31u + ch;
+      }
+    }
+    color = QColor::fromHsv(int((quint64(index) * 137u + 30u) % 360u), 155, 220);
+  }
+  entry.object = makeBody(*entry.shape, entry.style, color,
+                         componentColors ? std::vector<BodyDisplay::FaceLook>{} : entry.faceLooks,
+                         m_visualStyle, m_paper);
   const bool placed = !entry.placement.IsIdentity();
   if (placed) {
     entry.object->SetLocalTransformation(entry.placement.Transformation());
@@ -1427,7 +1463,7 @@ void OcctViewer::showBody(BodyEntry& entry) {
   setEdgeStyle(entry.hiddenEdges, kHiddenEdgeColor, 1.0, Aspect_TOL_DASH);
   entry.visibleEdges = new AIS_Shape(edges);
   setEdgeStyle(entry.visibleEdges,
-               m_visualStyle == VisualStyle::WireframeHiddenEdges ? wireColor(entry.color) : kEdgeColor,
+               m_visualStyle == VisualStyle::WireframeHiddenEdges ? wireColor(color) : kEdgeColor,
                1.0);
   for (const auto& [object, layer] :
        {std::pair{entry.hiddenEdges, m_hiddenLayer}, std::pair{entry.visibleEdges, m_edgeLayer}}) {
@@ -1448,6 +1484,18 @@ void OcctViewer::removeBody(BodyEntry& entry) {
       edges->Nullify();
     }
   }
+}
+
+void OcctViewer::setComponentColors(bool on) {
+  if (m_componentColors == on) {
+    return;
+  }
+  m_componentColors = on;
+  for (auto& [key, entry] : m_bodies) {
+    removeBody(entry);
+    showBody(entry);
+  }
+  sceneChanged();
 }
 
 void OcctViewer::setVisualStyle(VisualStyle style) {
@@ -1537,6 +1585,16 @@ void OcctViewer::setSketchEntities(const std::vector<SketchEntityDisplay>& entit
     display(object, AIS_WireFrame, std::move(info), true);
     // Over the faces a sketch lies on.
     m_context->SetZLayer(object, Graphic3d_ZLayerId_Top);
+    if (hasSketchHalo(look)) {
+      // In a layer of its own just before the top layer: at the same depth
+      // as the entity, whose line passes OCCT's depth test (less or equal)
+      // over it.
+      occ::handle<AIS_Shape> halo = new AIS_Shape(entity.shape);
+      styleSketchHalo(halo, look);
+      display(halo, AIS_WireFrame, PickInfo(), false);
+      m_context->SetZLayer(halo, m_sketchHaloLayer);
+      m_sketchEntityHalos[object.get()] = halo;
+    }
     m_sketchEntities.push_back(object);
     // A key shown twice (not expected) keeps the first in the map; the
     // other is taken away with the rest below.
@@ -1547,8 +1605,14 @@ void OcctViewer::setSketchEntities(const std::vector<SketchEntityDisplay>& entit
   }
   for (const auto& [key, entry] : shown) {
     m_sketchEntityLooks.erase(entry.second.get());
+    const auto halo = m_sketchEntityHalos.find(entry.second.get());
+    if (halo != m_sketchEntityHalos.end()) {
+      m_context->Remove(halo->second, false);
+      m_sketchEntityHalos.erase(halo);
+    }
     remove(entry.second);
   }
+  logSketchHalos();
   // For UI tests (mitcad#286): per shown sketch (and the occurrence placing
   // it), how many of its entities take the fully constrained colour and how
   // many the unconstrained blue; construction, centre lines and projected
@@ -1594,10 +1658,31 @@ void OcctViewer::styleSketchEntity(const occ::handle<AIS_Shape>& object, const S
   if (look.point) {
     setPointStyle(object, color, Aspect_TOM_O_POINT, 1.0);
   } else {
-    setEdgeStyle(object, color, 2.0,
+    setEdgeStyle(object, color, kSketchLineWidth,
                  look.construction ? Aspect_TOL_DASH
                  : look.centerline ? Aspect_TOL_DOTDASH
                                    : Aspect_TOL_SOLID);
+  }
+}
+
+bool OcctViewer::hasSketchHalo(const SketchEntityLook& look) {
+  return !look.point && !look.reference && !look.construction && (look.centerline || look.constrained);
+}
+
+void OcctViewer::styleSketchHalo(const occ::handle<AIS_Shape>& halo, const SketchEntityLook& look) const {
+  // The line's own pattern, so that a centre line's gaps stay gaps.
+  setEdgeStyle(halo, m_backgroundDark ? kSketchHaloDark : kSketchHaloLight, kSketchHaloWidth,
+               look.centerline ? Aspect_TOL_DOTDASH : Aspect_TOL_SOLID);
+}
+
+void OcctViewer::logSketchHalos() {
+  const QString line =
+      QStringLiteral("%1 %2")
+          .arg(m_sketchEntityHalos.size())
+          .arg(m_backgroundDark ? QStringLiteral("dark") : QStringLiteral("light"));
+  if (line != m_loggedSketchHalos) {
+    m_loggedSketchHalos = line;
+    qDebug().noquote() << QStringLiteral("Sketch halos: %1").arg(line);
   }
 }
 
@@ -1618,7 +1703,13 @@ void OcctViewer::restyleSketchEntities() {
     }
     styleSketchEntity(object, look->second);
     m_context->Redisplay(object, false);
+    const auto halo = m_sketchEntityHalos.find(object.get());
+    if (halo != m_sketchEntityHalos.end()) {
+      styleSketchHalo(halo->second, look->second);
+      m_context->Redisplay(halo->second, false);
+    }
   }
+  logSketchHalos();
   if (!m_sketchEntities.empty()) {
     qDebug().noquote() << QStringLiteral("Sketch entities recoloured for a %1 background: %2 fully constrained, "
                                          "%3 centre lines")
@@ -3791,7 +3882,10 @@ void OcctViewer::trackpadScroll(QWheelEvent* event) {
     m_scrollPoint = event->position() * ratio;
     UpdateMouseButtons(devicePixel(m_scrollPoint), Aspect_VKeyMouse_LeftButton, flags, false);
   }
-  m_scrollPoint += delta * ratio;
+  // A modest gain for the two-finger orbit; pan and mouse drags retain
+  // their one-to-one motion. Apply it to momentum through the same path.
+  const qreal gain = mode == ScrollMode::Orbit ? 1.3 : 1.0;
+  m_scrollPoint += delta * ratio * gain;
   UpdateMousePosition(devicePixel(m_scrollPoint), Aspect_VKeyMouse_LeftButton, flags, false);
   cameraMoved();
   requestFrame();

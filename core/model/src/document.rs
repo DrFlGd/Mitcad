@@ -60,6 +60,7 @@ mod policy;
 pub use policy::{PolicyItem, PolicyReport};
 // Moving an occurrence to another parent (mitcad#219).
 mod reparent;
+pub(crate) use reparent::ReparentPlan;
 // Body edges and vertices in a sketch's plane (mitcad#256).
 mod plane_geometry;
 pub use plane_geometry::PlaneShape;
@@ -212,6 +213,11 @@ pub struct DocState {
     pub(crate) import_notes: BTreeMap<FeatureUid, String>,
     /// Flat Patterns of sheet-metal bodies (mitcad#208), by body.
     pub(crate) flat_patterns: BTreeMap<BodyUid, crate::sheet::flat::FlatPatternDef>,
+    /// The distance (mm) within which the features' joins still fuse
+    /// where they fail exactly ([`Kernel::join_within`], mitcad#298): set
+    /// by an importer whose bodies match a file's only within its
+    /// geometric tolerance; None (exact joins) for the model's own designs.
+    pub(crate) join_tolerance: Option<f64>,
 }
 
 impl Default for DocState {
@@ -236,6 +242,7 @@ impl Default for DocState {
             hybrid_assembly: false,
             import_notes: BTreeMap::new(),
             flat_patterns: BTreeMap::new(),
+            join_tolerance: None,
         }
     }
 }
@@ -2772,6 +2779,13 @@ impl<K: Kernel> Document<K> {
         let mut state = self.state.clone();
         state.edit_feature(uid, def)?;
         state.place_made_beside(uid, made, beside);
+        // An editor shows the model as the feature finds it, the marker
+        // just before the feature: the edit is computed there as a feature
+        // added at the marker is, the later ones staying rolled back
+        // (mitcad#309).
+        if let Some(position) = state.features.iter().position(|f| f.uid == uid) {
+            state.marker = state.marker.max(position + 1);
+        }
         self.preview_state(state, uid)
     }
 

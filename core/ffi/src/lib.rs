@@ -51,7 +51,7 @@ mod ifc_import;
 use ifc_import::ifc_test_building;
 // The .rvt and .rfa import, phase 1 (mitcad#274).
 mod rvt_import;
-use rvt_import::rvt_write_test_file;
+use rvt_import::{rvt_write_building_test, rvt_write_test_file};
 
 use cxx::SharedPtr;
 use mitcad_model::api::ApiError;
@@ -203,6 +203,10 @@ mod ffi {
         /// Writes the .rvt reader's small test project (or family) file
         /// (tests).
         fn rvt_write_test_file(path: &str, family: bool) -> Result<()>;
+        /// Writes the .rvt reader's building test project (walls, a floor, a
+        /// grid, a link) to `dir` as building.rvt with its linked.rvt
+        /// (mitcad#275).
+        fn rvt_write_building_test(dir: &str) -> Result<()>;
     }
 
     // Background computation (P7, jobs.rs): the application computes a

@@ -67,6 +67,8 @@
 #include "../render/RenderEnvironmentDialog.hpp"
 #include "../render/RenderImageDialog.hpp"
 #include "../render/RenderMode.hpp"
+// Texture folders for Edit Appearances (mitcad#315).
+#include "../materials/TexturePreferences.hpp"
 
 namespace mitcad {
 namespace {
@@ -205,6 +207,8 @@ const PreferencePage kPreferencePages[] = {
     {"print", QT_TRANSLATE_NOOP("View", "3D Print"), "slicer printing"},
     // The debug log (mitcad#269).
     {"diagnostics", QT_TRANSLATE_NOOP("View", "Diagnostics"), "debug log logging trace problem report"},
+    // Texture folders for Edit Appearances (mitcad#315).
+    {"textures", QT_TRANSLATE_NOOP("View", "Textures"), "texture folders maps materials appearance images"},
 };
 
 QString onOff(bool on) { return on ? QStringLiteral("on") : QStringLiteral("off"); }
@@ -285,6 +289,7 @@ ViewSettings ViewSettings::load() {
   s.style = static_cast<VisualStyle>(
       std::clamp(number("style", int(s.style)), 0, int(VisualStyle::WireframeHiddenEdges)));
   s.perspective = flag("perspective", s.perspective);
+  s.componentColors = flag("componentColors", s.componentColors);
 #ifdef Q_OS_MACOS
   s.background = Background::Automatic; // unless the settings name another
 #endif
@@ -322,6 +327,7 @@ void ViewSettings::save() const {
   QSettings store;
   store.setValue(kGroup + QStringLiteral("style"), int(style));
   store.setValue(kGroup + QStringLiteral("perspective"), perspective);
+  store.setValue(kGroup + QStringLiteral("componentColors"), componentColors);
   store.setValue(kGroup + QStringLiteral("background"), int(background));
   store.setValue(kGroup + QStringLiteral("top"), top.name());
   store.setValue(kGroup + QStringLiteral("bottom"), bottom.name());
@@ -477,6 +483,17 @@ void ViewController::registerCommands() {
          QStringLiteral("jpeg"), QStringLiteral("exr"), QStringLiteral("photo"), QStringLiteral("cycles")},
         tr("Renders the view or a named view to an image file at a chosen size and quality"), "MAKE");
   }
+  add("view.component_colors", tr("Component Colors"), "visual-style", [this] {
+    m_settings.componentColors = !m_settings.componentColors;
+    if (m_settings.componentColors) {
+      setRendered(false);
+    }
+    m_viewer.setComponentColors(m_settings.componentColors);
+    m_settings.save();
+    syncChecks();
+    qDebug() << "Component colors" << (m_settings.componentColors ? "on" : "off");
+  }, {QStringLiteral("component"), QStringLiteral("color"), QStringLiteral("colour"), QStringLiteral("assembly")},
+      tr("Shows each component in a distinct color; toggle off to restore appearance colors"));
   add("view.grid", tr("Layout Grid"), "grid", [this] { setGridShown(!m_settings.gridShown); },
       {QStringLiteral("grid")}, tr("Shows the grid on the ground or sketch plane"));
   add("view.snap_grid", tr("Snap to Grid"), "grid", [this] { setSnapToGrid(!m_settings.snapToGrid); },
@@ -577,6 +594,7 @@ void ViewController::createMenus(QMenu* view, QMenu* tools, QMenu* help) {
     styles->addAction(action(QStringLiteral("file.render_image")));
   }
   QMenu* environment = view->addMenu(themeIcon(QStringLiteral("environment")), tr("Environment"));
+  view->addAction(checkable(QStringLiteral("view.component_colors")));
   auto* backgrounds = new QActionGroup(this);
   for (const BackgroundEntry& entry : kBackgrounds) {
     environment->addAction(checkable(QString::fromLatin1(entry.id), backgrounds));
@@ -608,6 +626,7 @@ void ViewController::createMenus(QMenu* view, QMenu* tools, QMenu* help) {
 
 void ViewController::apply() {
   m_viewer.setVisualStyle(m_settings.style);
+  m_viewer.setComponentColors(m_settings.componentColors);
   m_viewer.setNavigation(m_settings.navigation);
   m_viewer.setPerspective(m_settings.perspective);
   QColor top;
@@ -636,6 +655,7 @@ void ViewController::syncChecks() {
   }
   check(QStringLiteral("view.orthographic"), !m_settings.perspective);
   check(QStringLiteral("view.perspective"), m_settings.perspective);
+  check(QStringLiteral("view.component_colors"), m_settings.componentColors);
   check(QStringLiteral("view.grid"), m_settings.gridShown);
   check(QStringLiteral("view.snap_grid"), m_settings.snapToGrid);
   if (m_render != nullptr) {
@@ -680,6 +700,11 @@ void ViewController::setBackground(ViewSettings::Background background) {
 }
 
 void ViewController::setRendered(bool on) {
+  if (on && m_settings.componentColors) {
+    m_settings.componentColors = false;
+    m_viewer.setComponentColors(false);
+    m_settings.save();
+  }
   if (m_render != nullptr) {
     m_render->setEnabled(on);
   }
@@ -1044,6 +1069,9 @@ void ViewController::showPreferences(const QString& page) {
   // starts or stops the log and is saved; the log of a run started with
   // --debug-log stays a run's unless the switch is changed.
   const auto debugLogApplied = std::make_shared<bool>(debugLog->isChecked());
+  // Texture folders for Edit Appearances (mitcad#315).
+  auto* texturesBox = new TexturePreferencesBox;
+  groups.insert(QStringLiteral("textures"), texturesBox);
 
   QWidget* navigationBox = section(tr("Navigation"));
   auto* navigation = new QFormLayout(navigationBox);
@@ -1156,7 +1184,15 @@ void ViewController::showPreferences(const QString& page) {
 
   *commit = [this, general, top, bottom, scheme, zoomToCursor, reverseZoom, constrained, animate, camera, background,
              autosave, minutes, importTolerance, cacheBox, updatesBox, slicerBox, remoteBox, renderDevice, debugLog,
-             debugLogApplied] {
+             debugLogApplied, texturesBox] {
+    // Texture folders (mitcad#315).
+    const TextureSettings textures = texturesBox->chosen();
+    if (textures != TextureSettings::load()) {
+      textures.save();
+      qDebug().noquote() << QStringLiteral("Preferences: texture folders %1")
+                                .arg(textures.folders.isEmpty() ? QStringLiteral("none")
+                                                                : textures.folders.join(QStringLiteral(", ")));
+    }
     // The debug log (mitcad#269), at once.
     if (debugLog->isChecked() != *debugLogApplied) {
       *debugLogApplied = debugLog->isChecked();
@@ -1259,6 +1295,7 @@ void ViewController::showPreferences(const QString& page) {
         {"updates", "arrow.down.circle", ""},
         {"print", "printer", ""},
         {"diagnostics", "ladybug", "wrench"},
+        {"textures", "photo.on.rectangle", "photo"},
     };
     for (const PreferencePage& entry : kPreferencePages) {
       QWidget* group = groups.value(QLatin1String(entry.id));
@@ -1297,6 +1334,7 @@ void ViewController::showPreferences(const QString& page) {
     connect(minutes, &QSpinBox::valueChanged, host, changed);
     connect(importTolerance, &QDoubleSpinBox::valueChanged, host, changed);
     connect(cacheBox, &CachePreferencesBox::changed, host, changed);
+    connect(texturesBox, &TexturePreferencesBox::changed, host, changed);
     // The boxes of the other pages tell no change of their own: their
     // controls do.
     for (QWidget* box : std::initializer_list<QWidget*>{updatesBox, slicerBox, remoteBox}) {

@@ -254,17 +254,41 @@ def run(app, cli, out, ui):
         script = "expect-ever 'View area'\n"
         if ui == "native":
             script += "expect-ever 'Native UI: AppKit shell with embedded OCCT viewport'\nmenu 'View/Show History'\nexpect-native-layout\n"
+        if ui == "qt":
+            script += "expect-file '${MITCAD_MCP_TEST_WORK}/face' 60\n"
+            script += "expect-selection-info 'Area: (200|300|600) mm²' 200\n"
+            script += "command view.fit\nscreenshot '${MITCAD_MCP_TEST_OUT}/selection-face.png'\n"
+            script += "expect-file '${MITCAD_MCP_TEST_WORK}/measure' 60\n"
+            script += "screenshot '${MITCAD_MCP_TEST_OUT}/measure-panel.png'\nkey Escape\n"
+            script += "expect-file '${MITCAD_MCP_TEST_WORK}/edge' 60\n"
+            script += "expect-selection-info 'Length: (10|20|30) mm' 200\n"
+            script += "screenshot '${MITCAD_MCP_TEST_OUT}/selection-edge.png'\n"
         script += "expect-file '${MITCAD_MCP_TEST_WORK}/create' 60\nexpect-model-bodies 1 6000\n"
+        if ui == "qt":
+            script += "expect-selection-info 'Volume: 6000 mm³' 240\n"
         if ui == "native":
             script += "expect-native-history\n"
         script += "command view.fit\nscreenshot-view '${MITCAD_MCP_TEST_OUT}/created.png'\n"
+        if ui == "qt":
+            script += "capture-view-height orbit_height\ncapture-view-orientation orbit_direction\n"
+            script += "trackpad-scroll 55 45 45 30 alt\n"
+            script += "expect-view-orientation ${orbit_direction} changed\n"
+            script += "expect-view-zoom ${orbit_height} unchanged\nsleep 300\nexpect-view-buttons none\n"
+            script += "capture-view-orientation pan_direction\ntrackpad-scroll 55 45 10 10 ''\n"
+            script += "expect-view-orientation ${pan_direction} unchanged\nsleep 300\nexpect-view-buttons none\n"
         script += "expect-file '${MITCAD_MCP_TEST_WORK}/edit' 60\nexpect-model-bodies 1 9000\n"
+        if ui == "qt":
+            script += "expect-selection-info 'Volume: 9000 mm³' 240\n"
         if ui == "native":
             script += "expect-native-history\n"
         script += "command view.fit\nscreenshot-view '${MITCAD_MCP_TEST_OUT}/edited.png'\n"
         script += "expect-file '${MITCAD_MCP_TEST_WORK}/replace' 60\nmenu 'File/New Design'\n"
         script += "focus-dialog '^Save changes to .*'\nbutton \"^Don't Save$\"\nexpect-model-bodies 0 0\n"
         script += "screenshot-view '${MITCAD_MCP_TEST_OUT}/replaced.png'\n"
+        if ui == "qt":
+            script += "expect-selection-info '^$'\nexpect-file '${MITCAD_MCP_TEST_WORK}/circle' 60\n"
+            script += "expect-selection-info 'Radius: 5 mm' 240\nexpect-selection-info 'Diameter: 10 mm'\n"
+            script += "command view.fit\nscreenshot '${MITCAD_MCP_TEST_OUT}/selection-circle.png'\n"
         script += "expect-file '${MITCAD_MCP_TEST_WORK}/finish' 60\nquit\n"
         try:
             gui = Gui(app, env, out, "gui", script, ui)
@@ -313,6 +337,30 @@ def run(app, cli, out, ui):
 
             bridge.tool("model_command", {"document": document, "command": BOX})
             check(body_volume(bridge, document) == (1, 6000), "CLI edited a separate model instead of the GUI")
+            if ui == "qt":
+                bodies = bridge.tool("model_query", {
+                    "document": document, "query": {"query": "bodies"}})["result"]
+                body = bodies[0]["uid"]
+                faces = bridge.tool("model_query", {
+                    "document": document, "query": {"query": "faces", "body": body}})["result"]
+                bridge.tool("ui_select", {"document": document, "items": [
+                    {"kind": "face", "owner": body, "name": faces[0]["names"][0]}]})
+                (work / "face").touch()
+                check_png(out / "selection-face.png", gui, "measure")
+                bridge.tool("ui_command", {"document": document, "id": "inspect.measure",
+                    "inputs": {"a": [{"kind": "face", "owner": body, "name": faces[0]["names"][0]}],
+                               "b": [{"kind": "face", "owner": body, "name": faces[1]["names"][0]}]},
+                    "finish": "keep_open"})
+                (work / "measure").touch()
+                check_png(out / "measure-panel.png", gui, "edge")
+                edges = bridge.tool("model_query", {
+                    "document": document, "query": {"query": "edges", "body": body}})["result"]
+                bridge.tool("ui_select", {"document": document, "items": [
+                    {"kind": "edge", "owner": body, "name": edges[0]["name"]}]})
+                (work / "edge").touch()
+                check_png(out / "selection-edge.png", gui, "create")
+                bridge.tool("ui_select", {"document": document, "items": [
+                    {"kind": "body", "owner": body}]})
             (work / "create").touch()
             check_png(out / "created.png", gui, "edit")
             bridge.finish()
@@ -418,11 +466,32 @@ def run(app, cli, out, ui):
             check(second.process.returncode == 0 and "TestDriver: FAIL" not in second.log_text(), second.log_text())
 
             (work / "replace").touch()
-            check_png(out / "replaced.png", gui, "finish")
+            check_png(out / "replaced.png", gui, "circle" if ui == "qt" else "finish")
             replacement = reconnect.tool("document_list", {})["documents"][0]["document"]
             check(replacement != document, "New reused a stale GUI document handle")
             reconnect.tool("model_command", {"document": document, "command": BOX}, error=True)
             check(body_volume(reconnect, replacement) == (0, 0), "A stale handle edited the new GUI document")
+            if ui == "qt":
+                reconnect.tool("model_command", {"document": replacement, "command": {
+                    "cmd": "add_feature", "def": {"type": "cylinder", "plane": "xy", "center": [0, 0],
+                    "diameter": 10, "height": 20, "operation": "new_body"}}})
+                bodies = reconnect.tool("model_query", {
+                    "document": replacement, "query": {"query": "bodies"}})["result"]
+                body = bodies[0]["uid"]
+                edges = reconnect.tool("model_query", {
+                    "document": replacement, "query": {"query": "edges", "body": body}})["result"]
+                circular = None
+                for edge in edges:
+                    measured = reconnect.tool("model_query", {"document": replacement, "query": {
+                        "query": "measure", "a": {"body": body, "edge": edge["name"]}}})["result"]["a"]
+                    if "circle" in measured:
+                        circular = edge["name"]
+                        break
+                check(circular is not None, "Cylinder has no circular edge")
+                reconnect.tool("ui_select", {"document": replacement, "items": [
+                    {"kind": "edge", "owner": body, "name": circular}]})
+                (work / "circle").touch()
+                check_png(out / "selection-circle.png", gui, "finish")
             reconnect.finish()
             lingering = Bridge(cli, env, out, "lingering", endpoint["instance"])
             bridges.append(lingering)

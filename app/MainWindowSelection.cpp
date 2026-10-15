@@ -51,6 +51,11 @@ void MainWindow::setUpSelectionScope() {
         },
         Qt::QueuedConnection);
   }
+  // The datums' pick places move with the camera: logged again once it
+  // rests (a place logged before the view was laid out is 0,0, mitcad#318).
+  if (qEnvironmentVariableIsSet("MITCAD_LOG_PICKS")) {
+    connect(m_viewer, &OcctViewer::cameraRested, this, [this] { logDatumPlaces(); });
+  }
   // Where a click hits the bodies' edges once the camera rests: only on
   // request, every edge is tried in the view (tools/ui-sketch-select-test.sh).
   if (qEnvironmentVariableIsSet("MITCAD_LOG_EDGE_PLACES")) {

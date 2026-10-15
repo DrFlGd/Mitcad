@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: MIT
 // Modelled threads: the volume against the profile's exact one (bolts and
 // tapped holes, a class's diameters and the basic ones), where the helix
-// starts, ends at shoulders and partial lengths, names, and the speed on a
-// body of thousands of faces.
+// starts, ends at shoulders and partial lengths, end chamfers, names, and
+// the speed on a body of thousands of faces.
 
 #include <chrono>
 #include <cmath>
@@ -387,6 +387,184 @@ void test_hole_clearance() {
                  2e-5);
 }
 
+// End chamfers (mitcad#304). The material a chamfer takes off a thread is
+// exact: at a radius r the cone cuts u(r) deep into the material, and over
+// a whole turn the thread's material at that radius is the tooth's width
+// over the pitch (the helix sweeps every phase), so the cut is the
+// integral of 2 pi r u(r) times that fraction, piecewise a cubic in r
+// (Simpson's rule is exact for it).
+template <class F>
+double integral(const F& f, double a, double b) {
+  if (b <= a) {
+    return 0.0;
+  }
+  const int n = 64;
+  const double h = (b - a) / n;
+  double sum = f(a) + f(b);
+  for (int i = 1; i < n; ++i) {
+    sum += f(a + i * h) * (i % 2 == 1 ? 4.0 : 2.0);
+  }
+  return sum * h / 3.0;
+}
+
+// The fraction of an external (or internal) thread's material at radius r:
+// the core inside the minor diameter (outside the major one), the teeth
+// between them, nothing beyond the crest.
+double material_fraction(double pitch, const Diameters& d, bool internal, double r) {
+  const double a = d.minor / 2.0;
+  const double b = d.major / 2.0;
+  if (r <= a) {
+    return internal ? 0.0 : 1.0;
+  }
+  if (r >= b) {
+    return internal ? 1.0 : 0.0;
+  }
+  const double c1 = internal ? 2.0 * kTan30 : -2.0 * kTan30;
+  const double c0 = pitch / 2.0 - c1 * d.pitch / 2.0;
+  return (c0 + c1 * r) / pitch;
+}
+
+// What one end chamfer of diameter `diameter` at `angle` to the axis takes
+// off a thread (`threaded`) or off a plain face of `radius`.
+double chamfer_cut(double pitch, const Diameters& d, bool internal, double diameter, double angle, bool threaded,
+                   double radius = 0.0) {
+  const double rc = diameter / 2.0;
+  const double slope = std::tan(angle);
+  const auto fraction = [&](double r) {
+    if (threaded) {
+      return material_fraction(pitch, d, internal, r);
+    }
+    return internal ? (r >= radius ? 1.0 : 0.0) : (r <= radius ? 1.0 : 0.0);
+  };
+  const auto cut = [&](double r) {
+    const double u = (internal ? rc - r : r - rc) / slope;
+    return 2.0 * kPi * r * u * fraction(r);
+  };
+  const double a = d.minor / 2.0;
+  const double b = d.major / 2.0;
+  if (!threaded) {
+    return internal ? integral(cut, radius, rc) : integral(cut, rc, radius);
+  }
+  // Split where the fraction changes its formula.
+  if (internal) {
+    return integral(cut, a, std::min(b, rc)) + integral(cut, b, rc);
+  }
+  return integral(cut, rc, a) + integral(cut, std::max(a, rc), b);
+}
+
+// The smallest face of a shape.
+double smallest_face(const Shape& shape) {
+  double smallest = std::numeric_limits<double>::max();
+  for (int i = 0; i < shape.face_count(); ++i) {
+    GProp_GProps props;
+    BRepGProp::SurfaceProperties(shape.face(i), props);
+    smallest = std::min(smallest, props.Mass());
+  }
+  return smallest;
+}
+
+void test_end_chamfers() {
+  const double pitch = 1.25;
+  const Diameters m8 = basic(8, pitch);
+  const double angle = kPi / 4.0;
+  // The model's defaults: a tenth of a pitch inside the minor diameter
+  // outside, outside the major diameter inside.
+  const double d_ext = m8.minor - pitch / 10.0;
+  const double d_int = m8.major + pitch / 10.0;
+
+  // An M8 bolt: a shank 16 long on a 14 mm head, both ends asked for. Only
+  // the tip is free: the head's end keeps its full thread.
+  const ShapePtr head = extrude("F1", {circle(1, 0, 0, 7)}, -5, 0);
+  const ShapePtr shank = extrude("F2", {circle(2, 0, 0, 4)}, 0, 16);
+  const BooleanResult joined = boolean(BooleanOp::Join, {head.get()}, *shank);
+  CHECK(joined.pieces.size() == 1);
+  const ShapePtr bolt = joined.pieces.at(0).shape;
+  ThreadSpec spec = spec_of("F3", "F2:side(c2)", pitch, m8);
+  spec.chamfer = true;
+  spec.chamfer_angle = angle;
+  spec.chamfer_diameter = d_ext;
+  spec.chamfer_ends = {{true, true}};
+  const ShapePtr threaded = modeled_thread(*bolt, spec);
+  const double plain = kPi * 49 * 5 + 16 * bolt_per_mm(pitch, m8);
+  const double cut = chamfer_cut(pitch, m8, false, d_ext, angle, true);
+  CHECK(cut > 1.0);
+  CHECK_NEAR_TOL(volume(*threaded), plain - cut, 2e-5);
+  const int low = static_cast<int>(threaded->find_faces("F3:thread_chamfer_low(F2:side(c2))").size());
+  const int high = static_cast<int>(threaded->find_faces("F3:thread_chamfer_high(F2:side(c2))").size());
+  CHECK((low == 0) != (high == 0));
+  // The cone runs from the chamfer's diameter at the tip; no groove reaches
+  // the tip's plane, and the first turn leaves no sliver.
+  CHECK(near(bounding_box(*threaded).max.Z(), 16, 1e-6));
+  CHECK(inside(*threaded, gp_Pnt(d_ext / 2.0 - 0.01, 0, 16 - 1e-3)));
+  CHECK(!inside(*threaded, gp_Pnt(d_ext / 2.0 + 0.01, 0, 16 - 1e-3)));
+  CHECK(smallest_face(*threaded) > 1e-4);
+  // The input is left as it was.
+  CHECK_NEAR_TOL(volume(*bolt), kPi * 49 * 5 + kPi * 16 * 16, 1e-9);
+
+  // An M8 tapped hole through a plate 12 thick: both mouths countersunk to
+  // the default diameter at 45 degrees (a 90-degree countersink).
+  const ShapePtr plate = extrude("F2", {rectangle(1, -15, -15, 30, 30)}, 0, 12);
+  const ShapePtr drill = extrude("F3", {circle(5, 0, 0, m8.minor / 2.0)}, -1, 13);
+  const BooleanResult drilled = boolean(BooleanOp::Cut, {plate.get()}, *drill);
+  CHECK(drilled.pieces.size() == 1);
+  const ShapePtr nut = drilled.pieces.at(0).shape;
+  ThreadSpec tapped = spec_of("F4", "F3:side(c5)", pitch, m8);
+  tapped.chamfer = true;
+  tapped.chamfer_angle = angle;
+  tapped.chamfer_diameter = d_int;
+  tapped.chamfer_ends = {{true, true}};
+  const ShapePtr countersunk = modeled_thread(*nut, tapped);
+  const double sink = chamfer_cut(pitch, m8, true, d_int, angle, true);
+  CHECK(sink > 1.0);
+  CHECK_NEAR_TOL(volume(*countersunk), 30 * 30 * 12 - 12 * nut_hole_per_mm(pitch, m8) - 2 * sink, 2e-5);
+  CHECK(!countersunk->find_faces("F4:thread_chamfer_low(F3:side(c5))").empty());
+  CHECK(!countersunk->find_faces("F4:thread_chamfer_high(F3:side(c5))").empty());
+  CHECK(!inside(*countersunk, gp_Pnt(d_int / 2.0 - 0.01, 0, 12 - 1e-3)));
+  CHECK(inside(*countersunk, gp_Pnt(d_int / 2.0 + 0.01, 0, 12 - 1e-3)));
+  CHECK(smallest_face(*countersunk) > 1e-4);
+  // Only the end asked for.
+  tapped.chamfer_ends = {{true, false}};
+  const ShapePtr one = modeled_thread(*nut, tapped);
+  CHECK_NEAR_TOL(volume(*one), 30 * 30 * 12 - 12 * nut_hole_per_mm(pitch, m8) - sink, 2e-5);
+  CHECK(one->find_faces("F4:thread_chamfer_high(F3:side(c5))").empty());
+
+  // Cosmetic: the same cones on the plain faces, no profile.
+  ThreadSpec cosmetic = spec;
+  cosmetic.groove = false;
+  const ShapePtr chamfered = modeled_thread(*bolt, cosmetic);
+  CHECK_NEAR_TOL(volume(*chamfered),
+                 kPi * 49 * 5 + kPi * 16 * 16 - chamfer_cut(pitch, m8, false, d_ext, angle, false, 4.0), 1e-6);
+  CHECK(chamfered->find_faces("F3:thread(F2:side(c2))").empty());
+  CHECK(!chamfered->find_faces("F2:side(c2)").empty());
+  ThreadSpec cosmetic_hole = tapped;
+  cosmetic_hole.groove = false;
+  cosmetic_hole.chamfer_ends = {{true, true}};
+  const ShapePtr sunk = modeled_thread(*nut, cosmetic_hole);
+  CHECK_NEAR_TOL(volume(*sunk),
+                 volume(*nut) - 2 * chamfer_cut(pitch, m8, true, d_int, angle, false, m8.minor / 2.0), 1e-6);
+
+  // A partial thread: an end inside the face gets no chamfer.
+  ThreadSpec partial = spec;
+  partial.full_length = false;
+  partial.length = 8;
+  partial.offset = 2;
+  const ShapePtr inner = modeled_thread(*bolt, partial);
+  CHECK_NEAR_TOL(volume(*inner), kPi * 49 * 5 + 8 * kPi * 16 + 8 * bolt_per_mm(pitch, m8), 2e-5);
+
+  // Sizes that cut nothing, or more than the thread.
+  ThreadSpec wrong = spec;
+  wrong.chamfer_diameter = 8.5;
+  CHECK(throws_with([&] { modeled_thread(*bolt, wrong); }, "must be smaller"));
+  wrong = tapped;
+  wrong.chamfer_diameter = 6.0;
+  CHECK(throws_with([&] { modeled_thread(*nut, wrong); }, "must be larger"));
+  wrong = spec;
+  wrong.chamfer_angle = 0.02;
+  CHECK(throws_with([&] { modeled_thread(*bolt, wrong); }, "deeper than the thread"));
+  wrong.chamfer_angle = kPi / 2.0;
+  CHECK(throws_with([&] { modeled_thread(*bolt, wrong); }, "between 0 and 90"));
+}
+
 // A plate with a grid of n x n small holes (some thousands of faces for n
 // of 56) with a 10 mm shaft 20 long standing on a pad on it.
 ShapePtr perforated(int n) {
@@ -449,6 +627,7 @@ void thread_tests() {
   guarded("test_tapped_holes", test_tapped_holes);
   guarded("test_bolt_clearance", test_bolt_clearance);
   guarded("test_hole_clearance", test_hole_clearance);
+  guarded("test_end_chamfers", test_end_chamfers);
   guarded("test_large_body", test_large_body);
 }
 

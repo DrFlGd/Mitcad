@@ -59,11 +59,22 @@ MaterialData materialOf(const Appearance& a) {
   m.emissionColor = linear(a.emissionColor);
   m.emission = static_cast<float>(a.emission);
   m.opacity = static_cast<float>(a.opacity);
-  if (a.hasTexture && !a.texture.file.isEmpty()) {
-    m.texture = QDir::toNativeSeparators(a.texture.file).toStdString();
-    m.textureSize = {static_cast<float>(a.texture.width), static_cast<float>(a.texture.height)};
-    m.textureRotation = static_cast<float>(a.texture.rotation);
-    m.texturePlanar = a.texture.planar;
+  if (a.hasTexture) {
+    const auto fileOf = [](const QString& file) { return QDir::toNativeSeparators(file).toStdString(); };
+    // The images that were found (mitcad#314): a missing one is left out.
+    m.texture = a.texture.file.isEmpty() ? std::string() : fileOf(a.texture.file);
+    std::string* const maps[kTextureMapCount] = {&m.normalMap, &m.roughnessMap, &m.metalnessMap, &m.occlusionMap};
+    for (std::size_t i = 0; i < a.texture.maps.size(); ++i) {
+      const AppearanceMap& map = a.texture.maps[i];
+      if (map.present && !map.file.isEmpty()) {
+        *maps[i] = fileOf(map.file);
+      }
+    }
+    if (!m.texture.empty() || m.hasMaps()) {
+      m.textureSize = {static_cast<float>(a.texture.width), static_cast<float>(a.texture.height)};
+      m.textureRotation = static_cast<float>(a.texture.rotation);
+      m.texturePlanar = a.texture.planar;
+    }
   }
   return m;
 }
@@ -87,11 +98,24 @@ std::vector<FaceMaterial> faceMaterialsOf(const std::vector<SceneFaces>& faces) 
 
 QStringList missingTextures(const std::vector<const Appearance*>& appearances) {
   QStringList missing;
+  const auto add = [&missing](const QString& line) {
+    if (!missing.contains(line)) {
+      missing << line;
+    }
+  };
   for (const Appearance* a : appearances) {
-    if (a != nullptr && a->hasTexture && a->texture.file.isEmpty()) {
-      const QString line = QStringLiteral("%1: %2").arg(a->name, a->texture.missing);
-      if (!missing.contains(line)) {
-        missing << line;
+    if (a == nullptr || !a->hasTexture) {
+      continue;
+    }
+    if (a->texture.file.isEmpty()) {
+      add(QObject::tr("%1: %2, its base colour is shown").arg(a->name, a->texture.missing));
+    }
+    // The other maps of the set (mitcad#314): each left out alone.
+    for (std::size_t i = 0; i < a->texture.maps.size(); ++i) {
+      const AppearanceMap& map = a->texture.maps[i];
+      if (map.present && map.file.isEmpty()) {
+        add(QObject::tr("%1: the %2 map is left out, %3")
+                .arg(a->name, QLatin1String(textureMapNames()[i]), map.missing));
       }
     }
   }

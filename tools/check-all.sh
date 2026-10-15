@@ -136,6 +136,8 @@ CORPUS_SOURCES=(core/f3d core/import core/freecad core/zip core/ipt core/tests
   CMakeLists.txt rust-toolchain.toml vcpkg.json third_party/vcpkg-ports)
 # The IFC import (mitcad#273).
 CORPUS_SOURCES+=(core/ifc tools/cli/ifc-corpus.cmake)
+# Single .f3d designs checked item by item (mitcad#311).
+CORPUS_SOURCES+=(tools/cli/f3d-designs.cmake)
 CORPUS_CRATES=(mitcad-import mitcad-f3d mitcad-freecad mitcad-ipt mitcad-zip mitcad-ifc)
 CORPUS_PASSED=${XDG_CACHE_HOME:-$HOME/.cache}/mitcad/corpus-passed
 # The build files every UI test depends on, what the application is built

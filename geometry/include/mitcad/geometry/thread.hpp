@@ -71,6 +71,29 @@ struct ThreadSpec {
   // core is refused.
   double radial_clearance = 0.0;
   double flank_clearance = 0.0;
+  // Cut the profile; false: only the end chamfers (a cosmetic thread's).
+  bool groove = true;
+  // End chamfers (mitcad#304): before the profile, a cone is cut at the
+  // chosen ends of each face, so that the first turn starts on the cone and
+  // leaves no knife edge. An external thread's cone widens from
+  // `chamfer_diameter` at the end into the material at `chamfer_angle` to
+  // the axis, and everything outside it goes; an internal thread's (a
+  // countersink) narrows from `chamfer_diameter` at the end, and
+  // everything inside it goes. `chamfer_ends` holds per face (in the order
+  // of `faces`) whether its low and its high end along the axis of the
+  // face's cylinder get one; an end gets one only where the thread reaches
+  // it and nothing of the body lies beyond it (a shaft's free end, a
+  // hole's mouth). The cones' faces are named
+  // <feature>:thread_chamfer_low(<face reference>) and
+  // <feature>:thread_chamfer_high(<face reference>).
+  struct ChamferEnds {
+    bool low = false;
+    bool high = false;
+  };
+  bool chamfer = false;
+  double chamfer_angle = 0.0;
+  double chamfer_diameter = 0.0;
+  std::vector<ChamferEnds> chamfer_ends;
 };
 
 // The body with the threads. The thread's new faces (flanks, crests and

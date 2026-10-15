@@ -381,9 +381,11 @@ impl<K: Kernel> Document<K> {
                 let plan = self.reparent_occurrence(&source, &destination)?;
                 let a = self.assembly();
                 let path = plan.path();
+                let features = self.carried_json(&plan);
                 json!({"occurrence": plan.occurrence, "component": plan.component,
                        "path": OccurrencePath(path.clone()), "path_name": a.path_name(&path),
-                       "parent": plan.destination, "updated": plan.updates})
+                       "parent": plan.destination, "updated": plan.updates,
+                       "features": features})
             }
         })
     }
@@ -394,6 +396,21 @@ impl<K: Kernel> Document<K> {
         self.assembly()
             .find_path(text)
             .ok_or_else(|| ApiError(format!("no occurrence path {text}")))
+    }
+
+    /// The features that place a moved occurrence and go with it
+    /// (mitcad#301): `name`, `from`/`from_name` (its component), `to`/
+    /// `to_name` (the new parent) and `split` (the new feature that takes
+    /// the occurrence's part of it, or null when it goes whole).
+    fn carried_json(&self, plan: &crate::document::ReparentPlan) -> Vec<Value> {
+        let a = self.assembly();
+        plan.carried
+            .iter()
+            .map(|c| {
+                json!({"name": c.name, "from": c.from, "from_name": a.name(c.from),
+                       "to": c.to, "to_name": a.name(c.to), "split": c.split})
+            })
+            .collect()
     }
 
     /// The `reparent_occurrence` query (mitcad#219): the occurrence, what
@@ -493,9 +510,11 @@ impl<K: Kernel> Document<K> {
                     "from": plan.parent, "from_path": label(&plan.source[..plan.source.len() - 1]),
                     "path": OccurrencePath(plan.path()),
                     "transform": matrix_rows(&plan.transform),
-                    "updates": plan.updates, "problems": [],
+                    "updates": plan.updates, "features": self.carried_json(&plan),
+                    "problems": [],
                 }),
-                Err(blockers) => json!({"eligible": false, "problems": blockers, "updates": []}),
+                Err(blockers) => json!({"eligible": false, "problems": blockers, "updates": [],
+                                        "features": []}),
             };
         }
         Ok(value)

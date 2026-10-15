@@ -535,7 +535,8 @@ int import_ifc(const std::vector<std::string>& args) {
 int import_rvt(const std::vector<std::string>& args) {
   Arguments a;
   std::string problem;
-  if (!parse_arguments(args, {"--save", "--report"}, {"--json", "--report-only"}, a, problem)) {
+  if (!parse_arguments(args, {"--save", "--report", "--reference-ifc", "--link-folder"},
+                       {"--json", "--report-only", "--mesh-only"}, a, problem)) {
     return usage(problem);
   }
   if (a.positional.size() != 1) {
@@ -545,6 +546,15 @@ int import_rvt(const std::vector<std::string>& args) {
   std::string options = std::string(R"({"text": )") + (json ? "false" : "true");
   if (a.flag("--report-only")) {
     options += R"(, "report_only": true)";
+  }
+  if (a.flag("--mesh-only")) {
+    options += R"(, "mesh_only": true)";
+  }
+  if (const std::string* path = a.option("--reference-ifc")) {
+    options += R"(, "reference_ifc": )" + json_string(*path);
+  }
+  if (const std::string* path = a.option("--link-folder")) {
+    options += R"(, "link_folder": )" + json_string(*path);
   }
   if (const std::string* path = a.option("--report")) {
     options += R"(, "report_path": )" + json_string(*path);

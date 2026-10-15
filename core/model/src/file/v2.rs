@@ -3,6 +3,7 @@
 //! project; see the module documentation of `file`): version 3 is version 2
 //! with B-rep data in a project's store.
 
+use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::sync::Arc;
 
@@ -10,7 +11,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
 use super::{FORMAT, FileError, SINGLE_VERSION, VERSION, has_references, legacy_name};
-use crate::appearance::Appearance;
+use crate::appearance::{Appearance, BASE_COLOR, ImageData, share_images, slot_name};
 use crate::assembly::{
     Assembly, ComponentDef, ExternalLink, Occurrence, ROOT_NAME, from_rows, matrix_rows,
 };
@@ -60,8 +61,12 @@ struct FileOut<'a> {
     #[serde(skip_serializing_if = "<[Analysis]>::is_empty")]
     analyses: &'a [Analysis],
     // The document's appearances (mitcad#46), when there are any.
-    #[serde(skip_serializing_if = "<[Appearance]>::is_empty")]
-    appearances: &'a [Appearance],
+    #[serde(skip_serializing_if = "no_appearances")]
+    appearances: Cow<'a, [Appearance]>,
+    // Their embedded images, once each, when the textures refer to them by
+    // digest (mitcad#313).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    images: Vec<ImageOut>,
     // Render settings (mitcad#47), when not the defaults.
     #[serde(skip_serializing_if = "RenderSettings::is_default")]
     render: &'a RenderSettings,
@@ -71,6 +76,9 @@ struct FileOut<'a> {
     // A hybrid assembly allowed without asking (mitcad#171), when it is.
     #[serde(skip_serializing_if = "is_false")]
     hybrid_assembly: bool,
+    // The joins' tolerance an importer set (mitcad#298), when there is one.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    join_tolerance: Option<f64>,
     // Flat Patterns of sheet-metal bodies (mitcad#208), when there are any.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     flat_patterns: Vec<FlatPatternOut<'a>>,
@@ -199,6 +207,7 @@ struct BodyOut<'a> {
 }
 
 pub(super) fn save(state: &DocState) -> String {
+    let (appearances, images) = appearances_out(&state.appearances);
     let parameters = &state.parameters;
     let context = parameters.context();
     let assembly = &state.assembly;
@@ -295,10 +304,12 @@ pub(super) fn save(state: &DocState) -> String {
         display: &state.display,
         groups: &state.groups,
         analyses: &state.analyses,
-        appearances: &state.appearances,
+        appearances,
+        images,
         render: &state.render,
         configurations: &state.configurations,
         hybrid_assembly: state.hybrid_assembly,
+        join_tolerance: state.join_tolerance,
         flat_patterns: state
             .flat_patterns
             .iter()
@@ -311,6 +322,123 @@ pub(super) fn save(state: &DocState) -> String {
         serde_json::to_string_pretty(&file).expect("the design file schema always serializes");
     json.push('\n');
     json
+}
+
+fn no_appearances(appearances: &[Appearance]) -> bool {
+    appearances.is_empty()
+}
+
+/// An embedded image in the file's `images` (mitcad#313).
+#[derive(Serialize)]
+struct ImageOut {
+    sha256: String,
+    data: ImageData,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ImageIn {
+    sha256: String,
+    data: ImageData,
+}
+
+/// The appearances as the file keeps them, and the file's `images`: as
+/// before mitcad#313 (each embedded image in its texture's `data`, no
+/// `images`) unless an image of a map other than the base colour is
+/// embedded or one image is embedded more than once; then each image is
+/// kept once in `images`, in the order of first use, and the textures
+/// refer to it by its digest (`image`).
+fn appearances_out(appearances: &[Appearance]) -> (Cow<'_, [Appearance]>, Vec<ImageOut>) {
+    let mut uses: HashMap<&str, usize> = HashMap::new();
+    let mut maps = false;
+    for texture in appearances.iter().filter_map(|a| a.texture.as_ref()) {
+        for (map, data) in texture.images() {
+            *uses.entry(data.sha256()).or_default() += 1;
+            maps |= map != BASE_COLOR;
+        }
+    }
+    if !maps && uses.values().all(|n| *n == 1) {
+        return (Cow::Borrowed(appearances), Vec::new());
+    }
+    let mut images: Vec<ImageOut> = Vec::new();
+    let mut listed = HashSet::new();
+    let mut out = appearances.to_vec();
+    for texture in out.iter_mut().filter_map(|a| a.texture.as_mut()) {
+        for slot in texture.slots_mut() {
+            if let Some(data) = slot.data.take() {
+                let sha256 = data.sha256().to_owned();
+                if listed.insert(sha256.clone()) {
+                    images.push(ImageOut {
+                        sha256: sha256.clone(),
+                        data,
+                    });
+                }
+                *slot.image = Some(sha256);
+            }
+        }
+    }
+    (Cow::Owned(out), images)
+}
+
+/// The file's `images` by digest, each checked: a PNG or JPEG file of at
+/// most 32 MB whose SHA-256 is the one given, listed once.
+fn images_in(top: &mut Map<String, Value>) -> Result<HashMap<String, ImageData>, FileError> {
+    let mut images = HashMap::new();
+    for (i, image) in array(top, "images", false)?.into_iter().enumerate() {
+        let image: ImageIn =
+            serde_json::from_value(image).map_err(|e| schema(format!("images[{i}]: {e}")))?;
+        image
+            .data
+            .bytes()
+            .map_err(|e| invalid(format!("images[{i}]: {e}")))?;
+        if image.data.sha256() != image.sha256 {
+            return Err(invalid(format!(
+                "images[{i}]: the image's SHA-256 is {}, not {}",
+                image.data.sha256(),
+                image.sha256
+            )));
+        }
+        if images.insert(image.sha256.clone(), image.data).is_some() {
+            return Err(invalid(format!(
+                "images[{i}]: image {} is listed more than once",
+                image.sha256
+            )));
+        }
+    }
+    Ok(images)
+}
+
+/// An appearance of the file, its textures' images (`image`) taken from
+/// the file's `images`, shared.
+fn appearance_in(
+    i: usize,
+    value: Value,
+    images: &HashMap<String, ImageData>,
+) -> Result<Appearance, FileError> {
+    let mut appearance = serde_json::from_value::<Appearance>(value)
+        .map_err(|e| schema(format!("appearances[{i}]: {e}")))?;
+    if let Some(texture) = appearance.texture.as_mut() {
+        for slot in texture.slots_mut() {
+            let Some(digest) = slot.image.take() else {
+                continue;
+            };
+            let what = slot_name(slot.map);
+            if slot.data.is_some() {
+                return Err(schema(format!(
+                    "appearances[{i}]: {what}: both `data` and `image`"
+                )));
+            }
+            *slot.data = Some(images.get(&digest).cloned().ok_or_else(|| {
+                invalid(format!(
+                    "appearances[{i}]: {what}: image {digest} is not in `images`"
+                ))
+            })?);
+        }
+    }
+    appearance
+        .check()
+        .map_err(|e| invalid(format!("appearances[{i}]: {e}")))?;
+    Ok(appearance)
 }
 
 // Reading: the JSON value is walked, so every error can say where it is.
@@ -413,7 +541,7 @@ struct FeatureIn {
     shapes: Option<Value>,
 }
 
-const TOP_FIELDS: [&str; 21] = [
+const TOP_FIELDS: [&str; 23] = [
     "format",
     "version",
     "units",
@@ -435,10 +563,14 @@ const TOP_FIELDS: [&str; 21] = [
     "configurations",
     // A hybrid assembly allowed without asking (mitcad#171).
     "hybrid_assembly",
+    // The joins' tolerance an importer set (mitcad#298).
+    "join_tolerance",
     // Flat Patterns of sheet-metal bodies (mitcad#208).
     "flat_patterns",
     // The root component's policy (mitcad#220), when not the defaults.
     "root_policy",
+    // Embedded images by digest (mitcad#313).
+    "images",
 ];
 
 fn schema(message: impl Into<String>) -> FileError {
@@ -674,18 +806,17 @@ pub(super) fn load(value: Value) -> Result<(DocState, Vec<String>), FileError> {
             Ok(analysis)
         })
         .collect::<Result<Vec<_>, FileError>>()?;
-    let appearances = array(&mut top, "appearances", false)?
+    let images = images_in(&mut top)?;
+    let mut appearances = array(&mut top, "appearances", false)?
         .into_iter()
         .enumerate()
-        .map(|(i, a)| {
-            let appearance = serde_json::from_value::<Appearance>(a)
-                .map_err(|e| schema(format!("appearances[{i}]: {e}")))?;
-            appearance
-                .check()
-                .map_err(|e| invalid(format!("appearances[{i}]: {e}")))?;
-            Ok(appearance)
-        })
+        .map(|(i, a)| appearance_in(i, a, &images))
         .collect::<Result<Vec<_>, FileError>>()?;
+    // One copy of each image, also of one embedded twice in an older file.
+    let mut shared = HashMap::new();
+    for texture in appearances.iter_mut().filter_map(|a| a.texture.as_mut()) {
+        share_images(texture, &mut shared);
+    }
     let render = match top.remove("render") {
         None => RenderSettings::default(),
         Some(value) => {
@@ -706,6 +837,13 @@ pub(super) fn load(value: Value) -> Result<(DocState, Vec<String>), FileError> {
         None => false,
         Some(Value::Bool(allowed)) => allowed,
         Some(_) => return Err(schema("\"hybrid_assembly\" must be true or false")),
+    };
+    let join_tolerance = match top.remove("join_tolerance") {
+        None => None,
+        Some(value) => match value.as_f64() {
+            Some(t) if t.is_finite() && t > 0.0 => Some(t),
+            _ => return Err(schema("\"join_tolerance\" must be a positive number")),
+        },
     };
     let flat_patterns = array(&mut top, "flat_patterns", false)?
         .into_iter()
@@ -953,6 +1091,7 @@ pub(super) fn load(value: Value) -> Result<(DocState, Vec<String>), FileError> {
     }
     state.configurations = configurations;
     state.hybrid_assembly = hybrid_assembly;
+    state.join_tolerance = join_tolerance;
     // Flat Patterns (mitcad#208): evaluated when asked for, so one whose
     // body or panel is gone loads and says why.
     for (i, f) in flat_patterns.into_iter().enumerate() {

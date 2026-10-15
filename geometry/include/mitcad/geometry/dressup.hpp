@@ -24,7 +24,10 @@
 // tried again on the body with the pieces of its edges merged (a whole
 // circle in two arcs between the same faces, on which it fails), then, for
 // fillets, with tighter tolerances (knife edges), keeping the names of
-// every piece. A result that OCCT's checker rejects only where the input
+// every piece, and last on the body with the strips narrower than the
+// import's tolerance of 0.01 at the selected edges' vertices collapsed into
+// the one edge they stand for (a band of half a micrometre between two
+// chamfers, at whose two vertices two roundings end; mitcad#299). A result that OCCT's checker rejects only where the input
 // already was invalid, away from the dressup, is taken as it is.
 //
 // OCCT fails where a rounding or bevel takes a neighbouring face away

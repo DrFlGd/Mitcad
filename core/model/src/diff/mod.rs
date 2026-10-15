@@ -1482,15 +1482,17 @@ fn appearance_changes(a: &DocState, b: &DocState) -> Vec<ItemChange> {
                 if let Value::Object(fields) = &mut value {
                     fields.remove("id");
                 }
-                // An embedded image by its digest, not its data (mitcad#53).
-                if let (Some(texture), Some(data)) = (
-                    value.get_mut("texture").and_then(Value::as_object_mut),
-                    appearance.texture.as_ref().and_then(|t| t.data.as_ref()),
-                ) {
-                    texture.insert(
-                        "data".to_owned(),
-                        json!(format!("sha256 {}", data.sha256())),
-                    );
+                // An embedded image by its digest, not its data (mitcad#53),
+                // also each map's (mitcad#313).
+                if let (Some(texture), Some(t)) = (value.get_mut("texture"), &appearance.texture) {
+                    crate::appearance::each_image_json(texture, |map, image| {
+                        if let Some(data) = t.image_data(map) {
+                            image.insert(
+                                "data".to_owned(),
+                                json!(format!("sha256 {}", data.sha256())),
+                            );
+                        }
+                    });
                 }
                 (appearance.id.clone(), appearance.name.clone(), value)
             })

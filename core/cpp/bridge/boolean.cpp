@@ -12,12 +12,12 @@ namespace mitcad::bridge {
 namespace {
 
 std::unique_ptr<BooleanResult> run(geometry::BooleanOp op, const ShapeList& targets,
-                                   const geometry::Shape& tool) {
+                                   const geometry::Shape& tool, double within = 0.0) {
   std::vector<const geometry::Shape*> shapes;
   for (const auto& target : targets.items()) {
     shapes.push_back(target.get());
   }
-  return std::make_unique<BooleanResult>(geometry::boolean(op, shapes, tool));
+  return std::make_unique<BooleanResult>(geometry::boolean(op, shapes, tool, within));
 }
 
 } // namespace
@@ -66,6 +66,11 @@ std::unique_ptr<BooleanResult> join_near_copy(const geometry::Shape& body, const
   }
   joined->touched.assign(1, true);
   return std::make_unique<BooleanResult>(std::move(*joined));
+}
+
+std::unique_ptr<BooleanResult> boolean_join_within(const ShapeList& targets, const geometry::Shape& tool,
+                                                   double tolerance) {
+  return run(geometry::BooleanOp::Join, targets, tool, tolerance);
 }
 
 } // namespace mitcad::bridge

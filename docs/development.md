@@ -439,6 +439,8 @@ Run in the isolated environments:
 | `MITCAD_PROJECTS_DIR` | Where New Project creates projects instead of Documents/Mitcad. |
 | `MITCAD_GIT` | git program for remotes (Preferences sets it for the app). |
 | `MITCAD_LIBRARIES_DIR` | Where fetched component libraries are kept (default: `libraries` in the user's local data folder). |
+| `MITCAD_TEXTURES_DIR` | The texture cache of Edit Appearances' texture sources: thumbnails and fetched maps (default: `textures` in the user's local data folder; mitcad#315). |
+| `MITCAD_TEXTURE_FIXTURES` | The online texture sources' requests answered by files of this folder (`<folder>/<host>/<path>`, the query left out; a missing file is HTTP 404) instead of the network: UI tests (`tools/ui-appearance-polyhaven-test.sh`, mitcad#313). |
 | `MITCAD_TEST_REMOTE_RETRY_SECONDS` | First push retry delay instead of a minute. |
 | `MITCAD_TEST_REMOTE_CHANGE_CHECK_SECONDS` | Age of the last fetch after which the first change refetches (default two minutes). |
 | `MITCAD_TEST_LIVE_RETRY_MS` | The live updates' first delay before connecting again to a broker (default one second, doubling up to five minutes; with this, up to 20 times it). |

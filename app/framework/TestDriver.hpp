@@ -62,6 +62,8 @@
 //                           mnemonic) triggers it unless the focused widget
 //                           takes the key as text.
 //   type <text>             the characters as key events
+//   expect-selection-info <text-regex> [maximum-card-height]
+//                           idle Qt selection measurements and compact card
 //   click <x%> <y%> [button] [mods]
 //   dblclick <x%> <y%> [button] [mods]
 //   drag <x1%> <y1%> <x2%> <y2%> [button] [mods]     with moves between

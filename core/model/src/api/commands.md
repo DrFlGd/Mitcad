@@ -717,7 +717,8 @@ numbers the positions from 0.
   diameter; its 1:16 taper is not kept.
 - `modeled`: build the 60° profile on the faces (ISO metric, Unified and
   tyre valve and forming screw only, the others are cosmetic only); otherwise cosmetic: no geometry,
-  listed by the `threads` query. The profile is ISO 68-1's: flanks at
+  listed by the `threads` query (a cosmetic thread's end chamfers, below,
+  are cut into the geometry). The profile is ISO 68-1's: flanks at
   30° to the radius, half a pitch wide at the pitch diameter, flat crests
   and roots on the major and minor diameters. Along the threaded part the
   material becomes the thread: removed beyond the profile, and added up
@@ -758,9 +759,41 @@ numbers the positions from 0.
   leaves the crest narrower than P/50, or a radial clearance that leaves
   an external thread no core, fails the feature.
 
+- `chamfer` (mitcad#304): `"start"`, `"end"` or `"both"`, none when
+  left out: a cone cut at those ends of each face, before the profile, so
+  that the first turn starts on the cone and leaves no knife edge. The
+  start is the end `location` names (`high_end` by default, also for a
+  thread over the whole face), the end the other one. Only free ends get
+  one: ends the thread reaches (a partial thread's end inside the face
+  gets none) with nothing of the body beyond them (a shaft's free end, a
+  hole's mouth; not the shoulder under a bolt's head). An external
+  thread's cone widens from `chamfer_diameter` at the end into the
+  material at `chamfer_angle` to the axis, cutting off what lies outside
+  it; an internal thread's (a countersink) narrows from
+  `chamfer_diameter`, cutting off what lies inside it. A cosmetic thread
+  gets the same cones (its only geometry), and the `threads` query starts
+  its rings where a cone meets the cylinder.
+- `chamfer_angle`: the cone's angle to the axis, between 0 and 90°; 45°
+  when left out (inside: a 90° countersink).
+- `chamfer_diameter`: the cone's diameter at the end. When left out it
+  follows the size (a size change changes it; the `thread_chamfer` query
+  gives it): an external thread's minor diameter less P/10, an internal
+  thread's major diameter plus P/10 (from the size table), and further in
+  (out) when a modelled thread's root lies beyond that (a class's minor
+  diameter, a radial clearance), so that no groove reaches the end's
+  plane. A diameter that leaves the cone outside the thread (an external
+  one not smaller than the face and the crest, an internal one not larger
+  than the bore and the crest), or chamfers deeper than the thread is
+  long, fail the feature. Only with `chamfer`.
+
 A modelled thread's new faces (flanks, crests and roots) are
-`thread(<face>)`. The work is local: only the body's faces near the
-thread take part, so a large body does not slow it down.
+`thread(<face>)`, the chamfers' cones `thread_chamfer_low(<face>)` and
+`thread_chamfer_high(<face>)` (the low and high end along the axis of
+the face's cylinder). The work is local: only the body's faces near the
+thread take part, so a large body does not slow it down. Imported
+threads have no end chamfers: the thread properties the imports read
+(`core/import/SCHEMA.md`, `ThreadFeature`) include none; a chamfer in
+those designs is a feature of its own.
 
 ### fillet
 
@@ -822,6 +855,15 @@ form lists edge sets:
   kernel chain reaches an unselected edge is unsupported, and edges the
   kernel chains beyond Mitcad's chain stay rounded (chamfers: also past
   such turns).
+- A rolling ball rounding of constant radius whose chain ends at a small
+  notch in the rim it rounds (edges not rounded, each within the rounding's
+  contact on the face the notch breaks and within the ball's diameter of
+  the chain's end) carries on across the notch onto the next edge of the
+  rim, when that edge lies on the same line or circle between faces of the
+  same two surfaces, whether or not the set selects it or follows tangent
+  chains (OCCT port patch 0260, mitcad#307): the rounding is one surface
+  over both edges, cut by the notch's faces, as in the `.f3d` files'
+  roundings. A wider notch ends the rounding.
 - `continuity`: `tangent` (G1, default) or `curvature` (G2). A G2 set
   touches the faces where the G1 rounding of its radius would (the
   asymmetric one at its distances) and its quintic cross-section follows
@@ -1396,6 +1438,18 @@ by `growth` for every `pitch` they rise, so a cone's growth stays
 `pitch * tan(angle)` and the flat parts keep their distance from the
 axis), and the helix is built by Mitcad's construction (`freecad` with
 ends is an error).
+
+`piece_shift` (turns, optional, at least 0 and less than a third;
+mitcad#235) shifts the seams of the pieces the helix is swept in (a third
+of a turn each): the shape is the same, but a boolean that failed or left
+part of the helix uncut where those seams meet the seams of the bodies'
+faces about the axis can work with them moved. The `.ipt` import tries a
+coil as decoded once more with `"piece_shift": 1/6` when it does not give
+the file's state. Without it, a join, cut or intersection that fails, or
+whose result the geometry kernel's checker finds invalid, is tried once
+more with the seams shifted by a sixth of a turn, and the feature then has
+a warning that says so; a helix whose boolean works is built once, as
+before.
 
 Faces: `side(<segment>)`, `start(<region>)` at the profile and
 `end(<region>)` (`geometry/src/path_sweep.cpp`).
@@ -2107,7 +2161,7 @@ the design file. A body names its appearance by id
 | `coat`, `coat_roughness` | 0–1 | 0, 0.03 | a clear coat over the base (lacquer, car paint) |
 | `emission`, `emission_color` | 0–1000, sRGB | 0, [1, 1, 1] | emitted light: 1 is the colour's own radiance |
 | `opacity` | 0–1 | 1 | a cut-out (glass transmits instead) |
-| `texture` | `{"path", "size": [w, h] mm (default 100 x 100), "rotation" rad, "projection": "box" (default) or "planar", "data"}` | none | an image for the base colour (PNG or JPEG), projected in the body's coordinates: `planar` along Z, `box` from the axis each point of the surface faces most; one repeat of the image is `size`, turned by `rotation` about the projection's axis. `path` is relative to the design file's folder or absolute; `data` (base64 of the image file, at most 32 MB) embeds the image in the design file ([Textures](#textures)). The rendered view draws it, the shaded view shows the base colour |
+| `texture` | `{"path", "size": [w, h] mm (default 100 x 100), "rotation" rad, "projection": "box" (default) or "planar", "data", "normal", "roughness", "metalness", "occlusion", "source"}` | none | an image for the base colour (PNG or JPEG), with the other maps of its set and where it came from ([Texture map sets](#texture-map-sets)), projected in the body's coordinates: `planar` along Z, `box` from the axis each point of the surface faces most; one repeat of the image is `size`, turned by `rotation` about the projection's axis. `path` is relative to the design file's folder or absolute; `data` (base64 of the image file, at most 32 MB) embeds the image in the design file ([Textures](#textures)). The rendered view draws it, the shaded view shows the base colour |
 
 | Command | Fields | Result |
 |---|---|---|
@@ -2188,7 +2242,73 @@ design file (mitcad#53).
 - The `appearance_image` query (`id`) gives an embedded image: `data`
   (base64), `format` (`png`, `jpeg`) and `sha256`.
 - The design file keeps the image in the texture's `data`; the
-  comparison of versions shows `sha256 <digest>` for it.
+  comparison of versions shows `sha256 <digest>` for it. A file with
+  shared images or embedded maps keeps each image once instead
+  ([Texture map sets](#texture-map-sets)).
+
+### Texture map sets
+
+A texture can be a full set of physically based maps (mitcad#313,
+`core/model/src/appearance.rs`), so that a design looks the same on
+another computer without the image files: besides the base colour image
+(the texture's own `path` and `data`), each of
+
+| Map | Image |
+|---|---|
+| `normal` | a tangent-space normal map, OpenGL convention (green up) |
+| `roughness` | roughness, grey 0 (mirror) to 1 |
+| `metalness` | metalness, grey 0 (dielectric) to 1 (metal) |
+| `occlusion` | ambient occlusion, grey 0 (occluded) to 1 |
+
+is an optional object of the texture, `{"path", "data"}`, a PNG or JPEG
+file as the base colour's: `path` relative to the design file's folder or
+absolute, `data` (base64, at most 32 MB per image, each map one image)
+embeds it. The maps share the base colour's `size`, `rotation` and
+`projection`; a set needs its base colour image. A map left out of an
+`edit_appearance` texture is removed (the texture is replaced as a
+whole).
+
+```json
+{"cmd": "create_appearance", "name": "Oak veneer", "texture": {
+  "path": "oak_diff_2k.jpg", "data": "/9j/4AAQ…", "size": [300, 300],
+  "normal": {"path": "oak_nor_gl_2k.png", "data": "iVBORw0K…"},
+  "roughness": {"path": "oak_rough_2k.png", "data": "iVBORw0K…"},
+  "source": {"id": "polyhaven", "asset": "oak_veneer_01", "resolution": "2k",
+             "license": "CC0-1.0", "url": "https://polyhaven.com/a/oak_veneer_01"}}}
+```
+
+- **Embedding:** the application embeds the images of a set it takes
+  from a texture source; a map given by `path` alone stays a file of the
+  user's, read when the view renders.
+- **Source:** `source` records where the set came from: `id` (the
+  texture source: `polyhaven`, `folder`, …; letters, digits, `_`, `-`),
+  `asset` (the asset's id in it), and optionally `resolution` (`2k`),
+  `license` (an SPDX identifier, `CC0-1.0`) and `url` (the asset's web
+  page, http or https). The model keeps and lists it; it never fetches
+  anything.
+- **Listing:** the `appearances` query lists each embedded map image as
+  the base colour's, `{"path", "embedded": true, "image_sha256"}`, and
+  `source` as given. That form sent back keeps the images. `"embedded":
+  true` with `image_sha256` keeps the image of that digest the design
+  embeds, also another appearance's (so a set is reused without sending
+  its images again; refused when the design has none of that digest);
+  without `image_sha256` it keeps the image of the same map of the
+  texture it replaces (or of `based_on`).
+- **`appearance_image`** takes `map` (`base_color`, the default, or a map
+  above) and gives that image.
+- **One copy per image:** an image the design embeds already (the same
+  SHA-256) is shared, not copied: in memory, in the states undo keeps,
+  and in the design file. The file keeps a texture's embedded image in
+  its `data` as before while no map image is embedded and no image is
+  embedded twice; otherwise every embedded image is kept once in the
+  top-level `"images": [{"sha256", "data"}]` (in the order of first use)
+  and the textures and maps refer to it by `"image": "<sha256>"`. Opening
+  checks each image (PNG or JPEG, at most 32 MB, its digest, listed once)
+  and refuses a reference to an image that is not there. Files without
+  `images` and maps open as before, and a design with one embedded
+  texture is written as before. Older versions of Mitcad do not open a
+  file with `images` or maps (an unknown field).
+- The comparison of versions shows each map's image as `sha256 <digest>`.
 
 ### Render settings
 
@@ -2315,7 +2435,7 @@ timeline marker.
 | `parameters` | | `name`, `expression`, `unit` (`""` for unitless), `value` (mm or rad), `text` (the value in its unit, `"12.5 mm"`), `comment`, `kind` (`user`, `model`, `reference`: a driven dimension's, read-only), `owner` (the feature of a model or reference parameter), `dependencies` (names its expression uses), `favorite` |
 | `evaluate` | `expression`, `kind`: `length` (default), `angle` or `unitless` | `value` (mm or rad), `text` (in the document's unit, `"40 mm"`), `references` (parameter names used), `expression` (with decimal points: `"d1 * 1,5"` gives `"d1 * 1.5"`) |
 | `appearances` | | the library's and the document's appearances with their parameters ([Appearances](#appearances)) |
-| `appearance_image` | `id` | an appearance's embedded texture image: `data` (base64), `format`, `sha256` ([Textures](#textures)) |
+| `appearance_image` | `id`, `map` (`base_color` default, `normal`, `roughness`, `metalness`, `occlusion`) | an embedded image of an appearance's texture set: `data` (base64), `format`, `sha256` ([Textures](#textures), [Texture map sets](#texture-map-sets)) |
 | `render_settings` | | the document's render settings, every section and field ([Render settings](#render-settings)) |
 | `bodies` | `properties`, `volumes` | `uid`, `name`, `component` (when not the root's), `visible`, `material`, `appearance`, `face_appearances` ([Appearances of faces](#appearances-of-faces)) (when set); with `"properties": true` also `kind` (`solid`, `sheet`: faces or open shells, `mesh`, `empty`), `volume`, `area`, `center`, `bbox` {`min`, `max`} (in the component's coordinates), `faces`, `edges` (counts); with `"volumes": true` only `volume` (cheaper) |
 | `profiles` | `hashes` | `sketch`, `sketch_name`, `region`, `consumed` (an extrude uses it); with `"hashes": true` also `hash` (16 hex digits of the region's geometry and sketch frame: the same while the profile's face would be the same) |
@@ -2324,8 +2444,9 @@ timeline marker.
 | `dependents` | `uid` | `dependents`: `uid`, `name` of the features that refer to it, directly or through others, in timeline order (what `delete_feature` with `dependents` deletes too) |
 | `can_reorder` | `uid`, `index` | `ok`, and `error` (the reason `reorder_feature` would give) when not |
 | `sketch` | `uid` | see [Sketch commands](#sketch-commands) |
-| `threads` | | threads on the bodies (thread features and tapped holes): `feature`, `name`, `body`, `face`, `standard`, `designation`, `class`, `right_handed`, `modeled`, `major_diameter`, `minor_diameter`, `pitch`, and from the face `internal`, `radius`, `start`, `end` (points on the axis where the thread begins and ends) |
+| `threads` | | threads on the bodies (thread features and tapped holes): `feature`, `name`, `body`, `face`, `standard`, `designation`, `class`, `right_handed`, `modeled`, `major_diameter`, `minor_diameter`, `pitch`, and from the face `internal`, `radius`, `start`, `end` (points on the axis where the thread begins and ends; a cosmetic thread's end chamfers move them to where their cones meet the cylinder) |
 | `thread_sizes` | `standard` (`iso_metric`, `unified`, `whitworth`, `npt`, `tyre_valve` or `forming_screw`; all when left out) | `standards`, ISO metric first, then Unified, Whitworth (bolt sizes, then the pipe sizes `G 1/4`), NPT and tyre valve threads: `standard`, `title` (the thread type's name), `default` (true for ISO metric), `sizes` (smallest first: `size` as the table names it, `10`, `1/4`, `#10`; `major_diameter` mm; `designations`, the coarse pitch or UNC first, each one `thread` and `hole` accept), `classes_external`, `classes_internal`, `default_class_external` (6g, 2A, Medium, Standard), `default_class_internal` (6H, 2B, Medium, Standard) |
+| `thread_chamfer` | `designation`, `standard` (`iso_metric` when left out), `internal` (false when left out) | the size's default end chamfer ([thread](#thread), mitcad#304): `diameter` (mm, from the size table), `angle` (45, degrees to the axis) |
 | `named_views` | | in the order added: `name`, `eye`, `target`, `up`, `perspective` (when true), `height` |
 | `recompute_times` | | the features the last recompute evaluated (cache hits left out), in timeline order: `uid`, `name`, `type`, `ms` (wall time of its evaluation); and `ms`, their sum |
 | `changes_since_saved` | | `known` (the state last marked saved is on the undo or redo stack, or is this one), `steps`: oldest first, the labels of the undo steps made since (`Change d3`), or `Undo <label>` for those undone since, leaving out those that changed only the display state; empty when nothing else changed or not known (never saved, a step dropped by a new command after undo) |
@@ -2436,6 +2557,10 @@ it on a copy of the document without committing it. The result:
   `app/framework/PreviewBodies.hpp`).
 - `preview_body_shape(uid)` returns a body as the command leaves it and
   `preview_tool_shape()` the extrusion before its boolean.
+- An `edit_feature` preview computes the feature in its own component
+  (not the active one) under its own uid, and when the marker is before
+  the feature (an editor rolls it back) the feature is still computed, the
+  later ones staying rolled back (mitcad#309).
 - The next command or `clear_preview` drops the preview; committing the
   same command reuses its results.
 
@@ -2449,7 +2574,7 @@ check the document after the steps before them. Examples:
 | Expectation | Checks |
 |---|---|
 | `"bodies": n` | bodies at the marker |
-| `"body": "Body1"` (name or uid) | `"volume"`, `"area"` (relative `"tolerance"`, default 1e-6), `"faces"`, `"edges"` (counts), `"has_face"`, `"has_edge"`, `"no_edge"` (names), `"min"`, `"max"` (bounding box corners, the same tolerance), `"bbox": {"min", "max"}`, `"center"` (of mass; `"tolerance"` in mm) |
+| `"body": "Body1"` (name or uid) | `"volume"`, `"area"` (relative `"tolerance"`, default 1e-6), `"faces"`, `"edges"` (counts), `"has_face"`, `"has_edge"`, `"no_edge"` (names), `"min"`, `"max"` (bounding box corners, the same tolerance), `"bbox": {"min", "max"}`, `"center"` (of mass; `"tolerance"` in mm), `"min_face_area"` (every face has at least this area, mm²: no slivers) |
 | `"total_volume"` | all bodies |
 | `"occurrence"` (a path, or an occurrence placed once) with `"body"` | the body as placed: `volume`, `area`, `center`, `bbox`, `min`, `max` |
 | `"instances"`, `"world_volume"` | the visible placed bodies: count, sum of volumes |
@@ -2493,7 +2618,7 @@ made, in order) and `status` (as the `sketch` query: `dof`,
 | `sketch.rectangle` | `mode`: `two_point` (`a`, `b` corners), `three_point` (side `a`–`b`, `c` on the opposite side), `center` (`center`, `corner`); `construction` | four joined lines (counter-clockwise), horizontal and vertical (perpendicular for `three_point`), a construction diagonal with the centre at its midpoint for `center` |
 | `sketch.circle` | `mode`: `center` (`center` point input, `radius`), `two_point` (`a`, `b`: a diameter), `three_point` (`a`, `b`, `c`), `two_tangent` (`lines` [2], `radius`, `near`), `three_tangent` (`lines` [3]); `construction` | tangent constraints for the tangent modes |
 | `sketch.arc` | `mode`: `three_point` (`start`, `through`, `end`), `center` (`center`, `start`, `end`: the direction of the end, `clockwise`), `tangent` (`from`: an end point of a curve, `end`); `construction` | `tangent` adds a tangent constraint |
-| `sketch.polygon` | `center`, `vertex`, `sides` (3–256), `inscribed` (default true; false: `vertex` is a side's middle), `construction` | joined lines, equal, on (or tangent to) a construction circle |
+| `sketch.polygon` | `center`, `vertex`, `sides` (3–256), `inscribed` (default true; false: `vertex` is a side's middle), `construction` | joined lines that stay a regular polygon (four degrees of freedom: placement, orientation, size; mitcad#303): inscribed, equal sides with the corners on a construction circle; circumscribed, the sides tangent to a construction circle and the corners on a second construction circle around the same centre point (the first circle is the one through `vertex`). Polygons stored earlier keep their constraints |
 | `sketch.slot` | `mode`: `center_to_center` (`a`, `b`), `center_point` (`center`, `end`: an end's centre), `arc` (`center`, `start`, `end`); `width` | two end arcs, two tangent sides, a construction centre line or arc with the arc centres at its ends, equal end arcs |
 | `sketch.ellipse` | `center` (point input), `major` (end of the major axis), `minor_radius`, `start` and `end` (point inputs; an elliptical arc), `construction` | |
 | `sketch.spline` | `points` (point inputs), `degree` (optional), `construction` | without `degree` a cubic through the points; with it, a B-spline with these control points |
@@ -3523,7 +3648,9 @@ holds, bodies taken by later operations),
 `base_color`, `notes` on what Mitcad's parameters do not hold —
 translucency, emission, bump maps — and `texture`: the image the colour
 comes from with its `size` and `offset` in mm and `rotation`, which the
-file does not hold), `physical_materials` (`asset`, `preset`, `name`,
+file does not hold, and `maps`: the images of its other maps by
+Mitcad's map name, `roughness`, `normal`, `bump`, `cutout`, mitcad#313,
+which it does not hold either, so no texture set is made from them), `physical_materials` (`asset`, `preset`, `name`,
 `category`, `classification`, `density` kg/m³, `mitcad`, `bodies`) and
 `gaps` (what did not come in, and why). The readable report gives a line
 `appearances: bodies x/y, faces x/y, …`. Left out when the file has none.
@@ -4163,18 +4290,39 @@ every `.ifc` of `MITCAD_IFC_CORPUS`; faceted twins compared by volume).
 
 `{"cmd": "import_rvt", "path": "project.rvt", …}` (C++ `Document::command`,
 or `Document::import_rvt(path, json)` for the report alone) imports an
-`.rvt` project's building elements as reference geometry, phase 1
-(mitcad#274; `core/ffi/src/rvt_import.rs` and `mitcad_import::rvt`, the
-reader is [core/rvt](../../../rvt/README.md)). `.rte` templates likewise;
-an `.rfa` family (or `.rft` template) opens with its metadata and report
-only (its forms are a later ticket).
+`.rvt` project's building elements (mitcad#274, mitcad#275;
+`core/ffi/src/rvt_import.rs` and `mitcad_import::rvt`, the reader is
+[core/rvt](../../../rvt/README.md)). `.rte` templates likewise; an `.rfa`
+family (or `.rft` template) opens with its metadata and report only (its
+forms are a later ticket).
 
 - One component per level (named as the level, lowest first; a component
-  `Elements` for elements of a file without levels), each with one base
-  feature `<level> elements` holding a body per element, named
-  `Family:Type:Id` (`Class-Id` when the element has no type).
-- An element's body is the triangle mesh its record saves (a mesh body;
-  topography surfaces in the corpus), else a family type's box at the
+  `Elements` for elements of a file without levels), each with a
+  construction plane `<level> level` at the level's elevation. The grids
+  are construction axes of the root component (`Grid <name>`); an arc
+  grid is a sketch of its arc.
+- **Walls, floors (and pads), roofs, columns, beams and monolithic stair
+  runs** are rebuilt from their parameters as features of their level's
+  component, one command per element (`mitcad_import::rvt::plan`): a
+  sketch and an extrusion (a wall's footprint with its ends where its
+  joins put them; a floor's boundary loops down from its top; a roof's
+  footprint or extrusion profile under its slopes' planes; a column's or
+  beam's section, rectangular, round, I, L, U or hollow, along its axis; a
+  run's steps down to its support), with the cuts of the inserts it hosts
+  (doors and windows: their type's cut loops) and of the elements whose
+  geometry cuts it. Their bodies are named `Family:Type:Id` and take the
+  appearance of their material (a layered type's exterior layer's, a
+  family type's first).
+- Each element built is checked: against the IFC export given as
+  `reference_ifc` (by its GlobalId, which the import derives from the
+  element's creation episode: its volume within 1 % and its box within
+  5 mm of the export's solid), else against its stored box (its body
+  within 5 mm of it). An element whose features fail or disagree is
+  undone and comes in as below, the reason on its report line.
+- **Every other element** (family instances until their families' forms
+  are read, curtain walls, sections of no known kind, …) is a body of its
+  level's base feature `<level> elements`: the triangle mesh its record
+  saves where it has one (a mesh body), else a family type's box at the
   instance's transform (when it agrees with the element's own box within
   0.01 ft), else the element's box in model coordinates. Lengths in feet
   become millimetres.
@@ -4182,6 +4330,14 @@ only (its forms are a later ticket).
   a level field, a level its records hold, a level parameter, its host's);
   one that names none goes on the highest level at or below its box
   (counted as `by_elevation`).
+- **Links**: each linked model (an `RvtLinkInstance`) is a component of
+  the root, `<file> : <instance>`, placed by the instance's transform; the
+  linked file (found by its name in `link_files`, else next to the
+  project, at the relative path the project stores, or in `link_folder`)
+  comes in there the same way (its own links are not followed). A link
+  not found leaves its component empty, the report naming it. The
+  application asks for the missing files (`list_links`); the command line
+  never does.
 - Left out, counted by reason (`left_out`): types, view-specific elements
   (annotations), members of groups' definitions, elements without a box
   or mesh, elements of categories that are no building elements (levels,
@@ -4191,8 +4347,8 @@ only (its forms are a later ticket).
   (`memory_low`) and a warning says so.
 - Each base feature gets an import note (the timeline's yellow badge,
   [The import's outcomes on the timeline](#the-imports-outcomes-on-the-timeline)):
-  how many saved meshes and boxes, and that the elements' own shapes are
-  not read yet.
+  how many saved meshes and boxes, and that the report says why each one
+  is not built.
 
 One undo step (`Import project.rvt`). A job does not cancel it.
 
@@ -4201,6 +4357,11 @@ One undo step (`Import project.rvt`). A job does not cancel it.
 | `text` | `import_rvt` returns a readable report |
 | `report_path` | also write the JSON report to this file |
 | `report_only` | read and report; import no elements |
+| `reference_ifc` | the IFC export of the same project to check the features against |
+| `link_files` | linked models' files by the links' file names (`{"linked.rvt": "C:/…/linked.rvt"}`; the application's file dialogs) |
+| `link_folder` | a folder to look for linked models in, besides the project's |
+| `list_links` | only list the links and where their files are: `{"links": [{"id", "file", "stored_path", "found"}]}` |
+| `mesh_only` | every element as its mesh or box, no features |
 
 The command's result: `file`, `design` (the family's name, else the
 file's), `bodies` and `report`: `format` (`rvt` or `rfa`), `kind`
@@ -4211,15 +4372,29 @@ file's), `bodies` and `report`: `format` (`rvt` or `rfa`), `kind`
 `id_width`, `unknown_encodings`), `elements` (`declared`,
 `with_records`, `walked`, `read_in_part`, `not_read`), `levels` (`id`,
 `name`, `elevation` mm), `materials` (count), `import` (projects:
-`levels` with `id`, `name`, `elevation`, `component`, `feature`, `bodies`,
-`meshes`, `boxes`; `bodies`, `meshes`, `oriented_boxes`, `boxes`,
-`categories`, `left_out`, `by_elevation`, `not_built`, `memory_low`,
-`warnings`), `warnings` and `seconds`.
+`levels` with `id`, `name`, `elevation`, `component`, `feature`, `link`,
+`features`, `bodies`, `meshes`, `boxes`; `features` and `built` (elements
+built as features, by kind), `fallbacks` (elements of those kinds that
+came in as meshes or boxes), `reference`, `reference_agree` (the
+reference's solids agreed with, by IFC class) and `reference_unmatched`
+(its walls, slabs, roofs, columns, beams and members no feature agrees
+with, and why), `bodies`, `meshes`, `oriented_boxes`, `boxes`,
+`level_planes`, `grid_axes`, `grid_arcs`, `appearances`, `links` (`id`,
+`file`, `found`, `component`, `elements`, `note`), `categories`,
+`left_out`, `by_elevation`, `not_built`, `memory_low`, `warnings`, and
+`elements`: a line per element (`id`, `link`, `global_id`, `kind`,
+`category`, `name`, `level`, `outcome` (`features`, `mesh`, `box`),
+`features`, `bodies`, `volume`, `checked_against`, `reference_volume`,
+`volume_difference`, `box_difference`, `notes`)), `warnings` and
+`seconds`.
 
 Tests: `core/rvt` (`core.rvt`, no OCCT; its corpus test reads
-`MITCAD_RVT_CORPUS`), `core/import/src/rvt.rs` (mock kernel),
-`core.exchange` (`core/tests/test_exchange.cpp`), `cli.import_rvt`,
-`cli.import_rfa`, `rvt.corpus` (`MITCAD_RVT_CORPUS`) and
+`MITCAD_RVT_CORPUS`), `core/import/src/rvt` (mock kernel: the reader's
+building test project's walls, floor, grid and link), `core.exchange`
+(`core/tests/test_exchange.cpp`), `cli.import_rvt`, `cli.import_rfa`,
+`cli.import_rvt_building`, `rvt.corpus` (`MITCAD_RVT_CORPUS`, with
+`MITCAD_IFC_CORPUS` the IFC export of the MIT-licensed project: every
+wall, slab and column agreed with; and a link) and
 `tools/ui-rvt-import-test.sh`.
 
 ### The import's outcomes on the timeline
@@ -5800,10 +5975,11 @@ old and the new way do not share; translated and rotated parents alike).
 `occurrence` is the occurrence's path from the root and `parent` the path
 of the new parent's occurrence (empty: the root), by uids (`O1/O4`) or
 names (`Assembly:1/Part:1`). The result has `occurrence`, `component`,
-`path` (the new uid path), `path_name`, `parent` (the component) and
-`updated` (what followed it). One undo step, `Move Part:1 to Root`; undo
-and redo restore or reapply the hierarchy, the placement and the
-references together.
+`path` (the new uid path), `path_name`, `parent` (the component),
+`updated` (the references that followed it) and `features` (the features
+that place it and went with it, below). One undo step, `Move Part:1 to
+Root`; undo and redo restore or reapply the hierarchy, the placement, the
+references and the carried features together.
 
 Occurrence paths that lead through the moved occurrence follow it in the
 same step: sketch planes and projections linked to other components,
@@ -5811,13 +5987,74 @@ combine, sweep, split and extrude body links, construction plane links,
 cut scopes, joints and assembly constraints (their paths are relative to
 their component), section analyses and Isolate. Everything is validated
 before anything changes, in one place (`Document::plan_reparent`, which
-design policies extend), and refused with the blocker named:
+design policies extend), and refused with the blocker named.
 
-- the root, an occurrence made by Pattern at Points, and an occurrence a
-  timeline feature places: a Move or Capture Position of it, a joint or
-  constraint that moves it (the first occurrence of its path), a rigid
-  group with it (`Part:1 is placed by Move1; edit or delete it before
-  moving Part:1`);
+**The features that place it go with it** (mitcad#301): its joints and
+as-built joints (it is the first occurrence of a side's path), the rows of
+assembly constraint sets with it, rigid groups with it, and its Moves
+(`move_occurrence`) and Capture Positions, wherever they are in the
+timeline (also after the marker and suppressed). Each becomes a feature of
+the new parent and keeps its place in the timeline; its occurrence paths
+are rewritten relative to the new parent. The new parent is the one
+component where such a feature can still place the occurrence: a joint,
+constraint or rigid group moves only occurrences placed directly in its
+component, and a Move or Capture Position places only those, so the
+lowest component that holds everything the feature refers to after the
+move must be the new parent itself. Typical: `Joint1` of `Box` joins
+`Part:1` to `Box`'s own block; moving `Part:1` from `Box:1` to the root
+makes `Joint1` a root joint from `Part:1` to `Box:1` (its side `b` was the
+empty path, now `O1`). Moving `Part:1` into a component that holds the
+geometry it is joined to (a joint to `Sub:1`'s block, `Part:1` into
+`Box:1/Sub:1`) makes it a joint of `Sub` to `Sub`'s own block.
+
+- A Move turns into the new parent's coordinates: a free move (`free`
+  matrix) by `relative * move * inverse(relative)`, where `relative`
+  takes the old parent's coordinates into the new parent's; a move along
+  the axes (`translate_xyz`) stays as it is when the axes agree.
+- A Capture Position's placement becomes `relative * captured`.
+- A rigid group of the old parent holds the moved occurrence, in the new
+  parent (an ancestor of the old one), to the occurrence that places the
+  old parent there (`Box:1`), which stands for the members that stay.
+- A feature that also places other occurrences is split: the occurrence's
+  rows of a constraint set (with their parameters), its position of a
+  Capture Position, its place in a rigid group of three or more, or (for
+  a free move) its place in a Move go into a new feature of the new
+  parent right after it (`Constraint2`, `Position2`, `RigidGroup2`,
+  `Move2`, in the same timeline group), the rest stays.
+
+The query's plan and the command list them in `features`: `name`, `from`
+and `from_name` (its component), `to` and `to_name` (the new parent) and
+`split` (the new feature's name, null when the feature goes whole):
+
+```json
+{"name":"Joint1","from":"C1","from_name":"Box","to":"C0","to_name":"Root","split":null}
+```
+
+The refusals:
+
+- the root and an occurrence made by Pattern at Points;
+- a placing feature that could not keep its meaning in the new parent
+  (`Joint1: it joins Part:1 to Box:1, which is not in Lid; it places only
+  occurrences placed directly in its component, so it could not place
+  Part:1 there`; in `Root`, which holds both, it would move `Lid:1`
+  instead); a Move along the old parent's axes when they are turned in
+  the new parent (`Move1: it moves Part:1 along the x, y and z axes of
+  Assembly, which are turned in Root; …`) or by geometry of the old
+  parent (an axis or points, which a feature of another component cannot
+  use); a Move by values that also moves other occurrences (its
+  parameters belong to it, so it cannot be split);
+- what a carried feature depends on moving later in the timeline in a way
+  the moved occurrence would no longer follow: an occurrence below the
+  new parent on the way to geometry it is joined to, or a member of its
+  rigid group, placed by a later feature (`Joint1: Pin:1 is placed by
+  Move1 later in the timeline, which Part:1 in Root would no longer
+  follow`); a parent on the way between the old and the new parent placed
+  by a later Move, Capture Position or Pattern at Points (later joints of
+  the new parent are solved together with the carried ones); for a Move or
+  Capture Position, a parent on the way placed by any later feature (it
+  works in the parent's coordinates at its point of the timeline);
+- an occurrence whose solved placement differs from its own without a
+  timeline feature that places it (`Part:1 is placed by the joints`);
 - a source parent placed more than once (the occurrence is in each of
   them, `Assembly is placed 2 times and Part:1 is in each of them; …`) and
   a destination placed more than once (it would appear in each): a single
@@ -5840,7 +6077,14 @@ A component made by a feature (a new-component operation, Component from
 Bodies) can move: the feature keeps making its bodies, in that component's
 coordinates. The command recomputes the new state before taking it and
 refuses it (`the move would make features fail: …`) when a feature that
-built before fails after the move. A refused command changes nothing.
+built before fails after the move, and when any occurrence would be
+somewhere else in the design at the marker (`the move would change where
+Box:1 is in the design: Joint1 would place the occurrences differently in
+Root`; e.g. a joint whose side `a` was the old parent's own geometry,
+which cannot move there, while in the new parent `a` is the old parent's
+occurrence, which moves first unless grounded). Carried features are also
+checked where they stand in the timeline, after the marker too. A refused
+command changes nothing.
 
 The query takes `occurrence` and optionally `parent`:
 
@@ -5863,10 +6107,13 @@ parent), `eligible` and `reason`:
 
 With `parent`, `plan` is `eligible`, `problems` (the blockers), and for an
 eligible move `parent`, `parent_path`, `from`, `from_path`, `path` (the new
-uid path), `transform` (the new placement's rows) and `updates`. Tests:
-`core/model/src/reparent_tests.rs`, `cli.reparent_occurrence` and
-`cli.reparent_occurrence_reopened` (real geometry, undo/redo,
-save/reopen), `app.unit` (the picker), `tools/ui-move-test.sh`.
+uid path), `transform` (the new placement's rows), `updates` and
+`features` (the carried features). The query does not recompute: a move
+the plan allows can still be refused by the command's recompute (above).
+Tests: `core/model/src/reparent_tests.rs`, `cli.reparent_occurrence` and
+`cli.reparent_occurrence_reopened` (real geometry, undo/redo, save/reopen,
+a joint that goes to the root with its occurrence), `app.unit` (the
+picker), `tools/ui-move-test.sh`.
 
 ## Autoselect profile groups
 
@@ -6908,6 +7155,34 @@ click (`Kernel::tangent_chains`, `geometry/include/mitcad/geometry/tangent_chain
 - The chains are worked out for the whole body at once, so a client asks
   once per body and looks each hovered item up; the application does so
   per command run (app/COMMANDS.md, `withHoverChain`).
+
+## Join tolerance of imported designs
+
+A design the `.f3d` import made (`import_f3d`) has a join tolerance: the
+import's geometric tolerance (`geometric_tolerance`, default 0.01 mm,
+mitcad#224, mitcad#298). The bodies it keeps match the file's within that
+tolerance (mitcad#285), so a tool the file joins to a body can miss the
+replay's body by a few micrometres, touch it only along an edge, or meet
+it on a face so nearly coincident that the exact join's result is invalid.
+With a join tolerance, the joins of the features that apply a tool
+(extrusions, revolutions, sweeps, lofts, base features, primitives and
+patterns; `Kernel::join_within`) are widened only where the exact join
+fails:
+
+- a tool that touches no target joins the targets within the tolerance;
+- a tool solid the exact join leaves on its own beside a target within
+  the tolerance is merged with it;
+- a join whose result is invalid is tried again.
+
+Each takes the smallest fuzzy value that works (1e-5 mm, then 3 and 10
+times each power of ten up to the tolerance). A join that works exactly
+is the exact one, and tools farther away stay apart. The design file
+keeps it as `"join_tolerance"` (mm; left out without one), so a saved
+import recomputes the same; a design made in Mitcad has none and its joins
+are exact. Rust: `Document::join_tolerance`, `Document::set_join_tolerance`
+(one undo step, part of the import's own). Tests: `core.model`
+(`document::import_notes`), `core/import` (`tests.rs`), `geometry`
+(`test_boolean.cpp`).
 
 ## Extrude's automatic operation
 

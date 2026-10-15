@@ -99,8 +99,10 @@ public:
   void rebuild(const DocumentSnapshot& snapshot, bool originShown);
   // Selects the rows of these items (from the view) and the feature rows
   // of these features (picked in the timeline or here); others are
-  // deselected. Emits nothing.
-  void showSelection(const Selection& items, const QStringList& features = {});
+  // deselected. Emits nothing. With scroll, it scrolls to the newest
+  // selected row when none of them is in sight (mitcad#318); a selection
+  // picked in the tree itself does not scroll it.
+  void showSelection(const Selection& items, const QStringList& features = {}, bool scroll = true);
   // The rows of a feature: its sketch or datum, or the bodies it made.
   QVector<BrowserNode> nodesOfFeature(const QString& feature) const;
   // Expands to, selects and scrolls to the rows of a feature, its rows under
@@ -109,6 +111,12 @@ public:
   // The same for the row of a body (of a face, edge or vertex picked in
   // the view), a sketch or a datum.
   bool revealItem(const SelectionItem& item);
+  // Collapses every row, the descendants of a folded row too, and forgets
+  // what was open: the remembered states of all rows are "folded", so neither
+  // an arrow click (which opens only that row) nor a rebuild reopens a
+  // subtree (mitcad#312). The top row stays, to be opened again. Only the
+  // presentation changes.
+  void collapseAll();
   // Renames a row in place.
   void startRename(const BrowserNode& node);
   // Closes an open rename editor without renaming; false when none is open.
@@ -180,6 +188,8 @@ private:
   BrowserTree* m_tree = nullptr;
   QHash<QTreeWidgetItem*, BrowserNode> m_nodes;
   QHash<QString, bool> m_expanded; // by row key
+  QSet<QString> m_shownSelection;  // what showSelection last selected (items and features)
+  QSet<QString> m_foldedSelection; // the selection Collapse All left; showSelection does not reveal it again
   bool m_building = false;
   QString m_logged;
   QSet<QString> m_loggedPlaces; // what logLayout logged a place for, and has not logged out of sight

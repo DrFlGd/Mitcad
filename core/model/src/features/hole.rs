@@ -851,6 +851,8 @@ impl<K: Kernel> Evaluate<K> for HoleDef {
                 part,
                 radial_clearance,
                 flank_clearance,
+                groove: true,
+                chamfer: None,
             };
             *shape = ctx
                 .kernel

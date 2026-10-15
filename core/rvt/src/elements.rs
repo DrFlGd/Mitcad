@@ -28,6 +28,7 @@ use std::collections::{BTreeMap, HashMap};
 
 use serde::Serialize;
 
+use crate::building::{self, Building, Raw};
 use crate::categories;
 use crate::partition::{Partition, Slot};
 use crate::schema::Schema;
@@ -43,6 +44,11 @@ pub struct Declared {
     pub id: i64,
     /// The element that owns it (`m_OwningElementId`; -1 for none).
     pub owner: i64,
+    /// Its history (`m_history`): the id it was created with
+    /// (`m_originalElementId`) and the episode that created it
+    /// (`m_creationDate`, an index into [`crate::RvtFile::episodes`]).
+    pub original: Option<i64>,
+    pub created: Option<u64>,
 }
 
 /// The element table (`Global/ElemTable`), walked by the schema: the
@@ -72,8 +78,25 @@ pub fn element_table(file: &RvtFile, schema: &Schema) -> Result<Vec<Declared>, R
                 .get(schema, "m_OwningElementId")
                 .and_then(Value::as_id)
                 .unwrap_or(-1),
+            original: history_of(schema, rec, "m_originalElementId"),
+            created: history_of(schema, rec, "m_creationDate").map(|v| v as u64),
         })
         .collect())
+}
+
+/// A number of an element table record's history (`m_history`): the
+/// field's id or integer, however deep its object holds it.
+fn history_of(schema: &Schema, rec: &Object, field: &str) -> Option<i64> {
+    fn first(v: &Value) -> Option<i64> {
+        match v {
+            Value::Id(id) => Some(*id),
+            Value::Int(n) => Some(*n as i64),
+            Value::Object(o) => o.fields.iter().find_map(|(_, _, v)| first(v)),
+            _ => None,
+        }
+    }
+    let history = rec.get(schema, "m_history")?.as_object()?;
+    first(history.get(schema, field)?)
 }
 
 /// An element's header record, as read.
@@ -239,6 +262,13 @@ pub struct Model {
     /// The triangle meshes saved in elements' records, by element.
     #[serde(skip)]
     pub meshes: BTreeMap<i64, Vec<Mesh>>,
+    /// The building elements' own parameters (walls, floors, roofs,
+    /// columns, beams, openings, grids, links).
+    #[serde(skip)]
+    pub building: Building,
+    /// The editing episodes (`Global/History`), for the GlobalIds.
+    #[serde(skip)]
+    pub episodes: Vec<[u8; 16]>,
 }
 
 /// Where an element's latest records are: (partition index, slot index).
@@ -248,7 +278,9 @@ impl Model {
     pub fn read(file: &RvtFile, schema: &Schema) -> Result<Model, RvtError> {
         let declared = element_table(file, schema)?;
         let partitions = file.partitions(schema)?;
-        Ok(Model::from_parts(schema, declared, &partitions))
+        let mut model = Model::from_parts(schema, declared, &partitions);
+        model.episodes = file.episodes();
+        Ok(model)
     }
 
     pub fn from_parts(schema: &Schema, declared: Vec<Declared>, partitions: &[Partition]) -> Model {
@@ -548,6 +580,19 @@ impl Model {
             .filter(|(_, f)| !f.meshes.is_empty())
             .map(|(&id, f)| (id, std::mem::take(&mut f.meshes)))
             .collect();
+        let mut link_symbols = BTreeMap::new();
+        let mut ids: Vec<i64> = facts.keys().copied().collect();
+        ids.sort_unstable();
+        for id in ids {
+            match facts.get_mut(&id).and_then(|f| f.building.take()) {
+                Some(Raw::LinkSymbol { name, path }) => {
+                    link_symbols.insert(id, (name, path));
+                }
+                Some(raw) => model.building.add(id, raw),
+                None => {}
+            }
+        }
+        model.building.finish(&link_symbols);
         model
     }
 
@@ -557,6 +602,34 @@ impl Model {
 
     pub fn level(&self, id: i64) -> Option<&Level> {
         self.levels.iter().find(|l| l.id == id)
+    }
+
+    /// An element's IFC GlobalId, from the episode that created it
+    /// ([`crate::info::ifc_global_id`]); None when the table or the
+    /// history does not give it.
+    pub fn global_id(&self, id: i64) -> Option<String> {
+        let d = self.declared.iter().find(|d| d.id == id)?;
+        self.global_id_of(d)
+    }
+
+    /// Every declared element's GlobalId, where known.
+    pub fn global_ids(&self) -> HashMap<i64, String> {
+        self.declared
+            .iter()
+            .filter_map(|d| Some((d.id, self.global_id_of(d)?)))
+            .collect()
+    }
+
+    fn global_id_of(&self, d: &Declared) -> Option<String> {
+        // The history lists the episodes newest first.
+        let created = usize::try_from(d.created?).ok()?;
+        let episode = self
+            .episodes
+            .get(self.episodes.len().checked_sub(created + 1)?)?;
+        Some(crate::info::ifc_global_id(
+            episode,
+            d.original.unwrap_or(d.id),
+        ))
     }
 }
 
@@ -601,6 +674,8 @@ struct Facts {
     monolithic: Option<bool>,
     /// The triangle meshes its record holds (`GPolyMesh`).
     meshes: Vec<Mesh>,
+    /// What it gives the building model.
+    building: Option<Raw>,
 }
 
 /// Element ids a value holds, appended in order.
@@ -650,8 +725,12 @@ impl Facts {
                 .get(schema, "m_hasMonolithicSupport")
                 .and_then(Value::as_bool),
             meshes: Vec::new(),
+            building: None,
         };
         let own_id = root.get(schema, "m_id").and_then(Value::as_id);
+        if let Some(id) = own_id {
+            facts.building = building::read(schema, record, id);
+        }
         for (class, _, value) in &root.fields {
             if Some(*class) != element {
                 collect_ids(value, &mut facts.deep_ids);

@@ -246,9 +246,11 @@ int render(int argc, char* argv[], const OpenPart& open) {
   for (Appearance& appearance : known) {
     if (appearance.hasTexture) {
       const QString id = appearance.id;
-      resolveTexture(appearance.texture, folder, [&document, &id] {
+      // The base colour's image and every map's (mitcad#314).
+      resolveTextureMaps(appearance.texture, folder, [&document, &id](const QString& map) {
         const QJsonObject request{{QStringLiteral("query"), QStringLiteral("appearance_image")},
-                                  {QStringLiteral("id"), id}};
+                                  {QStringLiteral("id"), id},
+                                  {QStringLiteral("map"), map}};
         const std::string answer(
             document->query(QJsonDocument(request).toJson(QJsonDocument::Compact).toStdString()));
         return QByteArray::fromBase64(QJsonDocument::fromJson(QByteArray::fromStdString(answer))
@@ -311,7 +313,8 @@ int render(int argc, char* argv[], const OpenPart& open) {
     BRepBndLib::Add(body.shape.Moved(TopLoc_Location(body.placement)), box);
     bodies.push_back(std::move(body));
   }
-  // Textures whose images are missing show their base colour.
+  // Textures whose base colour images are missing show their base colour;
+  // maps whose images are missing are left out (mitcad#314).
   std::vector<const Appearance*> shownLooks;
   for (const render::SceneBody& body : bodies) {
     shownLooks.push_back(&body.appearance);
@@ -320,8 +323,7 @@ int render(int argc, char* argv[], const OpenPart& open) {
     }
   }
   for (const QString& line : render::missingTextures(shownLooks)) {
-    std::cerr << "mitcad-cli: a texture is not drawn, its base colour is shown instead: " << line.toStdString()
-              << "\n";
+    std::cerr << "mitcad-cli: a texture image is not drawn: " << line.toStdString() << "\n";
   }
 
   // The camera: a named view, a standard view fitted to the bodies, or the

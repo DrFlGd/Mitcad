@@ -10,6 +10,10 @@
 #     selected at the new place; one undo step puts it back; then into
 #     another component. A component cannot go into one placed in it: the
 #     picker says why, and Cancel changes nothing.
+#   - Move to... on a component a joint of its parent places (mitcad#301):
+#     the picker names the joint that goes along, the move takes it into
+#     the root with the component, which stays where it was on screen;
+#     one undo step puts both back.
 #
 # Runs headless on Xvfb (see ui-test-lib.sh).
 # Usage: tools/ui-move-test.sh [screenshot.png]
@@ -47,7 +51,9 @@ place() {
 
 # Assembly:1 (O1) turned a quarter about Z, holding Part:1 (O2): Sketch1
 # (F1) 30 x 20 and Extrude1 (F2) 10 up, Body1 (F2.b0). Holder:1 (O3), empty,
-# beside it. Sketch2 (F3) in the root.
+# beside it. Sketch2 (F3) in the root. Frame:1 (O4) with a 40 x 40 x 10 block
+# (F5.b0) holding Slider:1 (O5) with a 10 x 10 x 20 block (F7.b0), which
+# Joint1 (F8) of Frame stands on Frame's block.
 cat > "$WORK/model.json" << 'EOF'
 [
   {"cmd": "create_component", "name": "Assembly",
@@ -62,7 +68,24 @@ cat > "$WORK/model.json" << 'EOF'
   {"cmd": "create_component", "name": "Holder", "transform": {"translation": [0, 60, 0]}},
   {"cmd": "activate_component", "component": "Root"},
   {"cmd": "sketch.create"},
-  {"cmd": "sketch.add_rectangle", "sketch": "F3", "corner": [-50, -50], "width": 10, "height": 10}
+  {"cmd": "sketch.add_rectangle", "sketch": "F3", "corner": [-50, -50], "width": 10, "height": 10},
+  {"cmd": "create_component", "name": "Frame", "transform": {"translation": [-80, 0, 0]}},
+  {"cmd": "sketch.create"},
+  {"cmd": "sketch.add_rectangle", "sketch": "F4", "corner": [0, 0], "width": 40, "height": 40},
+  {"cmd": "add_feature", "def": {"type": "extrude",
+    "profiles": [{"sketch": "F4", "region": "r{c1[c4,c2],c2[c1,c3],c3[c2,c4],c4[c3,c1]}"}],
+    "extent": {"type": "distance", "distance": 10}, "operation": "new_body"}},
+  {"cmd": "create_component", "name": "Slider", "transform": {"translation": [50, 0, 0]}},
+  {"cmd": "sketch.create"},
+  {"cmd": "sketch.add_rectangle", "sketch": "F6", "corner": [0, 0], "width": 10, "height": 10},
+  {"cmd": "add_feature", "def": {"type": "extrude",
+    "profiles": [{"sketch": "F6", "region": "r{c1[c4,c2],c2[c1,c3],c3[c2,c4],c4[c3,c1]}"}],
+    "extent": {"type": "distance", "distance": 20}, "operation": "new_body"}},
+  {"cmd": "activate_component", "component": "Frame"},
+  {"cmd": "add_joint", "kind": "rigid", "flip": true,
+   "a": {"occurrence": "Slider:1", "geometry": {"body": "F7.b0", "face": "F7:start(r{c1[c4,c2],c2[c1,c3],c3[c2,c4],c4[c3,c1]})"}},
+   "b": {"geometry": {"body": "F5.b0", "face": "F5:end(r{c1[c4,c2],c2[c1,c3],c3[c2,c4],c4[c3,c1]})"}}},
+  {"cmd": "activate_component", "component": "Root"}
 ]
 EOF
 "$CLI" run "$WORK/model.json" --save "$FILE" > "$WORK/cli.log" 2>&1 || { cat "$WORK/cli.log"; ui_fail "mitcad-cli"; }
@@ -91,13 +114,13 @@ ui_expect_new "Moved Sketch2 into Holder" "the sketch moved into Holder"
 ui_expect_new "Move to Component completed: Root/Holder:1" "into the chosen occurrence"
 grep -q "Recompute failed" "$UI_LOG" && ui_fail "a recompute failed"
 save
-expect_file '[f.get("component", "C0") for f in doc["features"]]' "['C2', 'C2', 'C3']" \
+expect_file '[f.get("component", "C0") for f in doc["features"]][:3]' "['C2', 'C2', 'C3']" \
   "Sketch2 is Holder's"
 ui_mark
 ui_step "undo (Ctrl+Z)"                  ui_key ctrl+z
 ui_expect_new "Undo: " "the move undone"
 save
-expect_file '[f.get("component", "C0") for f in doc["features"]]' "['C2', 'C2', 'C0']" \
+expect_file '[f.get("component", "C0") for f in doc["features"]][:3]' "['C2', 'C2', 'C0']" \
   "one undo step puts Sketch2 back in the root"
 
 echo "--- Move to... on a component: to the root (mitcad#219)"
@@ -122,7 +145,7 @@ AFTER=$(place F2.b0)
 echo "ok   the block stays where it was ($AFTER)"
 grep -q "Recompute failed" "$UI_LOG" && ui_fail "a recompute failed"
 save
-expect_file '[(o["uid"], o["parent"]) for o in doc["occurrences"]]' \
+expect_file '[(o["uid"], o["parent"]) for o in doc["occurrences"]][:3]' \
   "[('O1', 'C0'), ('O2', 'C0'), ('O3', 'C0')]" "Part:1 placed in the root"
 
 echo "--- Undo and redo: one step"
@@ -131,7 +154,7 @@ ui_step "undo (Ctrl+Z)"                  ui_key ctrl+z
 ui_expect_new "Undo: Move Part:1 to Root" "the move undone in one step"
 ui_expect_new "Bodies shown: F2.b0 in O1/O2" "back in Assembly:1"
 save
-expect_file '[(o["uid"], o["parent"]) for o in doc["occurrences"]]' \
+expect_file '[(o["uid"], o["parent"]) for o in doc["occurrences"]][:3]' \
   "[('O1', 'C0'), ('O2', 'C1'), ('O3', 'C0')]" "Part:1 placed in Assembly again"
 
 echo "--- Move to... into another component"
@@ -151,7 +174,7 @@ AFTER=$(place F2.b0)
 [ "$AFTER" = "$BEFORE" ] || ui_fail "the block moved on screen: $BEFORE -> $AFTER"
 echo "ok   the block stays where it was"
 save
-expect_file '[(o["uid"], o["parent"]) for o in doc["occurrences"]]' \
+expect_file '[(o["uid"], o["parent"]) for o in doc["occurrences"]][:3]' \
   "[('O1', 'C0'), ('O2', 'C3'), ('O3', 'C0')]" "Part:1 placed in Holder"
 
 echo "--- A component cannot go into one placed in it; Cancel changes nothing"
@@ -167,7 +190,39 @@ ui_step "cancel (Escape)"                ui_key Escape
 ui_focus_main
 ui_expect_new "Move of Holder:1 cancelled" "cancelled"
 save
-expect_file '[(o["uid"], o["parent"]) for o in doc["occurrences"]]' \
+expect_file '[(o["uid"], o["parent"]) for o in doc["occurrences"]][:3]' \
   "[('O1', 'C0'), ('O2', 'C3'), ('O3', 'C0')]" "nothing changed"
+
+echo "--- Move to... on a component a joint places: the joint goes along (mitcad#301)"
+ui_expect_log "F7.b0 in O4/O5" "the slider shown in Frame:1"
+SLIDER=$(place F7.b0)
+[ -n "$SLIDER" ] || ui_fail "no place logged for the slider"
+ui_mark
+ui_step "right-click Slider:1"           ui_click_logged "Browser Root/Frame:1/Slider:1" 3
+ui_step "choose Move to..."              ui_menu_choose "Move to..."
+ui_focus_dialog '^Move Component$'
+ui_step "parents (Alt+P, Home)"          ui_key alt+p Home
+ui_expect_new "Move Component features: Joint1 -> Root" "the preview names the joint that moves along"
+ui_expect_new "Move Component parent: Root, ok" "the root can be its parent"
+ui_step "move (Alt+M)"                   ui_key alt+m
+ui_focus_main
+ui_expect_new "Moved Slider:1 to Root" "moved with its joint"
+ui_expect_new "Browser Root/Slider:1 at" "Slider:1 is a row of the root"
+ui_sync
+AFTER=$(place F7.b0)
+[ "$AFTER" = "$SLIDER" ] || ui_fail "the slider moved on screen: $SLIDER -> $AFTER"
+echo "ok   the slider stays where it was"
+grep -q "Recompute failed" "$UI_LOG" && ui_fail "a recompute failed"
+save
+expect_file '[(f.get("component", "C0"), f["b"].get("occurrence")) for f in doc["features"] if f["name"] == "Joint1"]' \
+  "[('C0', 'O4')]" "Joint1 is a root joint to Frame:1's block"
+expect_file '[(o["uid"], o["parent"]) for o in doc["occurrences"]][3:]' \
+  "[('O4', 'C0'), ('O5', 'C0')]" "Slider:1 placed in the root"
+ui_mark
+ui_step "undo (Ctrl+Z)"                  ui_key ctrl+z
+ui_expect_new "Undo: Move Slider:1 to Root" "the move and the joint undone in one step"
+save
+expect_file '[(f.get("component", "C0"), f["b"].get("occurrence")) for f in doc["features"] if f["name"] == "Joint1"]' \
+  "[('C4', None)]" "Joint1 is Frame's again"
 
 ui_finish "UI move test"

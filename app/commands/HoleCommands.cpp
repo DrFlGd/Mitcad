@@ -3,7 +3,7 @@
 // clicks on a planar face, each click a row of the position table, or at
 // sketch points; it may be counterdrilled and tapered (mitcad#27, as the
 // FreeCAD import makes them). A thread's size is suggested from the
-// cylinder picked. Sizes, designations and classes are chosen from the
+// cylinder picked; its free ends may be chamfered (mitcad#304). Sizes, designations and classes are chosen from the
 // model's table (`thread_sizes`, P9), ISO metric first (P11).
 #include <algorithm>
 #include <cmath>
@@ -312,6 +312,104 @@ void loadClearance(const QJsonObject& thread, const QJsonObject& feature, Comman
   for (const QString& key : {kRadialClearance, kFlankClearance}) {
     loadValue(state, key, thread.value(key), feature, context);
   }
+}
+
+// A thread's end chamfers (mitcad#304): the check, the ends, and the size
+// from the thread's size (the model's default, which follows the size) or
+// given as an angle and a diameter.
+const QString kChamfer = QStringLiteral("chamfer");
+const QString kChamferEnds = QStringLiteral("chamfer_ends");
+const QString kChamferSize = QStringLiteral("chamfer_size");
+const QString kChamferAngle = QStringLiteral("chamfer_angle");
+const QString kChamferDiameter = QStringLiteral("chamfer_diameter");
+
+QVector<InputDef> chamferInputs(const CommandContext& context) {
+  const auto chamfered = [](const CommandState& s) { return s.checked(kChamfer); };
+  const auto given = [](const CommandState& s) {
+    return s.checked(kChamfer) && s.choice(kChamferSize) == QStringLiteral("custom");
+  };
+  // Given values start at the size's defaults (the `thread_chamfer` query),
+  // inside when the class is an internal one.
+  const auto startValues = [&context](CommandState& state, const CommandContext& model) {
+    if (state.choice(kChamferSize) != QStringLiteral("custom")) {
+      return;
+    }
+    const QString standardId = state.choice(QStringLiteral("standard"));
+    const ThreadStandard* standard = standardOf(context, standardId);
+    const bool internal = standard != nullptr && standard->internal.contains(state.choice(QStringLiteral("class")));
+    QJsonObject answer;
+    try {
+      answer = model.queryObject({{QStringLiteral("query"), QStringLiteral("thread_chamfer")},
+                                  {QStringLiteral("standard"), standardId},
+                                  {QStringLiteral("designation"), state.choice(QStringLiteral("designation"))},
+                                  {QStringLiteral("internal"), internal}});
+    } catch (const std::exception&) {
+      return;
+    }
+    const double diameter = answer.value(QStringLiteral("diameter")).toDouble();
+    if (diameter > 0.0) {
+      state.setText(kChamferDiameter, lengthText(std::round(diameter * 1000.0) / 1000.0, model));
+      state.setValue(kChamferDiameter, std::numeric_limits<double>::quiet_NaN());
+    }
+    state.setText(kChamferAngle, QStringLiteral("%1 deg").arg(number(answer.value(QStringLiteral("angle")).toDouble(45.0))));
+    state.setValue(kChamferAngle, std::numeric_limits<double>::quiet_NaN());
+  };
+  return {
+      checkInput(kChamfer, QObject::tr("Chamfer Ends"), false)
+          .withHeading(QObject::tr("End chamfer"))
+          .withTooltip(QObject::tr("Cut a cone at the free ends the thread runs out through (a shaft's free end, a "
+                                   "hole's mouth), so that the first turn starts on the cone: an external thread "
+                                   "chamfered to below its minor diameter, an internal one countersunk past its "
+                                   "major diameter. Ends inside the face or against more material get none.")),
+      choiceInput(kChamferEnds, QObject::tr("Ends"),
+                  {{QStringLiteral("both"), QStringLiteral("Both")},
+                   {QStringLiteral("start"), QStringLiteral("Start")},
+                   {QStringLiteral("end"), QStringLiteral("End")}},
+                  QStringLiteral("both"))
+          .withTooltip(QObject::tr("The start is the end the thread location measures from (the high end by "
+                                   "default), the end the other one"))
+          .withVisible(chamfered),
+      choiceInput(kChamferSize, QObject::tr("Chamfer Size"),
+                  {{QStringLiteral("default"), QStringLiteral("From Thread Size")},
+                   {QStringLiteral("custom"), QStringLiteral("Custom")}},
+                  QStringLiteral("default"))
+          .withTooltip(QObject::tr("From the thread size: 45 degrees to the axis, a tenth of a pitch inside the "
+                                   "minor diameter (external) or outside the major diameter (internal); it follows "
+                                   "a change of the size"))
+          .withVisible(chamfered)
+          .withOnChange(startValues),
+      valueInput(kChamferAngle, QObject::tr("Chamfer Angle"), ValueKind::Angle, QStringLiteral("45 deg"))
+          .withTooltip(QObject::tr("The cone's angle to the axis: 45 degrees is a 90-degree countersink"))
+          .withVisible(given),
+      valueInput(kChamferDiameter, QObject::tr("Chamfer Diameter"), ValueKind::Length, QStringLiteral("6.5 mm"))
+          .withTooltip(QObject::tr("The cone's diameter at the end of the face"))
+          .withVisible(given),
+  };
+}
+
+// Puts the end chamfer into a thread's definition.
+void insertChamfer(const CommandState& state, QJsonObject& def) {
+  if (!state.checked(kChamfer)) {
+    return;
+  }
+  def.insert(kChamfer, state.choice(kChamferEnds));
+  if (state.choice(kChamferSize) == QStringLiteral("custom")) {
+    def.insert(kChamferAngle, state.expression(kChamferAngle));
+    def.insert(kChamferDiameter, state.expression(kChamferDiameter));
+  }
+}
+
+// Fills the end chamfer's inputs from a thread's definition.
+void loadChamfer(const QJsonObject& feature, CommandState& state, const CommandContext& context) {
+  const QString ends = feature.value(kChamfer).toString();
+  state.setChecked(kChamfer, !ends.isEmpty());
+  if (!ends.isEmpty()) {
+    state.setChoice(kChamferEnds, ends);
+  }
+  const bool custom = feature.contains(kChamferAngle) || feature.contains(kChamferDiameter);
+  state.setChoice(kChamferSize, custom ? QStringLiteral("custom") : QStringLiteral("default"));
+  loadValue(state, kChamferAngle, feature.value(kChamferAngle), feature, context);
+  loadValue(state, kChamferDiameter, feature.value(kChamferDiameter), feature, context);
 }
 
 } // namespace
@@ -714,6 +812,7 @@ CommandDef threadCommand(const CommandContext& context) {
                   QStringLiteral("high_end"))
           .withVisible(partial),
   };
+  def.inputs += chamferInputs(context);
   def.enabled = [&context] { return hasBodies(context); };
 
   def.build = [](const CommandState& state, const CommandContext&) {
@@ -740,6 +839,7 @@ CommandDef threadCommand(const CommandContext& context) {
       result.def.insert(QStringLiteral("offset"), state.expression(QStringLiteral("offset")));
       result.def.insert(QStringLiteral("location"), state.choice(QStringLiteral("location")));
     }
+    insertChamfer(state, result.def);
     return result;
   };
 
@@ -760,6 +860,7 @@ CommandDef threadCommand(const CommandContext& context) {
     loadValue(state, QStringLiteral("length"), feature.value(QStringLiteral("length")), feature, context);
     loadValue(state, QStringLiteral("offset"), feature.value(QStringLiteral("offset")), feature, context);
     state.setChoice(QStringLiteral("location"), feature.value(QStringLiteral("location")).toString(QStringLiteral("high_end")));
+    loadChamfer(feature, state, context);
   };
 
   def.describe = [](const CommandState& state, const CommandContext&) {

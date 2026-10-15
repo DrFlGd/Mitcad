@@ -548,18 +548,27 @@ bool isRvtImport(const QJsonObject& result) {
 }
 
 // The bodies an import_rvt result made: saved meshes and boxes, on how many
-// levels.
+// levels; the elements built as features (mitcad#275) and the links found.
 QString rvtCounts(const QJsonObject& report) {
   const QJsonObject import = report.value(QStringLiteral("import")).toObject();
   int levels = 0;
   for (const QJsonValue& level : import.value(QStringLiteral("levels")).toArray()) {
     levels += level.toObject().value(QStringLiteral("bodies")).toInt() > 0 ? 1 : 0;
   }
-  return QStringLiteral("%1 saved meshes, %2 boxes at a family type's transform, %3 boxes on %4 levels")
+  int found = 0;
+  const QJsonArray links = import.value(QStringLiteral("links")).toArray();
+  for (const QJsonValue& link : links) {
+    found += link.toObject().value(QStringLiteral("found")).isString() ? 1 : 0;
+  }
+  return QStringLiteral("%1 saved meshes, %2 boxes at a family type's transform, %3 boxes on %4 levels; "
+                        "%5 elements as features; %6 of %7 links found")
       .arg(import.value(QStringLiteral("meshes")).toInt())
       .arg(import.value(QStringLiteral("oriented_boxes")).toInt())
       .arg(import.value(QStringLiteral("boxes")).toInt())
-      .arg(levels);
+      .arg(levels)
+      .arg(import.value(QStringLiteral("features")).toInt())
+      .arg(found)
+      .arg(links.size());
 }
 
 // An assembly's occurrences and files: placed, suppressed, parts imported

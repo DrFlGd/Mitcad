@@ -207,6 +207,7 @@ enum StoredRead {
     BodiesIn(ComponentUid, Vec<(BodyUid, Hex)>),
     Placement(OccurrenceUid, Option<[u64; 12]>),
     Assembly(Hex),
+    JoinTolerance(Option<u64>),
 }
 
 impl StoredRead {
@@ -230,6 +231,7 @@ impl StoredRead {
             ),
             Read::Placement(uid, bits) => Self::Placement(*uid, *bits),
             Read::Assembly(key) => Self::Assembly(Hex(*key)),
+            Read::JoinTolerance(bits) => Self::JoinTolerance(*bits),
         }
     }
 
@@ -255,6 +257,7 @@ impl StoredRead {
             ),
             Self::Placement(uid, bits) => Read::Placement(*uid, *bits),
             Self::Assembly(key) => Read::Assembly(key.0),
+            Self::JoinTolerance(bits) => Read::JoinTolerance(*bits),
         })
     }
 }

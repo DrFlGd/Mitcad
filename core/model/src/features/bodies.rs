@@ -165,10 +165,7 @@ pub(crate) fn apply_tool_strays<K: Kernel>(
         return Err(format!("there is no body to {}", verb(op)));
     }
     let refs: Vec<&K::Shape> = targets.iter().collect();
-    let result = ctx
-        .kernel
-        .boolean(op, &refs, tool)
-        .map_err(|e| e.to_string())?;
+    let result = ctx.boolean(op, &refs, tool).map_err(|e| e.to_string())?;
     if !result.touched.iter().any(|t| *t) {
         return Ok(false);
     }

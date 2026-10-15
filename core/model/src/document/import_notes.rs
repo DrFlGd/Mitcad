@@ -12,6 +12,9 @@
 //! the feature's definition or one of its dimensions clears the note when
 //! the feature then builds (does not fail); undo brings it back with the
 //! state.
+//!
+//! Also here: the join tolerance an importer sets (mitcad#298,
+//! [`Document::set_join_tolerance`]).
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -111,6 +114,34 @@ impl<K: Kernel> Document<K> {
                 }
             }
             Ok(("Import notes".to_owned(), (), false))
+        })
+    }
+
+    /// The distance (mm) within which the features' joins still fuse where
+    /// they fail exactly (mitcad#298, [`Document::set_join_tolerance`]);
+    /// None for exact joins.
+    pub fn join_tolerance(&self) -> Option<f64> {
+        self.state.join_tolerance
+    }
+
+    /// Sets the join tolerance: with Some, a join (of an extrusion, a base
+    /// feature, a pattern's copies …) whose tool touches no target still
+    /// joins the targets within that distance, and one whose result is
+    /// invalid is retried with a fuzzy value up to it
+    /// ([`Kernel::join_within`]); a join that works exactly stays exact.
+    /// An importer whose bodies match a file's only within its geometric
+    /// tolerance sets it; the design file keeps it. One undo step; the
+    /// joins recompute. A value that is not finite and positive is refused.
+    pub fn set_join_tolerance(&mut self, tolerance: Option<f64>) -> Result<(), ModelError> {
+        if tolerance.is_some_and(|t| !t.is_finite() || t <= 0.0) {
+            return Err(invalid("the join tolerance must be a positive distance"));
+        }
+        if self.state.join_tolerance == tolerance {
+            return Ok(());
+        }
+        self.apply(|state| {
+            state.join_tolerance = tolerance;
+            Ok(("Join tolerance".to_owned(), ()))
         })
     }
 
@@ -271,6 +302,57 @@ mod tests {
             .add_import_placeholder(Some("Extrude1"), "", "Failed in the file", None)
             .unwrap();
         assert_eq!(other.name, "Placeholder2");
+    }
+
+    #[test]
+    fn joins_use_the_join_tolerance_an_importer_set() {
+        let mut b = block();
+        let join = crate::document_tests::extrude(b.sketch, &[&b.region], 5.0, "join", &[]);
+        b.doc.add_feature(&join, None).unwrap();
+        // The model's own joins are exact.
+        assert_eq!(b.doc.join_tolerance(), None);
+        assert_eq!(b.doc.kernel().count("join_within"), 0);
+        assert!(b.doc.kernel().count("join") > 0);
+        // Set: the join is evaluated again, within the tolerance; the new
+        // body is not (it joins nothing).
+        let extrusions = b.doc.kernel().count("extrude");
+        b.doc.set_join_tolerance(Some(0.01)).unwrap();
+        assert_eq!(b.doc.join_tolerance(), Some(0.01));
+        assert_eq!(b.doc.kernel().count("join_within"), 1);
+        assert_eq!(b.doc.kernel().count("extrude"), extrusions + 1);
+        assert!(
+            b.doc
+                .kernel()
+                .specs
+                .borrow()
+                .contains(&"join within 0.01".to_owned())
+        );
+        // Unchanged: nothing is evaluated.
+        b.doc.set_join_tolerance(Some(0.01)).unwrap();
+        assert_eq!(b.doc.kernel().count("join_within"), 1);
+        assert!(b.doc.set_join_tolerance(Some(0.0)).is_err());
+        assert!(b.doc.set_join_tolerance(Some(f64::NAN)).is_err());
+        // The design file keeps it; files without it have none.
+        let text = b.doc.to_json();
+        let saved: Value = serde_json::from_str(&text).unwrap();
+        assert_eq!(saved["join_tolerance"], 0.01);
+        let mut reopened = Document::from_json(&text, MockKernel::default()).unwrap();
+        reopened.recompute();
+        assert_eq!(reopened.join_tolerance(), Some(0.01));
+        assert_eq!(reopened.kernel().count("join_within"), 1);
+        assert_eq!(reopened.to_json(), text);
+        // An undo step takes it back.
+        b.doc.undo();
+        assert_eq!(b.doc.join_tolerance(), None);
+        assert!(
+            serde_json::from_str::<Value>(&b.doc.to_json())
+                .unwrap()
+                .get("join_tolerance")
+                .is_none()
+        );
+        let mut bad = saved;
+        bad["join_tolerance"] = json!(-1.0);
+        assert!(Document::from_json(&bad.to_string(), MockKernel::default()).is_err());
     }
 
     #[test]

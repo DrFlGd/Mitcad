@@ -89,6 +89,39 @@ fn import(doc: &mut Document<MockKernel>, dump: &Dump) -> DesignReport {
 }
 
 #[test]
+fn the_imports_joins_fuse_within_its_geometric_tolerance() {
+    // A join on the block: the document keeps the import's geometric
+    // tolerance as its join tolerance (mitcad#298), and the join is made
+    // within it.
+    let mut source = serde_json::to_value(block_dump()).unwrap();
+    source["timeline"]["items"]
+        .as_array_mut()
+        .unwrap()
+        .push(extrude(2, 0, "JoinFeatureOperation", "d2"));
+    let mut doc = Document::new(MockKernel::default());
+    let options = Options {
+        geometric_tolerance: 0.02,
+        undo_label: Some("Import".to_owned()),
+        ..Options::default()
+    };
+    let report = import_design(&mut doc, &dump(source), &mut NoGeometry, &options);
+    assert_eq!(report.items[2].outcome, Outcome::Parametric);
+    assert_eq!(doc.join_tolerance(), Some(0.02));
+    assert!(doc.kernel().count("join_within") > 0);
+    assert!(
+        doc.kernel()
+            .specs
+            .borrow()
+            .iter()
+            .all(|s| !s.starts_with("join within") || s == "join within 0.02")
+    );
+    // Part of the import's one undo step.
+    doc.undo();
+    assert_eq!(doc.join_tolerance(), None);
+    assert!(doc.features().next().is_none());
+}
+
+#[test]
 fn input_provenance_keeps_unknowns_and_reports_the_last_sketch_default() {
     let mut doc = Document::new(MockKernel::default());
     let report = import(&mut doc, &block_dump());

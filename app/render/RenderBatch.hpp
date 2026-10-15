@@ -49,15 +49,18 @@ struct SceneBody {
 
 // A body's appearance as the renderer's material (mitcad#46); the default
 // look keeps the renderer's default material. A texture whose image file
-// was found (AppearanceTexture::file, resolveTexture) gives the base
-// colour (mitcad#53).
+// was found (AppearanceTexture::file, resolveTextureMaps) gives the base
+// colour (mitcad#53), and so each map of its set whose file was found
+// (mitcad#314).
 MaterialData materialOf(const Appearance& appearance);
 
 // The materials of faces with appearances of their own.
 std::vector<FaceMaterial> faceMaterialsOf(const std::vector<SceneFaces>& faces);
 
-// Why textures of the appearances are not drawn ("Wood: the image ... is
-// missing"), each once; empty when all are.
+// Which images of the appearances' textures are not drawn, and why ("Wood:
+// the image ... is missing, its base colour is shown", "Wood: the normal
+// map is left out, the image ... is missing"), each once; empty when all
+// are.
 QStringList missingTextures(const std::vector<const Appearance*>& appearances);
 
 // The bodies' triangles (their display triangulations; faces without one

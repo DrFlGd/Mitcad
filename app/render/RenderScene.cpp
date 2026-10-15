@@ -326,12 +326,22 @@ QJsonObject materialJson(const MaterialData& m) {
           {QStringLiteral("emission_color"), color(m.emissionColor)},
           {QStringLiteral("emission"), double(m.emission)},
           {QStringLiteral("opacity"), double(m.opacity)}};
-  if (!m.texture.empty()) {
-    json.insert(QStringLiteral("texture"),
-                QJsonObject{{QStringLiteral("path"), QString::fromStdString(m.texture)},
-                            {QStringLiteral("size"), QJsonArray{double(m.textureSize[0]), double(m.textureSize[1])}},
-                            {QStringLiteral("rotation"), double(m.textureRotation)},
-                            {QStringLiteral("projection"), m.texturePlanar ? QStringLiteral("planar") : QStringLiteral("box")}});
+  if (!m.texture.empty() || m.hasMaps()) {
+    QJsonObject texture{{QStringLiteral("size"), QJsonArray{double(m.textureSize[0]), double(m.textureSize[1])}},
+                        {QStringLiteral("rotation"), double(m.textureRotation)},
+                        {QStringLiteral("projection"), m.texturePlanar ? QStringLiteral("planar") : QStringLiteral("box")}};
+    // The base colour's image and the other maps' (mitcad#314), each when
+    // there is one.
+    for (const auto& [name, file] : {std::pair<const char*, const std::string*>{"path", &m.texture},
+                                     {"normal", &m.normalMap},
+                                     {"roughness", &m.roughnessMap},
+                                     {"metalness", &m.metalnessMap},
+                                     {"occlusion", &m.occlusionMap}}) {
+      if (!file->empty()) {
+        texture.insert(QLatin1String(name), QString::fromStdString(*file));
+      }
+    }
+    json.insert(QStringLiteral("texture"), texture);
   }
   return json;
 }
@@ -368,6 +378,10 @@ MaterialData materialOf(const QJsonObject& json) {
   }
   m.textureRotation = static_cast<float>(texture.value(QStringLiteral("rotation")).toDouble());
   m.texturePlanar = texture.value(QStringLiteral("projection")).toString() == QLatin1String("planar");
+  m.normalMap = texture.value(QStringLiteral("normal")).toString().toStdString();
+  m.roughnessMap = texture.value(QStringLiteral("roughness")).toString().toStdString();
+  m.metalnessMap = texture.value(QStringLiteral("metalness")).toString().toStdString();
+  m.occlusionMap = texture.value(QStringLiteral("occlusion")).toString().toStdString();
   return m;
 }
 

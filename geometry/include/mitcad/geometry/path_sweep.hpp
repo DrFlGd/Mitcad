@@ -150,6 +150,13 @@ ShapePtr coil(const CoilSpec& spec);
 // the full pitch, the end's transition and flat. With ends the helix is
 // built as Mitcad's widening one (not with `freecad`), and a growth follows
 // the rise: the profiles move out by `growth` for every `pitch` they rise.
+//
+// `piece_shift` (turns, 0 by default; mitcad#235): above 0 (and below a
+// third), the helix is swept in pieces of a third of a turn whose seams are
+// shifted by that much (the first piece is `piece_shift` long), also where
+// it would otherwise be one piece; the shape is the same. A boolean that
+// fails where the pieces' seams meet seams of the bodies' faces about the
+// axis can be retried with it (not with `freecad` and a growth).
 struct HelixSweepSpec {
   std::string feature;
   Frame frame;
@@ -166,6 +173,7 @@ struct HelixSweepSpec {
   double start_transition = 0.0;
   double end_transition = 0.0;
   double end_flat = 0.0;
+  double piece_shift = 0.0;
 };
 
 ShapePtr helix_sweep(const HelixSweepSpec& spec);

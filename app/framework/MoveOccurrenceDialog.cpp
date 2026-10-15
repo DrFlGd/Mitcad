@@ -190,6 +190,25 @@ private:
         updates << QStringLiteral("  %1").arg(value.toString());
       }
       lines << tr("References that follow it:") << (updates.isEmpty() ? QStringList{tr("  none")} : updates);
+      // The joints, constraints, rigid groups and moves that place it go
+      // with it into the new parent (mitcad#301).
+      QStringList carried;
+      QStringList logged;
+      for (const QJsonValue& value : m_plan.value(QStringLiteral("features")).toArray()) {
+        const QJsonObject feature = value.toObject();
+        const QString name = feature.value(QStringLiteral("name")).toString();
+        const QString from = feature.value(QStringLiteral("from_name")).toString();
+        const QString to = feature.value(QStringLiteral("to_name")).toString();
+        const QString split = feature.value(QStringLiteral("split")).toString();
+        carried << (split.isEmpty() ? tr("  %1 moves from %2 to %3").arg(name, from, to)
+                                    : tr("  %1's part of %2 moves to %3, a new feature of %4")
+                                          .arg(m_info.value(QStringLiteral("name")).toString(), name, split, to));
+        logged << QStringLiteral("%1 -> %2").arg(name, split.isEmpty() ? to : QStringLiteral("%1 in %2").arg(split, to));
+      }
+      if (!carried.isEmpty()) {
+        lines << tr("Features that place it and move with it:") << carried;
+        qDebug().noquote() << QStringLiteral("Move Component features: %1").arg(logged.join(QStringLiteral(", ")));
+      }
     }
     m_details->setPlainText(lines.join(QLatin1Char('\n')));
     m_buttons->button(QDialogButtonBox::Ok)->setEnabled(ready);

@@ -83,6 +83,11 @@ pub struct AppearanceEntry {
     pub notes: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub texture: Option<TextureEntry>,
+    /// The images the asset's other maps come from (mitcad#313), by
+    /// Mitcad's map name (`roughness`, `normal`, `bump`, `cutout`), as the
+    /// asset names them: the file does not hold them either.
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub maps: BTreeMap<String, String>,
 }
 
 /// A texture image an appearance's colour comes from.
@@ -127,6 +132,8 @@ pub struct Look {
     pub change: AppearanceChange,
     pub notes: Vec<String>,
     pub texture: Option<TextureEntry>,
+    /// The other maps' images (see [`AppearanceEntry::maps`]).
+    pub maps: BTreeMap<String, String>,
 }
 
 fn props(a: &AssetDef) -> &BTreeMap<String, Value> {
@@ -349,11 +356,26 @@ pub fn look(a: &AssetDef, assets: &[AssetDef]) -> Look {
             notes.push(format!("{what} is not held"));
         }
     }
+    // The other maps' images by name, for the report (mitcad#313): the file
+    // holds no image, so no map of the texture set can be made from them.
+    let maps = [
+        ("surface_roughness", "roughness"),
+        ("surface_normal", "normal"),
+        ("generic_bump_map", "bump"),
+        ("surface_cutout", "cutout"),
+    ]
+    .into_iter()
+    .filter_map(|(id, map)| {
+        let image = texture(assets, a, id)?.image;
+        (!image.is_empty()).then(|| (map.to_owned(), image))
+    })
+    .collect();
     Look {
         name: display_name(a),
         change: c,
         notes,
         texture: tex,
+        maps,
     }
 }
 
@@ -558,6 +580,7 @@ impl<K: Kernel> Importer<'_, K> {
                     base_color: l.change.base_color.unwrap_or([0.8; 3]),
                     notes: l.notes.clone(),
                     texture: l.texture.clone(),
+                    maps: l.maps.clone(),
                 });
             }
             made.insert(key, out.clone());
@@ -565,6 +588,9 @@ impl<K: Kernel> Importer<'_, K> {
         };
         let bodies: &[BodyLook] = data.bodies.as_deref().unwrap_or(&[]);
         let mut materials: Vec<MaterialEntry> = Vec::new();
+        // Each body's faces and edges, read once for all its faces (an
+        // appearance changes no shape).
+        let mut indexes: HashMap<BodyUid, Option<crate::refs::PieceIndex>> = HashMap::new();
         // The stored design's solids (the final comparison's).
         let stored: Vec<&str> = self
             .report
@@ -685,8 +711,15 @@ impl<K: Kernel> Importer<'_, K> {
                     continue;
                 };
                 let mut names: Vec<String> = Vec::new();
+                let clock = std::time::Instant::now();
                 for fp in fps {
-                    let mut pieces = crate::refs::face_pieces(self.doc, uid, fp);
+                    let index = indexes
+                        .entry(uid)
+                        .or_insert_with(|| crate::refs::PieceIndex::new(self.doc, uid));
+                    let mut pieces = match index {
+                        Some(index) => crate::refs::face_pieces_in(self.doc, uid, fp, index),
+                        None => Vec::new(),
+                    };
                     if pieces.is_empty()
                         && let Some((_, face)) =
                             crate::refs::resolve_face_where(self.doc, fp, &|b| b == uid)
@@ -699,6 +732,15 @@ impl<K: Kernel> Importer<'_, K> {
                             names.push(p);
                         }
                     }
+                }
+                if crate::tracing() {
+                    eprintln!(
+                        "import: appearance of face {guid} of body {entity}: {} pieces of {} \
+                         stored faces in {:.2} s",
+                        names.len(),
+                        fps.len(),
+                        clock.elapsed().as_secs_f64()
+                    );
                 }
                 if names.is_empty() {
                     // How far the nearest face of the replayed body is.
@@ -871,14 +913,24 @@ mod tests {
             "id": "O", "schema": "PrismOpaqueSchema", "name": "Prism-144",
             "description": "Wood - oak",
             "properties": {"opaque_albedo": [1.0, 1.0, 1.0, 1.0], "opaque_f0": 0.04},
-            "connections": {"opaque_albedo": ["T"], "surface_normal": ["N"]}}));
-        let l = look(&oak, &[texture]);
+            "connections": {"opaque_albedo": ["T"], "surface_normal": ["N"],
+                            "surface_roughness": ["R"]}}));
+        let rough = asset(json!({
+            "id": "R", "schema": "UnifiedBitmapSchema",
+            "properties": {"unifiedbitmap_Bitmap": {"kind": 1, "paths": ["oak_rough.png"]}}}));
+        let l = look(&oak, &[texture, rough]);
+        // The roughness map's image is named; the normal map's asset is not
+        // in the file.
+        assert_eq!(
+            l.maps,
+            BTreeMap::from([("roughness".to_owned(), "oak_rough.png".to_owned())])
+        );
         let t = l.texture.unwrap();
         assert_eq!(t.image, "oak.jpg");
         assert_eq!(t.size, Some([18.0 * 25.4, 36.0 * 25.4]));
         assert!((t.rotation - std::f64::consts::FRAC_PI_2).abs() < 1e-12);
         assert!((l.change.ior.unwrap() - 1.5).abs() < 1e-9);
-        assert_eq!(l.notes.len(), 2, "{:?}", l.notes);
+        assert_eq!(l.notes.len(), 3, "{:?}", l.notes);
     }
 
     #[test]

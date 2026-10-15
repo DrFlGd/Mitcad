@@ -149,7 +149,17 @@ file) simply has no rendered view (the log says `No render worker
   and material, and only the meshes the worker does not hold, as binary
   glTF 2.0 (`RenderScene.cpp`: positions, normals, 32-bit indices) from
   their display triangulations. The worker reads it with cgltf. Faces
-  keep their vertices, so edges stay sharp under smooth shading. The
+  keep their vertices, so edges stay sharp under smooth shading.
+  Every triangle faces out of its solid (`meshOf`, mitcad#319): where a
+  face has a surface, by the surface's outward normal at the nodes (at its
+  largest triangle when the triangulation has no surface parameters), and
+  a closed mesh body (an imported STL file's) by its volume; a
+  triangulation made elsewhere may wind the other way, and glass, which
+  tells inside from outside by the winding, rendered such a body black
+  (`Render mesh <id>: n of m triangles turned to face outwards`). A body
+  whose appearance changes while the view renders is logged as `Render
+  material swap <id>: <old> -> <new>; mesh reused|meshed again|sent
+  again`. The
   writer is Mitcad's own: OCCT's `RWGltf_CafWriter` needs OCCT built with
   RapidJSON (vcpkg's `opencascade[rapidjson]`) and an XCAF document, which
   would have changed the normal build's OCCT.
@@ -200,7 +210,10 @@ file) simply has no rendered view (the log says `No render worker
   scaled by the exposure and put through the view transform
   ([Environment](#environment)), composited over the view's background
   gradient (or the settings' colour), times the ground's catcher factors,
-  in linear light, encoded as sRGB and
+  in linear light (no ground while the camera looks at its plane from
+  below: its matte would hide the bodies above it; the worker drops and
+  restores it when the camera crosses the plane and logs
+  `render-ground off|on`), encoded as sRGB and
   drawn as a texture over the whole view (stretched: a refining frame is
   smaller) in a layer over the bodies (which stay pickable); their edges
   and the layout grid are hidden, and OCCT draws the orientation cube,
@@ -372,9 +385,12 @@ first denoised frame after a camera change came after 45–60 ms.
 
 A body's appearance (`core/model/src/appearance.rs`, commands.md
 "Appearances") is a physically based parameter set with an optional
-texture for its base colour; single faces can have appearances of their
-own, which override the body's (mitcad#53). The rendered view uses all of
-it, the shaded view the base colours of the body and of its faces.
+texture for its base colour, which can bring a normal, a roughness, a
+metalness and an occlusion map (mitcad#313, commands.md "Texture map
+sets"); single faces can have appearances of their own, which override
+the body's (mitcad#53). The rendered view, Render Image and `mitcad-cli
+render` use all of it (mitcad#314), the shaded view the base colours of
+the body and of its faces.
 
 - **Application:** `MainWindow::modelBodies` gives each shown body its
   appearance from the `appearances` query (`BodyDisplay::appearance`); a
@@ -404,16 +420,35 @@ it, the shaded view the base colours of the body and of its faces.
   carries the file's absolute path, the size of one repeat, the rotation
   and the projection (`texture` in its JSON). An image that is missing
   is left out: the material renders in its base colour, and the view
-  says "Rendering: a texture is not drawn, its base colour is shown
-  instead (Wood: the image ... is missing)" (Render Image says so in its
+  says "Rendering: a texture image is not drawn (Wood: the image ... is
+  missing, its base colour is shown)" (Render Image says so in its
   dialog, `mitcad-cli render` on stderr); one the worker cannot read
   (OpenImageIO) is reported by the worker as an `error` (a `warning` in
   the batch mode) and renders in its base colour too.
+- **Texture maps** (mitcad#314): `resolveTextureMaps` finds the file of
+  the base colour and of each map of the set the same way (an embedded
+  map's data from `appearance_image` with its `map`, written once per
+  session by its digest, so maps shared by appearances are written once),
+  and the material carries each found map's absolute path in its
+  `texture` (`normal`, `roughness`, `metalness`, `occlusion`) with the
+  base colour's size, rotation and projection, also when the base
+  colour's image is missing. A map whose image is missing is left out
+  alone, the rest renders: the view says "Rendering: a texture image is
+  not drawn (Oak: the normal map is left out, the image ... is
+  missing)", as for a base colour ("Oak: the image ... is missing, its
+  base colour is shown"); Render Image says so in its dialog and
+  `mitcad-cli render` on stderr ("a texture image is not drawn: …").
+  One the worker cannot read gives its warning ("cannot read the texture
+  image …; the map is left out") and is left out too. The shaded view
+  still shows the base colour only.
 - **Scene update:** each body's `material` in the `scene` command
   ([Scene updates](#scene-updates)): `base_color`, `metallic`,
   `roughness`, `specular`, `transmission`, `ior`, `coat`,
   `coat_roughness`, `emission_color`, `emission`, `opacity` (linear
-  colours; a missing member keeps the default). The mesh files carry no
+  colours; a missing member keeps the default), and `texture`: `{"path",
+  "size", "rotation", "projection", "normal", "roughness", "metalness",
+  "occlusion"}` with the images' absolute paths, each when there is one
+  (`materialJson`). The mesh files carry no
   materials (from mitcad#46 to mitcad#49 the scene was one glTF file with
   glTF's metallic-roughness material and the Khronos material extensions).
 - **Cycles** (`CyclesRenderer::addMaterial`): one Principled BSDF per
@@ -422,8 +457,8 @@ it, the shaded view the base colours of the body and of its faces.
   and roughness, emission colour and strength, alpha (opacity) map one to
   one; the specular weight scales the specular IOR level (0.5 is "as the
   IOR gives", so weight 1 is 0.5). A texture's image (an Image Texture
-  node in sRGB, linear interpolation, repeated) gives the base colour
-  (`CyclesRenderer::textureColor`): the texture coordinates are Cycles'
+  node in sRGB, linear interpolation, repeated) gives the base colour: the
+  texture coordinates (`CyclesRenderer::projectionOf`) are Cycles'
   object coordinates, the body's own coordinates in mm, so the meshes need
   no UVs and a change of the texture (another image, size, rotation or
   projection) is another material, not another mesh. Planar takes (x, y);
@@ -432,6 +467,28 @@ it, the shaded view the base colours of the body and of its faces.
   nodes choose, Mix Color nodes pick). Each projection's two coordinates
   go through a Mapping node of the texture type: turned by the rotation
   about the projection's axis and divided by the repeat's size.
+- **Maps in Cycles** (mitcad#314): every map uses the base colour's
+  projection (the same Mapping nodes; per box plane an Image Texture
+  node, mixed as the base colour). The roughness, metalness and
+  occlusion images are read as non-colour data (`u_colorspace_data`: a
+  mid grey 128 is 0.502, not sRGB's 0.216). Roughness and metalness
+  replace the appearance's values (the map is the value, as the base
+  colour image replaces the base colour); occlusion multiplies the base
+  colour (a Mix Color node, multiply), the image's or the plain one, for
+  the small-scale shadowing the geometry does not have. The normal map
+  is a tangent-space map in OpenGL's convention (red along the image's
+  u, green along its v, both from -1 to 1, blue out of the surface). Cycles'
+  Normal Map node takes its tangent frame from a UV map's tangents,
+  which the meshes do not have, so `CyclesRenderer::textureNormal` builds
+  the frame from the projection: for each plane the directions in which
+  the image's u and v grow (the plane's axes turned by the rotation)
+  made perpendicular to the object's normal at the point (Vector Math:
+  project, subtract, normalize), the normal itself as the third axis;
+  the unpacked colour weighs the three, the planes' normals are mixed as
+  the colours are, and a Vector Transform node (normal, object to world)
+  gives the Principled BSDF's `Normal`. A face seen through a mirrored
+  plane (box's (y, z) on a face toward -X) gets a mirrored frame, as its
+  image is mirrored. The coat keeps the smooth normal.
 - **Library:** the first sixteen appearances keep the colours they had
   before (metals metallic, paints with a light coat, rubber and wood less
   specular, glass transmissive); chrome, polished gold and steel, red,
@@ -477,6 +534,31 @@ it, the shaded view the base colours of the body and of its faces.
   and embedded in Edit Appearances and then deleted, renders from the top
   with squares of 10 mm (85 pixels measured for 85.7 expected; the test
   allows 15 %).
+- `ctest` `app.render_texture_maps` (mitcad#314, `mitcad-render
+  --maps-test <folder>`): 64 x 64 maps generated into the folder on the
+  test block (box projection, 20 mm repeats, no ground), each render
+  compared with another by the mean difference of the 8-bit channels
+  (the same below 0.6, changed above 2): a flat normal map, a white
+  occlusion map, a mid-grey roughness map against roughness 0.502, a
+  white metalness map against metalness 1, a dark roughness map against
+  the parameter 0.05 and a normal map that cannot be read (with its
+  warning) change nothing (0.00 to 0.09); ridges in a normal map (8.2),
+  a checker in the occlusion map (15.5), the white metalness map against
+  the dielectric (15.3), the dark roughness map against 0.502 on a metal
+  (8.6) and a normal tilted along u (11.0) do; tilted along +u turned by
+  half a turn renders as tilted along -u (0.09; +u against -u 8.2): the
+  frame follows the rotation. The renders are kept there
+  (`maps-<name>.png`).
+- `ctest` `cli.render_texture_maps` (mitcad#314,
+  `tools/cli/render-texture-maps-test.cmake`): `mitcad-cli render` on the
+  CPU, not denoised, of a box in appearances of
+  `tools/cli/tests/render_texture_maps.json` (8 x 8 test images embedded
+  as base64): ridges in the normal map and a dark roughness map change
+  the image against the same texture without them; a normal map whose
+  file is missing gives `a texture image is not drawn: Lost Normal: the
+  normal map is left out, the image … is missing` and a roughness map
+  that is no image the worker's warning, and both render the same image
+  as the texture without that map.
 
 Decisions and limits:
 
@@ -493,9 +575,15 @@ Decisions and limits:
   projection can only use what a shader sees at a point (its position and
   normal): box chooses per point, not per face, so a curved face shows
   the seams where its normal turns from one axis to the next, as box
-  mapping does elsewhere. Roughness and normal maps are not done: they
-  would need the same coordinates and two more images per appearance in
-  the model.
+  mapping does elsewhere. The maps of a set (mitcad#314) use the same
+  coordinates; the normal map's tangent frame comes from the projection
+  instead of UV tangents, which is exact on planar faces and follows the
+  surface on curved ones (the axes made perpendicular to the normal), and
+  shows box mapping's seams as the colour does.
+- A map's value replaces the appearance's (roughness, metalness) rather
+  than scaling it: the sets come with maps meant to be used as they are,
+  and the base colour image already replaces the base colour. The
+  parameters still apply where a set has no such map.
 - The shaded view does not draw textures, only the base colour: OCCT
   generates texture coordinates from object coordinates
   (`Graphic3d_TOTM_OBJECT`) only in its fixed-function pipeline, not in
@@ -1403,7 +1491,9 @@ the render ran on the GPU (tested with the build of `--cuda` on the GTX
   change only that body and no mesh (mitcad#53); then the last scene
   renders. An orthographic view whose eye stands inside the block renders
   as one from far outside it (mitcad#215: the mean difference of the
-  images below 2 of 255).
+  images below 2 of 255). With the ground on, the block covers a good part
+  of the image from below the ground in perspective, looking up in
+  orthographic, and above it again (mitcad#320).
 - `tools/ui-render-materials-test.sh`: appearances in the render
   ([Materials](#materials)).
 - `tools/ui-render-faces-test.sh`: appearances of faces and textures
@@ -1412,6 +1502,18 @@ the render ran on the GPU (tested with the build of `--cuda` on the GTX
   sky as the background, a polished ground at a height.
 - `ctest` `app.unit`: the exposure and the view transforms of
   `displayImage`.
+- `tools/ui-render-glass-test.sh`: an STL cube wound inwards, imported:
+  its triangles turned outwards, Glass - Clear assigned while rendering
+  renders at once as bright as the design opened again with it
+  (mitcad#319). `ctest` `app.unit` checks `meshOf` on synthetic shapes
+  wound the other way, and `app.render_updates` glass given while the
+  session renders against glass given before it.
+- `tools/ui-render-ground-test.sh` (Windows:
+  `tools/ui-windows-render-ground-test.ps1`, ctest
+  `app.ui-windows-render-ground`): a box with the ground's shadows,
+  orbited under the ground and back in the orthographic and the
+  perspective view; the worker turns the ground off and on, and every
+  view's frames cover the box (mitcad#320).
 - `tools/ui-render-environment-test.sh`: Render Environment on a white box
   and a glass sphere: the Dark Studio renders the box darker than the
   Studio over the same background; a background colour shows without a

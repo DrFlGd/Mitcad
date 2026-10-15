@@ -18,6 +18,7 @@
 #include <QImage>
 #include <QKeyEvent>
 #include <QKeySequence>
+#include <QLabel>
 #include <QMenu>
 #include <QMenuBar>
 #include <QMessageBox>
@@ -31,6 +32,7 @@
 #include <QRegularExpression>
 #include <QShortcut>
 #include <QTimer>
+#include <QTextDocument>
 #include <QWheelEvent>
 #include <QWidget>
 #include <QtGlobal>
@@ -134,6 +136,7 @@ const StepSpec kSpecs[] = {
     {"expect-view-orientation", 2, 2, kIdle},
     {"expect-view-buttons", 1, 1, kIdle},
     {"expect-selection", 2, 2, kIdle},
+    {"expect-selection-info", 1, 2, kIdle},
     {"expect-native-text", 2, 2, kIdle},
     {"expect-native-enabled", 2, 2, kIdle},
     {"expect-native-visible", 2, 2, kIdle},
@@ -1380,6 +1383,24 @@ void TestDriver::run(const Step& step) {
       QString error;
       if (!mac::test::setAppearance(a.at(0), error)) fail(line, error);
     });
+  } else if (name == QLatin1String("expect-selection-info")) {
+    QRegularExpression expected;
+    if (!regex(a.at(0), expected)) return;
+    double maxHeight = 0;
+    if (a.size() > 1 && (!toNumber(a.at(1), maxHeight) || maxHeight <= 0)) {
+      fail(line, QStringLiteral("expect-selection-info <text-regex> [maximum-card-height]")); return;
+    }
+    whenReady([this, expected, maxHeight] {
+      const auto* label = m_main->findChild<QLabel*>(QStringLiteral("selectionInfo"));
+      const auto* card = m_main->findChild<GlassCard*>(QStringLiteral("commandDock"));
+      if (!label) return false;
+      QTextDocument document;
+      document.setHtml(label->text());
+      const QString text = document.toPlainText();
+      m_waitDetail = QStringLiteral("selection info: %1; card height %2").arg(text).arg(card ? card->height() : -1);
+      return expected.match(text).hasMatch() &&
+             (maxHeight == 0 || (card && card->height() <= maxHeight));
+    }, 6, QStringLiteral("selection measurements"));
   } else if (name == QLatin1String("expect-selection")) {
     double total = 0;
     double profiles = 0;

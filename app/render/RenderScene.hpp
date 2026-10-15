@@ -40,8 +40,10 @@ bool sceneUpdateOf(const QJsonObject& command, SceneUpdate& update, std::string&
 // A material as JSON (MaterialData's fields in snake case: "base_color",
 // "metallic", "roughness", "specular", "transmission", "ior", "coat",
 // "coat_roughness", "emission_color", "emission", "opacity"; linear
-// colours; "texture": {"path", "size", "rotation", "projection"} when it
-// has one) and back; missing members keep MaterialData's defaults.
+// colours; "texture": {"path", "size", "rotation", "projection", "normal",
+// "roughness", "metalness", "occlusion"} when it has an image, each image
+// when there is one) and back; missing members keep MaterialData's
+// defaults.
 QJsonObject materialJson(const MaterialData& material);
 MaterialData materialOf(const QJsonObject& json);
 

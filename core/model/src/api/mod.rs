@@ -450,9 +450,12 @@ enum Query {
     Analyses,
     // Appearances: the library's and the document's (mitcad#46).
     Appearances,
-    // An appearance's embedded texture image (mitcad#53).
+    // An appearance's embedded texture image (mitcad#53), of the base
+    // colour or another map of its set (mitcad#313).
     AppearanceImage {
         id: String,
+        #[serde(default)]
+        map: Option<String>,
     },
     // Render settings of the document (mitcad#47).
     RenderSettings,
@@ -525,6 +528,8 @@ enum Query {
     },
     // Tangent chains of edges and faces (mitcad#290, `tangent_chains.rs`).
     TangentChains(tangent_chains::TangentChainsQuery),
+    // A thread's default end chamfer (mitcad#304, `threads.rs`).
+    ThreadChamfer(threads::ThreadChamferQuery),
 }
 
 fn names(names: &[String]) -> Value {
@@ -1220,7 +1225,9 @@ impl<K: Kernel> Document<K> {
             Query::Analyses => self.analyses_json(),
             // Appearances (mitcad#46).
             Query::Appearances => self.appearances_json(),
-            Query::AppearanceImage { id } => self.appearance_image_json(&id)?,
+            Query::AppearanceImage { id, map } => {
+                self.appearance_image_json(&id, map.as_deref())?
+            }
             // Render settings (mitcad#47).
             Query::RenderSettings => self.render_settings_json(),
             // Joints between occurrences (mitcad#55).
@@ -1272,6 +1279,8 @@ impl<K: Kernel> Document<K> {
             Query::PlaneGeometry { sketch } => self.plane_geometry_json(sketch)?,
             // Tangent chains of edges and faces (mitcad#290).
             Query::TangentChains(query) => self.tangent_chains_json(&query)?,
+            // A thread's default end chamfer (mitcad#304).
+            Query::ThreadChamfer(query) => threads::thread_chamfer_json(&query)?,
         };
         Ok(result.to_string())
     }
@@ -1609,6 +1618,12 @@ mod sketch_points_tests;
 // Convert to Sketch Geometry (mitcad#257).
 #[cfg(test)]
 mod convert_projected_tests;
+// Regular polygons stay regular (mitcad#303).
+#[cfg(test)]
+mod regular_polygon_tests;
+// Texture map sets embedded once per image, with their source (mitcad#313).
+#[cfg(test)]
+mod texture_map_tests;
 
 // A Face with new rules of its own (mitcad#210): `add_feature` (and its
 // preview) of a `sheet_face` whose `rules` is the rules' definition adds a

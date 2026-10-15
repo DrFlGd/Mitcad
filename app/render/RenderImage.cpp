@@ -274,4 +274,24 @@ QRect coverage(const std::uint16_t* pixels, int width, int height) {
   return QRect(QPoint(left, topRow), QPoint(right, bottomRow));
 }
 
+double coveredBrightness(const std::uint16_t* pixels, int width, int height, int* count) {
+  const std::vector<float>& half = halfTable();
+  double sum = 0.0;
+  int covered = 0;
+  const std::size_t size = static_cast<std::size_t>(width) * static_cast<std::size_t>(height);
+  for (std::size_t i = 0; i < size; ++i) {
+    const std::uint16_t* pixel = pixels + i * 4;
+    const float alpha = half[pixel[3]];
+    if (alpha > 0.5f) {
+      // Premultiplied: the colour of the covered part.
+      sum += (half[pixel[0]] + half[pixel[1]] + half[pixel[2]]) / (3.0 * alpha);
+      ++covered;
+    }
+  }
+  if (count != nullptr) {
+    *count = covered;
+  }
+  return covered > 0 ? sum / covered : 0.0;
+}
+
 } // namespace mitcad::render

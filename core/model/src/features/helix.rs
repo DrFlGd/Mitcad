@@ -15,10 +15,11 @@ use super::extrude::{
 };
 use super::geom_ref::{GeomRef, Want};
 use super::{
-    CheckContext, EvalContext, Evaluate, FeatureInfo, FeatureOutput, References, ToolUse, is_false,
+    BodyChange, CheckContext, EvalContext, Evaluate, FeatureInfo, FeatureOutput, References,
+    ToolUse, is_false,
 };
 use crate::ids::BodyUid;
-use crate::kernel::Kernel;
+use crate::kernel::{Kernel, KernelError};
 use crate::parameters::ParamId;
 use crate::sweeps::HelixSpec;
 
@@ -72,6 +73,17 @@ pub struct HelixDef<P = ParamId> {
         skip_serializing_if = "Option::is_none"
     )]
     pub end: Option<HelixEnd<P>>,
+    /// The seams of the helix's pieces shifted by this many turns (0, the
+    /// default, for none; less than a third; mitcad#235): the same shape,
+    /// built so that a boolean that fails or comes out wrong where those
+    /// seams meet the seams of the bodies' faces about the axis works (the
+    /// `.ipt` import's coils that give the file's state only so).
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub piece_shift: f64,
+}
+
+fn is_zero(value: &f64) -> bool {
+    *value == 0.0
 }
 
 /// A flat end of a helix (mitcad#235), as a coil's: over `transition_angle` (an
@@ -153,6 +165,7 @@ impl<P> HelixDef<P> {
                 .as_ref()
                 .map(|e| e.map_params(f, "end"))
                 .transpose()?,
+            piece_shift: self.piece_shift,
         })
     }
 
@@ -220,6 +233,13 @@ impl FeatureInfo for HelixDef {
         {
             return Err("a helix with flat ends is built by Mitcad's construction".to_owned());
         }
+        if !(0.0..1.0 / 3.0).contains(&self.piece_shift) {
+            return Err(format!(
+                "the helix's piece shift must be at least 0 and less than a third of a turn, \
+                 got {}",
+                self.piece_shift
+            ));
+        }
         Ok(())
     }
 
@@ -270,7 +290,7 @@ impl<K: Kernel> Evaluate<K> for HelixDef {
             ends[2] = end_angle(ctx.param(e.transition_angle)?, "end transition")?;
             ends[3] = end_angle(ctx.param(e.flat_angle)?, "end flat")?;
         }
-        let spec = HelixSpec {
+        let mut spec = HelixSpec {
             feature: ctx.uid,
             frame: sketch.frame,
             regions: &regions,
@@ -284,8 +304,89 @@ impl<K: Kernel> Evaluate<K> for HelixDef {
             freecad: self.construction == Some(HelixConstruction::Freecad),
             bodies: &bodies,
             ends,
+            piece_shift: self.piece_shift,
         };
         let tool = ctx.kernel.helix(&spec).map_err(|e| e.to_string())?;
-        apply_operation(ctx, self.operation, participants, tool, "helix")
+        // (FreeCAD's widening helix is one piece: no seams to shift.)
+        if matches!(self.operation, Operation::NewBody | Operation::NewComponent)
+            || (spec.freecad && growth != 0.0)
+            || self.piece_shift != 0.0
+        {
+            return apply_operation(ctx, self.operation, participants, tool, "helix");
+        }
+        // The boolean with the bodies; once more with the pieces' seams
+        // shifted when it fails or its result is not valid (mitcad#235, see
+        // `PIECE_SHIFT`). A helix whose boolean works is built only once.
+        let next_body = ctx.next_body;
+        let first = apply_operation(
+            ctx,
+            self.operation,
+            participants.clone(),
+            tool.clone(),
+            "helix",
+        );
+        let failure = match &first {
+            Err(error) => error.clone(),
+            Ok(output) if invalid_change(ctx, output) => "its result is not valid".to_owned(),
+            Ok(_) => return first,
+        };
+        if !worth_retrying(ctx, &failure, &participants, &tool) {
+            return first;
+        }
+        spec.piece_shift = PIECE_SHIFT;
+        let Ok(shifted) = ctx.kernel.helix(&spec) else {
+            return first;
+        };
+        let after_first = ctx.next_body;
+        ctx.next_body = next_body;
+        match apply_operation(ctx, self.operation, participants, shifted, "helix") {
+            Ok(output) if !invalid_change(ctx, &output) => {
+                ctx.warn(format!(
+                    "built with its pieces' seams shifted by a sixth of a turn, \
+                     as the first build failed: {failure}"
+                ));
+                Ok(output)
+            }
+            _ => {
+                ctx.next_body = after_first;
+                first
+            }
+        }
     }
+}
+
+/// How far the helix's pieces' seams are shifted (turns) when its boolean
+/// failed (mitcad#235): a boolean with bodies that have faces about the
+/// axis can fail where the seams of the helix's pieces (a third of a turn
+/// apart) meet those faces' seams, and work with the seams moved (on a
+/// coil's cut, seams shifted by 1/12 to 1/4 of a turn worked).
+pub(crate) const PIECE_SHIFT: f64 = 1.0 / 6.0;
+
+/// Whether a body the operation set is not valid by the geometry kernel's
+/// checker (a kernel that cannot check finds none).
+fn invalid_change<K: Kernel>(ctx: &EvalContext<'_, K>, output: &FeatureOutput<K::Shape>) -> bool {
+    output.changes.iter().any(|change| match change {
+        BodyChange::Set(_, shape) => matches!(ctx.kernel.is_valid(shape), Ok(false)),
+        BodyChange::Remove(_) => false,
+    })
+}
+
+/// Whether a failed boolean is retried: not when the process ran low on
+/// memory or the evaluation was cancelled, and not when the tool's box is
+/// clear of every participant's (it cannot reach them however it is built).
+fn worth_retrying<K: Kernel>(
+    ctx: &EvalContext<'_, K>,
+    failure: &str,
+    participants: &[(BodyUid, K::Shape)],
+    tool: &K::Shape,
+) -> bool {
+    if KernelError::is_out_of_memory(failure) || failure.contains("cancelled") {
+        return false;
+    }
+    let Ok(Some(tool)) = ctx.kernel.bounding_box(tool) else {
+        return true;
+    };
+    participants.iter().any(|(_, body)| {
+        !matches!(ctx.kernel.bounding_box(body), Ok(Some(b)) if !b.overlaps(&tool, 1e-7))
+    })
 }

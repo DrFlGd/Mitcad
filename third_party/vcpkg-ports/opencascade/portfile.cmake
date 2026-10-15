@@ -86,8 +86,23 @@ vcpkg_from_github(
         0180-chfi3d-chains-stop-where-the-edges-turn.patch
         0190-chfi3d-consumed-face-round-a-closed-stripe.patch
         0200-chfi3d-walked-blend-about-a-standing-contact.patch
+        0210-chfi3d-mitred-ends-at-a-short-sharp-edge.patch
+        0211-chfi3d-end-cut-by-a-periodic-face-across-its-seam.patch
         0220-shapeupgrade-unifysamedomain-seams-half-a-period-apart.patch
         0230-chfi3d-contact-in-the-adjacent-face-period.patch
+        0240-chfi3d-extension-on-the-faces-own-surface-away-from-its-seam.patch
+        0241-chfi3d-roundings-meeting-across-a-notch.patch
+        0250-chfi3d-walk-on-along-a-face-of-the-spine.patch
+        0260-chfi3d-fillet-carried-across-a-notch-in-its-rim.patch
+        0270-chfi3d-roundings-meeting-on-one-contact-line-of-a-face-going-on.patch
+        0271-chfi3d-roundings-cut-by-each-other-where-their-contacts-cross.patch
+        0280-chfi3d-onsame-end-where-the-face-at-the-end-turns-tangentially.patch
+        0281-chfi3d-walk-round-the-vertex-past-a-short-edge.patch
+        0282-chfi3d-end-cut-past-the-bounds-of-the-faces-at-the-end.patch
+        0283-chfi3d-standing-end-piece-one-face-with-the-one-before.patch
+        0290-chfi3d-walk-round-the-vertex-through-a-face-met-at-a-point.patch
+        0291-chfi3d-end-past-the-spine-where-a-contact-ran-off-its-face.patch
+        0300-chfi3d-prolonged-end-edge-across-the-opposite-faces-seam.patch
 )
 
 if (VCPKG_LIBRARY_LINKAGE STREQUAL "dynamic")

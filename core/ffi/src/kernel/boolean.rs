@@ -37,6 +37,15 @@ pub mod ffi {
             slack: f64,
         ) -> Result<UniquePtr<BooleanResult>>;
 
+        /// A join where a tool that touches no target still joins those
+        /// within `tolerance` mm, and an invalid result is retried with a
+        /// fuzzy value up to it (`geometry::boolean`'s `within`, mitcad#298).
+        fn boolean_join_within(
+            targets: &ShapeList,
+            tool: &Shape,
+            tolerance: f64,
+        ) -> Result<UniquePtr<BooleanResult>>;
+
         fn piece_count(self: &BooleanResult) -> usize;
         fn piece(self: &BooleanResult, index: usize) -> SharedPtr<Shape>;
         fn piece_sources(self: &BooleanResult, index: usize) -> Vec<usize>;

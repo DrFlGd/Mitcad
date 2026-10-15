@@ -10,6 +10,7 @@
 // parameter and the texture. Physical materials are the model's own list
 // (`steel`, ...).
 
+#include <array>
 #include <functional>
 
 #include <QByteArray>
@@ -25,8 +26,34 @@
 
 namespace mitcad {
 
+// A map of a texture's set besides the base colour (mitcad#313): as the
+// `appearances` query lists it, and the file the renderer reads.
+struct AppearanceMap {
+  bool present = false;  // the texture has this map
+  QString path;          // relative to the design's folder or absolute
+  bool embedded = false; // the image is in the design file
+  QString imageSha256;   // of an embedded image
+  // The image file the renderer reads (resolveTextureMaps): absolute;
+  // empty when there is none, with the reason in `missing`.
+  QString file = QString();
+  QString missing = QString();
+
+  bool operator==(const AppearanceMap& o) const {
+    return present == o.present && path == o.path && embedded == o.embedded && imageSha256 == o.imageSha256 &&
+           file == o.file;
+  }
+  bool operator!=(const AppearanceMap& o) const { return !(*this == o); }
+};
+
+// The maps of a texture's set besides the base colour, in the order of
+// AppearanceTexture::maps: the names the model uses ("normal",
+// "roughness", "metalness", "occlusion"; commands.md "Texture map sets").
+constexpr int kTextureMapCount = 4;
+const std::array<const char*, kTextureMapCount>& textureMapNames();
+
 // An appearance's texture as the `appearances` query lists it (mitcad#53):
-// an image for the base colour, projected onto the body.
+// an image for the base colour, projected onto the body, and the other
+// maps of its set (mitcad#313), which share the projection.
 struct AppearanceTexture {
   QJsonObject json; // as listed: sent back as it is, it keeps an embedded image
   QString path;     // the image file, relative to the design's folder or absolute
@@ -40,10 +67,13 @@ struct AppearanceTexture {
   // when there is none, with the reason in `missing`.
   QString file = QString();
   QString missing = QString();
+  // normal, roughness, metalness, occlusion (textureMapNames()).
+  std::array<AppearanceMap, kTextureMapCount> maps = {};
 
   bool operator==(const AppearanceTexture& o) const {
     return path == o.path && width == o.width && height == o.height && rotation == o.rotation &&
-           planar == o.planar && embedded == o.embedded && imageSha256 == o.imageSha256 && file == o.file;
+           planar == o.planar && embedded == o.embedded && imageSha256 == o.imageSha256 && file == o.file &&
+           maps == o.maps;
   }
   bool operator!=(const AppearanceTexture& o) const { return !(*this == o); }
 };
@@ -101,6 +131,13 @@ QImage appearanceSwatch(const Appearance& appearance, int size, qreal devicePixe
 // `file`, or `missing` with the reason.
 void resolveTexture(AppearanceTexture& texture, const QString& documentFolder,
                     const std::function<QByteArray()>& embeddedImage);
+// The same for the base colour and every map of the texture's set
+// (mitcad#314), as the renderer needs them: `embeddedImage` gives the
+// bytes of an embedded image of a map ("base_color", or a name of
+// textureMapNames(): the `appearance_image` query's `map`). Sets each
+// one's `file`, or its `missing`.
+void resolveTextureMaps(AppearanceTexture& texture, const QString& documentFolder,
+                        const std::function<QByteArray(const QString& map)>& embeddedImage);
 
 // sRGB in [0, 1] as JSON and back.
 QJsonArray colorJson(const QColor& color);

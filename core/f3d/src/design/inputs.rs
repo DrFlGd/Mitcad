@@ -534,14 +534,17 @@ pub(crate) fn fill_face(state: &NamedState, i: usize, fp: &mut Fingerprint) -> R
 /// same names; where exactly n edges fit them, it is the k-th of those
 /// (mitcad#96: a set of n edges between the same two faces, such as
 /// the edges where a patterned boss meets a plate, names each the same
-/// way).
+/// way). `pieces`: a fillet's or chamfer's input may be several edges
+/// ([`pick_edge`]). Returns how an edge was picked and the edges found (the
+/// input's first; none for a face or vertex).
 fn locate(
     state: &NamedState,
     fp: &mut Fingerprint,
     entities: &[Vec<EntityName>],
     twin: (usize, usize),
     surface: bool,
-) -> Result<(&'static str, Option<usize>), String> {
+    pieces: bool,
+) -> Result<(&'static str, Vec<usize>), String> {
     let cm = |p: [f64; 3]| p.map(|x| x / 10.0);
     if fp.object_type.as_deref() == Some("BRepFace") {
         let i = if surface {
@@ -550,14 +553,14 @@ fn locate(
             state.find_face(entities)?
         };
         fill_face(state, i, fp)?;
-        return Ok(("", None));
+        return Ok(("", Vec::new()));
     }
     // A vertex (a plane or point through vertices): where the faces named
     // meet.
     if fp.object_type.as_deref() == Some("BRepVertex") {
         let (vertex, body) = state.find_vertex(entities)?;
         fp.point = Some(cm(state.vertex(vertex, body)?));
-        return Ok(("", None));
+        return Ok(("", Vec::new()));
     }
     // The faces round the edge's ends in the order the recipe lists them.
     let tail = fp
@@ -575,10 +578,242 @@ fn locate(
                 })
                 .collect(),
         });
-    let (i, how) = pick_edge(state, entities, tail.as_ref(), twin)?;
-    let g = state.edge(i)?;
+    let curves = stored_curves(fp);
+    let picked = pick_edge(state, entities, tail.as_ref(), twin, &curves, pieces)?;
+    let g = state.edge(picked.edge)?;
+    // The other edges the input is ([`by_stored_pieces`]), kept in the
+    // fingerprint until [`split_pieces`] makes each an input of its own.
+    let mut more = Vec::new();
+    for &e in &picked.pieces {
+        let g = state.edge(e)?;
+        let mut piece = Fingerprint {
+            object_type: fp.object_type.clone(),
+            f3d: fp.f3d.clone(),
+            ..Fingerprint::default()
+        };
+        edge_geometry(&mut piece, &g);
+        note_curve_fit(&mut piece, &curves, &g);
+        more.push(serde_json::to_value(&piece).map_err(|e| e.to_string())?);
+    }
     edge_geometry(fp, &g);
-    Ok((how, Some(i)))
+    note_curve_fit(fp, &curves, &g);
+    if !more.is_empty()
+        && let Some(f) = fp.f3d.as_mut()
+    {
+        f.other.insert(PIECES.to_owned(), Value::Array(more));
+    }
+    let mut edges = vec![picked.edge];
+    edges.extend(picked.pieces);
+    Ok((picked.how, edges))
+}
+
+/// The key under which [`locate`] keeps the other edges an input is until
+/// [`split_pieces`] takes them out (never in a dump written).
+const PIECES: &str = "_pieces";
+
+/// The edge inputs of a fillet or chamfer that are several edges
+/// ([`by_stored_pieces`]) made one input per edge, each in the input's place
+/// in its set and with its `found`: the import matches each edge on its own,
+/// as it does the edges of a face selection ([`expand_faces`]).
+fn split_pieces(detail: &mut Detail, out: &mut Resolved) {
+    let sets = match detail {
+        Detail::Fillet(f) => f.edge_sets.as_mut(),
+        Detail::Chamfer(c) => c.edge_sets.as_mut(),
+        _ => None,
+    };
+    // An edge by its place (the middle and length, cm).
+    let key = |fp: &Fingerprint| {
+        let r = |x: f64| (x * 1e6).round() as i64;
+        Some((fp.mid_point?.map(r), r(fp.length?)))
+    };
+    for s in sets.into_iter().flatten() {
+        let Some(refs) = s.edges.take() else { continue };
+        // The edges the set has: a piece another input of the set found
+        // (inputs whose stored curves overlap, the pieces of one ring) is
+        // there once.
+        let mut have: std::collections::HashSet<_> = refs
+            .iter()
+            .filter_map(|r| match r {
+                Reference::Edge(fp) => key(fp),
+                _ => None,
+            })
+            .collect();
+        let mut edges = Vec::with_capacity(refs.len());
+        for mut r in refs {
+            let more = match &mut r {
+                Reference::Edge(fp) => fp.f3d.as_mut().and_then(|f| f.other.remove(PIECES)),
+                _ => None,
+            };
+            let found = match &r {
+                Reference::Edge(fp) => fp.f3d.as_ref().and_then(|f| f.found.clone()),
+                _ => None,
+            };
+            edges.push(r);
+            let Some(Value::Array(more)) = more else {
+                continue;
+            };
+            for v in more {
+                let Value::Object(map) = v else { continue };
+                let mut piece = Fingerprint::from_map(map);
+                if key(&piece).is_some_and(|k| !have.insert(k)) {
+                    continue;
+                }
+                if let Some(f) = piece.f3d.as_mut() {
+                    f.found.clone_from(&found);
+                }
+                out.found += 1;
+                edges.push(Reference::Edge(Box::new(piece)));
+            }
+        }
+        s.edges = Some(edges);
+    }
+}
+
+// The curves edge inputs store (mitcad#306).
+
+/// How far (mm) an edge may lie from the curve its input stores and still
+/// be on it: the import's default geometric tolerance (mitcad#224).
+const CURVE_TOLERANCE: f64 = 0.01;
+
+/// The curves an edge input stores ([`super::curve`]), in millimetres
+/// (none when it stores none, or one that does not decode).
+fn stored_curves(fp: &Fingerprint) -> Vec<super::curve::StoredCurve> {
+    let Some(list) = fp.f3d.as_ref().and_then(|f| f.curves.as_ref()) else {
+        return Vec::new();
+    };
+    list.iter()
+        .map(|g| super::curve::StoredCurve::from_geometry(g).map(|c| c.scaled(10.0)))
+        .collect::<Option<Vec<_>>>()
+        .unwrap_or_default()
+}
+
+/// How an edge lies to the best fitting of an input's stored curves: its
+/// fit and the curve's index. `None` without curves, or when no fit can be
+/// told.
+fn best_fit(
+    curves: &[super::curve::StoredCurve],
+    g: &EdgeGeometry,
+) -> Option<(super::curve::CurveFit, usize)> {
+    curves
+        .iter()
+        .enumerate()
+        .filter_map(|(k, c)| Some((c.fit(g.start, g.mid, g.end, CURVE_TOLERANCE)?, k)))
+        .min_by(|(a, _), (b, _)| {
+            (a.rank(CURVE_TOLERANCE), a.off)
+                .partial_cmp(&(b.rank(CURVE_TOLERANCE), b.off))
+                .unwrap_or(std::cmp::Ordering::Equal)
+        })
+}
+
+/// How an edge of a state lies to an input's stored curves
+/// ([`super::curve::CurveFit::rank`] of the best; 3 when it cannot be told).
+fn curve_rank(state: &NamedState, edge: usize, curves: &[super::curve::StoredCurve]) -> u8 {
+    state
+        .edge(edge)
+        .ok()
+        .and_then(|g| best_fit(curves, &g))
+        .map_or(3, |(f, _)| f.rank(CURVE_TOLERANCE))
+}
+
+/// Notes in an edge input's fingerprint how the edge found lies to the
+/// curves the input stores (`_f3d.curve_fit`, mm; which curve, where it
+/// stores several).
+fn note_curve_fit(fp: &mut Fingerprint, curves: &[super::curve::StoredCurve], g: &EdgeGeometry) {
+    let Some((fit, k)) = best_fit(curves, g) else {
+        return;
+    };
+    let mut text = fit.describe(CURVE_TOLERANCE);
+    if curves.len() > 1 {
+        text += &format!(" (curve {} of {})", k + 1, curves.len());
+    }
+    if let Some(f) = fp.f3d.as_mut() {
+        f.curve_fit = Some(text);
+    }
+}
+
+/// Of the edges an input's names fit, the one its stored curves give: the
+/// only one that is a stored edge itself, else the only one that is a
+/// piece of one (on its curve, within its ends). `None` when the curves do
+/// not single one out.
+fn by_stored_curve(
+    state: &NamedState,
+    fits: &[usize],
+    curves: &[super::curve::StoredCurve],
+) -> Option<usize> {
+    let ranks: Vec<u8> = fits.iter().map(|&i| curve_rank(state, i, curves)).collect();
+    for rank in [0, 1] {
+        let at: Vec<usize> = (0..fits.len()).filter(|&k| ranks[k] == rank).collect();
+        match at[..] {
+            [k] => return Some(fits[k]),
+            [] => continue,
+            _ => return None,
+        }
+    }
+    None
+}
+
+/// Of the edges an input's names fit, those its stored curves give where it
+/// stands for several (mitcad#106): the input stores a curve per edge it saw
+/// ([`super::curve`]: an edge in pieces, the pieces of a ring between the
+/// same two faces), and the state has an edge on several of them, or the
+/// edge it saw as one curve is in pieces in the state (a later change of an
+/// earlier item cut it). The edges that fit the names and lie on a stored
+/// curve within its ends are the input's when they are at least two, all
+/// are on one body, and the edges on one curve are pieces of it whose
+/// lengths add up to its length at most (two copies of one edge, as where a
+/// body is in the state twice, are not two pieces). A stored curve no edge
+/// of these names lies on is left alone (an edge the names no longer give).
+/// `None` otherwise, and where one edge alone lies on the curves
+/// ([`by_stored_curve`] decides those).
+fn by_stored_pieces(
+    state: &NamedState,
+    fits: &[usize],
+    curves: &[super::curve::StoredCurve],
+) -> Option<Vec<usize>> {
+    // The edges on a curve within its ends, with that curve.
+    let on: Vec<(usize, usize, u8, f64)> = fits
+        .iter()
+        .filter_map(|&i| {
+            let g = state.edge(i).ok()?;
+            let (fit, k) = best_fit(curves, &g)?;
+            let rank = fit.rank(CURVE_TOLERANCE);
+            (rank <= 1).then_some((i, k, rank, g.length))
+        })
+        .collect();
+    if on.len() < 2 {
+        return None;
+    }
+    let body = state.edges.get(on[0].0)?.body;
+    if on
+        .iter()
+        .any(|&(i, ..)| state.edges.get(i).is_none_or(|e| e.body != body))
+    {
+        return None;
+    }
+    for (k, curve) in curves.iter().enumerate() {
+        let here: Vec<&(usize, usize, u8, f64)> = on.iter().filter(|e| e.1 == k).collect();
+        match here[..] {
+            [] | [_] => {}
+            _ => {
+                let fits: Vec<(u8, f64)> = here.iter().map(|e| (e.2, e.3)).collect();
+                if !are_pieces(curve, &fits) {
+                    return None;
+                }
+            }
+        }
+    }
+    Some(on.into_iter().map(|e| e.0).collect())
+}
+
+/// Whether edges that lie on a stored curve within its ends (each its rank
+/// of fit and its length, mm) can be pieces of it: none is the whole stored
+/// edge, and together they are no longer than it.
+fn are_pieces(curve: &super::curve::StoredCurve, fits: &[(u8, f64)]) -> bool {
+    let Some(length) = curve.length() else {
+        return false;
+    };
+    let sum: f64 = fits.iter().map(|f| f.1).sum();
+    fits.iter().all(|f| f.0 == 1) && sum <= length + CURVE_TOLERANCE
 }
 
 /// The edge a recipe names among those that fit its names: the one that
@@ -590,13 +825,44 @@ fn locate(
 /// [`locate`] says. The tail is not used for the n inputs of the same
 /// names of an item (n > 1): each would choose among the edges that fit
 /// alone, and two could choose the same one.
+///
+/// Before all that, where the names fit several edges, the curve the input
+/// stores (mitcad#306) decides when it singles one of them out
+/// ([`by_stored_curve`]): it is the edge as the input saw it, read from the
+/// file, so it tells apart the edges the names (and the tail's order) cannot.
+/// With `pieces` (a fillet's or chamfer's input, whose set can take more
+/// edges than it has inputs) the curves can give several edges first
+/// ([`by_stored_pieces`]): the first is the input's, the others go into
+/// [`Picked::pieces`].
 fn pick_edge(
     state: &NamedState,
     entities: &[Vec<EntityName>],
     tail: Option<&super::recipe::EdgeTail>,
     twin: (usize, usize),
-) -> Result<(usize, &'static str), String> {
+    curves: &[super::curve::StoredCurve],
+    pieces: bool,
+) -> Result<Picked, String> {
     let (k, n) = twin;
+    let one = |edge: usize, how: &'static str| Picked {
+        edge,
+        pieces: Vec::new(),
+        how,
+    };
+    if !curves.is_empty()
+        && let Ok(all) = state.edges_fitting_ordered(entities, None)
+        && all.len() > 1
+    {
+        if pieces && let Some(edges) = by_stored_pieces(state, &all, curves) {
+            return Ok(Picked {
+                edge: edges[0],
+                pieces: edges[1..].to_vec(),
+                how: " (one of the edges its stored curves give)",
+            });
+        }
+        if let Some(i) = by_stored_curve(state, &all, curves) {
+            return Ok(one(i, " (by its stored curve)"));
+        }
+    }
     let fits = state.edges_fitting_ordered(entities, tail.filter(|_| n == 1))?;
     if let [i] = fits[..] {
         // (By the order of the tail when the names alone leave several.)
@@ -605,7 +871,7 @@ fn pick_edge(
             && state
                 .edges_fitting_ordered(entities, None)
                 .is_ok_and(|all| all.len() > 1);
-        return Ok((
+        return Ok(one(
             i,
             if by_tail {
                 " (by the recipe's tail)"
@@ -615,12 +881,52 @@ fn pick_edge(
         ));
     }
     if let Some(first) = coincident(state, &fits) {
-        return Ok((first, " (one of coincident copies)"));
+        return Ok(one(first, " (one of coincident copies)"));
     }
     if fits.len() == n {
-        return Ok((fits[k], " (one of the edges of the same names)"));
+        return Ok(one(fits[k], " (one of the edges of the same names)"));
     }
-    Err(format!("{} edges fit the names", fits.len()))
+    Err(format!(
+        "{} edges fit the names{}",
+        fits.len(),
+        describe_fits(state, &fits, curves)
+    ))
+}
+
+/// The edge [`pick_edge`] found, how, and the other edges that are the
+/// input's too ([`by_stored_pieces`]).
+#[derive(Clone, Debug, PartialEq)]
+struct Picked {
+    edge: usize,
+    pieces: Vec<usize>,
+    how: &'static str,
+}
+
+/// How the edges an input's names fit lie to its stored curves, for the
+/// reason it is not found: ` (to the stored curve: the stored edge, off the
+/// stored curve by 3.2000, …)`, with the curve's number where it stores
+/// several; empty without curves.
+fn describe_fits(
+    state: &NamedState,
+    fits: &[usize],
+    curves: &[super::curve::StoredCurve],
+) -> String {
+    if curves.is_empty() {
+        return String::new();
+    }
+    let each: Vec<String> = fits
+        .iter()
+        .map(
+            |&i| match state.edge(i).ok().and_then(|g| best_fit(curves, &g)) {
+                Some((fit, k)) if curves.len() > 1 => {
+                    format!("{} (curve {})", fit.describe(CURVE_TOLERANCE), k + 1)
+                }
+                Some((fit, _)) => fit.describe(CURVE_TOLERANCE),
+                None => "not comparable".to_owned(),
+            },
+        )
+        .collect();
+    format!(" (to the stored curves: {})", each.join(", "))
 }
 
 /// The first of several edges with the same geometry (start, end and
@@ -932,6 +1238,119 @@ fn resolve_item(item: &mut TimelineItem, at: &At, out: &mut Resolved) {
         return;
     }
     find_named(at, result, edges, Some(&sets), others, false, out);
+    split_pieces(detail, out);
+    // (An item suppressed in the file is looked for in the state after the
+    // item before it, which the file never had: there pieces of one edge
+    // its inputs saw can be one edge, and each input takes it.)
+    if matches!(detail, Detail::Fillet(_) | Detail::Chamfer(_)) && !at.suppressed {
+        drop_conflicting(detail, out);
+    }
+}
+
+/// The edge inputs of a fillet's or chamfer's sets that were found.
+fn found_dressup_edges(detail: &mut Detail) -> Vec<&mut Fingerprint> {
+    let sets = match detail {
+        Detail::Fillet(f) => f.edge_sets.as_mut(),
+        Detail::Chamfer(c) => c.edge_sets.as_mut(),
+        _ => None,
+    };
+    sets.into_iter()
+        .flatten()
+        .flat_map(|s| s.edges.iter_mut().flatten())
+        .filter_map(|r| match r {
+            Reference::Edge(fp) if fp.mid_point.is_some() && fp.f3d.is_some() => Some(&mut **fp),
+            _ => None,
+        })
+        .collect()
+}
+
+/// An edge fingerprint's geometry in millimetres, as [`NamedState::edge`]
+/// gives it.
+fn fingerprint_edge(fp: &Fingerprint) -> Option<EdgeGeometry> {
+    let mm = |p: [f64; 3]| p.map(|x| x * 10.0);
+    Some(EdgeGeometry {
+        mid: mm(fp.mid_point?),
+        length: fp.length? * 10.0,
+        start: mm(fp.start_point.flatten()?),
+        end: mm(fp.end_point.flatten()?),
+        direction: fp.f3d.as_ref()?.direction.unwrap_or([0.0; 3]),
+    })
+}
+
+/// Inputs of one fillet or chamfer that found the same edge although their
+/// names and their stored curves differ (mitcad#306): two stored curves are
+/// two edges as the inputs saw them, so the names cannot have found both in
+/// that edge. Those of them whose stored curves the edge does not lie
+/// within (it runs beyond their ends, or off them: an edge their names fit
+/// in a state that does not have theirs) are left not found, with why; the
+/// others keep it (an input whose stored edge was longer than the edge now
+/// is, mitcad#305, keeps it as one that is the stored edge does). Not for
+/// an item suppressed in the file ([`resolve_item`]).
+fn drop_conflicting(detail: &mut Detail, out: &mut Resolved) {
+    let mut edges = found_dressup_edges(detail);
+    // The inputs by the edge they found (its place, in its component).
+    let key = |fp: &Fingerprint| {
+        let r = |p: [f64; 3]| p.map(|x| (x * 1e6).round() as i64);
+        (
+            fp.mid_point.map(r),
+            fp.length.map(|l| (l * 1e6).round() as i64),
+            fp.f3d.as_ref().and_then(|f| f.component),
+        )
+    };
+    let mut groups: HashMap<_, Vec<usize>> = HashMap::new();
+    for (i, fp) in edges.iter().enumerate() {
+        groups.entry(key(fp)).or_default().push(i);
+    }
+    for members in groups.values() {
+        if members.len() < 2 {
+            continue;
+        }
+        let f3d = |i: usize| edges[i].f3d.as_ref().expect("named");
+        let distinct = |of: &dyn Fn(usize) -> String| {
+            let mut v: Vec<String> = members.iter().map(|&i| of(i)).collect();
+            v.sort();
+            v.dedup();
+            v.len()
+        };
+        let names = |i: usize| serde_json::to_string(&f3d(i).entities).unwrap_or_default();
+        let curves = |i: usize| serde_json::to_string(&f3d(i).curves).unwrap_or_default();
+        let with_curves = members.iter().filter(|&&i| f3d(i).curves.is_some()).count();
+        if with_curves < 2 || distinct(&names) < 2 || distinct(&curves) < 2 {
+            continue;
+        }
+        for &i in members {
+            let curves = stored_curves(edges[i]);
+            let Some((fit, _)) = fingerprint_edge(edges[i]).and_then(|g| best_fit(&curves, &g))
+            else {
+                continue;
+            };
+            let why = match fit.rank(CURVE_TOLERANCE) {
+                2 => format!(
+                    "the edge its names fit, which another input of the item with another \
+                     stored curve found too, runs {:.4} mm beyond the ends of its stored curve",
+                    fit.beyond
+                ),
+                3 => format!(
+                    "the edge its names fit, which another input of the item with another \
+                     stored curve found too, lies {:.4} mm off its stored curve",
+                    fit.off
+                ),
+                _ => continue,
+            };
+            let fp = &mut *edges[i];
+            fp.mid_point = None;
+            fp.length = None;
+            fp.start_point = None;
+            fp.end_point = None;
+            if let Some(f) = fp.f3d.as_mut() {
+                f.direction = None;
+                f.component = None;
+                f.found = Some(why);
+            }
+            out.found = out.found.saturating_sub(1);
+            out.not_found += 1;
+        }
+    }
 }
 
 /// The edge set of each input [`named_entities`] gives of a fillet or
@@ -1115,6 +1534,8 @@ struct Input<'f> {
     hit: Option<(usize, usize)>,
     /// The edge found, in the state of `hit`.
     edge: Option<usize>,
+    /// The other edges the input is ([`by_stored_pieces`]).
+    pieces: Vec<usize>,
     /// How an edge was picked where several fit ([`pick_edge`]).
     how: &'static str,
 }
@@ -1274,6 +1695,7 @@ fn search_marked<'f>(
                 why,
                 hit: None,
                 edge: None,
+                pieces: Vec::new(),
                 how: "",
             })
         })
@@ -1284,10 +1706,18 @@ fn search_marked<'f>(
         }
         let state = states.get(b, k);
         for input in inputs.iter_mut().filter(|i| i.hit.is_none()) {
-            match locate(&state, input.fp, &input.entities, input.twin, surface) {
-                Ok((how, edge)) => {
+            match locate(
+                &state,
+                input.fp,
+                &input.entities,
+                input.twin,
+                surface,
+                input.set.is_some(),
+            ) {
+                Ok((how, edges)) => {
                     input.hit = Some((b, e));
-                    input.edge = edge;
+                    input.edge = edges.first().copied();
+                    input.pieces = edges.get(1..).unwrap_or_default().to_vec();
                     input.how = how;
                 }
                 Err(err) if input.why.is_empty() => input.why = err,
@@ -1337,7 +1767,8 @@ fn resolve_alike(state: &NamedState, inputs: &mut [Input], view: (usize, usize))
     let mut taken: HashSet<(usize, usize)> = inputs
         .iter()
         .filter(|i| i.hit == Some(view))
-        .filter_map(|i| Some((i.set?, i.edge?)))
+        .filter_map(|i| Some((i.set?, i.edge.into_iter().chain(i.pieces.iter().copied()))))
+        .flat_map(|(set, edges)| edges.map(move |e| (set, e)))
         .collect();
     // The inputs still open, with the edges that fit their names.
     let mut open: Vec<(usize, usize, Vec<usize>)> = Vec::new();
@@ -1380,6 +1811,8 @@ fn resolve_alike(state: &NamedState, inputs: &mut [Input], view: (usize, usize))
                 let Ok(g) = state.edge(edge) else { continue };
                 let input = &mut inputs[k];
                 edge_geometry(input.fp, &g);
+                let curves = stored_curves(input.fp);
+                note_curve_fit(input.fp, &curves, &g);
                 input.hit = Some(view);
                 input.edge = Some(edge);
                 input.how = " (one of the edges the inputs of the set name alike)";
@@ -1791,6 +2224,7 @@ fn find_external(
         f.component = None;
         f.face_points = None;
         f.seam = None;
+        f.curve_fit = None;
     }
     let entities = fp
         .f3d
@@ -1840,8 +2274,8 @@ fn find_external(
                 }
                 continue;
             }
-            match locate(&state, fp, &entities, (0, 1), false)
-                .or_else(|_| locate(&state, fp, &entities, (0, 1), true))
+            match locate(&state, fp, &entities, (0, 1), false, false)
+                .or_else(|_| locate(&state, fp, &entities, (0, 1), true, false))
             {
                 Ok((how, _)) => {
                     // A face as the last state has it, when it is still
@@ -2248,6 +2682,7 @@ fn history_blobs(doc: &F3dFile) -> Vec<Blob> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::brep;
     use crate::testdata;
 
     /// The entities of a named state, to compare namings.
@@ -2323,7 +2758,8 @@ mod tests {
         };
         let mut found = Vec::new();
         for fans in [[[0, 1, 2], [1, 0, 3]], [[1, 0, 2], [0, 1, 3]]] {
-            let (i, how) = pick_edge(&state, &entities, Some(&tail(fans)), (0, 1)).unwrap();
+            let p = pick_edge(&state, &entities, Some(&tail(fans)), (0, 1), &[], true).unwrap();
+            let (i, how) = (p.edge, p.how);
             assert_eq!(how, " (by the recipe's tail)");
             found.push(state.edge(i).unwrap().mid[2]);
         }
@@ -2334,16 +2770,368 @@ mod tests {
         );
         // Without the tail, two fit: one of two inputs of the item each.
         assert_eq!(
-            pick_edge(&state, &entities, None, (0, 1)),
+            pick_edge(&state, &entities, None, (0, 1), &[], true),
             Err("2 edges fit the names".to_owned())
         );
-        assert!(pick_edge(&state, &entities, None, (1, 2)).is_ok());
+        assert!(pick_edge(&state, &entities, None, (1, 2), &[], true).is_ok());
         // Edges at the same place are the same for a fingerprint; others
         // are not.
         let all = state.edges_fitting(&entities).unwrap();
         assert_eq!(coincident(&state, &[all[0], all[0]]), Some(all[0]));
         assert_eq!(coincident(&state, &all), None);
         assert_eq!(coincident(&state, &[]), None);
+    }
+
+    /// Inputs of other names and other stored curves that found one edge
+    /// (mitcad#306): those whose curve the edge does not lie within are
+    /// left not found; one whose stored edge is longer keeps it, and inputs
+    /// that store the same curve (two names of one edge) keep theirs.
+    #[test]
+    fn leaves_out_inputs_whose_stored_curve_another_edge_has() {
+        use super::super::curve::StoredCurve;
+        use super::super::ir::{EdgeSet, FilletDetail, FingerprintF3d};
+        // The edge found: from (0,0,0) to (1,0,0) cm.
+        let input = |id: u64, tag: &str, curve: Option<StoredCurve>| {
+            Reference::Edge(Box::new(Fingerprint {
+                object_type: Some("BRepEdge".to_owned()),
+                mid_point: Some([0.5, 0.0, 0.0]),
+                length: Some(1.0),
+                start_point: Some(Some([0.0, 0.0, 0.0])),
+                end_point: Some(Some([1.0, 0.0, 0.0])),
+                f3d: Some(FingerprintF3d {
+                    object_id: Some(id),
+                    entities: Some(vec![vec![n(tag)]]),
+                    curves: curve.map(|c| vec![c.to_geometry()]),
+                    found: Some("state 3".to_owned()),
+                    ..FingerprintF3d::default()
+                }),
+                ..Fingerprint::default()
+            }))
+        };
+        let line = |x0: f64, x1: f64, y: f64| StoredCurve::Line {
+            start: [x0, y, 0.0],
+            vector: [x1 - x0, 0.0, 0.0],
+        };
+        let set = |edges: Vec<Reference>| EdgeSet {
+            edges: Some(edges),
+            ..EdgeSet::default()
+        };
+        let mut detail = Detail::Fillet(Box::new(FilletDetail {
+            edge_sets: Some(vec![
+                set(vec![
+                    // The edge itself, a longer stored edge (mitcad#305),
+                    // a piece of the edge (the edge runs beyond it) and an
+                    // edge elsewhere.
+                    input(1, "1", Some(line(0.0, 1.0, 0.0))),
+                    input(2, "2", Some(line(-1.0, 1.0, 0.0))),
+                    input(3, "3", Some(line(0.0, 0.5, 0.0))),
+                ]),
+                set(vec![
+                    input(4, "4", Some(line(0.0, 1.0, 2.0))),
+                    // Without a curve (a face's edge): not judged.
+                    input(5, "5", None),
+                ]),
+            ]),
+            ..FilletDetail::default()
+        }));
+        let mut out = Resolved {
+            found: 5,
+            not_found: 0,
+        };
+        drop_conflicting(&mut detail, &mut out);
+        assert_eq!(
+            out,
+            Resolved {
+                found: 3,
+                not_found: 2
+            }
+        );
+        let Detail::Fillet(f) = &detail else {
+            unreachable!()
+        };
+        let found: Vec<(u64, bool)> = f
+            .edge_sets
+            .iter()
+            .flatten()
+            .flat_map(|s| s.edges.iter().flatten())
+            .map(|r| match r {
+                Reference::Edge(fp) => (
+                    fp.f3d.as_ref().unwrap().object_id.unwrap(),
+                    fp.mid_point.is_some(),
+                ),
+                _ => unreachable!(),
+            })
+            .collect();
+        assert_eq!(
+            found,
+            vec![(1, true), (2, true), (3, false), (4, false), (5, true)]
+        );
+        // Two names of one stored edge: both keep it.
+        let mut detail = Detail::Fillet(Box::new(FilletDetail {
+            edge_sets: Some(vec![set(vec![
+                input(1, "1", Some(line(0.0, 0.5, 2.0))),
+                input(2, "2", Some(line(0.0, 0.5, 2.0))),
+            ])]),
+            ..FilletDetail::default()
+        }));
+        let mut out = Resolved {
+            found: 2,
+            not_found: 0,
+        };
+        drop_conflicting(&mut detail, &mut out);
+        assert_eq!(out.found, 2);
+    }
+
+    /// Where the names fit two edges, the curve the input stores decides
+    /// (mitcad#306): the stored edge itself, or the only piece of it; a
+    /// curve that fits none of them or both leaves the choice as before.
+    #[test]
+    fn picks_the_edge_its_stored_curve_gives() {
+        use super::super::curve::StoredCurve;
+        let data = testdata::named_cube_blob();
+        let file = AsmFile::parse(&data).unwrap();
+        let state = NamedState::new(&file, None);
+        let entities = vec![
+            vec![n("1"), n("2")],
+            vec![n("3")],
+            vec![n("6")],
+            vec![n("4")],
+        ];
+        let all = state.edges_fitting(&entities).unwrap();
+        assert_eq!(all.len(), 2);
+        for &e in &all {
+            let g = state.edge(e).unwrap();
+            // The whole edge, either way round.
+            for (a, b) in [(g.start, g.end), (g.end, g.start)] {
+                let line = StoredCurve::Line {
+                    start: a,
+                    vector: brep::sub(b, a),
+                };
+                let picked = pick_edge(
+                    &state,
+                    &entities,
+                    None,
+                    (0, 1),
+                    std::slice::from_ref(&line),
+                    true,
+                );
+                assert_eq!(
+                    picked.map(|p| (p.edge, p.pieces, p.how)),
+                    Ok((e, vec![], " (by its stored curve)"))
+                );
+            }
+            // A longer edge on the same line (a later item shortened it).
+            let d = brep::sub(g.end, g.start);
+            let longer = StoredCurve::Line {
+                start: brep::sub(g.start, d),
+                vector: brep::scale(d, 3.0),
+            };
+            let picked = pick_edge(
+                &state,
+                &entities,
+                None,
+                (0, 1),
+                std::slice::from_ref(&longer),
+                true,
+            );
+            assert_eq!(picked.map(|p| p.edge), Ok(e));
+            // Its fit is noted in the fingerprint.
+            let mut fp = Fingerprint {
+                f3d: Some(super::super::ir::FingerprintF3d::default()),
+                ..Fingerprint::default()
+            };
+            note_curve_fit(&mut fp, std::slice::from_ref(&longer), &g);
+            assert_eq!(
+                fp.f3d.unwrap().curve_fit.as_deref(),
+                Some("a piece of the stored edge")
+            );
+        }
+        // A curve neither edge lies on: the names alone, as before.
+        let elsewhere = StoredCurve::Line {
+            start: [100.0, 100.0, 100.0],
+            vector: [1.0, 0.0, 0.0],
+        };
+        let why = pick_edge(
+            &state,
+            &entities,
+            None,
+            (0, 1),
+            std::slice::from_ref(&elsewhere),
+            true,
+        )
+        .unwrap_err();
+        assert!(
+            why.starts_with(
+                "2 edges fit the names (to the stored curves: off the stored curve by "
+            ),
+            "{why}"
+        );
+        assert_eq!(why.matches("off the stored curve").count(), 2, "{why}");
+    }
+
+    /// An input that stores a curve per piece of the edge it saw is every
+    /// edge on them (mitcad#106): the two edges its names fit, each the
+    /// stored edge of one of its two curves, are both a fillet's input; the
+    /// first is the input's own. A curve no edge lies on, an input of
+    /// another item, or edges on one curve longer together than it leave
+    /// the choice as before.
+    #[test]
+    fn an_input_stored_in_pieces_is_every_edge_on_them() {
+        use super::super::curve::StoredCurve;
+        let data = testdata::named_cube_blob();
+        let file = AsmFile::parse(&data).unwrap();
+        let state = NamedState::new(&file, None);
+        let entities = vec![
+            vec![n("1"), n("2")],
+            vec![n("3")],
+            vec![n("6")],
+            vec![n("4")],
+        ];
+        let all = state.edges_fitting(&entities).unwrap();
+        assert_eq!(all.len(), 2);
+        let line = |e: usize| {
+            let g = state.edge(e).unwrap();
+            StoredCurve::Line {
+                start: g.start,
+                vector: brep::sub(g.end, g.start),
+            }
+        };
+        let curves = [line(all[1]), line(all[0])];
+        let picked = pick_edge(&state, &entities, None, (0, 1), &curves, true).unwrap();
+        assert_eq!(picked.edge, all[0]);
+        assert_eq!(picked.pieces, vec![all[1]]);
+        assert_eq!(picked.how, " (one of the edges its stored curves give)");
+        // Not for another item's input: two edges are each a stored edge,
+        // which the curves alone cannot choose between.
+        let why = pick_edge(&state, &entities, None, (0, 1), &curves, false).unwrap_err();
+        assert!(
+            why.contains("the stored edge (curve 2), the stored edge (curve 1)"),
+            "{why}"
+        );
+        // A stored curve no edge lies on: not the input's pieces; the one
+        // edge on a curve is the input's.
+        let elsewhere = StoredCurve::Line {
+            start: [100.0, 100.0, 100.0],
+            vector: [1.0, 0.0, 0.0],
+        };
+        let curves = [line(all[1]), elsewhere];
+        assert_eq!(by_stored_pieces(&state, &all, &curves), None);
+        let picked = pick_edge(&state, &entities, None, (0, 1), &curves, true).unwrap();
+        assert_eq!((picked.edge, picked.pieces.len()), (all[1], 0));
+        // One stored edge and only one edge on it: not pieces.
+        let one = line(all[0]);
+        assert_eq!(
+            by_stored_pieces(&state, &all, std::slice::from_ref(&one)),
+            None
+        );
+        // Pieces of one curve (10 mm): none the whole edge, together no
+        // longer than it (two copies of one edge are).
+        let g = state.edge(all[0]).unwrap();
+        assert!((one.length().unwrap() - g.length).abs() < 1e-9);
+        let ten = StoredCurve::Line {
+            start: [0.0; 3],
+            vector: [10.0, 0.0, 0.0],
+        };
+        assert!(are_pieces(&ten, &[(1, 4.0), (1, 6.0)]));
+        assert!(are_pieces(&ten, &[(1, 4.0), (1, 3.0)]));
+        assert!(!are_pieces(&ten, &[(1, 6.0), (1, 6.0)]));
+        assert!(!are_pieces(&ten, &[(0, 10.0), (0, 10.0)]));
+        // An arc of a quarter turn of radius 2: π mm.
+        let arc = StoredCurve::Arc {
+            center: [0.0; 3],
+            axis: [0.0, 0.0, 1.0],
+            ref_dir: [1.0, 0.0, 0.0],
+            radius: 2.0,
+            range: [0.0, std::f64::consts::FRAC_PI_2],
+        };
+        assert!((arc.length().unwrap() - std::f64::consts::PI).abs() < 1e-12);
+        // A whole circle as an ellipse of equal radii 3: 6π mm, the
+        // polyline within 1e-4.
+        let circle = StoredCurve::Ellipse {
+            center: [0.0; 3],
+            major_dir: [1.0, 0.0, 0.0],
+            minor_dir: [0.0, 1.0, 0.0],
+            major: 3.0,
+            minor: 3.0,
+            range: [0.0, std::f64::consts::TAU],
+        };
+        let l = circle.length().unwrap();
+        assert!((l - 6.0 * std::f64::consts::PI).abs() < 1e-4, "{l}");
+    }
+
+    /// The edges a fillet's input is besides its own ([`locate`] keeps them
+    /// in the fingerprint) become inputs of their own after it in its set,
+    /// with its `found`; one the set has already is not added again.
+    #[test]
+    fn the_pieces_of_an_input_become_inputs_of_their_own() {
+        use super::super::ir::{EdgeSet, FilletDetail, FingerprintF3d};
+        let edge = |x: f64| Fingerprint {
+            object_type: Some("BRepEdge".to_owned()),
+            mid_point: Some([x, 0.0, 0.0]),
+            length: Some(1.0),
+            f3d: Some(FingerprintF3d {
+                object_id: Some(7),
+                ..FingerprintF3d::default()
+            }),
+            ..Fingerprint::default()
+        };
+        let mut own = edge(0.5);
+        let f = own.f3d.as_mut().unwrap();
+        f.found = Some("state 3 (one of the edges its stored curves give)".to_owned());
+        f.other.insert(
+            PIECES.to_owned(),
+            Value::Array(vec![
+                serde_json::to_value(edge(2.5)).unwrap(),
+                serde_json::to_value(edge(4.5)).unwrap(),
+                // An edge another input of the set has: there once.
+                serde_json::to_value(edge(9.0)).unwrap(),
+            ]),
+        );
+        let mut detail = Detail::Fillet(Box::new(FilletDetail {
+            edge_sets: Some(vec![EdgeSet {
+                edges: Some(vec![
+                    Reference::Edge(Box::new(own)),
+                    Reference::Edge(Box::new(edge(9.0))),
+                ]),
+                ..EdgeSet::default()
+            }]),
+            ..FilletDetail::default()
+        }));
+        let mut out = Resolved {
+            found: 2,
+            not_found: 0,
+        };
+        split_pieces(&mut detail, &mut out);
+        assert_eq!(out.found, 4);
+        let Detail::Fillet(f) = &detail else {
+            unreachable!()
+        };
+        let edges: Vec<(f64, Option<String>, bool)> = f.edge_sets.as_ref().unwrap()[0]
+            .edges
+            .iter()
+            .flatten()
+            .map(|r| match r {
+                Reference::Edge(fp) => {
+                    let f = fp.f3d.as_ref().unwrap();
+                    (
+                        fp.mid_point.unwrap()[0],
+                        f.found.clone(),
+                        f.other.contains_key(PIECES),
+                    )
+                }
+                _ => unreachable!(),
+            })
+            .collect();
+        let found = Some("state 3 (one of the edges its stored curves give)".to_owned());
+        assert_eq!(
+            edges,
+            vec![
+                (0.5, found.clone(), false),
+                (2.5, found.clone(), false),
+                (4.5, found, false),
+                (9.0, None, false),
+            ]
+        );
     }
 
     fn open_input<'f>(
@@ -2359,6 +3147,7 @@ mod tests {
             why: String::new(),
             hit: None,
             edge: None,
+            pieces: Vec::new(),
             how: "",
         }
     }

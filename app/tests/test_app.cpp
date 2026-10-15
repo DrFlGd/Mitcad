@@ -1571,6 +1571,17 @@ void autoConstraintTests() {
 
 // Selection inputs keep a region once, and a click toggles it (mitcad#199).
 void selectionEntryTests() {
+  const QString line = mitcad::selectionMeasurementText(QJsonObject{{QStringLiteral("length"), 12.5}});
+  CHECK(line.contains(QStringLiteral("12.5 mm")));
+  CHECK(!line.contains(QStringLiteral("Radius")));
+  const QString arc = mitcad::selectionMeasurementText(
+      QJsonObject{{QStringLiteral("length"), 15.707963},
+                  {QStringLiteral("circle"), QJsonObject{{QStringLiteral("radius"), 5.0}}}});
+  CHECK(arc.contains(QStringLiteral("Radius: <b>5 mm")));
+  CHECK(arc.contains(QStringLiteral("Diameter: <b>10 mm")));
+  CHECK(mitcad::selectionMeasurementText(QJsonObject{{QStringLiteral("area"), 0.000025}})
+            .contains(QStringLiteral("2.5e-05 mm²")));
+  CHECK(mitcad::selectionMeasurementText(QJsonObject()).isEmpty());
   using mitcad::Selection;
   using mitcad::SelectionItem;
   using mitcad::SelectKind;
@@ -1813,6 +1824,10 @@ int previewBodiesTests();
 int debugLogTests();
 int waitCursorTests();
 int sketchSnapTests();
+int textureMapsTests();
+int textureSourceTests();
+int polyHavenSourceTests();
+int renderMeshTests();
 
 int main(int argc, char* argv[]) {
   QApplication app(argc, argv);
@@ -1854,6 +1869,10 @@ int main(int argc, char* argv[]) {
     failures += debugLogTests();
     failures += waitCursorTests();
     failures += sketchSnapTests();
+    failures += textureMapsTests();
+    failures += textureSourceTests();
+    failures += polyHavenSourceTests();
+    failures += renderMeshTests();
   }
   if (failures != 0) {
     std::fprintf(stderr, "%d check(s) failed\n", failures);

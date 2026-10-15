@@ -1,4 +1,4 @@
-# Commands in the Mitcad application
+(cascaded combo boxes per selector, `SizeChooser`), linked or a copy; **Update** fetches every enabled source (as Fetch All, one warning for the failures) and searches again, keeping the selected item; while no enabled source is fetched the empty list says to press Update (mitcad#317) | `library_search`, `library_show`, `library_preview`, `library_list`, `library_fetch`; then `insert_component` with `library` |# Commands in the Mitcad application
 
 How to add or change UI commands, sketch tools and panels, the UI
 framework's conventions, and the log lines UI tests read. A feature
@@ -689,6 +689,18 @@ computing`. Tests: `tools/ui-visibility-test.sh`,
   (`BrowserController::featureMenu`, shared), with Rename in place and
   Find in Timeline; a double-click edits, Delete deletes the feature.
   Test: `tools/ui-browser-features-test.sh`.
+- **Collapse All** (mitcad#312): the last entry of every browser row's
+  context menu (`BrowserController::browserMenu`, `featureMenu` for feature
+  rows; not the timeline's) calls `BrowserPanel::collapseAll`, whichever row
+  was clicked. It folds every row, those under an already folded row too,
+  and remembers every row as folded (`m_expanded` is cleared, then filled
+  with `false` for each row), so a rebuild does not reopen anything, also
+  not the folders that open by default. The top row stays. An arrow click
+  then opens only that row (the tree never opens recursively); rows below
+  stay folded until their own arrows are clicked. A presentation action: it
+  runs no model command and changes no visibility. Logs: `Browser collapsed
+  all`; `logLayout` also logs each row with children's arrow as `Browser
+  arrow <path> at x,y`. Test: `tools/ui-browser-collapse-test.sh`.
 - **Rename in place:** F2, the menu's Rename, or a slow second click on
   the name of the selected, current row (`BrowserTree`: after the
   double-click interval, not in a double-click or a drag; the timer is
@@ -737,14 +749,18 @@ computing`. Tests: `tools/ui-visibility-test.sh`,
   path, the current parent marked, unavailable parents grey with their
   reason (selectable, so that the reason shows); what is in the occurrence
   and, for the chosen parent, the references that follow it or the
-  blockers. Move runs the `reparent_occurrence` command (one undo step) and
+  blockers, and the features that place it and go with it into the new
+  parent (mitcad#301: `Joint1 moves from Box to Root`, or `Part:1's part
+  of Move1 moves to Move2, a new feature of Root` when a feature is split).
+  Move runs the `reparent_occurrence` command (one undo step) and
   selects the occurrence's row at its new path; a refused command leaves
   the dialog open; Cancel changes nothing. Log lines: `Move Component
   parents of Part:1: Root | Root/Assembly:1 (unavailable) | …`, `Move
+  Component features: Joint1 -> Root` (`Move1 -> Move2 in Root`), `Move
   Component parent: Root, ok` (or `…, unavailable: <reason>`), `Moved
   Part:1 to Root`, `Move of Holder:1 cancelled`. Tests: `app.unit`
   (`tests/move_occurrence.cpp`), `tools/ui-move-test.sh` (also the sketch
-  row's Move to Component).
+  row's Move to Component, and a component a joint places).
 - **Selection:** rows set the selection outside commands
   (`DocumentHost::pickItems`); in a command a row goes to the active input
   like a click in the view; while Create Sketch waits for a plane, a plane
@@ -880,6 +896,53 @@ computing`. Tests: `tools/ui-visibility-test.sh`,
   `AIS_ColoredShape` in the shaded styles); `BodyDisplay::appearance`
   carries the parameters to the rendered view, and a change of them alone
   emits `bodiesChanged` without redrawing the shaded body.
+  Texture sources (mitcad#315, `app/materials/`): a selector above the
+  list chooses the appearances (the list; the search field and the
+  category, All, Library or This Design, hide what does not match) or a
+  registered `TextureSource` (`textureSourceRegistry()`; now Local
+  Folders, `FolderTextureSource` over the folders of Preferences ›
+  Textures, the setting `textures/folders`). A source's search fills
+  `TextureBrowser`'s grid (thumbnails asked of the source as they come
+  into sight and kept in the texture cache); its categories fill the
+  filter; the chosen asset's resolutions (`textures/resolution`
+  remembers the choice, 2k at first) show the bytes they take; its
+  attribution line, when it has one, is under the grid. **Use** fetches
+  the asset's maps in the resolution and sends one `create_appearance`
+  (`textureUseCommand`): the asset's name (made unique), the base colour
+  image's average as `base_color`, and a texture with each map's file
+  name and `data`, or `{"path", "embedded": true, "image_sha256"}` for an
+  image the design embeds already (`embeddedImageDigests` of the
+  `appearances` query), `size` the asset's or 100 mm wide in the image's
+  proportions, and `source` (`id`, the asset's recorded id, `resolution`,
+  `license`, `url` when known); the new appearance is selected for
+  Assign. The model never sees a source or the cache. A source that uses
+  the network is asked only once the user allows it (asked on its first
+  selection; No goes back to the previous source and asks nothing;
+  `textures/allowNetwork`, Preferences › Textures). Choosing an asset
+  asks the source for its details once (`TextureSource::details`: an
+  online source's real resolutions and their bytes).
+  The texture's own lines list the set's maps and its source.
+  **Poly Haven** (mitcad#313, `PolyHavenTextureSource`): the CC0 textures
+  of https://polyhaven.com through its public API
+  (`https://api.polyhaven.com`): `/assets?t=textures` gives the list
+  (name, tags, categories, `dimensions` in mm as the texture's size,
+  `max_resolution`, the thumbnail's address, `files_hash`; kept in the
+  cache as `polyhaven/textures.json` for a day, and used however old when
+  the API cannot answer), `/files/<id>` the chosen asset's maps per
+  resolution (`Diffuse`, `nor_gl`, `Rough`, `Metal`, `AO`; JPEG where
+  there is one, else PNG; kept as `polyhaven/<id>/files-<files_hash>.json`),
+  the thumbnails come as PNG in the size shown (`thumbnail-96.png`, a
+  month), and Use downloads only the chosen resolution's maps into
+  `polyhaven/<id>/<resolution>/`, checked by size and MD5 (kept for a
+  later Use). `source` records `polyhaven`, the id, the resolution,
+  `CC0-1.0` and `https://polyhaven.com/a/<id>`. The requests go through a
+  `TextureFetcher` (`NetworkTextureFetcher`: Qt Network, HTTPS only,
+  User-Agent `Mitcad/<version>`, no cookies, 30 s without data ends a
+  request, nothing while the network is not allowed); failures (no
+  network, a timeout, an HTTP error, an unexpected answer) are sentences
+  in the browser and leave the other sources working.
+  `MITCAD_TEXTURE_FIXTURES` answers the requests from files
+  (`<folder>/<host>/<path>`) for UI tests.
 - **Change Parameters** (`solid.parameters`): each cell change is one
   model command and undo step; a bare number gets the parameter's unit;
   refusals stay in the cell in red with the reason. Favourites are
@@ -1113,6 +1176,15 @@ settings in the user's settings (`ViewSettings`, group `view`);
   unlit in the background's middle colour, because OCCT draws see-through
   faces after every layer sharing the depth buffer. Bodies keep
   `BodyDisplay::color`; previews, highlights and overlays are untouched.
+- **Component Colors** (`view.component_colors`, View menu, mitcad#321):
+  draws every body in a stable colour of its owning component
+  (`BodyDisplay::component`; hues of consecutive component ids a golden
+  angle apart, other ids hashed) and leaves out face appearances, in the
+  shaded and wireframe styles; new bodies of a preview keep their style.
+  A view setting (`componentColors`), not part of the document. Turning
+  it on leaves the rendered view; entering the rendered view turns it off.
+  Logs `Component colors on` / `Component colors off`; checked in
+  `tools/ui-windows-test.ps1` (`app.ui-windows`).
 - **Layout grid** (`LayoutGrid`): on XY, or the sketch plane in sketch
   mode, in a layer under everything, left out of Fit. Automatic spacing:
   the largest 1 or 5 × 10ⁿ mm whose lines are at most 35 px apart
@@ -1128,7 +1200,8 @@ settings in the user's settings (`ViewSettings`, group `view`);
   Pinch, rotation and two-finger double tap
   work in every scheme (`OcctViewer::event`).
 - **Preferences** (`tools.preferences`): one page per group (General,
-  Navigation, Display, Cache, Cloud, Updates, 3D Print) so the
+  Navigation, Display, Cache, Cloud, Updates, 3D Print, Diagnostics,
+  Textures: `TexturePreferencesBox`, the texture folders, mitcad#315) so the
   window fits 1366 × 768; each page is also a command
   `tools.preferences.<page>` that the search finds by its settings. OK
   saves every page. On macOS the pages are the panes of `SettingsWindow`
@@ -1333,6 +1406,8 @@ UI thread.
 | `framework/ModelShapes.*` | display shapes of datums and sketch geometry from JSON |
 | `framework/ManipulatorOverlay.*` | handles a command draws over the view: distance arrows, angle rings |
 | `framework/Appearances.*` | appearances as the model's `appearances` query lists them (`Appearance`: the physically based parameters and the display colour), a preview swatch (`appearanceSwatch`), and the physical materials |
+| `materials/TextureSource.*`, `materials/FolderTextureSource.*`, `materials/TextureBrowser.*`, `materials/TextureUse.*`, `materials/TexturePreferences.*` | texture sources (mitcad#315): the `TextureSource` interface, its registry, `TextureSettings` and the texture cache's folders; local texture folders (map detection in file names, the scan, thumbnails); Edit Appearances' grid; Use's `create_appearance`; Preferences' Textures group |
+| `materials/PolyHavenTextureSource.*`, `materials/TextureFetcher.*` | Poly Haven as an online texture source (mitcad#313): reading the API's lists, the cached list, files and thumbnails, the downloads; the requests of online sources (Qt Network, or fixture files for UI tests) |
 | `framework/Cursors.*`, `framework/Icons.*`, `framework/Numbers.*` | the sketch tools' pointer; icons from `app/icons`; numbers with decimal commas |
 | `framework/AppSettings.*` | general settings (autosave) |
 | `framework/DesktopEntry.*` | the Linux desktop file and icons an AppImage installs for itself |
@@ -2012,7 +2087,10 @@ SOLID tab's ASSEMBLE group.
   commands are local and run at once.
 
 Logs: `Library fetched: <kind> <name> (<id>) from <url>; versions ...`,
-`Library fetch failed: <url>: ...`, `Library source <url> (on|off):
+`Library fetch failed: <url>: ...`, `Library fetch of <n> source(s): <m>
+failed` (Fetch All, Update), `Library browser update: <n> enabled
+source(s)`, `Library browser empty: nothing fetched yet, press Update` (or
+`nothing found`), `Library browser kept the selection <key>`, `Library source <url> (on|off):
 <what>; versions ...`, `Library source added|removed: <url>`, `Library
 search '<text>': <n> components, <m> libraries, <k> hidden by the
 licence`, `Library browser selected <library>/<component>: version ...,
@@ -2021,7 +2099,8 @@ fetched|not fetched`), `Library size <row>`, `Inserted component <name>
 (linked|copy) from <library> <version>, licence <spdx|none>`, `Library
 part <name>: <library> <version>, size <row>, <status>`, `Library changes:
 ...`, `Updated library parts: ...`, `Parts list row: <qty> x <part>
-(...)`, `Publish: ...`. Test: `tools/ui-library-test.sh`.
+(...)`, `Publish: ...`. Tests: `tools/ui-library-test.sh`,
+`tools/ui-windows-library-test.ps1` (ctest `app.ui-windows-library`).
 
 ### Design policy
 
@@ -2318,7 +2397,8 @@ connected", its menu offering Disconnect Agent.
 | `Selection filter sketch defaults: sketch-geometry=cross, …`, `Selection filter sketch visible-edges cross: …`, `… reset: …`, `Selection filter project defaults: …`, `Selection filter sketch restored: …`, `Selection filter button at x,y`, `Selection filter row visible-edges at x,y`, `Selection filter reset at x,y`, `Selection filter widened (Shift)`, `Selection filter as set` | sketch selection filters (mitcad#217): the rows when a sketch edit or Project starts, a row clicked, the sketch's rows back after Project, where the control and its rows are (the rows when its menu opens), Shift down and up |
 | `Sketch hover: edge E{…} of F1.b0` / `nothing`, `Sketch pick places:` then `Sketch pick edge F1.b0/E{…} visible at x,y` (`occluded`) | with `MITCAD_LOG_PICKS`: what a click would take under the pointer in sketch mode and Project; with `MITCAD_LOG_EDGE_PLACES` (`tools/ui-sketch-select-test.sh`; every edge is tried) where a click hits each body edge in sight and behind faces once the camera rests in sketch mode |
 | `Sketch Sketch1: 2 DOF`, `… 0 DOF, fully constrained`, `…, conflicts k3+k5` | the sketch's status changed |
-| `Sketch entities recoloured for a dark background: 8 fully constrained, 1 centre lines` (`light`) | the view's background turned dark or light while sketch entities are shown: fully constrained geometry and centre lines take the background's colours (mitcad#253) |
+| `Sketch entities recoloured for a dark background: 8 fully constrained, 1 centre lines` (`light`) | the view's background turned dark or light while sketch entities are shown: fully constrained geometry and centre lines take the background's colours (mitcad#253), their halos too (mitcad#302) |
+| `Sketch halos: 5 dark` (`light`) | the halos shown changed in number or tone: fully constrained curves and centre lines are drawn over a wider line in the background's tone (`OcctViewer::styleSketchHalo`), dark on a dark background and light on a light one, so that they stay readable over a body's face; points, construction and projected geometry and unconstrained curves have none (mitcad#302) |
 | `Sketch colours: F1 8 fully constrained, 0 unconstrained; F3 in O1 4 fully constrained, 3 unconstrained` (`none`) | the shown sketches changed how they are coloured, in sketch mode and outside it: per sketch (with the occurrence that places a component's sketch) the entities drawn in the fully constrained colour of the background and those in the unconstrained blue; construction, centre lines and projected geometry are not counted (mitcad#286) |
 | `Sketch tool Line`, `Added line c2 from (0, 0) to (40, 0) (horizontal)`, `Line chain closed`, `Added rectangle 40 x 25 mm at (0, 0) [c1, …]`, `Added circle, diameter 20 mm at (x, y) [c5]`, `Added arc …`, `Added polygon (6 sides) …`, `Added slot, width 12 mm …`, `Added ellipse …`, `Added spline c9 through 3 points`, `Added point p4 at …`, `Added text t7 "…" at …` (or `in a frame from (x, y) to (x, y)`), `Trimmed c3 at (x, y)`, `Extended c1 at (x, y)` (with ` (joined p5)` when the end joined an existing point, mitcad#259) | the tools |
 | `Sketch cursor: bitmap 32x32, hot spot 10,10, ratio 1, icon line`, `Sketch cursor: arrow` | the view's pointer when a sketch tool starts or ends, or the screen's ratio changes (logical pixels) |
@@ -2371,7 +2451,7 @@ connected", its menu offering Disconnect Agent.
 | `Orientation cube arrow up at x,y` (up, down, left, right, cw, ccw), `Orientation cube arrow cw`, `Orientation cube arrows hidden` | the cube's arrows: where they are when the view comes to rest face on, a click |
 | `Visual style Shaded with Hidden Edges`, `Camera perspective`, `Background #525761 #1f2126`, `Layout grid off`, `Snap to grid on`, `Grid spacing 10 mm` | display settings |
 | `Saved named view NamedView1`, `View NamedView1`, `Deleted named view …` | named views |
-| `Rendered view on`/`off`, `No render worker (mitcad-render) next to the application: no rendered view`, `Render worker started (pid <n>): <path of mitcad-render>`, `Render frame memory 1: 910 x 735` (debug; the frame memory's id and capacity), `Render worker ready: Cycles 5.3.0 on <CPU>`, `Render scene 1: 2 bodies, 1 meshes sent (F4.b0), 1 meshed, 0 released`, `Render scene 1 applied in 2.1 ms: received F4.b0; added -; changed F4.b0; moved -; removed -; kept 1; meshes 3; instanced 0`, `Render view 3: orthographic 728 x 588` (debug; a view sent to the worker, once a navigation of the view ends, mitcad#214), `Render view 3: first frame (145 x 117) after 26 ms`, `Render view 3: first denoised frame (145 x 117, 1 samples) after 60 ms`, `Render frame view 3 728x588 samples 4 denoised covers x0,y0 x1,y1` (debug; what the frame's alpha covers, in view pixels; `denoised` for a denoised frame), `Render image dropped: camera moved` (debug; `size changed`, `animation`: the view draws the bodies shaded from this frame, once per navigation, mitcad#216), `Render view 3: 64 samples in 2.91 s`, `Render worker stopped: <reason>`, `View message: <text>`, `Render worker ended` | View > Rendered (`tools/ui-render-test.sh`) |
+| `Rendered view on`/`off`, `No render worker (mitcad-render) next to the application: no rendered view`, `Render worker started (pid <n>): <path of mitcad-render>`, `Render frame memory 1: 910 x 735` (debug; the frame memory's id and capacity), `Render worker ready: Cycles 5.3.0 on <CPU>`, `Render scene 1: 2 bodies, 1 meshes sent (F4.b0), 1 meshed, 0 released`, `Render scene 1 applied in 2.1 ms: received F4.b0; added -; changed F4.b0; moved -; removed -; kept 1; meshes 3; instanced 0`, `Render view 3: orthographic 728 x 588` (debug; a view sent to the worker, once a navigation of the view ends, mitcad#214), `Render view 3: first frame (145 x 117) after 26 ms`, `Render view 3: first denoised frame (145 x 117, 1 samples) after 60 ms`, `Render frame view 3 728x588 samples 4 denoised covers x0,y0 x1,y1` (debug; what the frame's alpha covers, in view pixels; `denoised` for a denoised frame), `Render image dropped: camera moved` (debug; `size changed`, `animation`: the view draws the bodies shaded from this frame, once per navigation, mitcad#216), `Render view 3: 64 samples in 2.91 s`, `Render mesh F2.b0: 12 of 12 triangles turned to face outwards` (debug; a triangulation wound inwards, mitcad#319), `Render material swap F2.b0: default (transmission 0, opacity 1) -> glass_clear (transmission 1, opacity 1); mesh reused (the worker holds it)` (debug; `meshed again`, `sent again`), `Render brightness view 3 samples 16: 0.412 over 5321 pixels` (debug; the mean linear brightness of what the frame covers, `tools/ui-render-glass-test.sh`), `Render worker: render-ground off: the camera looks at the ground from below` (debug; `render-ground on: the camera is above the ground again`: the ground dropped and built again as the camera crosses its plane, mitcad#320, `tools/ui-render-ground-test.sh`), `Render worker stopped: <reason>`, `View message: <text>`, `Render worker ended` | View > Rendered (`tools/ui-render-test.sh`) |
 | `Preferences opened: General, 640 x 330` (the page shown and the size the window asks for), `Preferences: navigation middle-orbit, zoom to cursor on, …, autosave every 5 min` (or `…, autosave off`), `Shortcut overview: 23 command shortcuts` | the dialogs |
 | `Section caps: 2 face(s) at {"normal":[1,0,0],"origin":[30,…]}`, `Section caps: none` | the caps of Section Analysis or Hide Above Sketch drawn (when they change), and gone again (the bodies whole) |
 | `Hide Above Sketch on`/`off`, `In front of the sketch plane: F2.b0 5.0, F5.b0 10.0` | the sketch palette's option; in sketch mode (also while a sketch command's panel is open), how far each shown body reaches in front of the sketch plane (mm, when it changes; 0 or less once cut, a body cut away entirely is left out) |
@@ -2395,7 +2475,9 @@ connected", its menu offering Disconnect Agent.
 | `Version recorded: part.mitcad abc1234 v3: <summary>`, `Version unchanged: part.mitcad (v3)`, `Version not recorded: <why>`, `Version failed: <error>`, `Version warning: <warning>`, `Version status: bracket, main, v3` (`…, no version`; `none` outside projects with history; when it changes), `Version author: Name <email> (git)` (or `(settings)`), `Version author dialog: git has none` (an older project without an author), `Version author dialog cancelled`, `Save with Description dialog: <automatic message's summary>`, `Save with Description cancelled`, `Save with Description: no version history for part.mitcad`, `Save conflict: <path> changed outside Mitcad (the file)` (or `(a newer version)`), `Save conflict: compare: <the diff's lines joined by " \| ">`, `Save conflict: new version` (`save as`, `cancelled`), `Renamed from a.mitcad: its display state moved along` | saving versions: a commit and what it did, the indicator's version (`Version status`), the author, Save with Description, a change outside Mitcad before Save, a rename followed at opening |
 | `Version History dialog: part.mitcad, reading its versions`, `Version History: 3 versions of part.mitcad: v3 abc1234 <summary> \| v2 … (renamed from a.mitcad)` (at most 30), `Version History changes: v3 <changes> \| v2 … \| v1 first version`, `Version History selected v2 (abc1234): preview` (or `no preview`), `Version History compare v2 with v1: <heading and text joined by " \| ">` (`with the open design`), `Version History geometry v2 with v1: computing`, `…: <text>`, `…: cancelled`, `Version History open v2 (abc1234)`, `Version History restore v2 (abc1234)`, `Version History save copy v2 (abc1234)`, `Version History closed`, `Version History failed: <error>`, `Version History: no version history for part.mitcad`, `Restore dialog: v2 (abc1234) of part.mitcad` (` (unsaved changes)`), `Restore cancelled`, `Restore: the unsaved changes dropped`, `Version restored: part.mitcad v2 (abc1234) as v4 (def5678)`, `Opened version v2 (abc1234) of part.mitcad as part v2`, `Save Copy As dialog: part v2.mitcad`, `Save Copy As cancelled`, `Saved a copy of part.mitcad v2 (abc1234) as <path>`, `Version preview saved: <blob's 7 digits> (256 x 160)` | Version History: the list, the changes, the selection and its comparison, the geometry, the choice; Restore, Open and Save Copy As; a version's preview |
 | `Appearances dialog opened`, `Appearances for bodies: F1.b0 (custom1)` (the bodies' shared appearance; `none` without bodies), `Appearances item chrome at x,y` (the list's rows in sight), `Appearances field roughness at x,y` (also `name`, `base_color`, `emission_color`: their text fields), `Appearances new at x,y` (`delete`, `assign`, `close`), `Appearance selected: chrome`, `Created appearance custom1 (Chrome Copy) from chrome`, `Appearance custom1 roughness = 0.35` (`base_color = #d02020`; `… refused: <why>`), `Assigned appearance custom1 to F1.b0` (faces: `F1.b0 F1:top`), `Deleted appearance custom1`; mitcad#53: `Appearances for faces: F1.b0 F1:top (paint_red)`, `Appearances field texture_path at x,y` (also `texture_width`, `texture_height`, `texture_rotation`, `texture_projection`, `texture_embed`, `texture_remove`), `Appearances face F1.b0 F1:top paint_red at x,y` (the listed face appearances), `Appearances clear_faces at x,y`, `Cleared face appearances of F1.b0 F1:top`, `Appearance checker texture embedded` (`not embedded`, `removed`, `path <path>`, `size [...]`), `Appearance lost texture missing: <why>` | Edit Appearances (`tools/ui-appearance-test.sh`, `tools/ui-render-faces-test.sh`); places in the main window's coordinates |
-| `Render body F1.b0: appearance plastic_red` (`default`; with faces of their own `…, 1 faces paint_red`), `Render textures not drawn: <appearance>: <why>` | the rendered view's scene: each body's appearance and its faces' (`tools/ui-render-materials-test.sh`, `tools/ui-render-faces-test.sh`) |
+| `Render body F1.b0: appearance plastic_red` (`default`; with faces of their own `…, 1 faces paint_red`), `Render textures not drawn: <appearance>: <why>, its base colour is shown` (a map of its set, mitcad#314: `<appearance>: the normal map is left out, <why>`) | the rendered view's scene: each body's appearance and its faces' (`tools/ui-render-materials-test.sh`, `tools/ui-render-faces-test.sh`) |
+| `Appearances texture sources: folder, polyhaven (1 folders)`, `Appearances source at x,y` (also `search`, `category`; with a texture source `resolution`, `use`), `Appearances source: folder` (`appearances`), `Appearances filtered "brick" (All Categories): 2 shown`, `Texture search folder "brick" (all categories): 1 found` (`…: <error>`), `Appearances texture Red bricks at x,y` (the grid's tiles in sight), `Texture thumbnail Red bricks shown`, `Texture selected: Red bricks (2k)`, `Texture fetching folder red_bricks 2k`, `Texture used: folder red_bricks 2k as custom1 (3 maps; 3 images embedded, 0 shared)`, `Texture not used: <why>`, `Appearance custom1 texture: embedded, maps normal roughness, source folder red_bricks 2k`, `Appearances: texture sources on the internet allowed`, `Preferences texture folder at x,y`, `Preferences: texture folders <folders>` (`none`) | texture sources in Edit Appearances and Preferences › Textures (mitcad#315, `tools/ui-appearance-textures-test.sh`) |
+| `Texture source polyhaven attribution: Powered by …`, `Texture request https://api.polyhaven.com/assets?t=textures` (every request of an online source; `Texture request refused: <why>`, `Texture request <host> failed: <why> (HTTP <status>)`), `Texture details: Red Tiles 01: 1k 292 bytes, 2k 1.2 kB`, `Poly Haven: 2 textures` (`… from the cache`; `the cached list of textures, as <error>`), `Poly Haven: red_tiles_01 2k in the cache (3 maps)` | Poly Haven as a texture source (mitcad#313, `tools/ui-appearance-polyhaven-test.sh`) |
 | `Render image dialog opened`, `Render image field output.width at x,y` (every output field; also `camera`, `size`, `render`, `cancel`, `save`, `close`), `Render setting output.width = 320` (`output.size = 3840 x 2160` for a preset), `Render image camera Front` (`current view`), `Render image frame x y w h` (the image's frame in the view, main window coordinates; `Render image frame hidden`), `Render image started: 320 x 240, 8 samples, png, current view, 1 bodies (pid <n>)`, `Render image progress 4/8` (debug), `Render image preview (4 samples)` (debug), `Render image done: 320 x 240, 8 samples in 0.21 s`, `Render image cancelled`, `Render image failed: <reason>`, `Render image saved <path>` | Render Image (`tools/ui-render-image-test.sh`) |
 | `Render environment studio_dark, background view, ground shadows` (`environment`; `none`, `shadows and reflections`), `Render worker: environment studio_dark, 1 lights` (debug), `Render environment dialog opened`, `Render settings field film.exposure at x,y` (every field by its section and name, also `environment.image`, `background.color`, `ground.lowest`; a check box at its box), `Render settings rendered at x,y` (`reset`, `close`, `page environment`, `page lights`), `Render settings page lights` (the page shown; the places are logged again), `Render setting environment.preset = studio_dark` (`… refused: <why>`), `Render settings reset`, `Render light field power at x,y` (`list`, `new`, `add`, `delete`, `name`, `type`, `enabled`, `camera`, `position.0`…`direction.2`, `color`, `size`, `size_y`, `shape`, `spot_angle`, `spot_blend`, `angle`, `distance`, `aim`, `from_camera`), `Render light light1 added (point)`, `Render light light1 power = 25` (`… refused: <why>`; `space = camera`, `placed at the camera`, `aimed at a face`), `Render light light1: click a face to aim at`, `Render light light1 aimed at x, y, z (normal x, y, z)`, `Render light aim: no face there`, `Render light light1 deleted`, `Render light glyph light1 at x,y` (`tools/ui-render-lights-test.sh`), the environment's ending `, 1 lights` (`, 2 lights (1 off)`), `View message: Rendering: cannot read the environment image <path>: <why>; the studio lights the scene instead.` | the render settings: an environment sent to the worker, Render Environment's places (main window coordinates) and changes, an image the worker cannot read (`tools/ui-render-environment-test.sh`) |
 | `Send Feedback: the form shows`, `Feedback screenshot 1280x800`, `Feedback screenshot image at x,y`, `Feedback screenshot image size w h`, `Report screenshot cropped to 568x402`, `Feedback form: kind bug, summary '<s>', description 42 characters, contact given, diagnostics on, screenshot 568x402`, `Send Feedback cancelled`, `Report preview: <title>`, `Report section <id>: <text, lines joined by " \| ">`, `Report section <id> at x,y` (its check box), `Report text <id> at x,y` (its text), `Report key: mitcad-<key>`, `Report section <id> included` (`left out`), `Report not sent: the preview was cancelled`, `Report sent: '<title>', sections description, contact; link 812 characters`, `Report on the clipboard: <n> characters (too long for the link)`, `Report screenshot saved: <path> 568x402`, `Open URL (test, not opened): <url>`; `Internal error (<context>): <masked message>; key mitcad-<key>`, `Crash report of this application's import-worker: SIGSEGV <file>`, `Crash reports of earlier runs: 1, the newest SIGSEGV of the app`, `Error report offered (crash): <message>; key mitcad-<key>` (`worker-crash`, `error`), `Error report no more offers at x,y`, `Error reports: no more offers`, `Error report declined`, `Error report not offered (turned off): <message>`, `Crashing for a test (MITCAD_TEST_CRASH=app)`; on standard error of a crashed process `Mitcad crashed: SIGSEGV; crash report: <file>` | feedback and error reports (`tools/ui-report-test.sh`); places in the main window's coordinates |

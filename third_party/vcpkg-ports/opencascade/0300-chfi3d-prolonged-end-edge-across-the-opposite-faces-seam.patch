@@ -1,0 +1,44 @@
+Mitcad's patch to OCCT 8.0.1, under OCCT's licence:
+SPDX-License-Identifier: LGPL-2.1-only WITH OCCT-exception-1.0
+
+Fillets: where the prolonged edge at a rounding's end crosses the seam of
+the opposite face, its two pieces get their p-curves on the face at the
+end from that face.
+
+At the end of a rounding, PerformOneCorner prolongs the edge between the
+face at the end (Fv) and the opposite face (Fop) from the vertex to the
+contact's end: the intersection curve of the two faces, with a p-curve on
+each. Where that curve crosses the seam of the opposite face (a cylinder
+whose seam lies between the edge and the contact), the curve is cut at
+the seam in two pieces. The pieces' p-curves on the face at the end were
+computed by projecting them onto the opposite face, Fop, and stored on
+Fv: on Fv they lay anywhere (edges with tolerances of several mm), and the
+face at the end was unorientable. The pieces now take the intersection's
+own p-curve on Fv, trimmed at the seam crossing, as the opposite face's
+pieces are computed on that face.
+diff --git a/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_C1.cxx b/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_C1.cxx
+index b869f0c..931f51c 100644
+--- a/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_C1.cxx
++++ b/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_C1.cxx
+@@ -2640,14 +2640,16 @@ void ChFi3d_Builder::PerformOneCorner(const int Index, const bool thePrepareOnSa
+     if (intcouture)
+     {
+ 
+-      // interference of curv1 and curv2 on Ishape
++      // interference of curv1 and curv2 on Ishape: the pieces of the
++      // curve's own p-curve on Fv (before, curves computed on Fop, the
++      // other face, were put on Fv)
+       Et = TopAbs::Reverse(TopAbs::Compose(OVtx, OArcprolv));
+-      ComputeCurve2d(curv1, Fop, c2d1);
++      c2d1 = new Geom2d_TrimmedCurve(zob2dv, Udeb, par2);
+       occ::handle<TopOpeBRepDS_SurfaceCurveInterference> InterFv =
+-        ChFi3d_FilCurveInDS(Icurv1, IShape, /*zob2dv*/ c2d1, Et);
++        ChFi3d_FilCurveInDS(Icurv1, IShape, c2d1, Et);
+       DStr.ChangeShapeInterferences(IShape).Append(InterFv);
+-      ComputeCurve2d(curv2, Fop, c2d2);
+-      InterFv = ChFi3d_FilCurveInDS(Icurv2, IShape, /*zob2dv*/ c2d2, Et);
++      c2d2    = new Geom2d_TrimmedCurve(zob2dv, par2, Ufin);
++      InterFv = ChFi3d_FilCurveInDS(Icurv2, IShape, c2d2, Et);
+       DStr.ChangeShapeInterferences(IShape).Append(InterFv);
+ 
+       // limitation of the sewing edge

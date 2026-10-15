@@ -1,0 +1,431 @@
+Mitcad's patch to OCCT 8.0.1, under OCCT's licence:
+SPDX-License-Identifier: LGPL-2.1-only WITH OCCT-exception-1.0
+
+Fillets: a contour carried on across a small notch in the rim it rounds
+onto the next edge of that rim (mitcad#307).
+
+A rim rounded on one side of a small notch whose edges are not rounded (a
+plate's top edge along an arc of a cylinder, broken by a tapered hole
+whose three top edges are 0.28 to 0.29 long, the notch 0.25 deep and 0.57
+wide; the rounding's radius 0.5), the next arc of the same cylinder beyond
+the notch not given: the bodies stored in the .f3d files round that arc
+too, with one torus face over both arcs and the notch, cut by the notch's
+faces. OCCT ended the contour at the notch, its end cut by the notch's
+face, and the next arc stayed sharp (the result was invalid:
+self-intersecting wires).
+
+- ChFi3d_FilBuilder::AddAcrossNotches (BRepFilletAPI_MakeFillet::
+  CarryChainsAcrossNotches, to be called after the contours are added):
+  where a contour of constant radius R ends at a vertex V, the boundary of
+  a face Fc of its end edge E is followed from V through edges that no
+  contour holds, each lying within the fillet's contact distance on Fc of
+  E's line or circle (R tan(a/2), a the angle between the faces' normals
+  at V: the contact on Fc runs on inside Fc over the notch) and ending
+  within 2R of V (the ball spans the notch), up to an edge of Fc on E's
+  line or circle whose other face lies on the surface of E's other face.
+  That edge is added as a contour of radius R (with its own tangent
+  chain), placed just before the contour it is carried from, and the
+  contours added are carried on in turn. (Where 0241 makes the two
+  blends one face, the face is the later stripe's: so it is the given
+  contour's, and BRepFilletAPI_MakeFillet::Generated of the given edge
+  gives it.)
+  ChFi3d_JoinAcrossNotches (0241) then joins the two ends over the notch.
+  Lines and circles only; elementary surfaces of one kind that coincide
+  (or one surface object) count as one surface.
+- A notch wider than the ball (a groove 1 long and 0.0043 deep beside a
+  rounding of 0.3) is not crossed: there the files' roundings end at the
+  notch.
+
+Upstream: new; without the call nothing changes.
+diff --git a/src/ModelingAlgorithms/TKFillet/BRepFilletAPI/BRepFilletAPI_MakeFillet.cxx b/src/ModelingAlgorithms/TKFillet/BRepFilletAPI/BRepFilletAPI_MakeFillet.cxx
+index b1af6fe..9963c77 100644
+--- a/src/ModelingAlgorithms/TKFillet/BRepFilletAPI/BRepFilletAPI_MakeFillet.cxx
++++ b/src/ModelingAlgorithms/TKFillet/BRepFilletAPI/BRepFilletAPI_MakeFillet.cxx
+@@ -65,6 +65,13 @@ void BRepFilletAPI_MakeFillet::StopChainsAtTurns(
+ 
+ //=================================================================================================
+ 
++int BRepFilletAPI_MakeFillet::CarryChainsAcrossNotches()
++{
++  return myBuilder.AddAcrossNotches();
++}
++
++//=================================================================================================
++
+ void BRepFilletAPI_MakeFillet::Add(const TopoDS_Edge& E)
+ {
+   myBuilder.Add(E);
+diff --git a/src/ModelingAlgorithms/TKFillet/BRepFilletAPI/BRepFilletAPI_MakeFillet.hxx b/src/ModelingAlgorithms/TKFillet/BRepFilletAPI/BRepFilletAPI_MakeFillet.hxx
+index ed1c29b..2412599 100644
+--- a/src/ModelingAlgorithms/TKFillet/BRepFilletAPI/BRepFilletAPI_MakeFillet.hxx
++++ b/src/ModelingAlgorithms/TKFillet/BRepFilletAPI/BRepFilletAPI_MakeFillet.hxx
+@@ -99,6 +99,18 @@ public:
+     return myBuilder.ChainTurnStops();
+   }
+ 
++  //! Carries the contours of constant radius added so far on across notches
++  //! in the rims they round: where a contour ends at a notch whose edges
++  //! are not filleted and lie within the fillet's contact on the face the
++  //! notch breaks and within the fillet's diameter of the contour's end, and
++  //! the edge beyond the notch continues the contour's end
++  //! edge (its line or circle, between the same face and a face of the same
++  //! surface as the end edge's other face), that edge is added as a contour
++  //! of the same radius; the two fillets meet over the notch as one
++  //! surface, cut by the notch's faces. Returns the number of contours
++  //! added.
++  Standard_EXPORT int CarryChainsAcrossNotches();
++
+   //! Adds a fillet contour in the builder (builds a
+   //! contour of tangent edges).
+   //! The Radius must be set after.
+diff --git a/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_FilBuilder.cxx b/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_FilBuilder.cxx
+index 5dabf2f..a0a90b8 100644
+--- a/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_FilBuilder.cxx
++++ b/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_FilBuilder.cxx
+@@ -65,7 +65,17 @@
+ #include <TopOpeBRepDS_HDataStructure.hxx>
+ #include <TopOpeBRepDS_Surface.hxx>
+ #include <BRepAdaptor_Curve.hxx>
++#include <BRepAdaptor_Surface.hxx>
+ #include <BRepClass_FaceClassifier.hxx>
++#include <BRepTools.hxx>
++#include <Geom2d_Curve.hxx>
++#include <GeomAPI_ProjectPointOnSurf.hxx>
++#include <Geom_Surface.hxx>
++#include <NCollection_IndexedDataMap.hxx>
++#include <Standard_ErrorHandler.hxx>
++#include <TopLoc_Location.hxx>
++#include <TopTools_ShapeMapHasher.hxx>
++#include <algorithm>
+ #include <BRep_Tool.hxx>
+ #include <TopExp.hxx>
+ #include <TopExp_Explorer.hxx>
+@@ -410,6 +420,304 @@ void ChFi3d_FilBuilder::Add(const double Radius, const TopoDS_Edge& E)
+   }
+ }
+ 
++//=======================================================================
++// function : ChFi3d_SameSupport
++// purpose  : Whether the surfaces of two faces are one surface: one surface
++//            object, or elementary surfaces of one kind on which points of
++//            each face lie on the other's surface (whatever their
++//            parametrizations).
++//=======================================================================
++
++static bool ChFi3d_SameSupport(const TopoDS_Face& F1, const TopoDS_Face& F2, const double Tol)
++{
++  if (F1.IsSame(F2))
++  {
++    return true;
++  }
++  TopLoc_Location                  L1, L2;
++  const occ::handle<Geom_Surface>& S1 = BRep_Tool::Surface(F1, L1);
++  const occ::handle<Geom_Surface>& S2 = BRep_Tool::Surface(F2, L2);
++  if (S1.IsNull() || S2.IsNull())
++  {
++    return false;
++  }
++  if (S1 == S2 && L1.IsEqual(L2))
++  {
++    return true;
++  }
++  const BRepAdaptor_Surface A1(F1, false), A2(F2, false);
++  const GeomAbs_SurfaceType aType = A1.GetType();
++  if (aType != A2.GetType()
++      || (aType != GeomAbs_Plane && aType != GeomAbs_Cylinder && aType != GeomAbs_Cone && aType != GeomAbs_Sphere
++          && aType != GeomAbs_Torus))
++  {
++    return false;
++  }
++  // (Points inside each face's parametric box on the other's surface.)
++  const auto onOther = [Tol](const TopoDS_Face& Fa, const BRepAdaptor_Surface& Aa, const TopoDS_Face& Fb) {
++    double u1 = 0., u2 = 0., v1 = 0., v2 = 0.;
++    BRepTools::UVBounds(Fa, u1, u2, v1, v2);
++    const occ::handle<Geom_Surface> Sb = BRep_Tool::Surface(Fb);
++    for (const double a : {0.2, 0.5, 0.8})
++    {
++      for (const double b : {0.3, 0.7})
++      {
++        const gp_Pnt               P = Aa.Value(u1 + a * (u2 - u1), v1 + b * (v2 - v1));
++        GeomAPI_ProjectPointOnSurf aPr(P, Sb);
++        if (aPr.NbPoints() == 0 || aPr.LowerDistance() > Tol)
++        {
++          return false;
++        }
++      }
++    }
++    return true;
++  };
++  return onOther(F1, A1, F2) && onOther(F2, A2, F1);
++}
++
++//=======================================================================
++// function : AddAcrossNotches
++// purpose  : A rim rounded on one side of a small notch whose edges are
++//            not rounded (a plate's top edge along an arc of a cylinder,
++//            the arc broken by a notch shallower than the fillet's contact
++//            on the top is wide, the next arc of the same cylinder beyond
++//            it not given): the fillet runs on over the notch with its
++//            contact on the top, the notch's faces cutting its other side,
++//            onto the next arc, as one surface; the bodies stored in .f3d
++//            files have one torus face over both arcs and the notch. OCCT
++//            ended the contour at the notch, where its end was cut by the
++//            notch's face and the next arc stayed sharp. The edge beyond
++//            the notch is added as a contour of the same radius; the two
++//            ends then meet over the notch (ChFi3d_JoinAcrossNotches).
++//=======================================================================
++
++int ChFi3d_FilBuilder::AddAcrossNotches()
++{
++  // The edge beyond a notch from the end V of the contour's end edge E, on
++  // E's line or circle, or a null edge.
++  const auto across = [&](const TopoDS_Edge& E, const TopoDS_Vertex& V, const double R) {
++    TopoDS_Edge aNone;
++    if (BRep_Tool::Degenerated(E) || !myEFMap.Contains(E))
++    {
++      return aNone;
++    }
++    TopoDS_Vertex V1, V2;
++    TopExp::Vertices(E, V1, V2);
++    if (!V.IsSame(V1) && !V.IsSame(V2))
++    {
++      return aNone;
++    }
++    TopoDS_Face aFaces[2];
++    int         nbFaces = 0;
++    for (NCollection_List<TopoDS_Shape>::Iterator it(myEFMap(E)); it.More(); it.Next())
++    {
++      const TopoDS_Face& F = TopoDS::Face(it.Value());
++      if (nbFaces > 0 && (F.IsSame(aFaces[0]) || (nbFaces > 1 && F.IsSame(aFaces[1]))))
++      {
++        continue;
++      }
++      if (nbFaces == 2)
++      {
++        return aNone;
++      }
++      aFaces[nbFaces++] = F;
++    }
++    if (nbFaces != 2)
++    {
++      return aNone;
++    }
++    const BRepAdaptor_Curve aC(E);
++    if (aC.GetType() != GeomAbs_Line && aC.GetType() != GeomAbs_Circle)
++    {
++      return aNone;
++    }
++    // (The distance from E's whole line or circle.)
++    const auto fromRim = [&aC](const gp_Pnt& P) {
++      return aC.GetType() == GeomAbs_Line ? aC.Line().Distance(P) : aC.Circle().Distance(P);
++    };
++    const double tV = BRep_Tool::Parameter(V, E);
++    // The faces' normals at V (as the faces are oriented).
++    const auto normalAt = [&](const TopoDS_Face& F, gp_Dir& N) {
++      double                          f = 0., l = 0.;
++      const occ::handle<Geom2d_Curve> pc = BRep_Tool::CurveOnSurface(E, F, f, l);
++      if (pc.IsNull())
++      {
++        return false;
++      }
++      const gp_Pnt2d            uv = pc->Value(tV);
++      const BRepAdaptor_Surface aS(F, false);
++      gp_Pnt                    P;
++      gp_Vec                    Du, Dv;
++      aS.D1(uv.X(), uv.Y(), P, Du, Dv);
++      const gp_Vec aN = Du.Crossed(Dv);
++      if (aN.Magnitude() <= gp::Resolution())
++      {
++        return false;
++      }
++      N = gp_Dir(aN);
++      if (F.Orientation() == TopAbs_REVERSED)
++      {
++        N.Reverse();
++      }
++      return true;
++    };
++    gp_Dir N0, N1;
++    if (!normalAt(aFaces[0], N0) || !normalAt(aFaces[1], N1))
++    {
++      return aNone;
++    }
++    // The contact's distance from E on a face: R tan(a/2), a the angle
++    // between the faces' normals.
++    const double anAngle = N0.Angle(N1);
++    if (anAngle <= Precision::Angular() || anAngle >= M_PI - 0.1)
++    {
++      return aNone;
++    }
++    const double aContact = R * std::tan(0.5 * anAngle);
++    for (int c = 0; c < 2; c++)
++    {
++      const TopoDS_Face& Fc = aFaces[c];     // the face whose rim the notch breaks
++      const TopoDS_Face& Fo = aFaces[1 - c]; // the face whose surface goes on beyond it
++      NCollection_IndexedDataMap<TopoDS_Shape, NCollection_List<TopoDS_Shape>, TopTools_ShapeMapHasher> aVE;
++      TopExp::MapShapesAndUniqueAncestors(Fc, TopAbs_VERTEX, TopAbs_EDGE, aVE);
++      TopoDS_Edge   aPrev = E;
++      TopoDS_Vertex aCur  = V;
++      for (int aStep = 0; aStep < 64; aStep++)
++      {
++        // The next edge of Fc's boundary at aCur.
++        const int iV = aVE.FindIndex(aCur);
++        if (iV == 0)
++        {
++          break;
++        }
++        TopoDS_Edge aNext;
++        int         nbNext = 0;
++        for (NCollection_List<TopoDS_Shape>::Iterator it(aVE(iV)); it.More(); it.Next())
++        {
++          const TopoDS_Edge& e = TopoDS::Edge(it.Value());
++          if (!e.IsSame(aPrev) && !BRep_Tool::Degenerated(e))
++          {
++            aNext = e;
++            nbNext++;
++          }
++        }
++        if (nbNext != 1 || aNext.IsSame(E))
++        {
++          break;
++        }
++        TopoDS_Vertex W1, W2;
++        TopExp::Vertices(aNext, W1, W2);
++        const TopoDS_Vertex aFar = W1.IsSame(aCur) ? W2 : W1;
++        if (aFar.IsNull())
++        {
++          break;
++        }
++        const BRepAdaptor_Curve aNC(aNext);
++        const gp_Pnt            aMid = aNC.Value(0.5 * (aNC.FirstParameter() + aNC.LastParameter()));
++        const double            aTol =
++          2. * std::max({BRep_Tool::Tolerance(E), BRep_Tool::Tolerance(aNext), Precision::Confusion()});
++        // Past the notch: the next edge on E's line or circle, between Fc
++        // and a face of Fo's surface.
++        if (aStep > 0 && fromRim(aMid) <= aTol && fromRim(BRep_Tool::Pnt(aFar)) <= aTol && myEFMap.Contains(aNext))
++        {
++          TopoDS_Face aBeyond;
++          for (NCollection_List<TopoDS_Shape>::Iterator it(myEFMap(aNext)); it.More(); it.Next())
++          {
++            if (!it.Value().IsSame(Fc))
++            {
++              aBeyond = TopoDS::Face(it.Value());
++            }
++          }
++          if (!aBeyond.IsNull() && Contains(aNext) == 0 && ChFi3d_SameSupport(Fo, aBeyond, aTol))
++          {
++            return aNext;
++          }
++          break;
++        }
++        // An edge of the notch: not rounded, within the contact's distance
++        // from E's line or circle (the contact runs on inside Fc), and within
++        // the ball's diameter of V (the ball spans the notch: past a wider
++        // one, a groove 1 long and 0.0043 deep under a ball of 0.3 across,
++        // the files' roundings end at the notch).
++        if (Contains(aNext) != 0 || fromRim(aMid) >= aContact - aTol
++            || fromRim(BRep_Tool::Pnt(aFar)) >= aContact - aTol || aFar.IsSame(V)
++            || BRep_Tool::Pnt(aFar).Distance(BRep_Tool::Pnt(V)) >= 2. * R - aTol)
++        {
++          break;
++        }
++        aPrev = aNext;
++        aCur  = aFar;
++      }
++    }
++    return aNone;
++  };
++
++  int nbAdded = 0;
++  // (The contours added are carried on in turn.)
++  NCollection_Sequence<occ::handle<ChFiDS_Stripe>> aQueue;
++  for (NCollection_List<occ::handle<ChFiDS_Stripe>>::Iterator it(myListStripe); it.More(); it.Next())
++  {
++    aQueue.Append(it.Value());
++  }
++  for (int q = 1; q <= aQueue.Length(); q++)
++  {
++    const occ::handle<ChFiDS_Stripe>   aStripe = aQueue.Value(q);
++    const occ::handle<ChFiDS_FilSpine> Spine   = occ::down_cast<ChFiDS_FilSpine>(aStripe->Spine());
++    if (Spine.IsNull() || Spine->IsClosed() || Spine->NbEdges() == 0 || !Spine->IsConstant())
++    {
++      continue;
++    }
++    const double R = Spine->Radius();
++    for (int iEnd = 0; iEnd < 2; iEnd++)
++    {
++      TopoDS_Edge aBeyond;
++      try
++      {
++        OCC_CATCH_SIGNALS
++        aBeyond = across(Spine->Edges(iEnd == 0 ? 1 : Spine->NbEdges()),
++                         iEnd == 0 ? Spine->FirstVertex() : Spine->LastVertex(),
++                         R);
++      }
++      catch (Standard_Failure const&)
++      {
++        aBeyond.Nullify();
++      }
++      if (aBeyond.IsNull() || Contains(aBeyond) != 0)
++      {
++        continue;
++      }
++      Add(R, aBeyond);
++      if (Contains(aBeyond) == 0)
++      {
++        continue;
++      }
++      // The contour added goes just before the one it is carried from: where
++      // the two blends meet over the notch as one face (0241), that face is
++      // the later stripe's, the contour given.
++      const occ::handle<ChFiDS_Stripe> aNew = myListStripe.Last();
++      for (NCollection_List<occ::handle<ChFiDS_Stripe>>::Iterator it(myListStripe); it.More(); it.Next())
++      {
++        if (it.Value() == aNew)
++        {
++          myListStripe.Remove(it);
++          break;
++        }
++      }
++      for (NCollection_List<occ::handle<ChFiDS_Stripe>>::Iterator it(myListStripe); it.More(); it.Next())
++      {
++        if (it.Value() == aStripe)
++        {
++          myListStripe.InsertBefore(aNew, it);
++          break;
++        }
++      }
++      aQueue.Append(aNew);
++      nbAdded++;
++    }
++  }
++  return nbAdded;
++}
++
+ //=================================================================================================
+ 
+ void ChFi3d_FilBuilder::SetRadius(const occ::handle<Law_Function>& C, const int IC, const int IinC)
+diff --git a/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_FilBuilder.hxx b/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_FilBuilder.hxx
+index d2074ae..d19dce7 100644
+--- a/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_FilBuilder.hxx
++++ b/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_FilBuilder.hxx
+@@ -68,6 +68,19 @@ public:
+   //! initialisation of the constant vector the corresponding 1st edge.
+   Standard_EXPORT void Add(const double Radius, const TopoDS_Edge& E);
+ 
++  //! Carries the contours of constant radius on across notches in the rims
++  //! they round. Where a contour ends at a vertex from which the boundary of
++  //! a face of its end edge runs through edges that no contour holds, each
++  //! within the fillet's contact distance on that face of the end edge's
++  //! line or circle and within the fillet's diameter of the vertex (a notch
++  //! shallower than the fillet's contact and narrower than its ball), to an
++  //! edge of that face on the same line or circle whose other face
++  //! lies on the surface of the end edge's other face, that edge is added
++  //! as a contour of the same radius (and so on from the contours added).
++  //! The fillet then runs on over the notch, cut by its faces, as one
++  //! surface. Returns the number of contours added.
++  Standard_EXPORT int AddAcrossNotches();
++
+   //! Set the radius of the contour of index IC.
+   Standard_EXPORT void SetRadius(const occ::handle<Law_Function>& C, const int IC, const int IinC);
+ 

@@ -1,0 +1,553 @@
+Mitcad's patch to OCCT 8.0.1, under OCCT's licence:
+SPDX-License-Identifier: LGPL-2.1-only WITH OCCT-exception-1.0
+
+Fillets: two roundings ending at the two vertices of a short sharp edge
+whose ends would cross are mitred (mitcad#236).
+
+Where two fillets end alone at the two vertices of a sharp edge E (three
+sharp edges at each vertex), each with one contact on E's face S and the
+other on an edge of E's other face Fv (the face at both ends), and their
+contacts on E overlap (the edge is shorter than the two roundings' setbacks
+on it together), each end was cut by Fv as if the other were not there:
+the second end's cut crossed the first one's on Fv, and the corner failed
+("OneCorner : fillets have too big radiuses"). The two blends meet: each
+is trimmed by the other along their intersection, from the point where
+their contacts on S cross up to Fv, and by Fv from there to its contact on
+Fv's edge. E vanishes.
+
+- ChFi3d_Builder::PerformMitredEnd, called by PerformFilletOnVertex before
+  the one-stripe corner: recognises the two ends (constant or variable
+  radius fillets, both ends AllSame or OnDiff, their surface data ending on
+  faces, a contact on E each on the same face S, the other contacts on arcs
+  of Fv, the contact of the end at this vertex lying beyond the other's on
+  E), and makes both ends at the later of the two vertices (the earlier one
+  is left to it). Each end is two curves, stored as the big stripe's end
+  of PerformTwoCornerbyInter is: the mitre, the blends' intersection from
+  the crossing of the contacts on S (found on their curves on S and refined
+  with ChFi3d_ComputesIntPC) to the point where the blends' cuts by Fv cross
+  (found on their curves on Fv), shared by both blends; and each blend's
+  cut by Fv from there to its contact on Fv's edge. The contacts on S end
+  at their crossing; the stripes' ends are marked as in the data
+  structure, so ChFi3d_FilDS adds no end curve.
+- Two cylinders of one radius whose axes cross (straight roundings of one
+  radius at both ends) meet in two ellipses (IntAna_QuadQuadGeo): the
+  mitre is the shorter arc of the one through both points, exact. The walk
+  of ChFi3d_ComputeCurves, which starts where the two blends touch (both
+  tangent to S at the crossing of their contacts), stays for other
+  surfaces.
+
+diff --git a/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder.cxx b/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder.cxx
+index 64a188b..dc5de34 100644
+--- a/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder.cxx
++++ b/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder.cxx
+@@ -1875,7 +1875,11 @@ void ChFi3d_Builder::PerformFilletOnVertex(const int Index)
+ #ifdef OCCT_DEBUG // perf
+           ChFi3d_InitChron(cl_perform1corner);
+ #endif
+-          if (MoreSurfdata(Index))
++          if (PerformMitredEnd(Index))
++          {
++            // (Made with the fillet ending at the edge's other vertex.)
++          }
++          else if (MoreSurfdata(Index))
+           {
+             PerformMoreSurfdata(Index);
+             // PerformMoreSurfdata returns without a corner where the
+diff --git a/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder.hxx b/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder.hxx
+index 24bd712..ae0ca00 100644
+--- a/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder.hxx
++++ b/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder.hxx
+@@ -830,6 +830,11 @@ private:
+ 
+   Standard_EXPORT void PerformIntersectionAtEnd(const int Index);
+ 
++  //! Two fillets ending alone at the two vertices of a sharp edge whose
++  //! contacts on it overlap: their blends are mitred (the end at the later
++  //! vertex makes both). True when the end at vertex Index is made so.
++  Standard_EXPORT bool PerformMitredEnd(const int Index);
++
+   Standard_EXPORT void ExtentAnalyse();
+ 
+   Standard_EXPORT bool FindFace(const TopoDS_Vertex&      V,
+diff --git a/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_C1.cxx b/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_C1.cxx
+index 2788ff6..26d1498 100644
+--- a/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_C1.cxx
++++ b/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_C1.cxx
+@@ -38,6 +38,10 @@
+ #include <NCollection_List.hxx>
+ #include <ChFiDS_Map.hxx>
+ #include <ChFiDS_Spine.hxx>
++#include <ChFiDS_FilSpine.hxx>
++#include <Geom_Ellipse.hxx>
++#include <GeomAdaptor_Curve.hxx>
++#include <IntAna_QuadQuadGeo.hxx>
+ #include <ElCLib.hxx>
+ #include <Extrema_ExtCC.hxx>
+ #include <Extrema_ExtPC.hxx>
+@@ -2871,6 +2875,466 @@ static bool ProlongOnSameEdge(TopOpeBRepDS_DataStructure& DStr,
+   return true;
+ }
+ 
++//=======================================================================
++// function : PerformMitredEnd
++// purpose  : Two fillets ending alone at the two vertices of a sharp edge E
++//           (three sharp edges at each), each with a contact on E's face S
++//           and its other contact on an edge of E's other face Fv (the face
++//           at both ends), where their contacts on E overlap: their ends on
++//           Fv would cross ("fillets have too big radiuses"). The two blends
++//           are mitred: each ends in two curves, its intersection with the
++//           other blend (from where their contacts on S cross up to Fv) and
++//           its intersection with Fv from there to its contact on Fv's
++//           edge; E vanishes. Both ends are made at the later of the two
++//           vertices; true when the end at the vertex Index is (or will be)
++//           made so.
++//=======================================================================
++
++bool ChFi3d_Builder::PerformMitredEnd(const int Index)
++{
++  TopOpeBRepDS_DataStructure& DStr = myDS->ChangeDS();
++  struct MitreEnd
++  {
++    occ::handle<ChFiDS_Stripe>   St;
++    occ::handle<ChFiDS_SurfData> Fd;
++    bool                         IsFirst = false;
++    int                          ICo     = 0; // the side on S
++  };
++  const auto endAt = [&](const int theIndex, MitreEnd& theEnd) -> bool {
++    if (myVDataMap(theIndex).Extent() != 1)
++    {
++      return false;
++    }
++    const TopoDS_Vertex& V = myVDataMap.FindKey(theIndex);
++    theEnd.St              = myVDataMap(theIndex).First();
++    if (theEnd.St->SetOfSurfData().IsNull() || myDroppedStripes.Contains(theEnd.St)
++        || myRideStripes.Contains(theEnd.St) || myRideOn.Contains(theEnd.St))
++    {
++      return false;
++    }
++    const occ::handle<ChFiDS_Spine>& sp = theEnd.St->Spine();
++    if (occ::down_cast<ChFiDS_FilSpine>(sp).IsNull()
++        || ChFi3d_NumberOfSharpEdges(V, myVEMap, myEFMap) != 3)
++    {
++      return false;
++    }
++    int       sens   = 0;
++    const int num    = ChFi3d_IndexOfSurfData(V, theEnd.St, sens);
++    theEnd.IsFirst   = (sens == 1);
++    const ChFiDS_State st = theEnd.IsFirst ? sp->FirstStatus() : sp->LastStatus();
++    if ((st != ChFiDS_AllSame && st != ChFiDS_OnDiff) || num < 1
++        || num > theEnd.St->SetOfSurfData()->Length() || theEnd.St->IsInDS(theEnd.IsFirst) != 0)
++    {
++      return false;
++    }
++    theEnd.Fd = theEnd.St->SetOfSurfData()->Value(num);
++    return theEnd.Fd->IndexOfS1() > 0 && theEnd.Fd->IndexOfS2() > 0 && !theEnd.Fd->IsOnCurve1()
++           && !theEnd.Fd->IsOnCurve2()
++           && !theEnd.Fd->Vertex(theEnd.IsFirst, 1).Point().IsEqual(
++             theEnd.Fd->Vertex(theEnd.IsFirst, 2).Point(),
++             0.);
++  };
++  // Whether edge Arc is one of face F's.
++  const auto onFace = [](const TopoDS_Edge& Arc, const TopoDS_Face& F) {
++    for (TopExp_Explorer ex(F, TopAbs_EDGE); ex.More(); ex.Next())
++    {
++      if (ex.Current().IsSame(Arc))
++      {
++        return true;
++      }
++    }
++    return false;
++  };
++
++  MitreEnd A, B;
++  if (!endAt(Index, A))
++  {
++    return false;
++  }
++  const TopoDS_Vertex& Vtx = myVDataMap.FindKey(Index);
++  TopoDS_Face          Fv;
++  int                  Ib = 0;
++  for (int ico = 1; ico <= 2 && Ib == 0; ico++)
++  {
++    const ChFiDS_CommonPoint& cp = A.Fd->Vertex(A.IsFirst, ico);
++    if (!cp.IsOnArc() || cp.IsVertex() || BRep_Tool::Degenerated(cp.Arc()))
++    {
++      continue;
++    }
++    const TopoDS_Edge& E = cp.Arc();
++    TopoDS_Vertex      V1, V2, Vo;
++    TopExp::Vertices(E, V1, V2);
++    if (V1.IsSame(Vtx))
++    {
++      Vo = V2;
++    }
++    else if (V2.IsSame(Vtx))
++    {
++      Vo = V1;
++    }
++    int Io = 0;
++    for (int j = 1; j <= myVDataMap.Extent() && Io == 0 && !Vo.IsNull(); j++)
++    {
++      Io = myVDataMap.FindKey(j).IsSame(Vo) ? j : 0;
++    }
++    if (Io == 0 || Io == Index || !endAt(Io, B) || B.St == A.St)
++    {
++      continue;
++    }
++    const int IS = A.Fd->Index(ico);
++    B.ICo        = 0;
++    for (int k = 1; k <= 2; k++)
++    {
++      const ChFiDS_CommonPoint& cpb = B.Fd->Vertex(B.IsFirst, k);
++      if (cpb.IsOnArc() && !cpb.IsVertex() && cpb.Arc().IsSame(E) && B.Fd->Index(k) == IS)
++      {
++        B.ICo = k;
++      }
++    }
++    if (B.ICo == 0)
++    {
++      continue;
++    }
++    // The contacts on E overlap: A's lies beyond B's.
++    const double pV = BRep_Tool::Parameter(Vtx, E), pVo = BRep_Tool::Parameter(Vo, E);
++    const double pA = cp.ParameterOnArc(), pB = B.Fd->Vertex(B.IsFirst, B.ICo).ParameterOnArc();
++    if ((pA - pB) * (pVo - pV) <= Precision::PConfusion())
++    {
++      continue;
++    }
++    // The face at the ends: E's other face, holding the other contacts' arcs.
++    const TopoDS_Face S = TopoDS::Face(DStr.Shape(IS));
++    TopoDS_Face       F;
++    for (NCollection_List<TopoDS_Shape>::Iterator It(myEFMap(E)); It.More(); It.Next())
++    {
++      if (!It.Value().IsSame(S))
++      {
++        F = TopoDS::Face(It.Value());
++      }
++    }
++    if (F.IsNull())
++    {
++      continue;
++    }
++    bool ok = true;
++    for (const MitreEnd* X : {&A, &B})
++    {
++      const int                 iarc = X == &A ? 3 - ico : 3 - B.ICo;
++      const ChFiDS_CommonPoint& cpa  = X->Fd->Vertex(X->IsFirst, iarc);
++      ok = ok && cpa.IsOnArc() && !cpa.IsVertex() && !cpa.Arc().IsSame(E) && onFace(cpa.Arc(), F)
++           && !BRep_Tool::IsClosed(cpa.Arc(), F) && !F.IsSame(DStr.Shape(X->Fd->Index(iarc)));
++    }
++    if (!ok)
++    {
++      continue;
++    }
++    A.ICo = ico;
++    Fv    = F;
++    Ib    = Io;
++    if (BRep_Tool::IsClosed(E, F) || BRep_Tool::IsClosed(E, S))
++    {
++      return false;
++    }
++  }
++  if (Ib == 0)
++  {
++    return false;
++  }
++  if (Ib > Index)
++  {
++    // Both ends are made at the other vertex.
++    return true;
++  }
++
++  // The blends' surfaces and the face at the ends.
++  Fv.Orientation(TopAbs_FORWARD);
++  const occ::handle<GeomAdaptor_Surface> HSA = ChFi3d_BoundSurf(DStr, A.Fd, A.ICo, 3 - A.ICo);
++  const occ::handle<GeomAdaptor_Surface> HSB = ChFi3d_BoundSurf(DStr, B.Fd, B.ICo, 3 - B.ICo);
++  const occ::handle<GeomAdaptor_Surface> HS[2] = {HSA, HSB};
++  const MitreEnd*                        X[2]  = {&A, &B};
++
++  // Where the contacts on S cross (the nearest crossing to A's end).
++  const ChFiDS_FaceInterference& FiA = A.Fd->Interference(A.ICo);
++  const ChFiDS_FaceInterference& FiB = B.Fd->Interference(B.ICo);
++  if (FiA.PCurveOnFace().IsNull() || FiB.PCurveOnFace().IsNull())
++  {
++    throw StdFail_NotDone("MitredEnd : contact without a curve on the face");
++  }
++  double wE[2] = {0., 0.};
++  {
++    Geom2dAdaptor_Curve ca(FiA.PCurveOnFace(), FiA.FirstParameter(), FiA.LastParameter());
++    Geom2dAdaptor_Curve cb(FiB.PCurveOnFace(), FiB.FirstParameter(), FiB.LastParameter());
++    Geom2dInt_GInter    inter(ca, cb, tol2d, Precision::PConfusion());
++    if (!inter.IsDone() || inter.NbSegments() > 0 || inter.NbPoints() == 0)
++    {
++      throw StdFail_NotDone("MitredEnd : the contacts on the common face do not cross");
++    }
++    const double wEnd = FiA.Parameter(A.IsFirst);
++    double       best = RealLast();
++    for (int i = 1; i <= inter.NbPoints(); i++)
++    {
++      const IntRes2d_IntersectionPoint& ip = inter.Point(i);
++      if (std::abs(ip.ParamOnFirst() - wEnd) < best)
++      {
++        best  = std::abs(ip.ParamOnFirst() - wEnd);
++        wE[0] = ip.ParamOnFirst();
++        wE[1] = ip.ParamOnSecond();
++      }
++    }
++  }
++  gp_Pnt Pend;
++  ChFi3d_ComputesIntPC(FiA, FiB, HSA, HSB, wE[0], wE[1], Pend);
++
++  // The blends' intersections with Fv from the contact on Fv's edge (at
++  // its first parameter) towards E, and where they cross.
++  const auto faceAdaptor = [&](const gp_Pnt2d& p1, const gp_Pnt2d& p2) {
++    occ::handle<BRepAdaptor_Surface> HF = new BRepAdaptor_Surface(Fv);
++    double                           uu1, uu2, vv1, vv2;
++    ChFi3d_Boite(p1, p2, uu1, uu2, vv1, vv2);
++    ChFi3d_BoundFac(*HF, uu1, uu2, vv1, vv2);
++    return HF;
++  };
++  const auto onFv = [&](const ChFiDS_CommonPoint& cp) {
++    double                          f = 0., l = 0.;
++    const occ::handle<Geom2d_Curve> pc = BRep_Tool::CurveOnSurface(cp.Arc(), Fv, f, l);
++    if (pc.IsNull())
++    {
++      throw Standard_ConstructionError("Failed to get p-curve of edge");
++    }
++    return pc->Value(cp.ParameterOnArc());
++  };
++  occ::handle<Geom_Curve>   cork[2];
++  occ::handle<Geom2d_Curve> corkF[2], corkS[2];
++  double                    tolc = tolapp3d;
++  for (int i = 0; i < 2; i++)
++  {
++    const MitreEnd&                X1   = *X[i];
++    const int                      iarc = 3 - X1.ICo;
++    const ChFiDS_FaceInterference& Fa   = X1.Fd->Interference(iarc);
++    const ChFiDS_FaceInterference& Fc   = X1.Fd->Interference(X1.ICo);
++    const gp_Pnt2d                 pf1  = onFv(X1.Fd->Vertex(X1.IsFirst, iarc));
++    const gp_Pnt2d                 pf2  = onFv(X1.Fd->Vertex(X1.IsFirst, X1.ICo));
++    const gp_Pnt2d                 ps1  = Fa.PCurveOnSurf()->Value(Fa.Parameter(X1.IsFirst));
++    const gp_Pnt2d                 ps2  = Fc.PCurveOnSurf()->Value(Fc.Parameter(X1.IsFirst));
++    NCollection_Array1<double>     Pardeb(1, 4), Parfin(1, 4);
++    Pardeb(1) = pf1.X();
++    Pardeb(2) = pf1.Y();
++    Pardeb(3) = ps1.X();
++    Pardeb(4) = ps1.Y();
++    Parfin(1) = pf2.X();
++    Parfin(2) = pf2.Y();
++    Parfin(3) = ps2.X();
++    Parfin(4) = ps2.Y();
++    double tolr = tolapp3d;
++    if (!ChFi3d_ComputeCurves(faceAdaptor(pf1, pf2),
++                              HS[i],
++                              Pardeb,
++                              Parfin,
++                              cork[i],
++                              corkF[i],
++                              corkS[i],
++                              tolapp3d,
++                              tol2d,
++                              tolr))
++    {
++      throw StdFail_NotDone("MitredEnd : no intersection with the face at the end");
++    }
++    tolc = std::max(tolc, tolr);
++  }
++  double tTop[2] = {0., 0.};
++  {
++    Geom2dAdaptor_Curve ca(corkF[0], cork[0]->FirstParameter(), cork[0]->LastParameter());
++    Geom2dAdaptor_Curve cb(corkF[1], cork[1]->FirstParameter(), cork[1]->LastParameter());
++    Geom2dInt_GInter    inter(ca, cb, tol2d, Precision::PConfusion());
++    if (!inter.IsDone() || inter.NbSegments() > 0 || inter.NbPoints() == 0)
++    {
++      throw StdFail_NotDone("MitredEnd : the ends on the face at the end do not cross");
++    }
++    double best = RealLast();
++    for (int i = 1; i <= inter.NbPoints(); i++)
++    {
++      const IntRes2d_IntersectionPoint& ip = inter.Point(i);
++      // (The nearest crossing to E.)
++      const double d = std::abs(ip.ParamOnFirst() - cork[0]->LastParameter());
++      if (d < best)
++      {
++        best    = d;
++        tTop[0] = ip.ParamOnFirst();
++        tTop[1] = ip.ParamOnSecond();
++      }
++    }
++  }
++  const gp_Pnt Ptop = cork[0]->Value(tTop[0]).Translated(
++    0.5 * gp_Vec(cork[0]->Value(tTop[0]), cork[1]->Value(tTop[1])));
++
++  // The mitre: the blends' intersection from where their contacts cross to
++  // where their ends on Fv cross.
++  occ::handle<Geom_Curve>   Gm;
++  occ::handle<Geom2d_Curve> PmA, PmB;
++  double                    tolm = tolapp3d;
++  {
++    NCollection_Array1<double> Pardeb(1, 4), Parfin(1, 4);
++    const gp_Pnt2d             a1 = FiA.PCurveOnSurf()->Value(wE[0]);
++    const gp_Pnt2d             b1 = FiB.PCurveOnSurf()->Value(wE[1]);
++    const gp_Pnt2d             a2 = corkS[0]->Value(tTop[0]);
++    const gp_Pnt2d             b2 = corkS[1]->Value(tTop[1]);
++    Pardeb(1)                     = a1.X();
++    Pardeb(2)                     = a1.Y();
++    Pardeb(3)                     = b1.X();
++    Pardeb(4)                     = b1.Y();
++    Parfin(1)                     = a2.X();
++    Parfin(2)                     = a2.Y();
++    Parfin(3)                     = b2.X();
++    Parfin(4)                     = b2.Y();
++    // Two cylinders of one radius whose axes cross (two straight roundings
++    // of one radius) meet in two ellipses: the mitre is an arc of one of
++    // them, computed exactly (a walk from Pend starts where the blends
++    // touch, both tangent to S there).
++    IntAna_QuadQuadGeo cc;
++    if (HSA->GetType() == GeomAbs_Cylinder && HSB->GetType() == GeomAbs_Cylinder)
++    {
++      cc.Perform(HSA->Cylinder(), HSB->Cylinder(), tolapp3d);
++    }
++    if (cc.IsDone() && cc.TypeInter() == IntAna_Ellipse)
++    {
++      int    ibest = 0;
++      double dbest = RealLast();
++      for (int i = 1; i <= cc.NbSolutions(); i++)
++      {
++        const gp_Elips el = cc.Ellipse(i);
++        const double   d  = std::max(ElCLib::Value(ElCLib::Parameter(el, Pend), el).Distance(Pend),
++                                  ElCLib::Value(ElCLib::Parameter(el, Ptop), el).Distance(Ptop));
++        if (d < dbest)
++        {
++          dbest = d;
++          ibest = i;
++        }
++      }
++      if (ibest == 0 || dbest > 10. * tolapp3d)
++      {
++        throw StdFail_NotDone("MitredEnd : the ends are not on the blends' intersection");
++      }
++      occ::handle<Geom_Ellipse> ge = new Geom_Ellipse(cc.Ellipse(ibest));
++      double                    u1 = ElCLib::Parameter(ge->Elips(), Pend);
++      double                    du = ElCLib::InPeriod(ElCLib::Parameter(ge->Elips(), Ptop) - u1, 0., 2. * M_PI);
++      // (The shorter arc, near the vertex.)
++      if (du > M_PI)
++      {
++        ge->Reverse();
++        u1 = ElCLib::InPeriod(2. * M_PI - u1, 0., 2. * M_PI);
++        du = 2. * M_PI - du;
++      }
++      const occ::handle<GeomAdaptor_Curve> HC = new GeomAdaptor_Curve(ge, u1, u1 + du);
++      double                               tolr1 = tolapp3d, tolr2 = tolapp3d;
++      ChFi3d_ProjectPCurv(HC, HSA, PmA, tolapp3d, tolr1);
++      ChFi3d_ProjectPCurv(HC, HSB, PmB, tolapp3d, tolr2);
++      // (Onto the blends' periods where the ends lie.)
++      const gp_Vec2d sa(PmA->Value(u1), a1), sb(PmB->Value(u1), b1);
++      if (sa.Magnitude() >= tol2d)
++      {
++        PmA->Translate(sa);
++      }
++      if (sb.Magnitude() >= tol2d)
++      {
++        PmB->Translate(sb);
++      }
++      Gm   = new Geom_TrimmedCurve(ge, u1, u1 + du);
++      tolm = std::min(1.5 * std::max(tolr1, tolr2), ChFi3d_EvalTolReached(HSA, PmA, HSB, PmB, Gm));
++    }
++    else if (!ChFi3d_ComputeCurves(HSA, HSB, Pardeb, Parfin, Gm, PmA, PmB, tolapp3d, tol2d, tolm))
++    {
++      throw StdFail_NotDone("MitredEnd : no intersection of the two blends");
++    }
++  }
++  const occ::handle<Geom2d_Curve> Pm[2] = {PmA, PmB};
++
++  // The data structure: the point where the contacts cross, the point on
++  // Fv, the mitre, and each blend's end on Fv from there to its contact on
++  // Fv's edge.
++  const double       tolp = std::max(tolm, tolc);
++  ChFiDS_CommonPoint cpEnd;
++  cpEnd.SetPoint(Pend);
++  cpEnd.SetTolerance(tolp);
++  const int IpEnd = ChFi3d_IndexPointInDS(cpEnd, DStr);
++  const int IpTop = DStr.AddPoint(TopOpeBRepDS_Point(Ptop, tolp));
++  const int ICm   = DStr.AddCurve(TopOpeBRepDS_Curve(Gm, tolm));
++  DStr.ChangeCurveInterferences(ICm).Append(
++    ChFi3d_FilPointInDS(TopAbs_FORWARD, ICm, IpEnd, Gm->FirstParameter()));
++  DStr.ChangeCurveInterferences(ICm).Append(
++    ChFi3d_FilPointInDS(TopAbs_REVERSED, ICm, IpTop, Gm->LastParameter()));
++  const int IFv = DStr.AddShape(Fv);
++  for (int i = 0; i < 2; i++)
++  {
++    const MitreEnd&     X1    = *X[i];
++    const int           iarc  = 3 - X1.ICo;
++    ChFiDS_CommonPoint& cpa   = X1.Fd->ChangeVertex(X1.IsFirst, iarc);
++    const int           Isurf = X1.Fd->Surf();
++    // The blend's end runs from its side on S to its side on Fv's edge.
++    TopAbs_Orientation tracurv =
++      TopAbs::Compose(TopAbs::Compose(DStr.Shape(X1.Fd->IndexOfS1()).Orientation(),
++                                      X1.Fd->Orientation()),
++                      X1.Fd->InterferenceOnS1().Transition());
++    if (!X1.IsFirst)
++    {
++      tracurv = TopAbs::Reverse(tracurv);
++    }
++    if (X1.ICo != 1)
++    {
++      tracurv = TopAbs::Reverse(tracurv);
++    }
++    DStr.ChangeSurfaceInterferences(Isurf).Append(ChFi3d_FilCurveInDS(ICm, Isurf, Pm[i], tracurv));
++
++    // Its end on Fv, from the mitre's top to the contact on Fv's edge.
++    const ChFiDS_FaceInterference& Fa  = X1.Fd->Interference(iarc);
++    const gp_Pnt2d                 pf1 = corkF[i]->Value(tTop[i]);
++    const gp_Pnt2d                 pf2 = onFv(cpa);
++    const gp_Pnt2d                 ps1 = corkS[i]->Value(tTop[i]);
++    const gp_Pnt2d                 ps2 = Fa.PCurveOnSurf()->Value(Fa.Parameter(X1.IsFirst));
++    NCollection_Array1<double>     Pardeb(1, 4), Parfin(1, 4);
++    Pardeb(1) = pf1.X();
++    Pardeb(2) = pf1.Y();
++    Pardeb(3) = ps1.X();
++    Pardeb(4) = ps1.Y();
++    Parfin(1) = pf2.X();
++    Parfin(2) = pf2.Y();
++    Parfin(3) = ps2.X();
++    Parfin(4) = ps2.Y();
++    occ::handle<Geom_Curve>   Gc;
++    occ::handle<Geom2d_Curve> PcF, PcS;
++    double                    tolr = tolapp3d;
++    if (!ChFi3d_ComputeCurves(faceAdaptor(pf1, pf2), HS[i], Pardeb, Parfin, Gc, PcF, PcS, tolapp3d, tol2d, tolr))
++    {
++      throw StdFail_NotDone("MitredEnd : no intersection with the face at the end");
++    }
++    cpa.SetTolerance(std::max(cpa.Tolerance(), tolr));
++    const int IpArc = ChFi3d_IndexPointInDS(cpa, DStr);
++    const int ICc   = DStr.AddCurve(TopOpeBRepDS_Curve(Gc, tolr));
++    DStr.ChangeCurveInterferences(ICc).Append(
++      ChFi3d_FilPointInDS(TopAbs_FORWARD, ICc, IpTop, Gc->FirstParameter()));
++    DStr.ChangeCurveInterferences(ICc).Append(
++      ChFi3d_FilPointInDS(TopAbs_REVERSED, ICc, IpArc, Gc->LastParameter()));
++    DStr.ChangeSurfaceInterferences(Isurf).Append(ChFi3d_FilCurveInDS(ICc, Isurf, PcS, tracurv));
++    TopAbs_Orientation trafv = TopAbs_FORWARD;
++    for (TopExp_Explorer ex(Fv, TopAbs_EDGE); ex.More(); ex.Next())
++    {
++      if (ex.Current().IsSame(cpa.Arc()))
++      {
++        trafv = TopAbs::Compose(ex.Current().Orientation(), cpa.TransitionOnArc());
++        break;
++      }
++    }
++    DStr.ChangeShapeInterferences(IFv).Append(ChFi3d_FilCurveInDS(ICc, IFv, PcF, trafv));
++
++    // Its contact on S ends where the contacts cross.
++    X1.Fd->ChangeVertex(X1.IsFirst, X1.ICo) = cpEnd;
++    X1.Fd->ChangeInterference(X1.ICo).SetParameter(wE[i], X1.IsFirst);
++    X1.St->SetIndexPoint(IpEnd, X1.IsFirst, X1.ICo);
++    X1.St->SetIndexPoint(IpArc, X1.IsFirst, iarc);
++    X1.St->InDS(X1.IsFirst);
++  }
++  return true;
++}
++
+ //=================================================================================================
+ 
+ void ChFi3d_Builder::PerformIntersectionAtEnd(const int Index)

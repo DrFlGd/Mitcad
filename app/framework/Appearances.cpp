@@ -71,56 +71,95 @@ bool Appearance::sameLook(const Appearance& o) const {
          hasTexture == o.hasTexture && texture == o.texture && displayColor == o.displayColor;
 }
 
-void resolveTexture(AppearanceTexture& texture, const QString& documentFolder,
-                    const std::function<QByteArray()>& embeddedImage) {
-  texture.file.clear();
-  texture.missing.clear();
-  if (texture.embedded) {
-    // Embedded images of this session, by digest.
+namespace {
+
+// The file of one image of a texture (resolveTexture): sets `file`, or
+// `missing` with the reason.
+void resolveImage(const QString& imagePath, bool embedded, const QString& sha256, const QString& documentFolder,
+                  const std::function<QByteArray()>& embeddedImage, QString& file, QString& missing) {
+  file.clear();
+  missing.clear();
+  if (embedded) {
+    // Embedded images of this session, by digest (shared by the maps of
+    // every appearance that uses the same image).
     static QTemporaryDir folder;
     if (!folder.isValid()) {
-      texture.missing = QObject::tr("no temporary folder for the embedded image");
+      missing = QObject::tr("no temporary folder for the embedded image");
       return;
     }
-    const QString base = folder.filePath(texture.imageSha256);
+    const QString base = folder.filePath(sha256);
     for (const char* extension : {".png", ".jpg"}) {
-      if (QFileInfo::exists(base + QLatin1String(extension))) {
-        texture.file = base + QLatin1String(extension);
+      if (!sha256.isEmpty() && QFileInfo::exists(base + QLatin1String(extension))) {
+        file = base + QLatin1String(extension);
         return;
       }
     }
     const QByteArray bytes = embeddedImage ? embeddedImage() : QByteArray();
-    if (bytes.isEmpty()) {
-      texture.missing = QObject::tr("the embedded image cannot be read");
+    if (bytes.isEmpty() || sha256.isEmpty()) {
+      missing = QObject::tr("the embedded image cannot be read");
       return;
     }
     const QString path = base + (bytes.startsWith("\x89PNG") ? QStringLiteral(".png") : QStringLiteral(".jpg"));
-    QSaveFile file(path);
-    if (!file.open(QIODevice::WriteOnly) || file.write(bytes) != bytes.size() || !file.commit()) {
-      texture.missing = QObject::tr("the embedded image cannot be written to %1").arg(path);
+    QSaveFile saved(path);
+    if (!saved.open(QIODevice::WriteOnly) || saved.write(bytes) != bytes.size() || !saved.commit()) {
+      missing = QObject::tr("the embedded image cannot be written to %1").arg(path);
       return;
     }
-    texture.file = path;
+    file = path;
     return;
   }
-  if (texture.path.isEmpty()) {
-    texture.missing = QObject::tr("no image is chosen");
+  if (imagePath.isEmpty()) {
+    missing = QObject::tr("no image is chosen");
     return;
   }
-  QString path = texture.path;
+  QString path = imagePath;
   if (QFileInfo(path).isRelative()) {
     if (documentFolder.isEmpty()) {
-      texture.missing = QObject::tr("the image %1 is relative to the design's folder, and the design is not saved yet")
-                            .arg(texture.path);
+      missing = QObject::tr("the image %1 is relative to the design's folder, and the design is not saved yet")
+                    .arg(imagePath);
       return;
     }
     path = QDir::cleanPath(QDir(documentFolder).filePath(path));
   }
   if (!QFileInfo(path).isFile()) {
-    texture.missing = QObject::tr("the image %1 is missing").arg(QDir::toNativeSeparators(path));
+    missing = QObject::tr("the image %1 is missing").arg(QDir::toNativeSeparators(path));
     return;
   }
-  texture.file = path;
+  file = path;
+}
+
+} // namespace
+
+const std::array<const char*, kTextureMapCount>& textureMapNames() {
+  static const std::array<const char*, kTextureMapCount> names = {"normal", "roughness", "metalness", "occlusion"};
+  return names;
+}
+
+void resolveTexture(AppearanceTexture& texture, const QString& documentFolder,
+                    const std::function<QByteArray()>& embeddedImage) {
+  resolveImage(texture.path, texture.embedded, texture.imageSha256, documentFolder, embeddedImage, texture.file,
+               texture.missing);
+}
+
+void resolveTextureMaps(AppearanceTexture& texture, const QString& documentFolder,
+                        const std::function<QByteArray(const QString& map)>& embeddedImage) {
+  const auto bytesOf = [&embeddedImage](const QString& map) -> std::function<QByteArray()> {
+    if (!embeddedImage) {
+      return {};
+    }
+    return [&embeddedImage, map] { return embeddedImage(map); };
+  };
+  resolveImage(texture.path, texture.embedded, texture.imageSha256, documentFolder,
+               bytesOf(QStringLiteral("base_color")), texture.file, texture.missing);
+  for (std::size_t i = 0; i < texture.maps.size(); ++i) {
+    AppearanceMap& map = texture.maps[i];
+    map.file.clear();
+    map.missing.clear();
+    if (map.present) {
+      resolveImage(map.path, map.embedded, map.imageSha256, documentFolder,
+                   bytesOf(QLatin1String(textureMapNames()[i])), map.file, map.missing);
+    }
+  }
 }
 
 QJsonArray colorJson(const QColor& color) { return QJsonArray{color.redF(), color.greenF(), color.blueF()}; }
@@ -165,6 +204,18 @@ Appearance appearanceOf(const QJsonObject& value) {
     a.texture.planar = texture.value(QStringLiteral("projection")).toString() == QLatin1String("planar");
     a.texture.embedded = texture.value(QStringLiteral("embedded")).toBool();
     a.texture.imageSha256 = texture.value(QStringLiteral("image_sha256")).toString();
+    // The other maps of the set (mitcad#313).
+    for (std::size_t i = 0; i < a.texture.maps.size(); ++i) {
+      const QJsonValue listed = texture.value(QLatin1String(textureMapNames()[i]));
+      AppearanceMap& map = a.texture.maps[i];
+      map.present = listed.isObject();
+      if (map.present) {
+        const QJsonObject object = listed.toObject();
+        map.path = object.value(QStringLiteral("path")).toString();
+        map.embedded = object.value(QStringLiteral("embedded")).toBool();
+        map.imageSha256 = object.value(QStringLiteral("image_sha256")).toString();
+      }
+    }
   }
   a.displayColor = colorOf(value.value(QStringLiteral("display_color")));
   if (!a.displayColor.isValid()) {

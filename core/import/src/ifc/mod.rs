@@ -31,7 +31,7 @@
 //!   imported.
 
 pub mod brep;
-mod build;
+pub(crate) mod build;
 pub mod report;
 pub mod sketch;
 pub mod transform;
@@ -1125,7 +1125,7 @@ impl<K: Kernel> Importer<'_, K> {
 }
 
 /// A cut that failed only because it reaches none of its bodies.
-fn is_miss(error: &str) -> bool {
+pub(crate) fn is_miss(error: &str) -> bool {
     error.contains("does not cut into any participant body")
         || error.contains("there are no bodies in the extrude direction")
 }

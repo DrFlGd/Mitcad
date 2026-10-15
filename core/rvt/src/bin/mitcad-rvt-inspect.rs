@@ -37,6 +37,12 @@ const USAGE: &str = "usage: mitcad-rvt-inspect <command> ...
   classes <file> [<class>]        the classes of the element records and of
                                   the objects behind their pointers, counted;
                                   with a class, the elements that hold one
+  records <file> <class>[,<class>...]
+                                  the latest records of the elements of
+                                  those classes, one JSON line each
+  building <file>                 the building elements' parameters (walls,
+                                  floors, roofs, instances, types, grids,
+                                  links) and GlobalIds as JSON
   preview <file> <out.png>        the preview image
   write-test <out> [family]       a test project (or family) of the writers";
 
@@ -462,6 +468,65 @@ fn cmd_record(path: &str, id: i64, all: bool) -> Result<(), String> {
     Ok(())
 }
 
+/// Every element whose latest object record is of one of `classes`
+/// (comma separated), one JSON line each: id, partition, header, object
+/// (read as far as it walks).
+fn cmd_records(path: &str, classes: &str) -> Result<(), String> {
+    let f = open(path)?;
+    let schema = schema_of(&f)?;
+    let wanted: Vec<&str> = classes.split(',').map(str::trim).collect();
+    let partitions = f.partitions(&schema).map_err(|e| e.to_string())?;
+    let mut latest: std::collections::BTreeMap<i64, usize> = Default::default();
+    for (i, p) in partitions.iter().enumerate() {
+        for slot in &p.objects {
+            latest.insert(slot.id, i);
+        }
+    }
+    for (id, i) in latest {
+        let p = &partitions[i];
+        let Some(slot) = p.objects.iter().find(|s| s.id == id) else {
+            continue;
+        };
+        let (record, _, error) = walk::walk_partial(&schema, p.bytes(slot));
+        let Some(record) = record else { continue };
+        if !wanted.contains(&schema.class_name(record.root.class)) {
+            continue;
+        }
+        let header = p
+            .headers
+            .iter()
+            .find(|s| s.id == id)
+            .and_then(|s| walk::walk(&schema, p.bytes(s)).ok())
+            .map(|r| r.to_json(&schema));
+        println!(
+            "{}",
+            json!({
+                "id": id,
+                "partition": p.number,
+                "header": header,
+                "object": record.to_json(&schema),
+                "error": error.map(|e| e.to_string()),
+            })
+        );
+    }
+    Ok(())
+}
+
+/// The building elements' parameters (walls, floors, roofs, instances,
+/// types, grids, links) as JSON, with the elements' GlobalIds.
+fn cmd_building(path: &str) -> Result<(), String> {
+    let f = open(path)?;
+    let schema = schema_of(&f)?;
+    let model = model_of(&f, &schema)?;
+    let ids: std::collections::BTreeMap<i64, String> = model.global_ids().into_iter().collect();
+    println!(
+        "{}",
+        serde_json::to_string(&json!({"building": model.building, "global_ids": ids}))
+            .expect("serializes")
+    );
+    Ok(())
+}
+
 fn cmd_classes(path: &str, wanted: Option<&str>) -> Result<(), String> {
     let f = open(path)?;
     let schema = schema_of(&f)?;
@@ -555,6 +620,8 @@ fn run(args: &[String]) -> Result<(), String> {
         ),
         "preview" => cmd_preview(arg(2)?, arg(3)?),
         "classes" => cmd_classes(arg(2)?, args.get(3).map(String::as_str)),
+        "records" => cmd_records(arg(2)?, arg(3)?),
+        "building" => cmd_building(arg(2)?),
         "write-test" => {
             let out = arg(2)?;
             let data = if args.get(3).map(String::as_str) == Some("family") {

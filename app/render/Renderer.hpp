@@ -39,6 +39,20 @@ struct MaterialData {
   std::array<float, 2> textureSize{100.0f, 100.0f};
   float textureRotation = 0.0f;
   bool texturePlanar = false;
+  // The texture's other maps (mitcad#313, mitcad#314): files as `texture`
+  // (empty: none), with its projection, size and rotation, also when the
+  // base colour's image is not there. A tangent-space normal map (OpenGL
+  // convention, green up), roughness and metalness (grey, they replace
+  // the values above) and ambient occlusion (grey, multiplies the base
+  // colour).
+  std::string normalMap;
+  std::string roughnessMap;
+  std::string metalnessMap;
+  std::string occlusionMap;
+
+  bool hasMaps() const {
+    return !normalMap.empty() || !roughnessMap.empty() || !metalnessMap.empty() || !occlusionMap.empty();
+  }
 };
 
 // A body's triangles in its own coordinates (mm), with smooth normals per
@@ -52,6 +66,9 @@ struct MeshData {
   // faces (mitcad#53; the triangles come face by face): faces with a
   // material of their own are named by their index here. Empty: one face.
   std::vector<std::uint32_t> faceTriangles;
+  // How many triangles meshOf turned round to face out of the solid
+  // (mitcad#319: a triangulation wound the other way); for the log, not sent.
+  std::uint32_t turned = 0;
 };
 
 // Faces of a body with a material of their own (mitcad#53: appearances of
@@ -115,7 +132,7 @@ struct SceneChanges {
   int instanced = 0;     // bodies that share their mesh with another body
   bool restarted = false; // something changed: the render started again
   // What could not be as asked (a texture image the renderer cannot read:
-  // the base colour instead).
+  // the base colour instead; a map it cannot read is left out).
   std::vector<std::string> warnings;
 };
 

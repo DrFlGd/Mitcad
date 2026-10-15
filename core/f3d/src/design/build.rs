@@ -178,6 +178,12 @@ fn edge_input(seg: &Segment, input: u64) -> Option<Reference> {
             recipe: Some(recipe.kind),
             entities: Some(recipe.entities),
             end_faces,
+            // The edge's curve as the input saw it (mitcad#306).
+            curves: super::curve::of_input(seg, input).map(|c| {
+                c.iter()
+                    .map(super::curve::StoredCurve::to_geometry)
+                    .collect()
+            }),
             document: recipe::owner_guid(seg, input),
             context: decode::slot_contexts(seg).get(&input).copied(),
             ..FingerprintF3d::default()

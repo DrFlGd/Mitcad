@@ -2,19 +2,23 @@
 //! The `threads` query: the threads on the bodies at the timeline marker,
 //! cosmetic or modelled, from thread features and tapped holes, with what a
 //! view needs to draw them (cosmetic threads are drawn on their faces).
-//! And the `thread_sizes` query: the size table of the panels (P9).
+//! And the `thread_sizes` query: the size table of the panels (P9), and the
+//! `thread_chamfer` query: a size's default end chamfer (mitcad#304).
 
+use serde::Deserialize;
 use serde_json::{Value, json};
 
+use super::ApiError;
 use crate::document::Document;
 use crate::features::hole::hole_face;
+use crate::features::thread::{DEFAULT_CHAMFER_ANGLE, default_chamfer_diameter};
 use crate::features::thread_table;
 use crate::features::{FeatureDef, FeatureEntry, ThreadEnd, ThreadSize, ThreadStandard};
 use crate::ids::BodyUid;
 use crate::kernel::Kernel;
 use crate::parameters::ParamId;
 use crate::recompute::FeatureStatus;
-use crate::topo::FaceName;
+use crate::topo::{FaceName, RoleKey};
 
 /// (length, offset, from the high end) of a partial thread.
 type Part = Option<(f64, f64, bool)>;
@@ -37,6 +41,14 @@ impl<K: Kernel> Document<K> {
                             def.location == ThreadEnd::HighEnd,
                         )
                     });
+                    // A cosmetic thread's end chamfers (mitcad#304): the
+                    // angle and the diameter (the size's default without).
+                    let chamfer = def.chamfer.filter(|_| !def.modeled).map(|_| {
+                        (
+                            value(def.chamfer_angle).unwrap_or(DEFAULT_CHAMFER_ANGLE),
+                            value(def.chamfer_diameter),
+                        )
+                    });
                     for face in &def.faces {
                         threads.extend(self.thread_json(
                             entry,
@@ -45,6 +57,7 @@ impl<K: Kernel> Document<K> {
                             &def.thread,
                             def.modeled,
                             part,
+                            chamfer,
                         ));
                     }
                 }
@@ -68,6 +81,7 @@ impl<K: Kernel> Document<K> {
                                 &thread.size(),
                                 thread.modeled,
                                 part,
+                                None,
                             ));
                         }
                     }
@@ -78,7 +92,9 @@ impl<K: Kernel> Document<K> {
         Value::Array(threads)
     }
 
-    /// A thread on a face of a body at the marker, if the face is there.
+    /// A thread on a face of a body at the marker, if the face is there;
+    /// `chamfer`: a cosmetic thread's end chamfers (angle, diameter).
+    #[allow(clippy::too_many_arguments)]
     fn thread_json(
         &self,
         entry: &FeatureEntry,
@@ -87,6 +103,7 @@ impl<K: Kernel> Document<K> {
         size: &ThreadSize,
         modeled: bool,
         part: Part,
+        chamfer: Option<(f64, Option<f64>)>,
     ) -> Option<Value> {
         let shape = self.body_shape(body)?;
         let kernel = self.kernel();
@@ -114,13 +131,45 @@ impl<K: Kernel> Document<K> {
             "pitch": data.pitch,
         });
         if let Ok(cylinder) = kernel.face_cylinder(shape, face) {
-            let (from, to) = match part {
-                None => (0.0, cylinder.length),
-                Some((length, offset, true)) => {
-                    (cylinder.length - offset - length, cylinder.length - offset)
+            // The cones of end chamfers took `low` and `high` off the face's
+            // ends: the part is measured on the face as it was, and the
+            // thread starts where a cone meets the cylinder.
+            let (low, high) = match chamfer {
+                Some((angle, diameter)) => {
+                    let diameter = diameter.unwrap_or_else(|| {
+                        default_chamfer_diameter(&data, cylinder.internal, None)
+                    });
+                    let depth = (cylinder.radius - diameter / 2.0).abs() / angle.tan();
+                    let cut = |role: &str| {
+                        let cone = FaceName::new(
+                            entry.uid,
+                            role,
+                            Some(RoleKey::Face(Box::new(face.clone()))),
+                        );
+                        kernel.count_faces(shape, &cone).is_ok_and(|n| n > 0)
+                    };
+                    (
+                        if cut("thread_chamfer_low") {
+                            depth
+                        } else {
+                            0.0
+                        },
+                        if cut("thread_chamfer_high") {
+                            depth
+                        } else {
+                            0.0
+                        },
+                    )
                 }
+                None => (0.0, 0.0),
+            };
+            let whole = cylinder.length + low + high;
+            let (from, to) = match part {
+                None => (0.0, whole),
+                Some((length, offset, true)) => (whole - offset - length, whole - offset),
                 Some((length, offset, false)) => (offset, offset + length),
             };
+            let (from, to) = (from.max(low) - low, to.min(whole - high) - low);
             let at = |t: f64| -> [f64; 3] {
                 std::array::from_fn(|i| cylinder.axis.origin[i] + t * cylinder.axis.direction[i])
             };
@@ -162,4 +211,24 @@ pub(super) fn thread_sizes_json(standard: Option<ThreadStandard>) -> Value {
         })
         .collect();
     json!({"standards": standards})
+}
+
+/// The `thread_chamfer` query (mitcad#304): a thread size's default end
+/// chamfer, for the Thread panel's fields.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct ThreadChamferQuery {
+    #[serde(default)]
+    standard: ThreadStandard,
+    designation: String,
+    #[serde(default)]
+    internal: bool,
+}
+
+pub(super) fn thread_chamfer_json(query: &ThreadChamferQuery) -> Result<Value, ApiError> {
+    let data = thread_table::lookup(query.standard, &query.designation).map_err(ApiError)?;
+    Ok(json!({
+        "diameter": default_chamfer_diameter(&data, query.internal, None),
+        "angle": DEFAULT_CHAMFER_ANGLE.to_degrees(),
+    }))
 }

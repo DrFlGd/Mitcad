@@ -36,6 +36,7 @@ struct ViewSettings {
 
   VisualStyle style = VisualStyle::ShadedVisibleEdges;
   bool perspective = false;
+  bool componentColors = false;
   Background background = Background::Gradient;
   // Custom: the default gradient's colours (sRGB).
   QColor top = QColor(247, 248, 250);

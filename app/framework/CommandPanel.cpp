@@ -28,7 +28,6 @@
 #include "CutTargetsPanel.hpp"
 #include "GlassCard.hpp"
 #include "Icons.hpp"
-#include "GlassCard.hpp"
 #include "TestSync.hpp"
 #include "Theme.hpp"
 
@@ -209,7 +208,7 @@ CommandPanel::CommandPanel(const CommandDef& def, const CommandState& state, boo
   auto* layout = new QVBoxLayout(this);
   if (chromeStyle() == ChromeStyle::Floating) {
     layout->setContentsMargins(4, 4, 4, 4); // the card has its own margins
-    layout->setSpacing(4);                  // compact: the whole panel fits the card
+    layout->setSpacing(10);
   }
 
   auto* header = new QHBoxLayout;
@@ -224,7 +223,10 @@ CommandPanel::CommandPanel(const CommandDef& def, const CommandState& state, boo
   m_form = new QFormLayout;
   m_form->setFieldGrowthPolicy(QFormLayout::AllNonFixedFieldsGrow);
   if (chromeStyle() == ChromeStyle::Floating) {
-    m_form->setVerticalSpacing(3);
+    m_form->setVerticalSpacing(8);
+    m_form->setHorizontalSpacing(10);
+    m_form->setRowWrapPolicy(QFormLayout::WrapLongRows);
+    m_form->setLabelAlignment(Qt::AlignLeft | Qt::AlignVCenter);
   }
   int selectionIndex = 0;
   for (const InputDef& input : def.inputs) {
@@ -297,6 +299,10 @@ void CommandPanel::applyControlStyles() {
   const QColor accent = accentColor(palette());
   // White on the accent colour, as the title bar's prominent button has it.
   const QColor accentText = palette().color(QPalette::HighlightedText);
+  m_result->setFrameShape(QFrame::NoFrame);
+  m_result->setMargin(10);
+  m_result->setStyleSheet(QStringLiteral(
+      "QLabel { background: rgba(128, 128, 128, 18); border: none; border-radius: 10px; }"));
   for (const auto& row : m_rows) {
     if (row->select != nullptr) {
       styleSelect(row->select, accent, accentText);

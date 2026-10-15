@@ -5,7 +5,8 @@ templates, `.rte` and `.rft`): the container, the metadata, the file's own
 serialisation schema, the element table and the element records, walked
 field by field by that schema, as typed views (category, class, level,
 family and type, transform, bounding box, saved meshes, levels,
-materials). It has no geometry: the `.rvt` import (mitcad#274,
+materials) and the building elements' parameters (mitcad#275). It has no
+geometry: the `.rvt` import (mitcad#274, mitcad#275,
 `mitcad_import::rvt`, `core/ffi/src/rvt_import.rs`, the `import_rvt`
 command in [commands.md](../model/src/api/commands.md#rvt-import),
 `mitcad-cli import-rvt`, File › Open) builds the bodies through the
@@ -31,10 +32,11 @@ further.
 | `schema` | The serialisation schema (`Formats/Latest`): classes, bases, fields, type encodings, the known unknowns. A writer for tests. |
 | `walk` | Records walked by the schema: objects, pointers and the objects behind them, partial walks. |
 | `partition` | The partition streams' two record chains (element headers, element objects). A writer for tests. |
-| `elements` | The element table and the typed views: elements, levels, materials, type boxes, saved meshes. |
+| `elements` | The element table and the typed views: elements, levels, materials, type boxes, saved meshes, GlobalIds. |
+| `building` | The building elements' parameters: walls, floors, roofs, family instances and types, stair runs, grids, links (mitcad#275). |
 | `categories` | Built-in categories' names and which are building elements; system families by type kind. |
-| `testfile` | A small project and family written by the writers (the tests', the CLI's and the UI test's). |
-| `bin/mitcad-rvt-inspect` | `list`, `info [--json]`, `stream <path> [--raw]`, `schema [<class>] [--json]`, `table`, `elements [--json\|--csv] [--all]`, `levels`, `materials`, `record <id> [--all]`, `classes [<class>]`, `preview`, `write-test`. |
+| `testfile` | A small project and family written by the writers (the tests', the CLI's and the UI test's), and a building project with a link. |
+| `bin/mitcad-rvt-inspect` | `list`, `info [--json]`, `stream <path> [--raw]`, `schema [<class>] [--json]`, `table`, `elements [--json\|--csv] [--all]`, `levels`, `materials`, `record <id> [--all]`, `records <class>[,…]`, `building`, `classes [<class>]`, `preview`, `write-test`. |
 
 ## The container
 
@@ -264,6 +266,85 @@ All values are fields the schema names, read by their names:
 
 Built-in categories are not named in the file; `categories` lists the
 public enumeration's names of the common ones.
+
+## The building elements (mitcad#275)
+
+The `building` module reads what the import rebuilds walls, floors,
+roofs, columns, beams and stair runs from, by the schema's field names,
+in feet:
+
+- **Curves:** `GLine` (`m_origin`, `m_dirVec`, `m_endParams`: the
+  points `origin + t·dir`) and `GArc` (`m_center`, `m_radius`, `m_xVec`,
+  `m_yVec`, `m_endParams`: the angles from the x vector towards the y
+  vector) *(verified: the walls' and floors' curves of the MIT project
+  land on the IFC export's solids)*.
+- **Walls** (`VWall`): the location curve (`m_pCurveDriver` → `m_pCrv`);
+  the base and the height from the location reference face
+  (`m_pRefFaces[0]`, a `Plane` whose envelope spans the curve's length
+  and the height); the faces' offsets from the other vertical reference
+  faces; the type's layers (`m_WallAttributesId` → `m_pCompoundStructure`
+  → `m_layers`: `m_layerWidth`, `m_materialId`, `m_layerFunction`); per
+  end the walls joined there in order (`m_controlJoinsSet`:
+  `CDJoinInfo.m_info`, each `EndInfo` an element and its end, 0 and 1
+  its ends, 2 and 3 its sides; `m_wallJoinType`); the elements cutting it
+  (`CutPairGStep.m_otherId` of its geometry steps) and the inserts whose
+  cut it takes (`WallCutoutGStep.m_instId`); an edited profile's loops
+  (`VWallExtrusionHelper.m_pCurveLoops`, in the wall's vertical plane).
+  **Joins** *(verified on the MIT project's 360 walls)*: where walls meet
+  end to end, the first listed runs on to the far face of the second
+  (and stays at the joint when the second runs on in line), the others
+  stop at its near face (one in line with it where it ends); an end on
+  another wall's side stops at that side's near face; joins with what is
+  no layered wall (room separation lines, curtain walls) shape nothing.
+- **Floors, pads and roofs:** the loops of their extrusion helper cell
+  (`FloorExtrusionHelper`, `BuildingPadExtrusionHelper`,
+  `RoofExtrusionHelper`: `m_pCurveLoops`) or a footprint roof's own
+  (`ProfileRoof.m_curveLoops`); a floor's `m_top` and `m_bottom`, a pad's
+  horizontal reference faces; a roof's layer reference faces
+  (`m_pRefLayerFaces`: the boundaries of its type's layers, per slope)
+  and an extrusion roof's extents (`m_extrusionDepth`, along its open
+  profile's plane's normal); a shape edit in use
+  (`SlabShapeEditGStep.m_dormant` false).
+- **Family instances and types:** the level references (`m_refs`'
+  `FamilyLevelRef`: `m_elemId`, `m_offset`: a column's base and top), a
+  beam's location curve and setbacks (`FamInstCurveDriver`: `m_pCrv`,
+  `m_setbacks`); a type's parameters (`m_pParams` → `NamedParam`:
+  `m_paramId`, `m_value`; a family parameter's name is its element's
+  `m_pParamDef` → `m_caption`; the structural sections' built-in ids
+  -1005502 width, -1005503 height, -1005504 diameter, -1005505/-1005506
+  wall thickness, -1005524 flange and -1005525 web thickness, -1005529
+  and -1005530 the hollow sections' corner radii *(verified: the steel
+  sections' published dimensions)*), an insert type's cut loops and
+  direction (`m_pCutLoops`, `m_cutDirs`: a door's opening, in the type's
+  coordinates) *(verified: the MIT project's door openings are the IFC
+  export's)*.
+- **Stair runs** (`StairsRun`): `m_bottomElevation`, `m_topElevation`,
+  the risers (`m_topRiserIndex - m_baseRiserIndex`), the treads' depths
+  (`m_stairsTreadInfoArr` → `m_actDepth`), the start and end riser lines,
+  the line along the nosings (`m_oSupportPathCurveLoops`); the run type's
+  `m_hasMonolithicSupport` and `m_structuralDepth` (the support's depth
+  under that line).
+- **Grids** (`Grid`): `m_text` and the line of `m_pSurface` (a `Plane`
+  whose envelope's u range is the line).
+- **Links:** `RvtLinkInstance` (`m_name`, `m_pInstanceInfo` → the
+  transform and the type) and `RvtLinkSymbol` (the file's name,
+  `m_symbolInfo`; the stored path,
+  `m_otherDocModelLocation.m_lastKnownModelPath.m_path`).
+- **GlobalIds:** the element table's history (`ElemRec.m_history`:
+  `m_originalElementId`, `m_creationDate`, an `EpisodeId`) names the
+  episode that created the element in `Global/History` (a count, then
+  per episode its GUID and one byte; the list newest first, so an
+  `EpisodeId` counts from its end); the GlobalId is that GUID with its
+  last four bytes xor-ed with the element id, in IFC's base-64 form
+  *(verified: every one of the 854 elements of the MIT project's IFC
+  export)*.
+
+On the MIT project with its IFC export (`c805df44`, `bfdf36ff`) every
+wall (360), slab (80, and 20 floors the export names shading devices) and
+column (256) built as features agrees with the export's solid (its volume
+within 0.1 %, its box within 0.001 mm). Elsewhere the features are
+checked against the elements' stored boxes (`rvt.corpus` imports a
+structural sample with the architectural sample it links).
 
 ## The test corpus
 

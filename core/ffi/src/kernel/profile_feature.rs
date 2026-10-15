@@ -98,6 +98,14 @@ pub mod ffi {
         /// Extra clearance, mm (mitcad#195; `ThreadSpec` in thread.hpp).
         radial_clearance: f64,
         flank_clearance: f64,
+        /// End chamfers (mitcad#304; `ThreadSpec` in thread.hpp): `groove`
+        /// false cuts only them; per face whether its low (1) and high (2)
+        /// end along its cylinder's axis get one.
+        groove: bool,
+        chamfer: bool,
+        chamfer_angle: f64,
+        chamfer_diameter: f64,
+        chamfer_ends: Vec<u8>,
     }
 
     struct PlaneOutput {
@@ -381,6 +389,16 @@ pub fn thread_input(spec: &ThreadSpec<'_>) -> ffi::ThreadInput {
         high_end,
         radial_clearance: spec.radial_clearance,
         flank_clearance: spec.flank_clearance,
+        groove: spec.groove,
+        chamfer: spec.chamfer.is_some(),
+        chamfer_angle: spec.chamfer.as_ref().map_or(0.0, |c| c.angle),
+        chamfer_diameter: spec.chamfer.as_ref().map_or(0.0, |c| c.diameter),
+        chamfer_ends: spec.chamfer.as_ref().map_or_else(Vec::new, |c| {
+            c.ends
+                .iter()
+                .map(|&(low, high)| u8::from(low) | (u8::from(high) << 1))
+                .collect()
+        }),
     }
 }
 

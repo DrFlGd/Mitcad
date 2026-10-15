@@ -182,7 +182,7 @@ it. The library itself is kept in a repository of its own.
 Fetched libraries are bare clones in the user's local data folder
 (`libraries`; `MITCAD_LIBRARIES_DIR` overrides it), one per URL, made and
 updated with the system's git only when the user asks (Libraries ›
-Fetch, Library Parts › Check for Newer Versions, Get Library). Updates
+Fetch, Update in the library browser, Library Parts › Check for Newer Versions, Get Library). Updates
 add branches and tags without removing anything, and git's automatic
 garbage collection is off there, so the versions designs use stay
 readable. A design whose library is not on the computer keeps the bodies

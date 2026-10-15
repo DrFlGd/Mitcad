@@ -104,6 +104,8 @@ struct BodyDisplay {
     Appearance appearance;
   };
   std::vector<FaceLook> faceLooks = {};
+  // Owning component, shared by all its bodies and occurrences.
+  std::string component;
 };
 
 // A sketch curve or point in model space.
@@ -236,6 +238,7 @@ public:
 
   // Display settings (U5).
   void setVisualStyle(VisualStyle style);
+  void setComponentColors(bool on);
   VisualStyle visualStyle() const { return m_visualStyle; }
   void setNavigation(const NavigationSettings& settings);
   const NavigationSettings& navigation() const { return m_navigation; }
@@ -518,6 +521,7 @@ private:
 
   struct BodyEntry {
     std::string uid;
+    std::string component;
     std::string occurrence;
     occ::handle<AIS_Shape> object;
     std::shared_ptr<geometry::Shape> shape;
@@ -576,6 +580,14 @@ private:
     bool reference = false;
   };
   void styleSketchEntity(const occ::handle<AIS_Shape>& object, const SketchEntityLook& look) const;
+  // Whether the entity is drawn over a halo (mitcad#302): fully constrained
+  // curves and centre lines, whose colour follows the background and would
+  // otherwise vanish over a body's face of the same tone.
+  static bool hasSketchHalo(const SketchEntityLook& look);
+  // The halo: a wider line in the background's tone under the entity's.
+  void styleSketchHalo(const occ::handle<AIS_Shape>& halo, const SketchEntityLook& look) const;
+  // Logs "Sketch halos: <n> dark|light" when it changed (for UI tests).
+  void logSketchHalos();
   // Recolours the sketch entities shown after the background turned dark
   // or light.
   void restyleSketchEntities();
@@ -670,6 +682,10 @@ private:
   std::map<QString, std::pair<QString, occ::handle<AIS_Shape>>> m_sketchEntityKeys;
   // How each of them is drawn, for restyleSketchEntities().
   std::map<const AIS_InteractiveObject*, SketchEntityLook> m_sketchEntityLooks;
+  // Their halos (mitcad#302), not pickable, drawn before the entities.
+  std::map<const AIS_InteractiveObject*, occ::handle<AIS_Shape>> m_sketchEntityHalos;
+  // The halos as last logged ("Sketch halos:").
+  QString m_loggedSketchHalos;
   // The shown sketches' colours as last logged ("Sketch colours:", for UI
   // tests; mitcad#286).
   QString m_loggedSketchColours;
@@ -732,9 +748,12 @@ private:
 
   // Display settings (U5).
   VisualStyle m_visualStyle = VisualStyle::ShadedVisibleEdges;
+  bool m_componentColors = false;
   NavigationSettings m_navigation;
   Graphic3d_ZLayerId m_hiddenLayer = Graphic3d_ZLayerId_UNKNOWN;
   Graphic3d_ZLayerId m_edgeLayer = Graphic3d_ZLayerId_UNKNOWN;
+  // Sketch entities' halos, just before the top layer (mitcad#302).
+  Graphic3d_ZLayerId m_sketchHaloLayer = Graphic3d_ZLayerId_UNKNOWN;
   occ::handle<AIS_Shape> m_sectionCaps;
   occ::handle<AIS_Shape> m_sectionHatch;
   occ::handle<AIS_Shape> m_threads;

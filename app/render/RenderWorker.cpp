@@ -16,6 +16,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <functional>
 #include <iostream>
 #include <map>
 #include <memory>
@@ -628,7 +629,330 @@ int runUpdateTest() {
   failures += unchanged ? 0 : 1;
   std::printf("render-update orthographic eye inside the block: mean difference %.2f from outside%s\n", difference,
               unchanged ? "" : " (wanted below 2: the block is cut off)");
+  // Views from below the ground (mitcad#320), the test scene's ground on:
+  // the shadow catcher's matte would meet the camera's rays first and leave
+  // only the background. The block's pixels are opaque (not the background)
+  // in a perspective view from under the ground, an orthographic one
+  // looking up, and above the ground again.
+  const auto blockShare = [&](const char* name, const render::ViewData& below) {
+    renderer->setView(below);
+    if (!frame.waitDone(below.sequence) || frame.pixels.empty()) {
+      std::printf("render-update %s: no frame\n", name);
+      ++failures;
+      return;
+    }
+    const QRect covered = render::coverage(frame.pixels.data(), frame.width_, frame.height_);
+    const double share = covered.isEmpty() ? 0.0
+                                           : static_cast<double>(covered.width()) * covered.height() /
+                                                 (static_cast<double>(frame.width_) * frame.height_);
+    const bool seen = share > 0.1;
+    failures += seen ? 0 : 1;
+    std::printf("render-update %s: the block covers %.2f of the image%s\n", name, share,
+                seen ? "" : " (wanted above 0.1: only the background)");
+  };
+  render::ViewData under = view;
+  under.sequence = 5;
+  under.eye = {120, -160, -110};
+  under.target = {0, 0, 10};
+  under.halfHeight = 40;
+  blockShare("perspective from below the ground", under);
+  render::ViewData up = ortho;
+  up.sequence = 6;
+  up.eye = {0, 0, -500};
+  up.target = {0, 0, 10};
+  up.up = {0, 1, 0};
+  up.halfHeight = 40;
+  blockShare("orthographic looking up at the ground", up);
+  render::ViewData above = view;
+  above.sequence = 7;
+  above.target = {0, 0, 10};
+  above.halfHeight = 40;
+  blockShare("perspective above the ground again", above);
+  // Glass given to a body while the session renders (mitcad#319: the
+  // application swaps only the material of a body it keeps) renders as
+  // glass given before the render starts (a design opened with it): the
+  // body's Cycles mesh and shader are made again, and the image is not
+  // black. Without the ground, so that what the frame covers is the block.
+  const auto glassOf = [](render::BodyData body) {
+    body.material = render::MaterialData();
+    body.material.baseColor = {1.0f, 1.0f, 1.0f};
+    body.material.roughness = 0.0f;
+    body.material.transmission = 1.0f;
+    body.material.ior = 1.45f;
+    body.materialKey = "glass";
+    return body;
+  };
+  render::SceneUpdate opaque = render::testScene();
+  opaque.ground = false;
+  renderer->setSamples(16);
+  renderer->updateScene(opaque);
+  render::ViewData glassView = above;
+  glassView.sequence = 8;
+  renderer->setView(glassView);
+  render::SceneUpdate swapped;
+  swapped.bodies = {glassOf(opaque.bodies.front())};
+  swapped.ground = false;
+  const render::SceneChanges swap = frame.waitDone(8) ? renderer->updateScene(swapped) : render::SceneChanges();
+  const bool swappedLive = swap.changed == std::vector<std::string>{"test block"} && swap.added.empty();
+  failures += swappedLive ? 0 : 1;
+  std::printf("render-update glass while rendering: changed %s%s\n", qPrintable(listed(swap.changed)),
+              swappedLive ? "" : " (wanted test block)");
+  glassView.sequence = 9;
+  renderer->setView(glassView);
+  int liveCovered = 0;
+  double live = 0.0;
+  if (frame.waitDone(9) && !frame.pixels.empty()) {
+    live = render::coveredBrightness(frame.pixels.data(), frame.width_, frame.height_, &liveCovered);
+  }
+  KeptFrame openedFrame;
+  std::string openedError;
+  const std::unique_ptr<render::Renderer> opened = render::makeCyclesRenderer(openedFrame, options, openedError);
+  int openedCovered = 0;
+  double fromStart = 0.0;
+  if (opened) {
+    opened->setSamples(16);
+    render::SceneUpdate glassScene = render::testScene();
+    glassScene.ground = false;
+    glassScene.bodies.front() = glassOf(glassScene.bodies.front());
+    opened->updateScene(glassScene);
+    render::ViewData openedView = glassView;
+    openedView.sequence = 1;
+    opened->setView(openedView);
+    if (openedFrame.waitDone(1) && !openedFrame.pixels.empty()) {
+      fromStart = render::coveredBrightness(openedFrame.pixels.data(), openedFrame.width_, openedFrame.height_,
+                                            &openedCovered);
+    }
+  }
+  const bool sameGlass = fromStart > 0.05 && live > 0.05 && std::abs(live - fromStart) <= 0.25 * fromStart + 0.02 &&
+                         std::abs(liveCovered - openedCovered) <= openedCovered / 10 + 10;
+  failures += sameGlass ? 0 : 1;
+  std::printf("render-update glass given while rendering: brightness %.3f over %d pixels, given before the render "
+              "%.3f over %d%s\n",
+              live, liveCovered, fromStart, openedCovered,
+              sameGlass ? "" : " (wanted alike and above 0.05: the live swap renders it wrong)");
   std::printf("render-update %s\n", failures == 0 ? "ok" : "FAILED");
+  return failures == 0 ? 0 : 1;
+}
+
+// --maps-test <folder> (mitcad#314): the maps of a texture set on the test
+// block, each rendered and compared with the same material without it or
+// with the parameter it replaces (docs/rendering.md, "Materials"). The
+// images are generated into the folder, and so are the renders
+// (maps-<name>.png). A map that matters changes the image; a map that is
+// the same as the parameter it replaces (a mid-grey roughness map for
+// roughness 0.502: read as data, not as sRGB; a white metalness map for
+// metalness 1), a flat normal map, a white occlusion map, and a map that
+// cannot be read (a warning; the rest still renders) do not; a normal map tilted
+// along the image's u turned by half a turn renders as one tilted the
+// other way (the tangent frame follows the texture's rotation). Prints a
+// line per comparison; 0 when all hold.
+int runMapsTest(const QString& folderPath) {
+  QDir folder(folderPath);
+  if (!folder.mkpath(QStringLiteral("."))) {
+    std::fprintf(stderr, "render-failed cannot make the folder %s\n", qPrintable(folderPath));
+    return 3;
+  }
+  // The images: 64 x 64 pixels, the block's texture repeats every 20 mm.
+  static constexpr int kSize = 64;
+  static constexpr double kPi = 3.14159265358979323846;
+  const auto write = [&folder](const QString& name, const std::function<QRgb(int, int)>& pixel) {
+    QImage image(kSize, kSize, QImage::Format_RGB32);
+    for (int y = 0; y < kSize; ++y) {
+      for (int x = 0; x < kSize; ++x) {
+        image.setPixel(x, y, pixel(x, y));
+      }
+    }
+    const QString path = folder.absoluteFilePath(name);
+    return image.save(path) ? path.toStdString() : std::string();
+  };
+  const auto grey = [](int level) { return [level](int, int) { return qRgb(level, level, level); }; };
+  // A tangent-space normal (x along u, y along v, z out) as OpenGL's colour.
+  const auto normalColor = [](double x, double y, double z) {
+    const double length = std::sqrt(x * x + y * y + z * z);
+    const auto channel = [length](double c) { return static_cast<int>(std::lround((c / length * 0.5 + 0.5) * 255.0)); };
+    return qRgb(channel(x), channel(y), channel(z));
+  };
+  const std::string base = write(QStringLiteral("base.png"), grey(120));
+  const std::string flat = write(QStringLiteral("normal-flat.png"), [&](int, int) { return normalColor(0, 0, 1); });
+  // Ridges across u, four per image: the normal leans along u and back.
+  const std::string ridges = write(QStringLiteral("normal-ridges.png"), [&](int x, int) {
+    return normalColor(1.5 * std::cos(2.0 * kPi * 4.0 * (x + 0.5) / kSize), 0, 1);
+  });
+  const std::string tiltPlus = write(QStringLiteral("normal-tilt-plus-u.png"), [&](int, int) { return normalColor(0.8, 0, 1); });
+  const std::string tiltMinus =
+      write(QStringLiteral("normal-tilt-minus-u.png"), [&](int, int) { return normalColor(-0.8, 0, 1); });
+  const std::string roughMid = write(QStringLiteral("roughness-128.png"), grey(128));
+  const std::string roughLow = write(QStringLiteral("roughness-low.png"), grey(13));
+  const std::string metal = write(QStringLiteral("metalness-1.png"), grey(255));
+  const std::string white = write(QStringLiteral("occlusion-white.png"), grey(255));
+  const std::string checker = write(QStringLiteral("occlusion-checker.png"), [](int x, int y) {
+    const int level = ((x / 16 + y / 16) % 2 == 0) ? 255 : 40;
+    return qRgb(level, level, level);
+  });
+  for (const std::string* file : {&base, &flat, &ridges, &tiltPlus, &tiltMinus, &roughMid, &roughLow, &metal, &white,
+                                  &checker}) {
+    if (file->empty()) {
+      std::fprintf(stderr, "render-failed cannot write the test images into %s\n", qPrintable(folderPath));
+      return 3;
+    }
+  }
+  const std::string missing = folder.absoluteFilePath(QStringLiteral("no-such-normal.png")).toStdString();
+
+  KeptFrame frame;
+  std::string error;
+  render::RendererOptions options; // on the CPU
+  options.interactive = true;
+  options.kernelFolder = kernelFolder();
+  const std::unique_ptr<render::Renderer> renderer = render::makeCyclesRenderer(frame, options, error);
+  if (!renderer) {
+    std::fprintf(stderr, "render-failed %s\n", error.c_str());
+    return 3;
+  }
+  renderer->setSamples(16);
+  render::ViewData view;
+  view.width = 160;
+  view.height = 120;
+  view.perspective = true;
+  view.eye = {90, -120, 110};
+  view.target = {0, 0, 10};
+  view.up = {0, 0, 1};
+  view.halfHeight = 40;
+  render::SceneUpdate scene = render::testScene();
+  // Without the ground: its shadow's noise would differ between shaders.
+  scene.ground = false;
+  render::MaterialData plain = scene.bodies.front().material;
+  plain.texture = base;
+  plain.textureSize = {20.0f, 20.0f};
+  plain.roughness = 0.502f;
+  // Renders the block in a material; the image as the view shows it.
+  std::uint64_t sequence = 0;
+  int failures = 0;
+  const auto renderOf = [&](const char* name, const render::MaterialData& material, QImage& image,
+                            std::vector<std::string>& warnings) {
+    render::BodyData& body = scene.bodies.front();
+    body.material = material;
+    body.materialKey = QJsonDocument(render::materialJson(material)).toJson(QJsonDocument::Compact).toStdString();
+    warnings = renderer->updateScene(scene).warnings;
+    scene.meshes.clear(); // sent once
+    view.sequence = ++sequence;
+    renderer->setView(view);
+    if (!frame.waitDone(sequence) || frame.pixels.empty()) {
+      return false;
+    }
+    image = render::displayImage(frame.pixels.data(), frame.width_, frame.height_, QColor(247, 248, 250),
+                                 QColor(223, 227, 234), render::Look(),
+                                 frame.catcher.empty() ? nullptr : frame.catcher.data())
+                .convertToFormat(QImage::Format_RGB32);
+    image.save(folder.absoluteFilePath(QStringLiteral("maps-%1.png").arg(QLatin1String(name))));
+    return true;
+  };
+  // The mean difference of the 8-bit channels.
+  const auto difference = [](const QImage& a, const QImage& b) {
+    if (a.size() != b.size()) {
+      return 255.0;
+    }
+    double sum = 0.0;
+    for (int y = 0; y < a.height(); ++y) {
+      const auto* pa = reinterpret_cast<const QRgb*>(a.constScanLine(y));
+      const auto* pb = reinterpret_cast<const QRgb*>(b.constScanLine(y));
+      for (int x = 0; x < a.width(); ++x) {
+        sum += std::abs(qRed(pa[x]) - qRed(pb[x])) + std::abs(qGreen(pa[x]) - qGreen(pb[x])) +
+               std::abs(qBlue(pa[x]) - qBlue(pb[x]));
+      }
+    }
+    return sum / (3.0 * a.width() * a.height());
+  };
+  // Below this the images are the same (noise and rounding), above
+  // `kChanged` a map changed the block.
+  constexpr double kSame = 0.6;
+  constexpr double kChanged = 2.0;
+  // The renders by name, and the warnings of the last one.
+  std::map<std::string, QImage> images;
+  std::vector<std::string> warnings;
+  const auto renderAs = [&](const char* name, const render::MaterialData& material) {
+    QImage image;
+    if (!renderOf(name, material, image, warnings)) {
+      std::fprintf(stderr, "render-failed %s did not render\n", name);
+      return false;
+    }
+    for (const std::string& warning : warnings) {
+      std::printf("render-maps %s: warning %s\n", name, warning.c_str());
+    }
+    images[name] = image;
+    return true;
+  };
+  // Whether two renders differ (`changes`) or are the same.
+  const auto compare = [&](const char* a, const char* b, bool changes) {
+    const double d = difference(images[a], images[b]);
+    const bool ok = changes ? d > kChanged : d < kSame;
+    failures += ok ? 0 : 1;
+    std::printf("render-maps %s against %s: mean difference %.2f (wanted %s %.1f)%s\n", a, b, d,
+                changes ? "above" : "below", changes ? kChanged : kSame, ok ? "" : " FAILED");
+  };
+  render::MaterialData metallic = plain; // a polished metal shows its roughness
+  metallic.metallic = 1.0f;
+  render::MaterialData m = plain;
+  bool rendered = renderAs("none", plain) && renderAs("metal", metallic);
+  // Normal maps: a flat one changes nothing, ridges do.
+  m.normalMap = flat;
+  rendered = rendered && renderAs("normal-flat", m);
+  m.normalMap = ridges;
+  rendered = rendered && renderAs("normal-ridges", m);
+  // Roughness: a mid-grey map is roughness 0.502 (read as data), a dark one
+  // the same as the parameter 0.05.
+  m = metallic;
+  m.roughnessMap = roughMid;
+  rendered = rendered && renderAs("metal-roughness-map-0.502", m);
+  m.roughnessMap = roughLow;
+  rendered = rendered && renderAs("metal-roughness-map-0.05", m);
+  m = metallic;
+  m.roughness = 13.0f / 255.0f;
+  rendered = rendered && renderAs("metal-roughness-0.05", m);
+  // Metalness: a white map is metal.
+  m = plain;
+  m.metalnessMap = metal;
+  rendered = rendered && renderAs("metalness-map-1", m);
+  // Occlusion: white changes nothing, a checker darkens its squares.
+  m = plain;
+  m.occlusionMap = white;
+  rendered = rendered && renderAs("occlusion-white", m);
+  m.occlusionMap = checker;
+  rendered = rendered && renderAs("occlusion-checker", m);
+  // A map that cannot be read: a warning, the rest renders as without it.
+  m = plain;
+  m.normalMap = missing;
+  rendered = rendered && renderAs("normal-missing", m);
+  const bool warned = warnings.size() == 1 && warnings.front().find("no-such-normal.png") != std::string::npos &&
+                      warnings.front().find("the map is left out") != std::string::npos;
+  // The tangent frame follows the rotation: +u turned by half a turn is -u.
+  m = plain;
+  m.normalMap = tiltPlus;
+  rendered = rendered && renderAs("normal-tilt-plus-u", m);
+  m.textureRotation = static_cast<float>(kPi);
+  rendered = rendered && renderAs("normal-tilt-plus-u-turned", m);
+  m.normalMap = tiltMinus;
+  m.textureRotation = 0.0f;
+  rendered = rendered && renderAs("normal-tilt-minus-u", m);
+  if (!rendered) {
+    return 3;
+  }
+  compare("normal-flat", "none", false);
+  compare("normal-ridges", "none", true);
+  compare("metal", "none", true);
+  compare("metal-roughness-map-0.502", "metal", false);
+  compare("metal-roughness-map-0.05", "metal", true);
+  compare("metal-roughness-map-0.05", "metal-roughness-0.05", false);
+  compare("metalness-map-1", "none", true);
+  compare("metalness-map-1", "metal", false);
+  compare("occlusion-white", "none", false);
+  compare("occlusion-checker", "none", true);
+  compare("normal-missing", "none", false);
+  failures += warned ? 0 : 1;
+  std::printf("render-maps normal-missing: %s\n", warned ? "warned" : "no warning that the map is left out FAILED");
+  compare("normal-tilt-plus-u", "none", true);
+  compare("normal-tilt-plus-u", "normal-tilt-minus-u", true);
+  compare("normal-tilt-plus-u-turned", "normal-tilt-minus-u", false);
+  std::printf("render-maps %s\n", failures == 0 ? "ok" : "FAILED");
   return failures == 0 ? 0 : 1;
 }
 
@@ -1262,6 +1586,10 @@ int main(int argc, char* argv[]) {
                                     QStringLiteral("n,m,..."));
   const QCommandLineOption updateTest(QStringLiteral("update-test"),
                                       QStringLiteral("Check that scene updates change only what changed"));
+  const QCommandLineOption mapsTest(
+      QStringLiteral("maps-test"),
+      QStringLiteral("Check that a texture's maps render as they should, with test images in this folder"),
+      QStringLiteral("folder"));
   const QCommandLineOption environment(
       QStringLiteral("environment"),
       QStringLiteral("--bench in this environment: the \"environment\" command's JSON (render settings)"),
@@ -1296,7 +1624,7 @@ int main(int argc, char* argv[]) {
       QStringLiteral("probe-denoiser"),
       QStringLiteral("Print whether Open Image Denoise creates its device on each GPU, or its error, and end"));
   parser.addOptions({channel, bench, samples, output, interactive, orthographic, environment, texture, trace, frameFiles, previews,
-                     updateTest, batch, control, device, compare, tolerance, listDevices, probeDenoiser});
+                     updateTest, batch, control, device, compare, tolerance, listDevices, probeDenoiser, mapsTest});
   parser.process(app);
   if (parser.isSet(probeDenoiser)) {
     // Diagnostics of GPU denoising (mitcad#202, docs/rendering.md "Devices").
@@ -1315,6 +1643,9 @@ int main(int argc, char* argv[]) {
   }
   if (parser.isSet(updateTest)) {
     return runUpdateTest();
+  }
+  if (parser.isSet(mapsTest)) {
+    return runMapsTest(parser.value(mapsTest));
   }
   if (parser.isSet(batch)) {
     return runBatch(parser.value(batch), parser.isSet(control));

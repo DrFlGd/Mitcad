@@ -200,6 +200,9 @@ pub(crate) enum Read {
     Placement(OccurrenceUid, Option<[u64; 12]>),
     /// Assembly identities, availability, multiplicity and read-only state.
     Assembly(u128),
+    /// The document's join tolerance (as bits), None without one
+    /// (mitcad#298).
+    JoinTolerance(Option<u64>),
 }
 
 /// A placement's matrix as bits, for [`Read::Placement`].
@@ -254,6 +257,7 @@ impl Read {
                 .eq(bodies.iter().copied()),
             Self::Placement(uid, bits) => env.placements.get(uid).map(placement_bits) == *bits,
             Self::Assembly(key) => crate::features::extrude_scope::assembly_key(env) == *key,
+            Self::JoinTolerance(bits) => env.join_tolerance.map(f64::to_bits) == *bits,
         }
     }
 
@@ -317,6 +321,11 @@ impl Read {
             }
             Self::Assembly(key) => {
                 fingerprint.u8(9).u128(*key);
+            }
+            Self::JoinTolerance(bits) => {
+                fingerprint.u8(12).option(*bits, |f, b| {
+                    f.u64(b);
+                });
             }
         }
     }
@@ -854,6 +863,7 @@ pub(crate) fn recompute<K: Kernel>(
             components: &components,
             placements: &done.placements,
             written_from: &written_from,
+            join_tolerance: state.join_tolerance,
         };
         let output = match cache.lookup(entry, &env) {
             Some(output) => output,

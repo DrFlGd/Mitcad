@@ -1,16 +1,21 @@
 // SPDX-License-Identifier: MIT
 #include "ProjectIndicator.hpp"
 
+#include <algorithm>
 #include <utility>
 
 #include <QAction>
 #include <QCoreApplication>
 #include <QDir>
 #include <QMenu>
+#include <QPainter>
+#include <QPainterPath>
 #include <QStringList>
 #include <QtLogging>
 
 #include "../framework/TestSync.hpp"
+#include "../framework/ChromeStyle.hpp"
+#include "../framework/Theme.hpp"
 
 namespace mitcad {
 namespace {
@@ -31,10 +36,44 @@ ProjectIndicator::ProjectIndicator(std::function<void(const QString& id)> trigge
   setToolButtonStyle(Qt::ToolButtonTextOnly);
   setPopupMode(QToolButton::InstantPopup);
   setFocusPolicy(Qt::NoFocus);
+  setAttribute(Qt::WA_Hover);
   m_menu = new QMenu(this);
   setMenu(m_menu);
   connect(m_menu, &QMenu::aboutToShow, this, &ProjectIndicator::fillMenu);
   refresh();
+}
+
+QSize ProjectIndicator::sizeHint() const {
+  if (chromeStyle() != ChromeStyle::Floating) {
+    return QToolButton::sizeHint();
+  }
+  return QSize(std::min(280, fontMetrics().horizontalAdvance(text()) + 42), 30);
+}
+
+void ProjectIndicator::paintEvent(QPaintEvent* event) {
+  if (chromeStyle() != ChromeStyle::Floating) {
+    QToolButton::paintEvent(event);
+    return;
+  }
+  QPainter painter(this);
+  painter.setRenderHint(QPainter::Antialiasing);
+  QColor fill = palette().color(QPalette::WindowText);
+  fill.setAlpha(isDown() ? 35 : underMouse() ? 24 : 12);
+  painter.setBrush(fill);
+  painter.setPen(QPen(cardBorderColor(palette()), 1));
+  painter.drawRoundedRect(QRectF(rect()).adjusted(0.5, 0.5, -0.5, -0.5), 10, 10);
+  painter.setPen(palette().color(QPalette::WindowText));
+  const QRect label = rect().adjusted(12, 0, -28, 0);
+  painter.drawText(label, Qt::AlignVCenter | Qt::AlignLeft,
+                   fontMetrics().elidedText(text(), Qt::ElideRight, label.width()));
+  QPen pen(palette().color(QPalette::WindowText), 1.5, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin);
+  painter.setPen(pen);
+  const QPointF center(width() - 15, height() / 2.0);
+  QPainterPath arrow;
+  arrow.moveTo(center + QPointF(-3, -1.5));
+  arrow.lineTo(center + QPointF(0, 1.5));
+  arrow.lineTo(center + QPointF(3, -1.5));
+  painter.drawPath(arrow);
 }
 
 void ProjectIndicator::setProject(const ProjectState& project) {

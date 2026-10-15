@@ -346,6 +346,11 @@ private:
   void refreshAutoselect();
   void showSketches();
   void showDatums();
+  // The datums' pick places for UI tests (showDatums; again when the camera
+  // comes to rest, when they changed).
+  void logDatumPlaces();
+  QVector<QJsonObject> m_loggedDatums;
+  QString m_loggedDatumPlaces;
   // Where the shown bodies are in the window, for UI tests (when changed).
   void logBodyPlaces();
   // Whether an instance of a body is shown while something is isolated.
@@ -875,6 +880,7 @@ private:
   QStackedWidget* m_commandPages = nullptr;
   QPointer<QWidget> m_panelScroll; // the running command's panel page
   QLabel* m_idleInfo = nullptr;
+  QHash<QString, QString> m_idleMeasurements;
   QWidget* m_idlePage = nullptr;
   AutoselectPanel* m_autoselect = nullptr;
   Selection m_autoselectPreview; // hover only; never part of the actual selection

@@ -74,6 +74,8 @@ struct Expectation {
     occurrence: Option<String>,
     instances: Option<usize>,
     world_volume: Option<f64>,
+    // Thread end chamfers (mitcad#304): no sliver faces.
+    min_face_area: Option<f64>,
 }
 
 /// A body's bounding box.
@@ -228,6 +230,15 @@ impl<K: Kernel> Document<K> {
                 && kernel.count_faces(body.shape, face).map_err(error)? == 0
             {
                 return fail(format!("{wanted} to have a face {face}"));
+            }
+            if let Some(least) = expect.min_face_area {
+                let faces = kernel.faces(body.shape).map_err(error)?;
+                if let Some(small) = faces.iter().find(|f| f.area < least) {
+                    return fail(format!(
+                        "every face of {wanted} to have an area of {least} or more, got {} for {:?}",
+                        small.area, small.names
+                    ));
+                }
             }
             if let Some(edge) = &expect.has_edge
                 && kernel.count_edges(body.shape, edge) == 0

@@ -28,6 +28,10 @@
 //   test_exchange --write-rvt <file>    writes the .rvt reader's small test
 //                                       project (--write-rfa: family; CLI
 //                                       and UI tests)
+//   test_exchange --write-rvt-building <dir>
+//                                       writes the .rvt reader's building
+//                                       test project and its linked model
+//                                       into <dir> (CLI tests)
 //   test_exchange --corpus [dir]        imports every .f3d/.f3z under dir
 //                                       (default MITCAD_F3D_CORPUS, else
 //                                       ~/f3d-corpus) bodies only; exits 77
@@ -757,8 +761,9 @@ void test_rvt_import(const fs::path& dir) {
   // The wall's box, 10 x 0.5 x 10 ft; the column's type box at its
   // transform, 2 x 2 x 9 ft.
   const double cubic_foot = 304.8 * 304.8 * 304.8;
-  CHECK(near(volume(*document, "F1.b0"), 50.0 * cubic_foot, 1e-6));
-  CHECK(near(volume(*document, "F2.b0"), 36.0 * cubic_foot, 1e-6));
+  // (F1 and F2 are the levels' construction planes, mitcad#275.)
+  CHECK(near(volume(*document, "F3.b0"), 50.0 * cubic_foot, 1e-6));
+  CHECK(near(volume(*document, "F4.b0"), 36.0 * cubic_foot, 1e-6));
   auto command = mitcad::new_document();
   const std::string result(command->command(R"({"cmd": "import_rvt", "path": )" + json_path(rvt) + "}"));
   CHECK(contains(result, R"("bodies":3)"));
@@ -801,6 +806,10 @@ int main(int argc, char** argv) {
     }
     if (args.size() == 2 && (args[0] == "--write-rvt" || args[0] == "--write-rfa")) {
       mitcad::rvt_write_test_file(args[1], args[0] == "--write-rfa");
+      return 0;
+    }
+    if (args.size() == 2 && args[0] == "--write-rvt-building") {
+      mitcad::rvt_write_building_test(args[1]);
       return 0;
     }
     if (args.size() == 3 && args[0] == "--corpus-file") {

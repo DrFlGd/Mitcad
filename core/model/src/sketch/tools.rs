@@ -422,8 +422,17 @@ impl SketchEdit<'_> {
     }
 
     /// A regular polygon around `center`: `inscribed` puts the corners on a
-    /// construction circle through `vertex`, otherwise `vertex` is the
-    /// middle of a side and the sides touch the circle. Equal sides.
+    /// construction circle through `vertex`, with equal sides; otherwise
+    /// `vertex` is the middle of a side, the sides touch a construction
+    /// circle through it and the corners lie on a second one around the
+    /// same centre point.
+    ///
+    /// Either set leaves exactly the placement, the orientation and the
+    /// size free (four degrees of freedom), so dragging or turning keeps
+    /// the polygon regular (mitcad#303). Equal sides tangent to one circle
+    /// alone are not enough: with an even number of sides the touching
+    /// points can slide off the sides' middles in turn (alternate tangent
+    /// lengths `a`, `L - a`), which skews the polygon.
     pub fn polygon(
         &mut self,
         center: [f64; 2],
@@ -477,13 +486,30 @@ impl SketchEdit<'_> {
                     entity: super::Ref::Curve(circle),
                 });
             }
+            for w in lines.windows(2) {
+                self.add_constraint(ConstraintKind::Equal { a: w[0], b: w[1] });
+            }
         } else {
+            // The corners' circle shares the centre point; each side is a
+            // chord of it touching the inner circle, so all sides are
+            // equally long and turn by the same angle.
+            let around = self.curve_entity(
+                EntityKind::Circle {
+                    center: c,
+                    radius: big,
+                    start: 0.0,
+                },
+                true,
+            );
             for l in &lines {
                 self.add_constraint(ConstraintKind::Tangent { a: *l, b: circle });
             }
-        }
-        for w in lines.windows(2) {
-            self.add_constraint(ConstraintKind::Equal { a: w[0], b: w[1] });
+            for p in &corners {
+                self.add_constraint(ConstraintKind::Coincident {
+                    point: *p,
+                    entity: super::Ref::Curve(around),
+                });
+            }
         }
         Ok(lines)
     }

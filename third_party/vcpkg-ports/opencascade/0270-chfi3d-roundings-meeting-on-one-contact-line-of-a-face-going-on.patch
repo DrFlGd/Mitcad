@@ -1,0 +1,199 @@
+Mitcad's patch to OCCT 8.0.1, under OCCT's licence:
+SPDX-License-Identifier: LGPL-2.1-only WITH OCCT-exception-1.0
+
+Fillets: two roundings whose contact lines on the face between their
+edges are one line, where that face goes on past the line's ends
+(mitcad#239). Example: a rib 2 wide standing out of a plate's side, its
+top one face with the plate's top, the rib's two top edges rounded with 1.
+0153 makes such blends meet on the line only where the face is a strip
+between the two edges, which vanishes whole; here the face goes on over
+the plate, so the pair was not recorded and the check of the stripes'
+interferences failed ("fillets have too big radiuses",
+ChFi3d_StripeEdgeInter).
+
+- ChFi3d_Builder::Compute: the pair is recorded as 0153's also where the
+  face is not a strip (isStripBetween, 0153's test as a function), when
+  neither stripe is closed.
+- ApplyRides, for such a pair (the face standing for the support, not a
+  strip): each end of the line must be on one arc of the face for both
+  stripes (handled as 0153 does) or a point inside the face where both
+  stripes' corners end; otherwise the pair is left as it was. At an end
+  inside the face, the corners have cut the face off there (the edge of
+  the face at the end prolonged across the root, PerformOneCorner), each
+  at its own point: the later stripe's point is made the earlier one's
+  everywhere in the data structure (redirectPoint), so that the face's
+  wire and the face at the end close there. The face keeps its part past
+  the line's ends and loses the part between the line and the edges.
+diff --git a/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder.cxx b/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder.cxx
+index a7da6776..68ca4c06 100644
+--- a/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder.cxx
++++ b/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder.cxx
+@@ -305,6 +305,41 @@ static TopoDS_Edge spineEdgeOf(const occ::handle<ChFiDS_Spine>& Sp, const TopoDS
+   return TopoDS_Edge();
+ }
+ 
++// Whether face F is a strip between edges EA and EB: its other edges each
++// join a vertex of EA to one of EB.
++static bool isStripBetween(const TopoDS_Face& F, const TopoDS_Edge& EA, const TopoDS_Edge& EB)
++{
++  if (EA.IsNull() || EB.IsNull())
++  {
++    return false;
++  }
++  for (TopExp_Explorer ex(F, TopAbs_EDGE); ex.More(); ex.Next())
++  {
++    const TopoDS_Edge& E = TopoDS::Edge(ex.Current());
++    if (E.IsSame(EA) || E.IsSame(EB) || BRep_Tool::Degenerated(E))
++    {
++      continue;
++    }
++    bool toA = false, toB = false;
++    for (TopExp_Explorer exv(E, TopAbs_VERTEX); exv.More(); exv.Next())
++    {
++      for (TopExp_Explorer exa(EA, TopAbs_VERTEX); exa.More(); exa.Next())
++      {
++        toA = toA || exa.Current().IsSame(exv.Current());
++      }
++      for (TopExp_Explorer exb(EB, TopAbs_VERTEX); exb.More(); exb.Next())
++      {
++        toB = toB || exb.Current().IsSame(exv.Current());
++      }
++    }
++    if (!toA || !toB)
++    {
++      return false;
++    }
++  }
++  return true;
++}
++
+ // Whether the contact of SurfData A on its side onA lies beyond the
+ // contact of SurfData B on its side onB, seen from B's edge EB (both on
+ // the same face): nearer to EB than B's contact, at points all along.
+@@ -749,6 +784,34 @@ bool ChFi3d_Builder::RideOnOverlap(const occ::handle<ChFiDS_Stripe>& A,
+   return true;
+ }
+ 
++// Makes the interferences of the data structure at point theOld be at
++// point theNew instead (two corners' points that are one).
++static void redirectPoint(TopOpeBRepDS_DataStructure& DStr, const int theOld, const int theNew)
++{
++  const auto redirect = [&](NCollection_List<occ::handle<TopOpeBRepDS_Interference>>& theList) {
++    for (NCollection_List<occ::handle<TopOpeBRepDS_Interference>>::Iterator it(theList); it.More();
++         it.Next())
++    {
++      if (it.Value()->GeometryType() == TopOpeBRepDS_POINT && it.Value()->Geometry() == theOld)
++      {
++        it.ChangeValue()->Geometry(theNew);
++      }
++    }
++  };
++  for (int i = 1; i <= DStr.NbShapes(); i++)
++  {
++    redirect(DStr.ChangeShapeInterferences(i));
++  }
++  for (int i = 1; i <= DStr.NbCurves(); i++)
++  {
++    redirect(DStr.ChangeCurveInterferences(i));
++  }
++  for (int i = 1; i <= DStr.NbSurfaces(); i++)
++  {
++    redirect(DStr.ChangeSurfaceInterferences(i));
++  }
++}
++
+ void ChFi3d_Builder::ApplyRides()
+ {
+   TopOpeBRepDS_DataStructure&                            DStr = myDS->ChangeDS();
+@@ -778,6 +841,37 @@ void ChFi3d_Builder::ApplyRides()
+     {
+       continue;
+     }
++    // Where F goes on past the line's ends (contact lines that coincide, F
++    // standing for the support, not a strip), each end is either on one
++    // arc of F for both (as on a strip) or, where F goes on, a point inside
++    // F where both corners end, on the curves that cut F off there.
++    bool              atPoint[2] = {false, false};
++    const TopoDS_Face F          = TopoDS::Face(itF.Value());
++    if (itS.Value().IsSame(F)
++        && !isStripBetween(F, spineEdgeOf(A->Spine(), F), spineEdgeOf(B->Spine(), F)))
++    {
++      bool ends = true;
++      for (int f = 0; f < 2 && ends; f++)
++      {
++        const ChFiDS_CommonPoint& CPA = SA->Vertex(f == 0, onA);
++        const ChFiDS_CommonPoint& CPB = SB->Vertex(f == 0, onB);
++        if (CPA.IsOnArc() && CPB.IsOnArc())
++        {
++          ends = !CPA.IsVertex() && !CPB.IsVertex() && CPA.Arc().IsSame(CPB.Arc());
++        }
++        else
++        {
++          atPoint[f] = true;
++          ends       = !CPA.IsOnArc() && !CPB.IsOnArc()
++                 && CPA.Point().Distance(CPB.Point()) <= 10. * tolapp3d
++                 && A->IndexPoint(f == 0, onA) > 0 && B->IndexPoint(f == 0, onB) > 0;
++        }
++      }
++      if (!ends || (!atPoint[0] && !atPoint[1]))
++      {
++        continue;
++      }
++    }
+     // The two blends meet on A's contact line: both sides hold that line,
+     // each on its own surface, and lie on no face (F, between the line and
+     // B's edge, has no contact line left and vanishes).
+@@ -854,7 +948,15 @@ void ChFi3d_Builder::ApplyRides()
+     {
+       if (A->IndexPoint(f == 0, onA) > 0)
+       {
+-        B->SetIndexPoint(A->IndexPoint(f == 0, onA), f == 0, onB);
++        const int aNew  = A->IndexPoint(f == 0, onA);
++        const int anOld = B->IndexPoint(f == 0, onB);
++        B->SetIndexPoint(aNew, f == 0, onB);
++        // (At an end inside F, B's corner already used its own point: the
++        // corners' curves there, which cut F off, meet at A's.)
++        if (atPoint[f] && anOld > 0 && anOld != aNew)
++        {
++          redirectPoint(DStr, anOld, aNew);
++        }
+       }
+     }
+   }
+@@ -1113,29 +1215,13 @@ void ChFi3d_Builder::Compute()
+               continue;
+             }
+             // F vanishes: its other edges join a vertex of EA to one of EB.
+-            bool strip = true;
+-            for (TopExp_Explorer ex(F, TopAbs_EDGE); ex.More() && strip; ex.Next())
+-            {
+-              const TopoDS_Edge& E = TopoDS::Edge(ex.Current());
+-              if (E.IsSame(EA) || E.IsSame(EB) || BRep_Tool::Degenerated(E))
+-              {
+-                continue;
+-              }
+-              bool toA = false, toB = false;
+-              for (TopExp_Explorer exv(E, TopAbs_VERTEX); exv.More(); exv.Next())
+-              {
+-                for (TopExp_Explorer exa(EA, TopAbs_VERTEX); exa.More(); exa.Next())
+-                {
+-                  toA = toA || exa.Current().IsSame(exv.Current());
+-                }
+-                for (TopExp_Explorer exb(EB, TopAbs_VERTEX); exb.More(); exb.Next())
+-                {
+-                  toB = toB || exb.Current().IsSame(exv.Current());
+-                }
+-              }
+-              strip = toA && toB;
+-            }
+-            if (!strip)
++            // Or F goes on past the line's ends (a rib as wide as the two
++            // roundings, its top one face with the top it stands out of):
++            // two open stripes, ending at the line's ends, whose corners
++            // cut F off there (ApplyRides checks those ends).
++            if (!isStripBetween(F, EA, EB)
++                && (A->Spine()->IsPeriodic() || B->Spine()->IsPeriodic()
++                    || A->Spine()->IsClosed() || B->Spine()->IsClosed()))
+             {
+               continue;
+             }

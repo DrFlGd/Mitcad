@@ -14,6 +14,7 @@
 #include <vector>
 
 #include <BRepAdaptor_Curve.hxx>
+#include <BRepBuilderAPI_MakeEdge.hxx>
 #include <BRepBuilderAPI_MakeVertex.hxx>
 #include <BRepCheck_Analyzer.hxx>
 #include <BRepCheck_Result.hxx>
@@ -21,9 +22,15 @@
 #include <BRepFilletAPI_MakeChamfer.hxx>
 #include <BRepFilletAPI_MakeFillet.hxx>
 #include <BRepGProp.hxx>
+#include <BRepTools_History.hxx>
+#include <BRep_Builder.hxx>
 #include <BRep_Tool.hxx>
 #include <ChFi3d.hxx>
+#include <ElCLib.hxx>
 #include <GProp_GProps.hxx>
+#include <GeomAPI_IntSS.hxx>
+#include <GeomAPI_ProjectPointOnCurve.hxx>
+#include <Geom_Curve.hxx>
 #include <Law_BSpline.hxx>
 #include <Law_Interpolate.hxx>
 #include <NCollection_Array1.hxx>
@@ -33,6 +40,7 @@
 #include <NCollection_Map.hxx>
 #include <Precision.hxx>
 #include <ShapeBuild_ReShape.hxx>
+#include <ShapeFix_Edge.hxx>
 #include <ShapeFix_Shape.hxx>
 #include <ShapeUpgrade_UnifySameDomain.hxx>
 #include <Standard_ErrorHandler.hxx>
@@ -786,6 +794,15 @@ ShapePtr round_edges(const std::string& feature, const Shape& body, const std::v
       throw std::logic_error("an asymmetric set among the rolling ball fillets");
     }
   }
+  // A contour of constant radius that ends at a small notch in the rim it
+  // rounds, whose edges lie within the rounding's contact (a notch shallower
+  // than the rounding is wide), runs on over the notch onto the next edge of
+  // the rim when that edge continues the contour's edge between the same
+  // surfaces (port patch 0260, mitcad#307): the rounding is one surface over
+  // both edges, cut by the notch's faces, as in the files' roundings, where
+  // the edge beyond the notch is rounded although no input names it. The
+  // added contours belong to no set (check_contours: -1).
+  maker.CarryChainsAcrossNotches();
   const std::vector<int> contour_sets = check_contours(maker, body, sets, owner);
   for (std::size_t c = 0; c < contour_sets.size(); ++c) {
     const int s = contour_sets[c];
@@ -816,9 +833,11 @@ ShapePtr round_edges(const std::string& feature, const Shape& body, const std::v
           const TopoDS_Edge& edge = maker.Edge(ic, ie);
           if (TopExp::FirstVertex(edge).IsSame(vertex) || TopExp::LastVertex(edge).IsSame(vertex)) {
             const int s = contour_sets[static_cast<std::size_t>(ic - 1)];
-            largest = std::max(largest, s < 0 ? 0.0 : largest_radius(body, sets[static_cast<std::size_t>(s)],
-                                                                     body.edge_index(edge)) *
-                                                          scale);
+            // (A contour carried across a notch: its constant radius.)
+            largest = std::max(largest, s < 0 ? maker.Radius(ic)
+                                              : largest_radius(body, sets[static_cast<std::size_t>(s)],
+                                                               body.edge_index(edge)) *
+                                                    scale);
           }
         }
       }
@@ -1407,6 +1426,289 @@ std::optional<MergedEdges> merge_edge_pieces(const Shape& body, const std::vecto
   return merged;
 }
 
+// The import's geometric tolerance (mitcad#224): stored bodies of imported
+// designs hold faces narrower than this between two others (a band of
+// 0.5 micrometres between two chamfers that meet in the design), which the
+// files' own roundings treat as the one edge it is within the tolerance.
+constexpr double kStripWidth = 0.01;
+
+// The length of an edge's curve.
+double edge_length(const TopoDS_Edge& edge) {
+  if (BRep_Tool::Degenerated(edge)) {
+    return 0.0;
+  }
+  GProp_GProps props;
+  BRepGProp::LinearProperties(edge, props);
+  return props.Mass();
+}
+
+// Whether every point of edge `a` lies within `width` of edge `b` (sampled).
+bool within_of(const TopoDS_Edge& a, const TopoDS_Edge& b, double width) {
+  const BRepAdaptor_Curve curve(a);
+  constexpr int kSamples = 8;
+  for (int i = 0; i <= kSamples; ++i) {
+    const double t = curve.FirstParameter() + (curve.LastParameter() - curve.FirstParameter()) * i / kSamples;
+    BRepExtrema_DistShapeShape distance(BRepBuilderAPI_MakeVertex(curve.Value(t)).Vertex(), b);
+    if (!distance.IsDone() || distance.Value() > width) {
+      return false;
+    }
+  }
+  return true;
+}
+
+// A face that is a strip narrower than kStripWidth: four edges, two opposite
+// short ones (each at most that long, joining the long ones' ends) and two
+// long ones within that width of each other all along. `ends`: the short
+// edges; `sides`: the long ones.
+struct Strip {
+  TopoDS_Face face;
+  std::array<TopoDS_Edge, 2> ends;
+  std::array<TopoDS_Edge, 2> sides;
+};
+
+std::optional<Strip> as_strip(const TopoDS_Face& face) {
+  std::vector<TopoDS_Edge> ends, sides;
+  for (TopExp_Explorer ex(face, TopAbs_EDGE); ex.More(); ex.Next()) {
+    const TopoDS_Edge& edge = TopoDS::Edge(ex.Current());
+    if (BRep_Tool::Degenerated(edge) || BRep_Tool::IsClosed(edge, face)) {
+      return std::nullopt;
+    }
+    (edge_length(edge) <= kStripWidth ? ends : sides).push_back(edge);
+  }
+  if (ends.size() != 2 || sides.size() != 2) {
+    return std::nullopt;
+  }
+  // Each end joins a vertex of one side to a vertex of the other.
+  for (const TopoDS_Edge& end : ends) {
+    TopoDS_Vertex a, b;
+    TopExp::Vertices(end, a, b);
+    const auto on = [](const TopoDS_Vertex& v, const TopoDS_Edge& e) {
+      return v.IsSame(TopExp::FirstVertex(e)) || v.IsSame(TopExp::LastVertex(e));
+    };
+    if (a.IsSame(b) || !((on(a, sides[0]) && on(b, sides[1])) || (on(a, sides[1]) && on(b, sides[0])))) {
+      return std::nullopt;
+    }
+  }
+  if (!within_of(sides[0], sides[1], kStripWidth) || !within_of(sides[1], sides[0], kStripWidth)) {
+    return std::nullopt;
+  }
+  return Strip{face, {ends[0], ends[1]}, {sides[0], sides[1]}};
+}
+
+// The edge a strip stands for: where the surfaces of the faces beyond its
+// two sides meet, from the end at one of its ends to the other, with curves
+// on both faces. None where they do not meet within the strip's width of
+// it (a step between parallel faces is no crease) or the ends do not lie
+// on the meeting curve within that width.
+std::optional<TopoDS_Edge> crease_of(
+    const Strip& strip,
+    const NCollection_IndexedDataMap<TopoDS_Shape, NCollection_List<TopoDS_Shape>, TopTools_ShapeMapHasher>&
+        faces_of) {
+  std::array<TopoDS_Face, 2> beyond;
+  for (int i = 0; i < 2; ++i) {
+    for (const TopoDS_Shape& f : faces_of.FindFromKey(strip.sides[static_cast<std::size_t>(i)])) {
+      if (!f.IsSame(strip.face)) {
+        beyond[static_cast<std::size_t>(i)] = TopoDS::Face(f);
+      }
+    }
+    if (beyond[static_cast<std::size_t>(i)].IsNull()) {
+      return std::nullopt;
+    }
+  }
+  if (beyond[0].IsSame(beyond[1])) {
+    return std::nullopt;
+  }
+  // The middles of the ends and of the first side.
+  std::array<gp_Pnt, 2> ends;
+  for (int k = 0; k < 2; ++k) {
+    TopoDS_Vertex a, b;
+    TopExp::Vertices(strip.ends[static_cast<std::size_t>(k)], a, b);
+    ends[static_cast<std::size_t>(k)] = gp_Pnt(0.5 * (BRep_Tool::Pnt(a).XYZ() + BRep_Tool::Pnt(b).XYZ()));
+  }
+  const BRepAdaptor_Curve side(strip.sides[0]);
+  const gp_Pnt middle = side.Value(0.5 * (side.FirstParameter() + side.LastParameter()));
+  GeomAPI_IntSS meeting(BRep_Tool::Surface(beyond[0]), BRep_Tool::Surface(beyond[1]), Precision::Confusion());
+  if (!meeting.IsDone()) {
+    return std::nullopt;
+  }
+  occ::handle<Geom_Curve> curve;
+  double nearest = kStripWidth;
+  for (int i = 1; i <= meeting.NbLines(); ++i) {
+    GeomAPI_ProjectPointOnCurve on(middle, meeting.Line(i));
+    if (on.NbPoints() > 0 && on.LowerDistance() <= nearest) {
+      nearest = on.LowerDistance();
+      curve = meeting.Line(i);
+    }
+  }
+  if (curve.IsNull()) {
+    return std::nullopt;
+  }
+  const auto parameter = [&](const gp_Pnt& p, double& t) {
+    GeomAPI_ProjectPointOnCurve on(p, curve);
+    if (on.NbPoints() == 0 || on.LowerDistance() > kStripWidth) {
+      return false;
+    }
+    t = on.LowerDistanceParameter();
+    return true;
+  };
+  double t0 = 0.0, t1 = 0.0, tm = 0.0;
+  if (!parameter(ends[0], t0) || !parameter(ends[1], t1) || !parameter(middle, tm)) {
+    return std::nullopt;
+  }
+  if (curve->IsPeriodic()) {
+    // The way from the first end through the middle to the second.
+    const double period = curve->Period();
+    t1 = t0 + ElCLib::InPeriod(t1 - t0, 0.0, period);
+    tm = t0 + ElCLib::InPeriod(tm - t0, 0.0, period);
+    if (tm > t1) {
+      t1 -= period;
+    }
+  }
+  if (std::abs(t1 - t0) < Precision::PConfusion()) {
+    return std::nullopt;
+  }
+  const double lo = std::min(t0, t1), hi = std::max(t0, t1);
+  BRepBuilderAPI_MakeEdge make(curve, lo, hi);
+  if (!make.IsDone()) {
+    return std::nullopt;
+  }
+  TopoDS_Edge crease = make.Edge();
+  ShapeFix_Edge fix;
+  for (const TopoDS_Face& face : beyond) {
+    fix.FixAddPCurve(crease, face, false, Precision::Confusion());
+    double first = 0.0, last = 0.0;
+    if (BRep_Tool::CurveOnSurface(crease, face, first, last).IsNull()) {
+      return std::nullopt;
+    }
+  }
+  fix.FixSameParameter(crease);
+  return crease;
+}
+
+// A body with the strips at the selected edges' vertices collapsed into
+// edges, within the import's tolerance (mitcad#299): the faces beyond a
+// strip's two sides are made to meet in the crease the strip stands for
+// (where their surfaces meet), the strip's sides replaced by it, the
+// vertices of each end merged into the crease's vertex there and the ends
+// and the strip removed, so that the edges that ended at the two vertices
+// of an end meet at one, as in the design. The edge sets are carried to the
+// edges' images. None when no strip touches a selected edge, a strip's
+// edge is selected, or a strip stands for no crease.
+std::optional<MergedEdges> collapse_strips(const Shape& body, const std::vector<int>& owner) {
+  ShapeMap vertices;
+  ShapeMap selected;
+  for (int e = 0; e < body.edge_count(); ++e) {
+    if (owner[static_cast<std::size_t>(e)] >= 0) {
+      TopExp::MapShapes(body.edge(e), TopAbs_VERTEX, vertices);
+      selected.Add(body.edge(e));
+    }
+  }
+  NCollection_IndexedDataMap<TopoDS_Shape, NCollection_List<TopoDS_Shape>, TopTools_ShapeMapHasher> faces_of;
+  TopExp::MapShapesAndUniqueAncestors(body.occt(), TopAbs_EDGE, TopAbs_FACE, faces_of);
+  std::vector<Strip> strips;
+  ShapeMap taken; // edges of the strips found so far
+  for (int f = 0; f < body.face_count(); ++f) {
+    const TopoDS_Face& face = body.face(f);
+    bool touches = false;
+    for (TopExp_Explorer ex(face, TopAbs_VERTEX); ex.More() && !touches; ex.Next()) {
+      touches = vertices.Contains(ex.Current());
+    }
+    if (!touches) {
+      continue;
+    }
+    std::optional<Strip> strip = as_strip(face);
+    if (!strip) {
+      continue;
+    }
+    bool free = true;
+    for (TopExp_Explorer ex(face, TopAbs_EDGE); ex.More() && free; ex.Next()) {
+      const int found = faces_of.FindIndex(ex.Current());
+      free = !selected.Contains(ex.Current()) && !taken.Contains(ex.Current()) && found != 0 &&
+             faces_of(found).Extent() == 2;
+    }
+    if (!free) {
+      return std::nullopt;
+    }
+    TopExp::MapShapes(face, TopAbs_EDGE, taken);
+    strips.push_back(*strip);
+  }
+  if (strips.empty()) {
+    return std::nullopt;
+  }
+  const occ::handle<ShapeBuild_ReShape> reshape = new ShapeBuild_ReShape;
+  BRep_Builder builder;
+  for (const Strip& strip : strips) {
+    const std::optional<TopoDS_Edge> crease = crease_of(strip, faces_of);
+    if (!crease) {
+      return std::nullopt;
+    }
+    // The crease's vertices take the places of the ends' vertices, the
+    // crease those of the sides.
+    const TopoDS_Vertex start = TopExp::FirstVertex(*crease);
+    const TopoDS_Vertex finish = TopExp::LastVertex(*crease);
+    const gp_Pnt at_start = BRep_Tool::Pnt(start);
+    for (const TopoDS_Edge& end : strip.ends) {
+      TopoDS_Vertex a, b;
+      TopExp::Vertices(end, a, b);
+      const double to_start = BRep_Tool::Pnt(a).Distance(at_start) + BRep_Tool::Pnt(b).Distance(at_start);
+      const double to_finish = BRep_Tool::Pnt(a).Distance(BRep_Tool::Pnt(finish)) +
+                               BRep_Tool::Pnt(b).Distance(BRep_Tool::Pnt(finish));
+      const TopoDS_Vertex& image = to_start < to_finish ? start : finish;
+      for (const TopoDS_Vertex& v : {a, b}) {
+        builder.UpdateVertex(image, std::max(BRep_Tool::Tolerance(image),
+                                             BRep_Tool::Pnt(v).Distance(BRep_Tool::Pnt(image)) +
+                                                 BRep_Tool::Tolerance(v) + Precision::Confusion()));
+        reshape->Replace(v, image.Oriented(v.Orientation()));
+      }
+      reshape->Remove(end);
+    }
+    for (const TopoDS_Edge& side : strip.sides) {
+      // The side runs as the crease where its first vertex is nearer the
+      // crease's start.
+      const gp_Pnt first = BRep_Tool::Pnt(TopExp::FirstVertex(side));
+      const bool along = first.Distance(at_start) < first.Distance(BRep_Tool::Pnt(finish));
+      reshape->Replace(side, crease->Oriented(along ? side.Orientation() : TopAbs::Reverse(side.Orientation())));
+    }
+    reshape->Remove(strip.face);
+  }
+  // Shape healing puts the creases' curves on the faces' periodic surfaces
+  // in the periods of the faces' other edges.
+  ShapeFix_Shape fixer;
+  const occ::handle<ShapeBuild_ReShape> fixes = new ShapeBuild_ReShape;
+  fixer.SetContext(fixes);
+  fixer.Init(reshape->Apply(body.occt()));
+  fixer.Perform();
+  const TopoDS_Shape collapsed = fixer.Shape();
+  if (!BRepCheck_Analyzer(collapsed).IsValid()) {
+    return std::nullopt;
+  }
+  const occ::handle<BRepTools_History> history = reshape->History();
+  history->Merge(fixes->History());
+  MergedEdges merged;
+  detail::FaceNamer namer(collapsed);
+  namer.carry(*history, body);
+  namer.finish();
+  merged.body = namer.shape();
+  const Shape& m = *merged.body;
+  merged.owner.assign(static_cast<std::size_t>(m.edge_count()), -1);
+  for (int e = 0; e < body.edge_count(); ++e) {
+    const int s = owner[static_cast<std::size_t>(e)];
+    if (s < 0) {
+      continue;
+    }
+    const TopoDS_Shape& edge = body.edge(e);
+    const NCollection_List<TopoDS_Shape>& modified = history->Modified(edge);
+    const int i = history->IsRemoved(edge) || modified.Extent() > 1
+                      ? -1
+                      : m.edge_index(modified.IsEmpty() ? edge : modified.First());
+    if (i < 0) {
+      return std::nullopt; // a selected edge gone
+    }
+    merged.owner[static_cast<std::size_t>(i)] = s;
+  }
+  return merged;
+}
+
 // A dressup of a body with merged edges, its faces also named after the
 // selected pieces: a face generated from a merged edge gets the names the
 // pieces' dressup would have given it (with its own "#k" of a split face).
@@ -1452,7 +1754,9 @@ ShapePtr with_piece_names(const ShapePtr& result, const MergedEdges& merged, con
 // input. When OCCT fails at the sizes as asked, it is built again by the
 // same algorithm on the input with the pieces of its edges merged
 // (merge_edge_pieces), then, with `tighten` (fillets), with OCCT's
-// tolerances tightened (kTight), on the input and on the merged one.
+// tolerances tightened (kTight), on the input and on the merged one, and
+// last on the input with the strips narrower than the import's tolerance
+// at its vertices collapsed (collapse_strips).
 // Throws the first error when none builds.
 template <class Set, class Dressup>
 ShapePtr dress(const Shape& input, const std::vector<Set>& sets, const std::vector<int>& owner, double scale,
@@ -1524,6 +1828,19 @@ ShapePtr dress(const Shape& input, const std::vector<Set>& sets, const std::vect
       throw;
     } catch (...) {
     }
+  }
+  // Strips narrower than the import's tolerance at the selected edges'
+  // vertices collapsed into the edges they are in the design (mitcad#299).
+  try {
+    OCC_CATCH_SIGNALS
+    const ShapePtr copy = detail::working_copy(input);
+    const std::optional<MergedEdges> collapsed = collapse_strips(*copy, owner);
+    if (collapsed) {
+      return dressup(*collapsed->body, collapsed->owner, scale, false);
+    }
+  } catch (const Cancelled&) {
+    throw;
+  } catch (...) {
   }
   std::rethrow_exception(first);
 }

@@ -2,6 +2,8 @@
 // Join, Cut and Intersect with participant bodies: pieces, their sources and
 // the face names they carry.
 
+#include <utility>
+
 #include <BRepBuilderAPI_MakeFace.hxx>
 #include <BRep_Builder.hxx>
 #include <TopoDS.hxx>
@@ -223,6 +225,129 @@ void test_join_with_a_plate_of_many_holes() {
   }
 }
 
+// A region of straight lines c<first>.. through the points (closed).
+Region polygon(int first, const std::vector<gp_Pnt2d>& points) {
+  Region region;
+  Loop loop;
+  std::string name = "r{";
+  for (std::size_t i = 0; i < points.size(); ++i) {
+    Segment segment;
+    segment.name = "c" + std::to_string(first + static_cast<int>(i));
+    segment.start = points[i];
+    segment.end = points[(i + 1) % points.size()];
+    loop.segments.push_back(segment);
+    name += (i == 0 ? "" : ",") + segment.name;
+  }
+  region.loops.push_back(loop);
+  region.name = name + "}";
+  return region;
+}
+
+ShapePtr extrude_on(const std::string& feature, const Frame& frame, std::vector<Region> regions, double start,
+                    double end) {
+  ExtrudeSpec spec;
+  spec.feature = feature;
+  spec.frame = frame;
+  spec.direction = frame.normal();
+  spec.regions = std::move(regions);
+  spec.start = start;
+  spec.end = end;
+  return mitcad::geometry::extrude(spec);
+}
+
+// A join within a tolerance (mitcad#298), on one target.
+BooleanResult run_within(const ShapePtr& target, const ShapePtr& tool, double within) {
+  const std::vector<const Shape*> raw{target.get()};
+  return boolean(BooleanOp::Join, raw, *tool, within);
+}
+
+void test_join_within_a_tolerance_reaches_a_tool_micrometres_away() {
+  // A pin 2.6 micrometres above the block's top: apart for an exact join,
+  // joined within 0.01 mm (as a body the import kept within its tolerance
+  // joins the tool the file joined to it).
+  const ShapePtr body = block();
+  const ShapePtr pin = extrude("F4", {circle(5, 30, 20, 2.5)}, 20.0026, 21.5);
+  const BooleanResult exact = run(BooleanOp::Join, {body}, pin);
+  CHECK((exact.touched == std::vector<bool>{false}) && exact.pieces.empty());
+  const BooleanResult within = run_within(body, pin, 0.01);
+  CHECK((within.touched == std::vector<bool>{true}));
+  CHECK(within.pieces.size() == 1);
+  if (within.pieces.size() == 1) {
+    CHECK((within.pieces[0].sources == std::vector<std::size_t>{0}));
+    CHECK_NEAR_TOL(volume(*within.pieces[0].shape), volume(*body) + volume(*pin), 1e-5);
+    CHECK(faces_named(*within.pieces[0].shape, "F4:side(c5)") == 1);
+  }
+  // Farther away than the tolerance: still apart.
+  const ShapePtr far = extrude("F4", {circle(5, 30, 20, 2.5)}, 20.02, 21.5);
+  const BooleanResult apart = run_within(body, far, 0.01);
+  CHECK((apart.touched == std::vector<bool>{false}) && apart.pieces.empty());
+  // Touching exactly: the exact join's result.
+  const ShapePtr standing = extrude("F4", {circle(5, 30, 20, 2.5)}, 20, 21.5);
+  const BooleanResult on = run_within(body, standing, 0.01);
+  CHECK(on.pieces.size() == 1);
+  CHECK(!on.pieces.empty() &&
+        near(volume(*on.pieces[0].shape), volume(*run(BooleanOp::Join, {body}, standing).pieces.at(0).shape)));
+}
+
+// Half of a tee of two pipes of the same outer radius (13, wall 3), cut at
+// the plane y = 0 through the main pipe's axis (z): the branch pipe (along
+// -y, at z = 50) meets the main one where their outer cylinders are
+// tangent, at (-13, 0, 50) on the cut face's edge. With a gusset plate
+// 1.5 mm thick on the cut face, against the main pipe's outer line x = -13,
+// `offset` off the face and its normal turned by `tilt` (the noise of a
+// body that matches a file's within a micrometre).
+std::pair<ShapePtr, ShapePtr> half_tee_and_plate(double offset, double tilt) {
+  const ShapePtr main_outer = test::extrude("F1", {circle(1, 0, 0, 13)}, 0, 100);
+  Frame xz;
+  xz.origin = gp_Pnt(0, 0, 0);
+  xz.x_axis = gp_Dir(1, 0, 0);
+  xz.y_axis = gp_Dir(0, 0, 1);
+  const ShapePtr branch_outer = extrude_on("F2", xz, {circle(2, 0, 50, 13)}, 0, 50);
+  const ShapePtr main_inner = test::extrude("F3", {circle(3, 0, 0, 10)}, 0, 100);
+  const ShapePtr branch_inner = extrude_on("F4", xz, {circle(4, 0, 50, 10)}, 0, 50);
+  const ShapePtr half = test::extrude("F6", {rectangle(8, -20, 0, 40, 20)}, -1, 101);
+  ShapePtr tee = run(BooleanOp::Cut, {main_outer}, half).pieces.at(0).shape;
+  tee = run(BooleanOp::Join, {tee}, branch_outer).pieces.at(0).shape;
+  tee = run(BooleanOp::Cut, {tee}, main_inner).pieces.at(0).shape;
+  tee = run(BooleanOp::Cut, {tee}, branch_inner).pieces.at(0).shape;
+  Frame side;
+  side.origin = gp_Pnt(-13, offset, 0);
+  side.x_axis = gp_Dir(tilt, 1, 0);
+  side.y_axis = gp_Dir(0, 0, 1);
+  const ShapePtr plate =
+      extrude_on("F5", side, {polygon(5, {gp_Pnt2d(0, 0), gp_Pnt2d(50, 50), gp_Pnt2d(0, 100)})}, 0, 1.5);
+  return {tee, plate};
+}
+
+void test_join_within_a_tolerance_on_a_near_coincident_face() {
+  // The plate half a micrometre into the cut face, turned by 4e-9: the
+  // exact join's result has an invalid face (a self-intersecting wire at
+  // the tangent point); within 0.01 mm the join is retried with the
+  // smallest fuzzy value that gives a valid result.
+  const auto [tee, plate] = half_tee_and_plate(-5e-7, 3.9e-9);
+  const BooleanResult within = run_within(tee, plate, 0.01);
+  CHECK((within.touched == std::vector<bool>{true}));
+  CHECK(within.pieces.size() == 1);
+  if (within.pieces.size() == 1) {
+    CHECK_NEAR_TOL(volume(*within.pieces[0].shape), volume(*tee) + 2500.0 * 1.5, 1e-6);
+  }
+  // Half a micrometre off the face (within the contact distance, but not
+  // on the face for the exact boolean): the exact join leaves the plate a
+  // solid of its own beside the tee; within the tolerance it joins it.
+  const auto [tee2, apart] = half_tee_and_plate(5e-7, 0.0);
+  const BooleanResult stray = run(BooleanOp::Join, {tee2}, apart);
+  const BooleanResult joined = run_within(tee2, apart, 0.01);
+  CHECK(joined.pieces.size() == 1);
+  if (joined.pieces.size() == 1) {
+    CHECK((joined.pieces[0].sources == std::vector<std::size_t>{0}));
+    CHECK_NEAR_TOL(volume(*joined.pieces[0].shape), volume(*tee2) + 2500.0 * 1.5, 1e-6);
+  }
+  // Where the exact join merges them, the join within the tolerance is it.
+  if (stray.pieces.size() == 1) {
+    CHECK(near(volume(*stray.pieces[0].shape), volume(*joined.pieces.at(0).shape)));
+  }
+}
+
 void test_cut_hole_names_the_walls() {
   const ShapePtr drill = extrude("F4", {circle(5, 30, 20, 5)}, 0, 30);
   const BooleanResult result = run(BooleanOp::Cut, {block()}, drill);
@@ -352,6 +477,9 @@ void boolean_tests() {
   test_cut_misses_or_removes();
   test_cut_changes_by_more_than_a_billionth();
   test_intersect();
+  // Joins within a tolerance (mitcad#298).
+  test_join_within_a_tolerance_reaches_a_tool_micrometres_away();
+  test_join_within_a_tolerance_on_a_near_coincident_face();
 }
 
 } // namespace test

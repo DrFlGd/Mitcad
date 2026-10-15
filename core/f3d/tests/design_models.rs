@@ -571,6 +571,104 @@ fn mid_points(set: &ir::EdgeSet) -> Vec<ir::Vec3> {
         .collect()
 }
 
+/// The curves fillet and chamfer edge inputs store (mitcad#306): each is
+/// one of its set's edges in the dump, its ends the edge's ends (either way
+/// round) and the edge's middle on it.
+#[test]
+fn stored_edge_curves_match_the_reference_dumps() {
+    use mitcad_f3d::design::curve::StoredCurve;
+    let Some(dir) = models_dir() else {
+        eprintln!("reference models not found; skipped");
+        return;
+    };
+    let (mut agree, mut without) = (0usize, 0usize);
+    let mut differ = Vec::new();
+    let near = |a: [f64; 3], b: [f64; 3]| (0..3).all(|i| (a[i] - b[i]).abs() < 1e-6);
+    for (id, f3d, json) in models(&dir) {
+        let text = std::fs::read_to_string(&json).unwrap();
+        let reference = ir::Dump::from_json(&text).unwrap_or_else(|e| panic!("{id}: {e}"));
+        let designs = design::decode_path(&f3d).unwrap_or_else(|e| panic!("{id}: {e}"));
+        let Some(decoded) = designs.into_iter().find_map(|d| d.dump) else {
+            panic!("{id}: no design decoded");
+        };
+        for kind in ["FilletFeature", "ChamferFeature"] {
+            let twins = of_kind(&decoded, kind);
+            for (k, item) in of_kind(&reference, kind).into_iter().enumerate() {
+                let Some(twin) = twins.get(k) else { continue };
+                let (sets, ours) = (edge_sets(item), edge_sets(twin));
+                for (theirs, mine) in sets.iter().zip(&ours) {
+                    // The dump's edges: ends and middle (cm).
+                    let edges: Vec<[[f64; 3]; 3]> = theirs
+                        .edges
+                        .iter()
+                        .flatten()
+                        .filter_map(|r| match r {
+                            ir::Reference::Edge(fp) => Some([
+                                fp.start_point.flatten()?,
+                                fp.end_point.flatten()?,
+                                fp.mid_point?,
+                            ]),
+                            _ => None,
+                        })
+                        .collect();
+                    // (Items after the timeline marker: the dump lists no
+                    // edges of some.)
+                    if edges.is_empty() {
+                        continue;
+                    }
+                    for r in mine.edges.iter().flatten() {
+                        let ir::Reference::Edge(fp) = r else { continue };
+                        let Some(f) = fp
+                            .f3d
+                            .as_ref()
+                            .filter(|f| f.recipe.as_deref() == Some("edge"))
+                        else {
+                            continue;
+                        };
+                        let curves: Vec<StoredCurve> = f
+                            .curves
+                            .iter()
+                            .flatten()
+                            .filter_map(StoredCurve::from_geometry)
+                            .collect();
+                        let [curve] = &curves[..] else {
+                            without += 1;
+                            continue;
+                        };
+                        let [a, b] = curve.ends().unwrap();
+                        let on = |p: [f64; 3]| curve.place(p).is_some_and(|(off, _)| off < 1e-6);
+                        // (A closed edge: its seam may lie elsewhere.)
+                        let is = |[s, e, m]: &[[f64; 3]; 3]| {
+                            ((near(a, *s) && near(b, *e))
+                                || (near(a, *e) && near(b, *s))
+                                || (near(a, b) && near(*s, *e) && on(*s)))
+                                && on(*m)
+                        };
+                        if edges.iter().any(is) {
+                            agree += 1;
+                        } else {
+                            differ.push(format!(
+                                "{id}: {}: object {:?}",
+                                item.name().unwrap_or("?"),
+                                f.object_id
+                            ));
+                        }
+                    }
+                }
+            }
+        }
+    }
+    println!(
+        "stored edge curves: {agree} are an edge of their set in the dump, {} not, {without} \
+         inputs without one curve",
+        differ.len()
+    );
+    for d in &differ {
+        println!("  {d}");
+    }
+    assert!(differ.is_empty(), "{differ:#?}");
+}
+
 /// Fillet and chamfer edges found by their names (mitcad#33): every edge
 /// the decoder found is one of its set's edges in the dump (by the middle
 /// point), and a set has as many edges as there.

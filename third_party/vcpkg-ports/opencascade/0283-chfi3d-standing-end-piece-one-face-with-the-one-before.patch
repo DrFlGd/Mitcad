@@ -1,0 +1,218 @@
+Mitcad's patch to OCCT 8.0.1, under OCCT's licence:
+SPDX-License-Identifier: LGPL-2.1-only WITH OCCT-exception-1.0
+
+Fillets: a stripe's end piece whose contact on one face stands still is
+one face with the piece before it (mitcad#236).
+
+An analytic blend along two edges of one line (an edge split by a vertex
+where nothing else meets it) whose contact on one face ends at the first
+edge's end (0282's floor contact at the hole's side) gives the second
+edge a piece with that contact standing still and the other running on,
+for the corner to cut. The corner then cut that piece off along a section
+at the first piece's end ("shrink"): the blend was two faces where the
+bodies stored in the .f3d files have one.
+
+- ChFi3d_JoinStandingEnd (after the stripe's pieces are computed): such
+  an end piece that meets the piece before it in a whole section, between
+  the same faces with the same orientation, on the same analytic surface
+  (parametrized the same, or otherwise by a plane isometry with the same
+  normals, ChFi3d_AnalyticParamMap of 0241) takes that piece's surface,
+  its p-curves on the blend mapped onto it.
+- PerformIntersectionAtEnd: where the piece before the end piece is on
+  the end piece's own surface, no section is put between them.
+
+Upstream: new.
+diff --git a/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_2.cxx b/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_2.cxx
+index 0200954..6cb3c97 100644
+--- a/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_2.cxx
++++ b/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_2.cxx
+@@ -9233,6 +9233,115 @@ void ChFi3d_Builder::PerformSetOfKGen(occ::handle<ChFiDS_Stripe>& Stripe, const
+   }
+ }
+ 
++static bool ChFi3d_AnalyticParamMap(const occ::handle<Geom_Surface>& S1,
++                                    const occ::handle<Geom_Surface>& S2,
++                                    const gp_Pnt2d&                  uv1,
++                                    const gp_Pnt2d&                  uv2,
++                                    const double                     tol3d,
++                                    gp_Trsf2d&                       T,
++                                    bool&                            Flip);
++
++//=======================================================================
++// function : ChFi3d_JoinStandingEnd
++// purpose  : A stripe's end piece whose contact on one face stands still
++//            (an analytic blend run on past the end of that contact, along
++//            the next edge of the spine, for the corner to cut) continues
++//            the blend of the piece before it where both lie on one surface:
++//            it takes that piece's surface, its parameters mapped onto it,
++//            and the blend is one face up to the corner, as one piece is.
++//=======================================================================
++
++static void ChFi3d_JoinStandingEnd(TopOpeBRepDS_DataStructure&       DStr,
++                                   const occ::handle<ChFiDS_Stripe>& Stripe,
++                                   const double                      tol3d)
++{
++  if (Stripe->SetOfSurfData().IsNull())
++  {
++    return;
++  }
++  NCollection_Sequence<occ::handle<ChFiDS_SurfData>>& aSeq =
++    Stripe->ChangeSetOfSurfData()->ChangeSequence();
++  for (int iEnd = 0; iEnd < 2 && aSeq.Length() >= 2; iEnd++)
++  {
++    const bool                          isFirst = iEnd == 0;
++    const occ::handle<ChFiDS_SurfData>& Q       = isFirst ? aSeq.First() : aSeq.Last();
++    const occ::handle<ChFiDS_SurfData>& P = isFirst ? aSeq.Value(2) : aSeq.Value(aSeq.Length() - 1);
++    if (Q->Surf() == P->Surf() || Q->IndexOfS1() != P->IndexOfS1()
++        || Q->IndexOfS2() != P->IndexOfS2() || Q->Orientation() != P->Orientation())
++    {
++      continue;
++    }
++    // (The side whose contact moves on the end piece, the other's standing.)
++    int aMoving = 0;
++    for (int s = 1; s <= 2; s++)
++    {
++      const ChFiDS_FaceInterference& Fs = Q->Interference(s);
++      const ChFiDS_FaceInterference& Fo = Q->Interference(3 - s);
++      if (std::abs(Fs.LastParameter() - Fs.FirstParameter()) <= Precision::PConfusion()
++          && std::abs(Fo.LastParameter() - Fo.FirstParameter()) > Precision::PConfusion())
++      {
++        aMoving = 3 - s;
++      }
++    }
++    if (aMoving == 0 || Q->Interference(aMoving).PCurveOnSurf().IsNull()
++        || P->Interference(aMoving).PCurveOnSurf().IsNull())
++    {
++      continue;
++    }
++    // The pieces meet in a whole section: the end piece's side toward the
++    // other is that piece's side toward it.
++    const bool qFirst = !isFirst;
++    bool       aMeet  = true;
++    for (int s = 1; s <= 2 && aMeet; s++)
++    {
++      aMeet = Q->Vertex(qFirst, s).Point().Distance(P->Vertex(!qFirst, s).Point()) <= tol3d;
++    }
++    if (!aMeet)
++    {
++      continue;
++    }
++    const occ::handle<Geom_Surface>& SurfQ = DStr.Surface(Q->Surf()).Surface();
++    const occ::handle<Geom_Surface>& SurfP = DStr.Surface(P->Surf()).Surface();
++    const ChFiDS_FaceInterference&   FQ    = Q->Interference(aMoving);
++    const ChFiDS_FaceInterference&   FP    = P->Interference(aMoving);
++    gp_Trsf2d                        aT;
++    bool                             aFlip = false;
++    const bool                       aSame = ChFi3d_SameAnalyticSurface(SurfQ, SurfP);
++    if (!aSame
++        && (!ChFi3d_AnalyticParamMap(SurfQ,
++                                     SurfP,
++                                     FQ.PCurveOnSurf()->Value(FQ.Parameter(qFirst)),
++                                     FP.PCurveOnSurf()->Value(FP.Parameter(!qFirst)),
++                                     tol3d,
++                                     aT,
++                                     aFlip)
++            || aFlip))
++    {
++      continue;
++    }
++    Q->ChangeSurf(P->Surf());
++    if (aSame)
++    {
++      continue;
++    }
++    for (int s = 1; s <= 2; s++)
++    {
++      occ::handle<Geom2d_Curve>& aPC = Q->ChangeInterference(s).ChangePCurveOnSurf();
++      if (!aPC.IsNull())
++      {
++        aPC = occ::down_cast<Geom2d_Curve>(aPC->Transformed(aT));
++      }
++    }
++    gp_Pnt2d p[4];
++    Q->Get2dPoints(p[0], p[1], p[2], p[3]);
++    for (gp_Pnt2d& q : p)
++    {
++      q.Transform(aT);
++    }
++    Q->Set2dPoints(p[0], p[1], p[2], p[3]);
++  }
++}
++
+ //=================================================================================================
+ 
+ void ChFi3d_Builder::PerformSetOfSurf(occ::handle<ChFiDS_Stripe>& Stripe, const bool Simul)
+@@ -9260,6 +9369,7 @@ void ChFi3d_Builder::PerformSetOfSurf(occ::handle<ChFiDS_Stripe>& Stripe, const
+     {
+       RolledCutToEnd(Stripe, false);
+     }
++    ChFi3d_JoinStandingEnd(DStr, Stripe, tolapp3d);
+     ChFi3d_MakeExtremities(Stripe, DStr, myEFMap, tolapp3d, tol2d);
+   }
+ }
+diff --git a/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_C1.cxx b/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_C1.cxx
+index 722da5a..b869f0c 100644
+--- a/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_C1.cxx
++++ b/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_C1.cxx
+@@ -5716,25 +5716,31 @@ void ChFi3d_Builder::PerformIntersectionAtEnd(const int Index)
+     // box.Add(point);
+     // box.Add(aSurf->Value(UV.X(), UV.Y()));
+ 
+-    TopOpeBRepDS_Curve Crv   = TopOpeBRepDS_Curve(C3d, aTolreached);
+-    int                Icurv = DStr.AddCurve(Crv);
+-    Interfp1                 = ChFi3d_FilPointInDS(TopAbs_FORWARD, Icurv, indpoint1, p1, false);
+-    Interfp2                 = ChFi3d_FilPointInDS(TopAbs_REVERSED, Icurv, indpoint2, p2, false);
+-    Interfc                  = ChFi3d_FilCurveInDS(Icurv, Isurf, Ps, orcourbe);
+-    DStr.ChangeCurveInterferences(Icurv).Append(Interfp1);
+-    DStr.ChangeCurveInterferences(Icurv).Append(Interfp2);
+-    DStr.ChangeSurfaceInterferences(Isurf).Append(Interfc);
+-
+-    // for SDprev
+-    aSurf = DStr.Surface(SDprev->Surf()).Surface();
+-    UV1.SetCoord(isUShrink ? 1 : 2, prevSDParam);
+-    UV2.SetCoord(isUShrink ? 1 : 2, prevSDParam);
+-
+-    ChFi3d_ComputePCurv(C3d, UV1, UV2, Pc, aSurf, p1, p2, tolapp3d, aTolreached);
+-
+-    Crv.Tolerance(std::max(Crv.Tolerance(), aTolreached));
+-    Interfc = ChFi3d_FilCurveInDS(Icurv, IsurfPrev, Pc, TopAbs::Reverse(orcourbe));
+-    DStr.ChangeSurfaceInterferences(IsurfPrev).Append(Interfc);
++    // (A previous SurfData on Fd's own surface makes one face with it, no
++    // section between them: ChFi3d_JoinStandingEnd.)
++    const bool aOneFace = IsurfPrev == Isurf;
++    if (!aOneFace)
++    {
++      TopOpeBRepDS_Curve Crv   = TopOpeBRepDS_Curve(C3d, aTolreached);
++      int                Icurv = DStr.AddCurve(Crv);
++      Interfp1                 = ChFi3d_FilPointInDS(TopAbs_FORWARD, Icurv, indpoint1, p1, false);
++      Interfp2                 = ChFi3d_FilPointInDS(TopAbs_REVERSED, Icurv, indpoint2, p2, false);
++      Interfc                  = ChFi3d_FilCurveInDS(Icurv, Isurf, Ps, orcourbe);
++      DStr.ChangeCurveInterferences(Icurv).Append(Interfp1);
++      DStr.ChangeCurveInterferences(Icurv).Append(Interfp2);
++      DStr.ChangeSurfaceInterferences(Isurf).Append(Interfc);
++
++      // for SDprev
++      aSurf = DStr.Surface(SDprev->Surf()).Surface();
++      UV1.SetCoord(isUShrink ? 1 : 2, prevSDParam);
++      UV2.SetCoord(isUShrink ? 1 : 2, prevSDParam);
++
++      ChFi3d_ComputePCurv(C3d, UV1, UV2, Pc, aSurf, p1, p2, tolapp3d, aTolreached);
++
++      Crv.Tolerance(std::max(Crv.Tolerance(), aTolreached));
++      Interfc = ChFi3d_FilCurveInDS(Icurv, IsurfPrev, Pc, TopAbs::Reverse(orcourbe));
++      DStr.ChangeSurfaceInterferences(IsurfPrev).Append(Interfc);
++    }
+ 
+     // UV = isOnSame1 ? UV2 : UV1;
+     // box.Add(aSurf->Value(UV.X(), UV.Y()));
+@@ -5756,6 +5762,10 @@ void ChFi3d_Builder::PerformIntersectionAtEnd(const int Index)
+       CPlast2.Reset();
+       CPlast2.SetPoint(CPlast1.Point());
+     }
++    if (aOneFace)
++    {
++      return;
++    }
+ 
+     // in shrink case, self intersection is possible at <midIpoint>,
+     // eval its tolerance intersecting Ps and Pcurve at end.

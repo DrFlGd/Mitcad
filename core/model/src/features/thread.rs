@@ -6,7 +6,8 @@
 //! Whitworth and NPT threads are cosmetic only): the basic profile of the
 //! size, or the profile of given diameters (a tolerance class's, as .f3d
 //! designs store them), turned about its axis by an angle, with optional
-//! extra radial and flank clearance for a looser fit (mitcad#195).
+//! extra radial and flank clearance for a looser fit (mitcad#195). Either
+//! may have a chamfer cut at its free ends (mitcad#304), a cosmetic one too.
 
 use serde::{Deserialize, Serialize};
 
@@ -17,7 +18,7 @@ use super::{
     is_false,
 };
 use crate::ids::BodyUid;
-use crate::kernel::{Kernel, ThreadSpec};
+use crate::kernel::{Kernel, ThreadChamfer, ThreadSpec};
 use crate::parameters::ParamId;
 use crate::topo::FaceName;
 
@@ -80,6 +81,63 @@ impl ThreadEnd {
     }
 }
 
+/// The ends of a thread that get a chamfer (mitcad#304), measured like
+/// `location`: the start is the end `location` names, the end the other
+/// one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ThreadChamferEnds {
+    Start,
+    End,
+    Both,
+}
+
+impl ThreadChamferEnds {
+    /// Whether the low and the high end along the face's cylinder's axis
+    /// are asked for, with the thread measured from `location`.
+    pub fn low_high(self, location: ThreadEnd) -> (bool, bool) {
+        let (start, end) = match self {
+            Self::Start => (true, false),
+            Self::End => (false, true),
+            Self::Both => (true, true),
+        };
+        if location.is_high() {
+            (end, start)
+        } else {
+            (start, end)
+        }
+    }
+}
+
+/// The default angle of a thread's end chamfer to the axis: 45 degrees
+/// (an internal thread's countersink of 90 degrees).
+pub const DEFAULT_CHAMFER_ANGLE: f64 = std::f64::consts::FRAC_PI_4;
+
+/// The default diameter of a thread's end chamfer at the end (mitcad#304):
+/// a tenth of a pitch below the minor diameter of the size for an external
+/// thread, above its major diameter for an internal one, and past the
+/// profile's `root` diameter (a class's, moved by a radial clearance) when
+/// that lies further out, so that no groove reaches the end's plane.
+pub fn default_chamfer_diameter(data: &ThreadData, internal: bool, root: Option<f64>) -> f64 {
+    let margin = data.pitch / 10.0;
+    if internal {
+        data.major.max(root.unwrap_or(data.major)) + margin
+    } else {
+        data.minor.min(root.unwrap_or(data.minor)) - margin
+    }
+}
+
+/// Whether a thread part (`thread_part`) reaches the low and the high end
+/// of a face of `length` (within a micrometre).
+pub(crate) fn part_reaches(part: Option<(f64, f64, bool)>, length: f64) -> (bool, bool) {
+    const NEAR: f64 = 1e-6;
+    match part {
+        None => (true, true),
+        Some((l, offset, true)) => (offset + l >= length - NEAR, offset <= NEAR),
+        Some((l, offset, false)) => (offset <= NEAR, offset + l >= length - NEAR),
+    }
+}
+
 /// The diameters of a modelled thread's profile: its crests and roots lie
 /// on the major and minor diameters, and it is half a pitch wide at the
 /// pitch diameter (`majorDiameter`, `minorDiameter` and `pitchDiameter` of
@@ -125,6 +183,17 @@ pub struct ThreadDef<P = ParamId> {
     /// `ThreadSpec`); 0 without.
     #[serde(default = "Default::default", skip_serializing_if = "Option::is_none")]
     pub flank_clearance: Option<P>,
+    /// A chamfer at these ends of each face where the thread runs out
+    /// through a free end (mitcad#304); none without.
+    #[serde(default = "Default::default", skip_serializing_if = "Option::is_none")]
+    pub chamfer: Option<ThreadChamferEnds>,
+    /// The chamfer's angle to the axis; `DEFAULT_CHAMFER_ANGLE` without.
+    #[serde(default = "Default::default", skip_serializing_if = "Option::is_none")]
+    pub chamfer_angle: Option<P>,
+    /// The chamfer's diameter at the end; `default_chamfer_diameter` of the
+    /// size without (it follows the size).
+    #[serde(default = "Default::default", skip_serializing_if = "Option::is_none")]
+    pub chamfer_diameter: Option<P>,
 }
 
 impl<P> ThreadDef<P> {
@@ -161,7 +230,33 @@ impl<P> ThreadDef<P> {
                 .as_ref()
                 .map(|v| f("flank_clearance", v))
                 .transpose()?,
+            chamfer: self.chamfer,
+            chamfer_angle: self
+                .chamfer_angle
+                .as_ref()
+                .map(|v| f("chamfer_angle", v))
+                .transpose()?,
+            chamfer_diameter: self
+                .chamfer_diameter
+                .as_ref()
+                .map(|v| f("chamfer_diameter", v))
+                .transpose()?,
         })
+    }
+}
+
+/// A body's threaded faces with the ends (low, high) to chamfer of each.
+type ThreadedBody<S> = (BodyUid, S, Vec<FaceName>, Vec<(bool, bool)>);
+
+/// A chamfer angle's check: between 0 and 90 degrees to the axis.
+fn check_chamfer_angle(angle: f64) -> Result<(), String> {
+    if angle > 0.0 && angle < std::f64::consts::FRAC_PI_2 {
+        Ok(())
+    } else {
+        Err(format!(
+            "the thread's chamfer angle must be between 0 and 90 degrees to the axis, got {} deg",
+            angle.to_degrees()
+        ))
     }
 }
 
@@ -292,6 +387,11 @@ impl FeatureInfo for ThreadDef {
         } else if self.radial_clearance.is_some() || self.flank_clearance.is_some() {
             return Err("only a modelled thread has extra clearance".to_owned());
         }
+        if self.chamfer.is_none()
+            && (self.chamfer_angle.is_some() || self.chamfer_diameter.is_some())
+        {
+            return Err("a thread without a chamfer has no chamfer angle or diameter".to_owned());
+        }
         self.thread.check(None).map(|_| ())
     }
 
@@ -323,6 +423,17 @@ impl FeatureInfo for ThreadDef {
         }
         clearance_value("radial clearance", self.radial_clearance.map(value))?;
         clearance_value("flank clearance", self.flank_clearance.map(value))?;
+        if let Some(angle) = self.chamfer_angle {
+            check_chamfer_angle(value(angle))?;
+        }
+        if let Some(diameter) = self.chamfer_diameter
+            && (value(diameter).is_nan() || value(diameter) <= 0.0)
+        {
+            return Err(format!(
+                "the thread's chamfer diameter must be greater than zero, got {}",
+                value(diameter)
+            ));
+        }
         Ok(())
     }
 }
@@ -359,8 +470,27 @@ impl<K: Kernel> Evaluate<K> for ThreadDef {
         };
         let clearance = thread_clearance(ctx, self.radial_clearance, self.flank_clearance)?;
         let (radial, _) = clearance;
-        // The faces by body, each a cylinder, all on one side of their material.
-        let mut bodies: Vec<(BodyUid, K::Shape, Vec<FaceName>)> = Vec::new();
+        // The chamfer's angle (checked before the faces).
+        let chamfer_angle = match (self.chamfer, self.chamfer_angle) {
+            (Some(_), Some(id)) => {
+                let angle = ctx.param(id)?;
+                check_chamfer_angle(angle)?;
+                Some(angle)
+            }
+            (Some(_), None) => Some(DEFAULT_CHAMFER_ANGLE),
+            (None, _) => None,
+        };
+        let chamfer_diameter = self
+            .chamfer_diameter
+            .filter(|_| self.chamfer.is_some())
+            .map(|id| ctx.positive(id))
+            .transpose()?;
+        // The faces by body, each a cylinder, all on one side of their
+        // material, with the ends to chamfer (low, high) of each.
+        let mut bodies: Vec<ThreadedBody<K::Shape>> = Vec::new();
+        // The thinnest external and the widest internal face, for the
+        // chamfer's check.
+        let mut extreme_diameter: Option<f64> = None;
         let mut internal = None;
         for face in &self.faces {
             let shape = ctx.body(face.body)?;
@@ -394,26 +524,89 @@ impl<K: Kernel> Evaluate<K> for ThreadDef {
                     data.designation, face.face
                 ));
             }
-            match bodies.iter_mut().find(|(uid, _, _)| *uid == face.body) {
-                Some((_, _, faces)) => faces.push(found),
-                None => bodies.push((face.body, shape, vec![found])),
+            // The ends asked for that the thread reaches; the kernel
+            // chamfers those with nothing beyond them.
+            let ends = match self.chamfer {
+                Some(chamfer) => {
+                    let (low, high) = chamfer.low_high(self.location);
+                    let (reaches_low, reaches_high) = part_reaches(part, cylinder.length);
+                    (low && reaches_low, high && reaches_high)
+                }
+                None => (false, false),
+            };
+            // The material at the face: the face, or the crest of a modelled
+            // thread where that lies further into the material.
+            let material = if !self.modeled {
+                diameter
+            } else if cylinder.internal {
+                diameter.min(minor + 2.0 * radial)
+            } else {
+                diameter.max(major - 2.0 * radial)
+            };
+            extreme_diameter = Some(match extreme_diameter {
+                None => material,
+                Some(d) if cylinder.internal => d.max(material),
+                Some(d) => d.min(material),
+            });
+            match bodies.iter_mut().find(|(uid, _, _, _)| *uid == face.body) {
+                Some((_, _, faces, all_ends)) => {
+                    faces.push(found);
+                    all_ends.push(ends);
+                }
+                None => bodies.push((face.body, shape, vec![found], vec![ends])),
             }
         }
         let mut output = FeatureOutput::default();
-        if !self.modeled {
-            return Ok(output);
-        }
         let data = self.thread.data()?;
         let (major, minor, pitch_diameter) =
             diameters.unwrap_or((data.major, data.minor, data.pitch_diameter));
-        check_clearance(
-            data.pitch,
-            (major, minor, pitch_diameter),
-            internal.unwrap_or(false),
-            clearance,
-        )?;
+        let is_internal = internal.unwrap_or(false);
         let (radial_clearance, flank_clearance) = clearance;
-        for (uid, shape, faces) in bodies {
+        // The end chamfers, when an end is to be chamfered.
+        let chamfer = match chamfer_angle {
+            Some(angle)
+                if bodies
+                    .iter()
+                    .any(|(_, _, _, ends)| ends.iter().any(|&(l, h)| l || h)) =>
+            {
+                // The profile's root diameter, moved by the radial clearance.
+                let root = self.modeled.then_some(if is_internal {
+                    major + 2.0 * radial_clearance
+                } else {
+                    minor - 2.0 * radial_clearance
+                });
+                let diameter = chamfer_diameter
+                    .unwrap_or_else(|| default_chamfer_diameter(&data, is_internal, root));
+                if let Some(material) = extreme_diameter {
+                    if !is_internal && diameter >= material {
+                        return Err(format!(
+                            "the thread's chamfer diameter {diameter} must be smaller than the \
+                             thread's diameter {material}"
+                        ));
+                    }
+                    if is_internal && diameter <= material {
+                        return Err(format!(
+                            "the thread's chamfer diameter {diameter} must be larger than the \
+                             thread's diameter {material}"
+                        ));
+                    }
+                }
+                Some((angle, diameter))
+            }
+            _ => None,
+        };
+        if !self.modeled && chamfer.is_none() {
+            return Ok(output);
+        }
+        if self.modeled {
+            check_clearance(
+                data.pitch,
+                (major, minor, pitch_diameter),
+                is_internal,
+                clearance,
+            )?;
+        }
+        for (uid, shape, faces, ends) in bodies {
             let spec = ThreadSpec {
                 feature: ctx.uid,
                 faces: &faces,
@@ -426,7 +619,21 @@ impl<K: Kernel> Evaluate<K> for ThreadDef {
                 part,
                 radial_clearance,
                 flank_clearance,
+                groove: self.modeled,
+                chamfer: chamfer.map(|(angle, diameter)| ThreadChamfer {
+                    angle,
+                    diameter,
+                    ends,
+                }),
             };
+            if !self.modeled
+                && spec
+                    .chamfer
+                    .as_ref()
+                    .is_none_or(|c| c.ends.iter().all(|&(l, h)| !l && !h))
+            {
+                continue;
+            }
             let threaded = ctx
                 .kernel
                 .modeled_thread(&shape, &spec)

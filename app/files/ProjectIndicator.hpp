@@ -78,12 +78,14 @@ public:
   // The text shown, and the one logged ("bracket, cloud, synced").
   QString shownText() const { return text(); }
   const QString& loggedText() const { return m_logged; }
+  QSize sizeHint() const override;
 
 signals:
   // Native chrome observes the same project, live and lock status.
   void presentationChanged();
 
 protected:
+  void paintEvent(QPaintEvent* event) override;
   void moveEvent(QMoveEvent* event) override;
   void resizeEvent(QResizeEvent* event) override;
 

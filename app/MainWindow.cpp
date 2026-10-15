@@ -26,6 +26,7 @@
 #include <QPair>
 #include <QPushButton>
 #include <QScrollArea>
+#include <QScrollBar>
 #include <QSet>
 #include <QStackedWidget>
 #include <QStandardPaths>
@@ -910,6 +911,9 @@ void MainWindow::createFloatingPanels() {
   m_commandPages->addWidget(m_palette);
   m_commandCard = new GlassCard;
   m_commandCard->setObjectName(QStringLiteral("commandDock"));
+  // A stacked widget normally reserves the minimum size of every page,
+  // including the hidden sketch palette. Size this card for its active page.
+  m_commandPages->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Ignored);
   m_commandCard->setContent(m_commandPages, QMargins(8, 8, 8, 8));
   m_commandCard->hide(); // nothing to say while idle (updateCommandCard)
 
@@ -928,6 +932,9 @@ void MainWindow::createFloatingPanels() {
   connect(m_commandPages, &QStackedWidget::currentChanged, this, [this] { updateCommandCard(); });
   setCentralWidget(m_floating);
   m_floating->watchContent(m_idlePage);
+  if (auto* scroll = qobject_cast<QScrollArea*>(m_idlePage)) {
+    m_floating->watchContent(scroll->widget());
+  }
   m_floating->watchContent(m_palette);
 
   // The View menu shows and hides the cards as it did the docks.
@@ -943,6 +950,8 @@ void MainWindow::createFloatingPanels() {
 }
 
 void MainWindow::createIdlePage() {
+  m_idleInfo->setObjectName(QStringLiteral("selectionInfo"));
+  m_idleInfo->setTextInteractionFlags(Qt::TextSelectableByMouse);
   m_idlePage = new QWidget;
   auto* layout = new QVBoxLayout(m_idlePage);
   layout->setContentsMargins(0, 0, 0, 0);
@@ -970,13 +979,30 @@ void MainWindow::createIdlePage() {
       updateIdleView();
     }
   });
+  if (!m_nativeUi && chromeStyle() == ChromeStyle::Floating) {
+    auto* scroll = new QScrollArea;
+    scroll->setWidgetResizable(true);
+    scroll->setFrameShape(QFrame::NoFrame);
+    scroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    scroll->setWidget(m_idlePage);
+    scroll->setAutoFillBackground(false);
+    scroll->viewport()->setAutoFillBackground(false);
+    m_idlePage->setAutoFillBackground(false);
+    m_idlePage = scroll;
+  }
   m_commandPages->addWidget(m_idlePage);
 }
 
 int MainWindow::commandContentHeight() const {
   QWidget* page = m_commandPages->currentWidget();
   if (auto* scroll = qobject_cast<QScrollArea*>(page)) {
-    return scroll->widget() != nullptr ? scroll->widget()->sizeHint().height() + 2 : 0;
+    QWidget* content = scroll->widget();
+    if (content == nullptr) {
+      return 0;
+    }
+    const int width = m_commandCard->width() - 16 - scroll->verticalScrollBar()->sizeHint().width();
+    const int wrapped = content->hasHeightForWidth() ? content->heightForWidth(width) : -1;
+    return (wrapped >= 0 ? wrapped : content->sizeHint().height()) + 2;
   }
   if (page == m_idlePage) {
     const int height = m_idlePage->layout()->totalHeightForWidth(m_commandCard->width() - 16);
@@ -1933,6 +1959,9 @@ void MainWindow::recompute() {
 }
 
 void MainWindow::refreshScene() {
+  // A recompute, edit, undo or newly opened document can change the
+  // geometry behind the same selection reference.
+  m_idleMeasurements.clear();
   ScopedTiming total("refresh");
   ScopedTiming snapshot("refresh snapshot");
   try {
@@ -2060,10 +2089,12 @@ std::vector<BodyDisplay> MainWindow::modelBodies() const {
   for (Appearance& appearance : known) {
     if (appearance.hasTexture) {
       const QString id = appearance.id;
-      resolveTexture(appearance.texture, folder, [this, id] {
+      // The base colour's image and every map's (mitcad#314).
+      resolveTextureMaps(appearance.texture, folder, [this, id](const QString& map) {
         try {
           return QByteArray::fromBase64(queryObject({{QStringLiteral("query"), QStringLiteral("appearance_image")},
-                                                     {QStringLiteral("id"), id}})
+                                                     {QStringLiteral("id"), id},
+                                                     {QStringLiteral("map"), map}})
                                             .value(QStringLiteral("data"))
                                             .toString()
                                             .toLatin1());
@@ -2174,6 +2205,7 @@ std::vector<BodyDisplay> MainWindow::modelBodies() const {
     const QJsonArray rows = instance.value(QStringLiteral("transform")).toArray();
     BodyDisplay display;
     display.uid = utf8(uid);
+    display.component = utf8(m_snapshot.bodies.value(uid).component);
     display.shape = shape;
     if (const auto look = looks.constFind(uid); look != looks.cend()) {
       display.color = look->displayColor;
@@ -2472,12 +2504,21 @@ void MainWindow::showDatums() {
     }
   }
   m_viewer->setDatums(datums);
+  m_loggedDatums = logged;
+  m_loggedDatumPlaces.clear();
+  logDatumPlaces();
+}
 
+void MainWindow::logDatumPlaces() {
   // Where a click picks each datum (the origin's while they are shown;
   // with MITCAD_LOG_PICKS also the root's construction features, at the
   // first place tried where a click would pick the datum now), for UI
   // tests.
-  for (const QJsonObject& datum : std::as_const(logged)) {
+  // Logged again when the camera comes to rest (the places move with it;
+  // a place logged before the view was laid out is 0,0, mitcad#318).
+  QStringList lines;
+  const bool picks = qEnvironmentVariableIsSet("MITCAD_LOG_PICKS");
+  for (const QJsonObject& datum : std::as_const(m_loggedDatums)) {
     const QString uid = datum.value(QStringLiteral("uid")).toString();
     const SelectKind kind = datumKind(datum.value(QStringLiteral("type")).toString());
     std::vector<gp_Pnt> candidates;
@@ -2541,7 +2582,15 @@ void MainWindow::showDatums() {
       }
     }
     const QPoint point = m_viewer->mapTo(this, m_viewer->toWidget(at));
-    qDebug().noquote() << QStringLiteral("Datum %1 at %2,%3").arg(uid).arg(point.x()).arg(point.y());
+    lines << QStringLiteral("Datum %1 at %2,%3").arg(uid).arg(point.x()).arg(point.y());
+  }
+  const QString text = lines.join(QLatin1Char('\n'));
+  if (text == m_loggedDatumPlaces) {
+    return;
+  }
+  m_loggedDatumPlaces = text;
+  for (const QString& line : std::as_const(lines)) {
+    qDebug().noquote() << line;
   }
 }
 
@@ -2946,6 +2995,7 @@ void MainWindow::setSelection(const Selection& items) {
   const bool changed = items != m_selection;
   m_selection = items;
   if (changed) {
+    m_idleMeasurements.clear();
     m_locks->activity(); // a selection keeps the edit lock active (mitcad#89)
     QStringList names;
     for (const SelectionItem& item : items) {
@@ -3014,10 +3064,40 @@ void MainWindow::updateIdleView() {
   if (!m_selection.isEmpty()) {
     text += tr("<br><br>Selected: %1").arg(summarize(m_selection));
     QStringList lines;
+    QStringList details;
     for (const SelectionItem& item : m_selection.mid(0, 8)) {
-      lines << item.describe().toHtmlEscaped();
+      details << item.describe();
+      QString label = SelectionItem::kindName(item.kind);
+      if (!label.isEmpty()) {
+        label[0] = label[0].toUpper();
+      }
+      QString measurements;
+      if (item.kind == SelectKind::Face || item.kind == SelectKind::Edge || item.kind == SelectKind::Body) {
+        const QString key = QString::fromUtf8(compactJson(item.reference().toObject()));
+        if (!m_idleMeasurements.contains(key)) {
+          try {
+            const QJsonObject answer = queryObject({{QStringLiteral("query"), QStringLiteral("measure")},
+                                                    {QStringLiteral("a"), item.reference()}});
+            m_idleMeasurements.insert(key, selectionMeasurementText(answer.value(QStringLiteral("a")).toObject()));
+          } catch (const std::exception&) {
+            m_idleMeasurements.insert(key, tr("Measurements unavailable"));
+          }
+        }
+        measurements = m_idleMeasurements.value(key);
+      }
+      if (measurements.isEmpty()) {
+        lines << item.describe().toHtmlEscaped();
+      } else {
+        lines << QStringLiteral("<b>%1</b><br>%2").arg(label.toHtmlEscaped(), measurements);
+      }
     }
-    text += QStringLiteral("<br><span style='color:gray'>%1</span>").arg(lines.join(QStringLiteral("<br>")));
+    text += QStringLiteral("<br><br>%1").arg(lines.join(QStringLiteral("<br><br>")));
+    if (m_selection.size() > 8) {
+      text += tr("<br><br>Showing the first 8 items.");
+    }
+    m_idleInfo->setToolTip(details.join(QLatin1Char('\n')));
+  } else {
+    m_idleInfo->setToolTip(QString());
   }
   if (m_nativeUi || chromeStyle() == ChromeStyle::Floating) {
     // The card is for what there is to say: the selection, not the hint.

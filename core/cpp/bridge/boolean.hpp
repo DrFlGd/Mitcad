@@ -35,5 +35,8 @@ std::unique_ptr<BooleanResult> removed_material(const geometry::Shape& before, c
 // is not a near copy (mitcad#88).
 std::unique_ptr<BooleanResult> join_near_copy(const geometry::Shape& body, const geometry::Shape& copy,
                                               double slack);
+// A join within a tolerance (mitcad#298, geometry::boolean's `within`).
+std::unique_ptr<BooleanResult> boolean_join_within(const ShapeList& targets, const geometry::Shape& tool,
+                                                   double tolerance);
 
 } // namespace mitcad::bridge

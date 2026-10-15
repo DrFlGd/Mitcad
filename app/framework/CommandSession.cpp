@@ -1408,7 +1408,15 @@ void CommandSession::runPreview() {
     return;
   }
 
+  // An edit previews as edit_feature: the feature is computed in its own
+  // component, under its own uid, and the design policy sees that state
+  // (mitcad#309); add_feature would put it in the active component.
   QJsonObject command{{QStringLiteral("cmd"), QStringLiteral("add_feature")}, {QStringLiteral("def"), built.def}};
+  if (isEditing()) {
+    command = {{QStringLiteral("cmd"), QStringLiteral("edit_feature")},
+               {QStringLiteral("uid"), m_editUid},
+               {QStringLiteral("def"), built.def}};
+  }
   addAutoOperation(command);
   const QByteArray key = compactJson(command);
   const auto cached = m_cache.constFind(key);

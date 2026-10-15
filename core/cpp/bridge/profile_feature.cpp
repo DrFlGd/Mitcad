@@ -2,6 +2,7 @@
 #include "bridge/profile_feature.hpp"
 
 #include <array>
+#include <cstdint>
 #include <optional>
 #include <stdexcept>
 #include <string>
@@ -177,6 +178,13 @@ std::shared_ptr<geometry::Shape> modeled_thread(rust::Str feature, const geometr
   spec.high_end = input.high_end;
   spec.radial_clearance = input.radial_clearance;
   spec.flank_clearance = input.flank_clearance;
+  spec.groove = input.groove;
+  spec.chamfer = input.chamfer;
+  spec.chamfer_angle = input.chamfer_angle;
+  spec.chamfer_diameter = input.chamfer_diameter;
+  for (const std::uint8_t ends : input.chamfer_ends) {
+    spec.chamfer_ends.push_back({(ends & 1U) != 0, (ends & 2U) != 0});
+  }
   return geometry::modeled_thread(body, spec);
 }
 

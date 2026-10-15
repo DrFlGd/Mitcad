@@ -47,7 +47,11 @@ const USAGE: &str = "usage: mitcad-f3d-inspect <command> ...
                               in hex, the first n
   off-timeline <file>...      features of the components' feature lists
                               that the timeline does not list, and the
-                              item each is a part of";
+                              item each is a part of
+  edge-curves <file>          the curves the edge inputs store (classes,
+                              how many decode), each edge input with how
+                              the edge found lies to its curve, and the
+                              inputs of other names that found one edge";
 
 fn open(path: &str) -> Result<F3dFile, String> {
     F3dFile::open(Path::new(path)).map_err(|e| format!("{path}: {e}"))
@@ -995,6 +999,128 @@ fn cmd_presentations(path: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// The curves the edge inputs store (mitcad#306): per curve class how many
+/// decode, then per edge input of the timeline (item, input object, curve,
+/// how the edge found lies to it, where it was found), then the inputs of
+/// one item with other names that found the same edge.
+fn cmd_edge_curves(path: &str) -> Result<(), String> {
+    use mitcad_f3d::design::{self, classes, curve, recipe};
+    use serde_json::Value;
+    for (label, doc) in design::documents(Path::new(path))? {
+        let Some(s) = design::find_design_streams(&doc).map_err(|e| e.to_string())? else {
+            continue;
+        };
+        let seg = design::Segment::parse(&s.meta, s.bulk).map_err(|e| e.to_string())?;
+        let mut classes_seen: BTreeMap<String, (usize, usize)> = BTreeMap::new();
+        let mut without = 0;
+        for o in seg.objects_of(classes::FACE_REF) {
+            if recipe::of_input(&seg, o.id).is_none_or(|r| r.kind != "edge") {
+                continue;
+            }
+            let ids = curve::ids_of_input(&seg, o.id);
+            if ids.is_empty() {
+                without += 1;
+            }
+            for id in ids {
+                let g = seg.guid_of(id).unwrap_or("?").to_owned();
+                let e = classes_seen.entry(g).or_default();
+                match curve::decode(&seg, id) {
+                    Some(_) => e.0 += 1,
+                    None => e.1 += 1,
+                }
+            }
+        }
+        println!("== {label}");
+        for (g, (ok, bad)) in &classes_seen {
+            println!("curve-class {g} decoded {ok} not {bad}");
+        }
+        println!("edge-inputs-without-curve {without}");
+        let fd = design::decode_document(&doc, &label)?;
+        let Some(dump) = fd.dump else { continue };
+        let items = dump.timeline_items();
+        for it in items {
+            let value = serde_json::to_value(it).map_err(|e| e.to_string())?;
+            let mut edges: Vec<&serde_json::Map<String, Value>> = Vec::new();
+            fn walk<'v>(v: &'v Value, out: &mut Vec<&'v serde_json::Map<String, Value>>) {
+                match v {
+                    Value::Object(m) => {
+                        if m.get("objectType").and_then(Value::as_str) == Some("BRepEdge")
+                            && m.get("_f3d").and_then(|f| f.get("object_id")).is_some()
+                        {
+                            out.push(m);
+                        }
+                        m.values().for_each(|x| walk(x, out));
+                    }
+                    Value::Array(a) => a.iter().for_each(|x| walk(x, out)),
+                    _ => {}
+                }
+            }
+            walk(&value, &mut edges);
+            let index = it.index.unwrap_or(-1);
+            let name = it.name().unwrap_or("?");
+            let text = |v: Option<&Value>| match v {
+                Some(Value::String(s)) => s.clone(),
+                Some(v) => v.to_string(),
+                None => "-".to_owned(),
+            };
+            let mut by_place: BTreeMap<String, Vec<(String, String, String)>> = BTreeMap::new();
+            for m in &edges {
+                let f = m.get("_f3d").expect("has _f3d");
+                let object = text(f.get("object_id"));
+                // Each curve's type (several where the input stores more).
+                let curve = f
+                    .get("curves")
+                    .and_then(Value::as_array)
+                    .map(|c| {
+                        c.iter()
+                            .map(|c| text(c.get("type")))
+                            .collect::<Vec<_>>()
+                            .join("+")
+                    })
+                    .unwrap_or_else(|| "none".to_owned());
+                let place = match (m.get("mid_point"), m.get("length")) {
+                    (Some(Value::Array(p)), Some(l)) => {
+                        let r = |v: &Value| format!("{:.5}", v.as_f64().unwrap_or(f64::NAN));
+                        Some(format!("{} {} {} l {}", r(&p[0]), r(&p[1]), r(&p[2]), r(l)))
+                    }
+                    _ => None,
+                };
+                println!(
+                    "input item {index} {name:?} object {object} curve {curve} fit {:?} at {} found {:?}",
+                    text(f.get("curve_fit")),
+                    place.as_deref().unwrap_or("-"),
+                    text(f.get("found")),
+                );
+                if let Some(place) = place {
+                    by_place.entry(place).or_default().push((
+                        object,
+                        text(f.get("entities")),
+                        text(f.get("curves")),
+                    ));
+                }
+            }
+            for (place, inputs) in by_place {
+                let names: std::collections::BTreeSet<&String> =
+                    inputs.iter().map(|i| &i.1).collect();
+                if names.len() < 2 {
+                    continue;
+                }
+                let curves: std::collections::BTreeSet<&String> =
+                    inputs.iter().map(|i| &i.2).collect();
+                let objects: Vec<&str> = inputs.iter().map(|i| i.0.as_str()).collect();
+                println!(
+                    "same-edge item {index} {name:?} at {place} inputs {} names {} curves {} objects {}",
+                    inputs.len(),
+                    names.len(),
+                    curves.len(),
+                    objects.join(",")
+                );
+            }
+        }
+    }
+    Ok(())
+}
+
 fn cmd_objects(path: &str, class: &str, max: Option<usize>) -> Result<(), String> {
     use mitcad_f3d::design;
     let prefix = class.to_uppercase();
@@ -1087,6 +1213,7 @@ fn run(args: &[String]) -> Result<(), String> {
         [cmd, files @ ..] if cmd == "off-timeline" && !files.is_empty() => cmd_off_timeline(files),
         [cmd, file, class] if cmd == "objects" => cmd_objects(file, class, None),
         [cmd, file, class, n] if cmd == "objects" => cmd_objects(file, class, n.parse().ok()),
+        [cmd, file] if cmd == "edge-curves" => cmd_edge_curves(file),
         _ => Err(USAGE.to_string()),
     }
 }

@@ -48,6 +48,8 @@ mod unicode;
 pub mod writer;
 // What an `.f3z` package says about its designs (mitcad#229).
 pub mod package;
+// The curves edge inputs store beside their recipes (mitcad#306).
+pub mod curve;
 
 use std::path::Path;
 
@@ -250,7 +252,7 @@ pub fn resolve_inputs(design: &mut FileDesign, doc: &F3dFile, threads: usize) {
     if let Some(dump) = &mut design.dump {
         inputs::resolve_on(dump, doc, threads);
         if let Some(a) = dump.f3d.as_mut().and_then(|f| f.appearance.as_mut()) {
-            appearance::resolve(a, doc);
+            appearance::resolve(a, doc, threads);
         }
     }
 }

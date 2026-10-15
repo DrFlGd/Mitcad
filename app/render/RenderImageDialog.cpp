@@ -576,7 +576,8 @@ void RenderImageDialog::renderScene() {
     }
     bodies.push_back(std::move(scene));
   }
-  // Textures whose images are missing show their base colour (mitcad#53).
+  // Textures whose images are missing show their base colour (mitcad#53);
+  // missing maps are left out (mitcad#314).
   const QStringList missing = render::missingTextures(looks);
   const QString scenePath = m_dir->filePath(QStringLiteral("scene.glb"));
   std::string error;
@@ -619,7 +620,7 @@ void RenderImageDialog::renderScene() {
   if (!missing.isEmpty()) {
     const QString text = missing.join(QStringLiteral("; "));
     qWarning().noquote() << QStringLiteral("Render image textures not drawn: %1").arg(text);
-    m_message->setText(tr("A texture is not drawn, its base colour is shown instead (%1).").arg(text));
+    m_message->setText(tr("A texture image is not drawn (%1).").arg(text));
   }
   setRendering(true);
 }

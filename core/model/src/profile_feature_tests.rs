@@ -1049,3 +1049,211 @@ fn profile_features_round_trip_through_the_design_file() {
     let original: Vec<_> = b.doc.features().map(|f| f.def.clone()).collect();
     assert_eq!(defs, original);
 }
+
+/// The default chamfer diameter of a size, external or internal, as the
+/// mock kernel's spec prints it.
+fn default_chamfer(designation: &str, internal: bool) -> String {
+    let data = crate::features::thread_table::lookup(
+        crate::features::ThreadStandard::IsoMetric,
+        designation,
+    )
+    .unwrap();
+    format!(
+        "{:.4}",
+        crate::features::thread::default_chamfer_diameter(&data, internal, None)
+    )
+}
+
+#[test]
+fn thread_end_chamfers_default_to_the_size_and_cut_only_ends_the_thread_reaches() {
+    // The defaults from the size table: a tenth of a pitch inside the minor
+    // diameter outside, outside the major diameter inside (mitcad#304).
+    assert_eq!(default_chamfer("M8", false), "6.5218");
+    assert_eq!(default_chamfer("M8", true), "8.1250");
+    let doc = rod();
+    let answer = query(
+        &doc,
+        json!({"query": "thread_chamfer", "designation": "M8", "internal": true}),
+    );
+    assert!((answer["diameter"].as_f64().unwrap() - 8.125).abs() < 1e-9);
+    assert!((answer["angle"].as_f64().unwrap() - 45.0).abs() < 1e-9);
+    let answer = query(
+        &doc,
+        json!({"query": "thread_chamfer", "designation": "M8"}),
+    );
+    assert!(
+        (answer["diameter"].as_f64().unwrap() - (8.0 - 1.25 * 0.8660254037844386 * 1.25 - 0.125))
+            .abs()
+            < 1e-9
+    );
+
+    // A modelled M10 on the rod, chamfered at both ends: the default
+    // diameter from the size (here below the basic minor diameter), 45
+    // degrees, both ends of the face.
+    let mut doc = rod();
+    let chamfered = thread_def("F2:side(c1)", json!({"modeled": true, "chamfer": "both"}));
+    let uid = doc.add_feature(&chamfered, None).unwrap().uid;
+    assert_eq!(status(&doc, uid), FeatureStatus::Ok);
+    let m10 = default_chamfer("M10x1.5", false);
+    assert_eq!(
+        last_spec(&doc),
+        format!(
+            "thread F2:side(c1) pitch 1.5 diameters 10.0000/8.3762/9.0257 angle 0.000000 right true \
+             part None chamfer 45.0000 deg {m10} ends [(true, true)]"
+        )
+    );
+    // The cones have names of their own.
+    let shape = doc.body_shape(BodyUid::new(FeatureUid(2), 0)).unwrap();
+    assert!(
+        shape
+            .faces
+            .iter()
+            .any(|f| f.to_string() == "F3:thread_chamfer_high(F2:side(c1))")
+    );
+
+    // Saved and loaded as they were; no chamfer fields without a chamfer.
+    let text = doc.to_json();
+    assert!(text.contains("\"chamfer\": \"both\""), "{text}");
+    let loaded = Document::from_json(&text, MockKernel::default()).unwrap();
+    assert_eq!(loaded.to_json(), text);
+    assert_eq!(
+        loaded.feature(uid).unwrap().def,
+        doc.feature(uid).unwrap().def
+    );
+    doc.edit_feature(uid, &thread_def("F2:side(c1)", json!({"modeled": true})))
+        .unwrap();
+    assert!(!doc.to_json().contains("chamfer"), "{}", doc.to_json());
+    assert!(!last_spec(&doc).contains("chamfer"));
+
+    // The default follows the size; a given diameter and angle stay.
+    let fine = thread_def(
+        "F2:side(c1)",
+        json!({"modeled": true, "chamfer": "both",
+               "thread": {"designation": "M10x1.25", "class": "6g"}}),
+    );
+    doc.edit_feature(uid, &fine).unwrap();
+    let m10_fine = default_chamfer("M10x1.25", false);
+    assert_ne!(m10_fine, m10);
+    assert!(
+        last_spec(&doc).ends_with(&format!(
+            "chamfer 45.0000 deg {m10_fine} ends [(true, true)]"
+        )),
+        "{}",
+        last_spec(&doc)
+    );
+    doc.add_parameter("sink", 7.0, "mm").unwrap();
+    let given = thread_def(
+        "F2:side(c1)",
+        json!({"modeled": true, "chamfer": "both", "chamfer_angle": "30 deg",
+               "chamfer_diameter": "sink", "thread": {"designation": "M10x1.25", "class": "6g"}}),
+    );
+    doc.edit_feature(uid, &given).unwrap();
+    assert!(
+        last_spec(&doc).ends_with("chamfer 30.0000 deg 7.0000 ends [(true, true)]"),
+        "{}",
+        last_spec(&doc)
+    );
+    doc.set_parameter("sink", 7.5).unwrap();
+    assert!(
+        last_spec(&doc).ends_with("chamfer 30.0000 deg 7.5000 ends [(true, true)]"),
+        "{}",
+        last_spec(&doc)
+    );
+
+    // A partial thread chamfers only ends it reaches: measured from the
+    // high end (the start) 12 long, the start; 2 below it, none.
+    let partial = |extra: Value| {
+        let mut value = json!({"modeled": true, "length": 12});
+        for (key, field) in extra.as_object().unwrap() {
+            value[key] = field.clone();
+        }
+        thread_def("F2:side(c1)", value)
+    };
+    let ends = |doc: &Document<MockKernel>| {
+        let spec = last_spec(doc);
+        spec.find(" ends ").map(|i| spec[i + 6..].to_owned())
+    };
+    doc.edit_feature(uid, &partial(json!({"chamfer": "both"})))
+        .unwrap();
+    assert_eq!(ends(&doc).as_deref(), Some("[(false, true)]"));
+    doc.edit_feature(uid, &partial(json!({"chamfer": "start"})))
+        .unwrap();
+    assert_eq!(ends(&doc).as_deref(), Some("[(false, true)]"));
+    // The far end lies inside the face: nothing to chamfer.
+    doc.edit_feature(uid, &partial(json!({"chamfer": "end"})))
+        .unwrap();
+    assert_eq!(ends(&doc), None);
+    doc.edit_feature(uid, &partial(json!({"chamfer": "both", "offset": 2})))
+        .unwrap();
+    assert_eq!(status(&doc, uid), FeatureStatus::Ok);
+    assert_eq!(ends(&doc), None);
+    // From the low end: its start is the low end; over the whole face
+    // measured from the high end, its end is the low end.
+    doc.edit_feature(
+        uid,
+        &partial(json!({"chamfer": "start", "location": "low_end"})),
+    )
+    .unwrap();
+    assert_eq!(ends(&doc).as_deref(), Some("[(true, false)]"));
+    doc.edit_feature(uid, &partial(json!({"chamfer": "end", "length": 20})))
+        .unwrap();
+    assert_eq!(ends(&doc).as_deref(), Some("[(true, false)]"));
+
+    // A cosmetic thread cuts its chamfers too (the kernel builds no
+    // profile); without a chamfer it stays data.
+    let calls = doc.kernel().count("thread");
+    doc.edit_feature(uid, &thread_def("F2:side(c1)", json!({"chamfer": "start"})))
+        .unwrap();
+    assert_eq!(status(&doc, uid), FeatureStatus::Ok);
+    assert_eq!(doc.kernel().count("thread"), calls + 1);
+    assert!(
+        last_spec(&doc).ends_with(&format!(
+            "cosmetic chamfer 45.0000 deg {m10} ends [(false, true)]"
+        )),
+        "{}",
+        last_spec(&doc)
+    );
+    let shape = doc.body_shape(BodyUid::new(FeatureUid(2), 0)).unwrap();
+    assert!(!shape.faces.iter().any(|f| f.role == "thread"));
+    doc.edit_feature(uid, &thread_def("F2:side(c1)", json!({})))
+        .unwrap();
+    assert_eq!(doc.kernel().count("thread"), calls + 1);
+
+    // Values that are none, and fields without a chamfer.
+    for (extra, expected) in [
+        (
+            json!({"chamfer_angle": "30 deg"}),
+            "has no chamfer angle or diameter",
+        ),
+        (
+            json!({"chamfer": "both", "chamfer_angle": "90 deg"}),
+            "between 0 and 90 degrees",
+        ),
+        (
+            json!({"chamfer": "both", "chamfer_diameter": 0}),
+            "chamfer diameter must be greater than zero",
+        ),
+    ] {
+        let error = doc
+            .edit_feature(uid, &thread_def("F2:side(c1)", extra.clone()))
+            .map(|_| String::new())
+            .unwrap_or_else(|e| e.to_string());
+        assert!(
+            error.contains(expected),
+            "'{expected}' not in '{error}' ({extra})"
+        );
+    }
+    // A chamfer wider than the rod cuts nothing.
+    doc.edit_feature(
+        uid,
+        &thread_def(
+            "F2:side(c1)",
+            json!({"modeled": true, "chamfer": "both", "chamfer_diameter": 12}),
+        ),
+    )
+    .unwrap();
+    let FeatureStatus::Failed(message) = status(&doc, uid) else {
+        panic!("too wide a chamfer");
+    };
+    assert!(message.contains("must be smaller than"), "{message}");
+}

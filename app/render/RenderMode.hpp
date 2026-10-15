@@ -132,6 +132,9 @@ private:
   QString m_documentFolder;
   QString m_sentEnvironment; // the last "environment" command sent
   QString m_missingTextures; // the textures last said to be missing
+  // Each body's look last sent (its appearance and its faces'), by its id:
+  // a change is logged as a material swap (mitcad#319).
+  std::map<std::string, QString> m_sentLooks;
   render::Look m_look;
   render::Frame m_frame; // the last frame shown, for a new look
 };

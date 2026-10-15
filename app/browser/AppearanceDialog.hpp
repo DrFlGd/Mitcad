@@ -1,6 +1,9 @@
 // SPDX-License-Identifier: MIT
 #pragma once
 
+#include <memory>
+#include <vector>
+
 #include <QDialog>
 #include <QJsonValue>
 #include <QString>
@@ -9,6 +12,7 @@
 
 #include "../framework/Appearances.hpp"
 #include "../framework/Selection.hpp"
+#include "../materials/TextureSource.hpp"
 
 class QCheckBox;
 class QComboBox;
@@ -18,11 +22,14 @@ class QLabel;
 class QLineEdit;
 class QListWidget;
 class QPushButton;
+class QStackedWidget;
+class QTimer;
 class QToolButton;
 
 namespace mitcad {
 
 class DocumentHost;
+class TextureBrowser;
 
 // Edit Appearances (mitcad#46): Mitcad's appearance library and the
 // document's own appearances with a preview swatch and their physically
@@ -35,11 +42,19 @@ class DocumentHost;
 // Assign gives the bodies and faces the dialog was opened for the selected
 // appearance. The faces of those bodies with appearances of their own are
 // listed, and Clear gives the selected ones their body's again.
+//
+// Texture sources (mitcad#315): a selector above the list chooses between
+// the appearances (the library and the design's) and the texture sources
+// (app/materials/TextureSource.hpp), with a search field and a category
+// filter for both. A source's assets show as a grid of thumbnails; Use
+// fetches the chosen one's maps and makes them a new appearance of the
+// design with the images embedded, which is then selected for Assign.
 class AppearanceDialog : public QDialog {
   Q_OBJECT
 
 public:
   AppearanceDialog(DocumentHost& host, QWidget* parent = nullptr);
+  ~AppearanceDialog() override;
 
   // The bodies and faces Assign gives the selected appearance (bodies and
   // faces of the selection); none disables it. Their own appearance is
@@ -85,6 +100,19 @@ private:
   void clearFaces();
   QStringList targetBodies() const;
   void logLayout();
+  // Texture sources (mitcad#315).
+  void loadSources();
+  TextureSource* currentSource() const;
+  void sourceChosen();
+  void showCategories();
+  void runSearch();
+  void filterList();
+  void useTexture(const TextureAsset& asset, const QString& resolution);
+  void finishUse(const QString& sourceId, const TextureAsset& asset, const TextureFiles& files,
+                 const QString& error);
+  void showEvent(QShowEvent* event) override;
+  // The places are logged again when the dialog's size changes.
+  void resizeEvent(QResizeEvent* event) override;
 
   DocumentHost& m_host;
   QVector<Appearance> m_appearances;
@@ -114,6 +142,19 @@ private:
   QPushButton* m_close = nullptr;
   bool m_building = false;
   QString m_logged; // the logged places
+  QString m_loggedTexture; // the texture line last logged
+  // Texture sources (mitcad#315): the selector's entry 0 is the
+  // appearances, entry i + 1 is m_sources[i].
+  TextureSettings m_textureSettings;
+  std::vector<std::unique_ptr<TextureSource>> m_sources;
+  QComboBox* m_source = nullptr;
+  QLineEdit* m_search = nullptr;
+  QComboBox* m_category = nullptr;
+  QStackedWidget* m_pages = nullptr;
+  TextureBrowser* m_textures = nullptr;
+  QTimer* m_searchTimer = nullptr;
+  int m_shownSource = 0;
+  bool m_using = false;
 };
 
 } // namespace mitcad

@@ -575,6 +575,9 @@ pub(crate) struct Env<'a, S> {
     /// B-rep data of base features being added and the shapes it was
     /// written from (mitcad#244, `recompute::Cache::written_from`).
     pub written_from: &'a [(Brep, S)],
+    /// The document's join tolerance (`DocState::join_tolerance`,
+    /// mitcad#298), read through [`EvalContext::join`].
+    pub join_tolerance: Option<f64>,
 }
 
 /// Inputs of an evaluating feature. Every read is recorded, so the
@@ -675,6 +678,31 @@ impl<'a, K: Kernel> EvalContext<'a, K> {
         for note in self.kernel.notes(shape) {
             self.warn(note);
         }
+    }
+
+    /// [`Kernel::boolean`]; a join within the document's join tolerance
+    /// where it has one ([`Kernel::join_within`], mitcad#298: an importer's
+    /// bodies that match a file's only within its geometric tolerance). A
+    /// kernel without such joins joins exactly.
+    pub(crate) fn boolean(
+        &mut self,
+        op: crate::kernel::BooleanOp,
+        targets: &[&K::Shape],
+        tool: &K::Shape,
+    ) -> Result<crate::kernel::BooleanOutput<K::Shape>, crate::kernel::KernelError> {
+        if op == crate::kernel::BooleanOp::Join {
+            let read = Read::JoinTolerance(self.env.join_tolerance.map(f64::to_bits));
+            if !self.reads.contains(&read) {
+                self.reads.push(read);
+            }
+            if let Some(tolerance) = self.env.join_tolerance {
+                match self.kernel.join_within(targets, tool, tolerance) {
+                    Err(crate::kernel::KernelError::Unsupported(_)) => {}
+                    joined => return joined,
+                }
+            }
+        }
+        self.kernel.boolean(op, targets, tool)
     }
 
     pub fn param(&mut self, id: ParamId) -> Result<f64, String> {

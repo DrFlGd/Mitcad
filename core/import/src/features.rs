@@ -57,6 +57,10 @@ const SKETCH_TOLERANCE: f64 = 1e-4;
 /// How far (mm) the points of reference curves may move where the sketch
 /// is solved with them free (`sketch::position_error_slack`).
 const REFERENCE_SLACK: f64 = 0.05;
+/// How far (turns) a coil's retry shifts the seams of the helix's pieces
+/// (`piece_shift`, mitcad#235): on a coil whose cut gave the file's state
+/// only with its seams moved, shifts of 1/12 to 1/4 of a turn worked.
+const COIL_PIECE_SHIFT: f64 = 1.0 / 6.0;
 
 fn param(r: &Option<Reference>) -> Option<&mitcad_f3d::design::ir::ParameterRef> {
     r.as_ref().and_then(Reference::parameter)
@@ -4264,7 +4268,34 @@ impl<K: crate::ImportKernel> Importer<'_, K> {
                 }
             }
         }
-        Ok(candidates)
+        // The coil as decoded once more, right after it, with the seams of
+        // the helix's pieces shifted (mitcad#235): OCCT's cut or join can
+        // fail or leave part of the coil uncut where those seams meet the
+        // seams of the body's faces about the axis. A coil that gives the
+        // file's state as built first never gets to it. (Only the decoded
+        // definitions, not the guesses, so that the guesses keep their
+        // places among the candidates tried; the retry itself is a guess,
+        // tried after the others where guesses come last.)
+        let mut with_shifted = Vec::with_capacity(candidates.len());
+        for c in candidates {
+            let shifted = (!c.guess).then(|| {
+                let mut s = c.clone();
+                s.guess = true;
+                s.input_provenance = InputProvenance::Inferred;
+                for def in s.defs.iter_mut().filter(|d| d["type"] == "helix") {
+                    def["piece_shift"] = json!(COIL_PIECE_SHIFT);
+                }
+                let shift = "the seams of the helix's pieces shifted by a sixth of a turn";
+                s.note = Some(match s.note.take() {
+                    Some(n) => format!("{n}; {shift}"),
+                    None => shift.to_owned(),
+                });
+                s
+            });
+            with_shifted.push(c);
+            with_shifted.extend(shifted);
+        }
+        Ok(with_shifted)
     }
 
     /// A revolve axis as a line of the sketch plane (a point and a unit

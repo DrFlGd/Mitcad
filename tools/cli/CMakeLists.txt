@@ -17,7 +17,7 @@ target_sources(mitcad-cli PRIVATE render.cpp render.hpp
 set_target_properties(mitcad-cli PROPERTIES AUTOMOC ON)
 target_include_directories(mitcad-cli PRIVATE "${app}")
 target_include_directories(mitcad-cli SYSTEM PRIVATE "${MITCAD_CGLTF_INCLUDE_DIR}")
-target_link_libraries(mitcad-cli PRIVATE Qt6::Gui TKMesh TKFillet TKPrim TKTopAlgo TKBRep)
+target_link_libraries(mitcad-cli PRIVATE Qt6::Gui TKMesh TKFillet TKPrim TKTopAlgo TKGeomBase TKG3d TKBRep)
 
 # The imports, which the import corpus tests run, apart from the other
 # commands (tools/check-all.sh runs the corpus again when they change).
@@ -30,7 +30,7 @@ if(BUILD_TESTING)
     add_test(NAME cli.${script} COMMAND mitcad-cli run "${scripts}/${script}.json")
   endforeach()
   # Profile features (F1), with the volumes of the T0 reference models.
-  foreach(script f1_extrude f1_revolve f1_hole f1_thread f1_failures)
+  foreach(script f1_extrude f1_revolve f1_hole f1_thread f1_thread_chamfer f1_failures)
     add_test(NAME cli.${script} COMMAND mitcad-cli run "${scripts}/${script}.json")
   endforeach()
   # Assembly cut scope preserves component-local geometry and split ownership.
@@ -93,6 +93,13 @@ if(BUILD_TESTING)
   add_test(NAME cli.reparent_occurrence_reopened
            COMMAND mitcad-cli run "${scripts}/reparent_occurrence_reopened.json" --open "${reparent_occurrence}")
   set_tests_properties(cli.reparent_occurrence_reopened PROPERTIES FIXTURES_REQUIRED cli_reparent_occurrence)
+  # Texture map sets embedded once per image, saved and opened again (mitcad#313).
+  set(texture_maps "${CMAKE_CURRENT_BINARY_DIR}/texture-maps.mitcad")
+  add_test(NAME cli.texture_maps COMMAND mitcad-cli run "${scripts}/texture_maps.json" --save "${texture_maps}")
+  set_tests_properties(cli.texture_maps PROPERTIES FIXTURES_SETUP cli_texture_maps)
+  add_test(NAME cli.texture_maps_reopened
+           COMMAND mitcad-cli run "${scripts}/texture_maps_reopened.json" --open "${texture_maps}")
+  set_tests_properties(cli.texture_maps_reopened PROPERTIES FIXTURES_REQUIRED cli_texture_maps)
   set(f6 "${CMAKE_CURRENT_BINARY_DIR}/f6")
   file(MAKE_DIRECTORY "${f6}")
   add_test(NAME cli.f6_assembly COMMAND mitcad-cli run "${scripts}/f6_assembly.json" --save "${f6}/plate.mitcad")
@@ -443,6 +450,15 @@ if(BUILD_TESTING)
   add_test(NAME cli.import_rfa COMMAND mitcad-cli import-rvt "${exchange}/family.rfa")
   set_tests_properties(cli.import_rfa PROPERTIES FIXTURES_REQUIRED cli_rvt PASS_REGULAR_EXPRESSION
     "family\\.rfa \\(rfa\\), saved by release 2020.*family: Test Family & Co.*a family file: its metadata only")
+  # The building test project (mitcad#275): its walls and floor rebuilt as
+  # features checked against their stored boxes, its levels' planes, its
+  # grid's axis, its material's appearance and its link found next to it.
+  add_test(NAME cli.rvt_building_files COMMAND test_exchange --write-rvt-building "${exchange}/rvt-building")
+  set_tests_properties(cli.rvt_building_files PROPERTIES FIXTURES_SETUP cli_rvt_building)
+  add_test(NAME cli.import_rvt_building
+    COMMAND mitcad-cli import-rvt "${exchange}/rvt-building/building.rvt" --save "${exchange}/rvt-building/building.mitcad")
+  set_tests_properties(cli.import_rvt_building PROPERTIES FIXTURES_REQUIRED cli_rvt_building PASS_REGULAR_EXPRESSION
+    "Built 6 elements as features \\(2 floor, 4 wall\\), checked against their stored boxes; of those kinds none came in as meshes or boxes.*4 level planes, 2 grid axes, 0 grid arcs, 2 appearances.*link linked\\.rvt: linked\\.rvt, 3 elements")
   add_test(NAME rvt.corpus
     COMMAND "${CMAKE_COMMAND}" "-DCLI=$<TARGET_FILE:mitcad-cli>" "-DWORK=${CMAKE_CURRENT_BINARY_DIR}/rvt-corpus"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/rvt-corpus.cmake")
@@ -468,6 +484,16 @@ if(BUILD_TESTING)
   add_test(NAME designs.corpus
     COMMAND "${CMAKE_COMMAND}" "-DCLI=$<TARGET_FILE:mitcad-cli>" -P "${CMAKE_CURRENT_SOURCE_DIR}/designs-corpus.cmake")
   set_tests_properties(designs.corpus PROPERTIES SKIP_REGULAR_EXPRESSION "design corpus: skipped")
+
+  # Single .f3d designs checked item by item (mitcad#311), found by their
+  # content ids under MITCAD_F3D_CORPUS and MITCAD_F3D_BACKUP: the items
+  # named come in parametric, none after a retry on the file's exact state,
+  # and reading the file and applying its appearances take less time than
+  # the replay; skipped without the designs.
+  add_test(NAME f3d.corpus_designs
+    COMMAND "${CMAKE_COMMAND}" "-DCLI=$<TARGET_FILE:mitcad-cli>" "-DWORK=${CMAKE_CURRENT_BINARY_DIR}/f3d-designs"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/f3d-designs.cmake")
+  set_tests_properties(f3d.corpus_designs PROPERTIES SKIP_REGULAR_EXPRESSION "f3d designs: skipped")
 
   # Recompute speed (P10): a generated model with the joins, patterns and
   # fillets that slowed down imported designs, saved, then opened with the
@@ -570,6 +596,13 @@ if(BUILD_TESTING)
             -P "${CMAKE_CURRENT_SOURCE_DIR}/render-test.cmake")
   # Seconds normally; a hung GPU fails it in two minutes (mitcad#146).
   set_tests_properties(cli.render PROPERTIES TIMEOUT 120)
+  # Texture map sets in the final render (mitcad#314): maps that change the
+  # image, a missing one and one that is no image left out.
+  add_test(NAME cli.render_texture_maps
+    COMMAND "${CMAKE_COMMAND}" "-DCLI=$<TARGET_FILE:mitcad-cli>" "-DWORKER=$<TARGET_FILE:mitcad-render>"
+            "-DSCRIPT=${scripts}/render_texture_maps.json" "-DWORK=${CMAKE_CURRENT_BINARY_DIR}/render-texture-maps"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/render-texture-maps-test.cmake")
+  set_tests_properties(cli.render_texture_maps PROPERTIES TIMEOUT 120)
 
   # Joints between occurrences (mitcad#55): joints placed on the geometry
   # kernel's faces and edges, saved and opened again.

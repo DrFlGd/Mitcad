@@ -115,7 +115,16 @@ private:
   void select();
   void showVersion();
   void getLibrary();
+  // Update: fetches every enabled source, reports the failures in one
+  // warning and refreshes the results (mitcad#317).
+  void updateLibraries();
+  // The search again, the selected item kept when it is still listed.
+  void refresh();
   void insert();
+  // An item of the results the same after a new search.
+  static QString itemKey(const QJsonObject& item);
+  // Whether any enabled source has been fetched (the empty list's text).
+  static bool anySourceFetched();
 
   bool m_community = false;
   QLineEdit* m_search = nullptr;

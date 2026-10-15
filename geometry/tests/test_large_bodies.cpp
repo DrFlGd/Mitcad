@@ -7,7 +7,8 @@
 // is its faces' boxes, found on all cores; and OCCT's face merge keeps a
 // chain of B-spline edges it cannot concatenate (the port's patch 0110);
 // the checker's statuses on faces of many wires and edges stay OCCT's
-// (patches 0120 and 0121, mitcad#119).
+// (patches 0120 and 0121, mitcad#119); faces of surfaces of linear
+// extrusion get boxes of their own (mitcad#311).
 
 #include <algorithm>
 #include <exception>
@@ -26,6 +27,7 @@
 #include <BRepCheck_Face.hxx>
 #include <BRepCheck_Shell.hxx>
 #include <BRepPrimAPI_MakeCylinder.hxx>
+#include <BRepPrimAPI_MakePrism.hxx>
 #include <BRepPrimAPI_MakeSphere.hxx>
 #include <BRepTools.hxx>
 #include <BRepTopAdaptor_FClass2d.hxx>
@@ -37,6 +39,7 @@
 #include <Geom_Circle.hxx>
 #include <Geom_CylindricalSurface.hxx>
 #include <Geom_Line.hxx>
+#include <Geom_SurfaceOfLinearExtrusion.hxx>
 #include <NCollection_Array1.hxx>
 #include <NCollection_List.hxx>
 #include <ShapeUpgrade_UnifySameDomain.hxx>
@@ -271,6 +274,59 @@ void test_face_boxes_hold_their_faces() {
   }
   // Planes, cylinders and the sphere all have boxes of their own.
   CHECK(bounded == shape->face_count());
+}
+
+// A face of a surface of linear extrusion (a B-spline curve swept along a
+// slanted direction) gets a box of its own, which holds it and is near its
+// extent, where it had an unbounded one (mitcad#311: the lookups through a
+// point measured every such face of a body).
+void test_extruded_faces_have_boxes() {
+  NCollection_Array1<gp_Pnt> poles(1, 5);
+  poles(1) = gp_Pnt(0, 0, 0);
+  poles(2) = gp_Pnt(3, 4, 0);
+  poles(3) = gp_Pnt(6, -3, 0);
+  poles(4) = gp_Pnt(9, 5, 0);
+  poles(5) = gp_Pnt(12, 0, 0);
+  NCollection_Array1<double> knots(1, 2);
+  knots(1) = 0.0;
+  knots(2) = 1.0;
+  NCollection_Array1<int> mults(1, 2);
+  mults(1) = 5;
+  mults(2) = 5;
+  const occ::handle<Geom_BSplineCurve> wave = new Geom_BSplineCurve(poles, knots, mults, 4);
+  BRepBuilderAPI_MakeWire wire(BRepBuilderAPI_MakeEdge(wave).Edge(),
+                               BRepBuilderAPI_MakeEdge(gp_Pnt(12, 0, 0), gp_Pnt(12, -8, 0)).Edge(),
+                               BRepBuilderAPI_MakeEdge(gp_Pnt(12, -8, 0), gp_Pnt(0, -8, 0)).Edge(),
+                               BRepBuilderAPI_MakeEdge(gp_Pnt(0, -8, 0), gp_Pnt(0, 0, 0)).Edge());
+  const TopoDS_Face base = BRepBuilderAPI_MakeFace(wire.Wire()).Face();
+  const auto shape =
+      std::make_shared<Shape>(BRepPrimAPI_MakePrism(base, gp_Vec(1.5, 0.5, 5.0)).Shape());
+  const std::vector<std::array<double, 6>> boxes = face_boxes(*shape);
+  CHECK(static_cast<int>(boxes.size()) == shape->face_count());
+  int extruded = 0;
+  for (int i = 0; i < shape->face_count() && i < static_cast<int>(boxes.size()); ++i) {
+    const TopoDS_Face& face = shape->face(i);
+    occ::handle<Geom_Surface> surface = BRep_Tool::Surface(face);
+    if (occ::down_cast<Geom_SurfaceOfLinearExtrusion>(surface).IsNull()) {
+      continue;
+    }
+    ++extruded;
+    const std::array<double, 6>& box = boxes[static_cast<std::size_t>(i)];
+    // Within the hull of the curve's poles moved along the sweep.
+    CHECK(box[0] > -0.1 && box[3] < 13.6 && box[1] > -3.1 && box[4] < 5.6 && box[2] > -0.1 &&
+          box[5] < 5.1);
+    double u0 = 0, u1 = 0, v0 = 0, v1 = 0;
+    BRepTools::UVBounds(face, u0, u1, v0, v1);
+    const BRepAdaptor_Surface adaptor(face);
+    for (int a = 0; a <= 40; ++a) {
+      for (int b = 0; b <= 10; ++b) {
+        const gp_Pnt p = adaptor.Value(u0 + (u1 - u0) * a / 40.0, v0 + (v1 - v0) * b / 10.0);
+        CHECK(p.X() >= box[0] && p.Y() >= box[1] && p.Z() >= box[2] && p.X() <= box[3] &&
+              p.Y() <= box[4] && p.Z() <= box[5]);
+      }
+    }
+  }
+  CHECK(extruded == 1);
 }
 
 // A plane face of a 100 x 100 square with holes of radius 2 at the given
@@ -509,6 +565,7 @@ void large_body_tests() {
   guarded("test_optimal_box_is_occts", test_optimal_box_is_occts);
   guarded("test_edges_measured_once", test_edges_measured_once);
   guarded("test_face_boxes_hold_their_faces", test_face_boxes_hold_their_faces);
+  guarded("test_extruded_faces_have_boxes", test_extruded_faces_have_boxes);
   guarded("test_wires_of_arcs_past_their_range_are_classified",
           test_wires_of_arcs_past_their_range_are_classified);
   guarded("test_the_orientation_of_a_shell_with_a_face_of_many_edges",

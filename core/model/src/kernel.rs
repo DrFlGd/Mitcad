@@ -1007,6 +1007,24 @@ pub trait Kernel {
     ) -> Result<(f64, f64), KernelError> {
         Err(KernelError::Unsupported("changed volume"))
     }
+
+    // Joins within a tolerance (an importer's bodies that match a file's
+    // only within its geometric tolerance, mitcad#298).
+
+    /// [`Kernel::boolean`]'s join, widened where it fails exactly: a tool
+    /// that touches no target still joins the targets within `tolerance`
+    /// mm of it, a tool solid the exact join leaves on its own beside a
+    /// target within it is merged, and a join whose result is invalid is
+    /// retried; each with the smallest fuzzy value that works, up to
+    /// `tolerance`. A join that works exactly is the same as `boolean`'s.
+    fn join_within(
+        &self,
+        _targets: &[&Self::Shape],
+        _tool: &Self::Shape,
+        _tolerance: f64,
+    ) -> Result<BooleanOutput<Self::Shape>, KernelError> {
+        Err(KernelError::Unsupported("joins within a tolerance"))
+    }
 }
 
 /// How a tool lies against a body ([`Kernel::tool_contacts`]).
@@ -1616,6 +1634,8 @@ pub struct HoleSpec<'a, S> {
 /// `flank_clearance` moves each flank that far perpendicular to itself
 /// into the tooth, keeping the flank angle, the pitch and the crest and
 /// root radii (`features::thread::check_clearance` gives the limits).
+/// `groove` false builds no profile, only the `chamfer` (a cosmetic
+/// thread's end chamfers, mitcad#304).
 #[derive(Debug, Clone)]
 pub struct ThreadSpec<'a> {
     pub feature: FeatureUid,
@@ -1629,6 +1649,26 @@ pub struct ThreadSpec<'a> {
     pub part: Option<(f64, f64, bool)>,
     pub radial_clearance: f64,
     pub flank_clearance: f64,
+    pub groove: bool,
+    pub chamfer: Option<ThreadChamfer>,
+}
+
+/// The end chamfers of a thread (mitcad#304): a cone cut at an end of each
+/// face, before the profile, so that the first turn starts on the cone.
+/// An external thread's cone widens from `diameter` at the end into the
+/// material at `angle` (radians, to the axis), and everything outside it
+/// goes; an internal thread's (a countersink) narrows from `diameter` at
+/// the end, and everything inside it goes. `ends` holds per face (in the
+/// order of the faces) whether its low and its high end along the axis of
+/// the face's cylinder are chamfered; the kernel chamfers such an end only
+/// where nothing of the body lies beyond it (a free end). The cones are
+/// named `<feature>:thread_chamfer_low(<face>)` and
+/// `<feature>:thread_chamfer_high(<face>)`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ThreadChamfer {
+    pub angle: f64,
+    pub diameter: f64,
+    pub ends: Vec<(bool, bool)>,
 }
 
 /// [`Kernel::extrude_feature`] with [`Kernel::extrude`]: a prism between

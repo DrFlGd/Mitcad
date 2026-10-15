@@ -1208,6 +1208,23 @@ void BrowserPanel::rebuild(const DocumentSnapshot& snapshot, bool originShown) {
   QTimer::singleShot(0, this, &BrowserPanel::logLayout);
 }
 
+void BrowserPanel::collapseAll() {
+  // The states of rows that are gone are forgotten too, and every row now
+  // present is remembered as folded, also where a row opens by default.
+  m_expanded.clear();
+  m_foldedSelection = m_shownSelection;
+  const bool wasBuilding = m_building;
+  m_building = true; // the signals below remember nothing
+  for (QTreeWidgetItemIterator it(m_tree); *it != nullptr; ++it) {
+    (*it)->setExpanded(false);
+    m_expanded.insert(keyOf(nodeOf(*it)), false);
+  }
+  m_building = wasBuilding;
+  emit contentHeightChanged();
+  QTimer::singleShot(0, this, &BrowserPanel::logLayout);
+  qDebug().noquote() << QStringLiteral("Browser collapsed all");
+}
+
 int BrowserPanel::contentHeight() const {
   // The rows in sight: those whose parents are all open.
   int rows = 0;
@@ -1222,30 +1239,76 @@ int BrowserPanel::contentHeight() const {
   return rows * std::max(row, 20) + 2 * m_tree->frameWidth();
 }
 
-void BrowserPanel::showSelection(const Selection& items, const QStringList& features) {
+void BrowserPanel::showSelection(const Selection& items, const QStringList& features, bool scroll) {
   QSet<QString> keys;
   for (const SelectionItem& item : items) {
     keys.insert(itemKey(item));
   }
   const QSet<QString> picked(features.cbegin(), features.cend());
+  // The selection Collapse All left (rows folded away): shown again by a
+  // refresh, it must not scroll to its rows, which would open their parents.
+  const QSet<QString> selection = keys + QSet<QString>(features.cbegin(), features.cend());
+  const bool keepFolded = !m_foldedSelection.isEmpty() && selection == m_foldedSelection;
+  if (!keepFolded) {
+    m_foldedSelection.clear();
+  }
+  const QSet<QString> before = m_shownSelection;
+  m_shownSelection = selection;
   const QSignalBlocker blocker(m_tree);
-  // Scrolled to: the first row of an item, else the first feature row (which
-  // opens its sketch's row).
-  QTreeWidgetItem* first = nullptr;
-  QTreeWidgetItem* firstFeature = nullptr;
+  // Scrolled to (mitcad#318): the row of the newest item (the last one in
+  // the selection, the newest added first), else the row of the newest
+  // feature (which opens its sketch's row); none when a selected row is in
+  // sight already.
+  QTreeWidgetItem* newest = nullptr;
+  QTreeWidgetItem* newestFeature = nullptr;
+  int newestRank = -1;
+  int newestFeatureRank = -1;
+  bool inSight = false;
+  const QRect sight = m_tree->viewport()->rect();
   for (QTreeWidgetItemIterator it(m_tree); *it != nullptr; ++it) {
     const BrowserNode node = nodeOf(*it);
     const SelectionItem item = node.item();
     const bool feature = node.type == BrowserNode::Type::Feature;
-    const bool on = feature ? picked.contains(node.uid) : item.isValid() && keys.contains(itemKey(item));
+    const QString key = feature ? node.uid : item.isValid() ? itemKey(item) : QString();
+    const bool on = feature ? picked.contains(node.uid) : item.isValid() && keys.contains(key);
     (*it)->setSelected(on);
-    QTreeWidgetItem*& firstOfKind = feature ? firstFeature : first;
-    if (on && firstOfKind == nullptr) {
-      firstOfKind = *it;
+    if (!on) {
+      continue;
+    }
+    bool open = !(*it)->isHidden();
+    for (const QTreeWidgetItem* parent = (*it)->parent(); open && parent != nullptr; parent = parent->parent()) {
+      open = parent->isExpanded() && !parent->isHidden();
+    }
+    // In sight as logLayout says: the middle of its row is in the view.
+    const QRect row = m_tree->visualItemRect(*it);
+    if (open && !row.isEmpty() && sight.contains(row.center())) {
+      inSight = true;
+    }
+    // Newly added rows rank above those selected before, then by the place
+    // in the selection.
+    int rank = 0;
+    if (feature) {
+      rank = static_cast<int>(features.lastIndexOf(node.uid));
+    } else {
+      for (int i = static_cast<int>(items.size()) - 1; i >= 0; --i) {
+        if (itemKey(items.at(i)) == key) {
+          rank = i;
+          break;
+        }
+      }
+    }
+    rank += before.contains(key) ? 0 : 1 << 20;
+    int& bestRank = feature ? newestFeatureRank : newestRank;
+    QTreeWidgetItem*& best = feature ? newestFeature : newest;
+    if (rank > bestRank) {
+      bestRank = rank;
+      best = *it;
     }
   }
-  if (first != nullptr || firstFeature != nullptr) {
-    m_tree->scrollToItem(first != nullptr ? first : firstFeature);
+  QTreeWidgetItem* target = newest != nullptr ? newest : newestFeature;
+  if (scroll && !keepFolded && !inSight && target != nullptr) {
+    m_tree->scrollToItem(target);
+    qDebug().noquote() << QStringLiteral("Browser scrolled to %1").arg(nodeOf(target).path);
   }
   m_tree->viewport()->update();
   logSelection();
@@ -1404,6 +1467,8 @@ void BrowserPanel::logLayout() {
                .arg(width())
                .arg(m_tree->horizontalScrollBar()->isVisible() ? QStringLiteral(", scrolls sideways")
                                                                : QString());
+  // Where the rows are scrolled to (mitcad#318: a pick in the tree keeps it).
+  lines << QStringLiteral("Browser scroll %1").arg(m_tree->verticalScrollBar()->value());
   const QRect viewport = m_tree->viewport()->rect();
   const auto place = [this, &lines, &places](const QString& what, const QRect& rect) {
     const QPoint point = GlassCard::mapToHost(m_tree->viewport(), rect.center());
@@ -1421,6 +1486,11 @@ void BrowserPanel::logLayout() {
     const BrowserNode node = nodeOf(item);
     const BrowserDelegate::Parts parts = m_tree->partsOf(item);
     place(QStringLiteral("Browser %1").arg(node.path), parts.name);
+    if (item->childCount() > 0) {
+      // The disclosure arrow: the middle of the indentation before the row.
+      place(QStringLiteral("Browser arrow %1").arg(node.path),
+            QRect(row.left() - kIndentation, row.top(), kIndentation, row.height()));
+    }
     if (!parts.eye.isEmpty()) {
       place(QStringLiteral("Browser eye %1").arg(node.path), parts.eye);
     }

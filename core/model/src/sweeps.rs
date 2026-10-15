@@ -337,4 +337,9 @@ pub struct HelixSpec<'a, S> {
     /// flat and transition, the end's transition and flat (see
     /// [`crate::features::helix::HelixEnd`]).
     pub ends: [f64; 4],
+    /// The pieces' seams shifted by this many turns (0 for none, less
+    /// than a third; mitcad#235): the same shape, built so that a boolean
+    /// that failed where the pieces' seams meet seams of the bodies'
+    /// faces about the axis can be retried (see `geometry::HelixSweepSpec`).
+    pub piece_shift: f64,
 }

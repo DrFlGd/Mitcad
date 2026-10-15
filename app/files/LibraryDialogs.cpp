@@ -72,6 +72,30 @@ QJsonObject command(const char* name, QJsonObject fields = {}) {
   return libraryCommand(fields);
 }
 
+// Fetches the sources one after another (Fetch All in Libraries..., Update in
+// the library browser, mitcad#317), then refreshes the dialog, and reports
+// the failures in one warning. True when every source was fetched.
+bool fetchAndReport(QWidget* parent, const QStringList& urls, const std::function<void()>& refresh) {
+  const QList<QJsonObject> answers = fetchLibraries(parent, urls);
+  QStringList failures;
+  for (int i = 0; i < answers.size(); ++i) {
+    const QString error = errorOf(answers[i]);
+    if (!error.isEmpty()) {
+      failures << QStringLiteral("%1: %2").arg(urls[i], error);
+    }
+  }
+  qInfo().noquote() << QStringLiteral("Library fetch of %1 source(s): %2 failed")
+                           .arg(urls.size())
+                           .arg(failures.size());
+  if (refresh) {
+    refresh();
+  }
+  if (!failures.isEmpty()) {
+    sheetWarning(parent, QObject::tr("Fetch Libraries"), failures.join(QStringLiteral("\n\n")));
+  }
+  return failures.isEmpty();
+}
+
 } // namespace
 
 // ---------------------------------------------------------------------------
@@ -342,18 +366,7 @@ void LibrariesDialog::fetch(bool all) {
   if (urls.isEmpty()) {
     return;
   }
-  const QList<QJsonObject> answers = fetchLibraries(this, urls);
-  QStringList failures;
-  for (int i = 0; i < answers.size(); ++i) {
-    const QString error = errorOf(answers[i]);
-    if (!error.isEmpty()) {
-      failures << QStringLiteral("%1: %2").arg(urls[i], error);
-    }
-  }
-  reload();
-  if (!failures.isEmpty()) {
-    sheetWarning(this, tr("Fetch Libraries"), failures.join(QStringLiteral("\n\n")));
-  }
+  fetchAndReport(this, urls, [this] { reload(); });
 }
 
 // ---------------------------------------------------------------------------
@@ -419,11 +432,16 @@ LibraryBrowser::LibraryBrowser(bool community, QWidget* parent) : QDialog(parent
   layout->addWidget(split, 1);
   auto* buttons = new QHBoxLayout;
   auto* libraries = new QPushButton(tr("Li&braries..."));
+  // Fetches every enabled source, as Fetch All in Libraries... (mitcad#317).
+  auto* update = new QPushButton(tr("&Update"));
+  update->setObjectName(QStringLiteral("libraryUpdate"));
+  update->setToolTip(tr("Fetch newer versions of all enabled libraries"));
   m_get = new QPushButton(tr("&Get Library"));
   m_insert = new QPushButton(tr("&Insert"));
   m_insert->setDefault(true);
   auto* close = new QPushButton(tr("Close"));
   buttons->addWidget(libraries);
+  buttons->addWidget(update);
   buttons->addStretch(1);
   buttons->addWidget(m_get);
   buttons->addWidget(m_insert);
@@ -450,8 +468,9 @@ LibraryBrowser::LibraryBrowser(bool community, QWidget* parent) : QDialog(parent
     LibrariesDialog dialog(this);
     prepareModal(&dialog);
     execDialog(&dialog);
-    search();
+    refresh();
   });
+  connect(update, &QPushButton::clicked, this, &LibraryBrowser::updateLibraries);
   connect(m_size, &SizeChooser::rowChanged, this, [](const QString& row) {
     if (!row.isEmpty()) {
       qInfo().noquote() << QStringLiteral("Library browser size %1").arg(row);
@@ -558,8 +577,17 @@ void LibraryBrowser::select() {
   m_get->setEnabled(false);
   m_shown = {};
   if (row < 0 || row >= m_items.size()) {
-    m_details->setText(tr("<p>Nothing found. Fetch libraries in <b>Libraries...</b>; items without an accepted "
-                          "licence are hidden unless asked for.</p>"));
+    // No enabled source fetched yet (a fresh install): Update fetches them
+    // (mitcad#317); Libraries... adds sources.
+    if (!anySourceFetched()) {
+      m_details->setText(tr("<p>No library is fetched yet. Press <b>Update</b> to fetch the enabled libraries; "
+                            "add sources in <b>Libraries...</b>.</p>"));
+      qInfo().noquote() << QStringLiteral("Library browser empty: nothing fetched yet, press Update");
+      return;
+    }
+    m_details->setText(tr("<p>Nothing found. Fetch newer versions with <b>Update</b> or add sources in "
+                          "<b>Libraries...</b>; items without an accepted licence are hidden unless asked for.</p>"));
+    qInfo().noquote() << QStringLiteral("Library browser empty: nothing found");
     return;
   }
   const QJsonObject item = m_items[row].toObject();
@@ -681,7 +709,56 @@ void LibraryBrowser::getLibrary() {
   if (!answers.isEmpty() && !errorOf(answers.first()).isEmpty()) {
     sheetWarning(this, tr("Get Library"), errorOf(answers.first()));
   }
+  refresh();
+}
+
+void LibraryBrowser::updateLibraries() {
+  // Only when asked (the button): fetching brings newer versions to choose
+  // from; parts already in a design keep theirs.
+  const QStringList urls = LibrarySettings::load().enabledUrls();
+  qInfo().noquote() << QStringLiteral("Library browser update: %1 enabled source(s)").arg(urls.size());
+  if (urls.isEmpty()) {
+    sheetInformation(this, tr("Update"), tr("No library source is enabled. Add or enable sources in Libraries..."));
+    return;
+  }
+  fetchAndReport(this, urls, [this] { refresh(); });
+}
+
+void LibraryBrowser::refresh() {
+  // The search again, keeping the selected item when it is still listed.
+  QString kept;
+  const int row = m_results->currentRow();
+  if (row >= 0 && row < m_items.size()) {
+    kept = itemKey(m_items[row].toObject());
+  }
   search();
+  if (kept.isEmpty()) {
+    return;
+  }
+  for (int i = 0; i < m_items.size(); ++i) {
+    if (itemKey(m_items[i].toObject()) == kept) {
+      if (i != m_results->currentRow()) {
+        m_results->setCurrentRow(i);
+      }
+      qInfo().noquote() << QStringLiteral("Library browser kept the selection %1").arg(kept);
+      return;
+    }
+  }
+}
+
+QString LibraryBrowser::itemKey(const QJsonObject& item) {
+  return QStringList{str(item, "item"), normalUrl(str(item, "url")), str(item, "library"), str(item, "id")}.join(
+      QLatin1Char('|'));
+}
+
+bool LibraryBrowser::anySourceFetched() {
+  QStringList fetched;
+  for (const QJsonValue& value : command("library_list").value(QStringLiteral("libraries")).toArray()) {
+    fetched << normalUrl(str(value.toObject(), "url"));
+  }
+  const QStringList urls = LibrarySettings::load().enabledUrls();
+  return std::any_of(urls.cbegin(), urls.cend(),
+                     [&fetched](const QString& url) { return fetched.contains(normalUrl(url)); });
 }
 
 void LibraryBrowser::insert() {

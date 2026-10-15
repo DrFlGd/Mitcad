@@ -505,10 +505,58 @@ pub fn decode(seg: &Segment, doc: &F3dFile) -> AppearanceData {
     }
 }
 
+/// The geometry of each face of `faces` ([`super::inputs::fill_face`]),
+/// on up to `threads` threads, each face on its own (the same with any
+/// number).
+fn fill_faces(
+    state: &NamedState,
+    faces: &[usize],
+    threads: usize,
+) -> HashMap<usize, Result<Fingerprint, String>> {
+    let one = |f: usize| {
+        let mut fp = Fingerprint {
+            f3d: Some(FingerprintF3d::default()),
+            ..Fingerprint::default()
+        };
+        super::inputs::fill_face(state, f, &mut fp).map(|()| fp)
+    };
+    let threads = threads.clamp(1, faces.len().max(1));
+    if threads == 1 {
+        return faces.iter().map(|&f| (f, one(f))).collect();
+    }
+    let next = std::sync::atomic::AtomicUsize::new(0);
+    let out = std::sync::Mutex::new(HashMap::new());
+    let work = || {
+        loop {
+            let k = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            let Some(&f) = faces.get(k) else {
+                break;
+            };
+            let filled = one(f);
+            out.lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .insert(f, filled);
+        }
+    };
+    std::thread::scope(|scope| {
+        for _ in 1..threads {
+            // (One that does not start leaves its faces to the others.)
+            let _ = std::thread::Builder::new()
+                .name("mitcad-import-appearances".to_owned())
+                .stack_size(64 << 20)
+                .spawn_scoped(scope, work);
+        }
+        work();
+    });
+    out.into_inner()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
 /// The part in the blobs: each body's record in its blob, and the faces
 /// with appearances of their own, found by their GUIDs in the blob's
-/// stored state.
-pub fn resolve(data: &mut AppearanceData, doc: &F3dFile) {
+/// stored state. `threads`: how many threads work out the faces' points
+/// (the same result with any number).
+pub fn resolve(data: &mut AppearanceData, doc: &F3dFile, threads: usize) {
     let Some(bodies) = data.bodies.as_mut() else {
         return;
     };
@@ -580,6 +628,26 @@ pub fn resolve(data: &mut AppearanceData, doc: &F3dFile) {
                 }
             }
         }
+        // The geometry of every face carrying a GUID named here, worked
+        // out on several threads (mitcad#311: a point inside a spline face
+        // takes milliseconds, and a design's appearances can name
+        // thousands of them).
+        let named: std::collections::HashSet<&str> = bodies
+            .iter()
+            .filter(|b| b.blob.as_deref() == Some(blob.as_str()))
+            .flat_map(|b| b.faces.iter().flatten())
+            .chain(loose.iter())
+            .filter_map(|f| f.guid.as_deref())
+            .collect();
+        let mut wanted: Vec<usize> = named
+            .iter()
+            .filter_map(|g| faces_by_guid.get(*g))
+            .flatten()
+            .copied()
+            .collect();
+        wanted.sort_unstable();
+        wanted.dedup();
+        let filled = fill_faces(&state, &wanted, threads);
         // The geometry of the faces of `body` carrying a GUID.
         let fill = |guid: &str, body: usize| -> Result<Vec<Fingerprint>, String> {
             let Some(all) = faces_by_guid.get(guid) else {
@@ -587,12 +655,7 @@ pub fn resolve(data: &mut AppearanceData, doc: &F3dFile) {
             };
             let mut out = Vec::new();
             for &f in all.iter().filter(|&&f| state.faces[f].body == body) {
-                let mut fp = Fingerprint {
-                    f3d: Some(FingerprintF3d::default()),
-                    ..Fingerprint::default()
-                };
-                super::inputs::fill_face(&state, f, &mut fp)?;
-                out.push(fp);
+                out.push(filled[&f].clone()?);
             }
             if out.is_empty() {
                 return Err("only other bodies' faces carry its GUID".to_owned());

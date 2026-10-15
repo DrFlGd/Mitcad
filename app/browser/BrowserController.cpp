@@ -184,7 +184,10 @@ void BrowserController::showSelection(const Selection& items) {
     m_shownFeatures.clear();
   }
   m_shownItems = items;
-  m_browser->showSelection(items, m_shownFeatures);
+  // Rows picked in the tree stay where they are: scrolling would jump to
+  // another selected row (mitcad#318). A pick in the timeline, the view or
+  // a command scrolls to its row when none is in sight.
+  m_browser->showSelection(items, m_shownFeatures, !(m_picking && m_fromTree));
 }
 
 bool BrowserController::cancelEditing() {
@@ -1045,8 +1048,9 @@ void BrowserController::browserMenu(const BrowserNode& node, const QPoint& at) {
     break;
   case BrowserNode::Type::Feature:
     // The timeline's menu of the feature (mitcad#177).
+    // (its own menu ends with Collapse All).
     featureMenu(node.uid, at, node);
-    break;
+    return;
   case BrowserNode::Type::SheetRules:
     menu.add(QStringLiteral("sheet-rules"), tr("Edit Sheet Rules"), [this, node] { m_host.editFeature(node.uid); });
     timelineEntry(node.uid);
@@ -1062,9 +1066,12 @@ void BrowserController::browserMenu(const BrowserNode& node, const QPoint& at) {
   default:
     break;
   }
+  // Every row's menu ends with this presentation action (mitcad#312).
   if (!menu.isEmpty()) {
-    menu.exec(at);
+    menu.separator();
   }
+  menu.add(QStringLiteral("folder"), tr("Collapse All"), [this] { m_browser->collapseAll(); });
+  menu.exec(at);
 }
 
 // ---------------------------------------------------------------------------
@@ -1179,6 +1186,14 @@ void BrowserController::reorder(const QString& uid, int index) {
 void BrowserController::pickItems(const Selection& items) { pickRows(items, QStringList()); }
 
 void BrowserController::pickRows(const Selection& items, const QStringList& features) {
+  // Picked in the tree itself: showSelection does not scroll it (mitcad#318).
+  const bool fromTree = m_fromTree;
+  m_fromTree = true;
+  pickRowsOfTree(items, features);
+  m_fromTree = fromTree;
+}
+
+void BrowserController::pickRowsOfTree(const Selection& items, const QStringList& features) {
   // The features of the rows are selected in the timeline (mitcad#177),
   // without its signal: sketches, datums, joints and the features under
   // sketches; a body, a component or the origin's rows clear it.
@@ -1356,6 +1371,7 @@ void BrowserController::featureMenu(const QString& uid, const QPoint& at, const 
   // Found in the other place.
   if (row.isValid()) {
     menu.add(QStringLiteral("timeline"), tr("Find in Timeline"), [this, uid] { findInTimeline(uid); });
+    menu.add(QStringLiteral("folder"), tr("Collapse All"), [this] { m_browser->collapseAll(); });
   } else {
     menu.add(QStringLiteral("browser"), tr("Find in Browser"), [this, uid] {
       const DocumentSnapshot::Feature* f = m_snapshot.feature(uid);

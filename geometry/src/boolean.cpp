@@ -808,12 +808,29 @@ std::optional<std::vector<detail::FaceNamer::Piece>> tiled_cut(const Shape& targ
   return current;
 }
 
+// The fuzzy values a join tries up to `reach` (at least kNearContact),
+// smallest first: kNearContact, then 3 and 10 times each power of ten above
+// it below `reach`, then `reach` (mitcad#298). The smallest that works
+// moves the least geometry.
+std::vector<double> fuzzy_steps(double reach) {
+  std::vector<double> steps;
+  for (double decade = kNearContact; decade < reach; decade *= 10.0) {
+    steps.push_back(decade);
+    if (3.0 * decade < reach) {
+      steps.push_back(3.0 * decade);
+    }
+  }
+  steps.push_back(std::max(reach, kNearContact));
+  return steps;
+}
+
 } // namespace
 
 // The contacts of a new Extrude's tool (contact.cpp, mitcad#289).
 bool detail::shapes_touch(const Shape& a, const Shape& b) { return touches(a, b); }
 
-BooleanResult boolean(BooleanOp op, const std::vector<const Shape*>& targets, const Shape& tool) {
+BooleanResult boolean(BooleanOp op, const std::vector<const Shape*>& targets, const Shape& tool,
+                      double within) {
   return detail::run(operation_name(op), [&] {
     PhaseTrace trace(std::string("whole-") + operation_name(op) + " targets=" + std::to_string(targets.size()));
     BooleanResult result;
@@ -835,11 +852,38 @@ BooleanResult boolean(BooleanOp op, const std::vector<const Shape*>& targets, co
     };
 
     if (op == BooleanOp::Join) {
+      // How far a tool that touches nothing reaches: kNearContact, or the
+      // caller's tolerance (mitcad#298).
+      const double reach = std::max(kNearContact, within);
+      // The join of `joined` with a fuzzy value: the first of `steps` from
+      // `from` on that gives a result (a valid one: run_operation checks
+      // it); the last failure when none does.
+      const auto fuzzy_join = [&](const std::vector<std::pair<const Shape*, int>>& joined, double from) {
+        const std::vector<double> steps = fuzzy_steps(reach);
+        for (std::size_t s = 0; s < steps.size(); ++s) {
+          if (steps[s] < from) {
+            continue;
+          }
+          try {
+            detail::FaceNamer namer =
+                run_operation(op, joined, tool, tool_tag, true, nullptr, false, nullptr, steps[s]);
+            trace.note("fuzzy=" + std::to_string(steps[s]));
+            return namer;
+          } catch (const Cancelled&) {
+            throw;
+          } catch (...) {
+            if (s + 1 == steps.size()) {
+              throw;
+            }
+          }
+        }
+        return run_operation(op, joined, tool, tool_tag, true, nullptr, false, nullptr, reach);
+      };
       // Only the targets the tool touches: fusing all of them would also
       // merge targets that overlap each other but not the tool.
       std::vector<std::pair<const Shape*, int>> near;
       Bnd_Box join_box = tool_box;
-      join_box.Enlarge(kNearContact);
+      join_box.Enlarge(reach);
       for (std::size_t i = 0; i < targets.size(); ++i) {
         if (!join_box.IsOut(box_of(*targets[i]))) {
           near.emplace_back(targets[i], static_cast<int>(i));
@@ -906,44 +950,125 @@ BooleanResult boolean(BooleanOp op, const std::vector<const Shape*>& targets, co
         // between them are not reduced), and a target joins where the tool
         // merged with it. This is the failure path only (no target touched
         // within kContact), and tools farther away are as untouched as
-        // before.
+        // before. A caller's tolerance (`within`, mitcad#298) widens this
+        // to bodies that match a file's within it: each target is fused
+        // with the smallest fuzzy value (fuzzy_steps) that merges it.
         std::vector<std::pair<const Shape*, int>> close;
         {
-          const ContactScope scope(kNearContact);
+          const ContactScope scope(reach);
           for (const auto& [target, i] : near) {
             if (touches(*target, tool)) {
               close.emplace_back(target, i);
             }
           }
         }
+        double fuzzy = kNearContact;
         for (const auto& entry : close) {
           const Shape* const target = entry.first;
           const int i = entry.second;
-          std::vector<detail::FaceNamer::Piece> solids;
+          for (const double step : fuzzy_steps(reach)) {
+            if (step < fuzzy && step < reach) {
+              continue;
+            }
+            std::vector<detail::FaceNamer::Piece> solids;
+            try {
+              solids =
+                  run_operation(op, {{target, i}}, tool, tool_tag, true, nullptr, false, nullptr, step).pieces();
+            } catch (const Cancelled&) {
+              throw;
+            } catch (...) {
+              continue;
+            }
+            const bool merged = std::any_of(solids.begin(), solids.end(), [&](const auto& piece) {
+              return piece.sources.count(tool_tag) > 0 && piece.sources.count(i) > 0;
+            });
+            if (merged) {
+              joined.emplace_back(target, i);
+              result.touched[static_cast<std::size_t>(i)] = true;
+              fuzzy = std::max(fuzzy, step);
+              break;
+            }
+          }
+        }
+        trace.note("near-contact fuzzy=" + std::to_string(fuzzy));
+        if (joined.empty()) {
+          return result;
+        }
+        result.pieces = pieces_of(fuzzy_join(joined, fuzzy));
+        return result;
+      }
+      if (within <= 0.0) {
+        result.pieces = pieces_of(run_operation(op, joined, tool, tool_tag));
+        return result;
+      }
+      // Within a tolerance (mitcad#298), for bodies that match a file's
+      // only within it: an exact join that fails (its result invalid, where
+      // the operands meet within that noise) is retried with the smallest
+      // fuzzy value that gives a valid result.
+      std::vector<BooleanPiece> exact;
+      try {
+        exact = pieces_of(run_operation(op, joined, tool, tool_tag));
+      } catch (const Cancelled&) {
+        throw;
+      } catch (...) {
+        trace.note("exact join failed: fuzzy");
+        result.pieces = pieces_of(fuzzy_join(joined, 0.0));
+        return result;
+      }
+      // A tool solid the exact join leaves on its own that comes within
+      // the tolerance of a target (it touches the target only along an
+      // edge, its face a few micrometres off the target's) joins it too:
+      // the targets near such solids are fused with the smallest fuzzy
+      // value that merges every one of them. Solids farther away stay
+      // apart, and a join that merged everything is the exact one.
+      int strays = 0;
+      int close_strays = 0;
+      std::vector<std::pair<const Shape*, int>> fused = joined;
+      {
+        const ContactScope scope(reach);
+        for (const BooleanPiece& piece : exact) {
+          if (!piece.sources.empty()) {
+            continue;
+          }
+          ++strays;
+          bool close = false;
+          for (const auto& [target, i] : near) {
+            if (touches(*target, *piece.shape)) {
+              close = true;
+              const bool listed = std::any_of(fused.begin(), fused.end(),
+                                              [i = i](const auto& entry) { return entry.second == i; });
+              if (!listed) {
+                fused.emplace_back(target, i);
+              }
+            }
+          }
+          close_strays += close ? 1 : 0;
+        }
+      }
+      trace.mark("strays");
+      if (close_strays > 0) {
+        for (const double step : fuzzy_steps(reach)) {
+          std::vector<BooleanPiece> pieces;
           try {
-            solids = run_operation(op, {{target, i}}, tool, tool_tag, true, nullptr, false, nullptr, kNearContact)
-                         .pieces();
+            pieces = pieces_of(run_operation(op, fused, tool, tool_tag, true, nullptr, false, nullptr, step));
           } catch (const Cancelled&) {
             throw;
           } catch (...) {
             continue;
           }
-          const bool merged = std::any_of(solids.begin(), solids.end(), [&](const auto& piece) {
-            return piece.sources.count(tool_tag) > 0 && piece.sources.count(i) > 0;
-          });
-          if (merged) {
-            joined.emplace_back(target, i);
-            result.touched[static_cast<std::size_t>(i)] = true;
+          const int left = static_cast<int>(std::count_if(
+              pieces.begin(), pieces.end(), [](const BooleanPiece& piece) { return piece.sources.empty(); }));
+          if (left <= strays - close_strays) {
+            trace.note("strays fuzzy=" + std::to_string(step));
+            for (const auto& entry : fused) {
+              result.touched[static_cast<std::size_t>(entry.second)] = true;
+            }
+            result.pieces = std::move(pieces);
+            return result;
           }
         }
-        if (joined.empty()) {
-          return result;
-        }
-        result.pieces = pieces_of(
-            run_operation(op, joined, tool, tool_tag, true, nullptr, false, nullptr, kNearContact));
-        return result;
       }
-      result.pieces = pieces_of(run_operation(op, joined, tool, tool_tag));
+      result.pieces = std::move(exact);
       return result;
     }
 

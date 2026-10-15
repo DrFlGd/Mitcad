@@ -1496,6 +1496,32 @@ impl Kernel for OcctKernel {
                 .map_err(failed)?;
         Ok((values[0], values[1]))
     }
+
+    // Joins within a tolerance (mitcad#298; boolean.rs).
+
+    fn join_within(
+        &self,
+        targets: &[&Self::Shape],
+        tool: &Self::Shape,
+        tolerance: f64,
+    ) -> Result<BooleanOutput<Self::Shape>, KernelError> {
+        let mut list = shape::ffi::new_shape_list();
+        for target in targets {
+            occt(target)?;
+            list.pin_mut().push((*target).clone());
+        }
+        let result =
+            boolean::ffi::boolean_join_within(&list, occt(tool)?, tolerance).map_err(failed)?;
+        Ok(BooleanOutput {
+            pieces: (0..result.piece_count())
+                .map(|i| BooleanPiece {
+                    shape: result.piece(i),
+                    sources: result.piece_sources(i),
+                })
+                .collect(),
+            touched: (0..targets.len()).map(|i| result.touched(i)).collect(),
+        })
+    }
 }
 
 /// The name of a selection's sub-shape, empty for the whole body.

@@ -111,6 +111,9 @@ pub mod ffi {
         /// The start's flat and transition, the end's transition and flat
         /// (radians; mitcad#235).
         ends: [f64; 4],
+        /// The pieces' seams shifted by this many turns (0 for none;
+        /// mitcad#235, `geometry::HelixSweepSpec::piece_shift`).
+        piece_shift: f64,
     }
 
     /// The chains' curves one after another, `chains` holding how many each
@@ -427,6 +430,7 @@ pub fn helix(
         flip: spec.flip,
         freecad: spec.freecad,
         ends: spec.ends,
+        piece_shift: spec.piece_shift,
     };
     ffi::helix_solid(
         &spec.feature.to_string(),

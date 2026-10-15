@@ -103,7 +103,7 @@ Keyboard Shortcuts), and Help › Keyboard and Mouse Overview lists them
 all. Commands without a shortcut are in command search (S) and in the
 groups' menus. Tools › Preferences has a page for each kind of setting
 (General, Navigation, Display, Cache, Cloud, Updates,
-3D Print, Diagnostics); command search finds each page by its name or by what it
+3D Print, Diagnostics, Textures); command search finds each page by its name or by what it
 sets ("autosave", "slicer", "git"), as *Preferences: Cache* and so on.
 
 | Command | Key | Action |
@@ -150,7 +150,13 @@ Other commands of the SOLID tab, in menu order:
   the axis each turn (negative: in), widening the helix into a cone or a
   spiral. A hole can be counterdrilled (a counterbore
   whose floor is a cone down to the hole) and tapered (Taper Angle: the
-  wall leans in as the hole goes deeper).
+  wall leans in as the hole goes deeper). A thread, cosmetic or modelled,
+  can have *Chamfer Ends*: a cone cut at the free ends it runs out
+  through (a shaft's tip, a hole's mouth), so that the first turn starts
+  on the cone without a knife edge. The size comes from the thread size
+  (45 degrees, just inside the minor diameter of a shaft, just outside the
+  major diameter of a hole) and follows it, or is given as an angle and
+  a diameter.
 - **MODIFY:** Press Pull, Fillet, Chamfer, Shell, Draft, Scale, Combine,
   Offset Face, Replace Face, Split Face, Split Body, Move/Copy, Align,
   Delete Face, Physical Material, Appearance, Edit Appearances, Change
@@ -160,7 +166,46 @@ Other commands of the SOLID tab, in menu order:
   emission and opacity. New copies the selected appearance into the design,
   where its values can be changed; Assign gives the bodies it was opened
   for the selected appearance. The shaded view shows an appearance's base
-  colour; the rendered view uses all of its values. With *Tangent Chain*
+  colour; the rendered view uses all of its values. **Textures:** the
+  selector above the list switches between the appearances and the
+  texture sources: *Local Folders* are the folders added in Preferences ›
+  Textures (Add, Choose... or a folder typed and OK; subfolders are
+  searched too). A material there is a set of PNG or JPEG images named by
+  their maps: a base colour (`_diff`, `_albedo`, `_basecolor`, `_color`),
+  and optionally a normal map in the OpenGL convention (`_nor_gl`,
+  `_normal`; DirectX ones, `_nor_dx`, are left out), roughness (`_rough`),
+  metalness (`_metal`) and ambient occlusion (`_ao`), with the same name
+  before the suffix (`oak_diff_2k.jpg`, `oak_nor_gl_2k.png`), or a folder
+  of its own with files named by the suffix alone (`color.jpg`,
+  `roughness.png`); a resolution in the name (`_1k`, `_2K`, `_2048`) makes
+  that material come in several resolutions. The search field and the
+  category (one per texture folder; Library and This Design for the
+  appearances) narrow the list; the materials show as thumbnails. Choose
+  a resolution (the last one chosen, 2k at first), then **Use**: the
+  material becomes a new appearance of the design with all its images
+  embedded in the design file (the line next to the resolution says how
+  much they take), its texture 100 mm wide (as high as the image's
+  proportions) unless the source knows the material's real size, and its
+  base colour the image's average for the shaded view; it is selected, so
+  Assign gives it to the selection. An image the design embeds already
+  is kept once. The design opens on any computer without the folder.
+  *Poly Haven* is an online source: the textures of
+  [Poly Haven](https://polyhaven.com), all under the CC0 licence
+  (`CC0-1.0`: free for any use, no attribution needed, so they may be
+  embedded in designs and shared), searched through Poly Haven's public
+  API. Mitcad uses the internet only when you allow it: the first time an
+  online source is chosen, Mitcad asks; No asks for nothing, and
+  Preferences › Textures (*Allow texture sources on the internet*)
+  changes the choice later. Choosing a texture shows its resolutions with
+  their download size; Use downloads only that resolution's maps (base
+  colour, normal, roughness, metalness and ambient occlusion where the
+  texture has them) and the texture's size is its real size (Poly Haven
+  gives it in metres). The source records the texture's page and its
+  licence. The list of textures, the thumbnails and the downloads are kept
+  in the texture cache, so Poly Haven is asked again only now and then;
+  when it cannot be reached, the browser says why and the other sources
+  keep working. Mitcad is not made or endorsed by Poly Haven.
+  The dialog lists a texture's maps and where it came from. With *Tangent Chain*
   on (the default), Fillet and Chamfer also take the edges that continue
   a picked edge smoothly, and Shell, Draft and Replace Face the faces
   joined to a picked face through smooth edges; the hover then shows the
@@ -196,6 +241,12 @@ Other commands of the SOLID tab, in menu order:
 - **INSPECT:** Measure, Interference, Section Analysis, Physical
   Properties.
 - **INSERT:** Insert Mesh, Insert DXF, Import.
+
+Outside a command, selecting an edge shows its length in the selection card;
+a circular edge also shows its radius and diameter. A selected face shows
+its area, and a body shows its area and volume. Values update after edits
+and undo. The card lists up to eight items; hover over the text for their
+full geometry references. Use Measure for distances and angles between items.
 
 **Pattern at Points** repeats Features, Bodies or Components at sketch points,
 construction points or vertices. Select the source objects, then the Target
@@ -244,6 +295,8 @@ application menu.
   Mac, still opens the context menu). In every scheme a pinch zooms about
   the fingers, a two-finger rotation rolls the view (not with a
   constrained orbit) and a two-finger double tap fits everything.
+  Two-finger orbit has a 1.3× motion gain; panning, zoom and mouse drags
+  retain their own sensitivity.
 - **Orientation cube**: a click on a face, edge or corner turns the view
   there, dragging the cube orbits, the house returns to the home view, the
   right button opens the cube's menu (Home, Orthographic, Perspective, Set
@@ -369,6 +422,14 @@ and constraints (CONSTRAINTS). The CREATE menu groups its tools:
 | Project | Project (references from the bodies) |
 | Sketch Dimension | Sketch Dimension |
 
+A polygon (Circumscribed, Inscribed or Edge Polygon) stays regular: its
+construction circles keep the sides equal and the corners evenly spaced,
+so dragging a corner or turning it with Move/Copy (Rotate) turns, moves
+or resizes the whole polygon without skewing it. A dimension that would
+make it irregular is refused. Its centre, size and orientation stay free
+until you constrain them (fix or place the centre, dimension a circle or
+a side, make a side horizontal).
+
 On the toolbar, Line and Sketch Dimension are buttons; Rectangles, Circles
 and Arcs are split buttons: the button starts the default tool (2-Point
 Rectangle, Center Diameter Circle, 3-Point Arc) and its arrow opens the
@@ -395,7 +456,10 @@ stays on for the next sketch.
   design beside it and marks the design origin as seen along the sketch's
   normal. Fully constrained geometry is drawn dark, or light on a dark
   background, also in the sketches shown outside sketch editing, so a
-  glance tells which of them are fully constrained.
+  glance tells which of them are fully constrained. Fully constrained
+  curves and centre lines have a thin outline in the background's tone
+  (dark under light lines, light under dark ones), so they stay readable
+  where they cross a body's face as well.
 - While a tool is active the pointer is a slim cross with the tool's
   icon; a small square in its centre gap shows that the point snaps to
   geometry.
@@ -582,9 +646,15 @@ sketch.
   that. The radio button after a component's name activates it; F2
   renames. Context menu: Edit, Show/Hide, Isolate, New Component, Move
   Features into a Component, Copy, Paste, Paste New, Move to... (a
-  component: another parent), Ground, Create Components from Bodies,
+  component: another parent; the joints, constraints, rigid groups and
+  moves that place it go with it), Ground, Create Components from Bodies,
   Move to Component (bodies and sketches), Create Sketch, Look At,
-  Rename, Delete, Find in Timeline.
+  Rename, Delete, Find in Timeline. **Collapse All**, the last entry of
+  every row's menu, folds the whole tree whichever row you clicked, with
+  everything below folded rows; only the top row stays. Its arrow then
+  opens just that row, and each row below opens with its own arrow, so you
+  reopen the tree one level at a time. It changes only what the browser
+  shows: nothing in the design and no light bulb changes.
 - **Timeline:** features as icons in their component's colour, a failed
   one in red with its error, one with a warning in yellow with the
   warning in its tooltip (also what an import says about a feature, see
@@ -1144,7 +1214,11 @@ program to be fetched; parts already in a design need nothing.
    search by name, standard or tag (`4762`, `washer`), choose the version
    (the newest first) and the size (Size, then Length), and insert the part
    **linked** (read only) or as a **copy** (editable, with its history).
-   The licence and the attribution are shown before you insert.
+   The licence and the attribution are shown before you insert. On a new
+   installation the list is empty until you press **Update**, which
+   fetches all enabled libraries (the same as Fetch All in Libraries...)
+   and searches again; press it later to get newer versions to choose
+   from. Parts already in a design keep their versions.
 3. Each linked part keeps the library version chosen for it. Opening the
    design reads that version even when the library has moved on, so the
    design always rebuilds the same way. **Library Parts...** shows the
@@ -1581,7 +1655,8 @@ off, `MITCAD_DEBUG_LOG=1|<file>` writes a debug log as `--debug-log` does,
 `MITCAD_PROJECTS_DIR` sets where New Project puts projects (instead
 of Documents/Mitcad), `MITCAD_GIT` the git program when it is not on
 `PATH` (Preferences › Cloud sets it for the application), `MITCAD_LIBRARIES_DIR` where fetched component libraries are
-kept.
+kept, `MITCAD_TEXTURES_DIR` where the texture sources' thumbnails and
+fetched maps are kept.
 Variables for tests: [development.md](development.md).
 
 `mitcad-cli` works without a UI; `mitcad-cli --help` lists all commands

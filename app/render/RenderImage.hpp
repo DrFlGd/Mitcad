@@ -58,4 +58,9 @@ QImage outputImage(const std::uint16_t* pixels, const std::uint16_t* catcher, in
 // the frame's pixels with the top row first; null when it covers nothing.
 QRect coverage(const std::uint16_t* pixels, int width, int height);
 
+// The mean linear brightness (of red, green and blue) of the pixels a frame
+// covers (alpha above one half), and how many those are: UI tests tell a
+// body rendered black (mitcad#319) from one lit. 0 when it covers nothing.
+double coveredBrightness(const std::uint16_t* pixels, int width, int height, int* count = nullptr);
+
 } // namespace mitcad::render

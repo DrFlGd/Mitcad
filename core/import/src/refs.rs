@@ -685,11 +685,65 @@ fn same_surface_kind(wanted: &str, kind: &str) -> bool {
 
 // Faces and edges the replay splits (mitcad#161).
 
+/// What [`face_pieces`] reads of a body's faces and edges, kept for many
+/// lookups on one body (mitcad#311: a design's appearances name hundreds
+/// of faces of one body, and listing its faces and edges and reading their
+/// names for each took most of the time of applying them). Valid while
+/// the body's shape does not change.
+pub struct PieceIndex {
+    /// Each face's surface type and first name (none where it does not
+    /// read).
+    faces: Vec<(String, Option<FaceName>)>,
+    boxes: Option<Vec<[Vec3; 2]>>,
+    /// The edges whose names read, with their middles.
+    middles: Vec<(EdgeName, Vec3)>,
+}
+
+impl PieceIndex {
+    pub fn new<K: Kernel>(doc: &Document<K>, body: BodyUid) -> Option<Self> {
+        let shape = doc.body_shape(body)?;
+        let kernel = doc.kernel();
+        let faces = kernel.faces(shape).ok()?;
+        let boxes = face_boxes(kernel, shape, faces.len());
+        let faces = faces
+            .into_iter()
+            .map(|f| {
+                let name = f.names.first().and_then(|n| n.parse::<FaceName>().ok());
+                (f.surface, name)
+            })
+            .collect();
+        let middles = kernel
+            .edge_middles(shape)
+            .unwrap_or_default()
+            .into_iter()
+            .filter_map(|m| Some((m.name.parse::<EdgeName>().ok()?, m.point)))
+            .collect();
+        Some(PieceIndex {
+            faces,
+            boxes,
+            middles,
+        })
+    }
+}
+
 /// Every face of `body` that a face fingerprint covers: those of its
 /// surface type through `point_on_face` or one of `_f3d.face_points`
 /// (the replay may split a face of the file, a thread's flank one face
 /// per turn), each name once; the first through `point_on_face`.
 pub fn face_pieces<K: Kernel>(doc: &Document<K>, body: BodyUid, fp: &Fingerprint) -> Vec<FaceName> {
+    match PieceIndex::new(doc, body) {
+        Some(index) => face_pieces_in(doc, body, fp, &index),
+        None => Vec::new(),
+    }
+}
+
+/// [`face_pieces`] with the body's [`PieceIndex`].
+pub fn face_pieces_in<K: Kernel>(
+    doc: &Document<K>,
+    body: BodyUid,
+    fp: &Fingerprint,
+    index: &PieceIndex,
+) -> Vec<FaceName> {
     let Some(shape) = doc.body_shape(body) else {
         return Vec::new();
     };
@@ -711,33 +765,32 @@ pub fn face_pieces<K: Kernel>(doc: &Document<K>, body: BodyUid, fp: &Fingerprint
         .map(mm3)
         .collect();
     let kernel = doc.kernel();
-    let Ok(faces) = kernel.faces(shape) else {
-        return Vec::new();
-    };
     // (position of the first point on it, name)
     let mut found: Vec<(usize, FaceName)> = Vec::new();
-    let boxes = face_boxes(kernel, shape, faces.len());
-    for (k, face) in faces.into_iter().enumerate() {
-        if surface.is_some_and(|s| !same_surface_kind(s, &face.surface)) {
+    let boxes = &index.boxes;
+    for (k, (kind, name)) in index.faces.iter().enumerate() {
+        if surface.is_some_and(|s| !same_surface_kind(s, kind)) {
             continue;
         }
-        if points.iter().all(|&p| beyond(&boxes, k, p, 1e-3)) {
+        if points.iter().all(|&p| beyond(boxes, k, p, 1e-3)) {
             continue;
         }
-        let Some(name) = face.names.first().and_then(|n| n.parse::<FaceName>().ok()) else {
+        let Some(name) = name else {
             continue;
         };
-        if found.iter().any(|(_, n)| *n == name) {
+        if found.iter().any(|(_, n)| n == name) {
             continue;
         }
         crate::tick();
+        // (A point beyond the face's box is farther from it.)
         let on = points.iter().position(|&p| {
-            kernel
-                .face_point_normal(shape, &name, p)
-                .is_ok_and(|near| geom::distance(near.point, p) <= 1e-3)
+            !beyond(boxes, k, p, 1e-3)
+                && kernel
+                    .face_point_normal(shape, name, p)
+                    .is_ok_and(|near| geom::distance(near.point, p) <= 1e-3)
         });
         if let Some(k) = on {
-            found.push((k, name));
+            found.push((k, name.clone()));
         }
     }
     found.sort_by_key(|(k, _)| *k);
@@ -748,14 +801,10 @@ pub fn face_pieces<K: Kernel>(doc: &Document<K>, body: BodyUid, fp: &Fingerprint
     // meet without a crease).
     let same_face =
         |a: &FaceName, b: &FaceName| a.feature == b.feature && a.role == b.role && a.key == b.key;
-    let middles = kernel.edge_middles(shape).unwrap_or_default();
-    let mut grew = true;
+    let mut grew = !pieces.is_empty();
     while grew {
         grew = false;
-        for m in &middles {
-            let Ok(edge) = m.name.parse::<EdgeName>() else {
-                continue;
-            };
+        for (edge, point) in &index.middles {
             let [a, b] = edge.faces();
             let (inner, outer) = match (pieces.contains(a), pieces.contains(b)) {
                 (true, false) => (a, b),
@@ -766,7 +815,7 @@ pub fn face_pieces<K: Kernel>(doc: &Document<K>, body: BodyUid, fp: &Fingerprint
                 continue;
             }
             crate::tick();
-            let normal = |f: &FaceName| kernel.face_point_normal(shape, f, m.point).ok();
+            let normal = |f: &FaceName| kernel.face_point_normal(shape, f, *point).ok();
             if let (Some(i), Some(o)) = (normal(inner), normal(outer))
                 && geom::dot(i.normal, o.normal) > SMOOTH
             {

@@ -1288,6 +1288,23 @@ bool has_ends(const HelixSweepSpec& spec) {
   return spec.start_flat > 0.0 || spec.start_transition > 0.0 || spec.end_transition > 0.0 || spec.end_flat > 0.0;
 }
 
+// The pieces of a helix seamed a third of a turn apart (kShiftedPiece), the
+// first seam `shift` turns from the start (HelixSweepSpec::piece_shift,
+// mitcad#235): the turns from the start where each piece begins, and the
+// whole `turns` at the end. A last piece shorter than kShortestPiece is
+// joined to the one before it.
+constexpr double kShiftedPiece = 1.0 / 3.0;
+constexpr double kShortestPiece = 0.05;
+
+std::vector<double> shifted_cuts(double turns, double shift) {
+  std::vector<double> cuts{0.0};
+  for (double at = shift; at < turns - kShortestPiece; at += kShiftedPiece) {
+    cuts.push_back(at);
+  }
+  cuts.push_back(turns);
+  return cuts;
+}
+
 ShapePtr growing_helix(const HelixSweepSpec& spec, const std::vector<detail::SweepFace>& faces) {
   GrowingScrew screw;
   screw.base = spec.axis.Location();
@@ -1369,20 +1386,34 @@ ShapePtr growing_helix(const HelixSweepSpec& spec, const std::vector<detail::Swe
       pieces = std::max(1, static_cast<int>(std::ceil(turns * 3.0 - 1.0e-9)));
     }
   }
+  // Shifted seams (HelixSweepSpec::piece_shift): the pieces' turns.
+  const bool shifted = spec.piece_shift > 0.0;
+  const std::vector<double> cuts = shifted ? shifted_cuts(turns, spec.piece_shift) : std::vector<double>{};
+  if (shifted) {
+    pieces = static_cast<int>(cuts.size()) - 1;
+  }
   std::vector<ShapePtr> parts;
   for (const detail::SweepFace& face : faces) {
     const std::vector<NamedWire> loops = detail::face_loops(face.face, face.edges);
     for (int p = 0; p < pieces; ++p) {
       GrowingScrew piece = screw;
-      piece.from = static_cast<double>(p) / pieces;
-      piece.to = static_cast<double>(p + 1) / pieces;
+      double piece_turns = turns / pieces;
+      if (shifted) {
+        const std::size_t at = static_cast<std::size_t>(p);
+        piece.from = cuts[at] / turns;
+        piece.to = p == pieces - 1 ? 1.0 : cuts[at + 1] / turns;
+        piece_turns = cuts[at + 1] - cuts[at];
+      } else {
+        piece.from = static_cast<double>(p) / pieces;
+        piece.to = static_cast<double>(p + 1) / pieces;
+      }
       const ShapePtr outer =
-          screwed_loop(loops.front(), piece, turns / pieces,
+          screwed_loop(loops.front(), piece, piece_turns,
                        p == 0 ? detail::cap_names(spec.feature, "start", face) : NameList{},
                        p == pieces - 1 ? detail::cap_names(spec.feature, "end", face) : NameList{});
       std::vector<ShapePtr> holes;
       for (std::size_t l = 1; l < loops.size(); ++l) {
-        holes.push_back(screwed_loop(loops[l], piece, turns / pieces, {}, {}));
+        holes.push_back(screwed_loop(loops[l], piece, piece_turns, {}, {}));
       }
       parts.push_back(detail::with_holes(outer, holes, "the helix"));
     }
@@ -1798,6 +1829,10 @@ ShapePtr helix_sweep(const HelixSweepSpec& spec) {
   if (has_ends(spec) && spec.freecad) {
     throw std::invalid_argument("a helix with flat ends is built by Mitcad's construction, not FreeCAD's");
   }
+  detail::require_finite("helix piece shift", spec.piece_shift);
+  if (spec.piece_shift < 0.0 || spec.piece_shift >= kShiftedPiece) {
+    throw std::invalid_argument("the helix's piece shift must be at least 0 and less than a third of a turn");
+  }
   return detail::run("helix", [&] {
     const std::vector<detail::SweepFace> faces =
         detail::merged(detail::region_faces(spec.feature, spec.frame, spec.regions));
@@ -1854,20 +1889,33 @@ ShapePtr helix_sweep(const HelixSweepSpec& spec) {
     // use: it is swept in pieces of at most kSpineTurns, none of which
     // meets itself, and they are fused.
     const bool overlapping = axial_extent(faces, spec.axis) > spec.pitch + 1.0e-6;
-    // One edge, else edges of at most kSpineTurns each.
-    const int count = on_cylinder || overlapping
+    // One edge, else edges of at most kSpineTurns each; with shifted seams
+    // (HelixSweepSpec::piece_shift) always edges of kSpineTurns, the first
+    // `piece_shift` long.
+    const bool shifted = spec.piece_shift > 0.0;
+    const std::vector<double> cuts = shifted ? shifted_cuts(spec.revolutions, spec.piece_shift) : std::vector<double>{};
+    const int count = shifted ? static_cast<int>(cuts.size()) - 1
+                      : on_cylinder || overlapping
                           ? std::max(1, static_cast<int>(std::ceil(spec.revolutions / kSpineTurns - 1.0e-9)))
                           : 1;
+    // The turns where piece k starts.
+    const auto turns_at = [&](int k) {
+      return shifted ? cuts[static_cast<std::size_t>(k)] : spec.revolutions * k / count;
+    };
     const double length = spec.revolutions * direction.Magnitude();
     BRepBuilderAPI_MakeWire spine_wire;
     std::vector<TopoDS_Edge> spine_edges;
     for (int k = 0; k < count; ++k) {
-      BRepBuilderAPI_MakeEdge helix(line, surface, length * k / count, length * (k + 1) / count);
+      const double from = shifted ? turns_at(k) * direction.Magnitude() : length * k / count;
+      const double to =
+          shifted ? (k == count - 1 ? length : turns_at(k + 1) * direction.Magnitude()) : length * (k + 1) / count;
+      BRepBuilderAPI_MakeEdge helix(line, surface, from, to);
       if (!helix.IsDone()) {
         throw std::runtime_error("the helix could not be built");
       }
       TopoDS_Edge edge = helix.Edge();
-      const int samples = std::max(32, static_cast<int>(std::ceil(spec.revolutions / count * 32.0)));
+      const double piece_turns = shifted ? turns_at(k + 1) - turns_at(k) : spec.revolutions / count;
+      const int samples = std::max(32, static_cast<int>(std::ceil(piece_turns * 32.0)));
       BRepLib::BuildCurves3d(edge, 1.0e-7, GeomAbs_C1, 14, samples);
       spine_wire.Add(edge);
       spine_edges.push_back(edge);
@@ -1881,7 +1929,7 @@ ShapePtr helix_sweep(const HelixSweepSpec& spec) {
       // Each piece from the profiles moved by the screw motion to its start.
       const double sign = spec.left_handed ? -1.0 : 1.0;
       for (int k = 0; k < count; ++k) {
-        const double turns = spec.revolutions * k / count;
+        const double turns = turns_at(k);
         gp_Trsf turn;
         turn.SetRotation(spec.axis, sign * kTwoPi * turns);
         gp_Trsf rise;

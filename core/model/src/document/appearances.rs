@@ -30,9 +30,10 @@ impl<K: Kernel> Document<K> {
     /// The `appearances` query: the library's appearances, then the
     /// document's, each with its parameters, `library` (true for the
     /// built-in ones), its `display_color`, the bodies that use it and the
-    /// faces (`{"body", "face"}`). An embedded texture image is listed as
-    /// `"embedded": true` with its `image_sha256` instead of its data
-    /// (the `appearance_image` query gives it).
+    /// faces (`{"body", "face"}`). An embedded texture image (of the base
+    /// colour or another map, mitcad#313) is listed as `"embedded": true`
+    /// with its `image_sha256` instead of its data (the `appearance_image`
+    /// query gives it).
     pub(crate) fn appearances_json(&self) -> Value {
         let library = appearance::library().iter().map(|a| (a, true));
         let custom = self.state.appearances.iter().map(|a| (a, false));
@@ -41,13 +42,14 @@ impl<K: Kernel> Document<K> {
                 .chain(custom)
                 .map(|(a, library)| {
                     let mut value = serde_json::to_value(a).expect("appearances serialize");
-                    if let (Some(texture), Some(data)) = (
-                        value.get_mut("texture").and_then(Value::as_object_mut),
-                        a.texture.as_ref().and_then(|t| t.data.as_ref()),
-                    ) {
-                        texture.remove("data");
-                        texture.insert("embedded".to_owned(), json!(true));
-                        texture.insert("image_sha256".to_owned(), json!(data.sha256()));
+                    if let (Some(texture), Some(t)) = (value.get_mut("texture"), &a.texture) {
+                        appearance::each_image_json(texture, |map, image| {
+                            if let Some(data) = t.image_data(map) {
+                                image.remove("data");
+                                image.insert("embedded".to_owned(), json!(true));
+                                image.insert("image_sha256".to_owned(), json!(data.sha256()));
+                            }
+                        });
                     }
                     value["library"] = json!(library);
                     value["display_color"] = json!(a.display_color());
@@ -64,18 +66,35 @@ impl<K: Kernel> Document<K> {
         )
     }
 
-    /// The `appearance_image` query: the embedded texture image of an
-    /// appearance, as base64 (`data`), with its `format` (`png`, `jpeg`)
+    /// The `appearance_image` query: an embedded image of an appearance's
+    /// texture, the base colour's or that of another map (`map`,
+    /// mitcad#313), as base64 (`data`), with its `format` (`png`, `jpeg`)
     /// and `sha256`.
-    pub(crate) fn appearance_image_json(&self, id: &str) -> Result<Value, ModelError> {
+    pub(crate) fn appearance_image_json(
+        &self,
+        id: &str,
+        map: Option<&str>,
+    ) -> Result<Value, ModelError> {
         let a = self
             .appearance(id)
             .ok_or_else(|| invalid(format!("there is no appearance '{id}'")))?;
+        let map = map.unwrap_or(appearance::BASE_COLOR);
+        if map != appearance::BASE_COLOR && !appearance::MAPS.contains(&map) {
+            return Err(invalid(format!(
+                "'{map}' is no map: base_color, normal, roughness, metalness or occlusion"
+            )));
+        }
         let data = a
             .texture
             .as_ref()
-            .and_then(|t| t.data.as_ref())
-            .ok_or_else(|| invalid(format!("{} has no embedded texture image", a.name)))?;
+            .and_then(|t| t.image_data(map))
+            .ok_or_else(|| {
+                invalid(if map == appearance::BASE_COLOR {
+                    format!("{} has no embedded texture image", a.name)
+                } else {
+                    format!("{} has no embedded {map} image", a.name)
+                })
+            })?;
         let bytes = data.bytes().map_err(invalid)?;
         Ok(json!({
             "data": data.base64(),
@@ -133,7 +152,7 @@ impl<K: Kernel> Document<K> {
         };
         new.name = format!("Appearance{free}");
         change.apply_to(&mut new);
-        keep_embedded(&mut new, based_on.as_ref())?;
+        self.keep_embedded(&mut new, based_on.as_ref())?;
         if !appearance::valid_id(&new.id) {
             return Err(invalid(format!(
                 "'{}' is no appearance id: use letters, digits, '_' and '-'",
@@ -170,7 +189,8 @@ impl<K: Kernel> Document<K> {
         let i = self.custom_appearance_index(id)?;
         let mut edited = self.state.appearances[i].clone();
         change.apply_to(&mut edited);
-        keep_embedded(&mut edited, self.state.appearances[i].texture.as_ref())?;
+        let old = self.state.appearances[i].texture.clone();
+        self.keep_embedded(&mut edited, old.as_ref())?;
         if edited == self.state.appearances[i] {
             return Ok(());
         }
@@ -254,21 +274,56 @@ pub struct DeletedAppearance {
     pub faces: Vec<(BodyUid, String)>,
 }
 
-/// A texture given as `"embedded": true` (the `appearances` query's form)
-/// keeps the embedded image of the texture it replaces.
-fn keep_embedded(appearance: &mut Appearance, old: Option<&Texture>) -> Result<(), ModelError> {
-    if let Some(texture) = appearance.texture.as_mut() {
-        texture.image_sha256 = None;
+impl<K: Kernel> Document<K> {
+    /// An image of the texture given as `"embedded": true` (the
+    /// `appearances` query's form) keeps an embedded image: with
+    /// `image_sha256`, the document's image of that digest (also another
+    /// appearance's, mitcad#313); without it, the image of the same map in
+    /// the texture it replaces (`old`). Then every embedded image the
+    /// document already has is shared, not copied.
+    fn keep_embedded(
+        &self,
+        appearance: &mut Appearance,
+        old: Option<&Texture>,
+    ) -> Result<(), ModelError> {
+        let Some(texture) = appearance.texture.as_mut() else {
+            return Ok(());
+        };
+        let mut images = appearance::embedded_images(&self.state.appearances);
+        if let Some(old) = old {
+            for (_, data) in old.images() {
+                images
+                    .entry(data.sha256().to_owned())
+                    .or_insert_with(|| data.clone());
+            }
+        }
+        for slot in texture.slots_mut() {
+            let what = appearance::slot_name(slot.map);
+            if slot.image.is_some() {
+                return Err(invalid(format!(
+                    "{what}: `image` is for design files only: send `\"embedded\": true` \
+                     with `image_sha256`"
+                )));
+            }
+            let digest = slot.image_sha256.take();
+            if !std::mem::take(slot.embedded) || slot.data.is_some() {
+                continue;
+            }
+            *slot.data = Some(match digest {
+                Some(digest) => images.get(&digest).cloned().ok_or_else(|| {
+                    invalid(format!(
+                        "{what}: the design embeds no image with the SHA-256 {digest}"
+                    ))
+                })?,
+                None => old
+                    .and_then(|t| t.image_data(slot.map))
+                    .cloned()
+                    .ok_or_else(|| {
+                        invalid(format!("{what}: there is no embedded image to keep"))
+                    })?,
+            });
+        }
+        appearance::share_images(texture, &mut images);
+        Ok(())
     }
-    let Some(texture) = appearance.texture.as_mut().filter(|t| t.embedded) else {
-        return Ok(());
-    };
-    texture.embedded = false;
-    if texture.data.is_none() {
-        texture.data = Some(
-            old.and_then(|t| t.data.clone())
-                .ok_or_else(|| invalid("texture: there is no embedded image to keep"))?,
-        );
-    }
-    Ok(())
 }

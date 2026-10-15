@@ -1563,6 +1563,60 @@ void test_closed_rounding_consumes_an_earlier_rounding_over_a_rounded_rim() {
   }
 }
 
+// The area a rounding of radius r takes from the section of an edge whose
+// faces meet at an angle phi inside the solid: r^2 (cot(phi / 2) - (pi - phi) / 2).
+double rounding_area(double r, double phi) { return r * r * (1.0 / std::tan(phi / 2.0) - (kPi - phi) / 2.0); }
+
+void test_rounding_round_a_chamfered_box_walks_on_along_its_rounded_corners() {
+  // A box 60 x 40 x 20 whose vertical edges are rounded with 2, its bottom
+  // front edge chamfered by 2 (the chamfer runs on round the box), then the
+  // edge between the chamfer and the front rounded with 5 (mitcad#308). The
+  // contour runs on round the box too, between the chamfer's cones and the
+  // corners' cylinders, which bend towards the ball more sharply than the
+  // ball along the contour: the walk goes on along those faces of its
+  // contour, as before port patch 0160, which took them for the rounded rim
+  // of a hole the ball cannot touch and failed (port patch 0250). The
+  // straight runs (2 x 56 + 2 x 36 long) take the section of a rounding
+  // between faces at 135 degrees; round each corner the same section turns
+  // a quarter about the corner's axis, less than 2 from it.
+  const double straight = rounding_area(5.0, 0.75 * kPi) * (2.0 * 56.0 + 2.0 * 36.0);
+  const double corners = rounding_area(5.0, 0.75 * kPi) * 4.0 * (kPi / 2.0) * 2.0;
+  {
+    const TopoDS_Shape box = BRepPrimAPI_MakeBox(60, 40, 20).Shape();
+    const TopoDS_Shape rounded = occt_fillet(
+        box, {gp_Pnt(0, 0, 10), gp_Pnt(60, 0, 10), gp_Pnt(60, 40, 10), gp_Pnt(0, 40, 10)}, 2.0);
+    CHECK(!rounded.IsNull());
+    const TopoDS_Shape chamfered = rounded.IsNull() ? rounded : occt_chamfer(rounded, gp_Pnt(30, 0, 0), 2.0);
+    CHECK(!chamfered.IsNull());
+    const TopoDS_Shape result = chamfered.IsNull() ? chamfered : occt_fillet(chamfered, gp_Pnt(30, 0, 2), 5.0);
+    CHECK(!result.IsNull());
+    if (!result.IsNull()) {
+      const double removed = volume_of(chamfered) - volume_of(result);
+      CHECK(removed > straight);
+      CHECK(removed < straight + corners);
+    }
+  }
+  // Mitcad's fillet of that edge by its name, after the extrusion, the
+  // corners' fillet and the chamfer.
+  const ShapePtr box = extrude("F2", {rectangle(1, 0, 0, 60, 40)}, 0, 20);
+  std::vector<std::string> corner_edges;
+  for (int i = 0; i < 4; ++i) {
+    corner_edges.push_back(edge(side("F2", 1, i), side("F2", 1, (i + 1) % 4)));
+  }
+  const ShapePtr rounded = fillet("F7", *box, corner_edges, 2.0);
+  ChamferSpec spec;
+  spec.distance = 2.0;
+  const std::string bottom_front = edge(start_cap("F2", 1), side("F2", 1, 0));
+  const ShapePtr chamfered = chamfer("F11", *rounded, {bottom_front}, spec);
+  const std::string target = edge("F11:chamfer(" + bottom_front + ")", side("F2", 1, 0));
+  const ShapePtr result = fillet("F12", *chamfered, {target}, 5.0);
+  CHECK(detail::is_valid(result->occt()));
+  CHECK(faces_named(*result, "F12:fillet(" + target + ")") >= 1);
+  const double removed = volume_of(chamfered->occt()) - volume_of(result->occt());
+  CHECK(removed > straight);
+  CHECK(removed < straight + corners);
+}
+
 void fillet_overflow_tests() {
   guarded("test_rounding_rolls_on_a_bevels_far_edge", test_rounding_rolls_on_a_bevels_far_edge);
   guarded("test_concave_rounding_rolls_on_a_strips_far_edge", test_concave_rounding_rolls_on_a_strips_far_edge);
@@ -1609,6 +1663,8 @@ void fillet_overflow_tests() {
           test_closed_walked_rounding_over_a_hole_with_a_rounded_rim_is_cut_by_the_rim);
   guarded("test_closed_rounding_consumes_an_earlier_rounding_over_a_rounded_rim",
           test_closed_rounding_consumes_an_earlier_rounding_over_a_rounded_rim);
+  guarded("test_rounding_round_a_chamfered_box_walks_on_along_its_rounded_corners",
+          test_rounding_round_a_chamfered_box_walks_on_along_its_rounded_corners);
 }
 
 } // namespace test

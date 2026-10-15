@@ -12,6 +12,7 @@
 #include <QDialogButtonBox>
 #include <QJsonArray>
 #include <QJsonObject>
+#include <QJsonValue>
 #include <QList>
 #include <QPlainTextEdit>
 #include <QPushButton>
@@ -71,6 +72,7 @@ int moveOccurrenceTests() {
                   parentRow(QStringLiteral("C3"), QStringLiteral("Bracket"), QStringLiteral("O4"), QString(),
                             QStringLiteral("Root/Bracket:1"))}}};
   QString planProblem;
+  QJsonArray planFeatures;
   QList<QJsonObject> commands;
   QList<QJsonObject> queries;
   bool runSucceeds = true;
@@ -84,6 +86,7 @@ int moveOccurrenceTests() {
                            {QStringLiteral("problems"),
                             planProblem.isEmpty() ? QJsonArray{} : QJsonArray{planProblem}},
                            {QStringLiteral("updates"), QJsonArray{QStringLiteral("Sketch2"), QStringLiteral("Isolate")}},
+                           {QStringLiteral("features"), planFeatures},
                            {QStringLiteral("from_path"), QStringLiteral("Root/Assembly:1")},
                            {QStringLiteral("parent_path"),
                             parent.isEmpty() ? QStringLiteral("Root") : QStringLiteral("Root/Bracket:1")}};
@@ -204,6 +207,31 @@ int moveOccurrenceTests() {
   check(commands.isEmpty(), "a blocked move sends no command");
   planProblem.clear();
 
+  // A joint and a split Move that place Part:1 go with it (mitcad#301):
+  // the parent is available and the details name them.
+  planFeatures = QJsonArray{
+      QJsonObject{{QStringLiteral("name"), QStringLiteral("Joint1")},
+                  {QStringLiteral("from_name"), QStringLiteral("Assembly")},
+                  {QStringLiteral("to_name"), QStringLiteral("Root")},
+                  {QStringLiteral("split"), QJsonValue()}},
+      QJsonObject{{QStringLiteral("name"), QStringLiteral("Move1")},
+                  {QStringLiteral("from_name"), QStringLiteral("Assembly")},
+                  {QStringLiteral("to_name"), QStringLiteral("Root")},
+                  {QStringLiteral("split"), QStringLiteral("Move2")}}};
+  check(exercise([&](QDialog* dialog, QTreeWidget* tree, QPushButton* move) {
+          tree->setCurrentItem(parentItem(tree, QString()));
+          check(move->isEnabled(), "a parent whose placing features go along can be chosen");
+          const QString text = details(dialog);
+          check(text.contains(QStringLiteral("Joint1 moves from Assembly to Root")),
+                "the joint that moves along is listed");
+          check(text.contains(QStringLiteral("Part:1's part of Move1 moves to Move2, a new feature of Root")),
+                "a split feature is listed with its new feature");
+          move->click();
+        }) == QStringLiteral("O2"),
+        "a move with its placing features returns the new path");
+  check(commands.size() == 1, "one model command moves the occurrence and its features");
+  planFeatures = QJsonArray{};
+
   runSucceeds = false;
   check(exercise([&](QDialog* dialog, QTreeWidget* tree, QPushButton* move) {
           tree->setCurrentItem(parentItem(tree, QString()));
@@ -214,10 +242,10 @@ int moveOccurrenceTests() {
         "a refused move can be cancelled");
   runSucceeds = true;
 
-  info.insert(QStringLiteral("problems"), QJsonArray{QStringLiteral("Part:1 is placed by Move1")});
+  info.insert(QStringLiteral("problems"), QJsonArray{QStringLiteral("Part:1 is placed by the joints")});
   check(exercise([&](QDialog* dialog, QTreeWidget* tree, QPushButton* move) {
           tree->setCurrentItem(parentItem(tree, QString()));
-          check(!move->isEnabled() && details(dialog).contains(QStringLiteral("placed by Move1")),
+          check(!move->isEnabled() && details(dialog).contains(QStringLiteral("placed by the joints")),
                 "a problem of the occurrence itself disables every parent");
           dialog->reject();
         }).isEmpty(),

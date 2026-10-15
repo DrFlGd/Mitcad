@@ -16,6 +16,13 @@
 #     occurrence, has a fully constrained rectangle and a free line: the
 #     rectangle in the constrained colour, the line blue, in the main mode
 #     and in its edit alike (mitcad#286).
+#   - A design (mitcad-cli) with a block and a sketch on its top face: a
+#     fully constrained circle and a centre line on the face, a circle
+#     beside the block. In the dark theme the lines on the face are light
+#     with dark pixels of their halo beside them, in the light theme dark
+#     with white ones; the circle over the empty background shows in both
+#     (pixels of a screen dump; mitcad#302). Every background change also
+#     restyles the halos ("Sketch halos:").
 #
 # Runs headless on Xvfb (see ui-test-lib.sh).
 # Usage: tools/ui-sketch-view-test.sh [screenshot.png]
@@ -65,6 +72,11 @@ expect_recoloured() {
   [ -n "$count" ] && [ "$count" -ge 4 ] ||
     ui_fail "$1 background: '$count' fully constrained entities recoloured, expected 4 or more"
   echo "ok   $count fully constrained entities recoloured for the $1 background"
+  # Their halos took the background's tone too (mitcad#302).
+  count=$(grep "Sketch halos: " "$UI_LOG" | tail -1 | sed -n "s/.*Sketch halos: \([0-9]*\) $1\$/\1/p")
+  [ -n "$count" ] && [ "$count" -ge 4 ] ||
+    ui_fail "$1 background: the last halos are '$(grep "Sketch halos: " "$UI_LOG" | tail -1)'"
+  echo "ok   $count halos for the $1 background"
 }
 
 # expect_pointer x y: the pointer moved to the sketch point (x, y) mm; the
@@ -196,5 +208,110 @@ ui_expect_new "Sketch finished" "sketch finished"
 ui_wait_idle
 ui_sync
 expect_colours "F1 in O1" "c == ${PLACED% *} && u == ${PLACED#* }" "placed by Part:1 again, the same colours"
+
+echo "--- Fully constrained curves and a centre line over a body's face (mitcad#302)"
+# A 60 x 40 x 30 mm block centred on the origin; on its top face (sketch
+# origin over the design's) a fully constrained circle on the face, one
+# beside the block over the empty background, and a centre line on the
+# face. Each is drawn over a halo in the background's tone, which keeps it
+# readable over the face in both themes.
+cat > "$WORK/face.json" << 'EOF'
+[
+  {"cmd": "add_feature", "def": {"type": "box", "plane": "xy", "corner": [-30, -20],
+    "length": 60, "width": 40, "height": 30, "operation": "new_body"}},
+  {"cmd": "sketch.create", "plane": {"face": "F1:top", "body": "F1.b0"}},
+  {"cmd": "sketch.add_circle", "sketch": "F2", "center": [10, 0], "diameter": 16},
+  {"cmd": "sketch.add_circle", "sketch": "F2", "center": [50, 0], "diameter": 16},
+  {"cmd": "sketch.add_line", "sketch": "F2", "start": [-25, -12], "end": [25, -12], "centerline": true}
+]
+EOF
+"$CLI" run "$WORK/face.json" --save "$WORK/face.mitcad" > "$WORK/cli.log" 2>&1 ||
+  { cat "$WORK/cli.log"; ui_fail "mitcad-cli"; }
+ui_stop_app
+ui_start_app --open "$WORK/face.mitcad"
+UI_MARK=0
+ui_expect_log "Sketches shown: F2" "the face's sketch is shown"
+# The circles and their centres fully constrained, the centre line's free
+# ends blue.
+expect_colours F2 "c == 4" "both circles fully constrained"
+ui_expect_log "Timeline Sketch1 at" "the timeline is laid out"
+ui_double_click_expect "Timeline Sketch1" "Editing sketch F2 (Sketch1)" "the face's sketch is edited"
+ui_wait_idle
+ui_sync
+
+# expect_halos "3 dark": within six seconds the last "Sketch halos:" line
+# says so.
+expect_halos() {
+  for _ in $(seq 1 30); do
+    [ "$(grep "Sketch halos: " "$UI_LOG" | tail -1 | sed 's/.*Sketch halos: //')" = "$1" ] &&
+      { echo "ok   halos: $1"; return; }
+    sleep 0.2
+  done
+  ui_fail "halos: the last line is '$(grep "Sketch halos: " "$UI_LOG" | tail -1)', expected '$1'"
+}
+
+# tones name x y "w h": the pixels of the region centred on screen point
+# (x, y) in the dump of the screen: "light dark white min max", the counts
+# of luminance above 200, below 70 and above 244, and the lowest and
+# highest luminance.
+tones() {
+  local w=${4% *} h=${4#* }
+  convert "$WORK/$1.xwd" -crop "${w}x${h}+$(($2 - w / 2))+$(($3 - h / 2))" +repage -depth 8 txt:- |
+    sed -n 's/^[0-9]*,[0-9]*: *(\([0-9.]*\),\([0-9.]*\),\([0-9.]*\).*/\1 \2 \3/p' |
+    awk 'BEGIN { min = 255; max = 0 }
+      { l = 0.299 * $1 + 0.587 * $2 + 0.114 * $3
+        light += l > 200; dark += l < 70; white += l > 244
+        if (l < min) min = l; if (l > max) max = l }
+      END { printf "%d %d %d %d %d\n", light, dark, white, min, max }'
+}
+
+# region name sketch-x sketch-y "w h" description: the tones of the region
+# around a sketch point, in L (light), D (dark), W (white), MIN and MAX.
+region() {
+  local px py
+  read -r px py <<< "$(ui_sketch_at "$2" "$3")"
+  read -r L D W MIN MAX <<< "$(tones "$1" "$px" "$py" "$4")"
+  [ -n "$MAX" ] || ui_fail "$5: no pixels at ($px, $py)"
+  echo "     $5 at ($px, $py): $L light, $D dark, $W white, luminance $MIN-$MAX"
+}
+
+# check name "condition" description: an awk condition on L, D, W, MIN, MAX.
+check() {
+  awk -v L="$L" -v D="$D" -v W="$W" -v MIN="$MIN" -v MAX="$MAX" "BEGIN { exit !($2) }" ||
+    ui_fail "$1: $3 ($L light, $D dark, $W white, luminance $MIN-$MAX)"
+  echo "ok   $1: $3"
+}
+
+# A strip across each curve, wider than the line and its halo: across the
+# right side of each circle and across the centre line (along it, so that
+# its dashes are in it).
+ACROSS="25 5"
+ALONG="41 17"
+
+ui_step "dark background (search)"       ui_command "Dark Background"
+expect_halos "3 dark"
+ui_sync
+sleep 1
+xwd -root -silent > "$WORK/dark.xwd" || ui_fail "no screenshot"
+[ -z "$SHOT" ] || convert "$WORK/dark.xwd" "${SHOT%.png}-face-dark.png"
+region dark 18 0 "$ACROSS" "dark: the circle on the face"
+check dark "L >= 2 && D >= 2" "the circle on the face is light over a dark halo"
+region dark -10 -12 "$ALONG" "dark: the centre line on the face"
+check dark "D >= 2 && MAX >= 140" "the centre line on the face is light over a dark halo"
+region dark 58 0 "$ACROSS" "dark: the circle beside the block"
+check dark "L >= 2" "the circle over the dark background is light"
+
+ui_step "light background (search)"      ui_command "Light Background"
+expect_halos "3 light"
+ui_sync
+sleep 1
+xwd -root -silent > "$WORK/light.xwd" || ui_fail "no screenshot"
+[ -z "$SHOT" ] || convert "$WORK/light.xwd" "${SHOT%.png}-face-light.png"
+region light 18 0 "$ACROSS" "light: the circle on the face"
+check light "MIN <= 110 && W >= 2" "the circle on the face is dark over a light halo"
+region light -10 -12 "$ALONG" "light: the centre line on the face"
+check light "W >= 2 && MIN <= 160" "the centre line on the face is darker over a light halo"
+region light 58 0 "$ACROSS" "light: the circle beside the block"
+check light "MIN <= 110" "the circle over the light background is dark"
 
 ui_finish "UI sketch view test"

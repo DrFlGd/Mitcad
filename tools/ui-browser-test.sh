@@ -19,6 +19,9 @@
 #     with Move/Copy: OK keeps it there, Cancel takes it back), Paste
 #     New (a new component), Ground, Delete, New Component, Create Sketch on
 #     an origin plane, Look At; the document's units.
+#   - A long list (mitcad#318): a pick in the view scrolls the tree to its
+#     row out of sight; Ctrl+click on a row below, the first selected row
+#     scrolled away, keeps the scroll position and both rows selected.
 #
 # Runs headless on Xvfb (see ui-test-lib.sh).
 # Usage: tools/ui-browser-test.sh [screenshot.png]
@@ -295,6 +298,79 @@ ui_step "choose in (Down x3, Enter)"     ui_key Down Down Down Return
 ui_focus_main
 ui_expect_new "Units: in" "the document's unit is the inch"
 ui_expect_new "Browser Root/Document Settings/Units: in at" "the row shows it"
+grep -q "Recompute failed" "$UI_LOG" && ui_fail "a recompute failed"
+
+
+echo "--- Ctrl+click in a long list keeps the scroll position (mitcad#318)"
+ui_stop_app
+# Body1..Body60 (F2..F61, all from Sketch1's rectangle) and Plane1 (F62)
+# 60 mm above them: more rows than the browser shows at once, Plane1's at
+# the bottom.
+{
+  echo '['
+  echo '  {"cmd": "sketch.create"},'
+  echo '  {"cmd": "sketch.add_rectangle", "sketch": "F1", "corner": [0, 0], "width": 30, "height": 20},'
+  for i in $(seq 1 60); do
+    echo '  {"cmd": "add_feature", "def": {"type": "extrude",'
+    echo '    "profiles": [{"sketch": "F1", "region": "r{c1[c4,c2],c2[c1,c3],c3[c2,c4],c4[c3,c1]}"}],'
+    echo "    \"extent\": {\"type\": \"distance\", \"distance\": $((i % 10 + 1))}, \"operation\": \"new_body\"}},"
+  done
+  echo '  {"cmd": "add_feature", "def": {"type": "construction_plane",'
+  echo '    "definition": {"type": "offset", "plane": "xy", "distance": 60}}}'
+  echo ']'
+} > "$WORK/many.json"
+"$CLI" run "$WORK/many.json" --save "$WORK/many.mitcad" > "$WORK/cli-many.log" 2>&1 ||
+  { cat "$WORK/cli-many.log"; ui_fail "mitcad-cli (many bodies)"; }
+ui_start_app --open "$WORK/many.mitcad"
+ui_step "fit (F6)"                       ui_key F6
+ui_expect_log "Browser Root/Bodies/Body1 at" "the rows from the top"
+# Plane1's pick place is logged once the camera rests in the laid-out view
+# (one logged when the design opened, before the view had its size, is
+# 0,0): the last one is a place in the view.
+for _ in $(seq 1 50); do
+  plane=$(grep -oE "^Datum F62 at [0-9]+,[0-9]+$" "$UI_LOG" | tail -1 | sed "s/.* at //")
+  [ -n "$plane" ] && [ "$plane" != "0,0" ] && break
+  sleep 0.2
+done
+[ -n "$plane" ] && [ "$plane" != "0,0" ] || ui_fail "Plane1's place in the view is not logged ('$plane')"
+echo "ok   Plane1 in the view at $plane"
+ui_place_valid "Browser Root/Construction/Plane1" && ui_fail "every row in sight: nothing to scroll"
+echo "ok   Plane1's row is below the rows in sight"
+# browser_scroll: where the rows are scrolled to now (BrowserPanel::logLayout).
+browser_scroll() { grep -o '^Browser scroll [0-9]*$' "$UI_LOG" | tail -1 | grep -o '[0-9]*$'; }
+
+# A pick in the view scrolls the tree to its row when none is in sight.
+ui_mark
+ui_step "pick Plane1 in the view"        ui_click_logged "Datum F62"
+ui_expect_new "Selected: 1 plane [plane F62]" "Plane1 picked in the view"
+ui_expect_new "Browser scrolled to Root/Construction/Plane1" "the tree scrolled to its row"
+ui_expect_new "Browser Root/Construction/Plane1 at" "its row in sight"
+ui_expect_new "Browser selected: Root/Construction/Plane1" "and selected"
+
+# Body1 at the top, then Body60 below it with Ctrl, scrolled down between.
+ui_browser_reveal "Browser Root/Bodies/Body1"
+ui_mark
+ui_step "click Body1"                    ui_click_logged "Browser Root/Bodies/Body1"
+ui_expect_new "Selected: 1 body [body F2.b0]" "Body1 selected"
+ui_browser_reveal "Browser Root/Bodies/Body60"
+ui_place_valid "Browser Root/Bodies/Body60" || ui_fail "Body60's row cannot be scrolled into sight"
+ui_place_valid "Browser Root/Bodies/Body1" && ui_fail "Body1's row is still in sight: scroll further"
+before=$(browser_scroll)
+[ -n "$before" ] && [ "$before" -gt 0 ] || ui_fail "the rows are not scrolled down ('$before')"
+echo "ok   scrolled down to $before, Body1 out of sight"
+read -r px py <<< "$(ui_logged_at "Browser Root/Bodies/Body60")"
+ui_mark
+ui_step "Ctrl+click Body60"              xdotool mousemove "$px" "$py" keydown ctrl click 1 keyup ctrl
+ui_expect_new "Selected: 2 bodies" "two bodies selected"
+ui_expect_new "body F2.b0" "Body1 still selected"
+ui_expect_new "body F61.b0" "and Body60"
+ui_expect_new "Browser selected: Root/Bodies/Body1, Root/Bodies/Body60" "both rows selected"
+ui_sync
+after=$(browser_scroll)
+[ "$after" = "$before" ] || ui_fail "Ctrl+click scrolled the tree from $before to $after"
+tail -n +$((UI_MARK + 1)) "$UI_LOG" | grep -q "Browser scrolled to" && ui_fail "the tree scrolled to a row"
+ui_place_valid "Browser Root/Bodies/Body60" || ui_fail "Body60's row left the sight"
+echo "ok   the scroll position stays at $after"
 grep -q "Recompute failed" "$UI_LOG" && ui_fail "a recompute failed"
 
 ui_finish "UI browser test"

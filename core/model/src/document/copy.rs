@@ -39,24 +39,36 @@ pub(crate) enum CopySource<'a> {
 }
 
 impl CopySource<'_> {
+    /// Each image of the set (the base colour and the other maps,
+    /// mitcad#313) that is a file: an absolute path from another design,
+    /// embedded from a library.
     fn texture(&self, texture: &mut Texture) -> Result<(), ModelError> {
-        if texture.data.is_some() {
-            return Ok(());
+        for slot in texture.slots_mut() {
+            if slot.data.is_none() {
+                self.image(slot.path, slot.data)?;
+            }
         }
+        Ok(())
+    }
+
+    fn image(
+        &self,
+        image_path: &mut String,
+        data: &mut Option<ImageData>,
+    ) -> Result<(), ModelError> {
         match self {
             Self::SameDocument => {}
             Self::Document(directory) => {
-                let path = Path::new(&texture.path);
+                let path = Path::new(image_path.as_str());
                 if path.is_relative() {
                     let directory = directory.ok_or_else(|| {
                         invalid(format!(
-                            "cannot copy relative texture '{}': save the source design first, \
-                             or use an absolute path or an embedded image",
-                            texture.path
+                            "cannot copy relative texture '{image_path}': save the source design \
+                             first, or use an absolute path or an embedded image"
                         ))
                     })?;
                     let path = directory.join(path);
-                    texture.path = std::path::absolute(&path)
+                    *image_path = std::path::absolute(&path)
                         .map_err(|e| {
                             invalid(format!("cannot resolve texture {}: {e}", path.display()))
                         })?
@@ -66,7 +78,7 @@ impl CopySource<'_> {
             }
             Self::Library { resolver, request } => {
                 let bytes = resolver
-                    .library_texture(request, &texture.path)
+                    .library_texture(request, image_path)
                     .map_err(invalid)?;
                 if bytes.len() > appearance::MAX_EMBEDDED_IMAGE {
                     return Err(invalid("the library texture image is too large to embed"));
@@ -74,7 +86,7 @@ impl CopySource<'_> {
                 if appearance::image_format(&bytes).is_none() {
                     return Err(invalid("the library texture image is no PNG or JPEG file"));
                 }
-                texture.data = Some(ImageData::new(&crate::base64::encode(&bytes)));
+                *data = Some(ImageData::from_bytes(&bytes));
             }
         }
         Ok(())
@@ -409,6 +421,8 @@ impl DocState {
             .map(|a| a.name.clone())
             .collect();
         let mut mapped = BTreeMap::new();
+        // Images the target embeds already are shared, not copied (mitcad#313).
+        let mut images = appearance::embedded_images(&self.appearances);
         for id in needed {
             if appearance::library_appearance(id).is_some() {
                 continue;
@@ -428,6 +442,7 @@ impl DocState {
                     .expect("an unused appearance name exists");
                 if let Some(texture) = copy.texture.as_mut() {
                     origin.texture(texture)?;
+                    appearance::share_images(texture, &mut images);
                 }
                 self.appearances.push(copy);
             }

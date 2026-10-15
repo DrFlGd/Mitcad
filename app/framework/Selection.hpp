@@ -114,4 +114,8 @@ Selection uniqueProfiles(const Selection& items, const ItemResolver& resolve = {
 // Text such as "2 edges, 1 face".
 QString summarize(const Selection& items);
 
+// Compact rich text for one item returned by the model's measure query.
+// Missing properties are omitted; circular edges include radius and diameter.
+QString selectionMeasurementText(const QJsonObject& measured);
+
 } // namespace mitcad

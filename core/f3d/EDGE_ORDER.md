@@ -110,3 +110,71 @@ differed agree (two designs of one family and a third), one more set has 18
 inputs found that it lacked (the rest of it is not found by names), and no set
 that agreed changed. The other 56 are in groups whose size is not the
 number of edges that fit them, which this rule does not decide.
+
+## The curves an input stores (mitcad#306, mitcad#106)
+
+An edge input also stores the curve of each edge it stood for when it was
+made ([`design/curve.rs`](src/design/curve.rs), the import README's *Stored
+edge curves*). Where the names fit several edges, these curves come first,
+before the tail's order and the rules above (`design::inputs::pick_edge`):
+
+- **Several edges** (`by_stored_pieces`): the edges the names fit that lie
+  on one of the input's stored curves within its ends are the input's, all
+  of them, when they are at least two and on one body. An input that stores
+  a curve per edge it saw (the two arcs where a chamfer's cone breaks
+  through a corner of a hexagon, the pieces of a ring between the same two
+  faces) is every edge of the state on those curves; an input that stores
+  one curve, which a later change of an earlier item cut in pieces, is
+  every piece of it. Edges on one curve count as pieces only when none is
+  the whole stored edge and their lengths add up to its length at most (two
+  copies of one edge, as where a body is in the state twice, are not two
+  pieces). A curve no edge of these names lies on is left alone. The first
+  edge is the input's own; the others become edge inputs of their own after
+  it in its set (`split_pieces`, with the same `found`, ending `(one of the
+  edges its stored curves give)`), once per set: inputs of one set whose
+  curves overlap (each input of a ring stores a curve for several of the
+  ring's pieces) add an edge the set has once. Only for fillets and
+  chamfers, whose sets take any number of edges.
+- **One edge** (`by_stored_curve`): the only edge that is the stored edge,
+  else the only piece of it.
+
+An input that is still ambiguous says how each edge that fits lies to its
+curves (`N edges fit the names (to the stored curves: the stored edge
+(curve 1), off the stored curve by 3.2000, …)`).
+
+On the corpora (`MITCAD_F3D_CORPUS`, `MITCAD_F3D_MODELS` and the backup
+corpus, 1,020 files, the decoder alone), fillet and chamfer edge inputs that
+fit several edges equally, all files counted (distinct files in brackets):
+
+| | inputs ambiguous |
+|---|---|
+| before mitcad#306 | 92 (56 in 11 files) |
+| with the stored curves deciding one edge (mitcad#306) | 86 (50 in 9 files) |
+| with several edges (this rule) | 0 |
+
+Every one of the 86 was an input whose two to eight edges each lie on its
+stored curves: 83 stored a curve per edge (each edge the stored edge of
+another curve; some inputs store curves of edges the names no longer fit
+as well), one stored one curve that the state has in eight pieces, two six
+curves of which the state has two whole and four in part. The inputs now have 139 edges
+more (16,540 → 16,679 edge inputs). Of the edges found before, 30 inputs
+now find other ones: inputs of a ring (mitcad#186, *alike*) and inputs of the
+same names, which took the edges that fit one each in list order; the set's
+edges are the same, each input now with the edges its own curves give.
+One input that its names fit in pieces in the state before its item had
+been found as a whole edge three states earlier, which the item's bodies no
+longer have; it is now its two pieces in its own state. No other input
+changed, and none was lost. The edge sets of 25 items (distinct edges per
+item) have 195 edges more; one lost the earlier state's edge above.
+
+Eleven of the affected designs imported with the decoder's dumps before and
+after: nine fillets and chamfers in seven designs
+whose edges the history had to settle (`inferred`) are `read`; no outcome,
+no parametric item and no history check changed otherwise. Four items with
+inputs found now still fall back as before: the kernel's fillet of their
+edges fails. Two (a design and its smaller version) have every edge the history says it took (the 18 edges
+where a hexagon's chamfer and rounded corners meet an end face; the body
+before them matches the file's state within 1e-5 mm, the edges the replay
+finds are the 18 the file's next state lost): the fillet fails on the
+file's own geometry, not on upstream noise. Two have edge references the
+file has lost.

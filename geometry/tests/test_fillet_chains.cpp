@@ -2,7 +2,8 @@
 // Fillet contours that stop where their edges turn although the faces go on
 // tangentially across a shallow crease, built here with OCCT's fillet alone
 // on synthetic shapes: the case behind the patch 0180 of the OCCT port
-// (third_party/vcpkg-ports, mitcad#241); and Mitcad's fillets, which use it.
+// (third_party/vcpkg-ports, mitcad#241); and Mitcad's fillets, which use it
+// and carry their contours across small notches (0260, mitcad#307).
 
 #include <algorithm>
 #include <cmath>
@@ -425,6 +426,66 @@ void test_mitcad_fillet_stops_at_a_drafted_crease() {
   }
 }
 
+// A disc of radius 15, 5 high, cut by the plane y = 10 (a D), with a V
+// notch through its rim at the bottom (0.1 deep, 0.34 wide at the rim): the
+// top's arc is two edges, from the chord's ends to the notch.
+TopoDS_Shape notched_d() {
+  const TopoDS_Shape disc = BRepPrimAPI_MakeCylinder(gp_Ax2(gp_Pnt(0, 0, 0), gp::DZ()), 15, 5).Shape();
+  const TopoDS_Shape d =
+    BRepAlgoAPI_Cut(disc, BRepPrimAPI_MakeBox(gp_Pnt(-20, 10, -1), gp_Pnt(20, 20, 6)).Shape()).Shape();
+  const TopoDS_Face v = polygon({gp_Pnt(0.3, -15.6, -1), gp_Pnt(0.15, -14.9, -1), gp_Pnt(-0.15, -14.9, -1),
+                                 gp_Pnt(-0.3, -15.6, -1)});
+  return BRepAlgoAPI_Cut(d, BRepPrimAPI_MakePrism(v, gp_Vec(0, 0, 7)).Shape()).Shape();
+}
+
+// The index of the body's edge whose middle lies nearest to p.
+int edge_index_near(const mitcad::geometry::Shape& body, const gp_Pnt& p) {
+  int best = -1;
+  double nearest = 1e100;
+  for (int i = 0; i < body.edge_count(); ++i) {
+    BRepAdaptor_Curve curve(body.edge(i));
+    const double d = curve.Value(0.5 * (curve.FirstParameter() + curve.LastParameter())).Distance(p);
+    if (d < nearest) {
+      nearest = d;
+      best = i;
+    }
+  }
+  return best;
+}
+
+// Mitcad's fillet of the top arc on one side of the notch with 0.3 runs on
+// across the notch onto the arc beyond it (port patch 0260, mitcad#307), as
+// the files' roundings do: the body is the one with both arcs given, and the
+// two arcs' roundings are one face, named after the arc given.
+void test_mitcad_fillet_carried_across_a_notch() {
+  const ShapePtr body = import_body(notched_d(), "F1", 0);
+  const auto on_rim = [](double degrees) {
+    return gp_Pnt(15.0 * std::cos(degrees * kPi / 180.0), 15.0 * std::sin(degrees * kPi / 180.0), 5.0);
+  };
+  const std::string left = body->edge_name(edge_index_near(*body, on_rim(203.5)));
+  const std::string right = body->edge_name(edge_index_near(*body, on_rim(315.5)));
+  CHECK(left != right);
+  const ShapePtr one = mitcad::geometry::fillet("F2", *body, std::vector<std::string>{left}, 0.3);
+  const ShapePtr both = mitcad::geometry::fillet("F2", *body, std::vector<std::string>{left, right}, 0.3);
+  CHECK(mitcad::geometry::detail::is_valid(one->occt()));
+  CHECK(one->notes().empty());
+  CHECK_NEAR_TOL(volume_of(one->occt()), volume_of(both->occt()), 1e-8);
+  CHECK(one->face_count() == both->face_count());
+  // The same face names as with both arcs given: the joined face is the
+  // given arc's.
+  const auto names_of = [](const mitcad::geometry::Shape& shape) {
+    std::vector<std::string> names;
+    for (int i = 0; i < shape.face_count(); ++i) {
+      names.insert(names.end(), shape.face_names(i).begin(), shape.face_names(i).end());
+    }
+    std::sort(names.begin(), names.end());
+    return names;
+  };
+  CHECK(names_of(*one) == names_of(*both));
+  CHECK(faces_named(*one, "F2:fillet(" + left + ")") == 1);
+  CHECK(edge_names_unique(*one));
+}
+
 } // namespace
 
 void fillet_chain_tests() {
@@ -433,6 +494,7 @@ void fillet_chain_tests() {
   guarded("test_contour_stops_where_one_face_runs_on", test_contour_stops_where_one_face_runs_on);
   guarded("test_ring_contour_stops_at_a_concave_crease", test_ring_contour_stops_at_a_concave_crease);
   guarded("test_mitcad_fillet_stops_at_a_drafted_crease", test_mitcad_fillet_stops_at_a_drafted_crease);
+  guarded("test_mitcad_fillet_carried_across_a_notch", test_mitcad_fillet_carried_across_a_notch);
 }
 
 } // namespace test

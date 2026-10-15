@@ -36,15 +36,24 @@ fn the_mit_project_by_level() {
     let schema = file.schema().unwrap();
     let model = Model::read(&file, &schema).unwrap();
     let mut document = Document::new(MockKernel::default());
-    let report =
-        mitcad_import::rvt::import_rvt(&mut document, "project.rvt", &model, None).unwrap();
+    let report = mitcad_import::rvt::import_rvt(
+        &mut document,
+        "project.rvt",
+        &model,
+        &mitcad_import::rvt::RvtOptions::default(),
+    )
+    .unwrap();
     assert!(report.not_built.is_empty(), "{:?}", report.not_built);
 
-    // Where each element's body is: the level of its component.
-    let mut level_of: HashMap<i64, Option<i64>> = HashMap::new();
+    // Where each element's body is: the levels of its component (one, or
+    // several of the same name and elevation, mitcad#310).
+    let mut level_of: HashMap<i64, Vec<Option<i64>>> = HashMap::new();
     for level in &report.levels {
+        let ids: Vec<Option<i64>> = std::iter::once(level.id)
+            .chain(level.merged.iter().map(|m| Some(*m)))
+            .collect();
         for id in &level.elements {
-            level_of.insert(*id, level.id);
+            level_of.insert(*id, ids.clone());
         }
     }
     let names: Vec<String> = document.bodies().iter().map(|b| b.name.clone()).collect();
@@ -74,7 +83,7 @@ fn the_mit_project_by_level() {
         let Some(placed) = level_of.get(&id) else {
             panic!("element {id} ({}) has no body", element["class_name"]);
         };
-        assert_eq!(*placed, level, "element {id} on another level");
+        assert!(placed.contains(&level), "element {id} on another level");
         let suffix = format!(":{id}");
         assert!(
             names.iter().any(|n| n.ends_with(&suffix)),

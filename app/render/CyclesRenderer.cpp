@@ -10,6 +10,7 @@
 #include <atomic>
 #include <chrono>
 #include <cmath>
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <functional>
@@ -505,6 +506,9 @@ public:
       m_width = view.width;
       m_height = view.height;
       m_view = view.sequence;
+      if (groundFromBelow() != m_groundFromBelow) {
+        buildGround(*m_session->scene); // the camera went through the ground's plane
+      }
       placeCamera(*m_session->scene);
       // Lights relative to the camera follow it.
       if (std::any_of(m_environment.lights.begin(), m_environment.lights.end(),
@@ -845,13 +849,55 @@ private:
   // A body's material (Renderer.hpp, MaterialData) as a Principled BSDF:
   // the appearance's parameters map one to one, except the specular
   // weight, which scales Cycles' specular IOR level (0.5: as the IOR
-  // gives). A texture gives the base colour where its image can be read.
+  // gives). A texture gives the base colour where its image can be read,
+  // and the other maps of its set (mitcad#314) where theirs can: the
+  // normal map the shading normal (textureNormal), the roughness and
+  // metalness maps their values (instead of the parameters), and the
+  // occlusion map multiplies the base colour. Each map that cannot be
+  // read is left out alone.
   ccl::Shader* addMaterial(ccl::Scene& scene, const MaterialData& m) {
     auto graph = std::make_unique<ccl::ShaderGraph>();
     ccl::PrincipledBsdfNode* bsdf = graph->create_node<ccl::PrincipledBsdfNode>();
-    bsdf->set_base_color(ccl::make_float3(m.baseColor[0], m.baseColor[1], m.baseColor[2]));
-    if (!m.texture.empty() && textureReadable(m.texture)) {
-      graph->connect(textureColor(*graph, m), bsdf->input("Base Color"));
+    const ccl::float3 baseColor = ccl::make_float3(m.baseColor[0], m.baseColor[1], m.baseColor[2]);
+    bsdf->set_base_color(baseColor);
+    const bool colorImage = !m.texture.empty() && textureReadable(m.texture, false);
+    const auto mapImage = [this](const std::string& file) { return !file.empty() && textureReadable(file, true); };
+    const bool normalImage = mapImage(m.normalMap);
+    const bool roughnessImage = mapImage(m.roughnessMap);
+    const bool metalnessImage = mapImage(m.metalnessMap);
+    const bool occlusionImage = mapImage(m.occlusionMap);
+    if (colorImage || normalImage || roughnessImage || metalnessImage || occlusionImage) {
+      ccl::ShaderGraph& g = *graph;
+      const Projection projection = projectionOf(g, m);
+      // Grey maps are data: no colour transform.
+      const auto grey = [&](const std::string& file) {
+        return blend(g, projection, images(g, projection, file, ccl::u_colorspace_data), false);
+      };
+      ccl::ShaderOutput* color =
+          colorImage ? blend(g, projection, images(g, projection, m.texture, ccl::u_colorspace_srgb), false) : nullptr;
+      if (occlusionImage) {
+        auto* occluded = g.create_node<ccl::MixColorNode>();
+        occluded->set_blend_type(ccl::NODE_MIX_MUL);
+        occluded->set_fac(1.0f);
+        occluded->set_a(baseColor);
+        if (color != nullptr) {
+          g.connect(color, occluded->input("A"));
+        }
+        g.connect(grey(m.occlusionMap), occluded->input("B"));
+        color = occluded->output("Result");
+      }
+      if (color != nullptr) {
+        g.connect(color, bsdf->input("Base Color"));
+      }
+      if (roughnessImage) {
+        g.connect(grey(m.roughnessMap), bsdf->input("Roughness"));
+      }
+      if (metalnessImage) {
+        g.connect(grey(m.metalnessMap), bsdf->input("Metallic"));
+      }
+      if (normalImage) {
+        g.connect(textureNormal(g, projection, m.normalMap), bsdf->input("Normal"));
+      }
     }
     bsdf->set_metallic(m.metallic);
     bsdf->set_roughness(m.roughness);
@@ -871,57 +917,87 @@ private:
   }
 
   // Whether the image of a texture can be read; once per file, with a
-  // warning when it cannot (the base colour is used instead).
-  bool textureReadable(const std::string& path) {
+  // warning when it cannot (the base colour is used instead, a map is
+  // left out).
+  bool textureReadable(const std::string& path, bool map) {
     auto known = m_textures.find(path);
     if (known == m_textures.end()) {
       std::string why;
       const bool ok = readable(path, why);
       known = m_textures.emplace(path, ok).first;
       if (!ok) {
-        m_warnings.push_back("cannot read the texture image " + path + ": " + why + "; the base colour is shown");
+        m_warnings.push_back("cannot read the texture image " + path + ": " + why +
+                             (map ? "; the map is left out" : "; the base colour is shown"));
       }
     }
     return known->second;
   }
 
-  // The base colour of a texture (Renderer.hpp, MaterialData; mitcad#53):
-  // the image projected in the body's own coordinates (Cycles' object
+  // How the images of a texture lie on a body (Renderer.hpp, MaterialData;
+  // mitcad#53): projected in the body's own coordinates (Cycles' object
   // coordinates, mm), so that a mesh needs no texture coordinates and a
   // change of the texture makes no new mesh. Each projection takes two of
   // the coordinates as the image's (u, v), turns them by the rotation and
   // divides them by the size of one repeat. Planar projects along Z; box
   // projects X-facing surfaces from (y, z), Y-facing from (x, z) and
   // Z-facing from (x, y), each point from the axis its surface faces most
-  // (by the object's normal there).
-  ccl::ShaderOutput* textureColor(ccl::ShaderGraph& graph, const MaterialData& m) {
+  // (by the object's normal there). Every image of the set (the base
+  // colour and the maps, mitcad#314) uses the same coordinates.
+  struct Projection {
+    struct Plane {
+      ccl::ShaderOutput* coordinates = nullptr; // the image's (u, v)
+      // The directions in object coordinates in which the image's u and v
+      // grow (the rotation turns them): a normal map's tangent frame.
+      std::array<float, 3> u{1, 0, 0};
+      std::array<float, 3> v{0, 1, 0};
+    };
+    std::vector<Plane> planes; // planar: one; box: along X, Y and Z
+    ccl::ShaderOutput* normal = nullptr; // the object's normal, object coordinates
+    // Box: 1 where the surface faces X less than Y or Z, and where it faces
+    // Y less than Z.
+    ccl::ShaderOutput* notX = nullptr;
+    ccl::ShaderOutput* notY = nullptr;
+  };
+
+  static Projection projectionOf(ccl::ShaderGraph& graph, const MaterialData& m) {
+    Projection projection;
     auto* coordinates = graph.create_node<ccl::TextureCoordinateNode>();
     auto* position = graph.create_node<ccl::SeparateXYZNode>();
     graph.connect(coordinates->output("Object"), position->input("Vector"));
-    const auto projected = [&](const char* u, const char* v) {
-      auto* plane = graph.create_node<ccl::CombineXYZNode>();
-      graph.connect(position->output(u), plane->input("X"));
-      graph.connect(position->output(v), plane->input("Y"));
+    projection.normal = coordinates->output("Normal");
+    const float cosine = std::cos(m.textureRotation);
+    const float sine = std::sin(m.textureRotation);
+    using Axis = std::array<float, 3>;
+    const auto turned = [](const Axis& a, float fa, const Axis& b, float fb) {
+      return Axis{a[0] * fa + b[0] * fb, a[1] * fa + b[1] * fb, a[2] * fa + b[2] * fb};
+    };
+    const auto plane = [&](const char* u, const char* v, const Axis& uAxis, const Axis& vAxis) {
+      auto* combined = graph.create_node<ccl::CombineXYZNode>();
+      graph.connect(position->output(u), combined->input("X"));
+      graph.connect(position->output(v), combined->input("Y"));
       // Texture mapping: (rotation^-1 (p - location)) / scale.
       auto* mapping = graph.create_node<ccl::MappingNode>();
       mapping->set_mapping_type(ccl::NODE_MAPPING_TYPE_TEXTURE);
       mapping->set_rotation(ccl::make_float3(0.0f, 0.0f, m.textureRotation));
       mapping->set_scale(ccl::make_float3(m.textureSize[0], m.textureSize[1], 1.0f));
-      graph.connect(plane->output("Vector"), mapping->input("Vector"));
-      auto* image = graph.create_node<ccl::ImageTextureNode>();
-      image->set_filename(ccl::ustring(m.texture));
-      image->set_colorspace(ccl::u_colorspace_srgb);
-      graph.connect(mapping->output("Vector"), image->input("Vector"));
-      return image->output("Color");
+      graph.connect(combined->output("Vector"), mapping->input("Vector"));
+      Projection::Plane result;
+      result.coordinates = mapping->output("Vector");
+      // p = R (s * uv): u grows along R's first column, v along its second.
+      result.u = turned(uAxis, cosine, vAxis, sine);
+      result.v = turned(uAxis, -sine, vAxis, cosine);
+      return result;
     };
+    const Axis x{1, 0, 0};
+    const Axis y{0, 1, 0};
+    const Axis z{0, 0, 1};
     if (m.texturePlanar) {
-      return projected("X", "Y");
+      projection.planes = {plane("X", "Y", x, y)};
+      return projection;
     }
-    ccl::ShaderOutput* alongX = projected("Y", "Z");
-    ccl::ShaderOutput* alongY = projected("X", "Z");
-    ccl::ShaderOutput* alongZ = projected("X", "Y");
+    projection.planes = {plane("Y", "Z", y, z), plane("X", "Z", x, z), plane("X", "Y", x, y)};
     auto* normal = graph.create_node<ccl::SeparateXYZNode>();
-    graph.connect(coordinates->output("Normal"), normal->input("Vector"));
+    graph.connect(projection.normal, normal->input("Vector"));
     const auto math = [&](ccl::NodeMathType type, ccl::ShaderOutput* a, ccl::ShaderOutput* b) {
       auto* node = graph.create_node<ccl::MathNode>();
       node->set_math_type(type);
@@ -931,21 +1007,113 @@ private:
       }
       return node->output("Value");
     };
-    ccl::ShaderOutput* x = math(ccl::NODE_MATH_ABSOLUTE, normal->output("X"), nullptr);
-    ccl::ShaderOutput* y = math(ccl::NODE_MATH_ABSOLUTE, normal->output("Y"), nullptr);
-    ccl::ShaderOutput* z = math(ccl::NODE_MATH_ABSOLUTE, normal->output("Z"), nullptr);
-    // 1 where the surface faces X less than Y or Z, and where it faces Y
-    // less than Z.
-    ccl::ShaderOutput* notX = math(ccl::NODE_MATH_LESS_THAN, x, math(ccl::NODE_MATH_MAXIMUM, y, z));
-    ccl::ShaderOutput* notY = math(ccl::NODE_MATH_LESS_THAN, y, z);
+    ccl::ShaderOutput* nx = math(ccl::NODE_MATH_ABSOLUTE, normal->output("X"), nullptr);
+    ccl::ShaderOutput* ny = math(ccl::NODE_MATH_ABSOLUTE, normal->output("Y"), nullptr);
+    ccl::ShaderOutput* nz = math(ccl::NODE_MATH_ABSOLUTE, normal->output("Z"), nullptr);
+    projection.notX = math(ccl::NODE_MATH_LESS_THAN, nx, math(ccl::NODE_MATH_MAXIMUM, ny, nz));
+    projection.notY = math(ccl::NODE_MATH_LESS_THAN, ny, nz);
+    return projection;
+  }
+
+  // An image of a texture (Image Texture nodes, linear interpolation,
+  // repeated), looked up at each plane of the projection: its colour per
+  // plane.
+  static std::vector<ccl::ShaderOutput*> images(ccl::ShaderGraph& graph, const Projection& projection,
+                                                const std::string& file, const ccl::ustring& colorspace) {
+    std::vector<ccl::ShaderOutput*> colors;
+    for (const Projection::Plane& plane : projection.planes) {
+      auto* image = graph.create_node<ccl::ImageTextureNode>();
+      image->set_filename(ccl::ustring(file));
+      image->set_colorspace(colorspace);
+      graph.connect(plane.coordinates, image->input("Vector"));
+      colors.push_back(image->output("Color"));
+    }
+    return colors;
+  }
+
+  // The values of the planes as one: planar's own, box's the plane's the
+  // surface faces most (Mix Color nodes, Mix Vector nodes for `vectors`).
+  static ccl::ShaderOutput* blend(ccl::ShaderGraph& graph, const Projection& projection,
+                                  const std::vector<ccl::ShaderOutput*>& perPlane, bool vectors) {
+    if (perPlane.size() == 1) {
+      return perPlane.front();
+    }
     const auto mix = [&](ccl::ShaderOutput* factor, ccl::ShaderOutput* a, ccl::ShaderOutput* b) {
-      auto* node = graph.create_node<ccl::MixColorNode>();
+      ccl::ShaderNode* node = vectors ? static_cast<ccl::ShaderNode*>(graph.create_node<ccl::MixVectorNode>())
+                                      : static_cast<ccl::ShaderNode*>(graph.create_node<ccl::MixColorNode>());
       graph.connect(factor, node->input("Factor"));
       graph.connect(a, node->input("A"));
       graph.connect(b, node->input("B"));
       return node->output("Result");
     };
-    return mix(notX, alongX, mix(notY, alongY, alongZ));
+    return mix(projection.notX, perPlane[0], mix(projection.notY, perPlane[1], perPlane[2]));
+  }
+
+  // The shading normal of a tangent-space normal map (OpenGL convention:
+  // red along the image's u, green along its v; mitcad#314), in world
+  // coordinates. Cycles' Normal Map node takes its tangents from a UV
+  // map, which the meshes do not have (the images are projected), so the
+  // tangent frame comes from the projection: at each point the plane's u
+  // and v directions made perpendicular to the object's normal there, the
+  // normal itself the third axis. A mirrored plane (a surface facing -X
+  // seen through (y, z)) gives a mirrored frame, as its images are.
+  static ccl::ShaderOutput* textureNormal(ccl::ShaderGraph& graph, const Projection& projection,
+                                          const std::string& file) {
+    const auto vectorMath = [&graph](ccl::NodeVectorMathType type) {
+      auto* node = graph.create_node<ccl::VectorMathNode>();
+      node->set_math_type(type);
+      return node;
+    };
+    auto* unit = vectorMath(ccl::NODE_VECTOR_MATH_NORMALIZE);
+    graph.connect(projection.normal, unit->input("Vector1"));
+    ccl::ShaderOutput* normal = unit->output("Vector");
+    // An axis without its part along the normal, of unit length.
+    const auto along = [&](const std::array<float, 3>& axis) {
+      const ccl::float3 a = ccl::make_float3(axis[0], axis[1], axis[2]);
+      auto* onNormal = vectorMath(ccl::NODE_VECTOR_MATH_PROJECT);
+      onNormal->set_vector1(a);
+      graph.connect(normal, onNormal->input("Vector2"));
+      auto* across = vectorMath(ccl::NODE_VECTOR_MATH_SUBTRACT);
+      across->set_vector1(a);
+      graph.connect(onNormal->output("Vector"), across->input("Vector2"));
+      auto* length1 = vectorMath(ccl::NODE_VECTOR_MATH_NORMALIZE);
+      graph.connect(across->output("Vector"), length1->input("Vector1"));
+      return length1->output("Vector");
+    };
+    const auto scaled = [&](ccl::ShaderOutput* vector, ccl::ShaderOutput* factor) {
+      auto* node = vectorMath(ccl::NODE_VECTOR_MATH_SCALE);
+      graph.connect(vector, node->input("Vector1"));
+      graph.connect(factor, node->input("Scale"));
+      return node->output("Vector");
+    };
+    const auto sum = [&](ccl::ShaderOutput* a, ccl::ShaderOutput* b) {
+      auto* node = vectorMath(ccl::NODE_VECTOR_MATH_ADD);
+      graph.connect(a, node->input("Vector1"));
+      graph.connect(b, node->input("Vector2"));
+      return node->output("Vector");
+    };
+    const std::vector<ccl::ShaderOutput*> colors = images(graph, projection, file, ccl::u_colorspace_data);
+    std::vector<ccl::ShaderOutput*> normals;
+    for (std::size_t i = 0; i < projection.planes.size(); ++i) {
+      // The colour's [0, 1] as [-1, 1] along u, v and the normal.
+      auto* unpacked = vectorMath(ccl::NODE_VECTOR_MATH_MULTIPLY_ADD);
+      graph.connect(colors[i], unpacked->input("Vector1"));
+      unpacked->set_vector2(ccl::make_float3(2.0f, 2.0f, 2.0f));
+      unpacked->set_vector3(ccl::make_float3(-1.0f, -1.0f, -1.0f));
+      auto* parts = graph.create_node<ccl::SeparateXYZNode>();
+      graph.connect(unpacked->output("Vector"), parts->input("Vector"));
+      const Projection::Plane& plane = projection.planes[i];
+      normals.push_back(sum(sum(scaled(along(plane.u), parts->output("X")), scaled(along(plane.v), parts->output("Y"))),
+                            scaled(normal, parts->output("Z"))));
+    }
+    auto* world = graph.create_node<ccl::VectorTransformNode>();
+    world->set_transform_type(ccl::NODE_VECTOR_TRANSFORM_TYPE_NORMAL);
+    world->set_convert_from(ccl::NODE_VECTOR_TRANSFORM_CONVERT_SPACE_OBJECT);
+    world->set_convert_to(ccl::NODE_VECTOR_TRANSFORM_CONVERT_SPACE_WORLD);
+    graph.connect(blend(graph, projection, normals, true), world->input("Vector"));
+    auto* result = vectorMath(ccl::NODE_VECTOR_MATH_NORMALIZE);
+    graph.connect(world->output("Vector"), result->input("Vector1"));
+    return result->output("Vector");
   }
 
   // Removes the nodes of one part of the scene.
@@ -1260,10 +1428,23 @@ private:
   // they are, that only shows their shadows and, when glossy, their
   // reflections (Cycles' shadow catcher). Glass does not see it: refracted
   // rays go through to the environment, so clear glass stays clear.
+  // None while the camera looks at it from below: the camera's rays would
+  // meet the catcher's matte first and the bodies above it would vanish
+  // from the image (groundFromBelow).
   void buildGround(ccl::Scene& scene) {
     deleteNodes(scene, m_groundObjects, m_groundGeometry, m_groundShaders);
     const EnvironmentData& e = m_environment;
-    m_hasGround = m_sceneGround && e.groundShadows && m_bounds.valid();
+    const bool fromBelow = groundFromBelow();
+    const bool wanted = m_sceneGround && e.groundShadows && m_bounds.valid();
+    if (wanted && fromBelow != m_groundFromBelow) {
+      // For the log (the application logs the worker's stderr) and the UI
+      // tests (mitcad#320).
+      std::fputs(fromBelow ? "render-ground off: the camera looks at the ground from below\n"
+                           : "render-ground on: the camera is above the ground again\n",
+                 stderr);
+    }
+    m_groundFromBelow = fromBelow;
+    m_hasGround = wanted && !m_groundFromBelow;
     // The catcher's passes with the ground (and the environment's behind
     // it when the camera sees it).
     updatePasses(scene);
@@ -1274,7 +1455,7 @@ private:
     const ccl::float3 size = m_bounds.size();
     const float extent = 50.0f * std::max({size.x, size.y, size.z, 1.0f});
     const ccl::float3 middle = m_bounds.center();
-    const float z = e.groundAtHeight ? static_cast<float>(e.groundHeight) : m_bounds.min.z;
+    const float z = groundHeight();
     m_groundBounds = ccl::BoundBox(ccl::make_float3(middle.x - extent, middle.y - extent, z),
                                    ccl::make_float3(middle.x + extent, middle.y + extent, z));
     auto graph = std::make_unique<ccl::ShaderGraph>();
@@ -1321,6 +1502,24 @@ private:
     mesh->tag_update(&scene, true);
     object->tag_update(&scene);
     m_groundObjects.insert(object);
+  }
+
+  // The ground's height: the asked one or the bottom of the bodies.
+  float groundHeight() const {
+    return m_environment.groundAtHeight ? static_cast<float>(m_environment.groundHeight) : m_bounds.min.z;
+  }
+
+  // Whether the last view looks at the ground's plane from below: a
+  // perspective eye under it, an orthographic view looking up.
+  bool groundFromBelow() const {
+    if (!m_hasView || !m_bounds.valid()) {
+      return false;
+    }
+    const ViewData& view = m_viewData;
+    if (view.perspective) {
+      return view.eye[2] < static_cast<double>(groundHeight());
+    }
+    return view.target[2] > view.eye[2];
   }
 
   // The sample counts at which the image is denoised (the last with Open
@@ -1677,6 +1876,7 @@ private:
   ViewData m_viewData;
   bool m_hasView = false;
   bool m_sceneGround = true;
+  bool m_groundFromBelow = false; // the view of the last buildGround (groundFromBelow)
   float m_groundAlbedo = 0.5f;
   int m_samples = 64;
   // The denoising schedule (planDenoising) and where the render is in it.

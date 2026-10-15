@@ -22,6 +22,7 @@
 #include <BRepPrimAPI_MakeCone.hxx>
 #include <BRepPrimAPI_MakeCylinder.hxx>
 #include <BRepPrimAPI_MakePrism.hxx>
+#include <BRepPrimAPI_MakeRevol.hxx>
 #include <BRepPrimAPI_MakeTorus.hxx>
 #include <BRep_Builder.hxx>
 #include <BRep_Tool.hxx>
@@ -1068,6 +1069,120 @@ void test_own_tangent_chains() {
   CHECK(faces_named(*one, "F5:fillet(" + second + ")") == 0);
 }
 
+// A shaft of radius 2.4 from z = 2.5 with a flange of two 45 degree
+// chamfers up to radius 2.9 and back, cut by the plane y = -1: with `band`
+// a cylindrical band that high between the chamfers, with `ring` a flat
+// ring that wide under the lower one (stored bodies hold such strips of
+// half a micrometre where the design has one edge, mitcad#299).
+ShapePtr flanged_shaft(double band, double ring) {
+  const double r0 = 2.4, r1 = 2.9, z0 = 9.5;
+  BRepBuilderAPI_MakePolygon profile;
+  profile.Add(gp_Pnt(0, 0, 2.5));
+  profile.Add(gp_Pnt(r0, 0, 2.5));
+  profile.Add(gp_Pnt(r0, 0, z0));
+  if (ring > 0) {
+    profile.Add(gp_Pnt(r0 + ring, 0, z0));
+  }
+  const double z1 = z0 + (r1 - r0 - ring);
+  profile.Add(gp_Pnt(r1, 0, z1));
+  if (band > 0) {
+    profile.Add(gp_Pnt(r1, 0, z1 + band));
+  }
+  const double z2 = z1 + band + (r1 - r0);
+  profile.Add(gp_Pnt(r0, 0, z2));
+  profile.Add(gp_Pnt(0, 0, z2));
+  profile.Close();
+  const TopoDS_Shape turned = BRepPrimAPI_MakeRevol(BRepBuilderAPI_MakeFace(profile.Wire(), true).Face(),
+                                                    gp_Ax1(gp_Pnt(0, 0, 0), gp_Dir(0, 0, 1)))
+                                  .Shape();
+  const TopoDS_Shape cutter = BRepPrimAPI_MakeBox(gp_Pnt(-5, -1, 0), gp_Pnt(5, 5, 15)).Shape();
+  ShapeUpgrade_UnifySameDomain unify(BRepAlgoAPI_Cut(turned, cutter).Shape(), true, true, true);
+  unify.Build();
+  return import_body(unify.Shape(), "F1", 0);
+}
+
+// The edges of the flanged shaft's cut face above its foot, longer than
+// 0.01: the shaft's sides, the chamfers' and the top's.
+std::vector<int> flange_outline(const Shape& body) {
+  std::vector<int> edges;
+  for (int i = 0; i < body.edge_count(); ++i) {
+    BRepAdaptor_Curve curve(body.edge(i));
+    const gp_Pnt a = curve.Value(curve.FirstParameter());
+    const gp_Pnt b = curve.Value(curve.LastParameter());
+    const gp_Pnt m = curve.Value(0.5 * (curve.FirstParameter() + curve.LastParameter()));
+    if (near(a.Y(), -1) && near(b.Y(), -1) && near(m.Y(), -1) && a.Distance(b) > 0.01 &&
+        (a.Z() > 2.6 || b.Z() > 2.6)) {
+      edges.push_back(i);
+    }
+  }
+  return edges;
+}
+
+// The areas of a shape's faces, smallest first.
+std::vector<double> sorted_areas(const Shape& shape) {
+  std::vector<double> areas;
+  for (int f = 0; f < shape.face_count(); ++f) {
+    GProp_GProps props;
+    BRepGProp::SurfaceProperties(shape.face(f), props);
+    areas.push_back(props.Mass());
+  }
+  std::sort(areas.begin(), areas.end());
+  return areas;
+}
+
+void test_fillets_at_strips_within_the_tolerance() {
+  // mitcad#299: the roundings of the chamfers' edges on the cut face end at
+  // the two vertices of an edge of half a micrometre, the band's, and OCCT's
+  // fillet fails there; within the import's tolerance the band is the edge
+  // where the chamfers meet, and the roundings meet in one mitre there as
+  // on the body without the band. Likewise the ring under the lower chamfer.
+  const ShapePtr sharp = flanged_shaft(0, 0);
+  const std::vector<int> sharp_edges = flange_outline(*sharp);
+  CHECK(sharp_edges.size() == 7);
+  std::vector<std::string> sharp_names;
+  for (int e : sharp_edges) {
+    sharp_names.push_back(sharp->edge_name(e));
+  }
+  const ShapePtr expected = fillet("F5", *sharp, sharp_names, 0.2);
+  const double expected_change = accurate_volume(*expected) - accurate_volume(*sharp);
+  for (const auto& [band, ring] : {std::pair{5e-4, 0.0}, std::pair{0.0, 5e-4}, std::pair{5e-4, 5e-4}}) {
+    const ShapePtr body = flanged_shaft(band, ring);
+    const std::vector<int> outline = flange_outline(*body);
+    CHECK(outline.size() == 7);
+    std::vector<std::string> names;
+    for (int e : outline) {
+      names.push_back(body->edge_name(e));
+    }
+    if (band > 0) {
+      const ShapePtr copy = mitcad::geometry::detail::working_copy(*body);
+      BRepFilletAPI_MakeFillet plain(copy->occt());
+      for (int e : outline) {
+        plain.Add(0.2, copy->edge(e));
+      }
+      plain.Build();
+      CHECK(!plain.IsDone()); // why the band is collapsed; if OCCT learns it, this check can go
+    }
+    const ShapePtr rounded = fillet("F5", *body, names, 0.2);
+    CHECK(mitcad::geometry::detail::is_valid(rounded->occt()));
+    CHECK(rounded->notes().empty());
+    for (const std::string& name : names) {
+      CHECK(faces_named(*rounded, "F5:fillet(" + name + ")") == 1);
+    }
+    // The faces of the body without the strips: each rounding one face,
+    // two meeting in a mitre at each chamfer's end, the material taken away
+    // within the strips' width.
+    CHECK(rounded->face_count() == expected->face_count());
+    if (rounded->face_count() == expected->face_count()) {
+      const std::vector<double> got = sorted_areas(*rounded);
+      const std::vector<double> want = sorted_areas(*expected);
+      for (std::size_t i = 0; i < got.size(); ++i) {
+        CHECK_NEAR_TOL(got[i], want[i], 1e-3);
+      }
+    }
+    CHECK_NEAR_TOL(accurate_volume(*rounded) - accurate_volume(*body), expected_change, 1e-3);
+  }
+}
+
 } // namespace
 
 void dressup_tests() {
@@ -1093,6 +1208,7 @@ void dressup_tests() {
   guarded("test_own_tangent_chains", test_own_tangent_chains);
   guarded("test_fillets_of_circles_in_pieces", test_fillets_of_circles_in_pieces);
   guarded("test_fillets_of_knife_edges", test_fillets_of_knife_edges);
+  guarded("test_fillets_at_strips_within_the_tolerance", test_fillets_at_strips_within_the_tolerance);
 }
 
 } // namespace test

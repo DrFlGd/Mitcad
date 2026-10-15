@@ -105,6 +105,9 @@
 //! A design that may be a hybrid assembly without asking (mitcad#171:
 //! "don't ask again for this design") has `"hybrid_assembly": true`.
 //!
+//! A design whose importer set a join tolerance (mitcad#298,
+//! `Document::set_join_tolerance`) has `"join_tolerance"` (mm).
+//!
 //! Design policy (mitcad#220, `crate::policy`): `root_policy` and a
 //! component's `policy`, objects of the nine settings (`sketches`,
 //! `features`, `components`, `attach_to_others`,
@@ -124,8 +127,13 @@
 //! `appearances` (`id`, `name`, `base_color`, `metalness`, `roughness`,
 //! `specular`, `transmission`, `ior`, `coat`, `coat_roughness`, `emission`,
 //! `emission_color`, `opacity`, and a `texture` {`path`, `size`,
-//! `rotation`, `projection`}; parameters left out are the default's), see
-//! [`crate::appearance`].
+//! `rotation`, `projection`, `data`, and the maps `normal`, `roughness`,
+//! `metalness`, `occlusion` {`path`, `data`} and `source`, mitcad#313};
+//! parameters left out are the default's), see [`crate::appearance`].
+//! Embedded images are in their texture's `data` (base64) unless a map's
+//! image is embedded or one image is embedded twice: then the file has
+//! `images` (`[{"sha256", "data"}]`, each image once) and the textures and
+//! maps refer to them by `"image": "<sha256>"` (mitcad#313).
 //!
 //! Render settings (mitcad#47), when they are not the defaults: `render`
 //! with the sections `environment`, `background`, `ground`, `film` and

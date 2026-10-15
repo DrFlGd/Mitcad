@@ -2,12 +2,38 @@
 #include "Selection.hpp"
 
 #include <algorithm>
+#include <cmath>
 
+#include <QCoreApplication>
 #include <QJsonObject>
 #include <QMap>
 #include <QStringList>
 
 namespace mitcad {
+
+QString selectionMeasurementText(const QJsonObject& measured) {
+  QStringList lines;
+  const auto add = [&](const QString& label, const QJsonValue& value, const QString& unit) {
+    if (!value.isDouble() || !std::isfinite(value.toDouble())) {
+      return;
+    }
+    lines << QStringLiteral("%1: <b>%2 %3</b>")
+                 .arg(label.toHtmlEscaped(), QString::number(value.toDouble(), 'g', 6), unit);
+  };
+  add(QCoreApplication::translate("Selection", "Length"), measured.value(QStringLiteral("length")),
+      QStringLiteral("mm"));
+  add(QCoreApplication::translate("Selection", "Area"), measured.value(QStringLiteral("area")),
+      QStringLiteral("mm²"));
+  add(QCoreApplication::translate("Selection", "Volume"), measured.value(QStringLiteral("volume")),
+      QStringLiteral("mm³"));
+  const QJsonObject circle = measured.value(QStringLiteral("circle")).toObject();
+  const QJsonValue radius = circle.value(QStringLiteral("radius"));
+  if (radius.isDouble()) {
+    add(QCoreApplication::translate("Selection", "Radius"), radius, QStringLiteral("mm"));
+    add(QCoreApplication::translate("Selection", "Diameter"), radius.toDouble() * 2.0, QStringLiteral("mm"));
+  }
+  return lines.join(QStringLiteral("<br>"));
+}
 
 QJsonValue SelectionItem::reference() const {
   switch (kind) {

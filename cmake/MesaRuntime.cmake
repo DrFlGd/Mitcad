@@ -175,6 +175,36 @@ if(MITCAD_MESA_DIR)
               -App "$<TARGET_FILE:mitcad>" -Out "${CMAKE_BINARY_DIR}/ui-windows-auto-operation"
               -QtBin "$<TARGET_FILE_DIR:Qt6::Core>")
     set_tests_properties(app.ui-windows-auto-operation PROPERTIES TIMEOUT 300)
+
+    # The browser's scrolling with a selection (mitcad#318): a pick in the
+    # view scrolls to its row out of sight; a Ctrl+click on a row below the
+    # first selected one, scrolled away, keeps the scroll position.
+    add_test(NAME app.ui-windows-browser
+      COMMAND powershell -NoProfile -ExecutionPolicy Bypass
+              -File "${CMAKE_SOURCE_DIR}/tools/ui-windows-browser-test.ps1"
+              -App "$<TARGET_FILE:mitcad>" -Out "${CMAKE_BINARY_DIR}/ui-windows-browser"
+              -QtBin "$<TARGET_FILE_DIR:Qt6::Core>")
+    set_tests_properties(app.ui-windows-browser PROPERTIES TIMEOUT 300)
+
+    # The library browser's Update (mitcad#317): empty until Update, which
+    # fetches every enabled source (a local git repository) and lists its
+    # parts; a broken source reported in one warning, the selection kept.
+    add_test(NAME app.ui-windows-library
+      COMMAND powershell -NoProfile -ExecutionPolicy Bypass
+              -File "${CMAKE_SOURCE_DIR}/tools/ui-windows-library-test.ps1"
+              -App "$<TARGET_FILE:mitcad>" -Out "${CMAKE_BINARY_DIR}/ui-windows-library"
+              -QtBin "$<TARGET_FILE_DIR:Qt6::Core>")
+    set_tests_properties(app.ui-windows-library PROPERTIES TIMEOUT 300)
+
+    # The rendered view from below the ground (mitcad#320): orbited under
+    # the ground and back, orthographic and perspective, the box rendered
+    # in every view, the ground left out below and built again above.
+    add_test(NAME app.ui-windows-render-ground
+      COMMAND powershell -NoProfile -ExecutionPolicy Bypass
+              -File "${CMAKE_SOURCE_DIR}/tools/ui-windows-render-ground-test.ps1"
+              -App "$<TARGET_FILE:mitcad>" -Out "${CMAKE_BINARY_DIR}/ui-windows-render-ground"
+              -QtBin "$<TARGET_FILE_DIR:Qt6::Core>")
+    set_tests_properties(app.ui-windows-render-ground PROPERTIES TIMEOUT 600)
   endif()
 elseif(WIN32 AND CMAKE_RUNTIME_OUTPUT_DIRECTORY)
   # Turned off again: remove earlier copies, or they would stay in use.

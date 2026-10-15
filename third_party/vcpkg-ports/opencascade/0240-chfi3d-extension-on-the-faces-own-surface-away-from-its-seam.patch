@@ -1,0 +1,67 @@
+Mitcad's patch to OCCT 8.0.1, under OCCT's licence:
+SPDX-License-Identifier: LGPL-2.1-only WITH OCCT-exception-1.0
+
+Fillets: the face of an extension rolling on its face's own surface has
+its seam out of the ball's way (mitcad#239).
+
+Past the end of a spine, where a contact leaves its face with no face
+beyond, the blend rolls on the face's own surface, unbounded (0076): a
+face is made of the whole surface within its natural bounds. On a
+cylinder, cone, sphere or torus those bounds put the surface's seam at
+parameter 0, an edge with no vertices (its other parameter runs to
+infinity on a cylinder). Where the ball, leaving the face, heads for that
+seam close by (a small convex arc whose circle starts 0.08 radians before
+the arc, after a kink from a big arc, both rounded: the blend of the small
+arc is extended back past the kink for the corner), the walk stopped on
+the seam: ChFi3d_FilCommonPoint took the vertices of an edge that has none
+(Standard_NullObject), and the faces around it were looked for in the
+shape's maps, which do not hold that face (FindFromKey).
+
+- ChFi3d_BuildPlane: where the ball leaves the face (across the end of the
+  face's parameter range nearer the point) towards a seam of the natural
+  bounds less than a quarter period away, the bounds are taken half a
+  period on (the seam opposite) and the point within them. Otherwise the
+  face is the one before: other bounds, or a point moved by a period where
+  the ball does not cross the seam, would part the extension's parameters
+  from those of the walk on the face before it.
+
+--- a/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_2.cxx
++++ b/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_2.cxx
+@@ -2042,7 +2042,36 @@ static void ChFi3d_BuildPlane(TopOpeBRepDS_DataStructure&         DStr,
+     if (aType == GeomAbs_Cylinder || aType == GeomAbs_Cone || aType == GeomAbs_Sphere
+         || aType == GeomAbs_Torus)
+     {
+-      TopoDS_Face NewF = BRepLib_MakeFace(BRep_Tool::Surface(F), Precision::Confusion());
++      // (Its seams, edges without vertices, kept out of the ball's way: where
++      // the ball, leaving the face, heads for a seam of the surface's natural
++      // bounds within a quarter period, the bounds half a period on.)
++      const occ::handle<Geom_Surface> aSurf = BRep_Tool::Surface(F);
++      double                          u1 = 0., u2 = 0., v1 = 0., v2 = 0.;
++      aSurf->Bounds(u1, u2, v1, v2);
++      double fu1 = 0., fu2 = 0., fv1 = 0., fv2 = 0.;
++      BRepTools::UVBounds(F, fu1, fu2, fv1, fv2);
++      // (Parameter w of the point on F, F's range f1 to f2 there: the ball
++      // leaves F across the nearer end.)
++      const auto awayFromSeam =
++        [](double& w, double& w1, double& w2, const double T, const double f1, const double f2) {
++          const bool   down = std::abs(w - f1) < std::abs(w - f2);
++          const double wn   = ElCLib::InPeriod(w, w1, w1 + T);
++          if ((down ? wn - w1 : w1 + T - wn) < 0.25 * T)
++          {
++            w1 += 0.5 * T;
++            w2 = w1 + T;
++            w  = ElCLib::InPeriod(w, w1, w2);
++          }
++        };
++      if (aSurf->IsUPeriodic())
++      {
++        awayFromSeam(u, u1, u2, aSurf->UPeriod(), fu1, fu2);
++      }
++      if (aSurf->IsVPeriodic())
++      {
++        awayFromSeam(v, v1, v2, aSurf->VPeriod(), fv1, fv2);
++      }
++      TopoDS_Face NewF = BRepLib_MakeFace(aSurf, u1, u2, v1, v2, Precision::Confusion());
+       if (!NewF.IsNull())
+       {
+         NewF.Orientation(F.Orientation());

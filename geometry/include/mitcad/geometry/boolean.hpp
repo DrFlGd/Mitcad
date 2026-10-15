@@ -34,6 +34,14 @@ struct BooleanResult {
 // tool from each target it overlaps and Intersect keeps the common part; a
 // target may split into several pieces. Pieces are in geometric order. Face
 // names of the targets and the tool carry through (see naming.hpp).
-BooleanResult boolean(BooleanOp op, const std::vector<const Shape*>& targets, const Shape& tool);
+//
+// `within` (mm, 0 for none) widens a Join where it fails exactly
+// (mitcad#298), for an importer whose bodies match a file's only within a
+// geometric tolerance: a tool that touches no target still joins those
+// within `within` of it, and a join whose result is invalid is retried with
+// a fuzzy value of up to `within`. Each takes the smallest fuzzy value that
+// works; a join that works exactly stays exact.
+BooleanResult boolean(BooleanOp op, const std::vector<const Shape*>& targets, const Shape& tool,
+                      double within = 0.0);
 
 } // namespace mitcad::geometry

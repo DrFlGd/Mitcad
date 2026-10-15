@@ -1,0 +1,19 @@
+[
+  {"comment":"SPDX-License-Identifier: MIT"},
+  {"comment":"The design texture_maps.json saved, opened again: every map's image and the shared ones come back from the file's images."},
+  {"expect":{"query":{"query":"appearance_image","id":"oak","map":"base_color"},"result":{"data":"iVBORw0KGgoAAAANSUhEUgECAw==","format":"png"}}},
+  {"expect":{"query":{"query":"appearance_image","id":"oak","map":"normal"},"result":{"sha256":"6d289af3273dcb9d9ac95e863655a4e3d87d07019fb9d216f7bf0e34d69ac315"}}},
+  {"expect":{"query":{"query":"appearance_image","id":"oak","map":"roughness"},"result":{"sha256":"32f698ef89fc99ced975ad34fd776f5da81dc838c4be8edec9144e18d588f493"}}},
+  {"expect":{"query":{"query":"appearance_image","id":"oak","map":"metalness"},"result":{"sha256":"3453e591c740e726c41e92561c628e54e46d91d8179af4ad7dd5e805b5545809"}}},
+  {"expect":{"query":{"query":"appearance_image","id":"oak","map":"occlusion"},"result":{"sha256":"5cdc6bb214169739b9d7187f2f114ff390f8cb33b5509e150801659c1fc4e0c0"}}},
+  {"expect":{"query":{"query":"appearance_image","id":"stained"},"result":{"sha256":"4d4c1af556c184561c5a6d322cfed3ab35a8a30bdc3c3d8a10428f921790ff9f"}}},
+  {"expect":{"query":{"query":"appearance_image","id":"stained","map":"roughness"},"result":{"sha256":"32f698ef89fc99ced975ad34fd776f5da81dc838c4be8edec9144e18d588f493"}}},
+  {"expect":{"query":{"query":"bodies"},"result":[{"uid":"F2.b0","appearance":"oak"}]}},
+  {"comment":"Editing the size keeps the maps, sent back as the appearances query lists them."},
+  {"cmd":"edit_appearance","id":"oak","texture":{
+    "path":"oak_diff_2k.png","size":[600,600],"embedded":true,
+    "normal":{"path":"oak_nor_gl_2k.png","embedded":true},
+    "roughness":{"path":"oak_rough_2k.png","embedded":true},
+    "source":{"id":"polyhaven","asset":"oak_veneer_01","resolution":"2k","license":"CC0-1.0"}}},
+  {"expect":{"query":{"query":"appearance_image","id":"oak","map":"normal"},"result":{"sha256":"6d289af3273dcb9d9ac95e863655a4e3d87d07019fb9d216f7bf0e34d69ac315"}}}
+]

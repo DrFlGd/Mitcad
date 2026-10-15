@@ -5,6 +5,7 @@
 
 #include <limits>
 #include <optional>
+#include <set>
 #include <stdexcept>
 #include <string>
 
@@ -1323,6 +1324,113 @@ void test_guide_surfaces() {
 
 } // namespace
 
+// The distinct names of a shape's faces, without the numbers of their
+// occurrences (a face per piece of a helix: #0, #1, ...).
+std::set<std::string> face_name_set(const Shape& shape) {
+  std::set<std::string> names;
+  for (int i = 0; i < shape.face_count(); ++i) {
+    for (const std::string& name : shape.face_names(i)) {
+      names.insert(name.substr(0, name.find('#')));
+    }
+  }
+  return names;
+}
+
+// Helices with their pieces' seams shifted (HelixSweepSpec::piece_shift,
+// mitcad#235, the retry of a failed boolean): the same shape and face names
+// as without, whether the helix is otherwise one piece, pieces on a
+// cylinder of a body or pieces of a helix with flat ends; booleans with
+// them give the same result. (The cut the shift is for, a groove whose
+// unshifted cut left a part's body uncut, was not reproduced on simple
+// bodies: a rounded groove down a nut's hole, its base as long as the pitch
+// on the hole, cut alike with the nut turned every 10 degrees. The retry
+// itself is tested in the model with a failure put in.)
+void test_shifted_helix_pieces() {
+  Frame xz;
+  xz.x_axis = gp_Dir(1, 0, 0);
+  xz.y_axis = gp_Dir(0, 0, 1);
+  const auto same = [](HelixSweepSpec spec, const char* what) -> ShapePtr {
+    ShapePtr plain;
+    ShapePtr shifted;
+    try {
+      plain = helix_sweep(spec);
+      spec.piece_shift = 1.0 / 6.0;
+      shifted = helix_sweep(spec);
+    } catch (const std::exception& error) {
+      std::fprintf(stderr, "shifted helix pieces, %s: %s\n", what, error.what());
+      ++failures;
+      return nullptr;
+    }
+    const bool valid = BRepCheck_Analyzer(shifted->occt()).IsValid();
+    const bool volume = near(precise_volume(*shifted), precise_volume(*plain), 1e-6);
+    const bool names = face_name_set(*shifted) == face_name_set(*plain);
+    if (!valid || !volume || !names) {
+      std::fprintf(stderr, "shifted helix pieces, %s: %s, volume %.9g (%.9g), names %s\n", what,
+                   valid ? "valid" : "invalid", precise_volume(*shifted), precise_volume(*plain),
+                   names ? "the same" : "differ");
+      for (const std::string& name : face_name_set(*plain)) {
+        std::fprintf(stderr, "  without: %s\n", name.c_str());
+      }
+      for (const std::string& name : face_name_set(*shifted)) {
+        std::fprintf(stderr, "  shifted: %s\n", name.c_str());
+      }
+      ++failures;
+    }
+    return shifted;
+  };
+  // One piece without a shift: a circle eight from the axis, 4 turns.
+  HelixSweepSpec spec;
+  spec.feature = "F1";
+  spec.frame = xz;
+  spec.regions = {circle(1, 8, 0, 1)};
+  spec.axis = gp_Ax1(gp_Pnt(0, 0, 0), gp_Dir(0, 0, 1));
+  spec.pitch = 5;
+  spec.revolutions = 4;
+  const ShapePtr one = same(spec, "one piece");
+  CHECK(one && faces_with(*one, "F1:start(") == 1 && faces_with(*one, "F1:end(") == 1);
+  // Overlapping turns (a triangle whose base on a rod is longer than the
+  // pitch), a fraction of a turn at the end.
+  spec.regions = {polygon({{5, 4}, {4.4, 4.825}, {5, 5.65}})};
+  spec.pitch = 1.5;
+  spec.revolutions = 5.9;
+  spec.bodies = {ring_body(0, 5, 0, 20)};
+  same(spec, "overlapping turns");
+  spec.bodies.clear();
+  // A thread on a nut's hole (pieces of a third of a turn), cut from it.
+  const ShapePtr nut = ring_body(5, 10, 0, 20);
+  spec.regions = {polygon({{5, 4}, {5.6, 4.5}, {5, 5}})};
+  spec.pitch = 1.5;
+  spec.revolutions = 6;
+  spec.bodies = {nut};
+  same(spec, "thread");
+  const BooleanResult plain = boolean(BooleanOp::Cut, {nut.get()}, *helix_sweep(spec));
+  spec.piece_shift = 1.0 / 6.0;
+  const BooleanResult shifted = boolean(BooleanOp::Cut, {nut.get()}, *helix_sweep(spec));
+  CHECK(plain.pieces.size() == 1 && shifted.pieces.size() == 1);
+  if (plain.pieces.size() == 1 && shifted.pieces.size() == 1) {
+    CHECK(detail::is_valid(shifted.pieces.front().shape->occt()));
+    CHECK_NEAR_TOL(precise_volume(*shifted.pieces.front().shape), precise_volume(*plain.pieces.front().shape),
+                   1e-6);
+  }
+  // Flat ends (pieces of the growing construction), turns passing through
+  // each other.
+  HelixSweepSpec ends;
+  ends.feature = "F1";
+  ends.frame = xz;
+  ends.axis = gp_Ax1(gp_Pnt(0, 0, 0), gp_Dir(0, 0, 1));
+  ends.pitch = 4;
+  ends.revolutions = 2;
+  ends.end_transition = kPi / 2;
+  ends.end_flat = 1.5 * kPi;
+  ends.regions = {rectangle(1, 5, 0, 1, 2)};
+  same(ends, "flat ends");
+  // A shift is less than a third of a turn.
+  spec.piece_shift = 1.0 / 3.0;
+  CHECK(throws_with([&] { helix_sweep(spec); }, "piece shift"));
+  spec.piece_shift = -0.1;
+  CHECK(throws_with([&] { helix_sweep(spec); }, "piece shift"));
+}
+
 void sweeps_tests() {
   guarded("sweeps", test_sweeps);
   guarded("backward sweeps", test_backward_sweeps);
@@ -1334,6 +1442,7 @@ void sweeps_tests() {
   guarded("growing helices", test_growing_helices);
   guarded("helices with flat ends", test_helices_with_flat_ends);
   guarded("helices on cylinders", test_helices_on_cylinders);
+  guarded("shifted helix pieces", test_shifted_helix_pieces);
   guarded("lofts", test_lofts);
   guarded("ribs", test_ribs);
   guarded("guide surfaces", test_guide_surfaces);

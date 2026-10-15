@@ -564,6 +564,13 @@ if(BUILD_TESTING)
   # The sketch snapper's body vertices and edge midpoints (mitcad#258): the
   # sketch model's data with OCCT's geometry types.
   target_sources(test_app PRIVATE tests/sketch_snap.cpp sketch/SketchSnap.cpp sketch/BodyGeometry.cpp)
+  # The maps of a texture set and their files for the renderer (mitcad#314):
+  # plain Qt Gui.
+  target_sources(test_app PRIVATE tests/texture_maps.cpp framework/Appearances.cpp framework/Appearances.hpp)
+  # The rendered view's meshes face out of their solids however the
+  # triangulations wind (mitcad#319): OCCT's shapes and meshing.
+  target_sources(test_app PRIVATE tests/render_mesh.cpp render/RenderMesh.cpp render/RenderMesh.hpp)
+  target_link_libraries(test_app PRIVATE TKMesh)
   target_link_libraries(test_app PRIVATE mitcad_geometry)
   target_include_directories(test_app PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
   target_link_libraries(test_app PRIVATE Qt6::Widgets Qt6::Svg mitcad_warnings)
@@ -653,7 +660,7 @@ target_include_directories(mitcad-render PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
 target_include_directories(mitcad-render SYSTEM PRIVATE "${MITCAD_CGLTF_INCLUDE_DIR}")
 target_compile_definitions(mitcad-render PRIVATE MITCAD_VERSION="${PROJECT_VERSION}")
 target_link_libraries(mitcad-render PRIVATE
-  mitcad_cycles_renderer Qt6::Gui TKMesh TKFillet TKPrim TKTopAlgo TKBRep mitcad_warnings)
+  mitcad_cycles_renderer Qt6::Gui TKMesh TKFillet TKPrim TKTopAlgo TKGeomBase TKG3d TKBRep mitcad_warnings)
 # Built with the application. On macOS the worker lives in Contents/MacOS
 # in the build bundle too, where the application's ordinary lookup finds it.
 if(APPLE)
@@ -756,6 +763,16 @@ if(BUILD_TESTING)
                          app.render_worker_probe_denoiser
       PROPERTIES ENVIRONMENT_MODIFICATION "PATH=path_list_prepend:$<TARGET_FILE_DIR:Qt6::Core>")
   endif()
+  # The maps of a texture set (mitcad#314): generated normal, roughness,
+  # metalness and occlusion maps on the test block change its image, or
+  # leave it as it is where they equal what they replace.
+  add_test(NAME app.render_texture_maps
+           COMMAND mitcad-render --maps-test "${CMAKE_CURRENT_BINARY_DIR}/render-texture-maps")
+  set_tests_properties(app.render_texture_maps PROPERTIES TIMEOUT 120 PASS_REGULAR_EXPRESSION "render-maps ok")
+  if(WIN32)
+    set_tests_properties(app.render_texture_maps PROPERTIES
+      ENVIRONMENT_MODIFICATION "PATH=path_list_prepend:$<TARGET_FILE_DIR:Qt6::Core>")
+  endif()
 endif()
 
 if(APPLE)
@@ -772,3 +789,40 @@ target_sources(mitcad PRIVATE framework/CommandSessionHover.cpp)
 # the preview until the user picks them: Extrude's automatic operation
 # (mitcad#289).
 target_sources(mitcad PRIVATE framework/CommandSessionAuto.cpp)
+# Texture sources in Edit Appearances (mitcad#315, app/materials): the
+# TextureSource interface and its registry, local texture folders, the
+# browser's grid, Use's command, Preferences' Textures group.
+target_sources(mitcad PRIVATE
+  materials/FolderTextureSource.cpp
+  materials/FolderTextureSource.hpp
+  materials/TextureBrowser.cpp
+  materials/TextureBrowser.hpp
+  materials/TexturePreferences.cpp
+  materials/TexturePreferences.hpp
+  materials/TextureSource.cpp
+  materials/TextureSource.hpp
+  materials/TextureUse.cpp
+  materials/TextureUse.hpp)
+if(BUILD_TESTING)
+  # The folder source's map detection, scan, thumbnails and fetch, the
+  # registry, the cache's folders and Use's command: plain Qt Gui.
+  target_sources(test_app PRIVATE tests/texture_sources.cpp
+                 materials/FolderTextureSource.cpp materials/FolderTextureSource.hpp
+                 materials/TextureSource.cpp materials/TextureSource.hpp
+                 materials/TextureUse.cpp materials/TextureUse.hpp)
+endif()
+# Poly Haven as an online texture source (mitcad#313, app/materials): the
+# requests of the texture sources on the internet (Qt Network; files of a
+# folder for UI tests) and the source. The unit tests give it a fake
+# fetcher and never use the network.
+target_sources(mitcad PRIVATE
+  materials/PolyHavenTextureSource.cpp
+  materials/PolyHavenTextureSource.hpp
+  materials/TextureFetcher.cpp
+  materials/TextureFetcher.hpp)
+if(BUILD_TESTING)
+  target_sources(test_app PRIVATE tests/polyhaven_source.cpp
+                 materials/PolyHavenTextureSource.cpp materials/PolyHavenTextureSource.hpp
+                 materials/TextureFetcher.cpp materials/TextureFetcher.hpp)
+  target_link_libraries(test_app PRIVATE Qt6::Network)
+endif()

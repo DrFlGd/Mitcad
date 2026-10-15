@@ -1,0 +1,71 @@
+Mitcad's patch to OCCT 8.0.1, under OCCT's licence:
+SPDX-License-Identifier: LGPL-2.1-only WITH OCCT-exception-1.0
+
+Fillets: a walked blend whose contour goes on round a corner rounded more
+sharply than the ball walks on along the corner's face (mitcad#308).
+
+0160 made StartSol refuse a face beyond a tangent edge that bends towards
+the ball more sharply than the ball (ballCannotTouch), to bridge the
+rounded rim of a hole or cut-out of the contact's face. That also refused
+a face the contour itself runs along: a box whose vertical edges are
+rounded with 2, its bottom chamfered round the box, then the edge between
+the chamfer and a side face rounded with 5 (the contour goes on round the
+corners, between the chamfer's cone and the corner's cylinder). There the
+spine turns with the face, the sections touch it, and the walk went on
+onto it before 0160; after, no face continued the contact, the bridge over
+a gap found none, and the fillet failed (Chaining is impossible).
+
+- StartSol: a face beyond that borders an edge of the spine (faceAlongSpine)
+  continues the contact's face whatever its curvature along the spine; the
+  test of 0160 applies to other faces only.
+diff --git a/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_2.cxx b/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_2.cxx
+index 73c1e08b..ffd514b2 100644
+--- a/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_2.cxx
++++ b/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_2.cxx
+@@ -1465,6 +1465,33 @@ static bool ballCannotTouch(const TopoDS_Face& F,
+   return towards > (1. + 1.e-3) / R;
+ }
+ 
++// Whether face Fv borders an edge of the spine: the blend runs along Fv
++// there, its sections touching Fv, and the spine turns with the face (a
++// contour going on round a corner rounded more sharply than the ball).
++// Such a face is no gap of the blend's face, whatever its curvature along
++// the spine.
++static bool faceAlongSpine(const occ::handle<ChFiDS_Spine>& Spine,
++                           const TopoDS_Face&               Fv,
++                           const ChFiDS_Map&                EFMap)
++{
++  for (int i = 1; i <= Spine->NbEdges(); i++)
++  {
++    const TopoDS_Edge& E = Spine->Edges(i);
++    if (!EFMap.Contains(E))
++    {
++      continue;
++    }
++    for (const TopoDS_Shape& aFace : EFMap.FindFromKey(E))
++    {
++      if (aFace.IsSame(Fv))
++      {
++        return true;
++      }
++    }
++  }
++  return false;
++}
++
+ //=================================================================================================
+ 
+ bool ChFi3d_Builder::ObstacleAtSpineEnd(const occ::handle<ChFiDS_SurfData>& SD,
+@@ -2604,9 +2631,11 @@ bool ChFi3d_Builder::StartSol(
+       {
+         // A face beyond that the ball cannot touch (it bends towards the
+         // ball more sharply than the ball) does not continue F: there is
+-        // no neighbouring face for the blend.
++        // no neighbouring face for the blend. A face along the spine does
++        // (the contour goes on along it).
+         const occ::handle<ChFiDS_FilSpine> fsp = occ::down_cast<ChFiDS_FilSpine>(Spine);
+         if (!Fv.IsSame(F) && !fsp.IsNull() && fsp->IsConstant()
++            && !faceAlongSpine(Spine, Fv, myEFMap)
+             && ballCannotTouch(F,
+                                aCommonPoint.Point(),
+                                SD->Vertex(isfirst, ons == 1 ? 2 : 1).Point(),

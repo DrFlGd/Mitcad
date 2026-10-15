@@ -264,6 +264,11 @@ just before the item (its `_f3d.result_no`) and finds them there
   - n inputs of one item with the same names, where exactly n edges fit
     them (n edges between the same two faces, without end faces to tell
     them apart), take one edge each;
+  - each edge input stores the edge's curve as the input saw it (a line,
+    arc, elliptical arc or spline, `_f3d.curves`): where the names fit
+    several edges, the curve picks the one that is the stored edge
+    (mitcad#306, *Stored edge curves* below), before the tail's order and
+    the n-of-n rule;
   - the import finds a closed edge by its circle or ellipse and length
     (the file gives its middle half way along its parameter, opposite its
     seam, which the replay puts elsewhere; an ellipse's axes follow from
@@ -773,7 +778,9 @@ candidates against the next state:
   - Where OCCT's rounding fails at the size asked, it is tried again on
     the body with the pieces of its edges merged (stored circles in two
     arcs), then with tighter tolerances of OCCT's fillet (knife edges),
-    before the retries below (mitcad#107).
+    then with the strips narrower than the import's tolerance (0.01) at
+    the selected edges' vertices collapsed into edges (mitcad#299), before
+    the retries below (mitcad#107).
   - A rounding or bevel of a whole circle that runs over a neighbouring
     face (the rim of a hole near a side), which OCCT stops at, is built
     as a ring about the circle's axis when both faces are planes,
@@ -1777,6 +1784,44 @@ What now falls back:
   replaces that body now, and the item is skipped as one that changes
   nothing in the history.
 
+### Joins within the geometric tolerance (mitcad#298)
+
+A body kept within the geometric tolerance (above) can make a join that
+works on the stored body fail on the replay's. The import therefore gives
+the document its geometric tolerance as the join tolerance
+(`Document::set_join_tolerance`, kept in the design file; commands.md
+*Join tolerance of imported designs*), and the joins of its features go
+through `Kernel::join_within`: where the exact join fails, a tool that
+touches no target joins the targets within the tolerance, a tool solid
+left on its own beside a target within it is merged, and an invalid
+result is tried again, each with the smallest fuzzy value that works
+(from 1e-5 mm up). Joins that work exactly are as before. Checked on the
+designs of the section above (content ids, items parametric before →
+after):
+
+- `a1c980ab` 22 → 23 of 26: an extrusion joining a small cylinder to a
+  body that a chamfer made a few micrometres off the file's (the chamfer
+  is built 0.1 % smaller than asked: at its exact size it takes a face
+  away, which the geometry kernel cannot build, so the body keeps one face
+  more). The cylinder's start face lies within 1e-6 mm of the body's face,
+  so it touches, but not on it for the exact boolean, which left the
+  cylinder a solid of its own; it now merges with a fuzzy value of
+  1e-5 mm. The joined body is the replay's own (4.4 · 10⁻⁵ of its volume
+  off the file's, the chamfer's difference), where a base feature brought
+  the stored body before. One linked curve of a later sketch no longer
+  lies within the snap distance (2 µm) of the replay's edge, which
+  carries the chamfer's difference, and is kept as fixed reference
+  geometry (one projection fewer).
+- `9e53857a` 23 → 24 of 28 and `ad0df696` 12 → 13 of 14: a join of a
+  plate whose face lies on a face of the body, against the line where
+  two pipes of the same radius meet (the body's faces all lie on the
+  file's; its volume 1.8 · 10⁻⁵ off). The exact join's result had an
+  invalid face (intersecting wires); with a fuzzy value of 1e-5 mm it is
+  valid and matches the file's history. A later cut in the first design
+  still falls back as before: its result on the replay's body is invalid
+  (an unorientable face), a cut, which keeps its exact behaviour.
+- `0b758b01` 220 → 220 of 256, the final bodies as before.
+
 ### Faces the replay split where the files have one (mitcad#284)
 
 The extra faces of those five designs had three causes. A revolution or
@@ -1798,6 +1843,90 @@ against the file's history; final bodies within 1e-5 of the file's):
 | `3a5fe9db` | 24 / 25 | 23 / 25 | the boss's foot is now rounded exactly (its wall vanishes, as in the file); rounding its top edge then, between the top and the foot's torus, fails in OCCT's walk for any radius (a boss with an exact foot rounding reproduces it); a chamfer as wide as a face is still built 0.1 % smaller, and a later rounding fails at a vertex beside its sliver |
 | `7aa27c24` | 12 / 13 | 12 / 13 | the chamfer of a pocket's floor edges takes away both faces of its edges (the wall and a ledge, both 1.5 wide): OCCT builds it only 0.1 % smaller, and the rounding after it fails on the slivers |
 | `e4424061` | 7 / 8 | 7 / 8 | the replay is the file's within 0.5 µm (the file's edges there carry that as their tolerance); the rounding of a square hole's vertical edges fails in OCCT's walk at their upper ends on an earlier rounding's corner torus, and builds on the stored body |
+
+### Opening a design with many face appearances (mitcad#311)
+
+A design of a circuit board with a pole round it (content id `e3c34193`,
+150 items, 78 occurrences) opened in 12 s before the appearances
+(mitcad#228) and in 190–205 s after, with the same outcome. The commit
+that made it slow is `9e165ea9` (points inside faces of extruded and
+revolved curves, merged with mitcad#228 in `4dd9265d`): its 127 face
+appearances name 5 074 stored faces, most of them faces of B-spline
+curves extruded, and those then had points inside them. Two steps took
+the time, neither of them the replay (8 s):
+
+- **Reading** (25 s): the point inside a free-form face matched each edge
+  point to the nearest point of a grid over the surface by going through
+  the whole grid (up to 2000 × 2000 points), and built the grid evaluating
+  the face's curve once per grid point. The nearest grid point is now
+  found through cubic cells (`names/surface.rs`, `Nearest`: the same
+  point as the full search, the first of equally near ones), the grid
+  takes each curve point once (`Patch::grid`, the same points bit for
+  bit), and the faces are worked out on the reading threads
+  (`appearance::fill_faces`).
+- **Applying them** (159 s): a face of a surface of linear extrusion had
+  an unbounded box (OCCT's box of it is sampled), so every lookup through a
+  point measured its distance from every such face of the body, with an
+  extremum search that builds a grid each time. Such a face now gets a box
+  of its own (`geometry/src/query.cpp`, `extrusion_box`: the hull of the
+  curve's poles over the face's stretch, moved to both ends of its stretch
+  along the direction, widened by its tolerance); a point beyond a face's
+  box is not measured against it; and each body's faces, boxes and edge
+  names are read once for all its faces (`refs::PieceIndex`).
+
+The reports are byte for byte the same. Times of this design (release
+build, default threads; seconds; reading, replay, applying the
+appearances from the import trace):
+
+| build | open | reading | replay | appearances |
+|---|---|---|---|---|
+| `b7e68d3c` (before mitcad#228) | 11.9–13.2 | 0.1 | 9.7–11.1 | — |
+| `7aff9023` (main) | 189.6–204.8 | 24.7–25.7 | 8.0–8.2 | about 160 |
+| this change | 11.1–11.9 | 1.2 | 7.7 | 0.9–1.0 |
+
+The design's items: 68 parametric, 1 fallback, 81 skipped (the
+occurrences, the component insert and two items suppressed in the
+file); the file's own base features come in as its bodies. No parametric
+item goes through a retry on the exact state, and all 54 modelling inputs
+are read. What fell back or was partial on 8.10.2026 (main `7fe8bac`, 38
+parametric, 2 partial, 27 fallback) and came in parametric since:
+
+| item | 8.10.2026 | first deviation then | now |
+|---|---|---|---|
+| Revolve1 | fallback: "crosses the revolve axis" | the axis not decoded (guessed as the sketch's y axis), the profile guessed among regions that straddle it | parametric, the decoded axis and profile (revolve axes and flags decoded, mitcad#186; straddling profiles) |
+| Fillet5 | fallback: not in the history | on Revolve1's fallback body, its edges taken from the stored body's faces | parametric, edges found by their names |
+| Extrude8 | fallback: cuts no participant | its sketch on a fixed plane (the face was on Revolve1's fallback body) | parametric |
+| Sketch12 | partial: a curve type not decoded | one curve left out | parametric (sketch curve kinds decoded, mitcad#186) |
+| Revolve2 | fallback: its sketch has no profiles | Sketch12's missing curve left no region | parametric |
+| WorkPlane1 (now Plane1) | partial: a fixed plane | the plane's inputs not decoded | parametric (construction planes from their inputs, mitcad#178) |
+| Revolve3 | fallback: not in the history | the two touching regions fused into a wrong face | parametric (mitcad#227) |
+| Extrude11 | fallback: not in the history | single regions tried where the file selects two | parametric, the decoded profiles |
+
+Left: **Fillet9** (a 0.9 mm rounding of the edge between Chamfer3's cone
+and the pole's cylinder, r 35.1). The geometry kernel fails it on the
+replay's body and on the file's own stored body (`--retry-bodies
+replace`): its walk stops (ChFiDS_WalkingFailure). Ten flats cut the
+cylinder below z 0.8, so above them the band is 0.3 mm high, and the
+rounding's contact on the cylinder lies r · tan 22.5° = 0.373 mm below the
+edge: over each flat it crosses the flat's ceiling. Up to 0.724 mm (a
+contact of 0.300 mm) it builds. A body of the same shape made of
+primitives (a revolved profile with the 45° bevel, ten boxes cut from its
+side) fails the same way above 0.72 mm, and builds at 0.9 mm with the
+flats 0.6 mm below the edge. The file's result is one torus round the
+whole edge, its contact at z 0.727 also over the flats, cut there by the
+flats' ceilings (which grow to meet it, 19.477 → 19.537 mm² each): the
+rounding rolls on over each flat on the cylinder's own surface, as port
+patch 0160 does over a gap whose rim is rounded, here across a sharp rim.
+That needs an OCCT port patch of its own (a walked blend carried over a
+cut-out with a sharp rim on its face's surface, the rim's face extended to
+the blend).
+
+`f3d.corpus_designs` (`tools/cli/f3d-designs.cmake`) checks the design
+item by item where it is found by its content id under
+`MITCAD_F3D_CORPUS` or `MITCAD_F3D_BACKUP`: the items above parametric,
+only Fillet9 falling back, no parametric item after a retry on the exact
+state, every input read, and reading and applying the appearances taking
+less time than the replay. Without the design it is skipped.
 
 ### Work beside the replay
 
@@ -4012,6 +4141,98 @@ thread with offsets 0, 1 and 2.5 mm) and checked on the census.
   decoder that writes the seam. A modelled thread whose angle was read, whose
   faces were named and whose handedness was read has `read` provenance.
 
+#### Stored edge curves (mitcad#306)
+
+An edge input (`5662F619`) refers, besides its recipe, to the curve of the
+edge as it was when the input was made: after the reference's two GUIDs a
+list `u32 n | n refs` of curve objects (classes deriving from `518AD6D6`),
+in the component's coordinates, cm and rad
+(`core/f3d/src/design/curve.rs`). After the root part:
+
+| Class | Layout |
+|---|---|
+| `50AEE8B4` line | `f64[3] start, f64[3] vector` (start to end) |
+| `B0B3FA59` arc | `f64[3] centre, f64[3] axis, f64[3] reference direction, f64 radius, f64 start, f64 end` (angles from the reference direction towards axis × reference) |
+| `98E8921B` elliptical arc | `f64[3] centre, f64[3] major direction, f64[3] minor direction, f64 major radius, f64 minor radius, f64 start, f64 end` (the parameter t of centre + major cos t · major direction + minor sin t · minor direction) |
+| `2319971D` spline | `u8 a, u8 b, u32 degree, f64, knots, weights, poles, f64, u8, u8, f64 start, f64 end` (the edge's parameter range); knots and weights `u32 n, u32 n, u32 8, n × f64` (no weights: 0), poles `u32 n, u32 n, u32 8, n × f64[3]`; `a`, `b` and the two `f64` (small tolerances) are not read |
+
+Every curve ends with its base classes' `u8 0, ref, u8 0, u8 1, ref`, both
+references null (one byte 0) in edge inputs (a sketch profile's curves refer
+to the profile there). On the reference models (`MITCAD_F3D_MODELS`) the
+117 curves the fillet and chamfer edge inputs store are all edges their
+sets list in the reference dumps, ends and middle
+(`stored_edge_curves_match_the_reference_dumps` in
+`core/f3d/tests/design_models.rs`). On the corpora (`MITCAD_F3D_CORPUS`, the backup
+corpus and `MITCAD_F3D_MODELS`, 856 distinct designs) the edge inputs store
+15,636 curves, all of which decode (7,145 lines, 6,527 arcs, 459 elliptical
+arcs, 1,505 splines); 57 edge inputs store none, and 139 store two or three
+(an edge the input saw in pieces, each piece a curve: the stored curves of
+one spline then have ranges far apart on one parameter).
+
+The decoder writes the curves as `_f3d.curves` (`Line3D`, `Arc3D`,
+`EllipticalArc3D` with `normal` = major × minor direction, `NurbsCurve3D`)
+and uses them in two ways:
+
+- **Check.** The edge found is compared with the curves (mm, within 0.01 mm)
+  and `_f3d.curve_fit` says how it lies: `the stored edge` (its ends are the
+  curve's), `a piece of the stored edge` (on it, within its ends: a later
+  item cut it), `on the stored curve, … beyond its ends`, or `off the stored
+  curve by …` (with `(curve k of n)` for an input of several). Of the 13,952
+  edge inputs found in the corpora 13,763 lie on their curves within their
+  ends (13,710 the stored edge, a closed edge on its closed curve wherever
+  its seam lies; 53 a piece of it), 45 on them beyond their
+  ends and 144 off them: 68 for items suppressed in the file (the design
+  changed after the item was suppressed: mostly the same edge, moved by 1 or
+  10 mm), 54 found a few states before their item (the edge moved since),
+  22 in the state before their item (splines whose names fit an edge
+  4 to 40 mm away, and elliptical arcs 0.1 to 0.4 mm off; not settled).
+  The check does not reject an edge on its own: an edge that moved is still
+  the one the names give.
+- **Decide.** Where the names fit several edges, the edge that is the stored
+  edge, else the only piece of it, is the input's (`found` ends with `(by
+  its stored curve)`), before the recipe's tail, the n inputs of the same
+  names and the inputs of a set that fit alike: those take the edges in list
+  order, and on the corpora 52 inputs had taken another of the edges (most
+  the mirror image or the next copy of a pattern of the edge they name); 6
+  inputs the names left open are now found. The affected designs imported
+  with the decoder's dumps before and after: three items whose edges the
+  history had to settle (`inferred`) are `read`, no other outcome and no
+  body or history check changed.
+- **Several edges** (mitcad#106). An input stores a curve per edge it stood
+  for; where two or more edges its names fit lie on its curves within
+  their ends (on one body; edges on one curve only as its pieces, together
+  no longer than it), a fillet's or chamfer's input is all of them: the
+  first is the input's, the others edge inputs of their own after it in its
+  set (`found` ends with `(one of the edges its stored curves give)`; an
+  edge the set has already is not added again). This comes before the one
+  edge above. On the corpora it found the 86 inputs the names and curves
+  had left ambiguous (none is left; `core/f3d/EDGE_ORDER.md`, *The curves
+  an input stores*), the sets taking 139 edges more; 30 inputs of rings and
+  of the same names that had taken the set's edges one each in list order
+  now take those their own curves give (the sets' edges are the same). An
+  input still ambiguous says how each edge that fits lies to its curves.
+  Eleven affected designs imported with the decoder's dumps before and
+  after: nine items whose edges the history had to settle (`inferred`)
+  are `read`, no other outcome and no history check changed.
+- **Inputs that found one edge.** Inputs of one fillet or chamfer with other
+  names and other stored curves that found the same edge cannot both have
+  found theirs. Those whose curve the edge does not lie within (it runs
+  beyond its ends, or lies off it) are left not found with the reason; an
+  input whose stored edge was longer than the edge now is (mitcad#305) keeps
+  it, and two inputs of the same stored curve (two names of one edge) keep
+  theirs. On the corpora 9 inputs are left out this way: 7 arcs of a
+  pattern's copies whose names fit one edge 11 states earlier (1 mm off all
+  of them), and two inputs whose names fit another input's edge, 28 and
+  40 mm from their own curves. An item suppressed in the file keeps such
+  edges: it is looked for in the state after the item before it, which the
+  file never had, and there pieces of one edge its inputs saw can be one
+  edge (on the corpora two or three pieces of one line or elliptical arc,
+  each input taking the whole edge, in five items of five designs, versions
+  of three; leaving them out took the definitions of such items away).
+
+The inspector's `edge-curves` command lists the curve classes of a file, each
+edge input with its fit, and the inputs of other names that found one edge.
+
 #### Where a circle starts (its seam)
 
 A sketch circle record always names the sketch's x axis as its reference
@@ -4992,18 +5213,18 @@ traces of the import (the backup corpus repeats some designs of
   mitcad#121 take one by one.
 
   The 48 that stop at the corner where a rounding ends were traced one by
-  one in mitcad#236 (patch 0130 of [the
-  port](../../third_party/vcpkg-ports/README.md)). Grouped by where the
+  one in mitcad#236 (patches 0130, 0210, 0211, 0280 to 0283, 0290 and 0291
+  of [the port](../../third_party/vcpkg-ports/README.md)). Grouped by where the
   corner code stops, with the file's body reached (within 1e-5, the same
   faces) / specs:
 
   | Where the corner stops | File's body / specs | Cause |
   |---|---|---|
   | the end face's intersection with the blend (`PerformOneCorner`) | 1 / 5 | a rounding whose faces come tangent at its end vertex stopped a little short of it and could not be capped (1, fixed by 0130: the end is moved to the vertex and the rounding ends in a point there, as in the file); the wall's top rounded where the wall turns tangentially into a concave corner of the rounding's radius, the floor's contact running into that corner's foot before the end (3, one part in three files); the blend's face turning tangentially into an earlier rounding at the end (1) |
-  | the vertex's edge not found in the walk round the vertex | 0 / 7 | where the rounding's radius equals a neighbouring rounding's, the end section lies on that rounding and no contact ends on an edge (2, one part in two files); after an overflow the faces the blend runs on do not reach the vertex as the walk expects (a narrow face at the end consumed by a radius of 20, a top face tapering to the vertex, a sliver of 0.05 mm², 3); at a five-edge vertex of a concave rounding the walk finds no edge left on a face (2, one part, not traced further) |
-  | the cap crosses another rounding's cap on the face at the end | 0 / 6 | two roundings end at the two ends of a short edge that is not rounded, and their caps cross on the face at the end (4, one part in two files): the file intersects the two blends with each other and trims both with that face, an end of two curves, while OCCT's stripe ends in one curve; a radius of 100 on a body of 20 (1); edges of 0.6 micrometres at the vertex (1) |
+  | the vertex's edge not found in the walk round the vertex | 2 / 7 (fourth round) | the foot of a rib against a bore wall rounded up to the ceiling, where a groove runs along the ceiling's junction with the wall and the rib's top under it is a sliver of 0.05 mm² beside the ceiling in its plane, the two meeting only at the point where the groove's side crosses the rib's side (1): the walk round the vertex now passes the faces between the two there, the groove's side crossed at a point (0290); the file's body (1.1e-7, the same 12 faces). A top face tapering to the vertex between a wall and a sloped face, the wall running on past the vertex into a face tangent to it (1): the top's contact runs off the top before the end, and the piece walked from there past the spine's end on the top's plane had that side given up and was dropped at the corner; it now continues the torus before it, cut by the sloped face and the face beyond the wall (0291); the file's body (the boolean differences with its state empty both ways, 39 faces). Left: two roundings of 5 on both edges of a top 3.5 wide, each rolling on the other's edge (one part in two files, 2): the corner's walk follows the face the blend rolls on, which does not hold the corner's vertex, and loops up to its face limit; the file's two tori meet each other and are both cut by the slot's wall, a corner of two blends rolling on each other's edges that OCCT does not build. A rounding of 20 whose narrow end face it consumes, beside a boss whose foot passes through the end of the contact's edge (1): its end section lies under the boss for 16 mm; with 0290 OCCT cuts the blend with the boss's wall, which gives an invalid body removing 453 mm³ more than the file's volume change (the spec stores no next state); a blend ending in the end face's plane under the boss would need a face of the boss's underside that the body does not have. A concave rounding at a five-edge vertex (one part, 2): the piece before the end ran 0.43 mm past the point where its contact left the wall (its recorded end point lies on the wall's bottom edge, its last section's contact 0.3 below it), and the file cuts both that piece's last part and the extension with the bottom face, grown along the ridge circle to where the cut meets the other contact; a corner over two surfdata with that prolonged edge, not built |
+  | the cap crosses another rounding's cap on the face at the end | 5 / 6 (second round) | two roundings end at the two ends of a short edge that is not rounded, and their caps cross on the face at the end (4, one part in two files): the file intersects the two blends with each other and trims both with that face, an end of two curves; now built so (0210, the mitre an exact ellipse arc, all 4 the file's body); a radius of 100 on a body of 20 (1): the face at the end is a cylinder whose seam starts at the corner's vertex, and the cap was sought round the whole cylinder between the two sides of the seam, crossing the next rounding's cap (0211, now the file's body); edges of 0.6 micrometres at the vertex (1): two vertices half a micrometre apart where the file has one, so two roundings end at two vertices that are one within the import's geometric tolerance; with the edges shorter than 0.01 mm merged first the rounding builds within 1e-3 (the same faces) but removes 5 % less than the file, whose corner patches at those vertices differ; the merge belongs to the healing of stored bodies with the import's tolerance (mitcad#224), not done here |
   | no cap written (`OnSame` end) | 0 / 5 | the contact on the face at the side ends half a radius short of the face at the end (the walk stops where the other contact meets that face's edge, 1); concave roundings of ribs narrower than the radius whose wall contact runs into a window of the wall (1); a conical face at the end (2, one part in two files); not traced further (1) |
-  | the intersection at the end through several faces | 0 / 7 | the walk round the vertex took the wrong one of two edges that a torus and a cylinder share (3, one part in three files; corrected in a trial, the next corner then stops where the top face turns tangentially into that torus and the blend's contact runs off the top before the end); a rounding rolling on the edge of a pocket's island after an overflow (2); a torus at the end (1); faces of 0.07 mm² with edges of 6 micrometres (1) |
+  | the intersection at the end through several faces | 5 / 7 (third round) | a tab's rounded corners whose top edges are rounded up to where the top turns tangentially into a rim's torus (3, one part in three files): the walk round one corner's vertex passed an edge of 13 micrometres and took the far one of the two edges a torus and a cylinder share (0281: the edge at the walk's vertex, prolonged from there), and at the other corners the top's contact crosses the tangent edge past the vertex, the blend cut by the torus up to that point (0280); all three the file's body (5.2e-6, the same 64 faces). A wall's foot rounded up to a hole in the floor beside the wall (2, one part in two files): the blend is cut by the hole's side and corner chamfer continued past their faces (0282) and is one face with its piece along the next edge (0283); both the file's body (3.8e-12, the same 96 faces). Left: a rounding of 0.5 whose contact on a boss reaches the boss's concave edge with a bore just before the bore's rim rounding, where the file pivots the ball about that edge in a corner patch of its own (1, not built); a rounding of 0.1 over a plane face of 0.075 mm² narrower than the radius, whose overflow onto the face beyond leaves no face of the stripe at the vertex (the walk round that face cycles), where the file's rounding vanishes 1.3 short of the vertex and leaves the rest of the edge sharp (1; its edge of 6.7 micrometres lies between the same two faces, so merging it changes nothing, and the strips of mitcad#299 do not apply) |
   | an `OnSame` end with no point on an edge | 0 / 3 | a concave rounding at the foot of a small cylinder's end face (a lens 2.5 high) wider than the face: it overflows the face, and neither contact ends on an edge (one part in three files) |
   | others | 0 / 15 (1 now within 1e-3) | corners of two roundings that both overflow a 1 mm rim (3); corner patches of several roundings after an overflow, whose face beyond holds neither the vertex nor the edge (3, and 2 where a consumed face leaves a constraint of zero length); ends degenerate to 1e-10 at a vertex whose 4-edge corners then fail (3); a notch of 0.1 mm (1); exceptions inside OCCT's intersections and projections (2, one of them now built by 0130 but 15 % off the file's change); the edge beside the end not crossing the face at the end (1) |
 
@@ -5137,6 +5358,133 @@ traces of the import (the backup corpus repeats some designs of
   | 1 (1) | three of four corners build; at the fourth the chain ends just before the corner and the extension past its end starts inside the turn with both contacts on their faces' boundaries; the walk makes no step |
 
   The 84 specs that built before give the same results with 0200.
+
+  Two of those groups were traced further (mitcad#239, third round,
+  patches 0240 and 0241 of the
+  [port](../../third_party/vcpkg-ports/README.md)). Both are one part, an
+  outline of arcs of one cylinder whose rim is broken at its tips by small
+  V notches (0.4 wide, 0.1 deep) whose edges are not rounded, the rounding
+  (0.3 and 0.5) wider than the notch is deep: its contact on the top passes
+  above the notch, the file's torus runs on over it, cut by the notch's
+  faces, as one face. The edge chain stops on both sides of each notch;
+  OCCT ran each end's contact on the top on to the end of its domain on
+  that face, round the other half of the outline, and the corner did not
+  cut it back. 0241 joins the two ends over the notch: one blend runs on,
+  cut by the notch's faces, up to the other's end section, and the two are
+  one face. Reached the file's body (within 1e-5, the same faces) / within
+  1e-3 / specs:
+
+  | Group | Reached / near / specs | Cause |
+  |---|---|---|
+  | contacts of two stripes overlapping on the top | 3 / 3 / 3 (2 distinct) | fixed by 0241 (6.1e-6 of the body's volume; the boolean differences of the result and the file's state both ways are empty, so the remainder is the volume integration on the input's spline faces) |
+  | an extension stopping on its own surface's seam | 0 / 0 / 3 (one part) | 0240 keeps the seam of the face the extension rolls on (0076) out of the ball's way; 0241 joins the ends over two notches. The rounding still fails as recorded: the file rounds the lower outline's both arcs, but the decoded edge list has one of them only (two of the fillet's 23 edge references in the file resolve in the design dump to two short arcs the list already holds; not traced further), so the recorded rounding ends at a notch whose other side is sharp, with no rolling-ball end. With that arc added the three specs give the file's next state (2.7e-6, the same 53 faces, the boolean differences empty) |
+
+  Of the specs that built before, the six that reach the changed code (an
+  extension on a face's own surface, a cut piece at a vertex of the
+  contact's face) give the same results with 0240 and 0241.
+
+  The second group's missing arc (mitcad#305, mitcad#307, patch 0260 of
+  the [port](../../third_party/vcpkg-ports/README.md)): the decoded edge
+  list is the file's own (both references the arc seemed to need name, in
+  the file, edges the list already holds). The file's rounding carries on
+  from the lower outline's left arc across the three top edges of a small
+  tapered hole (0.28 to 0.29 long, 0.25 deep, 0.57 wide at the rim; the
+  radius 0.5) onto the right arc between the same top face and the same
+  cylinder: one torus face covers both arcs and the notch's edges, which no
+  input names. Mitcad's fillets now carry a contour of constant radius on
+  across such a notch (its edges within the rounding's contact on the top
+  and within the ball's diameter of the contour's end) onto the edge beyond
+  it on the same line or circle between faces of the same surfaces; 0241
+  then joins the two over the notch. Reached the file's body: 3 / 3 (the
+  volume within 2.7e-6, the same 53 faces, the boolean differences with
+  the file's next state empty both ways). Of the other specs, one more
+  reached the carry before the width bound was added (a groove 1 long and
+  0.0043 deep beside a rounding of 0.3, which the file's rounding does not
+  cross: the edge beyond it stays sharp in the file's state); with the
+  bound none does, so their results are unchanged.
+
+  The group of contact lines crossing on a face was taken up again
+  (mitcad#239, fourth round, patches 0270 and 0271 of the
+  [port](../../third_party/vcpkg-ports/README.md)), on synthetic bodies
+  built after the classes above; the specs themselves were not rerun in
+  this round.
+  - Contacts coinciding where a rib is exactly two radii wide and its top
+    is one face with the top it stands out of (2): 0270 makes the blends
+    meet on the line where the face goes on past the line's ends; the
+    corners at the rib's root cut the top off along the prolonged edge of
+    the face at the root (the ring's edge across the rib's root), and the
+    two corners' points there are made one. Ribs out of a plate, between
+    two plates and out of a ring, and the concave slot, build with the
+    exact volumes.
+  - Contacts crossing part of the way (the two roundings 5.8 apart with
+    radius 4, 2): where the contacts cross twice on a face that narrows
+    to less than the two roundings' width, 0271 cuts the two blends by
+    each other between the crossings and leaves the face in two pieces,
+    as the files' bodies do; the result has the volume and the faces of
+    the body rounded at each edge alone, the two in common (fused, for
+    concave roundings), also with different radii and on spline faces.
+    Contacts that overlap all along (a plate thinner than the roundings'
+    diameter) stay with 0016's ride, whose blend is not the files' cut;
+    where such a pair also ends against a face that goes on (a rib), the
+    corner at the rib's tip still fails.
+  - Not changed: contacts coinciding over part of a full circle and an
+    arc (1), which needs the closed stripe's line split where the arc's
+    ends cut the face; and the corner's projection exception before one
+    contact ends on another's (3, one part), not reproduced.
+
+  Fifth round (mitcad#239, patch 0300 of the
+  [port](../../third_party/vcpkg-ports/README.md)), measured the same way on
+  the 249 with the port as of this round, before and after: MATCH 88, NEAR
+  51 → 54, OFF 1, failing 109 → 106; every other spec gives the same result
+  line. The three are one part (a rib of radius 2.5 along a rod of 4.5,
+  its foot rounded with 3, the rib's end a spline face): the rib's end face
+  grows down to the rounding's contact on the rod, and the rod's seam runs
+  between the foot and the contact, so the prolonged edge is cut at the
+  seam; its pieces' curves on the end face were the ones computed on the
+  rod (the edges of 8.8 mm tolerance that the first round saw). Now valid
+  and within 4e-5 of the body (the same 8 faces); the change, 4.885 mm³
+  against the file's 4.839, is off by the walked blend's extension to the
+  end face (the contact ends 0.07 mm from the file's on one side, 0.008 on
+  the other): the file's blends are cylinders, OCCT walks a blend between
+  two cylinders and extends its spline. Of this ticket's classes, what is
+  left (specs, distinct inputs) is one part each:
+
+  | Class | Specs | Cause |
+  |---|---|---|
+  | invalid results | 3 (1) | a crescent top whose middle, at a notched tip, is narrower than two radii, rounded all round in one contour ending on both sides of the notch: the contacts from both sides overlap within one stripe and the top keeps its original edge (self-intersecting wire) |
+  | | 2 (1) | knife edges (the faces' normals opposite) 0.5 long rounded with 0.2: walked blends wrapping 166 degrees at 4-edge vertices, approximated with 0.05 mm tolerances |
+  | | 2 (1) | a fin 1.5 thick rounded on both sides with 0.75 along a chain of faces 1.5 wide (its edge, two earlier roundings, end faces): a full round over several faces that ends on faces that go on (0153 and 0270 handle one strip face) |
+  | | 2 (1) each | two-stripe corners leaving blend faces of 0.04 mm² and corners where one contact point is not on an edge (as the first round traced them); an input whose edges have 11 mm tolerances |
+  | | 3 (2) | chamfers, not traced |
+  | | 7 (7) | not traced further (single specs) |
+  | | 1 (1) | a radius of 100 between two cylinders ending at 4-edge vertices |
+  | contacts crossing on a face (`ChFi3d_StripeEdgeInter`) | 3 (1) | a boss on a lug whose foot circle touches the lug's rounded end at one point, the lug's face pinched into two faces there: the boss's foot, in two arcs, rounded with 1.5 runs out over the lug's edge at that point (the corner's filling surface fails in a projection, the retry's two stripes then cross) |
+  | | 1 (1) | coinciding over part of a full circle and an arc |
+  | exceptions in a rounding's computation | 2 (1) | a walked piece along the chain's last edge whose faces become tangent: the section's opening angle reaches zero (`BlendFunc::GetMinimalWeights`) |
+  | | 1 (1) | the walked blend's approximation gives knots OCCT's spline surface refuses (`StoreData`) |
+  | | 1 (1) | no start for one stripe, the others fail in the walk |
+
+  Strips narrower than the import's tolerance (mitcad#299): in one spec
+  the stored body has a band of 0.5 micrometres between two chamfers of a
+  flange (and a ring of 0.5 micrometres under the lower one) where the
+  design has one edge, and the roundings of the chamfers' edges end at the
+  band's two vertices; their caps crossed and the corner failed. The file's
+  body has no band: its two roundings meet in one mitre on the crease
+  between the chamfers (two faces of 0.256 and 0.281 mm² at each of the 8
+  corners, no corner patch). The dressup now, after its other tries, takes
+  such strips at the selected edges' vertices (four edges, two of them at
+  most 0.01 long, the other two within 0.01 of each other) as the crease
+  they stand for: the faces beyond meet in the curve where their surfaces
+  meet, each end's two vertices become one, and OCCT's own corner of two
+  roundings at a vertex builds the file's mitre (faces of 0.256 and 0.281
+  mm², 73 faces as the file, removed volume 1.8915 against the file's
+  1.8962 mm³; the earlier probe that merged short edges only, keeping the
+  band, built 0.295 mm² faces running past the crease and lacked the lower
+  roundings). A step between parallel faces is no crease and is left as
+  it is. Of the 249 measured the same way: MATCH 70 → 72 (this spec, and
+  one whose chain ends at a face of zero width, two coincident half
+  circles, which mitcad#239 listed among the invalid results), NEAR 46, OFF 1,
+  failing 132 → 130; every other spec gives the same result line.
 
 - **Edge names several edges fit** ("n edges fit the names"): 118 edges
   in 25 items. The recipe's tail after its type string, `i32 -1 | i32 -1
@@ -6429,6 +6777,68 @@ items that place occurrences and have no geometry):
   smaller; a circular pattern whose copies reach nothing after a
   fallback).
 - **Time** (an extrusion of 12 profiles out of time).
+
+### Census of 15.10.2026
+
+The census of mitcad#178 again, on main `f085226d`: one coverage run of
+both private corpora (release build, `--time-limit 300 --hang-limit 300
+--jobs 6 --memory 6G`, the learning dump), items grouped as in *Census of
+the non-parametric items (mitcad#178)* (the same selection and categories;
+applied to #178's own reports the grouping gives its counts exactly).
+Three designs ran out of the 6G per-file memory with the learning dump
+(peaks of 9–11 GB when imported alone) and one child process crashed once
+and did not again alone; all four were imported again alone and are
+counted.
+
+`MITCAD_F3D_CORPUS` is unchanged since #178. The backup corpus keeps its
+325 designs and has 174 files more: the local copies of components of
+other documents (mitcad#196), which the corpus run reads as designs of
+their own; they are counted apart. Since #178 the file's own base
+features (bodies the file keeps without a history) are counted parametric
+instead of fallback: 23 and 125 items of the totals below.
+
+Totals (parametric / partial / fallback / skipped):
+
+| | `MITCAD_F3D_CORPUS` | backup corpus (325 designs) | reference copies (174) |
+|---|---|---|---|
+| #178 after | 1147 / 28 / 206 / 260 | 5249 / 120 / 923 / 1110 | – |
+| 15.10.2026 | 1311 / 20 / 74 / 236 | 5947 / 76 / 357 / 1022 | 1786 / 38 / 86 / 365 |
+
+Final bodies: 447 and 3010 exact, 12 and 81 within 0.1 %, none off (the
+reference copies 2168 and 22). Fewer bodies are compared than in #178 (459
+against 501, 3091 against 3147) on the same designs: a stored body of
+several solids is now paired as one body, within its component.
+
+Non-parametric items by category, both corpora, the files of #178:
+
+| Category | #178 after | 15.10.2026 | reference copies |
+|---|---|---|---|
+| the import's time limit | 405 | 40 (30 of them one design) | 0 |
+| reading and translation: fallbacks | 297 | 154 | 31 |
+| geometry kernel: fillets, chamfers, booleans that fail or come out off the file's | 221 | 226 (fillets 206) | 30 |
+| the file's own base features (where the state before them cannot be rebuilt) | 166 | 17 | 29 |
+| construction planes as fixed planes | 40 | 11 | 3 |
+| no translation in Mitcad (bodies of other designs 20, electronics boards 3, mirrored components 3, emboss, faces moved, Whitworth threads 2 each, a draft) | 93 | 33 | 44 |
+| sketches partial | 53 | 36 | 13 |
+| assembly positions (relationships, captured positions, as-built joints that do not hold) | 47 | 49 | 22 |
+| after a fallback to the stored bodies | 18 | 0 | 0 |
+| construction axes as fixed axes | 8 | 0 | 0 |
+| references lost in the file itself | – | 11 | 2 |
+| all | 1348 | 577 | 174 |
+
+Items suppressed or rolled back in the file whose definition did not come
+in (mitcad#180) are left out as in #178: 64 (fillets most of them).
+
+The geometry kernel is now the largest group (39 % of the items): fillets
+that fail in OCCT's builder (94 items in 56 designs with the builder's
+generic failure, 57 in 37 at a vertex, 29 with invalid or off results).
+Fillet fallbacks went from 361 to 261, but fillets that the time limit or
+an earlier fallback hid before now reach the kernel. Of the 32 extrusions
+and revolutions whose result is not in the history or cuts nothing, 17
+follow an earlier fallback in their component, 15 have a complete sketch
+and bodies that are the file's (single cases), one a sketch on a fixed
+plane. Input provenance of the accepted candidates (mitcad#186), both
+corpora: 4668 read, 332 inferred, 113 unknown.
 
 ## FreeCAD import (.FCStd)
 

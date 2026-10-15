@@ -19,6 +19,7 @@
 //! There is no geometry here: the import builds bodies from these views
 //! through the model's geometry kernel.
 
+pub mod building;
 pub mod categories;
 pub mod elements;
 pub mod gzip;
@@ -199,6 +200,14 @@ impl RvtFile {
     pub fn external_files(&self) -> Vec<ExternalFile> {
         self.raw("/TransmissionData")
             .map(|d| info::transmission_data(&d))
+            .unwrap_or_default()
+    }
+
+    /// The editing episodes' GUIDs (`Global/History`), indexed by the
+    /// element table's `EpisodeId`s counted from the last (newest first).
+    pub fn episodes(&self) -> Vec<[u8; 16]> {
+        self.inflated("/Global/History")
+            .map(|d| info::episodes(&d))
             .unwrap_or_default()
     }
 

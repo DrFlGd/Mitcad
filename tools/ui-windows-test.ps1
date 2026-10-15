@@ -298,6 +298,27 @@ $refused = @(Frame-Lines $log | Where-Object { $_ -notmatch $applied })
 if ($refused.Count -eq 0) { Pass "the window frame was never refused ($theme)" }
 else { Fail "the window frame was refused ($theme): '$($refused -join ' | ')'" }
 
+Write-Host '--- Component colors and appearance restoration'
+$colorScript = Join-Path $Out 'component-colors.script'
+@"
+command view.component_colors
+expect-log 'Component colors on'
+screenshot-view '$((Join-Path $Out 'component-colors.png') -replace "'", "''")'
+command view.component_colors
+expect-log 'Component colors off'
+screenshot-view '$((Join-Path $Out 'component-restored.png') -replace "'", "''")'
+"@ | Set-Content -Encoding ascii $colorScript
+$log = Invoke-Mitcad 'component-colors' @('--demo') @{ 'MITCAD_TEST_INPUT' = $colorScript }
+Expect-Log $log 'TestDriver: done' 'Component colors: the script ran'
+$coloredPath = Join-Path $Out 'component-colors.png'
+if (Test-Path $coloredPath) {
+  $colored = [Shot]::Analyze($coloredPath)
+  if ($colored.Shades | Where-Object { $_.R -gt $_.B + 40 }) {
+    Pass 'Component colors: root component drawn in its identification color'
+  } else { Fail 'Component colors: no identification color in the view' }
+} else { Fail 'Component colors: no screenshot' }
+$null = Check-Shot 'component-restored'
+
 Write-Host '--- Open a project file, then change a parameter'
 $file = Join-Path $Out 'block.mitcad'
 @'

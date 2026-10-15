@@ -888,3 +888,63 @@ fn an_older_stored_policy_reads_the_first_sketch_settings_as_on() {
         assert!(Policy::ASSEMBLY.first_sketch_attachments_from_others);
     }
 }
+
+#[test]
+fn an_edit_previews_in_its_own_component_under_the_policy() {
+    // mitcad#309: B (active) has its first sketch attached to A, which
+    // allows that only as a first sketch. Editing A's fillet previews and
+    // commits in A, not as a new feature of B.
+    let (mut doc, body, face, a, b) = siblings();
+    doc.activate_component(a).unwrap();
+    let fillet_def = |radius: f64| {
+        json!({"type": "fillet", "body": body,
+               "edges": [format!("E{{{0}:side(c1[c4,c2])|{0}:side(c2[c1,c3])}}", body.feature)],
+               "radius": radius})
+    };
+    let fillet = uid(&command(
+        &mut doc,
+        json!({"cmd": "add_feature", "def": fillet_def(1.0)}),
+    ));
+    doc.activate_component(b).unwrap();
+    let create = json!({"cmd": "sketch.create", "plane": {"face": face, "body": body},
+                        "occurrence": "O1"});
+    let first = uid(&command(&mut doc, create));
+    assert_eq!(doc.status(first), Some(&FeatureStatus::Ok));
+    doc.set_policy(
+        a,
+        Policy {
+            attachments_from_others: false,
+            first_sketch_attachments_from_others: true,
+            ..Policy::PART
+        },
+    )
+    .unwrap();
+    doc.set_policy(b, Policy::PART).unwrap();
+    assert_eq!(doc.active_component(), b);
+
+    // Previewed as an added feature it would be a new one of B (what the
+    // app did for an edit), with a uid of its own.
+    let added = json!({"cmd": "add_feature", "def": fillet_def(2.0)});
+    if let Ok(report) = doc.preview(&added.to_string()) {
+        let report: Value = serde_json::from_str(&report).unwrap();
+        assert_ne!(report["uid"], json!(fillet), "{report}");
+    }
+    // As an edit it is computed in A, under its own uid.
+    let edited = json!({"cmd": "edit_feature", "uid": fillet, "def": fillet_def(2.0)});
+    let report: Value = serde_json::from_str(&doc.preview(&edited.to_string()).unwrap()).unwrap();
+    assert_eq!(report["status"], "ok", "{report}");
+    assert_eq!(report["uid"], json!(fillet), "{report}");
+    assert_eq!(doc.feature(fillet).unwrap().component, a);
+    // ... and commits.
+    let done = command(&mut doc, edited);
+    assert_eq!(done["error"], Value::Null, "{done}");
+    assert_eq!(doc.status(fillet), Some(&FeatureStatus::Ok));
+
+    // The editor rolls the marker back to just before the feature; the
+    // edit preview computes the feature there all the same.
+    let position = doc.features().position(|f| f.uid == fillet).unwrap();
+    doc.set_marker(position).unwrap();
+    let edited = json!({"cmd": "edit_feature", "uid": fillet, "def": fillet_def(3.0)});
+    let report: Value = serde_json::from_str(&doc.preview(&edited.to_string()).unwrap()).unwrap();
+    assert_eq!(report["status"], "ok", "{report}");
+}

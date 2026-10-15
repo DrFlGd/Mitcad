@@ -1,0 +1,49 @@
+Mitcad's patch to OCCT 8.0.1, under OCCT's licence:
+SPDX-License-Identifier: LGPL-2.1-only WITH OCCT-exception-1.0
+
+Fillets: a rounding cut at its end by a periodic face whose seam starts at
+the corner's vertex (mitcad#236).
+
+Where the face at the end of a rounding (OnDiff or AllSame corner) is
+periodic and its seam starts at the corner's vertex (a cylinder whose seam
+runs from that vertex), the two arcs that hold the rounding's contacts have
+their curves on the face on the two sides of the seam, a period apart. The
+intersection of the blend with the face was then sought between two points
+almost a period apart: it came out running nearly round the whole face, and
+crossing the other roundings' ends on the face ("OneCorner : fillets have
+too big radiuses").
+
+- ChFi3d_Builder::PerformOneCorner: the second point on the face at the
+  end is taken in the period within half a period of the first one, in u
+  and in v. The intersection then runs the short way across the seam, and
+  is cut at the seam as before (the "couture" case).
+
+diff --git a/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_C1.cxx b/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_C1.cxx
+index 26d1498..6992da4 100644
+--- a/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_C1.cxx
++++ b/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_C1.cxx
+@@ -1740,6 +1740,24 @@ void ChFi3d_Builder::PerformOneCorner(const int Index, const bool thePrepareOnSa
+     {
+       ChFi3d_Recale(Bs, pfac1, pfac2, (IFadArc == 1));
+     }
++    else
++    {
++      // The two points in one period of a periodic face at the end: where
++      // the face's seam starts at the corner's vertex, the arcs' curves on
++      // the face lie on the seam's two sides, a period apart, and the
++      // intersection, which crosses the seam (cut there below), was sought
++      // round the whole face.
++      if (Bs.IsUPeriodic())
++      {
++        const double T = Bs.UPeriod();
++        pfac2.SetX(ElCLib::InPeriod(pfac2.X(), pfac1.X() - 0.5 * T, pfac1.X() + 0.5 * T));
++      }
++      if (Bs.IsVPeriodic())
++      {
++        const double T = Bs.VPeriod();
++        pfac2.SetY(ElCLib::InPeriod(pfac2.Y(), pfac1.Y() - 0.5 * T, pfac1.Y() + 0.5 * T));
++      }
++    }
+ 
+     Pardeb(1) = pfil1.X();
+     Pardeb(2) = pfil1.Y();

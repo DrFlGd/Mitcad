@@ -92,6 +92,8 @@ pub struct MockKernel {
     pub fail: RefCell<BTreeSet<&'static str>>,
     /// A boolean fails only when one target has this exact shape history.
     pub boolean_fail_targets: RefCell<BTreeSet<String>>,
+    /// A boolean fails when its tool has this exact shape history.
+    pub boolean_fail_tools: RefCell<BTreeSet<String>>,
     /// Operations that fail as one whose allocation failed does (mitcad#80).
     pub out_of_memory: RefCell<BTreeSet<&'static str>>,
     /// Which targets a boolean touches, by index; all when None.
@@ -494,6 +496,9 @@ impl Kernel for MockKernel {
             .any(|shape| self.boolean_fail_targets.borrow().contains(&shape.history))
         {
             return Err(KernelError::failed("target Boolean failed"));
+        }
+        if self.boolean_fail_tools.borrow().contains(&tool.history) {
+            return Err(KernelError::failed("tool Boolean failed"));
         }
         let touched = self
             .touch
@@ -1186,6 +1191,19 @@ impl Kernel for MockKernel {
         } else {
             String::new()
         };
+        // End chamfers and cosmetic threads only when there are some.
+        let mut clearance = clearance;
+        if !spec.groove {
+            clearance += " cosmetic";
+        }
+        if let Some(chamfer) = &spec.chamfer {
+            clearance += &format!(
+                " chamfer {:.4} deg {:.4} ends {:?}",
+                chamfer.angle.to_degrees(),
+                chamfer.diameter,
+                chamfer.ends
+            );
+        }
         self.specs.borrow_mut().push(format!(
             "thread {} pitch {} diameters {:.4}/{:.4}/{:.4} angle {:.6} right {} part {:?}{clearance}",
             spec.faces
@@ -1205,12 +1223,25 @@ impl Kernel for MockKernel {
             history: format!("thread({},{})", body.history, number(spec.pitch)),
             ..body.clone()
         };
-        for face in spec.faces {
-            shape.faces.push(FaceName::new(
-                spec.feature,
-                "thread",
-                Some(RoleKey::Face(Box::new(face.clone()))),
-            ));
+        for (i, face) in spec.faces.iter().enumerate() {
+            let named = |role: &str| {
+                FaceName::new(
+                    spec.feature,
+                    role,
+                    Some(RoleKey::Face(Box::new(face.clone()))),
+                )
+            };
+            if spec.groove {
+                shape.faces.push(named("thread"));
+            }
+            let ends = spec.chamfer.as_ref().and_then(|c| c.ends.get(i).copied());
+            let (low, high) = ends.unwrap_or((false, false));
+            if low {
+                shape.faces.push(named("thread_chamfer_low"));
+            }
+            if high {
+                shape.faces.push(named("thread_chamfer_high"));
+            }
         }
         Ok(shape)
     }
@@ -1795,8 +1826,13 @@ impl Kernel for MockKernel {
             let angles: Vec<String> = spec.ends.iter().map(|a| number(*a)).collect();
             format!(" ends {}", angles.join(" "))
         };
+        let shift = if spec.piece_shift == 0.0 {
+            String::new()
+        } else {
+            format!(" shift {}", number(spec.piece_shift))
+        };
         self.specs.borrow_mut().push(format!(
-            "helix {} axis {:?} {:?} pitch {} revolutions {} left {}{growth}{ends}",
+            "helix {} axis {:?} {:?} pitch {} revolutions {} left {}{growth}{ends}{shift}",
             spec.feature,
             spec.origin,
             spec.direction,
@@ -1812,8 +1848,14 @@ impl Kernel for MockKernel {
                 faces.push(FaceName::side(spec.feature, segment.key.clone()));
             }
         }
+        // Pieces' seams shifted (mitcad#235): in the history too.
+        let history = if spec.piece_shift == 0.0 {
+            format!("helix({})", spec.feature)
+        } else {
+            format!("helix({} shift {})", spec.feature, number(spec.piece_shift))
+        };
         Ok(MockShape {
-            history: format!("helix({})", spec.feature),
+            history,
             faces,
             edges: Vec::new(),
             bounds: None,
@@ -1828,6 +1870,7 @@ impl Kernel for MockKernel {
             measures: self.measures.clone(),
             fail: self.fail.clone(),
             boolean_fail_targets: self.boolean_fail_targets.clone(),
+            boolean_fail_tools: self.boolean_fail_tools.clone(),
             out_of_memory: self.out_of_memory.clone(),
             touch: self.touch.clone(),
             split: self.split.clone(),
@@ -2027,6 +2070,21 @@ impl Kernel for MockKernel {
             });
         }
         Ok(contacts)
+    }
+
+    /// [`MockKernel::boolean`]'s join, counted as "join_within" too; the
+    /// tolerance goes to `specs` ("join within <mm>").
+    fn join_within(
+        &self,
+        targets: &[&MockShape],
+        tool: &MockShape,
+        tolerance: f64,
+    ) -> Result<BooleanOutput<MockShape>, KernelError> {
+        self.specs
+            .borrow_mut()
+            .push(format!("join within {tolerance}"));
+        self.call("join_within")?;
+        self.boolean(BooleanOp::Join, targets, tool)
     }
 }
 

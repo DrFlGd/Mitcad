@@ -240,6 +240,8 @@ const QUERIES: &[(&str, ApiClass)] = &[
     // Body edges and vertices in a sketch's plane (mitcad#256).
     ("plane_geometry", Model),
     ("tangent_chains", Model),
+    // A thread's default end chamfer (mitcad#304).
+    ("thread_chamfer", Model),
 ];
 
 fn class_in(table: &[(&str, ApiClass)], name: &str) -> Option<ApiClass> {

@@ -12,7 +12,7 @@
 #     (as the FreeCAD import makes them) opens for editing with its values
 #     and keeps its counterdrill when its taper changes.
 #   - Thread: suggested from the cylinder, cosmetic, edited to modelled,
-#     then given extra radial and flank clearance.
+#     then given extra radial and flank clearance, then end chamfers.
 #   - Box, Cylinder, Sphere and Torus placed with a click on XY; New
 #     Component.
 #
@@ -286,6 +286,22 @@ ui_step "OK (Enter)"                       ui_key Return
 ui_expect_new "Edited F3" "Thread1 edited with clearance" 60
 ui_expect_volume "Body Body1 (F2.b0): volume 130[0-9.]* -> \([0-9.]*\) mm3" 1156.647335933055 \
   "the profile moved in and its flanks relieved (thread_clearance)" 1e-3
+
+echo "--- End chamfers (thread_chamfer in f1_thread.json, mitcad#304)"
+ui_double_click_expect "Timeline Thread1" "Editing F3 with Thread" "editing Thread1 for its chamfers"
+ui_step "Chamfer Ends"                     ui_click_logged "Panel Thread input chamfer"
+ui_expect_new "Thread: Chamfer Ends = on" "chamfered"
+ui_expect_new "Preview Thread: ok" "the chamfered thread previewed" 120
+ui_step "OK (Enter)"                       ui_key Return
+ui_expect_new "Edited F3" "Thread1 edited with end chamfers" 60
+ui_expect_volume "Body Body1 (F2.b0): volume 115[0-9.]* -> \([0-9.]*\) mm3" 1150.6351332522352 \
+  "both free ends chamfered to the size's default (thread_chamfer)" 1e-3
+ui_double_click_expect "Timeline Thread1" "Editing F3 with Thread" "editing Thread1: the chamfer loaded"
+ui_step "Chamfer Size: Custom"             ui_choose "Panel Thread input chamfer_size" 1
+ui_expect_new "Thread: Chamfer Size = Custom" "a size of its own"
+ui_expect_new "Thread Chamfer Diameter: 8.226 mm" "starting at the size's default (M10x1.5: 8.376 - 0.15)"
+ui_expect_new "Thread Chamfer Angle: 45 deg" "and 45 degrees"
+ui_step "cancel (Escape)"                  ui_key Escape
 
 # primitive name volume body plane: placed with a click on an origin plane
 # (on xy, xz, yz: away from each other) or a face.

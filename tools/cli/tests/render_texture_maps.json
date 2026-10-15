@@ -1,0 +1,26 @@
+[
+  {"comment": "SPDX-License-Identifier: MIT"},
+  {"comment": "mitcad-cli render with texture map sets (mitcad#314): a box and appearances with 8 x 8 test images made for this test (a grey base colour, ridges in a normal map, a dark roughness map), one without its maps, one whose normal map file is missing and one whose roughness map is no image. render-texture-maps-test.cmake gives the box each appearance in turn."},
+  {"cmd": "add_feature", "def": {"type": "box", "plane": "xy", "corner": [-30, -20],
+    "length": 60, "width": 40, "height": 20, "operation": "new_body"}},
+  {"cmd": "create_appearance", "id": "mapped", "name": "Mapped", "based_on": "steel_satin", "texture": {
+    "path": "grey.png", "size": [10, 10],
+    "data": "iVBORw0KGgoAAAANSUhEUgAAAAgAAAAICAIAAABLbSncAAAAFUlEQVQI12OsqKhgwAaYGHCAwSkBAB2HAXjK0u8EAAAAAElFTkSuQmCC",
+    "normal": {"path": "ridges_nor_gl.png",
+               "data": "iVBORw0KGgoAAAANSUhEUgAAAAgAAAAICAIAAABLbSncAAAAIElEQVQI12N82XCMgYFBh4GBgYHhCgMDnM3EgAMMTgkAkscDa7pDcRYAAAAASUVORK5CYII="},
+    "roughness": {"path": "dark_rough.png",
+                  "data": "iVBORw0KGgoAAAANSUhEUgAAAAgAAAAICAIAAABLbSncAAAAFUlEQVQI12Pk5eVlwAaYGHCAwSkBACUyADc1N3xTAAAAAElFTkSuQmCC"}}},
+  {"cmd": "create_appearance", "id": "unmapped", "name": "Unmapped", "based_on": "steel_satin", "texture": {
+    "path": "grey.png", "size": [10, 10],
+    "data": "iVBORw0KGgoAAAANSUhEUgAAAAgAAAAICAIAAABLbSncAAAAFUlEQVQI12OsqKhgwAaYGHCAwSkBAB2HAXjK0u8EAAAAAElFTkSuQmCC"}},
+  {"cmd": "create_appearance", "id": "lost", "name": "Lost Normal", "based_on": "steel_satin", "texture": {
+    "path": "grey.png", "size": [10, 10],
+    "data": "iVBORw0KGgoAAAANSUhEUgAAAAgAAAAICAIAAABLbSncAAAAFUlEQVQI12OsqKhgwAaYGHCAwSkBAB2HAXjK0u8EAAAAAElFTkSuQmCC",
+    "normal": {"path": "nowhere/lost_nor_gl.png"}}},
+  {"cmd": "create_appearance", "id": "broken", "name": "Broken Roughness", "based_on": "steel_satin", "texture": {
+    "path": "grey.png", "size": [10, 10],
+    "data": "iVBORw0KGgoAAAANSUhEUgAAAAgAAAAICAIAAABLbSncAAAAFUlEQVQI12OsqKhgwAaYGHCAwSkBAB2HAXjK0u8EAAAAAElFTkSuQmCC",
+    "roughness": {"path": "broken_rough.png"}}},
+  {"cmd": "set_render_settings", "output": {"samples": 8, "width": 160, "height": 120, "aspect": "fixed"}},
+  {"expect": {"bodies": 1}}
+]

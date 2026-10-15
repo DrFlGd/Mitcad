@@ -10,6 +10,8 @@
 //! (mitcad#80), and an import that runs low on memory leaves the remaining
 //! elements out and says so.
 
+use std::collections::BTreeMap;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use serde::Deserialize;
@@ -35,6 +37,23 @@ struct Options {
     /// Read and report only; import no elements.
     #[serde(default)]
     report_only: bool,
+    /// The IFC export of the same project: the elements built as features
+    /// are checked against its solids, by GlobalId (mitcad#275).
+    #[serde(default)]
+    reference_ifc: Option<String>,
+    /// Files of linked models, by the link's file name (the
+    /// application's file dialogs).
+    #[serde(default)]
+    link_files: BTreeMap<String, String>,
+    /// A folder to look for linked models in (besides the project's).
+    #[serde(default)]
+    link_folder: Option<String>,
+    /// List the links and where their files are; import nothing.
+    #[serde(default)]
+    list_links: bool,
+    /// Every element as its saved mesh or box (no features).
+    #[serde(default)]
+    mesh_only: bool,
 }
 
 fn file_name(path: &str) -> &str {
@@ -57,17 +76,21 @@ impl Document {
         let (model, import) = MemoryGuard::with_limit(None)
             .around(&progress, || {
                 let model = Model::read(&rvt, &schema)?;
-                let import = if rvt.kind == Kind::Project && !options.report_only {
-                    Some(
-                        mitcad_import::rvt::import_rvt(&mut self.0, file, &model, Some(&*progress))
-                            .map_err(|e| mitcad_rvt::RvtError::Stream(e.to_string()))?,
-                    )
-                } else {
-                    None
-                };
+                let import =
+                    if rvt.kind == Kind::Project && !options.report_only && !options.list_links {
+                        Some(
+                            self.import_rvt_model(path, file, &model, options, &progress)
+                                .map_err(|e| mitcad_rvt::RvtError::Stream(e.to_string()))?,
+                        )
+                    } else {
+                        None
+                    };
                 Ok::<_, mitcad_rvt::RvtError>((model, import))
             })
             .map_err(|e| fail(&e))?;
+        if options.list_links {
+            return Ok(Self::list_rvt_links(path, &model, options));
+        }
         let mut warnings: Vec<String> = Vec::new();
         if rvt.release_by_table() != rvt.release() {
             warnings.push(format!(
@@ -153,8 +176,16 @@ impl Document {
             std::fs::write(path, format!("{text}\n"))
                 .map_err(|e| ApiError(format!("{path}: {e}")))?;
         }
-        // The imported bodies, for the application's report.
-        report["bodies"] = json!(report["import"]["bodies"].as_u64().unwrap_or(0));
+        // The imported bodies, for the application's report: the meshes
+        // and boxes, and the bodies of the elements built as features.
+        let featured: u64 = report["import"]["elements"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter(|l| l["outcome"] == "features")
+            .filter_map(|l| l["bodies"].as_u64())
+            .sum();
+        report["bodies"] = json!(report["import"]["bodies"].as_u64().unwrap_or(0) + featured);
         Ok(report)
     }
 
@@ -221,6 +252,58 @@ fn summary(report: &Value) -> String {
         text += &format!("  family: {family}\n");
     }
     if import.is_object() {
+        let counts = |v: &Value| {
+            let parts: Vec<String> = v
+                .as_object()
+                .into_iter()
+                .flatten()
+                .map(|(k, n)| format!("{n} {k}"))
+                .collect();
+            if parts.is_empty() {
+                "none".to_string()
+            } else {
+                parts.join(", ")
+            }
+        };
+        text += &format!(
+            "Built {} elements as features ({}), checked against {}; of those kinds {} came in as meshes or boxes\n",
+            import["features"],
+            counts(&import["built"]),
+            import["reference"]
+                .as_str()
+                .map_or("their stored boxes".to_string(), |r| format!(
+                    "the reference {r}"
+                )),
+            counts(&import["fallbacks"]),
+        );
+        if import["reference"].is_string() {
+            text += &format!(
+                "  the reference's solids agreed with: {}; not agreed with: {}\n",
+                counts(&import["reference_agree"]),
+                import["reference_unmatched"].as_array().map_or(0, Vec::len)
+            );
+            for line in import["reference_unmatched"]
+                .as_array()
+                .into_iter()
+                .flatten()
+            {
+                text += &format!("    {}\n", line.as_str().unwrap_or_default());
+            }
+        }
+        text += &format!(
+            "  {} level planes, {} grid axes, {} grid arcs, {} appearances\n",
+            import["level_planes"], import["grid_axes"], import["grid_arcs"], import["appearances"]
+        );
+        for link in import["links"].as_array().into_iter().flatten() {
+            text += &format!(
+                "  link {}: {}\n",
+                link["file"].as_str().unwrap_or_default(),
+                match link["found"].as_str() {
+                    Some(found) => format!("{found}, {} elements", link["elements"]),
+                    None => link["note"].as_str().unwrap_or("not imported").to_string(),
+                }
+            );
+        }
         text += &format!(
             "Imported {} bodies: {} saved meshes, {} boxes at a family type's transform, {} boxes; {} placed on a level by elevation\n",
             import["bodies"],
@@ -279,4 +362,174 @@ pub(crate) fn rvt_write_test_file(path: &str, family: bool) -> Result<(), String
         mitcad_rvt::testfile::project()
     };
     std::fs::write(path, data).map_err(|e| format!("{path}: {e}"))
+}
+
+/// The solids of an IFC export, by GlobalId: each product's volume and
+/// box (mm, the design's coordinates), imported with the kernel into a
+/// document of their own (its type's maps copied into each element).
+fn ifc_reference(path: &str) -> Result<mitcad_import::rvt::Reference, String> {
+    use mitcad_ifc::{IfcFile, ReadOptions};
+    let name = file_name(path).to_string();
+    let file = IfcFile::open_with(Path::new(path), &ReadOptions::import())
+        .map_err(|e| format!("{name}: {e}"))?;
+    crate::kernel::exchange::ffi::catch_occt_crashes();
+    let mut doc = mitcad_model::Document::new(crate::kernel::OcctKernel);
+    let options = mitcad_import::ifc::IfcOptions {
+        occurrences: false,
+        ..mitcad_import::ifc::IfcOptions::default()
+    };
+    let report = mitcad_import::ifc::import_ifc(&mut doc, &file, &name, &options);
+    let kernel = doc.kernel();
+    let instances = doc.instances();
+    let mut solids = std::collections::HashMap::new();
+    for line in &report.products {
+        if line.bodies.is_empty() || line.global_id.is_empty() {
+            continue;
+        }
+        let mut bbox: Option<([f64; 3], [f64; 3])> = None;
+        for inst in instances
+            .iter()
+            .filter(|i| line.bodies.contains(&i.body.to_string()))
+        {
+            let Some(shape) = doc.body_shape(inst.body) else {
+                continue;
+            };
+            let Ok(Some(b)) = mitcad_model::Kernel::bounding_box(kernel, shape) else {
+                continue;
+            };
+            for c in 0..8 {
+                let p = [
+                    if c & 1 == 0 { b.min[0] } else { b.max[0] },
+                    if c & 2 == 0 { b.min[1] } else { b.max[1] },
+                    if c & 4 == 0 { b.min[2] } else { b.max[2] },
+                ];
+                let q = inst.transform.apply_point(p);
+                bbox = Some(match bbox {
+                    None => (q, q),
+                    Some((lo, hi)) => (
+                        std::array::from_fn(|k| lo[k].min(q[k])),
+                        std::array::from_fn(|k| hi[k].max(q[k])),
+                    ),
+                });
+            }
+        }
+        solids.insert(
+            line.global_id.clone(),
+            mitcad_import::rvt::ReferenceSolid {
+                kind: line.kind.clone(),
+                name: line.name.clone(),
+                volume: line.volume,
+                bbox,
+            },
+        );
+    }
+    Ok(mitcad_import::rvt::Reference { file: name, solids })
+}
+
+/// Where a link's file is: the file given for it, else next to the
+/// project (by its name, then by the path the project stores), else in
+/// the link folder.
+fn find_link(
+    project: &str,
+    link: &mitcad_rvt::building::Link,
+    options: &Options,
+) -> Option<PathBuf> {
+    let name = link.file.as_deref()?;
+    if let Some(given) = options.link_files.get(name) {
+        return Some(PathBuf::from(given)).filter(|p| p.is_file());
+    }
+    let dir = Path::new(project).parent().unwrap_or(Path::new("."));
+    let stored = link.path.as_deref().map(|p| p.replace('\\', "/"));
+    let mut candidates = vec![dir.join(name)];
+    if let Some(stored) = &stored
+        && !stored.contains(':')
+        && !stored.starts_with('/')
+    {
+        candidates.push(dir.join(stored));
+    }
+    if let Some(folder) = &options.link_folder {
+        candidates.push(Path::new(folder).join(name));
+    }
+    candidates.into_iter().find(|p| p.is_file())
+}
+
+impl Document {
+    /// The links of a project and where their files are, as JSON.
+    fn list_rvt_links(path: &str, model: &Model, options: &Options) -> Value {
+        json!({"links": model.building.links.iter().map(|l| json!({
+            "id": l.id,
+            "file": l.file,
+            "stored_path": l.path,
+            "found": find_link(path, l, options).map(|p| p.display().to_string()),
+        })).collect::<Vec<_>>()})
+    }
+
+    /// The import of a project's model, with its reference and its links.
+    fn import_rvt_model(
+        &mut self,
+        path: &str,
+        file: &str,
+        model: &Model,
+        options: &Options,
+        progress: &Arc<mitcad_import::Progress>,
+    ) -> Result<mitcad_import::rvt::Report, String> {
+        let reference = match &options.reference_ifc {
+            Some(r) => Some(ifc_reference(r)?),
+            None => None,
+        };
+        let mut import_options = mitcad_import::rvt::RvtOptions {
+            progress: Some(progress),
+            reference: reference.as_ref(),
+            mesh_only: options.mesh_only,
+            ..Default::default()
+        };
+        for link in &model.building.links {
+            let name = link
+                .file
+                .clone()
+                .unwrap_or_else(|| format!("link {}", link.id));
+            let Some(found) = find_link(path, link, options) else {
+                import_options.missing_links.push((
+                    link.clone(),
+                    format!("{name} was not found next to the project or where it was given: its component is empty"),
+                ));
+                continue;
+            };
+            let read = RvtFile::open(&found).and_then(|f| {
+                let schema = f.schema()?;
+                if f.kind != Kind::Project {
+                    return Err(mitcad_rvt::RvtError::Stream("not a project".into()));
+                }
+                Model::read(&f, &schema)
+            });
+            match read {
+                Ok(m) => import_options.links.push(mitcad_import::rvt::LinkedModel {
+                    link: link.clone(),
+                    file: file_name(&found.display().to_string()).to_string(),
+                    model: m,
+                }),
+                Err(e) => import_options.missing_links.push((
+                    link.clone(),
+                    format!("{} did not read: {e}", found.display()),
+                )),
+            }
+        }
+        mitcad_import::rvt::import_rvt(&mut self.0, file, model, &import_options)
+            .map_err(|e| e.to_string())
+    }
+}
+
+/// The bridge's `rvt_write_building_test`: the reader's building test
+/// project (`mitcad_rvt::testfile::building`) as `building.rvt` in `dir`,
+/// with the model it links next to it (`linked.rvt`, the same project).
+pub(crate) fn rvt_write_building_test(dir: &str) -> Result<(), String> {
+    use mitcad_rvt::testfile::building;
+    let dir = Path::new(dir);
+    std::fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+    for name in ["building.rvt", building::LINKED] {
+        let path = dir.join(name);
+        std::fs::write(&path, building::project())
+            .map_err(|e| format!("{}: {e}", path.display()))?;
+    }
+    Ok(())
 }

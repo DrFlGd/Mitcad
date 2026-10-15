@@ -386,3 +386,79 @@ mod tests {
         assert!(preview_png(&stream[..stream.len() - 11]).is_none());
     }
 }
+
+/// The editing episodes' GUIDs of `Global/History` (inflated): a `u32`
+/// count, then per episode its GUID (16 bytes, as stored) and one byte,
+/// then a `u32`; read from the stream's end, the count checked against
+/// the entries' size and their bytes against each other (verified on the
+/// MIT project: every element's `EpisodeId` names the episode of its
+/// GlobalId). Empty when the stream does not read so.
+pub fn episodes(data: &[u8]) -> Vec<[u8; 16]> {
+    const ENTRY: usize = 17;
+    let Some(body) = data.len().checked_sub(4) else {
+        return Vec::new();
+    };
+    for count in 1..=(body / ENTRY) {
+        let start = body - count * ENTRY;
+        let Some(at) = start.checked_sub(4) else {
+            break;
+        };
+        let word = u32::from_le_bytes(data[at..start].try_into().expect("4 bytes"));
+        if word as usize != count {
+            continue;
+        }
+        let entries: Vec<&[u8]> = data[start..body].chunks(ENTRY).collect();
+        let tail = entries[0][16];
+        if entries.iter().all(|e| e[16] == tail) {
+            return entries
+                .iter()
+                .map(|e| e[..16].try_into().expect("16 bytes"))
+                .collect();
+        }
+    }
+    Vec::new()
+}
+
+/// An element's IFC GlobalId: its creation episode's GUID with the last
+/// four bytes (in the GUID's text order) xor-ed with the element id, in
+/// IFC's 22-character base-64 form (ISO 16739's encoding of a GUID).
+pub fn ifc_global_id(episode: &[u8; 16], id: i64) -> String {
+    // The stored GUID: Data1, Data2, Data3 little-endian, Data4 as is.
+    let mut b = [0u8; 16];
+    b[..4].copy_from_slice(&[episode[3], episode[2], episode[1], episode[0]]);
+    b[4..6].copy_from_slice(&[episode[5], episode[4]]);
+    b[6..8].copy_from_slice(&[episode[7], episode[6]]);
+    b[8..].copy_from_slice(&episode[8..]);
+    let tail = u32::from_be_bytes(b[12..].try_into().expect("4 bytes")) ^ (id as u32);
+    b[12..].copy_from_slice(&tail.to_be_bytes());
+    let n = u128::from_be_bytes(b);
+    const DIGITS: &[u8; 64] = b"0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz_$";
+    (0..22)
+        .rev()
+        .map(|k| DIGITS[((n >> (6 * k)) & 63) as usize] as char)
+        .collect()
+}
+
+#[cfg(test)]
+mod episode_tests {
+    use super::*;
+
+    #[test]
+    fn global_ids_of_an_episode() {
+        // An episode stored as the files store GUIDs; its element 20796's
+        // GlobalId as the IFC export of the MIT project names it.
+        let stored = [
+            0x04, 0xc3, 0xd5, 0xb9, 0x5d, 0xc6, 0x23, 0x44, 0x9f, 0x5c, 0x71, 0x87, 0x51, 0x70,
+            0x10, 0x22,
+        ];
+        assert_eq!(ifc_global_id(&stored, 20796), "2vrSC4nbr48vzSSOTHS44U");
+        let mut stream = vec![0xffu8, 4, 1, 0];
+        stream.extend(2u32.to_le_bytes());
+        for g in [[1u8; 16], stored] {
+            stream.extend(g);
+            stream.push(0x28);
+        }
+        stream.extend(0u32.to_le_bytes());
+        assert_eq!(episodes(&stream), vec![[1u8; 16], stored]);
+    }
+}

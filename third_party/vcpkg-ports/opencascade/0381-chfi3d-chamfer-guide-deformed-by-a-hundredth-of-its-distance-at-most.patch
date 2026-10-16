@@ -1,0 +1,97 @@
+Mitcad's patch to OCCT 8.0.1, under OCCT's licence:
+SPDX-License-Identifier: LGPL-2.1-only WITH OCCT-exception-1.0
+
+Chamfers: a chamfer's guide is not deformed beyond a hundredth of its
+distance (mitcad#263).
+
+The case: a chamfer along a chain of edges joined tangentially whose
+curvature jumps at the joints (a crease up a wall and on over the rim's
+roundings). ChFi3d_PerformElSpine makes the guide C2 by removing knots
+within up to a tenth of the guide's length; the guide then ran 0.03 to 0.08
+off the edges along the wall, and a chamfer's contacts, at its distances
+from the guide, moved with it (the chamfer's section along a straight wall
+0.0012 mm^2 short of its triangle for a chamfer of 0.2). For a chamfer the
+knots are removed only where the guide moves by a hundredth of the
+chamfer's smallest distance at most (ChFi3d_ChamferGuideDeformation);
+other blends are unchanged.
+
+diff --git a/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_0.cxx b/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_0.cxx
+--- a/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_0.cxx
++++ b/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_0.cxx
+@@ -28,6 +28,7 @@
+ #include <BRepTopAdaptor_TopolTool.hxx>
+ #include <BRep_Builder.hxx>
+ #include <ChFi3d.hxx>
++#include <ChFiDS_ChamfSpine.hxx>
+ #include <ChFiDS_FilSpine.hxx>
+ #include <ElCLib.hxx>
+ #include <ElSLib.hxx>
+@@ -6234,6 +6235,41 @@ static bool GoodExt(const occ::handle<Geom_Curve>& C,
+   return true;
+ }
+ 
++//=======================================================================
++// function : ChFi3d_ChamferGuideDeformation
++// purpose  : How far the smoothing of a guide may move it: for a chamfer,
++//            whose contacts lie at its distances from the guide, a
++//            hundredth of its smallest distance; for others no limit.
++//=======================================================================
++
++static double ChFi3d_ChamferGuideDeformation(const occ::handle<ChFiDS_Spine>& Spine)
++{
++  const occ::handle<ChFiDS_ChamfSpine> aChSp = occ::down_cast<ChFiDS_ChamfSpine>(Spine);
++  if (aChSp.IsNull())
++  {
++    return RealLast();
++  }
++  double aDist1 = 0., aDist2 = 0.;
++  switch (aChSp->IsChamfer())
++  {
++    case ChFiDS_Sym:
++      aChSp->GetDist(aDist1);
++      aDist2 = aDist1;
++      break;
++    case ChFiDS_TwoDist:
++      aChSp->Dists(aDist1, aDist2);
++      break;
++    default: {
++      double anAngle = 0.;
++      aChSp->GetDistAngle(aDist1, anAngle);
++      aDist2 = aDist1 * std::tan(anAngle);
++      break;
++    }
++  }
++  const double aDist = std::min(std::abs(aDist1), std::abs(aDist2));
++  return aDist > 0. ? 0.01 * aDist : RealLast();
++}
++
+ //=================================================================================================
+ 
+ Standard_EXPORT void ChFi3d_PerformElSpine(occ::handle<ChFiDS_ElSpine>& HES,
+@@ -6694,19 +6730,22 @@ Standard_EXPORT void ChFi3d_PerformElSpine(occ::handle<ChFiDS_ElSpine>& HES,
+     MultMax = BSpline->Degree() - 2;
+   }
+   // correction C2 or C3 (if possible)
+-  CurveCleaner(BSpline, std::abs(WL - WF) * 1.e-4, 1);
+-  CurveCleaner(BSpline, std::abs(WL - WF) * 1.e-2, MultMax);
++  // (A chamfer's contacts move with its guide: knots are removed from the
++  // guide of a chamfer deforming it by a hundredth of its distance at most.)
++  const double aMaxDeform = ChFi3d_ChamferGuideDeformation(Spine);
++  CurveCleaner(BSpline, std::min(std::abs(WL - WF) * 1.e-4, aMaxDeform), 1);
++  CurveCleaner(BSpline, std::min(std::abs(WL - WF) * 1.e-2, aMaxDeform), MultMax);
+   int MultMin = std::max(BSpline->Degree() - 4, 1);
+   for (ii = fk; ii <= lk; ii++)
+   {
+     if (BSpline->Multiplicity(ii) > MultMax)
+     {
+-      Bof = BSpline->RemoveKnot(ii, MultMax, std::abs(WL - WF) / 10);
++      Bof = BSpline->RemoveKnot(ii, MultMax, std::min(std::abs(WL - WF) / 10, aMaxDeform));
+     }
+     // See C4
+     if (BSpline->Multiplicity(ii) > MultMin)
+     {
+-      Bof = BSpline->RemoveKnot(ii, MultMin, std::abs(WL - WF) * 1.e-4);
++      Bof = BSpline->RemoveKnot(ii, MultMin, std::min(std::abs(WL - WF) * 1.e-4, aMaxDeform));
+     }
+   }
+   // elspine periodic => BSpline Periodic

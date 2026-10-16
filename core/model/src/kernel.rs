@@ -1025,6 +1025,24 @@ pub trait Kernel {
     ) -> Result<BooleanOutput<Self::Shape>, KernelError> {
         Err(KernelError::Unsupported("joins within a tolerance"))
     }
+
+    // Cuts within a tolerance (an importer's bodies that match a file's
+    // only within its geometric tolerance, mitcad#235).
+
+    /// [`Kernel::boolean`]'s cut, widened where it fails exactly: a cut of
+    /// a target that gives an error, an invalid result, a result whose
+    /// solids could not be built with all the faces or one with pieces of
+    /// the tool left inside it is retried with the
+    /// smallest fuzzy value up to `tolerance` that gives a valid result of
+    /// all its faces. A cut that works exactly is the same as `boolean`'s.
+    fn cut_within(
+        &self,
+        _targets: &[&Self::Shape],
+        _tool: &Self::Shape,
+        _tolerance: f64,
+    ) -> Result<BooleanOutput<Self::Shape>, KernelError> {
+        Err(KernelError::Unsupported("cuts within a tolerance"))
+    }
 }
 
 /// How a tool lies against a body ([`Kernel::tool_contacts`]).

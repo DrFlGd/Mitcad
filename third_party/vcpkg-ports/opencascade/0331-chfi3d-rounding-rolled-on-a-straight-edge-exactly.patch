@@ -1,0 +1,278 @@
+Mitcad's patch to OCCT 8.0.1, under OCCT's licence:
+SPDX-License-Identifier: LGPL-2.1-only WITH OCCT-exception-1.0
+
+Fillets: a rounding whose ball rolls on a plane and on a straight edge
+parallel to it is the exact cylinder.
+
+A rounding wider than the face beside its edge (a block's top edge rounded
+with 5, the block's side 3 high on a plate) rolls on that face's far edge
+(0170's rolling ball, BRepBlend_SurfRstConstRad): its ball touches the top
+and the side's edge with the plate. Along a straight guide, with the top a
+plane and the edge a line parallel to it, the ball's centres lie on a line
+and the blend is a cylinder of the radius about it. OCCT walked it and
+stored the approximation (a B-spline surface and curves, within the
+approximation's tolerance); a later rounding of edges of the result (the
+block's front edges, the top's and the arc's) failed on the approximation,
+and the stored designs these come from have the cylinder.
+
+ChFi3d_ExactRollOnLine, after CompleteData in the two
+ChFi3d_FilBuilder::PerformSurf of a constant blend rolling on a
+restriction: where the rolled-on surface is a plane, the restriction's edge
+a line parallel to it and the guide straight and parametrized by its
+length, and the walked contacts lie on the exact ones within 1e-3, the
+SurfData's surface is replaced by the cylinder (its V the guide's
+parameter, its normal on the walked surface's side, trimmed in U to the
+section as the walked surface is: code that takes the section from the
+surface's bounds, as the ball's centre at an end for 0390, finds it) and its interferences'
+curves by the contacts' lines, with exact p-curves on the plane and on a
+planar restriction face (else the walked one), on the same parameters;
+anything else is left as walked. (The edge on the rolled edge, where the
+rounding meets the face beyond at an angle, gets no regularity with 0350.)
+diff --git a/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_FilBuilder.cxx b/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_FilBuilder.cxx
+index 5789dc5..928dac5 100644
+--- a/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_FilBuilder.cxx
++++ b/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_FilBuilder.cxx
+@@ -82,6 +82,15 @@
+ #include <TopoDS.hxx>
+ #include <gp.hxx>
+ #include <gp_Lin.hxx>
++#include <ElCLib.hxx>
++#include <Geom2d_Line.hxx>
++#include <Geom_CylindricalSurface.hxx>
++#include <Geom_RectangularTrimmedSurface.hxx>
++#include <Geom_Line.hxx>
++#include <gp_Ax3.hxx>
++#include <gp_Dir2d.hxx>
++#include <gp_Pln.hxx>
++#include <TopOpeBRepDS_DataStructure.hxx>
+ 
+ #ifdef OCCT_DEBUG
+   #include <OSD_Chronometer.hxx>
+@@ -2104,6 +2113,209 @@ bool ChFi3d_FilBuilder::PerformFirstSection(const occ::handle<ChFiDS_Spine>&
+   }
+ }
+ 
++//=======================================================================
++// function : ChFi3d_ExactRollOnLine
++// purpose  : A constant blend rolling on a plane (side ISurf, HSurf) and on
++//            a straight edge (the restriction, side IRst, on face HRst)
++//            parallel to it, along a straight guide: the ball's centres
++//            lie on a line, the blend is a cylinder of the radius about it,
++//            its contacts lines along the guide. The walked blend is an
++//            approximation of it (a B-spline surface and curves); this
++//            replaces them with the cylinder and the lines, on the same
++//            parameters (the guide's along the blend, its contacts' sides
++//            at U = const), when the walked contacts lie on those lines.
++//            Returns false, leaving Data as it is, otherwise.
++//=======================================================================
++
++static bool ChFi3d_ExactRollOnLine(TopOpeBRepDS_DataStructure&             DStr,
++                                   const occ::handle<ChFiDS_SurfData>&     Data,
++                                   const int                               IRst,
++                                   const occ::handle<BRepAdaptor_Surface>& HSurf,
++                                   const occ::handle<BRepAdaptor_Surface>& HRst,
++                                   const occ::handle<BRepAdaptor_Curve2d>& PCRst,
++                                   const occ::handle<ChFiDS_ElSpine>&      HGuide,
++                                   const double                            Radius,
++                                   const double                            Tol)
++{
++  if (HSurf.IsNull() || HRst.IsNull() || PCRst.IsNull() || HGuide.IsNull() || Data->Surf() <= 0
++      || HSurf->GetType() != GeomAbs_Plane || PCRst->Edge().IsNull())
++  {
++    return false;
++  }
++  BRepAdaptor_Curve aCE(PCRst->Edge());
++  if (aCE.GetType() != GeomAbs_Line)
++  {
++    return false;
++  }
++  const int                ISurf = 3 - IRst;
++  ChFiDS_FaceInterference& aFS   = Data->ChangeInterference(ISurf);
++  ChFiDS_FaceInterference& aFR   = Data->ChangeInterference(IRst);
++  if (aFS.LineIndex() <= 0 || aFR.LineIndex() <= 0 || aFS.PCurveOnSurf().IsNull()
++      || aFR.PCurveOnSurf().IsNull())
++  {
++    return false;
++  }
++  const double t0 = aFS.FirstParameter(), t1 = aFS.LastParameter();
++  if (!(t1 - t0 > 10. * Precision::Confusion()))
++  {
++    return false;
++  }
++  // The guide: straight, parametrized by its length.
++  const gp_Pnt aG0 = HGuide->Value(t0), aG1 = HGuide->Value(t1);
++  if (std::abs(aG0.Distance(aG1) - (t1 - t0)) > Tol)
++  {
++    return false;
++  }
++  const gp_Dir aD(gp_Vec(aG0, aG1));
++  const gp_Pnt aGm = HGuide->Value(0.5 * (t0 + t1));
++  if (gp_Lin(aG0, aD).Distance(aGm) > Tol)
++  {
++    return false;
++  }
++  const gp_Lin aLE = aCE.Line();
++  const gp_Pln aPl = HSurf->Plane();
++  const gp_Dir aN  = aPl.Axis().Direction();
++  if (!aLE.Direction().IsParallel(aD, Precision::Angular()) || std::abs(aD.Dot(aN)) > Precision::Angular())
++  {
++    return false;
++  }
++  // The centre in the section across the guide at its middle, from the
++  // walked contacts there: at Radius from the plane, on the side of the
++  // contact on the edge, and at Radius from the edge.
++  const double                   tm  = 0.5 * (t0 + t1);
++  const occ::handle<Geom_Curve>& aCS = DStr.Curve(aFS.LineIndex()).Curve();
++  const occ::handle<Geom_Curve>& aCR = DStr.Curve(aFR.LineIndex()).Curve();
++  if (aCS.IsNull() || aCR.IsNull())
++  {
++    return false;
++  }
++  const gp_Pnt aPS  = aCS->Value(tm);
++  const gp_Pnt aPR  = aCR->Value(tm);
++  const double aSide = gp_Vec(aPS, aPR).Dot(gp_Vec(aN)) >= 0. ? 1. : -1.;
++  const gp_Dir aNs  = aSide > 0. ? aN : aN.Reversed();
++  // In the section's plane: the edge's point E, the plane offset by Radius
++  // on that side, and the centre on it at Radius from E nearest to the
++  // walked one.
++  const gp_Pnt aE    = ElCLib::Value(ElCLib::Parameter(aLE, aPS), aLE);
++  const double aH    = gp_Vec(aPl.Location(), aE).Dot(gp_Vec(aNs)); // the edge's height
++  const double aDz   = Radius - aH;                                  // centre above the edge
++  const double aDxSq = Radius * Radius - aDz * aDz;
++  if (aDxSq < 0.)
++  {
++    return false;
++  }
++  const gp_Dir aT  = aNs.Crossed(aD);
++  const gp_Pnt aCw = aPS.Translated(gp_Vec(aNs) * Radius); // the walked centre
++  gp_Pnt       aC;
++  double       aBest = RealLast();
++  for (const double aSign : {1., -1.})
++  {
++    const gp_Pnt aCand =
++      aE.Translated(gp_Vec(aNs) * aDz + gp_Vec(aT) * (aSign * std::sqrt(aDxSq)));
++    if (aCand.Distance(aCw) < aBest)
++    {
++      aBest = aCand.Distance(aCw);
++      aC    = aCand;
++    }
++  }
++  if (aBest > Tol)
++  {
++    return false;
++  }
++  // The contacts' lines and the walked ones: within Tol all along.
++  const gp_Pnt aCS0 = aC.Translated(gp_Vec(aNs) * -Radius);
++  const gp_Pnt aCR0 = aE;
++  const gp_Lin aLS(aCS0, aD), aLR(aCR0, aD), aLC(aC, aD);
++  for (int k = 0; k <= 8; k++)
++  {
++    const double t = t0 + (t1 - t0) * k / 8.;
++    if (aLS.Distance(aCS->Value(t)) > Tol || aLR.Distance(aCR->Value(t)) > Tol
++        || aLC.Distance(HGuide->Value(t)) > aLC.Distance(aG0) + Tol)
++    {
++      return false;
++    }
++  }
++  // The cylinder, its V the guide's parameter: its origin where the centres'
++  // line is across the guide's point of parameter 0. Its normal on the
++  // walked surface's side, its U from the contact on one side (0) to the
++  // other's (in (0, pi)).
++  const gp_Pnt aO = aC.Translated(gp_Vec(aD) * (-ElCLib::Parameter(gp_Lin(aG0, aD), aC) - t0));
++  const occ::handle<Geom_Surface>& aOld = DStr.Surface(Data->Surf()).Surface();
++  gp_Pnt                           aPo;
++  gp_Vec                           aDu, aDv;
++  aOld->D1(aFS.PCurveOnSurf()->Value(tm).X(), tm, aPo, aDu, aDv);
++  const gp_Vec aNo = aDu.Crossed(aDv);
++  if (aNo.Magnitude() < gp::Resolution())
++  {
++    return false;
++  }
++  const gp_Dir aXs(gp_Vec(aC, aCS0)), aXr(gp_Vec(aC, aCR0));
++  const bool   aDirect = aNo.Dot(gp_Vec(aXs)) > 0.; // outward normal: a direct frame
++  double       aUS = 0., aUR = 0.;
++  gp_Ax3       aAx(aO, aD, aXs);
++  if (!aDirect)
++  {
++    aAx.YReverse();
++  }
++  double aPhi = std::atan2(gp_Vec(aXr).Dot(gp_Vec(aAx.YDirection())), gp_Vec(aXr).Dot(gp_Vec(aAx.XDirection())));
++  if (aPhi > 0.)
++  {
++    aUR = aPhi;
++  }
++  else
++  {
++    aAx = gp_Ax3(aO, aD, aXr);
++    if (!aDirect)
++    {
++      aAx.YReverse();
++    }
++    aPhi = std::atan2(gp_Vec(aXs).Dot(gp_Vec(aAx.YDirection())), gp_Vec(aXs).Dot(gp_Vec(aAx.XDirection())));
++    if (!(aPhi > 0.))
++    {
++      return false;
++    }
++    aUS = aPhi;
++  }
++  occ::handle<Geom_CylindricalSurface> aCyl = new Geom_CylindricalSurface(aAx, Radius);
++  // The contacts' 3d lines (parameter: the guide's) and p-curves.
++  const gp_Pnt aS0 = ElSLib::Value(aUS, 0., aCyl->Cylinder());
++  const gp_Pnt aR0 = ElSLib::Value(aUR, 0., aCyl->Cylinder());
++  occ::handle<Geom_Line> aL3S = new Geom_Line(aS0, aD);
++  occ::handle<Geom_Line> aL3R = new Geom_Line(aR0, aD);
++  const auto onPlane = [&aD](const gp_Pln& thePl, const gp_Pnt& theP) -> occ::handle<Geom2d_Curve> {
++    double u, v;
++    ElSLib::PlaneParameters(thePl.Position(), theP, u, v);
++    const gp_Ax3& aPos = thePl.Position();
++    return new Geom2d_Line(gp_Pnt2d(u, v),
++                           gp_Dir2d(aD.Dot(aPos.XDirection()), aD.Dot(aPos.YDirection())));
++  };
++  occ::handle<Geom2d_Curve> aPCS = onPlane(aPl, aS0);
++  occ::handle<Geom2d_Curve> aPCR = aFR.PCurveOnFace();
++  if (HRst->GetType() == GeomAbs_Plane)
++  {
++    aPCR = onPlane(HRst->Plane(), aR0);
++  }
++  if (aPCR.IsNull())
++  {
++    return false;
++  }
++  // Its U bounds are the section's, as a walked blend's (code that takes
++  // the section from the surface's bounds, e.g. the ball's centre at an
++  // end, finds it there).
++  occ::handle<Geom_RectangularTrimmedSurface> aSection =
++    new Geom_RectangularTrimmedSurface(aCyl, std::min(aUS, aUR), std::max(aUS, aUR), true);
++  Data->ChangeSurf(DStr.AddSurface(TopOpeBRepDS_Surface(aSection, 0.)));
++  aFS.SetInterference(DStr.AddCurve(TopOpeBRepDS_Curve(aL3S, Precision::Confusion())),
++                      aFS.Transition(),
++                      aPCS,
++                      new Geom2d_Line(gp_Pnt2d(aUS, 0.), gp::DY2d()));
++  aFR.SetInterference(DStr.AddCurve(TopOpeBRepDS_Curve(aL3R, Precision::Confusion())),
++                      aFR.Transition(),
++                      aPCR,
++                      new Geom2d_Line(gp_Pnt2d(aUR, 0.), gp::DY2d()));
++  return true;
++}
++
+ //=================================================================================================
+ 
+ bool ChFi3d_FilBuilder::PerformSurf(NCollection_Sequence<occ::handle<ChFiDS_SurfData>>& SeqData,
+@@ -2401,6 +2613,8 @@ void ChFi3d_FilBuilder::PerformSurf(NCollection_Sequence<occ::handle<ChFiDS_Surf
+     {
+       throw Standard_Failure("PerformSurf : Failed approximation!");
+     }
++    // Rolling on a plane and on a straight edge parallel to it: exactly.
++    ChFi3d_ExactRollOnLine(myDS->ChangeDS(), Data, 1, HS2, HS1, PC1, HGuide, rad, 1.e-3);
+     maybesingular = (func.GetMinimalDistance() <= 100 * tolapp3d);
+   }
+   else
+@@ -2588,6 +2802,8 @@ void ChFi3d_FilBuilder::PerformSurf(NCollection_Sequence<occ::handle<ChFiDS_Surf
+     {
+       throw Standard_Failure("PerformSurf : Failed approximation!");
+     }
++    // Rolling on a plane and on a straight edge parallel to it: exactly.
++    ChFi3d_ExactRollOnLine(myDS->ChangeDS(), Data, 2, HS1, HS2, PC2, HGuide, rad, 1.e-3);
+     maybesingular = (func.GetMinimalDistance() <= 100 * tolapp3d);
+   }
+   else

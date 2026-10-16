@@ -29,6 +29,7 @@
 #include <BRepPrimAPI_MakeCylinder.hxx>
 #include <BRepPrimAPI_MakePrism.hxx>
 #include <BRepTools.hxx>
+#include <BRep_Builder.hxx>
 #include <BRep_Tool.hxx>
 #include <GProp_GProps.hxx>
 #include <Geom_Circle.hxx>
@@ -36,9 +37,11 @@
 #include <ShapeUpgrade_UnifySameDomain.hxx>
 #include <TopExp_Explorer.hxx>
 #include <TopoDS.hxx>
+#include <TopoDS_Vertex.hxx>
 #include <gp_Ax2.hxx>
 #include <gp_Vec.hxx>
 
+#include "../src/util.hpp"
 #include "check.hpp"
 
 namespace test {
@@ -773,6 +776,27 @@ void test_rib_foot_rounded_across_the_rods_seam() {
   }
 }
 
+
+// A box's vertex given a tolerance of 400 mm (what a rounding left at a
+// corner of a part, mitcad#235) counts as inflated: its edges need less
+// than a micrometre. Tightened in place, it is what they need, and the box
+// stays valid; tolerances below 1 mm, or within ten times the need, are
+// left alone.
+void test_inflated_vertex_tolerances_tightened() {
+  const TopoDS_Shape box = BRepPrimAPI_MakeBox(gp_Pnt(0, 0, 0), gp_Pnt(10, 20, 30)).Shape();
+  TopExp_Explorer first(box, TopAbs_VERTEX);
+  const TopoDS_Vertex vertex = TopoDS::Vertex(first.Current());
+  BRep_Builder().UpdateVertex(vertex, 400.0);
+  CHECK(mitcad::geometry::detail::inflated_vertices(box, false) == 1);
+  CHECK(BRep_Tool::Tolerance(vertex) == 400.0);
+  CHECK(mitcad::geometry::detail::inflated_vertices(box, true) == 1);
+  CHECK(BRep_Tool::Tolerance(vertex) < 1e-6);
+  CHECK(mitcad::geometry::detail::inflated_vertices(box, false) == 0);
+  CHECK(BRepCheck_Analyzer(box).IsValid());
+  BRep_Builder().UpdateVertex(vertex, 0.5);
+  CHECK(mitcad::geometry::detail::inflated_vertices(box, false) == 0);
+}
+
 } // namespace
 
 void fillet_result_tests() {
@@ -793,6 +817,7 @@ void fillet_result_tests() {
   test_roundings_cut_by_each_other_where_the_top_narrows();
   test_concave_roundings_cut_by_each_other_where_a_channel_narrows();
   test_rib_foot_rounded_across_the_rods_seam();
+  test_inflated_vertex_tolerances_tightened();
 }
 
 } // namespace test

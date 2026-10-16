@@ -87,7 +87,12 @@ pub(crate) fn component_dependencies(
                 .sqrt()
         })
         .collect();
-    let skipped = factor.factor(sym, 0.0, DEP_TOL);
+    // The Jacobian has n columns, so its rank is at most n. With nearly
+    // dependent rows the Gram matrix is so ill-conditioned (its condition is
+    // the square of the Jacobian's) that the pivot of a row that lies in the
+    // span of earlier rows can come out above `DEP_TOL`; once n rows are
+    // accepted, every later row is dependent.
+    let skipped = factor.factor_limited(sym, 0.0, DEP_TOL, n);
     let rank = m - skipped;
     let f = &work.f;
     let mut dependent = Vec::new();

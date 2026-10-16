@@ -52,7 +52,9 @@
 #include <gp_Pnt2d.hxx>
 
 #include "blend.hpp"
+#include "canonical.hpp"
 #include "corner.hpp"
+#include "cutouts.hpp"
 #include "face_select.hpp"
 #include "history.hpp"
 #include "mitcad/geometry/boolean.hpp"
@@ -481,6 +483,22 @@ ShapePtr name_result(BRepFilletAPI_LocalOperation& maker, const std::string& fea
   }
   name_consumed_faces(maker, body, namer);
   namer.finish();
+  // Vertex tolerances OCCT inflated far beyond what the vertices' edges need
+  // (detail::inflated_vertices, mitcad#235) are cut down to it: a result
+  // valid with them so is the result; one that is not hid a defect at its
+  // corners behind them (an edge ending off its vertex, faces that cannot
+  // be oriented), which the booleans after it fail on.
+  if (detail::inflated_vertices(namer.result(), false) > 0) {
+    const ShapePtr tightened = detail::working_copy(*namer.shape());
+    detail::inflated_vertices(tightened->occt(), true);
+    if (!BRepCheck_Analyzer(tightened->occt(), true, true).IsValid()) {
+      throw std::runtime_error(std::string(role) +
+                               " failed; the geometry kernel leaves a corner of the rounding open, its gap hidden "
+                               "by a vertex tolerance");
+    }
+    tightened->set_checked_valid(true);
+    return tightened;
+  }
   // One check of a valid result: on a large body BRepCheck takes about as
   // long as the fillet itself (on OCCT's thread pool, mitcad#181).
   if (BRepCheck_Analyzer(namer.result(), true, true).IsValid()) {
@@ -752,6 +770,131 @@ double largest_distance(const ChamferSpec& spec) {
   return spec.distance;
 }
 
+// Why OCCT's fillet did not build the corner at its first faulty vertex
+// (port patch 0330, mitcad#323): which corner (a rounding's end, two or
+// more roundings meeting) and why, from the computation's exception. The
+// text always names a vertex: the import then tries more edges, which can
+// end a rounding at a vertex.
+std::string corner_failure(const BRepFilletAPI_MakeFillet& maker) {
+  std::string what;
+  switch (maker.FailedCorner(1)) {
+  case ChFi3d_Builder::Corner_End:
+  case ChFi3d_Builder::Corner_EndMitred:
+    what = "cannot end the rounding at a vertex";
+    break;
+  case ChFi3d_Builder::Corner_EndMoreSurfdata:
+    what = "cannot end the rounding at a vertex where its last pieces lie on different faces";
+    break;
+  case ChFi3d_Builder::Corner_EndAtIntersection:
+    what = "cannot end the rounding at a vertex where more than three sharp edges meet";
+    break;
+  case ChFi3d_Builder::Corner_Two:
+    what = "cannot join the roundings of two edges at a vertex";
+    break;
+  case ChFi3d_Builder::Corner_Three:
+    what = "cannot join the roundings of three edges at a vertex";
+    break;
+  case ChFi3d_Builder::Corner_More:
+    what = "cannot join the roundings at a vertex where " + std::to_string(maker.FailedCornerBlends(1)) +
+           " roundings and " + std::to_string(maker.FailedCornerEdges(1)) + " sharp edges meet";
+    break;
+  case ChFi3d_Builder::Corner_Singular:
+    what = "cannot join the roundings that end in points at a vertex";
+    break;
+  case ChFi3d_Builder::Corner_None:
+    what = "cannot end or join the rounding at a vertex";
+    break;
+  }
+  // The corner computation's exceptions, by their messages (OCCT's own
+  // and the port's), as causes.
+  static const std::pair<const char*, const char*> causes[] = {
+      {"bouchon non ecrit", "the rounding's end does not meet the face at the end"},
+      {"cap not written", "the rounding's end does not meet the face at the end"},
+      {"fillets have too big radiuses",
+       "where the rounding cuts the face at the end, it crosses another rounding's contact on that face"},
+      {"echec calcul intersection", "the rounding's surface and the face at the end do not intersect"},
+      {"does not cross the face at the end", "the edge beside the end does not cross the face at the end"},
+      {"the max number of faces reached",
+       "the walk round the vertex along the faces at the end does not come back to the rounding"},
+      {"pb intersection Face", "the rounding does not intersect a face at the end"},
+      {"Failed to find edge", "two faces met round the vertex share no edge"},
+      {"Failed to find element", "a face round the vertex has no other edge at it"},
+      {"Failed to get p-curve", "an edge at the vertex has no curve on a face the corner takes it on"},
+      {"no parameters on surface", "an edge at the vertex has no curve on a face the corner takes it on"},
+      {"NULL face", "the two roundings end on no common face"},
+      {"corner not computed", "the pieces of the rounding at its end are not as the corner needs"},
+      {"U1 == U2", "a curve of the corner has no length"},
+      {"no point on arc", "the rounding's contact does not reach the edge at the vertex"},
+      {"ProjLib", "a curve of the corner does not project onto a face"},
+      {"SIGSEGV", "the corner's computation crashed (caught)"},
+      {"ACCESS_VIOLATION", "the corner's computation crashed (caught)"},
+  };
+  const std::string message = maker.FailedCornerMessage(1).ToCString();
+  std::string cause = message.empty() ? "the corner's computation gives no result"
+                                      : "the corner's computation fails (" + message + ")";
+  for (const auto& [key, text] : causes) {
+    if (message.find(key) != std::string::npos) {
+      cause = text;
+      break;
+    }
+  }
+  std::string more;
+  if (maker.NbFaultyVertices() > 1) {
+    more = " (and at " + std::to_string(maker.NbFaultyVertices() - 1) + " more vertices)";
+  }
+  return "the geometry kernel " + what + more + ": " + cause;
+}
+
+// Why OCCT's fillet did not build, from where it stopped (port patch 0320,
+// mitcad#322): a contour's rounding (no start, its walk, a twisted surface,
+// another failure), roundings of contours that overlap, cross or intersect
+// each other, or a corner. The import's report names it; a text that names
+// no vertex marks a failure along the edges (the import's retries rely on
+// that).
+std::string fillet_failure(const BRepFilletAPI_MakeFillet& maker, const Shape& body) {
+  const int ic = maker.FailedContour();
+  std::string along;
+  if (ic > 0 && maker.NbEdges(ic) > 0) {
+    const int edge = body.edge_index(maker.Edge(ic, 1));
+    along = " along " + (edge >= 0 ? describe_edge(body, edge) : std::string("an edge"));
+    if (maker.NbEdges(ic) > 1) {
+      along += " (and " + std::to_string(maker.NbEdges(ic) - 1) + " more edges of its chain)";
+    }
+  }
+  switch (maker.Failure()) {
+  case ChFi3d_Builder::Failure_NoStart:
+    return "the geometry kernel finds no start for the rounding" + along +
+           ": no ball of the radius touches both faces there";
+  case ChFi3d_Builder::Failure_Walk:
+    return "the rounding" + along +
+           " stops part of the way: the geometry kernel's walk between the two faces fails";
+  case ChFi3d_Builder::Failure_WalkOnEdge:
+    return "the rounding" + along +
+           " stops part of the way where it rolls on an edge of a neighbouring face";
+  case ChFi3d_Builder::Failure_Twisted:
+    return "the rounding's surface" + along + " twists: the radius is larger than a face's curvature there";
+  case ChFi3d_Builder::Failure_Stripe:
+    return "the geometry kernel's computation of the rounding" + along + " fails";
+  case ChFi3d_Builder::Failure_Overlap:
+    return "the roundings of two edges overlap on the face between them" +
+           (along.empty() ? std::string() : " (one" + along + ")") +
+           ", and the geometry kernel cannot run them across that face";
+  case ChFi3d_Builder::Failure_Crossing:
+    return "the contacts of two roundings cross on a face" +
+           (along.empty() ? std::string() : " (one" + along + ")") +
+           ", and the geometry kernel cannot cut them by each other";
+  case ChFi3d_Builder::Failure_Intersecting:
+    return "the rounding" + along + " and the rounding of another edge intersect each other";
+  case ChFi3d_Builder::Failure_Corner:
+    return corner_failure(maker);
+  case ChFi3d_Builder::Failure_PartialCorner:
+    return "the geometry kernel builds the corner at a vertex where the roundings meet only in part";
+  case ChFi3d_Builder::Failure_None:
+    break;
+  }
+  return maker.NbFaultyVertices() > 0 ? corner_failure(maker) : "the radius may be too large for the edges";
+}
+
 // The rolling ball fillets of the sets (none asymmetric or G2) that own the
 // body's edges, at their sizes times `scale`.
 ShapePtr round_edges(const std::string& feature, const Shape& body, const std::vector<FilletSet>& sets,
@@ -850,11 +993,7 @@ ShapePtr round_edges(const std::string& feature, const Shape& body, const std::v
   }
   detail::build(maker);
   if (!maker.IsDone()) {
-    std::string reason = "the radius may be too large for the edges";
-    if (maker.NbFaultyVertices() > 0) {
-      reason = "the geometry kernel cannot end or join the rounding at a vertex";
-    }
-    throw std::runtime_error("fillet failed; " + reason);
+    throw std::runtime_error("fillet failed; " + fillet_failure(maker, body));
   }
   const ShapePtr rounded = join_at_turn_stops(name_result(maker, feature, "fillet", body), maker.ChainTurnStops());
   return setbacks.empty() ? rounded : detail::setback_corners(feature, "fillet", body, *rounded, setbacks);
@@ -883,11 +1022,43 @@ int measured_face(const Shape& body, int edge, const std::string& reference, boo
   return (on_a != flip) ? a : b;
 }
 
+// The order the selected edges are given to the chamfer in. OCCT measures a
+// distance-angle or two distances chamfer against one face along the whole
+// tangent chain, the face of the edge it is given first (the chain's other
+// faces take the same role by adjacency). So the edge a chain is added with
+// decides which face of the chain is measured, and the edges' names list
+// their faces in no consistent role along a chain: the seed of a chain is the
+// first edge its set lists (the file's own first edge), not whichever has the
+// lowest index in the body.
+std::vector<int> chamfer_seed_order(const Shape& body, const std::vector<ChamferSet>& sets,
+                                    const std::vector<int>& owner) {
+  std::vector<int> order;
+  std::vector<char> placed(static_cast<std::size_t>(body.edge_count()), 0);
+  for (std::size_t s = 0; s < sets.size(); ++s) {
+    if (sets[s].spec.type == ChamferType::EqualDistance) {
+      continue;
+    }
+    for (int edge : detail::resolve_edges(body, sets[s].edges, sets[s].faces)) {
+      char& done = placed[static_cast<std::size_t>(edge)];
+      if (owner[static_cast<std::size_t>(edge)] == static_cast<int>(s) && done == 0) {
+        done = 1;
+        order.push_back(edge);
+      }
+    }
+  }
+  for (int edge = 0; edge < body.edge_count(); ++edge) {
+    if (placed[static_cast<std::size_t>(edge)] == 0) {
+      order.push_back(edge);
+    }
+  }
+  return order;
+}
+
 // Adds the chamfers of the edges the sets own (with `only`, of the edges it
 // marks), at their sizes times `scale`.
 void add_chamfers(BRepFilletAPI_MakeChamfer& maker, const Shape& body, const std::vector<ChamferSet>& sets,
                   const std::vector<int>& owner, double scale, const std::vector<char>* only = nullptr) {
-  for (int edge = 0; edge < body.edge_count(); ++edge) {
+  for (const int edge : chamfer_seed_order(body, sets, owner)) {
     const int s = owner[static_cast<std::size_t>(edge)];
     if (s < 0 || (only != nullptr && (*only)[static_cast<std::size_t>(edge)] == 0) ||
         maker.Contour(body.edge(edge)) != 0) {
@@ -1845,6 +2016,68 @@ ShapePtr dress(const Shape& input, const std::vector<Set>& sets, const std::vect
   std::rethrow_exception(first);
 }
 
+// A fillet whose roundings run over cut-outs or protrusions of their faces
+// (mitcad#311, cutouts.hpp): `build` rounds the body with them cleared
+// back to the faces' surfaces, and they are put back. Null where none is
+// found or the result is not one valid solid.
+template <class Build>
+ShapePtr over_cutouts(const Shape& input, const std::vector<FilletSet>& sets, const std::vector<int>& owner,
+                      Build&& build) {
+  // How far from its edges a rounding touches its faces (r tan(a / 2), a
+  // the angle between the faces' normals) and changes the body (the
+  // contact and the ball's diameter past it).
+  double contact = 0.0;
+  double reach = 0.0;
+  const detail::EdgeFaces edge_faces(input);
+  for (int e = 0; e < input.edge_count(); ++e) {
+    const int s = owner[static_cast<std::size_t>(e)];
+    if (s < 0) {
+      continue;
+    }
+    const std::vector<int> faces = edge_faces.at(e);
+    if (faces.size() != 2) {
+      return nullptr;
+    }
+    double largest_angle = 0.0;
+    for (const double t : {0.0, 0.5, 1.0}) {
+      largest_angle = std::max(
+          largest_angle, detail::normal_angle(input.edge(e), input.face(faces[0]), input.face(faces[1]), t));
+    }
+    if (!(largest_angle < 2.0 * kHalfPi - 1.0e-3)) {
+      return nullptr;
+    }
+    const double radius = largest_radius(input, sets[static_cast<std::size_t>(s)], e);
+    const double touch = radius * std::tan(largest_angle / 2.0);
+    contact = std::max(contact, touch);
+    reach = std::max(reach, touch + 2.0 * radius);
+  }
+  const ShapePtr copy = detail::working_copy(input);
+  const std::optional<detail::Cutouts> cutouts = detail::fill_cutouts(*copy, owner, contact, reach);
+  if (!cutouts) {
+    return nullptr;
+  }
+  const ShapePtr rounded = build(*cutouts->body, cutouts->owner);
+  ShapePtr result = detail::cut_out_again(rounded, *cutouts, *copy);
+  if (result) {
+    result->add_note("the rounding runs over cut-outs or protrusions of its faces: built with the faces' "
+                     "surfaces cleared of them and with them put back");
+  }
+  return result;
+}
+
+// The dressup's result with the faces OCCT walked as B-splines where they
+// are exactly analytic given their analytic surfaces (canonical.hpp,
+// mitcad#328): a later rounding along them builds, as on the bodies the
+// files store.
+ShapePtr canonical(const Shape& input, ShapePtr result) {
+  if (result) {
+    if (ShapePtr analytic = detail::canonical_dressup(input, *result)) {
+      return analytic;
+    }
+  }
+  return result;
+}
+
 } // namespace
 
 ShapePtr fillet(const std::string& feature, const Shape& input, const std::vector<FilletSet>& sets,
@@ -1859,21 +2092,45 @@ ShapePtr fillet(const std::string& feature, const Shape& input, const std::vecto
     blended[s] = sets[s].size == FilletSize::Asymmetric || sets[s].curvature ? 1 : 0;
     any_blended = any_blended || blended[s] != 0;
   }
-  return with_own_chains("fillet", input, sets, owner, [&](const std::vector<int>& selected) {
-    const auto rings = [&](const Shape& body) { return ring_fillet(feature, body, sets, selected); };
-    return or_rings("fillet", input, [&] {
-      return with_shrink_retry("fillet", [&](double scale) {
-        return dress(input, sets, selected, scale, feature, "fillet", true,
-                     [&](const Shape& body, const std::vector<int>& own, double size_scale, bool tight) {
-                       if (any_blended) {
-                         return round_and_blend(feature, body, sets, own, blended, rolling_ball_corners,
-                                                size_scale, tight);
-                       }
-                       return round_edges(feature, body, sets, own, rolling_ball_corners, size_scale, tight);
-                     });
-      });
-    }, rings);
-  });
+  return canonical(input, with_own_chains("fillet", input, sets, owner, [&](const std::vector<int>& selected) {
+    const auto build = [&](const Shape& target, const std::vector<int>& own_edges) {
+      const auto rings = [&](const Shape& body) { return ring_fillet(feature, body, sets, own_edges); };
+      return or_rings("fillet", target, [&] {
+        return with_shrink_retry("fillet", [&](double scale) {
+          return dress(target, sets, own_edges, scale, feature, "fillet", true,
+                       [&](const Shape& body, const std::vector<int>& own, double size_scale, bool tight) {
+                         if (any_blended) {
+                           return round_and_blend(feature, body, sets, own, blended, rolling_ball_corners,
+                                                  size_scale, tight);
+                         }
+                         return round_edges(feature, body, sets, own, rolling_ball_corners, size_scale, tight);
+                       });
+        });
+      }, rings);
+    };
+    try {
+      return build(input, selected);
+    } catch (const Cancelled&) {
+      throw;
+    } catch (const std::runtime_error&) {
+      // Where the geometry kernel cannot build it, the roundings may run
+      // over cut-outs or protrusions of their faces: built on the body with
+      // them cleared back to the faces' surfaces, and put back
+      // (mitcad#311). Else the kernel's error stands.
+      ShapePtr over;
+      try {
+        over = over_cutouts(input, sets, selected, build);
+      } catch (const Cancelled&) {
+        throw;
+      } catch (...) {
+        over = nullptr;
+      }
+      if (over) {
+        return over;
+      }
+      throw;
+    }
+  }));
 }
 
 ShapePtr fillet(const std::string& feature, const Shape& body, const std::vector<std::string>& edges,
@@ -1897,7 +2154,7 @@ ShapePtr chamfer(const std::string& feature, const Shape& input, const std::vect
     }
   }
   const std::vector<int> owner = select_edges(input, sets);
-  return with_own_chains("chamfer", input, sets, owner, [&](const std::vector<int>& selected) {
+  return canonical(input, with_own_chains("chamfer", input, sets, owner, [&](const std::vector<int>& selected) {
     const auto rings = [&](const Shape& body) { return ring_chamfer(feature, body, sets, selected); };
     return or_rings("chamfer", input, [&] {
       return with_shrink_retry("chamfer", [&](double scale) {
@@ -1907,7 +2164,7 @@ ShapePtr chamfer(const std::string& feature, const Shape& input, const std::vect
                      });
       });
     }, rings);
-  });
+  }));
 }
 
 ShapePtr chamfer(const std::string& feature, const Shape& body, const std::vector<std::string>& edges,

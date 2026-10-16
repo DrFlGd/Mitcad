@@ -176,5 +176,7 @@ void fillet_result_tests();
 void fillet_chain_tests();
 // The tangent chains of a body's edges and faces (mitcad#290).
 void tangent_chain_tests();
+// Roundings that run over cut-outs of their faces (mitcad#311).
+void fillet_cutout_tests();
 
 } // namespace test

@@ -565,6 +565,46 @@ void test_end_chamfers() {
   CHECK(throws_with([&] { modeled_thread(*bolt, wrong); }, "between 0 and 90"));
 }
 
+// A rod of a radius from 0 to 20 with a 45-degree chamfer `size` wide at
+// its top end (`F4:chamfer(E{F2:end(r{c1})|F2:side(c1)})`).
+ShapePtr chamfered_rod(double radius, double size) {
+  const ShapePtr rod = extrude("F2", {circle(1, 0, 0, radius)}, 0, 20);
+  ChamferSpec equal;
+  equal.distance = size;
+  return chamfer("F4", *rod, {"E{F2:end(r{c1})|F2:side(c1)}"}, equal);
+}
+
+void test_sized_chamfered_end() {
+  // The bodies stored after a modelled thread on a shaft sized to the
+  // major diameter keep a chamfer at its free end on the sized face: the
+  // cone moves along the radius with the face, its edge with the face
+  // stays, and its end circle shrinks by as much (mitcad#335). Sizing the
+  // face and moving the cone by the radial step times cos 45 along its
+  // normal (as the .f3d import does) gives the thread on a rod made at the
+  // major diameter with the same chamfer.
+  const double step = (k6g.major - 10.0) / 2.0;
+  const std::string cone = "F4:chamfer(E{F2:end(r{c1})|F2:side(c1)})";
+  const ShapePtr rod = chamfered_rod(5.0, 1.5);
+  CHECK(faces_named(*rod, cone) == 1);
+  const ShapePtr sized = offset_faces("F5", *rod, {"F2:side(c1)"}, step);
+  const ShapePtr moved = offset_faces("F6", *sized, {cone}, step * std::sqrt(0.5));
+  const ThreadSpec spec = spec_of("F7", "F2:side(c1)", 1.5, k6g);
+  const ShapePtr threaded = modeled_thread(*moved, spec);
+  const ShapePtr made = modeled_thread(*chamfered_rod(k6g.major / 2.0, 1.5), spec);
+  CHECK_NEAR_TOL(volume(*threaded), volume(*made), 1e-7);
+  // The cone from the crest at 18.5 to a radius of 4.925 - 1.5 at the end.
+  const double end = k6g.major / 2.0 - 1.5;
+  CHECK(inside(*threaded, gp_Pnt(end - 0.01, 0, 20 - 1e-3)));
+  CHECK(!inside(*threaded, gp_Pnt(end + 0.01, 0, 20 - 1e-3)));
+  CHECK(near(bounding_box(*threaded).max.Z(), 20, 1e-6));
+  // With the face sized alone the cone stays where it was: 1.92 mm3 more,
+  // 0.15 % of the bolt.
+  const ShapePtr alone = modeled_thread(*sized, spec);
+  CHECK(volume(*alone) - volume(*made) > 1.5);
+  // The two moves alone give the rod made at the major diameter.
+  CHECK_NEAR_TOL(volume(*moved), volume(*chamfered_rod(k6g.major / 2.0, 1.5)), 1e-9);
+}
+
 // A plate with a grid of n x n small holes (some thousands of faces for n
 // of 56) with a 10 mm shaft 20 long standing on a pad on it.
 ShapePtr perforated(int n) {
@@ -628,6 +668,7 @@ void thread_tests() {
   guarded("test_bolt_clearance", test_bolt_clearance);
   guarded("test_hole_clearance", test_hole_clearance);
   guarded("test_end_chamfers", test_end_chamfers);
+  guarded("test_sized_chamfered_end", test_sized_chamfered_end);
   guarded("test_large_body", test_large_body);
 }
 

@@ -501,8 +501,11 @@ impl<K: crate::ImportKernel> Importer<'_, K> {
             planes.entry(body).or_default().push((face, plane));
         }
         let mut candidates = Vec::new();
+        let sources = self.derive_sources();
         for instance in self.doc.instances() {
-            if instance.component == self.component {
+            if instance.component == self.component
+                || instance.path.iter().any(|o| sources.contains(o))
+            {
                 continue;
             }
             let Some(faces) = planes.get(&instance.body) else {
@@ -631,8 +634,12 @@ impl<K: crate::ImportKernel> Importer<'_, K> {
             let margin = 1.0;
             (0..2).all(|k| hi[k] >= low[k] - margin && lo[k] <= high[k] + margin)
         };
+        // (Not through derives' hidden sources, mitcad#324.)
+        let sources = self.derive_sources();
         for instance in self.doc.instances() {
-            if instance.component == self.component {
+            if instance.component == self.component
+                || instance.path.iter().any(|o| sources.contains(o))
+            {
                 continue;
             }
             let t = into.after(&instance.transform);

@@ -1,0 +1,338 @@
+Mitcad's patch to OCCT 8.0.1, under OCCT's licence:
+SPDX-License-Identifier: LGPL-2.1-only WITH OCCT-exception-1.0
+
+Fillets: a rounding rolling on an edge from one OnSame end of the spine to
+the other, whose walk past an end stopped on the seam of the other face
+before the ball comes tangent to the edge's face (mitcad#236, with 0340).
+
+The case of 0340 (a rod with a ridge, the ridge's end rounded wider than
+the lens it ends with), where the rod's seam runs past the spine's end
+between the lens's tip and the point where the ball comes tangent to the
+ridge's side: the walk past that end stopped on the seam, a blend rolling
+on an edge ends at the spine's end there (0011), and the corner had no
+point where 0340's cut by the ridge's side starts.
+
+- ChFi3d_Builder::RolledEndToEndAcrossSeam, called by PerformSetOfSurf: a
+  stripe of one SurfData rolling on an edge Er of its face B, Er running
+  from the spine's first vertex to its last, both ends OnSame, where at an
+  end the contact on the other face N stopped on N's seam short of the
+  ball's tangency to B: the blend is walked again from the middle of the
+  SurfData, both ways, N's surface unbounded, still rolling on Er, and
+  replaces the SurfData when both its ends are such tangencies. Its curve
+  on N is taken in the period of the old one at the start; its parts
+  across N's seam lie past the faces at the ends, which cut them off.
+
+Upstream: new.
+diff --git a/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder.hxx b/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder.hxx
+index ae0ca00..30fb9df 100644
+--- a/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder.hxx
++++ b/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder.hxx
+@@ -994,6 +994,13 @@ private:
+   //! piece is cut by the face beyond; the stripe ends in a point there.
+   Standard_EXPORT bool RolledCutToEnd(const occ::handle<ChFiDS_Stripe>& Stripe, const bool isFirst);
+ 
++  //! A stripe of one blend rolling on an edge of its face from one OnSame end
++  //! of the spine to the other, whose walk stopped on the seam of the other
++  //! side's face short of where the ball comes tangent to the edge's face at
++  //! an end: the blend is walked again with that face's surface unbounded, so
++  //! that it reaches those points at both ends (the corners cut it there).
++  Standard_EXPORT bool RolledEndToEndAcrossSeam(const occ::handle<ChFiDS_Stripe>& Stripe);
++
+   Standard_EXPORT void ConexFaces(const occ::handle<ChFiDS_Spine>&  Sp,
+                                   const int                         IEdge,
+                                   occ::handle<BRepAdaptor_Surface>& HS1,
+diff --git a/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_2.cxx b/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_2.cxx
+index 2cb4d40..7fd8688 100644
+--- a/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_2.cxx
++++ b/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_2.cxx
+@@ -8122,6 +8122,282 @@ bool ChFi3d_Builder::RolledCutToEnd(const occ::handle<ChFiDS_Stripe>& Stripe, co
+   return true;
+ }
+ 
++// Whether the ball of SD, rolling on side S on an edge of face F, is tangent
++// to F at SD's end (its first end if isFirst): the blend's normal at its
++// contact there along F's normal.
++static bool ChFi3d_RolledBallTangentAtEnd(const TopOpeBRepDS_DataStructure&   DStr,
++                                          const occ::handle<ChFiDS_SurfData>& SD,
++                                          const int                           S,
++                                          const TopoDS_Face&                  F,
++                                          const bool                          isFirst,
++                                          const double                        theAngTol)
++{
++  const ChFiDS_FaceInterference& Fi = SD->Interference(S);
++  if (Fi.PCurveOnSurf().IsNull() || Fi.PCurveOnFace().IsNull() || SD->Surf() <= 0)
++  {
++    return false;
++  }
++  const double                     t   = Fi.Parameter(isFirst);
++  const occ::handle<Geom_Surface>& SB  = DStr.Surface(SD->Surf()).Surface();
++  const gp_Pnt2d                   uvB = Fi.PCurveOnSurf()->Value(t);
++  const gp_Pnt2d                   uvF = Fi.PCurveOnFace()->Value(t);
++  gp_Pnt                           pB, pF;
++  gp_Vec                           duB, dvB, duF, dvF;
++  SB->D1(uvB.X(), uvB.Y(), pB, duB, dvB);
++  BRepAdaptor_Surface aF(F, false);
++  aF.D1(uvF.X(), uvF.Y(), pF, duF, dvF);
++  const gp_Vec nB = duB.Crossed(dvB), nF = duF.Crossed(dvF);
++  if (nB.Magnitude() < gp::Resolution() || nF.Magnitude() < gp::Resolution())
++  {
++    return false;
++  }
++  const double a = nB.Angle(nF);
++  return std::min(a, M_PI - a) <= theAngTol && pB.Distance(pF) <= 1.e-4;
++}
++
++//=======================================================================
++// function : RolledEndToEndAcrossSeam
++// purpose  : A stripe of one SurfData P whose blend rolls on side opp on
++//            an edge Er of its face B, Er running from the spine's first
++//            vertex to its last, both ends OnSame (a rounding wider than
++//            the face it ends against, the ball rolling on that face's edge
++//            with B). Past each end the ball goes on until it comes tangent
++//            to B, and B cuts the blend there (PerformOneCorner). Where the
++//            walk past an end stopped on the seam of the other side's face
++//            N before that, the blend is walked again from the middle of
++//            P, N's surface unbounded, and replaces P.
++//=======================================================================
++
++bool ChFi3d_Builder::RolledEndToEndAcrossSeam(const occ::handle<ChFiDS_Stripe>& Stripe)
++{
++  const occ::handle<ChFiDS_Spine>& Spine = Stripe->Spine();
++  if (Spine.IsNull() || Spine->IsPeriodic() || Stripe->SetOfSurfData().IsNull()
++      || Stripe->SetOfSurfData()->Length() != 1 || Spine->ChangeElSpines().Extent() != 1)
++  {
++    return false;
++  }
++  if (Spine->FirstStatus() != ChFiDS_OnSame || Spine->LastStatus() != ChFiDS_OnSame)
++  {
++    return false;
++  }
++  const occ::handle<ChFiDS_FilSpine> fsp = occ::down_cast<ChFiDS_FilSpine>(Spine);
++  if (fsp.IsNull() || !fsp->IsConstant())
++  {
++    return false;
++  }
++  TopOpeBRepDS_DataStructure&        DStr = myDS->ChangeDS();
++  const occ::handle<ChFiDS_SurfData> P    = Stripe->SetOfSurfData()->Sequence().First();
++  int                                opp  = 0;
++  for (int s = 1; s <= 2 && opp == 0; s++)
++  {
++    if (P->IsOnCurve(s) && !P->IsOnCurve(3 - s) && P->IndexOfC(s) > 0)
++    {
++      opp = s;
++    }
++  }
++  if (opp == 0 || P->Index(1) <= 0 || P->Index(2) <= 0)
++  {
++    return false;
++  }
++  const int         ons = 3 - opp;
++  const TopoDS_Edge Er  = TopoDS::Edge(DStr.Shape(P->IndexOfC(opp)));
++  const TopoDS_Face B   = TopoDS::Face(DStr.Shape(P->Index(opp)));
++  const TopoDS_Face N   = TopoDS::Face(DStr.Shape(P->Index(ons)));
++  if (!myEFMap.Contains(Er) || N.IsSame(B))
++  {
++    return false;
++  }
++  {
++    bool atFirst = false, atLast = false, onB = false;
++    for (TopExp_Explorer ex(Er, TopAbs_VERTEX); ex.More(); ex.Next())
++    {
++      atFirst = atFirst || ex.Current().IsSame(Spine->FirstVertex());
++      atLast  = atLast || ex.Current().IsSame(Spine->LastVertex());
++    }
++    for (TopExp_Explorer ex(B, TopAbs_EDGE); ex.More() && !onB; ex.Next())
++    {
++      onB = ex.Current().IsSame(Er);
++    }
++    if (!atFirst || !atLast || !onB)
++    {
++      return false;
++    }
++  }
++  // An end short of the ball's tangency to B, where the contact on N stopped
++  // on N's seam.
++  const occ::handle<Geom_Surface> SN = BRep_Tool::Surface(N);
++  if (SN.IsNull() || !SN->IsUPeriodic())
++  {
++    return false;
++  }
++  bool aShortEnd = false;
++  for (int e = 0; e < 2 && !aShortEnd; e++)
++  {
++    const bool                isFirst = e == 0;
++    const ChFiDS_CommonPoint& CPn     = P->Vertex(isFirst, ons);
++    aShortEnd = CPn.IsOnArc() && BRep_Tool::IsClosed(TopoDS::Edge(CPn.Arc()), N)
++                && !ChFi3d_RolledBallTangentAtEnd(DStr, P, opp, B, isFirst, 0.05);
++  }
++  if (!aShortEnd)
++  {
++    return false;
++  }
++  TopoDS_Face Fref;
++  for (NCollection_List<TopoDS_Shape>::Iterator it(myEFMap(Er)); it.More() && Fref.IsNull(); it.Next())
++  {
++    if (!it.Value().IsSame(B))
++    {
++      Fref = TopoDS::Face(it.Value());
++    }
++  }
++  if (Fref.IsNull())
++  {
++    return false;
++  }
++  occ::handle<ChFiDS_ElSpine> HGuide = Spine->ChangeElSpines().First();
++  const double                W0     = 0.5 * (P->FirstSpineParam() + P->LastSpineParam());
++  if (HGuide.IsNull() || W0 < HGuide->FirstParameter() || W0 > HGuide->LastParameter())
++  {
++    return false;
++  }
++  // The start: P's section at W0.
++  const ChFiDS_FaceInterference& FN = P->Interference(ons);
++  const ChFiDS_FaceInterference& FR = P->Interference(opp);
++  if (FN.PCurveOnFace().IsNull() || FR.LineIndex() <= 0 || FN.LineIndex() <= 0)
++  {
++    return false;
++  }
++  const gp_Pnt2d                uvN = FN.PCurveOnFace()->Value(W0);
++  double                        ef = 0., el = 0.;
++  const occ::handle<Geom_Curve> CEr = BRep_Tool::Curve(Er, ef, el);
++  if (CEr.IsNull())
++  {
++    return false;
++  }
++  GeomAPI_ProjectPointOnCurve aPrE(DStr.Curve(FR.LineIndex()).Curve()->Value(W0), CEr, ef, el);
++  if (aPrE.NbPoints() == 0 || aPrE.LowerDistance() > 1.e-4)
++  {
++    return false;
++  }
++  // N's surface unbounded, its seam half a period from the start.
++  double u1 = 0., u2 = 0., v1 = 0., v2 = 0.;
++  SN->Bounds(u1, u2, v1, v2);
++  u1             = uvN.X() - 0.5 * SN->UPeriod();
++  u2             = u1 + SN->UPeriod();
++  TopoDS_Face NF = BRepLib_MakeFace(SN, u1, u2, v1, v2, Precision::Confusion());
++  if (NF.IsNull())
++  {
++    return false;
++  }
++  NF.Orientation(N.Orientation());
++  TopoDS_Face BF = B;
++  BF.Orientation(TopAbs_FORWARD);
++  const TopoDS_Edge ErB = edgeInFace(Er, BF);
++  if (ErB.IsNull())
++  {
++    return false;
++  }
++  occ::handle<BRepAdaptor_Surface>      HSN = new BRepAdaptor_Surface(NF);
++  occ::handle<BRepAdaptor_Surface>      HSB = new BRepAdaptor_Surface(B);
++  occ::handle<BRepAdaptor_Curve2d>      PCB = new BRepAdaptor_Curve2d(ErB, B);
++  occ::handle<BRepTopAdaptor_TopolTool> ItN = new BRepTopAdaptor_TopolTool(HSN);
++  occ::handle<BRepTopAdaptor_TopolTool> ItB = new BRepTopAdaptor_TopolTool(HSB);
++  // (As for the blends on an edge of PerformSetOfSurfOnElSpine.)
++  TopAbs_Orientation OrN = NF.Orientation();
++  TopAbs_Orientation OrR = Fref.Orientation();
++  int                Choix;
++  if (ons == 1)
++  {
++    Choix = ChFi3d::NextSide(OrN, OrR, Stripe->OrientationOnFace1(), Stripe->OrientationOnFace2(), Stripe->Choix());
++  }
++  else
++  {
++    Choix = ChFi3d::NextSide(OrR, OrN, Stripe->OrientationOnFace1(), Stripe->OrientationOnFace2(), -Stripe->Choix());
++    Choix = Choix % 2 == 1 ? Choix + 1 : Choix - 1;
++  }
++  math_Vector Soldep(1, 3);
++  {
++    // (In the period of NF's parameters.)
++    double a = 0., b = 0., c = 0., d = 0.;
++    BRepTools::UVBounds(NF, a, b, c, d);
++    Soldep(1) = ElCLib::InPeriod(uvN.X(), a, a + SN->UPeriod());
++  }
++  Soldep(2) = uvN.Y();
++  Soldep(3) = aPrE.LowerDistanceParameter();
++  NCollection_Sequence<occ::handle<ChFiDS_SurfData>> SeqSD;
++  SeqSD.Append(new ChFiDS_SurfData());
++  // (A walk from inside, both ways, as the first walk of the stripe.)
++  double                   First = W0, Last = HGuide->FirstParameter();
++  const double             MaxStep  = 0.05 * (Spine->LastParameter(Spine->NbEdges()) - Spine->FirstParameter(1));
++  const double             Fleche   = (HGuide->LastParameter() - HGuide->FirstParameter()) * fleche;
++  bool                     decroch  = false;
++  bool                     walked   = true;
++  const bool               doneSave = done;
++  const ChFiDS_ErrorStatus stSave   = Spine->ErrorStatus();
++  try
++  {
++    OCC_CATCH_SIGNALS
++    if (ons == 1)
++    {
++      PerformSurf(SeqSD, HGuide, Spine, Choix, HSN, ItN, OrN, HSB, ItB, PCB, HSB, PCB, decroch, MaxStep, Fleche,
++                  tolesp, First, Last, true, true, true, false, false, false, Soldep);
++    }
++    else
++    {
++      PerformSurf(SeqSD, HGuide, Spine, Choix, HSB, ItB, PCB, HSB, PCB, decroch, HSN, ItN, OrN, MaxStep, Fleche,
++                  tolesp, First, Last, true, true, true, false, false, false, Soldep);
++    }
++  }
++  catch (Standard_Failure const&)
++  {
++    walked = false;
++  }
++  done = doneSave;
++  Spine->SetErrorStatus(stSave);
++  if (!walked || SeqSD.Length() != 1)
++  {
++    return false;
++  }
++  occ::handle<ChFiDS_SurfData> X = SeqSD.First();
++  // It must reach the ball's tangency to B at both ends, past P's ends.
++  if (X->FirstSpineParam() > P->FirstSpineParam() + 10. * tolesp
++      || X->LastSpineParam() < P->LastSpineParam() - 10. * tolesp
++      || !ChFi3d_RolledBallTangentAtEnd(DStr, X, opp, B, true, 0.05)
++      || !ChFi3d_RolledBallTangentAtEnd(DStr, X, opp, B, false, 0.05))
++  {
++    return false;
++  }
++  X->ChangeIndexOfS1(DStr.AddShape(ons == 1 ? N : B));
++  X->ChangeIndexOfS2(DStr.AddShape(ons == 1 ? B : N));
++  if (opp == 1)
++  {
++    X->SetIndexOfC1(DStr.AddShape(Er));
++  }
++  else
++  {
++    X->SetIndexOfC2(DStr.AddShape(Er));
++  }
++  // X's curve on N in the period of P's at W0 (the parts across N's seam
++  // lie past the faces at the ends, which cut them off).
++  {
++    ChFiDS_FaceInterference&        FX  = X->ChangeInterference(ons);
++    const occ::handle<Geom2d_Curve> PCX = FX.PCurveOnFace();
++    if (PCX.IsNull())
++    {
++      return false;
++    }
++    const double T   = SN->UPeriod();
++    const double aU  = PCX->Value(W0).X();
++    const double aDU = ElCLib::InPeriod(aU, uvN.X() - 0.5 * T, uvN.X() + 0.5 * T) - aU;
++    if (std::abs(aDU) > Precision::PConfusion())
++    {
++      FX.ChangePCurveOnFace() = occ::down_cast<Geom2d_Curve>(PCX->Translated(gp_Vec2d(aDU, 0.)));
++    }
++  }
++  Stripe->ChangeSetOfSurfData()->ChangeSequence().ChangeValue(1) = X;
++  return true;
++}
++
+ // Whether two surfaces of analytic blends are one surface with one
+ // parametrization (copies, as the pieces of one blend have).
+ static bool ChFi3d_SameAnalyticSurface(const occ::handle<Geom_Surface>& S1, const occ::handle<Geom_Surface>& S2)
+@@ -9511,6 +9787,7 @@ void ChFi3d_Builder::PerformSetOfSurf(occ::handle<ChFiDS_Stripe>& Stripe, const
+     {
+       RolledCutToEnd(Stripe, false);
+     }
++    RolledEndToEndAcrossSeam(Stripe);
+     ChFi3d_JoinStandingEnd(DStr, Stripe, tolapp3d);
+     ChFi3d_ExtensionOnNeighbourSurface(DStr, Stripe, tolapp3d);
+     ChFi3d_MakeExtremities(Stripe, DStr, myEFMap, tolapp3d, tol2d);

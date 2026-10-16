@@ -83,6 +83,15 @@ pub struct ComponentReport {
     /// document is found (mitcad#196): one body per copy of the document.
     #[serde(skip)]
     pub external_bodies: HashMap<String, Vec<mitcad_model::BodyUid>>,
+    /// Where the derives' entities are (mitcad#324): the hidden occurrences
+    /// of the components standing for their documents.
+    #[serde(skip)]
+    pub derived: Vec<crate::derive::DerivedSource>,
+    /// The bodies of the filled components by the body objects their
+    /// documents name them by, as `<document GUID>|<object id>`: what a
+    /// derive names (mitcad#324); one body per copy of the document.
+    #[serde(skip)]
+    pub external_entities: HashMap<String, Vec<mitcad_model::BodyUid>>,
 }
 
 /// An empty component standing for a component of another document
@@ -201,6 +210,24 @@ impl Components {
     /// Takes the components filled from their documents as filled.
     pub fn set_filled(&mut self, filled: &[ComponentUid]) {
         self.filled.extend(filled.iter().copied());
+    }
+
+    // Derived designs (mitcad#324).
+
+    /// The empty component standing for a component of the document of
+    /// key `key`, if one was made.
+    pub(crate) fn inserted_of_key(&self, key: &str) -> Option<ComponentUid> {
+        self.inserted
+            .iter()
+            .filter(|((k, _), _)| k == key)
+            .min_by_key(|((_, object), _)| *object)
+            .map(|(_, c)| *c)
+    }
+
+    /// Registers the component made for the derived entities of the
+    /// document of key `key`.
+    pub(crate) fn add_inserted(&mut self, key: &str, component: ComponentUid) {
+        self.inserted.insert((key.to_owned(), 0), component);
     }
 }
 
@@ -999,5 +1026,11 @@ pub fn external_documents(dump: &Dump) -> Vec<ExternalDocument> {
     }
     let mut out = Vec::new();
     walk(dump.occurrences.iter().flatten(), &guids, &mut out);
+    // The documents of the bodies the derives bring (mitcad#324).
+    for (urn, guid, key) in crate::derive::documents(dump) {
+        if !out.iter().any(|d| d.urn == urn) {
+            out.push(ExternalDocument { urn, guid, key });
+        }
+    }
     out
 }

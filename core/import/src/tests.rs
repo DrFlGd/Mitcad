@@ -122,6 +122,50 @@ fn the_imports_joins_fuse_within_its_geometric_tolerance() {
 }
 
 #[test]
+fn the_imports_cuts_are_retried_within_its_geometric_tolerance() {
+    // A cut into the block goes through the kernel's cut within the
+    // document's join tolerance (mitcad#235), which retries a cut that
+    // fails exactly with a fuzzy value up to it.
+    let mut source = serde_json::to_value(block_dump()).unwrap();
+    source["timeline"]["items"]
+        .as_array_mut()
+        .unwrap()
+        .push(extrude(2, 0, "CutFeatureOperation", "d2"));
+    let mut doc = Document::new(MockKernel::default());
+    let options = Options {
+        geometric_tolerance: 0.02,
+        ..Options::default()
+    };
+    import_design(&mut doc, &dump(source), &mut NoGeometry, &options);
+    assert!(doc.kernel().count("cut_within") > 0);
+    assert!(
+        doc.kernel()
+            .specs
+            .borrow()
+            .iter()
+            .any(|s| s == "cut within 0.02")
+    );
+}
+
+#[test]
+fn an_extrusion_of_texts_the_file_no_longer_has_says_so() {
+    // The text profiles name texts the design no longer has (mitcad#332):
+    // no region of the sketch stands in for them.
+    let mut source = serde_json::to_value(block_dump()).unwrap();
+    source["timeline"]["items"][1]["detail"]["_f3d_missing_texts"] = json!([2696, 2741]);
+    let mut doc = Document::new(MockKernel::default());
+    let report = import(&mut doc, &dump(source));
+    assert_ne!(report.items[1].outcome, Outcome::Parametric);
+    let note = report.items[1].note.clone().unwrap_or_default();
+    assert!(
+        note.contains(
+            "its profile is 2 sketch texts the file no longer has (deleted from Sketch1)"
+        ),
+        "{note}"
+    );
+}
+
+#[test]
 fn input_provenance_keeps_unknowns_and_reports_the_last_sketch_default() {
     let mut doc = Document::new(MockKernel::default());
     let report = import(&mut doc, &block_dump());
@@ -2590,6 +2634,7 @@ fn pattern_provenance_marks_only_omitted_dressup_inputs() {
         alternatives: HashMap::new(),
         guesses: None,
         defer_guesses: false,
+        kernel_failed: false,
         start_bases: HashMap::new(),
         deadline: None,
         captures: captures::Captures::default(),
@@ -7142,6 +7187,7 @@ fn a_split_in_two_operations_made_the_new_bodies_of_both() {
         alternatives: HashMap::new(),
         guesses: None,
         defer_guesses: false,
+        kernel_failed: false,
         start_bases: HashMap::new(),
         deadline: None,
         captures: captures::Captures::default(),
@@ -7252,6 +7298,7 @@ fn named_participants_alone_when_the_history_changed_only_them() {
             alternatives: HashMap::new(),
             guesses: None,
             defer_guesses: false,
+            kernel_failed: false,
             start_bases: HashMap::new(),
             deadline: None,
             captures: captures::Captures::default(),
@@ -9509,3 +9556,34 @@ fn an_angle_dimensions_side_comes_from_the_file() {
     assert_eq!(side(&dimensions[2]), given(false, false), "{def}");
     assert_eq!(side(&dimensions[3]), (None, None), "{def}");
 }
+
+#[test]
+fn symptoms_and_kernel_failures_of_definitions() {
+    // What only says the result is not the file's (mitcad#325) ...
+    assert!(symptom(NOT_IN_HISTORY));
+    assert!(symptom(
+        "the extrusion does not cut into any participant body"
+    ));
+    assert!(symptom("there are no bodies in the extrude direction"));
+    assert!(!symptom(
+        "fillet failed; the radius may be too large for the edges"
+    ));
+    // ... and what the geometry kernel failed in.
+    assert!(kernel_failure(
+        "the boolean operation produced an invalid shape (face: BRepCheck_UnorientableShape)"
+    ));
+    assert!(kernel_failure(
+        "fillet failed; the radius may be too large for the edges"
+    ));
+    assert!(kernel_failure("fillet: TopoDS_Builder::Add"));
+    assert!(kernel_failure(
+        "the taper failed; the angle may close the profile"
+    ));
+    assert!(!kernel_failure(NOT_IN_HISTORY));
+    assert!(!kernel_failure(
+        "the extrusion does not cut into any participant body"
+    ));
+}
+
+// Derives: bodies of other documents (mitcad#324).
+mod derive_tests;

@@ -936,7 +936,10 @@ form lists edge sets:
 "two_distances", "distance1": d1, "distance2": d2}` or `{"type":
 "distance_angle", "distance": d, "angle": a}` (0 < a < π/2). The first
 distance and the angle (from that face) are measured on the first face of
-each edge's name (`E{<first>|<second>}`), or on the second with `flip`.
+the name (`E{<first>|<second>}`) of the first edge the set lists in a
+tangent chain, or on its second face with `flip`; the chain's other edges
+measure on the same side (the geometry kernel carries it along the chain),
+whatever order their own names list their faces in.
 The general form has edge sets with a reference face:
 
 ```json
@@ -3776,7 +3779,7 @@ first, then those the file's history suggests without them.
 | `PipeFeature` | `pipe` | `path`, `sectionType` (Circular/Square/TriangularPipeSectionType) → `section`, `sectionSize` → `size`, `isHollow` with `sectionThickness` → `thickness`, `distanceOne`/`distanceTwo` → `extent`, `operation`, `participantBodies`. Without `sectionType` and `isHollow` (the stream decoder): a solid circle first, then hollow with `sectionThickness`, square and triangular, the history picking |
 | `CoilFeature` | `coil` | the sizes (`parameters.model` by `role`), `coilType` (`PitchAndRevolution`, `RevolutionAndHeight`, `PitchAndHeight`, `SpiralCoilType`) → `helix`, `sectionType` → `section`, `sectionPosition` → `section_position`, `isClockwise` (the default is true: a right-handed helix) → `clockwise` (inverted), `angle` → `angle`, `plane`, `frame` and `placement` as for the primitives (the coil must rise along the plane's normal and start on its x axis), `operation`, `participantBodies` |
 | `RibFeature`, `WebFeature` | | not translated (fallback): no inputs are recorded besides thickness and depth |
-| `ThreadFeature` | `thread` | `inputCylindricalFaces` (resolved through `point_on_face`) → `faces`; `threadInfo`: `threadType` ISO Metric profile and other metric `M` sizes → `iso_metric`, ANSI Unified → `unified`, BSP Pipe Threads → `whitworth` with `G <size>-<tpi>` → `G <size>`, others fallback; `threadDesignation` → `designation`, `threadClass` → `class` when Mitcad lists it for the face's side (else left out), `isRightHanded` → `right_handed`; `isModeled` true → `modeled` with `diameters` from `majorDiameter`, `minorDiameter` and `pitchDiameter` and the `angle` the next history state shows on each face (one `thread` per face; Whitworth and NPT fall back), tried first without sizing the faces; `isFullLength` false → `length` (`threadLength`), `offset` (`threadOffset`) and `location` (`threadLocation`, swapped where Mitcad's cylinder axis runs against the face's `geometry.axis`). First with an `offset_face` of each face to the thread's major (external) or minor (internal) diameter, as the file sizes threaded faces, then with a tube between the two radii (`cylinder`s and `combine`s) cut from or joined to the body, then without |
+| `ThreadFeature` | `thread` | `inputCylindricalFaces` (resolved through `point_on_face`) → `faces`; `threadInfo`: `threadType` ISO Metric profile and other metric `M` sizes → `iso_metric`, ANSI Unified → `unified`, BSP Pipe Threads → `whitworth` with `G <size>-<tpi>` → `G <size>`, others fallback; `threadDesignation` → `designation`, `threadClass` → `class` when Mitcad lists it for the face's side (else left out), `isRightHanded` → `right_handed`; `isModeled` true → `modeled` with `diameters` from `majorDiameter`, `minorDiameter` and `pitchDiameter` and the `angle` the next history state shows on each face (one `thread` per face; Whitworth and NPT fall back), tried first without sizing the faces; `isFullLength` false → `length` (`threadLength`), `offset` (`threadOffset`) and `location` (`threadLocation`, swapped where Mitcad's cylinder axis runs against the face's `geometry.axis`). First with an `offset_face` of each face to the thread's major (external) or minor (internal) diameter, as the file sizes threaded faces, and one of each chamfer at the face's ends (a cone about its axis from an end circle, narrowing away from a shaft, widening away from a bore) by the radial step times the cosine of its angle to the axis, so that it moves along the radius with the face as in the file (mitcad#335), then with a tube between the two radii (`cylinder`s and `combine`s) cut from or joined to the body, then without |
 | `HoleFeature` tapped (`holeTapType` Tapped) | `hole` + `thread` | the hole with its diameter (then `tappedHoleInfo.minorDiameter`), and a `thread` on `hole<i>.wall` with the size of `tappedHoleInfo` (as for `ThreadFeature`; for `thread.isModeled` modelled with its diameters, angle 0), and for `thread.isFullLength` false `length` and `offset` from the hole's start (`low_end`); then the hole without the thread |
 | `HoleFeature` | `hole` | `position` (the stream decoder: every point of `_f3d_positions`) on the planar face named by `holePositionDefinition` or through the point, `holeType` Simple/Counterbore/Countersink with `counterboreDiameter`/`Depth` or `countersinkDiameter`/`Angle`, `holeDiameter`, `tipAngle` (180° → `flat`), `extentDefinition` `DistanceExtentDefinition` → `distance`, `ThroughAllExtentDefinition` or `AllExtentDefinition` → `through_all` (others fall back; with the stream decoder's `_f3d_through_all` through all first, checked by the history), `isDefaultDirection` false → `flip`; without a position, the holes the history shows |
 | `Joint` | `joint` | in the component its occurrence paths start in (`_f3d.context_component`); `occurrenceOne` → `a`, `occurrenceTwo` → `b` (`_f3d.path` of occurrence objects → occurrence uids, occurrences of components of other documents included: they are occurrences of empty components; a level inside one leaves the joint out); each side's stored frame (`_f3d.frames`, else `geometryOrOrigin*`) on geometry of the side's component that gives it (a joint origin, construction geometry, a circular edge, a planar face or a face of revolution, with a `frame_override` for the rest; on a component of another document its `"origin"`), else a fixed plane; `jointMotion` → `kind` (`slide_axis` by the motion's slot), the values the motions have where the file places the occurrences (from the frames, mitcad#87: a joint that cannot hold there is not added), `rotationLimits` → `rz`'s and `slideLimits` → the slide's `limits` where they hold those values (else left out), the values → `position` where the rest value is another; `_f3d.opposed` → `flip`, `angle` → `angle`, `offset` → `offset` (an offset the file stores rounded takes the placements' value, mitcad#81), `offsetX`/`offsetY` move `b`'s origin. Kept only where every occurrence stays where it was or goes where the file places it after the item or at the end of its timeline (the occurrences' `_f3d.placements`, else its last captured position, else its stored transform); else an `as_built_joint` of the placements with a warning ([core/import/README.md](../../../import/README.md#joints)) |
@@ -4290,7 +4293,7 @@ every `.ifc` of `MITCAD_IFC_CORPUS`; faceted twins compared by volume).
 
 `{"cmd": "import_rvt", "path": "project.rvt", …}` (C++ `Document::command`,
 or `Document::import_rvt(path, json)` for the report alone) imports an
-`.rvt` project's building elements (mitcad#274, mitcad#275;
+`.rvt` project's building elements (mitcad#274, mitcad#275, mitcad#333;
 `core/ffi/src/rvt_import.rs` and `mitcad_import::rvt`, the reader is
 [core/rvt](../../../rvt/README.md)). `.rte` templates likewise; an `.rfa`
 family (or `.rft` template) opens with its metadata and report only (its
@@ -4314,18 +4317,53 @@ forms are a later ticket).
   appearance of their material (a layered type's exterior layer's, a
   family type's first).
 - Each element built is checked: against the IFC export given as
-  `reference_ifc` (by its GlobalId, which the import derives from the
-  element's creation episode: its volume within 1 % and its box within
-  5 mm of the export's solid), else against its stored box (its body
+  `reference_ifc`, or found next to the project as `<name>.ifc` (unless
+  `no_reference_ifc`), by its GlobalId (which the import derives from the
+  element's creation episode): its volume within 1 % and its box within
+  5 mm of the export's solid; else against its stored box (its body
   within 5 mm of it). An element whose features fail or disagree is
   undone and comes in as below, the reason on its report line.
-- **Every other element** (family instances until their families' forms
-  are read, curtain walls, sections of no known kind, …) is a body of its
-  level's base feature `<level> elements`: the triangle mesh its record
-  saves where it has one (a mesh body), else a family type's box at the
-  instance's transform (when it agrees with the element's own box within
-  0.01 ft), else the element's box in model coordinates. Lengths in feet
-  become millimetres.
+- **Every other element** (family instances: doors, windows, furniture,
+  curtain panels and mullions, …; curtain walls, railings, stairs of
+  parts, wall sweeps, slab edges, sections of no known kind, …) is a body
+  of its level's base feature `<level> elements`, from the first of these
+  that gives one (mitcad#333):
+  1. a mesh of the geometry the file keeps of it (the B-reps of its
+     partition's geometry chain: its own bodies and the types it places
+     at their transforms, [core/rvt](../../../rvt/README.md#the-geometry-mitcad333)),
+     when it agrees with the reference's solid of its GlobalId (its box
+     within 5 mm, a closed mesh's volume within 1 %) or else lies within
+     its stored box (but for a tenth of the box's largest extent);
+  2. the reference's bodies of its GlobalId (the IFC export's);
+  3. the triangle mesh its record saves;
+  4. its box: a family type's box at the instance's transform (when it
+     agrees with the element's own box within 0.01 ft), else the
+     element's box in model coordinates. A box is **hidden** (its body's
+     visibility off; showing it shows it) unless the element is
+     structural: of a kind built as features but curtain panels and
+     mullions (walls, floors, roofs, ceilings, stair runs, landings,
+     columns, beams, sweeps, slab edges, rails; by class or category).
+
+  Its report line says which, and a box's line why the others gave
+  nothing. Lengths in feet become millimetres.
+- **Groups**: the members of a placed group (`ElementGroup`) that it
+  places where they are come in as any element; members of a group's
+  definition placed nowhere stay out, and a member placed elsewhere comes
+  in there too, as the mesh of its geometry moved by the group's
+  transform (`group_copies`), on the group's level.
+- **Built as features too** (mitcad#333; [core/rvt](../../../rvt/README.md#curtain-walls-railings-stairs-sweeps-mitcad333)):
+  ceilings like floors (their boundary loops between their two horizontal
+  reference faces, else down by their type's width); curtain panels (a
+  system panel's cell extruded by its thickness) and mullions (a
+  rectangular, corner or custom profile along the mullion's path); stair
+  runs of treads and risers and landings; wall sweeps, slab edges,
+  fascias, gutters and rails (their profile family's profile along their
+  path, a body per line). A curtain wall and a railing whose geometry is
+  their parts' have no body of their own (`outcome` `parts`;
+  `curtain_walls`, `railings`); the balusters and posts come in as family
+  instances. The batch of elements built in one command is 64 elements;
+  one whose features fail or disagree is left out of it and comes in as
+  below.
 - An element's level is the one its records name (its associated level,
   a level field, a level its records hold, a level parameter, its host's);
   one that names none goes on the highest level at or below its box
@@ -4335,11 +4373,15 @@ forms are a later ticket).
   linked file (found by its name in `link_files`, else next to the
   project, at the relative path the project stores, or in `link_folder`)
   comes in there the same way (its own links are not followed). A link
-  not found leaves its component empty, the report naming it. The
+  not found leaves its component empty, the report naming it. A linked
+  IFC model (a link whose file is an `.ifc`) comes in from its cached
+  model (`<name>.ifc.RVT`) when found, else from the IFC file by the IFC
+  import into its component. The
   application asks for the missing files (`list_links`); the command line
   never does.
 - Left out, counted by reason (`left_out`): types, view-specific elements
-  (annotations), members of groups' definitions, elements without a box
+  (annotations), members of groups' definitions that no placed group
+  places where they are, placed groups themselves, elements without a box
   or mesh, elements of categories that are no building elements (levels,
   grids, rooms, lines, views, materials, …), elements without records.
 - The memory guard (mitcad#80) watches the reading and the building: when
@@ -4347,8 +4389,8 @@ forms are a later ticket).
   (`memory_low`) and a warning says so.
 - Each base feature gets an import note (the timeline's yellow badge,
   [The import's outcomes on the timeline](#the-imports-outcomes-on-the-timeline)):
-  how many saved meshes and boxes, and that the report says why each one
-  is not built.
+  how many meshes and boxes (and how many boxes hidden), and that the
+  report says why each one is not built.
 
 One undo step (`Import project.rvt`). A job does not cancel it.
 
@@ -4357,7 +4399,8 @@ One undo step (`Import project.rvt`). A job does not cancel it.
 | `text` | `import_rvt` returns a readable report |
 | `report_path` | also write the JSON report to this file |
 | `report_only` | read and report; import no elements |
-| `reference_ifc` | the IFC export of the same project to check the features against |
+| `reference_ifc` | the IFC export of the same project to check the features (and meshes) against, and whose bodies stand in for elements without geometry |
+| `no_reference_ifc` | do not take an IFC export next to the project as the reference |
 | `link_files` | linked models' files by the links' file names (`{"linked.rvt": "C:/…/linked.rvt"}`; the application's file dialogs) |
 | `link_folder` | a folder to look for linked models in, besides the project's |
 | `list_links` | only list the links and where their files are: `{"links": [{"id", "file", "stored_path", "found"}]}` |
@@ -4382,15 +4425,20 @@ with, and why), `bodies`, `meshes`, `oriented_boxes`, `boxes`,
 `level_planes`, `grid_axes`, `grid_arcs`, `appearances`, `links` (`id`,
 `file`, `found`, `component`, `elements`, `note`), `categories`,
 `left_out`, `by_elevation`, `not_built`, `memory_low`, `warnings`, and
-`elements`: a line per element (`id`, `link`, `global_id`, `kind`,
-`category`, `name`, `level`, `outcome` (`features`, `mesh`, `box`),
-`features`, `bodies`, `volume`, `checked_against`, `reference_volume`,
-`volume_difference`, `box_difference`, `notes`)), `warnings` and
+`geometry_meshes` and `geometry_triangles` (meshes of the geometry the
+file keeps), `reference_bodies`, `hidden_boxes`, `curtain_walls`,
+`railings`, `group_copies`, and `elements`: a line
+per element (`id`, `link`, `global_id`, `kind`, `category`, `name`,
+`level`, `outcome` (`features`, `mesh`, `reference body`, `box`,
+`parts`, `not built`), `features`, `bodies`, `volume`, `checked_against`,
+`reference_volume`, `volume_difference`, `box_difference`, `hidden`,
+`notes`)), `warnings` and
 `seconds`.
 
 Tests: `core/rvt` (`core.rvt`, no OCCT; its corpus test reads
 `MITCAD_RVT_CORPUS`), `core/import/src/rvt` (mock kernel: the reader's
-building test project's walls, floor, grid and link), `core.exchange`
+building test project's walls, floor, grid, link and its chair's hidden
+box; the mesh of a placed type's B-rep), `core.exchange`
 (`core/tests/test_exchange.cpp`), `cli.import_rvt`, `cli.import_rfa`,
 `cli.import_rvt_building`, `rvt.corpus` (`MITCAD_RVT_CORPUS`, with
 `MITCAD_IFC_CORPUS` the IFC export of the MIT-licensed project: every
@@ -5800,6 +5848,34 @@ mitcad#104), an extrusion's objects (`object_links`,
 [sweep](#sweep), mitcad#161). Tests: `core/model/src/link_tests.rs`,
 `core/model/src/links.rs`.
 
+### derive
+
+```json
+{"type": "derive", "bodies": ["F12.b0"], "links": {"F12.b0": {"source": "O3/O5"}}}
+```
+
+Copies of bodies of other components as new bodies of the feature's
+component (`Derive<n>`, mitcad#324): each body is read in its own component
+at the derive's point of the timeline and moved into the derive's
+coordinates by the placements there (`links`: one occurrence link per body
+of another component, as a combine's `tool_links`; a body without one is
+the derive's own component's), so a copy follows when its source changes
+or its occurrence moves. The sources stay where they are. The copies are
+the bodies `<derive>.b<j>` in the order listed, their faces named
+`<derive>:inst1(<name>)`. A body is listed once; a link for a body that is
+not listed, and an empty list, are refused. Paste New and moves of
+occurrences carry the links like a combine's (Paste New of a component that
+holds the source's occurrence links the copy to its own copy of it).
+
+The `.f3d` import brings a design's derived bodies in so: each body's
+document is imported from its own file like the other documents the design
+refers to ([Components of other documents](#components-of-other-documents)),
+placed as a hidden occurrence of a component filled with its copy, where
+the derive puts the body (the source design's placement of the body's
+occurrence seen from the deriving design's placement there), and the
+derive copies the body from it; `report.designs[0].components` then lists
+the documents among `references` as for occurrences.
+
 ## Moving features into components
 
 A design often starts in the root: sketches, extrudes and fillets made
@@ -6452,7 +6528,10 @@ without `body`, alone in its objects) copies each of those bodies as a new
 sheet body of the pattern (`F<pattern>.b<k>`), its panels moved by the
 element's transform (a mirror turns the material's side with the planes)
 and renamed as the pattern's, slots offset by 100000 per copy, rebuilt from
-the moved panels (mitcad#280).
+the moved panels (mitcad#280). A pattern whose copies are all of one
+straight `sheet_cut` cuts the copies clear of the bends' seams in one
+operation and the others one by one after them (mitcad#288): the same
+result as one copy after another.
 
 ```json
 {"type":"sheet_fold","body":"F3.b0","panel":{"feature":"F3","slot":0},
@@ -6468,6 +6547,10 @@ The selected finite interval divides the panel into stationary material, a
 finite allowance strip and moving material. Interior endpoints use the same
 explicit relief policy. Existing connected bends move rigidly with their
 branch; their original sign, radius and material parity remain unchanged.
+The line may cross holes and cut windows of the panel (mitcad#288): the
+bend's two lines then run through material in stretches, each stretch its
+own piece of the generated curve (numbered along the bend's axis) with a
+seam of its own, and the bend's strip keeps the openings.
 
 ```json
 {"type":"sheet_corner_chamfer","body":"F3.b0",
@@ -7172,7 +7255,16 @@ fails:
 - a tool that touches no target joins the targets within the tolerance;
 - a tool solid the exact join leaves on its own beside a target within
   the tolerance is merged with it;
-- a join whose result is invalid is tried again.
+- a join whose result is invalid is tried again;
+- a join that builds no solid of the targets, or leaves faces unused or
+  loose beside its solids (OCCT cannot orient them: a tool against a
+  stored body's rounded wall, mitcad#235), is tried again, and a fuzzy
+  value is taken only where it builds solids of the targets with every
+  face;
+- a join that leaves more edges shorter than 1e-5 mm than its operands
+  had (two vertices a micrometre apart kept apart, as where a sketch's
+  tangent point is found a micrometre along a wall, mitcad#326) is tried
+  again until it leaves no more.
 
 Each takes the smallest fuzzy value that works (1e-5 mm, then 3 and 10
 times each power of ten up to the tolerance). A join that works exactly
@@ -7183,6 +7275,37 @@ are exact. Rust: `Document::join_tolerance`, `Document::set_join_tolerance`
 (one undo step, part of the import's own). Tests: `core.model`
 (`document::import_notes`), `core/import` (`tests.rs`), `geometry`
 (`test_boolean.cpp`).
+
+## Cuts within the join tolerance of imported designs
+
+The cuts of the features that apply a tool in an imported design with a
+join tolerance (above) are widened alike where the exact cut fails
+(`Kernel::cut_within`, mitcad#235): a cut of a body that gives an error,
+an invalid result, a result whose solids could not be built with all
+their faces, or one with pieces of the tool left inside it (where the
+section edges of neighbouring faces of a body kept within the tolerance
+end micrometres apart and the tool lies on a face of the body, OCCT's
+boolean leaves faces out or puts the tool's pieces inside) is tried again
+with the smallest fuzzy value, as above, that gives a valid result of all
+its faces. A cut that works exactly is the exact one. Tests: `core/import`
+(`tests.rs`), and the named parts of mitcad#235.
+
+Two more repairs of the geometry kernel's results apply to every design
+(mitcad#235):
+
+- A cut that removes nothing from a body with a cylindrical or conical
+  face whose seam steps (a face merged from two whose seams lay apart,
+  joined along an arc of the circle between them) is tried again on the
+  body with that face rebuilt with one straight seam, the boundary edge
+  the seam crosses split in the neighbouring face too; the faces keep
+  their names. OCCT's cut of a thread's helix removed nothing from such a
+  bore. Test: `geometry` (`test_boolean.cpp`).
+- A rounding's or chamfer's result whose vertex tolerances OCCT inflated
+  far beyond what the vertices' edges need (above 1 mm and ten times it)
+  has them cut down to that; where the result is not valid without them
+  (a corner left open behind a tolerance of hundreds of millimetres) the
+  rounding fails instead of handing the later booleans a body they build
+  nothing from. Test: `geometry` (`test_fillet_results.cpp`).
 
 ## Extrude's automatic operation
 

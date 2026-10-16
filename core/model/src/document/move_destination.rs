@@ -481,6 +481,11 @@ fn relocate_links(
                     follow(link, &BTreeSet::from([body.feature]), own);
                 }
             }
+            FeatureDef::Derive(derive) => {
+                for (body, link) in &mut derive.links {
+                    follow(link, &BTreeSet::from([body.feature]), own);
+                }
+            }
             _ => {}
         }
         if def != entry.def {

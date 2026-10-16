@@ -1,0 +1,87 @@
+Mitcad's patch to OCCT 8.0.1, under OCCT's licence:
+SPDX-License-Identifier: LGPL-2.1-only WITH OCCT-exception-1.0
+
+Fillets: a rounding that vanishes at the end of its spine, where its two
+faces come tangent, ends where its contacts reach that vertex (mitcad#330).
+
+At such an end (a tangency extremity) the walk's last piece ended a little
+short of the guide's end where both contacts reached the edges ending at
+the vertex, within the vertex's tolerance (a stored body whose faces' edges
+lie within their tolerance of the vertex, not exactly at it: 1.5e-3 short
+of the end on a guide 18.9 long). The face beyond those edges, tangent to
+both faces there, continues the contour, so the end handling found it and
+the stripe went on with another piece from the vertex: both contacts on
+that one face, every section of no width. Its approximation threw
+("Geom_TrimmedCurve::U1 == U2" from BlendFunc::GetMinimalWeights, the
+minimal weights of sections whose largest angle is zero), and the whole
+fillet failed.
+
+- ChFi3d_Builder::PerformSetOfSurfOnElSpine: at a tangency extremity a
+  piece whose contacts at its end (or start, walking backwards) lie at the
+  spine's end vertex, within the vertex's tolerance and 10 tolesp, ends the
+  stripe (ContactsAtTangentEnd). The end is then the singular corner, as
+  where the walk reaches the vertex exactly.
+
+diff --git a/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_2.cxx b/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_2.cxx
+index 977ced2..b56eb98 100644
+--- a/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_2.cxx
++++ b/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_2.cxx
+@@ -3999,6 +3999,29 @@ static bool ChFi3d_ConcaveTurnWedge(TopOpeBRepDS_DataStructure&
+   return true;
+ }
+
++//=======================================================================
++// function : ContactsAtTangentEnd
++// purpose  : Where the faces of the spine come tangent at its end vertex V
++//            (a tangency extremity), the rounding vanishes there: whether
++//            both contacts of SD at its start (isFirst) or end have reached
++//            V, within V's tolerance and Tol.
++//=======================================================================
++
++static bool ContactsAtTangentEnd(const occ::handle<ChFiDS_SurfData>& SD,
++                                 const bool                          isFirst,
++                                 const TopoDS_Vertex&                V,
++                                 const double                        Tol)
++{
++  if (SD.IsNull() || V.IsNull())
++  {
++    return false;
++  }
++  const gp_Pnt P   = BRep_Tool::Pnt(V);
++  const double lim = BRep_Tool::Tolerance(V) + Tol;
++  return SD->Vertex(isFirst, 1).Point().Distance(P) <= lim
++         && SD->Vertex(isFirst, 2).Point().Distance(P) <= lim;
++}
++
+ //=================================================================================================
+
+ void ChFi3d_Builder::PerformSetOfSurfOnElSpine(const occ::handle<ChFiDS_ElSpine>&     HGuide,
+@@ -4931,6 +4954,15 @@ void ChFi3d_Builder::PerformSetOfSurfOnElSpine(const occ::handle<ChFiDS_ElSpine>
+       {
+         fini = true;
+       }
++      // A rounding that vanishes at the end of the spine, where its faces
++      // come tangent, ends where its contacts reach that vertex, a little
++      // short of the guide's end: past it both contacts would lie on the
++      // faces beyond, a section of no width.
++      if (!fini && !Spine->IsPeriodic() && Spine->IsTangencyExtremity(false)
++          && ContactsAtTangentEnd(ref, false, Spine->LastVertex(), 10. * tolesp))
++      {
++        fini = true;
++      }
+
+       if (!fini && Guide.IsPeriodic() && ((wl - Last) < Guide.Period() * 1.e-3))
+       {
+@@ -4978,6 +5010,12 @@ void ChFi3d_Builder::PerformSetOfSurfOnElSpine(const occ::handle<ChFiDS_ElSpine>
+       {
+         fini = true;
+       }
++      // (The same at the spine's start.)
++      if (!fini && !Spine->IsPeriodic() && Spine->IsTangencyExtremity(true)
++          && ContactsAtTangentEnd(ref, true, Spine->FirstVertex(), 10. * tolesp))
++      {
++        fini = true;
++      }
+       complete = false;
+       Last     = wf;
+     }

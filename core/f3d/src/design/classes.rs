@@ -497,3 +497,14 @@ pub const ITEM_PARTS: &str = "12D00AC0-B828-48C8-9740-80C4D992DB65";
 /// inside a component of another document names its levels there by
 /// context references). Read by [`super::build`]'s `hidden_paths`.
 pub const HIDDEN_OCCURRENCE: &str = "2BB3BB69-B0FD-4D56-B4CD-DEBD30847BE3";
+
+// Derived designs (mitcad#324).
+
+/// A derive item (`DerivedContext`): brings entities (bodies) of other
+/// documents into the item's component. Read by [`super::build`]'s
+/// `derive` module.
+pub const DERIVED_CONTEXT: &str = "428956BD-1956-4BAF-A4F8-D01D0C465FF1";
+/// A body object (a body's design entity). A derive's entities each have
+/// their own feature of a class based on [`BASE_FEATURE`], which holds the
+/// copied bodies.
+pub const BODY: &str = "D3937028-C20C-4E65-B010-94AD418A5C20";

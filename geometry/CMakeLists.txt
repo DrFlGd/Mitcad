@@ -134,6 +134,11 @@ target_sources(mitcad_geometry PRIVATE
 target_sources(mitcad_geometry PRIVATE
   src/removed.cpp
   include/mitcad/geometry/removed.hpp)
+# Roundings that run over cut-outs of their faces: the cut-outs filled and
+# cut out again (mitcad#311).
+target_sources(mitcad_geometry PRIVATE
+  src/cutouts.cpp
+  src/cutouts.hpp)
 # Fillets and chamfers of whole circles that run over a neighbouring face,
 # built as rings (mitcad#60).
 target_sources(mitcad_geometry PRIVATE
@@ -163,6 +168,11 @@ target_sources(mitcad_geometry PRIVATE
 target_sources(mitcad_geometry PRIVATE
   src/contact.cpp
   include/mitcad/geometry/contact.hpp)
+# The analytic surfaces and curves of a dressup's walked B-spline faces
+# (mitcad#328).
+target_sources(mitcad_geometry PRIVATE
+  src/canonical.cpp
+  src/canonical.hpp)
 target_include_directories(mitcad_geometry PUBLIC include)
 # Volumes and areas come from the analysis library's integrals, so that
 # every reported volume agrees (query.cpp, brep_import.cpp).
@@ -248,6 +258,8 @@ if(BUILD_TESTING)
   target_sources(test_geometry PRIVATE tests/test_fillet_chains.cpp)
   # The tangent chains of a body's edges and faces (mitcad#290).
   target_sources(test_geometry PRIVATE tests/test_tangent_chain.cpp)
+  # Roundings that run over cut-outs of their faces (mitcad#311).
+  target_sources(test_geometry PRIVATE tests/test_fillet_cutouts.cpp)
   target_link_libraries(test_geometry PRIVATE mitcad_geometry_analysis)
   target_link_libraries(test_geometry PRIVATE mitcad_geometry mitcad_warnings)
   add_test(NAME geometry COMMAND test_geometry)

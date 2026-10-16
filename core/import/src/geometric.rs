@@ -612,6 +612,120 @@ impl<K: crate::ImportKernel> crate::Importer<'_, K> {
         }
         verdict
     }
+
+    /// For traces (`MITCAD_IMPORT_TRACE_MISS` with `MITCAD_IMPORT_TRACE`):
+    /// where a result that is not the file's state differs from it, the
+    /// first deviation in numbers. The faces the result made or changed
+    /// (against the replay's bodies `before` it) that lie off the file's
+    /// state `states.after`, and the faces the file's operation made or
+    /// changed (against `states.before`) that lie off the result: each with
+    /// its area, the largest distance of its points from the other side and
+    /// the point where it is largest.
+    pub(crate) fn trace_miss(
+        &mut self,
+        name: &str,
+        before: &[(BodyUid, K::Shape)],
+        states: States,
+    ) {
+        if !tracing() || std::env::var_os("MITCAD_IMPORT_TRACE_MISS").is_none() {
+            return;
+        }
+        let kernel = self.doc.kernel();
+        let before: Vec<&K::Shape> = before.iter().map(|(_, s)| s).collect();
+        let after: Vec<K::Shape> = self.doc.bodies().iter().map(|b| b.shape.clone()).collect();
+        let mut state = |index: usize| -> Option<Vec<K::Shape>> {
+            let bodies = self.oracle.state(kernel, index).ok()?;
+            Some(bodies.iter().map(|(b, _)| b.shape.clone()).collect())
+        };
+        let reference = match states.before {
+            Some(s) => state(s),
+            None => Some(Vec::new()),
+        };
+        let (Some(reference), Some(target)) = (reference, state(states.after)) else {
+            trace!("{name}: miss: the file's states were not rebuilt");
+            return;
+        };
+        // Each new face of `shapes` (not in `old`) against the nearest of
+        // `other` by the smallest distance of its points.
+        let report = |whose: &str, old: &[&K::Shape], shapes: &[K::Shape], other: &[K::Shape]| {
+            let mut lines = Vec::new();
+            let mut count = 0;
+            let mut area = 0.0;
+            for shape in shapes {
+                // (More points than the check's: a trace looks for where.)
+                let Ok(faces) = kernel.new_faces(old, shape, 8 * POINTS) else {
+                    lines.push("new faces not listed".to_owned());
+                    continue;
+                };
+                for f in faces {
+                    count += 1;
+                    area += f.area;
+                    if f.points.is_empty() {
+                        continue;
+                    }
+                    // (The distance from the nearest body of the other side.)
+                    let mut best: Option<(f64, [f64; 3])> = None;
+                    for o in other {
+                        let Ok(d) = kernel.boundary_distances(o, &f.points) else {
+                            continue;
+                        };
+                        let (k, worst) = d
+                            .iter()
+                            .enumerate()
+                            .map(|(k, &v)| (k, if v.is_nan() { f64::INFINITY } else { v }))
+                            .fold((0, 0.0), |a, b| if b.1 > a.1 { b } else { a });
+                        if best.is_none_or(|(w, _)| worst < w) {
+                            best = Some((worst, f.points[k]));
+                        }
+                    }
+                    if let Some((worst, p)) = best.filter(|(w, _)| *w > tolerance()) {
+                        lines.push(format!(
+                            "{:.4} mm² {:.4} mm off at ({:.3}, {:.3}, {:.3})",
+                            f.area, worst, p[0], p[1], p[2]
+                        ));
+                    }
+                }
+            }
+            trace!(
+                "{name}: miss: {whose} {count} new faces ({area:.4} mm²), {} off{}",
+                lines.len(),
+                if lines.is_empty() {
+                    String::new()
+                } else {
+                    format!(": {}", lines.join("; "))
+                }
+            );
+        };
+        report("its", &before, &after, &target);
+        let reference: Vec<&K::Shape> = reference.iter().collect();
+        report("the file's", &reference, &target, &after);
+        // The faces before it that each side changed or took away (area and a
+        // point of each), to compare.
+        let gone = |whose: &str, old: &[&K::Shape], new: &[K::Shape]| {
+            let new: Vec<&K::Shape> = new.iter().collect();
+            let mut lines = Vec::new();
+            for shape in old {
+                let Ok(faces) = kernel.new_faces(&new, shape, 1) else {
+                    continue;
+                };
+                for f in faces {
+                    let p = f.points.first().copied().unwrap_or([f64::NAN; 3]);
+                    lines.push(format!(
+                        "{:.4} mm² at ({:.3}, {:.3}, {:.3})",
+                        f.area, p[0], p[1], p[2]
+                    ));
+                }
+            }
+            lines.sort();
+            trace!(
+                "{name}: miss: {whose} changed {} faces before it: {}",
+                lines.len(),
+                lines.join("; ")
+            );
+        };
+        gone("it", &before, &after);
+        gone("the file", &reference, &target);
+    }
 }
 
 #[cfg(test)]

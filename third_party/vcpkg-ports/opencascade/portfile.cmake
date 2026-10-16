@@ -103,6 +103,27 @@ vcpkg_from_github(
         0290-chfi3d-walk-round-the-vertex-through-a-face-met-at-a-point.patch
         0291-chfi3d-end-past-the-spine-where-a-contact-ran-off-its-face.patch
         0300-chfi3d-prolonged-end-edge-across-the-opposite-faces-seam.patch
+        0320-chfi3d-where-a-fillet-stops.patch
+        0321-chfi3d-closed-rounding-consuming-its-face-ends-at-the-vertex.patch
+        0322-chfi3d-open-stripe-end-at-the-vertex-of-the-edge-its-contact-runs-along.patch
+        0330-chfi3d-which-corner-a-fillet-fails-at.patch
+        0331-chfi3d-rounding-rolled-on-a-straight-edge-exactly.patch
+        0340-chfi3d-onsame-end-cut-by-the-face-of-the-edge-the-ball-rolls-on.patch
+        0341-chfi3d-rolling-blend-walked-again-across-a-seam-past-its-ends.patch
+        0342-chfi3d-rounding-rolled-on-past-its-edge-cut-by-the-faces-at-the-ends.patch
+        0350-chfi3d-regularity-only-where-the-faces-are-tangent.patch
+        0351-chfi3d-closed-chain-consuming-a-face-all-round.patch
+        0352-chfi3d-contact-on-a-face-beyond-at-an-acute-angle.patch
+        0360-bopalgo-wiresplitter-tangent-edges-measured-at-one-distance.patch
+        0380-chfi3d-chamfer-end-where-the-face-at-the-end-is-tangent-to-both-faces.patch
+        0381-chfi3d-chamfer-guide-deformed-by-a-hundredth-of-its-distance-at-most.patch
+        0390-chfi3d-rolling-ball-touches-the-next-edge-before-the-vertex.patch
+        0391-brepblend-rstrst-rolling-ball-on-two-edges.patch
+        0400-chfi3d-rounding-vanishing-at-its-end-stops-at-the-vertex.patch
+        0401-chfi3d-end-cut-across-the-seam-line-of-a-periodic-face.patch
+        0410-chfi3d-rounding-ending-in-the-face-it-runs-into.patch
+        0420-chfi3d-kpart-round-a-closed-edge-on-a-face-with-a-stepped-seam.patch
+        0440-chfi3d-contact-along-a-chain-of-edges-of-a-consumed-strip.patch
 )
 
 if (VCPKG_LIBRARY_LINKAGE STREQUAL "dynamic")

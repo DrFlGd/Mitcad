@@ -658,7 +658,8 @@ pub fn family() -> Vec<u8> {
 /// A building project for the phase-2 readers and the import's features
 /// (mitcad#275): two levels, a wall type of one layer with a material, two
 /// walls meeting at a corner (the first listed at the joint runs on), a
-/// floor of a rectangle with a hole, a grid and a link to `linked.rvt`.
+/// floor of a rectangle with a hole, a grid, a link to `linked.rvt` and a
+/// chair (a family instance known by its box only, mitcad#333).
 pub mod building {
     use super::*;
 
@@ -673,8 +674,11 @@ pub mod building {
     pub const GRID: i64 = 33;
     pub const LINK_TYPE: i64 = 40;
     pub const LINK: i64 = 41;
+    /// A chair: a family instance (furniture) without geometry, its box
+    /// its only shape.
+    pub const CHAIR: i64 = 42;
     /// The element table's ids.
-    pub const DECLARED: [i64; 12] = [
+    pub const DECLARED: [i64; 13] = [
         0,
         LEVEL_GROUND,
         LEVEL_UPPER,
@@ -687,6 +691,7 @@ pub mod building {
         GRID,
         LINK_TYPE,
         LINK,
+        CHAIR,
     ];
     /// The walls' type width and height (feet).
     pub const WIDTH: f64 = 0.5;
@@ -719,6 +724,7 @@ pub mod building {
         instance_info: u16,
         link: u16,
         link_type: u16,
+        instance: u16,
         elem_table: u16,
     }
 
@@ -913,6 +919,11 @@ pub mod building {
             &[("m_name", word(TEXT)), ("m_pInstanceInfo", word(OWNED))],
         );
         let link_type = w.class("RvtLinkSymbol", Some(symbol), &[]);
+        let instance = w.class(
+            "FamilyInstance",
+            Some(element),
+            &[("m_pInstanceInfo", word(OWNED))],
+        );
         let elem_rec = w.class(
             "ElemRec",
             None,
@@ -950,6 +961,7 @@ pub mod building {
             instance_info,
             link,
             link_type,
+            instance,
             elem_table,
         };
         (w.finish(), tags)
@@ -1082,6 +1094,13 @@ pub mod building {
         link.f64s(&[1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0])
             .f64s(&[100.0, 0.0, 0.0])
             .id(LINK_TYPE);
+        let mut chair = Bytes::new(8, t.instance);
+        element(&mut chair, &t, false, CHAIR, LEVEL_GROUND);
+        chair.pointer(t.instance_info);
+        chair
+            .f64s(&[1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0])
+            .f64s(&[3.0, 3.0, 0.0])
+            .id(-1);
         let floors = crate::categories::OST_FLOORS;
         let records = vec![
             (
@@ -1141,6 +1160,16 @@ pub mod building {
                 link_type.out,
             ),
             (LINK, header(&t, -2_001_352, t.link, None), link.out),
+            (
+                CHAIR,
+                header(
+                    &t,
+                    -2_000_080,
+                    t.instance,
+                    Some([2.0, 2.0, 0.0, 4.0, 4.0, 3.0]),
+                ),
+                chair.out,
+            ),
         ];
         let mut table = Bytes::new(8, t.elem_table);
         table.u32(DECLARED.len() as u32);

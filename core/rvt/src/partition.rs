@@ -42,6 +42,9 @@ pub struct Partition {
     pub format: u64,
     pub headers: Vec<Slot>,
     pub objects: Vec<Slot>,
+    /// The third chain of a document read by [`Documents`]: each element's
+    /// geometry (a `GElement`; a 2-byte `SerializedDummy` for most).
+    pub geometry: Vec<Slot>,
     /// Gzip members inflated (up to the end of the chains).
     pub members: usize,
     /// Why a chain stopped before its end record, if one did.
@@ -71,50 +74,7 @@ impl Partition {
         };
         let mut at = 0;
         for (chain, extra) in [(0u64, 0usize), (1, 4)] {
-            let mut slots = Vec::new();
-            let end = loop {
-                let head = id_width + extra + 4;
-                if !members.ensure(at + head)? {
-                    break Err(format!("the stream ends inside chain {chain} at {at:#x}"));
-                }
-                let d = &members.inflated;
-                let id = read_id(d, at, id_width);
-                if id == -1 {
-                    if !members.ensure(at + id_width + 8)? {
-                        break Err(format!("the stream ends after chain {chain}"));
-                    }
-                    let d = &members.inflated;
-                    let mark = u64::from_le_bytes(
-                        d[at + id_width..at + id_width + 8]
-                            .try_into()
-                            .expect("8 bytes"),
-                    );
-                    at += id_width + 8;
-                    if mark != chain {
-                        break Err(format!("chain {chain} ends with mark {mark}"));
-                    }
-                    break Ok(());
-                }
-                let size = u32_at(d, at + id_width + extra) as usize;
-                if size < 2 {
-                    break Err(format!("a record of {size} bytes at {at:#x}"));
-                }
-                if !members.ensure(at + head + size + 4)? {
-                    break Err(format!("record {id} at {at:#x} runs past the stream"));
-                }
-                let d = &members.inflated;
-                if u32_at(d, at + head + size) as usize != size {
-                    break Err(format!(
-                        "record {id} at {at:#x}: its size is not repeated after it"
-                    ));
-                }
-                slots.push(Slot {
-                    id,
-                    offset: at + head,
-                    size,
-                });
-                at += head + size + 4;
-            };
+            let (slots, end) = read_chain(&mut members, &mut at, id_width, chain, extra)?;
             if chain == 0 {
                 partition.headers = slots;
             } else {
@@ -136,6 +96,138 @@ impl Partition {
         members.inflated.truncate(at.min(members.inflated.len()));
         partition.data = members.inflated;
         Ok(partition)
+    }
+}
+
+/// A chain of records from `at` to its end record (whose mark must be
+/// `chain`): the slots, and why it stopped early if it did. `extra` is the
+/// word between a record's id and its size (4 in object chains).
+fn read_chain(
+    members: &mut Members<'_>,
+    at: &mut usize,
+    id_width: usize,
+    chain: u64,
+    extra: usize,
+) -> Result<(Vec<Slot>, Result<(), String>), String> {
+    let mut slots = Vec::new();
+    let end = loop {
+        let head = id_width + extra + 4;
+        if !members.ensure(*at + head)? {
+            break Err(format!("the stream ends inside chain {chain} at {at:#x}"));
+        }
+        let d = &members.inflated;
+        let id = read_id(d, *at, id_width);
+        if id == -1 {
+            if !members.ensure(*at + id_width + 8)? {
+                break Err(format!("the stream ends after chain {chain}"));
+            }
+            let d = &members.inflated;
+            let mark = u64::from_le_bytes(
+                d[*at + id_width..*at + id_width + 8]
+                    .try_into()
+                    .expect("8 bytes"),
+            );
+            *at += id_width + 8;
+            if mark != chain {
+                break Err(format!("chain {chain} ends with mark {mark}"));
+            }
+            break Ok(());
+        }
+        let size = u32_at(d, *at + id_width + extra) as usize;
+        if size < 2 {
+            break Err(format!("a record of {size} bytes at {at:#x}"));
+        }
+        if !members.ensure(*at + head + size + 4)? {
+            break Err(format!("record {id} at {at:#x} runs past the stream"));
+        }
+        let d = &members.inflated;
+        if u32_at(d, *at + head + size) as usize != size {
+            break Err(format!(
+                "record {id} at {at:#x}: its size is not repeated after it"
+            ));
+        }
+        slots.push(Slot {
+            id,
+            offset: *at + head,
+            size,
+        });
+        *at += head + size + 4;
+    };
+    Ok((slots, end))
+}
+
+/// The documents a partition carries after its own two chains: the loaded
+/// families' documents (*seen*), each its own element headers and objects
+/// in the same two chains, its ids its own. After each document's chains
+/// (the partition's own included) come a `u32` and a third chain of
+/// object records, one per element (2 bytes for most; not read); the next
+/// document starts with a `u32` before its headers.
+#[derive(Debug, Clone, Default)]
+pub struct Documents {
+    /// Each document's chains (the partition's own first, then the
+    /// families'), their bytes in [`Documents::data`].
+    pub documents: Vec<Partition>,
+    /// Why the documents stopped before the stream's end, if they did.
+    pub stopped: Option<String>,
+    /// The whole stream inflated.
+    pub data: Vec<u8>,
+}
+
+impl Documents {
+    /// The bytes of a slot's object.
+    pub fn bytes(&self, slot: &Slot) -> &[u8] {
+        &self.data[slot.offset..slot.offset + slot.size]
+    }
+
+    /// Reads the partition's own document with its third chain and, with
+    /// `families`, every document after it (else the stream is inflated only
+    /// as far as the partition's own third chain goes).
+    pub fn read(
+        number: u32,
+        stream: &[u8],
+        id_width: usize,
+        families: bool,
+    ) -> Result<Documents, String> {
+        let mut members = Members::new(stream, PARTITION_HEADER);
+        let mut out = Documents::default();
+        let mut at = 0;
+        let mut first = true;
+        let stopped = 'docs: loop {
+            let mut doc = Partition {
+                number,
+                ..Partition::default()
+            };
+            for (chain, extra) in [(0u64, 0usize), (1, 4)] {
+                if !first && chain == 0 {
+                    // The word before a document's headers.
+                    at += 4;
+                }
+                let (slots, end) = read_chain(&mut members, &mut at, id_width, chain, extra)?;
+                if chain == 0 {
+                    doc.headers = slots;
+                } else {
+                    doc.objects = slots;
+                }
+                if let Err(e) = end {
+                    break 'docs Some(e);
+                }
+            }
+            first = false;
+            // The word and the third chain.
+            at += 4;
+            let (geometry, end) = read_chain(&mut members, &mut at, id_width, 1, 4)?;
+            doc.geometry = geometry;
+            out.documents.push(doc);
+            if let Err(e) = end {
+                break Some(format!("the third chain: {e}"));
+            }
+            if !families || !members.ensure(at + 5)? {
+                break None;
+            }
+        };
+        out.stopped = stopped;
+        out.data = members.inflated;
+        Ok(out)
     }
 }
 

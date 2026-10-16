@@ -1,0 +1,147 @@
+Mitcad's patch to OCCT 8.0.1, under OCCT's licence:
+SPDX-License-Identifier: LGPL-2.1-only WITH OCCT-exception-1.0
+
+Fillets: the rounding of a closed circular edge (the rim of a boss) on a
+cylinder whose seam is not one straight line (mitcad#337).
+
+A join of two coaxial cylinders of one radius whose seams lie at different
+angles (a boss extruded on in a second step) gives one cylindrical face
+after the face merge, whose seam runs in steps: along the first part's
+seam, along the circle between the parts to the second part's seam, and on
+along that. The face is valid. A rounding of the boss's end circle is an
+analytic blend (a torus) round a spine closed by its one edge, whose
+parameters are the edge's, one period round it; its tangency line on the
+cylinder is a line of the cylinder's parametric space, which
+SplitKPart hatches with the face's boundary. Where the part the spine lies
+on extends before the first part's seam in the face's parametric space
+(the second seam at a smaller angle than the first), the hatching found
+the face's domain a period before the blend's parameters; the spine's
+parameters of that piece came out as half the spine, the rest was walked,
+and the walk failed ("Path failed", ChFiDS_WalkingFailure).
+
+- DomainsIntoPeriod, called by SplitKPart for a spine closed by its one
+  edge: where the domains of a tangency line that is a line on a face
+  periodic along it lie a whole period (or more) off the blend's
+  parameters (their middle outside the period from the edge's first
+  parameter), the line on the face is moved by those periods of the
+  surface (the same points of it; checked against the surface's periods)
+  and the domains with it, so that they lie in the blend's period.
+  Domains across the start of the period (a straight seam with the
+  spine's vertex off it) are left as they are.
+diff --git a/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_SpKP.cxx b/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_SpKP.cxx
+index b875eb0..691d31e 100644
+--- a/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_SpKP.cxx
++++ b/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_SpKP.cxx
+@@ -45,6 +45,8 @@
+ #include <gp_Circ.hxx>
+ #include <gp_Pnt.hxx>
+ #include <gp_Pnt2d.hxx>
++#include <gp_Vec2d.hxx>
++#include <Geom2d_Line.hxx>
+ #include <HatchGen_Domain.hxx>
+ #include <HatchGen_PointOnElement.hxx>
+ #include <HatchGen_PointOnHatching.hxx>
+@@ -1058,6 +1060,79 @@ static void FillSD(TopOpeBRepDS_DataStructure&                               DSt
+   }
+ }
+
++//=======================================================================
++// function : DomainsIntoPeriod
++// purpose  : A blend round a spine closed by its one edge has the edge's
++//            parameters, one period round it. Its tangency line on a face
++//            periodic along it (a line on a cylinder) is hatched where the
++//            face's parametric domain lies, which is a period before or
++//            after the blend's own parameters where the face's seam is not
++//            one straight line (two faces of one cylinder whose seams lay
++//            at different angles, merged: a seam of steps). Then the
++//            spine's parameters of the pieces came out wrong and the stripe
++//            failed. The line is moved by those whole periods of the face's
++//            surface (the same points), and its domains with it, so that
++//            they lie in the blend's period.
++//=======================================================================
++
++static void DomainsIntoPeriod(Geom2dHatch_Hatcher&                  H,
++                              const int                             iH,
++                              const int                             Nb,
++                              ChFiDS_FaceInterference&              FI,
++                              occ::handle<Geom2d_Curve>&            C,
++                              const occ::handle<Adaptor3d_Surface>& S,
++                              const double                          First,
++                              const double                          Period,
++                              const double                          Tol)
++{
++  if (Period <= Tol || Nb < 1 || !H.IsDone(iH) || H.NbDomains(iH) < Nb
++      || occ::down_cast<Geom2d_Line>(C).IsNull())
++  {
++    return;
++  }
++  double aMin = RealLast(), aMax = RealFirst();
++  for (int i = 1; i <= Nb; i++)
++  {
++    const HatchGen_Domain& aDom = H.Domain(iH, i);
++    if (!aDom.HasFirstPoint() || !aDom.HasSecondPoint())
++    {
++      return;
++    }
++    aMin = std::min(aMin, aDom.FirstPoint().Parameter());
++    aMax = std::max(aMax, aDom.SecondPoint().Parameter());
++  }
++  // (Domains across the start of the period, as where the seam is
++  // straight but the spine's vertex is not on it, stay as they are.)
++  const double aShift = std::floor((0.5 * (aMin + aMax) - First) / Period) * Period;
++  if (aShift == 0.)
++  {
++    return;
++  }
++  // The line moved by the shift lies on the same points of the surface
++  // when the move is whole periods of it.
++  const gp_Vec2d aV(C->Value(First), C->Value(First + aShift));
++  const double   aUP    = S->IsUPeriodic() ? S->UPeriod() : 0.;
++  const double   aVP    = S->IsVPeriodic() ? S->VPeriod() : 0.;
++  const auto     aWhole = [Tol](const double x, const double p) {
++    return p > 0. ? std::abs(x - p * std::round(x / p)) <= Tol : std::abs(x) <= Tol;
++  };
++  if (!aWhole(aV.X(), aUP) || !aWhole(aV.Y(), aVP))
++  {
++    return;
++  }
++  for (int i = 1; i <= Nb; i++)
++  {
++    HatchGen_Domain*         aD = (HatchGen_Domain*)(void*)&H.Domain(iH, i);
++    HatchGen_PointOnHatching aP1(aD->FirstPoint());
++    HatchGen_PointOnHatching aP2(aD->SecondPoint());
++    aP1.SetParameter(aP1.Parameter() - aShift);
++    aP2.SetParameter(aP2.Parameter() - aShift);
++    aD->SetPoints(aP1, aP2);
++  }
++  C                       = occ::down_cast<Geom2d_Curve>(C->Translated(aV));
++  FI.ChangePCurveOnFace() = C;
++}
++
+ //=======================================================================
+ // function : SplitKPart
+ // purpose  : Reconstruct SurfData depending on restrictions of faces.
+@@ -1200,6 +1275,23 @@ bool ChFi3d_Builder::SplitKPart(const occ::handle<ChFiDS_SurfData>&
+     }
+   }
+
++  if (Spine->IsPeriodic() && Spine->NbEdges() == 1)
++  {
++    // (A spine closed by its one edge: the blend's parameters are the
++    // edge's, one period round it.)
++    const BRepAdaptor_Curve& aSpEdge = Spine->CurrentElementarySpine(Iedge);
++    const double             aFirst  = aSpEdge.FirstParameter();
++    const double             aPeriod = aSpEdge.LastParameter() - aSpEdge.FirstParameter();
++    if (!C1.IsNull())
++    {
++      DomainsIntoPeriod(H1, iH1, Nb1, Data->ChangeInterferenceOnS1(), C1, S1, aFirst, aPeriod, pitol);
++    }
++    if (!C2.IsNull())
++    {
++      DomainsIntoPeriod(H2, iH2, Nb2, Data->ChangeInterferenceOnS2(), C2, S2, aFirst, aPeriod, pitol);
++    }
++  }
++
+   // Return start and end vertexes of the Spine
+   TopoDS_Vertex            bout1, bout2, boutemp;
+   const BRepAdaptor_Curve& bc      = Spine->CurrentElementarySpine(Iedge);

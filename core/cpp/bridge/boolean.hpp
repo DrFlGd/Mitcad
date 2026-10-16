@@ -38,5 +38,8 @@ std::unique_ptr<BooleanResult> join_near_copy(const geometry::Shape& body, const
 // A join within a tolerance (mitcad#298, geometry::boolean's `within`).
 std::unique_ptr<BooleanResult> boolean_join_within(const ShapeList& targets, const geometry::Shape& tool,
                                                    double tolerance);
+// A cut within a tolerance (mitcad#235, geometry::boolean's `within`).
+std::unique_ptr<BooleanResult> boolean_cut_within(const ShapeList& targets, const geometry::Shape& tool,
+                                                  double tolerance);
 
 } // namespace mitcad::bridge

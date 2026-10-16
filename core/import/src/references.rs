@@ -49,6 +49,10 @@ pub struct Referenced<'a, K: Kernel> {
     /// which the other design names bodies of it by
     /// (`_f3d.stored`).
     pub stored_bodies: &'a HashMap<String, BodyUid>,
+    /// Its bodies by the body objects its file names them by
+    /// ([`DesignReport::body_entities`]), which a design that derives them
+    /// names (mitcad#324).
+    pub entity_bodies: &'a BTreeMap<u64, BodyUid>,
 }
 
 /// A component filled from another document.
@@ -151,6 +155,16 @@ impl Linker {
                                 components
                                     .external_bodies
                                     .entry(format!("{}|{stored}", guid.to_lowercase()))
+                                    .or_default()
+                                    .push(BodyUid::new(*feature, body.index));
+                            }
+                        }
+                        // By the body objects a derive names (mitcad#324).
+                        for (object, body) in source.entity_bodies {
+                            if let Some(feature) = copies.features.get(&body.feature) {
+                                components
+                                    .external_entities
+                                    .entry(format!("{}|{object}", guid.to_lowercase()))
                                     .or_default()
                                     .push(BodyUid::new(*feature, body.index));
                             }

@@ -1,0 +1,782 @@
+// SPDX-License-Identifier: MIT
+//! The elements' geometry as the file keeps it (mitcad#333): each
+//! partition's third chain holds a `GElement` per element that has
+//! geometry ([`crate::partition::Partition::geometry`]), a tree of nodes:
+//!
+//! - `GGroup`, `GFilter` (the latter with view conditions, `m_oConditions`)
+//!   and `GElement` hold nodes (`m_subNodes`);
+//! - `Geometry` is a B-rep body: `m_pFaces` (and `m_pEdges`);
+//! - `GInstance` places a type's geometry: `m_instanceInfo` →
+//!   `InstanceInfo` (`m_symbolId`, `m_Trf`), or its own embedded
+//!   geometry (`m_oEmbeddedSymbolGRep`);
+//! - curves (`GLine`, `GArc`, `GEllipse`) are symbolic lines (a profile
+//!   family's profile), kept as curves.
+//!
+//! The B-rep is a winged-edge structure. A `Face` has a surface (`m_pSurf`)
+//! and loops (`m_pFirstLoop` → `EdgeLoop`, `m_nextLoop`); a loop names its
+//! first edge (`m_next`), and its last edge names the loop as its next. An `Edge`
+//! belongs to two faces (`m_pFace[0..2]`),
+//! with its next and previous edge in each face's loop (`m_next`,
+//! `m_prev`); it has no curve of its own but its points in each face's
+//! parameters: the first and the last (`m_firstAndLastEdgePnts`, each an
+//! `EdgePnt` with a (u, v) per side) and, along a curved edge, points
+//! between (`m_interiorEdgePnts`). The faces and edges name each other by
+//! reference ([`crate::walk::Record::deref`]).
+//!
+//! Surfaces, (u, v) to model point (feet; checked: the two sides of every
+//! edge land on the same points, [`Solid::seam_gap`]):
+//!
+//! - `Plane`: `m_origin + u m_xVec + v m_yVec`;
+//! - `CylSurf`: `m_center + m_radius (cos u m_xVec + sin u m_yVec) + v
+//!   m_zVec`;
+//! - `SurfRev`: its profile curve (`m_pProfileCurve`, in the surface's
+//!   frame `m_xVec`, `m_yVec`, `m_zVec` about `m_center`) at parameter v,
+//!   turned by u about the frame's z axis;
+//! - `RuledSurf`: the points at the fraction u of its two curves
+//!   (`m_pProfileCurve1`, `m_pProfileCurve2`; `m_Point1`, `m_Point2` for a
+//!   curve that is a point), joined by straight lines along v;
+//! - `ConeSurf`: apex `m_center`, axis `m_zVec`: `m_center + v (sin a (cos
+//!   u m_xVec + sin u m_yVec) + cos a m_zVec)`, a `m_halfAngle`;
+//! - `HermiteSurf`: bicubic Hermite patches between its nodes
+//!   (`m_NodeArray`: `m_iPoint`, `m_iTangent` in u and v, `m_iMixedDer`; u
+//!   running fastest) at the parameters `m_uParams` by `m_vParams`.
+//!
+//! Other surfaces are kept by their class name: their faces' points come
+//! from the neighbouring faces' surfaces.
+
+use serde::Serialize;
+
+use crate::schema::Schema;
+use crate::walk::{Object, Record, Value};
+
+pub type P3 = [f64; 3];
+pub type Uv = [f64; 2];
+
+/// A curve a surface is made from (feet; parameters as the file's).
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub enum Curve {
+    /// `origin + t dir`.
+    Line { origin: P3, dir: P3 },
+    /// `center + a cos t x + b sin t y` (a circle when `a == b`).
+    Ellipse {
+        center: P3,
+        x: P3,
+        y: P3,
+        a: f64,
+        b: f64,
+    },
+}
+
+impl Curve {
+    pub fn at(&self, t: f64) -> P3 {
+        match self {
+            Curve::Line { origin, dir } => add(*origin, scale(*dir, t)),
+            Curve::Ellipse { center, x, y, a, b } => {
+                add(*center, add(scale(*x, a * t.cos()), scale(*y, b * t.sin())))
+            }
+        }
+    }
+}
+
+/// A curve with its parameter range.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct Bounded {
+    pub curve: Curve,
+    pub range: [f64; 2],
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub enum Surface {
+    Plane {
+        origin: P3,
+        x: P3,
+        y: P3,
+    },
+    Cylinder {
+        center: P3,
+        x: P3,
+        y: P3,
+        z: P3,
+        radius: f64,
+    },
+    Revolution {
+        center: P3,
+        x: P3,
+        y: P3,
+        z: P3,
+        profile: Curve,
+    },
+    /// The apex at `center`, the axis `z`: v along the slant, at the
+    /// radius v sin(half angle) and the height v cos(half angle).
+    Cone {
+        center: P3,
+        x: P3,
+        y: P3,
+        z: P3,
+        half_angle: f64,
+    },
+    /// A bicubic Hermite surface: its nodes (point, u and v tangents, mixed
+    /// derivative) at the parameters u by v, u running fastest.
+    Hermite {
+        u: Vec<f64>,
+        v: Vec<f64>,
+        nodes: Vec<[P3; 4]>,
+    },
+    Ruled {
+        first: Result<Bounded, P3>,
+        second: Result<Bounded, P3>,
+    },
+    /// A surface of a class not read.
+    Other(String),
+}
+
+/// A bicubic Hermite surface's point: in the span of its parameters
+/// that holds (u, v) (the first or last beyond them), the nodes' points
+/// and derivatives (scaled by the span) blended by the cubic Hermite
+/// functions.
+fn hermite(us: &[f64], vs: &[f64], nodes: &[[P3; 4]], u: f64, v: f64) -> P3 {
+    let span = |ps: &[f64], x: f64| {
+        let i = ps
+            .windows(2)
+            .position(|w| x <= w[1])
+            .unwrap_or(ps.len() - 2);
+        let d = ps[i + 1] - ps[i];
+        let s = if d.abs() > 0.0 { (x - ps[i]) / d } else { 0.0 };
+        (i, d, s)
+    };
+    let (i, du, s) = span(us, u);
+    let (j, dv, t) = span(vs, v);
+    let h0 = |x: f64| {
+        [
+            2.0 * x.powi(3) - 3.0 * x * x + 1.0,
+            -2.0 * x.powi(3) + 3.0 * x * x,
+        ]
+    };
+    let h1 = |x: f64| [x.powi(3) - 2.0 * x * x + x, x.powi(3) - x * x];
+    let (h0s, h1s, h0t, h1t) = (h0(s), h1(s), h0(t), h1(t));
+    let nu = us.len();
+    let mut p = [0.0; 3];
+    for a in 0..2 {
+        for b in 0..2 {
+            let n = &nodes[(j + b) * nu + i + a];
+            let w = [
+                h0s[a] * h0t[b],
+                du * h1s[a] * h0t[b],
+                dv * h0s[a] * h1t[b],
+                du * dv * h1s[a] * h1t[b],
+            ];
+            for (k, wk) in w.iter().enumerate() {
+                p = add(p, scale(n[k], *wk));
+            }
+        }
+    }
+    p
+}
+
+fn add(a: P3, b: P3) -> P3 {
+    [a[0] + b[0], a[1] + b[1], a[2] + b[2]]
+}
+
+fn scale(a: P3, s: f64) -> P3 {
+    [a[0] * s, a[1] * s, a[2] * s]
+}
+
+impl Surface {
+    /// The model point (feet) at (u, v), None for a surface not read.
+    pub fn at(&self, [u, v]: Uv) -> Option<P3> {
+        Some(match self {
+            Surface::Plane { origin, x, y } => add(*origin, add(scale(*x, u), scale(*y, v))),
+            Surface::Cylinder {
+                center,
+                x,
+                y,
+                z,
+                radius,
+            } => add(
+                *center,
+                add(
+                    add(scale(*x, radius * u.cos()), scale(*y, radius * u.sin())),
+                    scale(*z, v),
+                ),
+            ),
+            Surface::Revolution {
+                center,
+                x,
+                y,
+                z,
+                profile,
+            } => {
+                // The profile in the frame, turned by u about its z.
+                let p = profile.at(v);
+                let (c, s) = (u.cos(), u.sin());
+                let local = [c * p[0] - s * p[1], s * p[0] + c * p[1], p[2]];
+                add(
+                    *center,
+                    add(
+                        add(scale(*x, local[0]), scale(*y, local[1])),
+                        scale(*z, local[2]),
+                    ),
+                )
+            }
+            Surface::Cone {
+                center,
+                x,
+                y,
+                z,
+                half_angle,
+            } => {
+                let (r, h) = (v * half_angle.sin(), v * half_angle.cos());
+                add(
+                    *center,
+                    add(
+                        add(scale(*x, r * u.cos()), scale(*y, r * u.sin())),
+                        scale(*z, h),
+                    ),
+                )
+            }
+            Surface::Hermite {
+                u: us,
+                v: vs,
+                nodes,
+            } => hermite(us, vs, nodes, u, v),
+            Surface::Ruled { first, second } => {
+                let at = |c: &Result<Bounded, P3>| match c {
+                    Ok(b) => b.curve.at(b.range[0] + u * (b.range[1] - b.range[0])),
+                    Err(p) => *p,
+                };
+                let (a, b) = (at(first), at(second));
+                add(scale(a, 1.0 - v), scale(b, v))
+            }
+            Surface::Other(_) => return None,
+        })
+    }
+
+    pub fn is_plane(&self) -> bool {
+        matches!(self, Surface::Plane { .. })
+    }
+
+    /// The surface's class name in the file.
+    pub fn class(&self) -> &str {
+        match self {
+            Surface::Plane { .. } => "Plane",
+            Surface::Cylinder { .. } => "CylSurf",
+            Surface::Revolution { .. } => "SurfRev",
+            Surface::Cone { .. } => "ConeSurf",
+            Surface::Hermite { .. } => "HermiteSurf",
+            Surface::Ruled { .. } => "RuledSurf",
+            Surface::Other(c) => c,
+        }
+    }
+}
+
+/// An edge: its two faces (indices into [`Solid::faces`]; the same face
+/// twice for a seam; None for the open side of a sheet's edge, or a face of
+/// another body) and its points in each face's (u, v), first to last.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct Edge {
+    pub faces: [Option<usize>; 2],
+    pub points: [Vec<Uv>; 2],
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct Face {
+    pub surface: Surface,
+    /// Its loops: each a list of (edge, side) in the loop's order, the
+    /// side being the one of the edge on this face.
+    pub loops: Vec<Vec<(usize, usize)>>,
+    /// The face's material (`m_renderStyleId`), when it names one.
+    pub material: Option<i64>,
+}
+
+/// A B-rep body (`Geometry`).
+#[derive(Debug, Clone, PartialEq, Serialize, Default)]
+pub struct Solid {
+    pub faces: Vec<Face>,
+    pub edges: Vec<Edge>,
+}
+
+impl Solid {
+    /// A face's loop as points in its (u, v), each edge's points in the
+    /// loop's direction, without repeating the joints.
+    pub fn loop_uv(&self, face: usize, l: usize) -> Vec<Uv> {
+        let uses = &self.faces[face].loops[l];
+        let runs: Vec<&Vec<Uv>> = uses
+            .iter()
+            .map(|(e, side)| &self.edges[*e].points[*side])
+            .collect();
+        let d = |a: Uv, b: Uv| (a[0] - b[0]).hypot(a[1] - b[1]);
+        let mut out: Vec<Uv> = Vec::new();
+        for (k, run) in runs.iter().enumerate() {
+            let (Some(first), Some(last)) = (run.first(), run.last()) else {
+                continue;
+            };
+            // Forward when its first point joins the loop so far (or, for
+            // the first edge, the next edge).
+            let forward = match out.last() {
+                Some(end) => d(*first, *end) <= d(*last, *end),
+                None => match runs.get((k + 1) % runs.len()) {
+                    Some(next) if runs.len() > 1 => {
+                        let near = |p: Uv| {
+                            next.first()
+                                .map_or(f64::INFINITY, |n| d(p, *n))
+                                .min(next.last().map_or(f64::INFINITY, |n| d(p, *n)))
+                        };
+                        near(*last) <= near(*first)
+                    }
+                    _ => true,
+                },
+            };
+            let mut pts: Vec<Uv> = run.to_vec();
+            if !forward {
+                pts.reverse();
+            }
+            for p in pts {
+                if out.last().is_none_or(|q| d(*q, p) > 1e-12) {
+                    out.push(p);
+                }
+            }
+        }
+        if out.len() > 1 && d(out[0], out[out.len() - 1]) <= 1e-12 {
+            out.pop();
+        }
+        out
+    }
+
+    /// The largest distance (feet) between the model points of an edge's
+    /// two sides, over the edges whose two faces' surfaces are read: how
+    /// well the surfaces' formulas fit.
+    /// The box (feet: min and max corner) of its edges' points, on the
+    /// surfaces that read.
+    pub fn bounds(&self) -> Option<[f64; 6]> {
+        let mut b: Option<[f64; 6]> = None;
+        for e in &self.edges {
+            for side in 0..2 {
+                let Some(f) = e.faces[side] else { continue };
+                for uv in &e.points[side] {
+                    let Some(p) = self.faces[f].surface.at(*uv) else {
+                        continue;
+                    };
+                    b = Some(match b {
+                        None => [p[0], p[1], p[2], p[0], p[1], p[2]],
+                        Some(b) => [
+                            b[0].min(p[0]),
+                            b[1].min(p[1]),
+                            b[2].min(p[2]),
+                            b[3].max(p[0]),
+                            b[4].max(p[1]),
+                            b[5].max(p[2]),
+                        ],
+                    });
+                }
+            }
+        }
+        b
+    }
+
+    pub fn seam_gap(&self) -> f64 {
+        let mut gap: f64 = 0.0;
+        for e in &self.edges {
+            let (Some(a), Some(b)) = (e.faces[0], e.faces[1]) else {
+                continue;
+            };
+            let (a, b) = (&self.faces[a], &self.faces[b]);
+            for (p, q) in e.points[0].iter().zip(&e.points[1]) {
+                if let (Some(p), Some(q)) = (a.surface.at(*p), b.surface.at(*q)) {
+                    let d = ((p[0] - q[0]).powi(2) + (p[1] - q[1]).powi(2) + (p[2] - q[2]).powi(2))
+                        .sqrt();
+                    gap = gap.max(d);
+                }
+            }
+        }
+        gap
+    }
+}
+
+/// A type's geometry placed in an element's (`GInstance`).
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct Placed {
+    /// The type (`m_symbolId`), or None for embedded geometry.
+    pub symbol: Option<i64>,
+    /// Its transform (the 3×3 matrix by rows, then the origin, feet).
+    pub transform: [f64; 12],
+    /// Embedded geometry (`m_oEmbeddedSymbolGRep`).
+    pub embedded: Option<Box<GRep>>,
+}
+
+/// An element's geometry.
+#[derive(Debug, Clone, PartialEq, Serialize, Default)]
+pub struct GRep {
+    pub solids: Vec<Solid>,
+    pub instances: Vec<Placed>,
+    /// Its curves (symbolic lines; a profile family's profile).
+    pub curves: Vec<Bounded>,
+    /// The box the file gives (feet, min and max).
+    pub bbox: Option<[f64; 6]>,
+    /// What did not read.
+    pub notes: Vec<String>,
+}
+
+impl GRep {
+    pub fn is_empty(&self) -> bool {
+        self.solids.is_empty() && self.instances.is_empty()
+    }
+}
+
+struct Reader<'a> {
+    schema: &'a Schema,
+    record: &'a Record,
+}
+
+/// Index of a pointee object (by address) in the record.
+fn index_of(record: &Record, o: &Object) -> Option<usize> {
+    record.pointees.iter().position(|p| std::ptr::eq(p, o))
+}
+
+impl<'a> Reader<'a> {
+    fn get(&self, o: &'a Object, name: &str) -> Option<&'a Value> {
+        o.get(self.schema, name)
+    }
+    fn obj(&self, o: &'a Object, name: &str) -> Option<&'a Object> {
+        self.record.deref(self.get(o, name)?)
+    }
+    fn class(&self, o: &Object) -> &'a str {
+        self.schema.class_name(o.class)
+    }
+    fn vec3(&self, o: &Object, name: &str) -> Option<P3> {
+        let v = self.get(o, name)?.floats();
+        (v.len() == 3 && v.iter().all(|x| x.is_finite())).then(|| [v[0], v[1], v[2]])
+    }
+    fn f64(&self, o: &Object, name: &str) -> Option<f64> {
+        self.get(o, name)?.as_f64().filter(|v| v.is_finite())
+    }
+    fn list(&self, o: &'a Object, name: &str) -> &'a [Value] {
+        self.get(o, name).and_then(Value::as_list).unwrap_or(&[])
+    }
+
+    fn curve(&self, o: &Object) -> Option<Bounded> {
+        let t = self.get(o, "m_endParams")?.floats();
+        if t.len() != 2 {
+            return None;
+        }
+        let range = [t[0], t[1]];
+        let curve = match self.class(o) {
+            "GLine" => Curve::Line {
+                origin: self.vec3(o, "m_origin")?,
+                dir: self.vec3(o, "m_dirVec")?,
+            },
+            "GArc" => {
+                let r = self.f64(o, "m_radius")?;
+                Curve::Ellipse {
+                    center: self.vec3(o, "m_center")?,
+                    x: self.vec3(o, "m_xVec")?,
+                    y: self.vec3(o, "m_yVec")?,
+                    a: r,
+                    b: r,
+                }
+            }
+            "GEllipse" => Curve::Ellipse {
+                center: self.vec3(o, "m_center")?,
+                x: self.vec3(o, "m_xVec")?,
+                y: self.vec3(o, "m_yVec")?,
+                a: self.f64(o, "m_xLen")?,
+                b: self.f64(o, "m_yLen")?,
+            },
+            _ => return None,
+        };
+        Some(Bounded { curve, range })
+    }
+
+    fn surface(&self, s: &Object) -> Surface {
+        let class = self.class(s);
+        let read = || -> Option<Surface> {
+            Some(match class {
+                "Plane" => Surface::Plane {
+                    origin: self.vec3(s, "m_origin")?,
+                    x: self.vec3(s, "m_xVec")?,
+                    y: self.vec3(s, "m_yVec")?,
+                },
+                "ConeSurf" => Surface::Cone {
+                    center: self.vec3(s, "m_center")?,
+                    x: self.vec3(s, "m_xVec")?,
+                    y: self.vec3(s, "m_yVec")?,
+                    z: self.vec3(s, "m_zVec")?,
+                    half_angle: self.f64(s, "m_halfAngle")?,
+                },
+                "CylSurf" => Surface::Cylinder {
+                    center: self.vec3(s, "m_center")?,
+                    x: self.vec3(s, "m_xVec")?,
+                    y: self.vec3(s, "m_yVec")?,
+                    z: self.vec3(s, "m_zVec")?,
+                    radius: self.f64(s, "m_radius")?,
+                },
+                "SurfRev" => Surface::Revolution {
+                    center: self.vec3(s, "m_center")?,
+                    x: self.vec3(s, "m_xVec")?,
+                    y: self.vec3(s, "m_yVec")?,
+                    z: self.vec3(s, "m_zVec")?,
+                    profile: self.curve(self.obj(s, "m_pProfileCurve")?)?.curve,
+                },
+                "HermiteSurf" => {
+                    let u = self.get(s, "m_uParams")?.floats();
+                    let v = self.get(s, "m_vParams")?.floats();
+                    let nodes: Vec<[P3; 4]> = self
+                        .list(s, "m_NodeArray")
+                        .iter()
+                        .filter_map(|n| {
+                            let n = self.record.deref(n)?;
+                            let t = self.get(n, "m_iTangent")?.floats();
+                            if t.len() != 6 {
+                                return None;
+                            }
+                            Some([
+                                self.vec3(n, "m_iPoint")?,
+                                [t[0], t[1], t[2]],
+                                [t[3], t[4], t[5]],
+                                self.vec3(n, "m_iMixedDer")?,
+                            ])
+                        })
+                        .collect();
+                    if u.len() < 2 || v.len() < 2 || nodes.len() != u.len() * v.len() {
+                        return None;
+                    }
+                    Surface::Hermite { u, v, nodes }
+                }
+                "RuledSurf" => {
+                    let side = |c: &str, p: &str| match self.obj(s, c) {
+                        Some(o) => self.curve(o).ok_or(()).map_err(|_| [f64::NAN; 3]),
+                        None => Err(self.vec3(s, p).unwrap_or([f64::NAN; 3])),
+                    };
+                    let first = side("m_pProfileCurve1", "m_Point1");
+                    let second = side("m_pProfileCurve2", "m_Point2");
+                    let bad = |c: &Result<Bounded, P3>| c.as_ref().is_err_and(|p| p[0].is_nan());
+                    if bad(&first) || bad(&second) {
+                        return None;
+                    }
+                    Surface::Ruled { first, second }
+                }
+                _ => return None,
+            })
+        };
+        read().unwrap_or_else(|| Surface::Other(class.to_string()))
+    }
+
+    fn uv_pairs(&self, list: &[Value]) -> Vec<[Uv; 2]> {
+        list.iter()
+            .filter_map(|p| {
+                let p = self.record.deref(p)?;
+                let uv = self.get(p, "uv")?.as_list()?;
+                let a = uv.first()?.floats();
+                let b = uv.get(1)?.floats();
+                (a.len() == 2 && b.len() == 2).then(|| [[a[0], a[1]], [b[0], b[1]]])
+            })
+            .collect()
+    }
+
+    /// A `Geometry` node's B-rep.
+    fn solid(&self, g: &'a Object) -> Result<Solid, String> {
+        let faces: Vec<&Object> = self
+            .list(g, "m_pFaces")
+            .iter()
+            .filter_map(|f| self.record.deref(f))
+            .collect();
+        let face_index = |o: &Object| {
+            let i = index_of(self.record, o)?;
+            faces
+                .iter()
+                .position(|f| index_of(self.record, f) == Some(i))
+        };
+        let mut solid = Solid::default();
+        let mut edge_ids: Vec<usize> = Vec::new();
+        for f in &faces {
+            solid.faces.push(Face {
+                surface: self
+                    .obj(f, "m_pSurf")
+                    .map_or(Surface::Other("none".into()), |s| self.surface(s)),
+                loops: Vec::new(),
+                material: self
+                    .get(f, "m_renderStyleId")
+                    .and_then(Value::as_id)
+                    .filter(|id| *id > 0),
+            });
+        }
+        for (fi, f) in faces.iter().enumerate() {
+            let mut lp = self.obj(f, "m_pFirstLoop");
+            let mut guard = 0;
+            while let Some(l) = lp {
+                guard += 1;
+                if guard > 10_000 {
+                    return Err("a face's loops do not end".into());
+                }
+                let first = self
+                    .obj(l, "m_next")
+                    .ok_or("a loop without its first edge")?;
+                let mut uses: Vec<(usize, usize)> = Vec::new();
+                let mut e = first;
+                // The edge before (the loop's last for its first).
+                let mut prev = self.obj(l, "m_prev").and_then(|p| index_of(self.record, p));
+                let mut start: Option<(usize, usize)> = None;
+                loop {
+                    let ei = index_of(self.record, e).ok_or("an edge outside the record")?;
+                    let sides: Vec<usize> = self
+                        .list(e, "m_pFace")
+                        .iter()
+                        .map(|v| self.record.deref(v).and_then(face_index))
+                        .enumerate()
+                        .filter(|(_, f)| *f == Some(fi))
+                        .map(|(s, _)| s)
+                        .collect();
+                    // A seam has both sides on this face: the side whose
+                    // previous edge is the one it was entered from.
+                    let prev_of = |s: usize| {
+                        self.list(e, "m_prev")
+                            .get(s)
+                            .and_then(|v| self.record.deref(v))
+                            .and_then(|p| index_of(self.record, p))
+                    };
+                    let side = match sides.as_slice() {
+                        [s] => *s,
+                        [a, b] => {
+                            if prev.is_some() && prev_of(*b) == prev && prev_of(*a) != prev {
+                                *b
+                            } else {
+                                *a
+                            }
+                        }
+                        _ => return Err("an edge of a loop that is not on its face".into()),
+                    };
+                    if start == Some((ei, side)) {
+                        break;
+                    }
+                    if start.is_none() {
+                        start = Some((ei, side));
+                    }
+                    let k = match edge_ids.iter().position(|x| *x == ei) {
+                        Some(k) => k,
+                        None => {
+                            edge_ids.push(ei);
+                            edge_ids.len() - 1
+                        }
+                    };
+                    uses.push((k, side));
+                    if uses.len() > 100_000 {
+                        return Err("a loop that does not close".into());
+                    }
+                    let next = self
+                        .list(e, "m_next")
+                        .get(side)
+                        .and_then(|v| self.record.deref(v))
+                        .ok_or("an edge without its next")?;
+                    // The loop's last edge names the loop as its next.
+                    if self.class(next) != "Edge" {
+                        break;
+                    }
+                    prev = Some(ei);
+                    e = next;
+                }
+                solid.faces[fi].loops.push(uses);
+                lp = self.obj(l, "m_nextLoop");
+            }
+        }
+        for ei in edge_ids {
+            let e = &self.record.pointees[ei];
+            let ends = self.uv_pairs(self.list(e, "m_firstAndLastEdgePnts"));
+            if ends.len() != 2 {
+                return Err("an edge without its two end points".into());
+            }
+            let inner = self.uv_pairs(self.list(e, "m_interiorEdgePnts"));
+            let mut sides: [Vec<Uv>; 2] = [Vec::new(), Vec::new()];
+            for (s, side) in sides.iter_mut().enumerate() {
+                side.push(ends[0][s]);
+                side.extend(inner.iter().map(|p| p[s]));
+                side.push(ends[1][s]);
+            }
+            let fs: Vec<Option<usize>> = self
+                .list(e, "m_pFace")
+                .iter()
+                .map(|v| self.record.deref(v).and_then(face_index))
+                .collect();
+            if fs.len() != 2 {
+                return Err("an edge without its two sides".into());
+            }
+            solid.edges.push(Edge {
+                faces: [fs[0], fs[1]],
+                points: sides,
+            });
+        }
+        Ok(solid)
+    }
+
+    fn transform(&self, info: &Object) -> Option<[f64; 12]> {
+        let trf = self.get(info, "m_Trf")?.as_object()?;
+        let mut m = self.get(trf, "m_3x3")?.floats();
+        m.extend(self.get(trf, "m_or")?.floats());
+        (m.len() == 12).then(|| std::array::from_fn(|i| m[i]))
+    }
+
+    fn node(&self, n: &'a Object, out: &mut GRep, depth: usize) {
+        if depth > 64 {
+            out.notes.push("nodes nest too deep".into());
+            return;
+        }
+        match self.class(n) {
+            "Geometry" => {
+                if self.list(n, "m_pFaces").is_empty() {
+                    return;
+                }
+                match self.solid(n) {
+                    Ok(s) if !s.faces.is_empty() => out.solids.push(s),
+                    Ok(_) => {}
+                    Err(e) => out.notes.push(format!("a body did not read: {e}")),
+                }
+            }
+            "GInstance" => {
+                let info = self.obj(n, "m_instanceInfo");
+                let transform = info.and_then(|i| self.transform(i));
+                let Some(transform) = transform else {
+                    out.notes.push("a placed type without its transform".into());
+                    return;
+                };
+                let embedded = self.obj(n, "m_oEmbeddedSymbolGRep").map(|e| {
+                    let mut g = GRep::default();
+                    self.node(e, &mut g, depth + 1);
+                    Box::new(g)
+                });
+                out.instances.push(Placed {
+                    symbol: info
+                        .and_then(|i| self.get(i, "m_symbolId"))
+                        .and_then(Value::as_id)
+                        .filter(|id| *id > 0),
+                    transform,
+                    embedded,
+                });
+            }
+            "GLine" | "GArc" | "GEllipse" => {
+                if let Some(c) = self.curve(n) {
+                    out.curves.push(c);
+                }
+            }
+            _ => {
+                for s in self.list(n, "m_subNodes") {
+                    if let Some(s) = self.record.deref(s) {
+                        self.node(s, out, depth + 1);
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// An element's geometry from its `GElement` record.
+pub fn read(schema: &Schema, record: &Record) -> Option<GRep> {
+    if schema.class_name(record.root.class) != "GElement" {
+        return None;
+    }
+    let r = Reader { schema, record };
+    let mut out = GRep::default();
+    let b = r.get(&record.root, "m_bBox").map(Value::floats);
+    out.bbox = b
+        .filter(|b| b.len() == 6 && b.iter().all(|v| v.is_finite()))
+        .map(|b| [b[0], b[1], b[2], b[3], b[4], b[5]]);
+    r.node(&record.root, &mut out, 0);
+    Some(out)
+}

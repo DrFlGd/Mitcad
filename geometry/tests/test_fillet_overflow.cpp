@@ -1617,6 +1617,176 @@ void test_rounding_round_a_chamfered_box_walks_on_along_its_rounded_corners() {
   CHECK(removed < straight + corners);
 }
 
+void test_top_rounding_larger_than_the_rounded_corners_walks_round_them() {
+  // A box 60 x 40 x 20 whose vertical edges are rounded with 1, then its top
+  // edges rounded with 1.5 (mitcad#297; a rim of tabs and notches with
+  // corners rounded with 1 under a rounding of 1.5). The contour runs round
+  // the box, between the top and the corners' cylinders, which bend towards
+  // the ball (inside the solid) more sharply than the ball: the walk goes on
+  // along those faces of its contour (port patch 0250; port patch 0160 took
+  // them for a rounded rim the ball cannot touch, and the fillet failed).
+  // The straight runs (2 x 58 + 2 x 38 long) take the section of a rounding
+  // between faces at a right angle; round each corner the rest lies within
+  // 1 of the corner's axis and turns a quarter about it.
+  const double section = rounding_area(1.5, kPi / 2.0);
+  const double straight = section * (2.0 * 58.0 + 2.0 * 38.0);
+  const double corners = section * 4.0 * (kPi / 2.0) * 1.0;
+  {
+    const TopoDS_Shape box = BRepPrimAPI_MakeBox(60, 40, 20).Shape();
+    const TopoDS_Shape rounded = occt_fillet(
+        box, {gp_Pnt(0, 0, 10), gp_Pnt(60, 0, 10), gp_Pnt(60, 40, 10), gp_Pnt(0, 40, 10)}, 1.0);
+    CHECK(!rounded.IsNull());
+    const TopoDS_Shape result = rounded.IsNull() ? rounded : occt_fillet(rounded, gp_Pnt(30, 0, 20), 1.5);
+    CHECK(!result.IsNull());
+    if (!result.IsNull()) {
+      const double removed = volume_of(rounded) - volume_of(result);
+      CHECK(removed > straight);
+      CHECK(removed < straight + corners);
+    }
+  }
+  // Mitcad's fillet of the top front edge by its name, after the extrusion
+  // and the corners' fillet.
+  const ShapePtr box = extrude("F2", {rectangle(1, 0, 0, 60, 40)}, 0, 20);
+  std::vector<std::string> corner_edges;
+  for (int i = 0; i < 4; ++i) {
+    corner_edges.push_back(edge(side("F2", 1, i), side("F2", 1, (i + 1) % 4)));
+  }
+  const ShapePtr rounded = fillet("F7", *box, corner_edges, 1.0);
+  const std::string target = edge(end_cap("F2", 1), side("F2", 1, 0));
+  const ShapePtr result = fillet("F8", *rounded, {target}, 1.5);
+  CHECK(detail::is_valid(result->occt()));
+  CHECK(faces_named(*result, "F8:fillet(" + target + ")") >= 1);
+  const double removed = volume_of(rounded->occt()) - volume_of(result->occt());
+  CHECK(removed > straight);
+  CHECK(removed < straight + corners);
+}
+
+// A boss of radius 5 and height 3 on a plate, its foot rounded with 3, as
+// high as the boss: the rounding's contact runs along the boss's top edge,
+// the wall vanishes, and the top edge lies between the top and the foot's
+// torus, at a right angle (patch 0350). The rounding marked that edge as
+// tangent (a regularity G1, for the wall it was tangent to), and rounding the
+// top edge then failed for any radius: the spine of the one closed edge was
+// taken as ending at its vertex (not tangent there across the faces said to
+// be tangent), its start was found on the guide's prolongation past the end
+// and the walk stopped at once. The top's rounding removes the section
+// between the top, the torus and the ball's arc, revolved: its volume by
+// Green's theorem, 2 pi times the integral of rho^2 / 2 dz round it.
+void test_boss_top_rounded_after_its_foot_rounded_as_high_as_it() {
+  const double R = 5.0, h = 3.0;
+  const TopoDS_Shape plate = BRepPrimAPI_MakeBox(gp_Pnt(-20, -20, -5), gp_Pnt(20, 20, 0)).Shape();
+  BRepAlgoAPI_Fuse fuse(plate, BRepPrimAPI_MakeCylinder(gp_Ax2(gp_Pnt(0, 0, 0), gp_Dir(0, 0, 1)), R, h).Shape());
+  fuse.SimplifyResult();
+  const TopoDS_Shape footed = occt_fillet(fuse.Shape(), gp_Pnt(-R, 0, 0), h);
+  CHECK(!footed.IsNull());
+  if (footed.IsNull()) {
+    return;
+  }
+  // The top edge, between the top and the torus, is not marked tangent.
+  const TopoDS_Edge top = edge_near(footed, gp_Pnt(-R, 0, h));
+  std::vector<TopoDS_Face> faces;
+  for (TopExp_Explorer f(footed, TopAbs_FACE); f.More(); f.Next()) {
+    for (TopExp_Explorer e(f.Current(), TopAbs_EDGE); e.More(); e.Next()) {
+      if (e.Current().IsSame(top)) {
+        faces.push_back(TopoDS::Face(f.Current()));
+        break;
+      }
+    }
+  }
+  CHECK(faces.size() == 2u);
+  if (faces.size() == 2u) {
+    CHECK(BRep_Tool::Continuity(top, faces[0], faces[1]) == GeomAbs_C0);
+  }
+  for (const double r : {0.5, 1.0, 2.0}) {
+    const TopoDS_Shape rounded = occt_fillet(footed, gp_Pnt(-R, 0, h), r);
+    CHECK(!rounded.IsNull());
+    if (rounded.IsNull()) {
+      continue;
+    }
+    // The ball's centre: r below the top, h + r from the torus's centre
+    // circle (radius R + h, height h).
+    const double d = std::sqrt(h * h + 2.0 * h * r);
+    const double rc = R + h - d;
+    const int n = 4000;
+    const auto simpson = [n](const auto& f, double a, double b) {
+      double sum = 0.0;
+      for (int i = 0; i <= n; ++i) {
+        sum += (i == 0 || i == n ? 1.0 : (i % 2 == 1 ? 4.0 : 2.0)) * f(a + (b - a) * i / n);
+      }
+      return sum * (b - a) / (3.0 * n);
+    };
+    // From the top edge down the torus to the ball's contact, then up the
+    // ball's arc to its contact with the top (the top's part adds nothing).
+    const double foot_arc = simpson(
+        [&](double t) {
+          const double rho = R + h + h * std::cos(t);
+          return rho * rho / 2.0 * h * std::cos(t);
+        },
+        kPi, kPi + std::atan2(r, d));
+    const double ball_arc = simpson(
+        [&](double s) {
+          const double rho = rc + r * std::cos(s);
+          return rho * rho / 2.0 * r * std::cos(s);
+        },
+        std::atan2(r, d), kPi / 2.0);
+    const double removed = 2.0 * kPi * std::abs(foot_arc + ball_arc);
+    // (The blend is walked: an approximation within its tolerance.)
+    CHECK_NEAR_TOL(volume_of(rounded) - volume_of(footed), -removed, 1e-5);
+  }
+}
+
+// The name of the edge of `shape` nearest to the point.
+std::string edge_at(const Shape& shape, const gp_Pnt& point) {
+  const TopoDS_Shape vertex = BRepBuilderAPI_MakeVertex(point).Vertex();
+  int best = -1;
+  double nearest = 1e100;
+  for (int i = 0; i < shape.edge_count(); ++i) {
+    BRepExtrema_DistShapeShape distance(vertex, shape.edge(i));
+    if (distance.IsDone() && distance.Value() < nearest) {
+      nearest = distance.Value();
+      best = i;
+    }
+  }
+  return best < 0 ? std::string() : shape.edge_name(best);
+}
+
+void test_rounding_rolled_on_a_ribs_far_edge_is_a_cylinder() {
+  // mitcad#328: the rounding of a rib's top edge that rolls on the other
+  // top edge (a ball touching a plane and an edge line: a cylinder) is
+  // walked by OCCT as a B-spline surface with B-spline edges. It is the
+  // cylinder, its edges lines and arcs, as in the bodies the files store
+  // (in a design, a rounding of a boss's end face after such roundings
+  // failed in OCCT's walk on the B-splines and builds on the analytic
+  // faces); the roundings after it build on them.
+  const ShapePtr plate = extrude("F2", {rectangle(1, -5, 0, 50, 20)}, 0, 5);
+  const ShapePtr rib = extrude("F3", {rectangle(5, 0, 9.5, 40, 1)}, 5, 15);
+  const ShapePtr body = joined(plate, rib);
+  const ShapePtr rounded = fillet("F4", *body, {edge(end_cap("F3", 5), side("F3", 5, 0))}, 2);
+  CHECK(detail::is_valid(rounded->occt()));
+  const std::vector<int> faces = rounded->find_faces(end_cap("F3", 5));
+  CHECK(faces.size() == 1);
+  if (faces.size() == 1) {
+    const TopoDS_Face& face = rounded->face(faces[0]);
+    CHECK(BRepAdaptor_Surface(face).GetType() == GeomAbs_Cylinder);
+    for (TopExp_Explorer edges(face, TopAbs_EDGE); edges.More(); edges.Next()) {
+      const GeomAbs_CurveType type = BRepAdaptor_Curve(TopoDS::Edge(edges.Current())).GetType();
+      CHECK(type == GeomAbs_Line || type == GeomAbs_Circle);
+    }
+  }
+  const double h = std::sqrt(3.0);
+  const double removed = 0.5 * h - 2.0 * (kPi / 3.0 - std::sin(kPi / 3.0));
+  CHECK_NEAR(volume(*rounded), volume(*body) - removed * 40.0);
+  // The rounding's far edge (on the rib's other side, at its top) rounded
+  // with 0.3, then the edges of the rib's end face with 0.4 (one tangent
+  // chain from the plate up and down again).
+  const ShapePtr far = fillet("F5", *rounded, {edge_at(*rounded, gp_Pnt(20, 10.5, 15))}, 0.3);
+  CHECK(detail::is_valid(far->occt()));
+  const ShapePtr ends = fillet("F6", *far, {edge_at(*far, gp_Pnt(0, 9.5, 10))}, 0.4);
+  CHECK(detail::is_valid(ends->occt()));
+  CHECK(volume(*ends) < volume(*far));
+  CHECK(volume(*far) - volume(*ends) < 10.0 * 0.4 * 0.4);
+}
+
 void fillet_overflow_tests() {
   guarded("test_rounding_rolls_on_a_bevels_far_edge", test_rounding_rolls_on_a_bevels_far_edge);
   guarded("test_concave_rounding_rolls_on_a_strips_far_edge", test_concave_rounding_rolls_on_a_strips_far_edge);
@@ -1665,6 +1835,12 @@ void fillet_overflow_tests() {
           test_closed_rounding_consumes_an_earlier_rounding_over_a_rounded_rim);
   guarded("test_rounding_round_a_chamfered_box_walks_on_along_its_rounded_corners",
           test_rounding_round_a_chamfered_box_walks_on_along_its_rounded_corners);
+  guarded("test_top_rounding_larger_than_the_rounded_corners_walks_round_them",
+          test_top_rounding_larger_than_the_rounded_corners_walks_round_them);
+  guarded("test_boss_top_rounded_after_its_foot_rounded_as_high_as_it",
+          test_boss_top_rounded_after_its_foot_rounded_as_high_as_it);
+  guarded("test_rounding_rolled_on_a_ribs_far_edge_is_a_cylinder",
+          test_rounding_rolled_on_a_ribs_far_edge_is_a_cylinder);
 }
 
 } // namespace test

@@ -174,6 +174,8 @@ int main() {
   test::fillet_chain_tests();
   // The tangent chains of a body's edges and faces (mitcad#290).
   test::tangent_chain_tests();
+  // Roundings that run over cut-outs of their faces (mitcad#311).
+  test::fillet_cutout_tests();
   for (const std::string& change : mitcad::geometry::input_changes()) {
     std::fprintf(stderr, "%s\n", change.c_str());
   }

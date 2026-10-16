@@ -46,6 +46,14 @@ pub mod ffi {
             tolerance: f64,
         ) -> Result<UniquePtr<BooleanResult>>;
 
+        /// A cut whose failures are retried with a fuzzy value up to
+        /// `tolerance` mm (`geometry::boolean`'s `within`, mitcad#235).
+        fn boolean_cut_within(
+            targets: &ShapeList,
+            tool: &Shape,
+            tolerance: f64,
+        ) -> Result<UniquePtr<BooleanResult>>;
+
         fn piece_count(self: &BooleanResult) -> usize;
         fn piece(self: &BooleanResult, index: usize) -> SharedPtr<Shape>;
         fn piece_sources(self: &BooleanResult, index: usize) -> Vec<usize>;

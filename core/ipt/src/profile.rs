@@ -70,6 +70,78 @@ pub fn nested(measured: &[Measured]) -> bool {
     })
 }
 
+/// Whether selection `inner` lies within selection `outer` and runs along
+/// its boundary for part of its own (a region beside the outline, inside
+/// it, selected with it): every point of `inner` lies in `outer` or on its
+/// boundary, and at least a twentieth of `inner`'s boundary lies on
+/// `outer`'s. Such a selection adds nothing to the outline's: the file's
+/// extrusion is the outline's region *(seen: a lid's outline and the ring
+/// between it and an inner outline touching it at two corners, both
+/// selected; the history state adds the whole outline's slab, not the
+/// outline less the ring)*. A selection inside another one that does not
+/// touch its boundary is a hole of it ([`even_odd`]).
+pub fn subsumed(outer: &Measured, inner: &Measured) -> bool {
+    if inner.area >= outer.area || outer.loops.is_empty() || inner.loops.is_empty() {
+        return false;
+    }
+    let bbox = |p: &[[f64; 2]]| {
+        p.iter()
+            .fold([f64::MAX, f64::MAX, f64::MIN, f64::MIN], |b, q| {
+                [
+                    b[0].min(q[0]),
+                    b[1].min(q[1]),
+                    b[2].max(q[0]),
+                    b[3].max(q[1]),
+                ]
+            })
+    };
+    let tol = 2e-5 * outer.area.sqrt() + 1e-7;
+    let (bo, bi) = (bbox(&outer.outer), bbox(&inner.outer));
+    if bi[0] < bo[0] - tol || bi[1] < bo[1] - tol || bi[2] > bo[2] + tol || bi[3] > bo[3] + tol {
+        return false;
+    }
+    let near_boundary = |p: [f64; 2]| {
+        outer
+            .loops
+            .iter()
+            .any(|l| (0..l.len()).any(|i| segment_distance(p, l[i], l[(i + 1) % l.len()]) <= tol))
+    };
+    // Inside the outer loop and in none of the holes (even-odd over all of
+    // `outer`'s loops).
+    let inside = |p: [f64; 2]| {
+        let mut odd = false;
+        for l in &outer.loops {
+            for i in 0..l.len() {
+                let (a, c) = (l[i], l[(i + 1) % l.len()]);
+                if (a[1] > p[1]) != (c[1] > p[1])
+                    && p[0] < a[0] + (p[1] - a[1]) * (c[0] - a[0]) / (c[1] - a[1])
+                {
+                    odd = !odd;
+                }
+            }
+        }
+        odd
+    };
+    // (A selection all along `outer`'s boundary, its hole selected again,
+    // lies in no part of it.)
+    let (mut shared, mut within) = (0.0, 0.0);
+    for l in &inner.loops {
+        for i in 0..l.len() {
+            let (a, b) = (l[i], l[(i + 1) % l.len()]);
+            let length = (b[0] - a[0]).hypot(b[1] - a[1]);
+            let mid = [(a[0] + b[0]) / 2.0, (a[1] + b[1]) / 2.0];
+            if near_boundary(mid) {
+                shared += length;
+            } else if inside(mid) {
+                within += length;
+            } else {
+                return false;
+            }
+        }
+    }
+    within > 0.0 && shared >= 0.05 * (shared + within)
+}
+
 /// The regions selections inside one another make up: a region of the
 /// sketch is taken when an odd number of the selections cover it. A
 /// boundary selected inside another selection's (a circle in the outline
@@ -255,6 +327,10 @@ pub struct Profiles {
     /// record, the selection they belong to (the record of a feature's
     /// profiles or of a loft's section), the loop in its coordinates).
     pub outlines: Vec<(usize, usize, Vec<[f64; 2]>)>,
+    /// The profile selections features made: (the sketch record, the
+    /// selection, the sketch's transform), for the curves of their
+    /// outlines (`Profiles::outline_edges`).
+    pub selected: Vec<(usize, usize, [[f64; 4]; 4])>,
 }
 
 impl Profiles {
@@ -345,6 +421,333 @@ impl Profiles {
             loops: parts.iter().map(|p| p.2.clone()).collect(),
         })
     }
+}
+
+impl Profiles {
+    /// The edges of a profile selection's loops as curves in the sketch
+    /// whose transform (sketch to model, cm) is `m` (mitcad#235: the
+    /// outlines of what the sketch draws that is not decoded, as texts'
+    /// glyphs). None when an edge is not a line, an ellipse's arc or a
+    /// B-spline, or leaves the sketch's plane.
+    pub fn outline_edges(
+        &mut self,
+        dc: &Definitions,
+        selection: usize,
+        m: &[[f64; 4]; 4],
+    ) -> Option<Vec<OutlineEdge>> {
+        let (body, file) = self.body(dc, selection)?;
+        let options = crate::convert_options();
+        let column = |c: usize| [m[0][c], m[1][c], m[2][c]];
+        let (x, y, o) = (column(0), column(1), column(3));
+        let z = unit3(cross3(x, y))?;
+        // Model (mm) to the sketch (cm), None off its plane.
+        let local = |p: [f64; 3]| -> Option<[f64; 2]> {
+            let d = [p[0] / 10.0 - o[0], p[1] / 10.0 - o[1], p[2] / 10.0 - o[2]];
+            (dot3(d, z).abs() <= 1e-6).then(|| [dot3(d, x), dot3(d, y)])
+        };
+        let mut out = Vec::new();
+        for edge in wire_edges(file, body)? {
+            let (curve, t, transform) =
+                convert::edge_curve(file, body, edge, &options, None).ok()?;
+            let moved = |p: [f64; 3]| match &transform {
+                Some(tr) => [
+                    tr.m[0][0] * p[0] + tr.m[0][1] * p[1] + tr.m[0][2] * p[2] + tr.t[0],
+                    tr.m[1][0] * p[0] + tr.m[1][1] * p[1] + tr.m[1][2] * p[2] + tr.t[1],
+                    tr.m[2][0] * p[0] + tr.m[2][1] * p[1] + tr.m[2][2] * p[2] + tr.t[2],
+                ],
+                None => p,
+            };
+            let to = |p: [f64; 3]| local(moved(p));
+            out.push(outline_edge(&curve, t, &to)?);
+        }
+        (!out.is_empty()).then_some(out)
+    }
+}
+
+/// An edge of a profile's outline in its sketch (cm): a line, or a NURBS
+/// curve clamped at its ends (knots in full, one weight per control point
+/// when rational).
+#[derive(Clone, Debug, PartialEq)]
+pub enum OutlineEdge {
+    Line([f64; 2], [f64; 2]),
+    Nurbs {
+        degree: usize,
+        knots: Vec<f64>,
+        poles: Vec<[f64; 2]>,
+        weights: Option<Vec<f64>>,
+    },
+}
+
+impl OutlineEdge {
+    /// The point at `s` of its parameter range, 0 at its start and 1 at its
+    /// end.
+    pub fn at(&self, s: f64) -> [f64; 2] {
+        match self {
+            OutlineEdge::Line(a, b) => [a[0] + s * (b[0] - a[0]), a[1] + s * (b[1] - a[1])],
+            OutlineEdge::Nurbs {
+                degree,
+                knots,
+                poles,
+                weights,
+            } => {
+                let (t0, t1) = (knots[*degree], knots[poles.len()]);
+                nurbs_point(
+                    *degree,
+                    knots,
+                    poles,
+                    weights.as_deref(),
+                    t0 + s * (t1 - t0),
+                )
+            }
+        }
+    }
+}
+
+/// The edges of a wire body's loops (as [`wire_loops`] walks them), each
+/// once.
+fn wire_edges(file: &AsmFile, body: usize) -> Option<Vec<usize>> {
+    let mut edges = Vec::new();
+    let mut walk = |first: usize, guard: &mut usize| -> Option<()> {
+        let mut coedge = Some(first);
+        while let Some(c) = coedge {
+            *guard += 1;
+            if *guard > 100_000 {
+                return None;
+            }
+            let edge = ptr(file, c, 6)?;
+            if !edges.contains(&edge) {
+                edges.push(edge);
+            }
+            let next = ptr(file, c, 3);
+            coedge = next.filter(|&n| n != first && n != c);
+        }
+        Some(())
+    };
+    let mut guard = 0;
+    let mut lump = ptr(file, body, 3);
+    while let Some(l) = lump {
+        let mut shell = ptr(file, l, 4);
+        while let Some(s) = shell {
+            let mut wire = ptr(file, s, 6);
+            while let Some(w) = wire {
+                walk(ptr(file, w, 4)?, &mut guard)?;
+                wire = ptr(file, w, 3);
+            }
+            let mut face = ptr(file, s, 5);
+            while let Some(f) = face {
+                let mut lp = ptr(file, f, 4);
+                while let Some(l) = lp {
+                    walk(ptr(file, l, 4)?, &mut guard)?;
+                    lp = ptr(file, l, 3);
+                }
+                face = ptr(file, f, 3);
+            }
+            shell = ptr(file, s, 3);
+        }
+        lump = ptr(file, l, 3);
+    }
+    (!edges.is_empty()).then_some(edges)
+}
+
+/// A curve's piece over `t` as an [`OutlineEdge`], its points mapped by
+/// `to` (None when one is not mapped).
+fn outline_edge(
+    curve: &mitcad_f3d::brep::Curve,
+    t: [f64; 2],
+    to: &dyn Fn([f64; 3]) -> Option<[f64; 2]>,
+) -> Option<OutlineEdge> {
+    use mitcad_f3d::brep::Curve;
+    let (t0, t1) = (t[0].min(t[1]), t[0].max(t[1]));
+    if t1.partial_cmp(&t0) != Some(std::cmp::Ordering::Greater) {
+        return None;
+    }
+    match curve {
+        Curve::Line { .. } => Some(OutlineEdge::Line(to(curve.eval(t0))?, to(curve.eval(t1))?)),
+        // An ellipse's arc as rational quadratic pieces of at most a
+        // quarter turn: each the affine image of a circle's.
+        Curve::Ellipse {
+            center,
+            normal,
+            major_dir,
+            major,
+            minor,
+        } => {
+            let v = cross3(*normal, *major_dir);
+            let at = |a: f64, r: f64| {
+                [
+                    center[0] + r * (major * a.cos() * major_dir[0] + minor * a.sin() * v[0]),
+                    center[1] + r * (major * a.cos() * major_dir[1] + minor * a.sin() * v[1]),
+                    center[2] + r * (major * a.cos() * major_dir[2] + minor * a.sin() * v[2]),
+                ]
+            };
+            let n = ((t1 - t0) / std::f64::consts::FRAC_PI_2 - 1e-9)
+                .ceil()
+                .max(1.0) as usize;
+            let h = (t1 - t0) / (2.0 * n as f64);
+            let mut poles = vec![to(at(t0, 1.0))?];
+            let mut weights = vec![1.0];
+            let mut knots = vec![0.0; 3];
+            for k in 0..n {
+                let a = t0 + 2.0 * h * k as f64;
+                poles.push(to(at(a + h, 1.0 / h.cos()))?);
+                weights.push(h.cos());
+                poles.push(to(at(a + 2.0 * h, 1.0))?);
+                weights.push(1.0);
+                let end = (k + 1) as f64;
+                knots.extend(if k + 1 == n {
+                    vec![end; 3]
+                } else {
+                    vec![end; 2]
+                });
+            }
+            Some(OutlineEdge::Nurbs {
+                degree: 2,
+                knots,
+                poles,
+                weights: Some(weights),
+            })
+        }
+        Curve::BSpline(b) => {
+            let knots: Vec<f64> = b
+                .knots
+                .iter()
+                .zip(&b.mults)
+                .flat_map(|(&k, &m)| std::iter::repeat_n(k, m))
+                .collect();
+            let p = b.degree;
+            if p == 0 || knots.len() != b.poles.len() + p + 1 {
+                return None;
+            }
+            let poles: Option<Vec<[f64; 2]>> = b.poles.iter().map(|&q| to(q)).collect();
+            let weights = b.weights.clone();
+            if weights.as_ref().is_some_and(|w| w.len() != b.poles.len()) {
+                return None;
+            }
+            let (poles, knots, weights) = trimmed(p, knots, poles?, weights, t0, t1)?;
+            Some(OutlineEdge::Nurbs {
+                degree: p,
+                knots,
+                poles,
+                weights,
+            })
+        }
+        Curve::Interpolated { .. } => None,
+    }
+}
+
+/// A NURBS curve's piece over `[t0, t1]`, clamped at both ends: knots
+/// inserted at the ends until each is there `degree` times (Boehm's
+/// insertion on the weighted control points). None when the piece leaves
+/// the curve's range.
+#[allow(clippy::type_complexity)]
+fn trimmed(
+    p: usize,
+    mut knots: Vec<f64>,
+    poles: Vec<[f64; 2]>,
+    weights: Option<Vec<f64>>,
+    t0: f64,
+    t1: f64,
+) -> Option<(Vec<[f64; 2]>, Vec<f64>, Option<Vec<f64>>)> {
+    let n = poles.len();
+    let (lo, hi) = (knots[p], knots[n]);
+    let slack = 1e-9 * (hi - lo).abs().max(1.0);
+    if t0 < lo - slack || t1 > hi + slack {
+        return None;
+    }
+    let (t0, t1) = (t0.max(lo), t1.min(hi));
+    // Weighted control points (x w, y w, w).
+    let mut q: Vec<[f64; 3]> = poles
+        .iter()
+        .enumerate()
+        .map(|(i, a)| {
+            let w = weights.as_ref().map_or(1.0, |w| w[i]);
+            [a[0] * w, a[1] * w, w]
+        })
+        .collect();
+    let same = |a: f64, b: f64| (a - b).abs() <= slack;
+    for u in [t0, t1] {
+        let times = knots.iter().filter(|&&k| same(k, u)).count();
+        for _ in times..p {
+            // The span: the last knot at or below u (among the poles').
+            let k = (p..q.len()).rev().find(|&i| knots[i] <= u + slack)?;
+            let mut next = Vec::with_capacity(q.len() + 1);
+            next.extend_from_slice(&q[..=k - p]);
+            for i in k - p + 1..=k {
+                let d = knots[i + p] - knots[i];
+                let a = if d > 0.0 { (u - knots[i]) / d } else { 0.0 };
+                next.push([
+                    (1.0 - a) * q[i - 1][0] + a * q[i][0],
+                    (1.0 - a) * q[i - 1][1] + a * q[i][1],
+                    (1.0 - a) * q[i - 1][2] + a * q[i][2],
+                ]);
+            }
+            next.extend_from_slice(&q[k..]);
+            q = next;
+            knots.insert(k + 1, u);
+        }
+    }
+    // t0's last place and t1's first: the poles between.
+    let s0 = knots.iter().rposition(|&k| same(k, t0))?;
+    let r1 = knots.iter().position(|&k| same(k, t1))?;
+    if s0 < p || r1 < 1 || r1 - 1 < s0 - p {
+        return None;
+    }
+    let piece = &q[s0 - p..r1];
+    let mut out = vec![t0; p + 1];
+    out.extend(knots[s0 + 1..r1].iter().copied());
+    out.extend(std::iter::repeat_n(t1, p + 1));
+    let poles: Vec<[f64; 2]> = piece.iter().map(|a| [a[0] / a[2], a[1] / a[2]]).collect();
+    let weights = weights.map(|_| piece.iter().map(|a| a[2]).collect());
+    (out.len() == poles.len() + p + 1).then_some((poles, out, weights))
+}
+
+/// A NURBS curve's point at `t` (de Boor's algorithm on the weighted
+/// control points).
+fn nurbs_point(
+    p: usize,
+    knots: &[f64],
+    poles: &[[f64; 2]],
+    weights: Option<&[f64]>,
+    t: f64,
+) -> [f64; 2] {
+    let n = poles.len();
+    let k = (p..n).rev().find(|&i| knots[i] <= t).unwrap_or(p);
+    let mut d: Vec<[f64; 3]> = (0..=p)
+        .map(|j| {
+            let i = k - p + j;
+            let w = weights.map_or(1.0, |w| w[i]);
+            [poles[i][0] * w, poles[i][1] * w, w]
+        })
+        .collect();
+    for r in 1..=p {
+        for j in (r..=p).rev() {
+            let i = k - p + j;
+            let den = knots[i + p + 1 - r] - knots[i];
+            let a = if den > 0.0 { (t - knots[i]) / den } else { 0.0 };
+            let before = d[j - 1];
+            for (x, b) in d[j].iter_mut().zip(before) {
+                *x = (1.0 - a) * b + a * *x;
+            }
+        }
+    }
+    [d[p][0] / d[p][2], d[p][1] / d[p][2]]
+}
+
+fn dot3(a: [f64; 3], b: [f64; 3]) -> f64 {
+    a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
+}
+
+fn cross3(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
+    [
+        a[1] * b[2] - a[2] * b[1],
+        a[2] * b[0] - a[0] * b[2],
+        a[0] * b[1] - a[1] * b[0],
+    ]
+}
+
+fn unit3(a: [f64; 3]) -> Option<[f64; 3]> {
+    let l = dot3(a, a).sqrt();
+    (l > 0.0).then(|| [a[0] / l, a[1] / l, a[2] / l])
 }
 
 /// The record a pointer field of a record names.
@@ -564,6 +967,116 @@ mod tests {
             selection(&[square(1.0, 0)]),
         ];
         assert_eq!(areas(&even_odd(&rings).unwrap()), [12.0, 20.0]);
+    }
+
+    #[test]
+    fn a_selection_along_the_outline_inside_it_adds_nothing() {
+        // An outline and the ring between it and an inner outline that
+        // touches its bottom side, both selected: the outline's region.
+        let outline = selection(&[vec![[0.0, 0.0], [10.0, 0.0], [10.0, 10.0], [0.0, 10.0]]]);
+        let ring = selection(&[vec![
+            [0.0, 0.0],
+            [1.0, 0.0],
+            [1.0, 9.0],
+            [9.0, 9.0],
+            [9.0, 0.0],
+            [10.0, 0.0],
+            [10.0, 10.0],
+            [0.0, 10.0],
+        ]]);
+        assert!((ring.area - 28.0).abs() < 1e-9);
+        assert!(subsumed(&outline, &ring));
+        assert!(!subsumed(&ring, &outline));
+        // By the even-odd rule the ring would be a hole of the outline.
+        let both = [outline.clone(), ring];
+        assert!(nested(&both));
+        let odd = even_odd(&both).unwrap();
+        assert_eq!(odd.len(), 1);
+        assert!((odd[0].area - 72.0).abs() < 1e-9);
+        // A hole inside the outline, apart from its boundary, stays a
+        // hole; a ring's hole selected again lies in no part of the ring.
+        let hole = selection(&[square(0.5, 0)]);
+        assert!(!subsumed(&selection(&[square(2.0, 0)]), &hole));
+        assert!(!subsumed(
+            &selection(&[square(2.0, 0), square(0.5, 0)]),
+            &hole
+        ));
+        // A region beside the outline, outside it.
+        let beside = selection(&[vec![[10.0, 0.0], [12.0, 0.0], [12.0, 5.0], [10.0, 5.0]]]);
+        assert!(!subsumed(&outline, &beside));
+    }
+
+    #[test]
+    fn outline_edges_are_the_curves_pieces() {
+        use mitcad_f3d::brep::{BSplineCurve, Curve};
+        let flat = |p: [f64; 3]| Some([p[0], p[1]]);
+        // A quarter and a bit of an ellipse, as rational quadratic pieces.
+        let ellipse = Curve::Ellipse {
+            center: [1.0, 2.0, 0.0],
+            normal: [0.0, 0.0, 1.0],
+            major_dir: [1.0, 0.0, 0.0],
+            major: 3.0,
+            minor: 2.0,
+        };
+        let e = outline_edge(&ellipse, [0.3, 2.2], &flat).unwrap();
+        let OutlineEdge::Nurbs { degree, poles, .. } = &e else {
+            panic!("{e:?}")
+        };
+        assert_eq!((*degree, poles.len()), (2, 5));
+        for k in 0..=20 {
+            let p = e.at(f64::from(k) / 20.0);
+            let (u, v) = ((p[0] - 1.0) / 3.0, (p[1] - 2.0) / 2.0);
+            assert!((u * u + v * v - 1.0).abs() < 1e-12, "{p:?}");
+        }
+        let (a, b) = (e.at(0.0), e.at(1.0));
+        assert!((a[0] - (1.0 + 3.0 * 0.3f64.cos())).abs() < 1e-12);
+        assert!((b[1] - (2.0 + 2.0 * 2.2f64.sin())).abs() < 1e-12);
+        // A rational cubic B-spline's piece between two interior
+        // parameters, one of them a knot: the same points.
+        let b = BSplineCurve {
+            degree: 3,
+            knots: vec![0.0, 1.0, 2.0, 3.0],
+            mults: vec![4, 1, 1, 4],
+            poles: vec![
+                [0.0, 0.0, 0.0],
+                [1.0, 2.0, 0.0],
+                [2.0, -1.0, 0.0],
+                [3.0, 3.0, 0.0],
+                [4.0, 0.0, 0.0],
+                [5.0, 1.0, 0.0],
+            ],
+            weights: Some(vec![1.0, 2.0, 0.5, 1.0, 1.5, 1.0]),
+            periodic: false,
+        };
+        let whole = outline_edge(&Curve::BSpline(b.clone()), [0.0, 3.0], &flat).unwrap();
+        let piece = outline_edge(&Curve::BSpline(b), [0.4, 2.0], &flat).unwrap();
+        let OutlineEdge::Nurbs { knots, poles, .. } = &piece else {
+            panic!("{piece:?}")
+        };
+        assert_eq!(knots.len(), poles.len() + 4);
+        for k in 0..=10 {
+            let s = f64::from(k) / 10.0;
+            let (p, q) = (piece.at(s), whole.at((0.4 + s * 1.6) / 3.0));
+            assert!((p[0] - q[0]).hypot(p[1] - q[1]) < 1e-12, "{p:?} {q:?}");
+        }
+        // Lines; and nothing for a range beyond the curve.
+        let line = Curve::Line {
+            origin: [0.0, 0.0, 0.0],
+            dir: [1.0, 1.0, 0.0],
+        };
+        assert_eq!(
+            outline_edge(&line, [1.0, 2.0], &flat),
+            Some(OutlineEdge::Line([1.0, 1.0], [2.0, 2.0]))
+        );
+        let curve = BSplineCurve {
+            degree: 1,
+            knots: vec![0.0, 1.0],
+            mults: vec![2, 2],
+            poles: vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]],
+            weights: None,
+            periodic: false,
+        };
+        assert!(outline_edge(&Curve::BSpline(curve), [0.5, 1.5], &flat).is_none());
     }
 
     #[test]

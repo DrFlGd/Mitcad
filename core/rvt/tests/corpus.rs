@@ -453,6 +453,29 @@ fn every_file_and_the_reference() {
                 continue;
             }
         };
+        // The geometry the projects of 2023 on keep (mitcad#333): every
+        // record walks and reads, and every edge's two sides land within
+        // 0.001 ft of each other.
+        if !family && release.is_some_and(|r| r >= 2023) {
+            if model.geometry.is_empty() || model.geometry_errors > 0 {
+                failures.push(fail(format!(
+                    "geometry of {} elements, {} records not walked",
+                    model.geometry.len(),
+                    model.geometry_errors
+                )));
+            }
+            for (id, g) in &model.geometry {
+                if let Some(note) = g.notes.first() {
+                    failures.push(fail(format!("element {id}'s geometry: {note}")));
+                }
+                let gap = g.solids.iter().map(|s| s.seam_gap()).fold(0.0, f64::max);
+                if gap > 0.001 {
+                    failures.push(fail(format!(
+                        "element {id}'s edges' sides lie {gap:.2e} ft apart"
+                    )));
+                }
+            }
+        }
         let declared: BTreeSet<i64> = model.declared.iter().map(|d| d.id).collect();
         // The reference reads the table from 24 bytes into it, in records
         // of 28 (to 2023) or 40 bytes: it leaves out the first record and

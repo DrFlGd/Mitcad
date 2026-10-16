@@ -2304,12 +2304,26 @@ fn find_external(
             }
         }
     }
-    let found = hit.is_some();
+    // A document without history (its bodies stored only): the entity in
+    // the stored bodies, where they name it.
+    let mut stored_note = None;
+    if hit.is_none() && blobs.is_empty() && !is_body {
+        match find_in_stored(doc, fp, &entities) {
+            Ok(entry) => {
+                stored_note = Some(format!("{entry} (another document's stored bodies)"));
+            }
+            Err(e) => why = e,
+        }
+    }
+    let found = hit.is_some() || stored_note.is_some();
     if let Some(f) = fp.f3d.as_mut() {
-        f.found = Some(match hit {
-            Some((entry, how)) => format!("{entry} (another document's last state){how}"),
-            None if blobs.is_empty() => "the other document has no history".to_owned(),
-            None => why,
+        f.found = Some(match (hit, stored_note) {
+            (Some((entry, how)), _) => format!("{entry} (another document's last state){how}"),
+            (None, Some(note)) => note,
+            (None, None) if blobs.is_empty() && why.is_empty() => {
+                "the other document has no history".to_owned()
+            }
+            (None, None) => why,
         });
     }
     if found {
@@ -2322,6 +2336,66 @@ fn find_external(
     }
     found
 }
+/// Finds a face, edge or vertex of a document without history in its stored
+/// bodies (`.smb` blobs) by its names and writes its geometry into the
+/// fingerprint; the blob's entry name.
+fn find_in_stored(
+    doc: &F3dFile,
+    fp: &mut Fingerprint,
+    entities: &[Vec<EntityName>],
+) -> Result<String, String> {
+    let is_face = fp.object_type.as_deref() == Some("BRepFace");
+    // (entry, the entity's geometry, for a face how many of the faces the
+    // recipe lists around it are next to it there).
+    let mut hits: Vec<(String, Fingerprint, usize)> = Vec::new();
+    let mut why = String::new();
+    for b in doc.body_blobs().into_iter().filter(|b| !b.history) {
+        let Ok(data) = doc.read(&b.entry) else {
+            continue;
+        };
+        let Ok(file) = AsmFile::parse(&data) else {
+            continue;
+        };
+        let state = NamedState::new(&file, None);
+        let mut found = fp.clone();
+        match locate(&state, &mut found, entities, (0, 1), false, false) {
+            Ok(_) => {
+                let entry = b.entry.rsplit('/').next().unwrap_or(&b.entry).to_owned();
+                let around = if is_face {
+                    state
+                        .find_face(entities)
+                        .map(|i| state.faces_around(i, entities))
+                        .unwrap_or(0)
+                } else {
+                    0
+                };
+                hits.push((entry, found, around));
+            }
+            Err(e) if why.is_empty() => why = e,
+            Err(_) => {}
+        }
+    }
+    // The stored bodies of one document name their entities each from its
+    // own start (the operation that imported it): the same names fit faces
+    // of several bodies. A face is the one with the most of the faces its
+    // recipe lists around it.
+    let most = hits.iter().map(|h| h.2).max().unwrap_or(0);
+    hits.retain(|h| h.2 == most);
+    match hits.len() {
+        0 if why.is_empty() => Err("the other document has no history or stored body".to_owned()),
+        0 => Err(why),
+        1 => {
+            let (entry, found, _) = hits.pop().expect("one");
+            *fp = found;
+            Ok(entry)
+        }
+        n => Err(format!(
+            "the other document has no history, and {n} of its stored bodies have \
+             an entity of these names"
+        )),
+    }
+}
+
 // Where the file's circles start.
 
 /// A whole circle of a sketch, looked for among the stored bodies' closed
@@ -2734,6 +2808,55 @@ mod tests {
             kind: 0,
             ops: vec![301],
         }
+    }
+
+    /// A face of a document without history (mitcad#332): found in its
+    /// stored bodies by its names, the one body that has it; where several
+    /// bodies have it just as well, not found, and the note says so.
+    #[test]
+    fn finds_a_face_of_a_document_without_history_in_its_stored_bodies() {
+        let cube = testdata::named_cube_blob();
+        let entry = |i: usize| format!("FusionAssetName[Active]/Breps.BlobParts/BREP.{i}.smb");
+        let face = || Fingerprint {
+            object_type: Some("BRepFace".to_owned()),
+            ..Fingerprint::default()
+        };
+        // The top face, bounded by the front face.
+        let entities = vec![vec![n("2")], vec![n("3")]];
+        let one =
+            F3dFile::from_bytes(crate::zip::stored_zip(&[(entry(1).as_str(), &cube)])).unwrap();
+        assert!(history_blobs(&one).is_empty());
+        let mut fp = face();
+        assert_eq!(
+            find_in_stored(&one, &mut fp, &entities).as_deref(),
+            Ok("BREP.1.smb")
+        );
+        let point = fp.point_on_face.unwrap();
+        assert!((point[2] - 1.0).abs() < 1e-9, "{point:?}");
+        assert_eq!(fp.normal_at_point, Some([0.0, 0.0, 1.0]));
+        assert_eq!(
+            fp.geometry.and_then(|g| g.geometry_type).as_deref(),
+            Some("Plane")
+        );
+        // Two bodies whose faces have the same names and neighbours: either.
+        let two = F3dFile::from_bytes(crate::zip::stored_zip(&[
+            (entry(1).as_str(), &cube),
+            (entry(2).as_str(), &cube),
+        ]))
+        .unwrap();
+        let mut fp = face();
+        assert_eq!(
+            find_in_stored(&two, &mut fp, &entities),
+            Err(
+                "the other document has no history, and 2 of its stored bodies have an \
+                 entity of these names"
+                    .to_owned()
+            )
+        );
+        assert!(fp.point_on_face.is_none());
+        // Names no stored body has.
+        let mut fp = face();
+        assert!(find_in_stored(&one, &mut fp, &[vec![n("9")]]).is_err());
     }
 
     /// The cube's edges along x at the bottom front and at the top front

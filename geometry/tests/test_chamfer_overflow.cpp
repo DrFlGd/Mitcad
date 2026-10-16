@@ -6,11 +6,14 @@
 
 #include <cmath>
 #include <cstdio>
+#include <algorithm>
 #include <functional>
+#include <tuple>
 #include <utility>
 #include <vector>
 
 #include <BRepAdaptor_Curve.hxx>
+#include <BRepAlgoAPI_Common.hxx>
 #include <BRepAlgoAPI_Cut.hxx>
 #include <BRepAlgoAPI_Fuse.hxx>
 #include <BRepAdaptor_Surface.hxx>
@@ -27,6 +30,7 @@
 #include <BRepPrimAPI_MakeBox.hxx>
 #include <BRepPrimAPI_MakeCylinder.hxx>
 #include <BRepPrimAPI_MakePrism.hxx>
+#include <BRepPrimAPI_MakeRevol.hxx>
 #include <BRep_Builder.hxx>
 #include <BRep_Tool.hxx>
 #include <GProp_GProps.hxx>
@@ -39,12 +43,14 @@
 #include <Standard_Failure.hxx>
 #include <TopExp.hxx>
 #include <TopExp_Explorer.hxx>
+#include <TopLoc_Location.hxx>
 #include <TopTools_ShapeMapHasher.hxx>
 #include <TopoDS.hxx>
 #include <TopoDS_Shell.hxx>
 #include <TopoDS_Solid.hxx>
 #include <gp_Ax2.hxx>
 #include <gp_Circ.hxx>
+#include <gp_Trsf.hxx>
 #include <gp_Vec.hxx>
 
 #include "check.hpp"
@@ -616,6 +622,385 @@ void test_chamfer_as_long_as_a_boss(double seam, bool by_angle) {
   CHECK(faces_of(result) == faces_of(body));
 }
 
+// A prism of the rounded rectangle [x0, x1] x [y0, y1] (corner radius r)
+// from z0 up by h.
+TopoDS_Shape rounded_prism(double x0, double y0, double x1, double y1, double r, double z0, double h) {
+  BRepBuilderAPI_MakeWire wire;
+  const auto line = [&](double ax, double ay, double bx, double by) {
+    wire.Add(BRepBuilderAPI_MakeEdge(gp_Pnt(ax, ay, z0), gp_Pnt(bx, by, z0)).Edge());
+  };
+  const auto arc = [&](double cx, double cy, double ax, double ay, double bx, double by) {
+    wire.Add(BRepBuilderAPI_MakeEdge(gp_Circ(gp_Ax2(gp_Pnt(cx, cy, z0), gp_Dir(0, 0, 1)), r), gp_Pnt(ax, ay, z0),
+                                     gp_Pnt(bx, by, z0))
+                 .Edge());
+  };
+  line(x0 + r, y0, x1 - r, y0);
+  arc(x1 - r, y0 + r, x1 - r, y0, x1, y0 + r);
+  line(x1, y0 + r, x1, y1 - r);
+  arc(x1 - r, y1 - r, x1, y1 - r, x1 - r, y1);
+  line(x1 - r, y1, x0 + r, y1);
+  arc(x0 + r, y1 - r, x0 + r, y1, x0, y1 - r);
+  line(x0, y1 - r, x0, y0 + r);
+  arc(x0 + r, y0 + r, x0, y0 + r, x0 + r, y0);
+  return BRepPrimAPI_MakePrism(BRepBuilderAPI_MakeFace(wire.Wire()).Face(), gp_Vec(0, 0, h)).Shape();
+}
+
+// a cut b, its faces of one surface merged (the pocket's floor in one face).
+TopoDS_Shape cut_simplified(const TopoDS_Shape& a, const TopoDS_Shape& b) {
+  BRepAlgoAPI_Cut op(a, b);
+  op.SimplifyResult();
+  return op.Shape();
+}
+
+// OCCT's fillet of the edges with one radius: the result, or a null shape
+// when it fails.
+TopoDS_Shape filleted(const TopoDS_Shape& body, const std::vector<TopoDS_Edge>& edges, double radius) {
+  BRepFilletAPI_MakeFillet maker(body);
+  for (const TopoDS_Edge& edge : edges) {
+    if (maker.Contour(edge) == 0) {
+      maker.Add(radius, edge);
+    }
+  }
+  try {
+    OCC_CATCH_SIGNALS
+    maker.Build();
+  } catch (const Standard_Failure& failure) {
+    std::fprintf(stderr, "chamfer overflow test: %s\n", failure.what());
+    return TopoDS_Shape();
+  }
+  return maker.IsDone() ? maker.Shape() : TopoDS_Shape();
+}
+
+// A block (top z = 12) with a pocket 60 x 40 of corner radius 7.5, in two
+// steps: a wall `wall` high stands on a ledge `ledge` wide round the deeper
+// part (down to z = 3). The wall's foot, a closed chain of four lines and
+// four arcs, is chamfered (or rounded) by 1.5. With `lip` the steps are the
+// other way round: the upper opening is the narrower one (inset by the
+// ledge, corner radius 7.5 - ledge), a lip `wall` high over the wider part,
+// and its edge with the lip's underside (convex) is chamfered. A wall and a
+// ledge of 1.5 both vanish (patches 0351, 0352). Before, along the chain's
+// lines the contact on the ledge, on its boundary, was hatched into the
+// pieces beyond the lines' ends only (where the ledge's edge turns away),
+// so that the stripe was walked there and failed, a chamfer's walking not
+// being implemented ("Path failed"); with the contacts along the edges the
+// stripe's point at its start was not the vertex its ends were made, and
+// the topological build failed (TopoDS_Builder::Add); and on the lip the
+// contact along the top's edge gave the top a transition into itself, the
+// chamfer folding back under the top: an invalid shape, 18 of 24 faces. It
+// adds (removes, on the lip) the triangle (legs d) along the lines and,
+// about the arcs' axes, at radius 7.5 - d / 3 (on the lip 6 + d / 3; for
+// a rounding the corner left by the ball, at its centroid's radius).
+void test_wall_foot_round_a_stepped_pocket(double wall, double ledge, bool lip, bool fillet) {
+  const double T = 12.0, X = 60.0, Y = 40.0, r = 7.5, d = 1.5;
+  const double zl = T - wall;
+  TopoDS_Shape body = BRepPrimAPI_MakeBox(gp_Pnt(-1.5, -1.5, 0), gp_Pnt(X + 1.5, Y + 1.5, T)).Shape();
+  if (lip) {
+    body = cut_simplified(body, rounded_prism(ledge, ledge, X - ledge, Y - ledge, r - ledge, zl, wall + 1));
+    body = cut_simplified(body, rounded_prism(0, 0, X, Y, r, 3.0, zl - 3.0));
+  } else {
+    body = cut_simplified(body, rounded_prism(0, 0, X, Y, r, zl, wall + 1));
+    body = cut_simplified(body, rounded_prism(ledge, ledge, X - ledge, Y - ledge, r - ledge, 3.0, T));
+  }
+  // The chamfered outline: inset o, corner radius ro.
+  const double o = lip ? ledge : 0.0, ro = r - o;
+  const std::vector<TopoDS_Edge> foot = edges_where(body, [&](const gp_Pnt& p) {
+    if (std::abs(p.Z() - zl) > 1e-7) {
+      return false;
+    }
+    const double dx = std::max({0.0, o + ro - p.X(), p.X() - (X - o - ro)});
+    const double dy = std::max({0.0, o + ro - p.Y(), p.Y() - (Y - o - ro)});
+    if (dx > 0 && dy > 0) {
+      return std::abs(std::hypot(dx, dy) - ro) < 1e-6;
+    }
+    return (dx == 0 && (std::abs(p.Y() - o) < 1e-6 || std::abs(p.Y() - (Y - o)) < 1e-6)) ||
+           (dy == 0 && (std::abs(p.X() - o) < 1e-6 || std::abs(p.X() - (X - o)) < 1e-6));
+  });
+  CHECK(foot.size() == 8u);
+  const TopoDS_Shape result = fillet ? filleted(body, foot, d) : chamfered(body, foot, d);
+  CHECK(!result.IsNull());
+  if (result.IsNull()) {
+    std::fprintf(stderr, "stepped pocket: wall %g ledge %g lip %d rounded %d failed\n", wall, ledge, lip ? 1 : 0,
+                 fillet ? 1 : 0);
+    return;
+  }
+  CHECK(BRepCheck_Analyzer(result).IsValid());
+  CHECK(pcurves_fit(result));
+  const double lines = 2.0 * (X - 2.0 * r) + 2.0 * (Y - 2.0 * r);
+  // The cross-section's area and its centroid's distance from the edge.
+  const double area = fillet ? (1.0 - kPi / 4.0) * d * d : d * d / 2.0;
+  const double off = fillet ? d * (10.0 - 3.0 * kPi) / (3.0 * (4.0 - kPi)) : d / 3.0;
+  const double expected = lip ? -area * (lines + 2.0 * kPi * (ro + off)) : area * (lines + 2.0 * kPi * (ro - off));
+  CHECK_NEAR_TOL(exact_volume_of(result) - exact_volume_of(body), expected, 1e-8);
+  // The wall's eight faces and the ledge vanish where as high or as wide as
+  // the chamfer; its eight faces come in.
+  const int vanished = (wall <= d + 1e-9 ? 8 : 0) + (ledge <= d + 1e-9 ? 1 : 0);
+  CHECK(faces_of(result) == faces_of(body) - vanished + 8);
+}
+
+// A plate `height` high whose outline turns at a crease from a straight
+// side into an arc, the rim rounded with radius 1 along both: a ring about
+// the vertical axis through (0, -5) between radii 10 and 20, its outer top
+// and bottom edges rounded, kept where x, y >= 0, and its section at y = 0
+// extruded 10 along -y. The crease (the straight side's wall x = sqrt(375)
+// meets the ring's cylinder) runs up the wall and on over both roundings to
+// the top and the bottom, where its edge meets the rims' edges, along which
+// the roundings join the top (and the bottom) tangentially. The chain is
+// chamfered by `distance`.
+//
+// Patch 0380: the walk reaches the chain's end on the top with its contact
+// on the straight side's rounding at that rounding's edge and its other
+// contact inside the ring's torus; the corner by intersection with the top,
+// tangent to both, found nothing, and the general corner threw in its
+// projection (the chamfer failed). Now a ruled piece closes the end, from
+// the end section to the point of the ring's rim as far from the vertex as
+// the section's point on the straight rim, along a line on the top and a
+// line of the torus's parameters; the top loses the triangle of the
+// straight rim, the chord and the vertex with the arc's segment.
+//
+// Patch 0381: the chain's guide, made C2 by removing its knots within a
+// tenth of its length, ran 0.03 off the crease along the wall and moved the
+// chamfer's contacts there; now a chamfer's guide is deformed by a
+// hundredth of its distance at most, and the wall's section of the chamfer
+// is the triangle of the crease, the contact on the straight wall and the
+// one on the cylinder, with the cylinder's segment.
+//
+// The roundings' parts are walked; their volume does not depend on the
+// height, so the plates `height` and `height` + 10 high lose volumes that
+// differ by the wall's section times 10.
+struct RoundedCrease {
+  TopoDS_Shape body;
+  TopoDS_Shape result;
+};
+
+RoundedCrease rounded_crease(double height, double distance) {
+  const double r = 1.0, ri = 10.0, ro = 20.0, c = -5.0;
+  const gp_Dir ny(0, -1, 0);
+  const auto at = [c](double rho, double z) { return gp_Pnt(rho, c, z); };
+  BRepBuilderAPI_MakeWire meridian;
+  meridian.Add(BRepBuilderAPI_MakeEdge(at(ri, 0), at(ro - r, 0)).Edge());
+  meridian.Add(
+      BRepBuilderAPI_MakeEdge(gp_Circ(gp_Ax2(at(ro - r, r), ny, gp_Dir(1, 0, 0)), r), at(ro - r, 0), at(ro, r)).Edge());
+  meridian.Add(BRepBuilderAPI_MakeEdge(at(ro, r), at(ro, height - r)).Edge());
+  meridian.Add(BRepBuilderAPI_MakeEdge(gp_Circ(gp_Ax2(at(ro - r, height - r), ny, gp_Dir(1, 0, 0)), r),
+                                       at(ro, height - r), at(ro - r, height))
+                   .Edge());
+  meridian.Add(BRepBuilderAPI_MakeEdge(at(ro - r, height), at(ri, height)).Edge());
+  meridian.Add(BRepBuilderAPI_MakeEdge(at(ri, height), at(ri, 0)).Edge());
+  const TopoDS_Face section = BRepBuilderAPI_MakeFace(meridian.Wire(), true).Face();
+  const gp_Pnt axis(0, c, 0);
+  const TopoDS_Shape ring = fuse(BRepPrimAPI_MakeRevol(section, gp_Ax1(axis, gp_Dir(0, 0, 1)), kPi / 3).Shape(),
+                                 BRepPrimAPI_MakeRevol(section, gp_Ax1(axis, gp_Dir(0, 0, -1)), kPi / 3).Shape());
+  const TopoDS_Shape part =
+      BRepAlgoAPI_Common(ring, BRepPrimAPI_MakeBox(gp_Pnt(0, 0, -1), gp_Pnt(40, 40, height + 1)).Shape()).Shape();
+  TopoDS_Face cut;
+  for (TopExp_Explorer f(part, TopAbs_FACE); f.More(); f.Next()) {
+    BRepAdaptor_Surface surface(TopoDS::Face(f.Current()));
+    if (surface.GetType() == GeomAbs_Plane && std::abs(surface.Plane().Axis().Direction().Y()) > 0.99) {
+      GProp_GProps props;
+      BRepGProp::SurfaceProperties(f.Current(), props);
+      if (std::abs(props.CentreOfMass().Y()) < 1e-9) {
+        cut = TopoDS::Face(f.Current());
+      }
+    }
+  }
+  RoundedCrease crease;
+  CHECK(!cut.IsNull());
+  if (cut.IsNull()) {
+    return crease;
+  }
+  crease.body = fuse(part, BRepPrimAPI_MakePrism(cut, gp_Vec(0, -10, 0)).Shape());
+  CHECK(BRepCheck_Analyzer(crease.body).IsValid());
+  const double x0 = std::sqrt((ro - r) * (ro - r) - c * c);
+  const std::vector<TopoDS_Edge> chain =
+      edges_where(crease.body, [x0](const gp_Pnt& p) { return std::abs(p.Y()) < 1e-7 && p.X() > x0 - 1e-6; });
+  CHECK(chain.size() == 3u);
+  crease.result = chamfered(crease.body, chain, distance);
+  return crease;
+}
+
+void test_chamfer_of_a_rounded_crease(double height, double distance) {
+  const double ro = 20.0, c = -5.0;
+  // The wall's section: the crease C, the contact C - d y on the straight
+  // wall, the one on the cylinder at distance d from C (an angle phi on),
+  // and the cylinder's segment over the chord to it.
+  const double xc = std::sqrt(ro * ro - c * c), phi = 2.0 * std::asin(distance / (2.0 * ro));
+  const double xb = ro * std::cos(std::atan2(-c, xc) + phi);
+  const double wall = 0.5 * distance * std::abs(xb - xc) + 0.5 * ro * ro * (phi - std::sin(phi));
+  double lost[2] = {0.0, 0.0};
+  for (int k = 0; k < 2; ++k) {
+    const double h = height + 10.0 * k;
+    const RoundedCrease crease = rounded_crease(h, distance);
+    CHECK(!crease.result.IsNull());
+    if (crease.result.IsNull()) {
+      return;
+    }
+    CHECK(BRepCheck_Analyzer(crease.result).IsValid());
+    CHECK(pcurves_fit(crease.result));
+    // The chamfer's faces along the chain and its two end pieces.
+    CHECK(faces_of(crease.result) == faces_of(crease.body) + 5);
+    lost[k] = volume_of(crease.body) - volume_of(crease.result);
+    // A slab across the wall: the section exactly.
+    const TopoDS_Shape slab = BRepPrimAPI_MakeBox(gp_Pnt(xc - 5, -3, h / 2 - 0.5), gp_Pnt(xc + 1, 3, h / 2 + 0.5)).Shape();
+    CHECK_NEAR_TOL(volume_of(BRepAlgoAPI_Common(crease.body, slab).Shape()) -
+                       volume_of(BRepAlgoAPI_Common(crease.result, slab).Shape()),
+                   wall, 1e-7);
+    // The top: the triangle of the vertex V on the rims, the end's point
+    // V - d y on the straight rim and Q on the ring's rim (radius 19) at
+    // distance d from V, with the rim's segment over V Q.
+    const auto top = [h](const TopoDS_Shape& shape) {
+      double area = 0.0;
+      for (TopExp_Explorer f(shape, TopAbs_FACE); f.More(); f.Next()) {
+        BRepAdaptor_Surface surface(TopoDS::Face(f.Current()));
+        if (surface.GetType() == GeomAbs_Plane && std::abs(surface.Plane().Axis().Direction().Z()) > 0.99 &&
+            std::abs(surface.Plane().Location().Z() - h) < 1e-9) {
+          GProp_GProps props;
+          BRepGProp::SurfaceProperties(f.Current(), props);
+          area += props.Mass();
+        }
+      }
+      return area;
+    };
+    const double rv = ro - 1.0, xv = std::sqrt(rv * rv - c * c), pv = 2.0 * std::asin(distance / (2.0 * rv));
+    const double xq = rv * std::cos(std::atan2(-c, xv) + pv);
+    CHECK_NEAR_TOL(top(crease.body) - top(crease.result),
+                   0.5 * distance * std::abs(xq - xv) + 0.5 * rv * rv * (pv - std::sin(pv)), 1e-9);
+  }
+  CHECK_NEAR_TOL(lost[1] - lost[0], 10.0 * wall, 1e-5);
+}
+
+// A wall of a ring sector between radii 112 and 115 over 36 degrees,
+// standing on a flange 3 thick out to 116.5 whose rim is rounded all round
+// (a half circle of radius 1.5); with `rounding` the edge where the rim
+// meets the flange's underside (tangentially) is rounded as well, which
+// puts a blend face between them.
+// The wall's foot on the flange (r 115) is chamfered by 1.5, as wide as the
+// flange's top (mitcad#327): the top vanishes and the chamfer's contact runs
+// along the top's edge with the rim, whose rounding goes on beyond it
+// tangentially. Before patch 0352, the rim took the transition into
+// itself: an invalid shape (with the underside rounded, also 6 mm3 too
+// much). It adds the triangle (legs 1.5) turned about the axis at radius
+// 115 + 0.5.
+void test_chamfer_as_wide_as_a_flange_with_a_rounded_rim(double rounding) {
+  const double angle = 0.2 * kPi;
+  const auto at = [](double r, double z) { return gp_Pnt(r, 0, z); };
+  BRepBuilderAPI_MakeWire outline;
+  outline.Add(BRepBuilderAPI_MakeEdge(at(112, 2.5), at(115, 2.5)).Edge());
+  outline.Add(BRepBuilderAPI_MakeEdge(at(115, 2.5), at(115, -34.5)).Edge());
+  outline.Add(BRepBuilderAPI_MakeEdge(at(115, -34.5), at(116.5, -34.5)).Edge());
+  outline.Add(BRepBuilderAPI_MakeEdge(gp_Circ(gp_Ax2(at(116.5, -36), gp_Dir(0, -1, 0), gp_Dir(1, 0, 0)), 1.5),
+                                      at(116.5, -34.5), at(116.5, -37.5))
+                  .Edge());
+  outline.Add(BRepBuilderAPI_MakeEdge(at(116.5, -37.5), at(112, -37.5)).Edge());
+  outline.Add(BRepBuilderAPI_MakeEdge(at(112, -37.5), at(112, 2.5)).Edge());
+  const gp_Ax1 axis(gp_Pnt(0, 0, 0), gp_Dir(0, 0, 1));
+  gp_Trsf turn;
+  turn.SetRotation(axis, 0.3 * kPi);
+  TopoDS_Shape body = BRepPrimAPI_MakeRevol(BRepBuilderAPI_MakeFace(outline.Wire(), true).Face(), axis, angle)
+                          .Shape()
+                          .Moved(TopLoc_Location(turn));
+  if (rounding > 0.0) {
+    const std::vector<TopoDS_Edge> under = edges_where(body, [](const gp_Pnt& p) {
+      return std::abs(p.Z() + 37.5) < 1e-6 && std::abs(std::hypot(p.X(), p.Y()) - 116.5) < 1e-6;
+    });
+    CHECK(under.size() == 1u);
+    body = filleted(body, under, rounding);
+    CHECK(!body.IsNull());
+    if (body.IsNull()) {
+      return;
+    }
+  }
+  const std::vector<TopoDS_Edge> foot = edges_where(body, [](const gp_Pnt& p) {
+    return std::abs(p.Z() + 34.5) < 1e-6 && std::abs(std::hypot(p.X(), p.Y()) - 115.0) < 1e-6;
+  });
+  CHECK(foot.size() == 1u);
+  const TopoDS_Shape result = chamfered(body, foot, 1.5);
+  CHECK(!result.IsNull());
+  if (result.IsNull()) {
+    return;
+  }
+  CHECK(BRepCheck_Analyzer(result).IsValid());
+  CHECK(pcurves_fit(result));
+  CHECK_NEAR_TOL(exact_volume_of(result) - exact_volume_of(body), 1.125 * 115.5 * angle, 1e-8);
+  // The flange's top gone, the chamfer's cone in its place.
+  CHECK(faces_of(result) == faces_of(body));
+}
+
+// A slab (z -2..0) and on it a boss 2 narrower on every side (z 0..4), the
+// boss's corners at y = 35 rounded with 3, the slab's with 5. The boss's foot
+// along x = 0, the two arcs, y = 35 and x = 28 is chamfered (or rounded) by
+// 2, as wide as the slab's top round the boss (patch 0440, mitcad#334): the
+// top vanishes there and stays along y = 0, where the chain ends. With
+// `split` the top's far edge along y = 37 is split at x = 14, and with
+// `split_side` also the one along x = -2 at y = 10 (the contact along it
+// starting inside the first part). Before, the contacts on the top along the
+// sides ended inside the far edges' first parts with points of their own
+// beside the vertices where the arcs' contacts began (the wires of the
+// slab's walls not closed), and a contact along two edges of the top end to
+// end was along neither (the top kept a strip of no width there): invalid
+// shapes. It adds the triangle (legs 2) or the corner left by the ball
+// (radius 2) along the lines and about the arcs' axes at the centroid's
+// radius.
+void test_chamfer_consuming_a_strip_along_a_chain_of_edges(bool split, bool split_side, bool fillet) {
+  const auto boss_on_slab = [](double x0, double y0, double x1, double y1, double r, double z0, double h) {
+    BRepBuilderAPI_MakeWire wire;
+    const auto line = [&](double ax, double ay, double bx, double by) {
+      wire.Add(BRepBuilderAPI_MakeEdge(gp_Pnt(ax, ay, z0), gp_Pnt(bx, by, z0)).Edge());
+    };
+    const auto arc = [&](double cx, double cy, double ax, double ay, double bx, double by) {
+      wire.Add(BRepBuilderAPI_MakeEdge(gp_Circ(gp_Ax2(gp_Pnt(cx, cy, z0), gp_Dir(0, 0, 1)), r), gp_Pnt(ax, ay, z0),
+                                       gp_Pnt(bx, by, z0))
+                   .Edge());
+    };
+    line(x0, y0, x1, y0);
+    line(x1, y0, x1, y1 - r);
+    arc(x1 - r, y1 - r, x1, y1 - r, x1 - r, y1);
+    line(x1 - r, y1, x0 + r, y1);
+    arc(x0 + r, y1 - r, x0 + r, y1, x0, y1 - r);
+    line(x0, y1 - r, x0, y0);
+    return BRepPrimAPI_MakePrism(BRepBuilderAPI_MakeFace(wire.Wire()).Face(), gp_Vec(0, 0, h)).Shape();
+  };
+  TopoDS_Shape body = BRepAlgoAPI_Fuse(boss_on_slab(-2, -2, 30, 37, 5, -2, 2), boss_on_slab(0, 0, 28, 35, 3, 0, 4)).Shape();
+  if (split) {
+    BRepAlgoAPI_Splitter splitter;
+    NCollection_List<TopoDS_Shape> arguments;
+    NCollection_List<TopoDS_Shape> tools;
+    arguments.Append(body);
+    tools.Append(BRepBuilderAPI_MakeVertex(gp_Pnt(14, 37, 0)).Vertex());
+    if (split_side) {
+      tools.Append(BRepBuilderAPI_MakeVertex(gp_Pnt(-2, 10, 0)).Vertex());
+    }
+    splitter.SetArguments(arguments);
+    splitter.SetTools(tools);
+    splitter.Build();
+    body = TopExp_Explorer(splitter.Shape(), TopAbs_SOLID).Current();
+  }
+  CHECK(BRepCheck_Analyzer(body).IsValid());
+  const std::vector<TopoDS_Edge> foot = edges_where(body, [](const gp_Pnt& p) {
+    if (std::abs(p.Z()) > 1e-6 || p.Y() < -1e-6) {
+      return false;
+    }
+    if (std::abs(p.X()) < 1e-6 || std::abs(p.X() - 28) < 1e-6 || std::abs(p.Y() - 35) < 1e-6) {
+      return true;
+    }
+    return p.Y() > 32 - 1e-6 && std::abs(std::hypot(p.X() - (p.X() < 14 ? 3 : 25), p.Y() - 32) - 3) < 1e-6;
+  });
+  CHECK(foot.size() == 5u);
+  const double d = 2.0;
+  const TopoDS_Shape result = fillet ? filleted(body, foot, d) : chamfered(body, foot, d);
+  CHECK(!result.IsNull());
+  if (result.IsNull()) {
+    return;
+  }
+  CHECK(BRepCheck_Analyzer(result).IsValid());
+  CHECK(pcurves_fit(result));
+  const double area = fillet ? (1.0 - kPi / 4.0) * d * d : d * d / 2.0;
+  const double off = fillet ? d * (10.0 - 3.0 * kPi) / (3.0 * (4.0 - kPi)) : d / 3.0;
+  CHECK_NEAR_TOL(exact_volume_of(result) - exact_volume_of(body), area * (2 * 32.0 + 22.0 + kPi * (3.0 + off)), 1e-8);
+  // The top along y = 0 and the blend's three planes (or cylinders) and two
+  // cones (or tori).
+  CHECK(faces_of(result) == faces_of(body) + 5);
+}
+
 } // namespace
 
 void chamfer_overflow_tests() {
@@ -649,6 +1034,37 @@ void chamfer_overflow_tests() {
     for (const bool by_angle : {false, true}) {
       guarded("test_chamfer_as_long_as_a_boss", [&] { test_chamfer_as_long_as_a_boss(seam, by_angle); });
     }
+  }
+  // (wall, ledge, lip, rounded)
+  for (const auto& [wall, ledge, lip, fillet] : {std::tuple<double, double, bool, bool>{1.5, 1.5, false, false},
+                                                 {3.0, 1.5, false, false},
+                                                 {1.5, 3.0, false, false},
+                                                 {1.5, 1.5, true, false},
+                                                 {3.0, 1.5, true, false},
+                                                 {1.5, 3.0, true, false},
+                                                 {1.5, 1.5, false, true},
+                                                 {1.5, 1.5, true, true}}) {
+    guarded("test_wall_foot_round_a_stepped_pocket", [&, wall = wall, ledge = ledge, lip = lip, fillet = fillet] {
+      test_wall_foot_round_a_stepped_pocket(wall, ledge, lip, fillet);
+    });
+  }
+  for (const double distance : {1.0, 0.6}) {
+    guarded("test_chamfer_of_a_rounded_crease", [&] { test_chamfer_of_a_rounded_crease(10.0, distance); });
+  }
+  for (const double rounding : {0.0, 0.5}) {
+    guarded("test_chamfer_as_wide_as_a_flange_with_a_rounded_rim",
+            [&] { test_chamfer_as_wide_as_a_flange_with_a_rounded_rim(rounding); });
+  }
+  // (split, split_side, rounded)
+  for (const auto& [split, split_side, fillet] : {std::tuple<bool, bool, bool>{false, false, false},
+                                                  {true, false, false},
+                                                  {true, true, false},
+                                                  {false, false, true},
+                                                  {true, true, true}}) {
+    guarded("test_chamfer_consuming_a_strip_along_a_chain_of_edges",
+            [&, split = split, split_side = split_side, fillet = fillet] {
+              test_chamfer_consuming_a_strip_along_a_chain_of_edges(split, split_side, fillet);
+            });
   }
 }
 

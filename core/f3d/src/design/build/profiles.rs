@@ -137,6 +137,19 @@ pub(crate) fn parse_loop_list(d: &[u8], start: usize, end: usize) -> Option<Vec<
 }
 
 impl Builder<'_> {
+    /// The sketch texts an item's text profiles name ([`PROFILE_SOURCE_2`],
+    /// whose target object holds the text's object id) that the design no
+    /// longer has (mitcad#332: texts deleted from their sketch after the
+    /// extrusions that use them were made; the history keeps their results).
+    pub(super) fn missing_text_profiles(&self, fid: u64) -> Vec<u64> {
+        let seg = self.seg;
+        inputs_of(seg, fid, PROFILE_SOURCE_2)
+            .into_iter()
+            .filter_map(|src| super::super::decode::target_id(seg, src))
+            .filter(|&text| seg.guid_of(text) != Some(SKETCH_TEXT))
+            .collect()
+    }
+
     /// The loops of the profiles an item selected, in the dump's terms
     /// (`_f3d_profile_loops`): per profile its `loops` and `children` (lists
     /// of loops), each loop `outer` and its `curves`, each curve its ids

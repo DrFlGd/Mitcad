@@ -43,6 +43,13 @@ const USAGE: &str = "usage: mitcad-rvt-inspect <command> ...
   building <file>                 the building elements' parameters (walls,
                                   floors, roofs, instances, types, grids,
                                   links) and GlobalIds as JSON
+  documents <file> [<partition> [<doc> [<class>|@geometry]]]
+                                  the documents a partition carries (its own,
+                                  the loaded families'): classes counted, or
+                                  one document's records as JSON lines
+  geometry <file> [<id>] [--all|--bounds]
+                                  the geometry the file keeps: faces by
+                                  surface, seam gaps; one element's bodies
   preview <file> <out.png>        the preview image
   write-test <out> [family]       a test project (or family) of the writers";
 
@@ -567,6 +574,190 @@ fn cmd_classes(path: &str, wanted: Option<&str>) -> Result<(), String> {
     Ok(())
 }
 
+/// The documents each partition carries after its own chains: their
+/// records' classes counted; with a partition and a document number, its
+/// records as JSON lines (only those of `class` when given).
+fn cmd_documents(
+    path: &str,
+    partition: Option<u32>,
+    doc: Option<usize>,
+    class: Option<&str>,
+) -> Result<(), String> {
+    let f = open(path)?;
+    let schema = schema_of(&f)?;
+    let numbers = match partition {
+        Some(n) => vec![n],
+        None => f.partition_numbers(),
+    };
+    for n in numbers {
+        let docs = f.documents(n, &schema, true).map_err(|e| e.to_string())?;
+        if doc.is_none() {
+            println!(
+                "partition {n}: {} documents{}",
+                docs.documents.len(),
+                docs.stopped
+                    .as_deref()
+                    .map_or(String::new(), |s| format!(", stopped: {s}"))
+            );
+        }
+        for (k, d) in docs.documents.iter().enumerate() {
+            if doc.is_some_and(|w| w != k) {
+                continue;
+            }
+            let mut counts: std::collections::BTreeMap<String, usize> = Default::default();
+            let mut errors = 0;
+            let geometry = class == Some("@geometry");
+            let class = class.filter(|c| *c != "@geometry");
+            let slots = if geometry && doc.is_some() {
+                &d.geometry
+            } else {
+                &d.objects
+            };
+            for slot in slots {
+                let (record, _, error) = walk::walk_partial(&schema, docs.bytes(slot));
+                if error.is_some() {
+                    errors += 1;
+                }
+                let Some(record) = record else { continue };
+                let name = schema.class_name(record.root.class).to_string();
+                if doc.is_some() {
+                    if class.is_none_or(|c| {
+                        c == name
+                            || record
+                                .pointees
+                                .iter()
+                                .any(|o| schema.class_name(o.class) == c)
+                    }) {
+                        println!(
+                            "{}",
+                            json!({"id": slot.id, "object": record.to_json(&schema),
+                                "error": error.map(|e| e.to_string())})
+                        );
+                    }
+                    continue;
+                }
+                *counts.entry(name).or_default() += 1;
+            }
+            if doc.is_none() {
+                let ids = d.objects.iter().map(|s| s.id);
+                let (lo, hi) = (ids.clone().min(), ids.max());
+                let list: Vec<String> = counts
+                    .iter()
+                    .filter(|(c, _)| {
+                        c.contains("Symbol")
+                            || c.contains("Form")
+                            || c.contains("Family")
+                            || c.contains("Extrusion")
+                            || c.contains("Sweep")
+                            || c.contains("Blend")
+                            || c.contains("Revolution")
+                    })
+                    .map(|(c, n)| format!("{c} {n}"))
+                    .collect();
+                println!(
+                    "  document {k}: {} elements, ids {lo:?} to {hi:?}, {errors} partial, {} geometry records: {}",
+                    d.objects.len(),
+                    d.geometry.iter().filter(|s| s.size > 2).count(),
+                    list.join(", ")
+                );
+            }
+        }
+    }
+    Ok(())
+}
+
+/// The geometry the file keeps (`GElement`s): per element (or the one
+/// asked for) its bodies' faces by surface, how far apart the two sides of
+/// their edges land (feet), its placed types; `--all` with the B-reps.
+fn cmd_geometry(path: &str, id: Option<i64>, all: bool, bounds: bool) -> Result<(), String> {
+    let f = open(path)?;
+    let schema = schema_of(&f)?;
+    let model = model_of(&f, &schema)?;
+    if bounds {
+        for (eid, g) in &model.geometry {
+            let b: Vec<[f64; 6]> = g.solids.iter().filter_map(|s| s.bounds()).collect();
+            if !b.is_empty() {
+                println!("{}", json!({"id": eid, "bounds": b}));
+            }
+        }
+        return Ok(());
+    }
+    let mut surfaces: std::collections::BTreeMap<String, usize> = Default::default();
+    let mut worst = (0.0f64, 0i64);
+    let mut gaps: std::collections::BTreeMap<String, f64> = Default::default();
+    for (eid, g) in &model.geometry {
+        if id.is_some_and(|w| w != *eid) {
+            continue;
+        }
+        for s in &g.solids {
+            for face in &s.faces {
+                *surfaces
+                    .entry(face.surface.class().to_string())
+                    .or_default() += 1;
+            }
+            let gap = s.seam_gap();
+            if gap > worst.0 {
+                worst = (gap, *eid);
+            }
+            // By the surfaces an edge joins.
+            for e in &s.edges {
+                let (Some(a), Some(b)) = (e.faces[0], e.faces[1]) else {
+                    continue;
+                };
+                let (a, b) = (&s.faces[a].surface, &s.faces[b].surface);
+                for (p, q) in e.points[0].iter().zip(&e.points[1]) {
+                    if let (Some(p), Some(q)) = (a.at(*p), b.at(*q)) {
+                        let d = (0..3).map(|k| (p[k] - q[k]).powi(2)).sum::<f64>().sqrt();
+                        let mut key = [a.class(), b.class()];
+                        key.sort_unstable();
+                        let w = gaps.entry(key.join("/")).or_insert(0.0);
+                        *w = w.max(d);
+                    }
+                }
+            }
+        }
+        if id.is_some() {
+            let summary = json!({
+                "id": eid,
+                "bbox": g.bbox,
+                "solids": g.solids.iter().map(|s| json!({
+                    "faces": s.faces.len(), "edges": s.edges.len(), "seam_gap": s.seam_gap(),
+                    "bounds": s.bounds(),
+                    "surfaces": s.faces.iter().map(|f| f.surface.class()).collect::<Vec<_>>(),
+                })).collect::<Vec<_>>(),
+                "instances": g.instances.iter().map(|p| json!({
+                    "symbol": p.symbol, "transform": p.transform, "embedded": p.embedded.is_some(),
+                })).collect::<Vec<_>>(),
+                "notes": g.notes,
+                "curves": g.curves,
+            });
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&summary).expect("serializes")
+            );
+            if all {
+                println!("{}", serde_json::to_string(&g.solids).expect("serializes"));
+            }
+        }
+    }
+    if id.is_none() {
+        println!(
+            "{} elements with geometry, {} records not walked",
+            model.geometry.len(),
+            model.geometry_errors
+        );
+        let mut notes: std::collections::BTreeMap<&str, usize> = Default::default();
+        for n in model.geometry.values().flat_map(|g| &g.notes) {
+            *notes.entry(n.as_str()).or_default() += 1;
+        }
+        println!("notes: {notes:?}");
+        println!("faces by surface: {surfaces:?}");
+        println!("largest seam gaps (ft) by the surfaces joined: {gaps:?}");
+        println!("largest seam gap {:.3e} ft (element {})", worst.0, worst.1);
+    }
+    Ok(())
+}
+
 fn cmd_preview(path: &str, out: &str) -> Result<(), String> {
     let f = open(path)?;
     let png = f.preview().ok_or("the file has no preview image")?;
@@ -622,6 +813,18 @@ fn run(args: &[String]) -> Result<(), String> {
         "classes" => cmd_classes(arg(2)?, args.get(3).map(String::as_str)),
         "records" => cmd_records(arg(2)?, arg(3)?),
         "building" => cmd_building(arg(2)?),
+        "geometry" => cmd_geometry(
+            arg(2)?,
+            args.get(3).and_then(|a| a.parse().ok()),
+            flag("--all"),
+            flag("--bounds"),
+        ),
+        "documents" => cmd_documents(
+            arg(2)?,
+            args.get(3).and_then(|a| a.parse().ok()),
+            args.get(4).and_then(|a| a.parse().ok()),
+            args.get(5).map(String::as_str),
+        ),
         "write-test" => {
             let out = arg(2)?;
             let data = if args.get(3).map(String::as_str) == Some("family") {

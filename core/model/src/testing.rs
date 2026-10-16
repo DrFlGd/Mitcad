@@ -2086,6 +2086,21 @@ impl Kernel for MockKernel {
         self.call("join_within")?;
         self.boolean(BooleanOp::Join, targets, tool)
     }
+
+    /// [`MockKernel::boolean`]'s cut, counted as "cut_within" too; the
+    /// tolerance goes to `specs` ("cut within <mm>").
+    fn cut_within(
+        &self,
+        targets: &[&MockShape],
+        tool: &MockShape,
+        tolerance: f64,
+    ) -> Result<BooleanOutput<MockShape>, KernelError> {
+        self.specs
+            .borrow_mut()
+            .push(format!("cut within {tolerance}"));
+        self.call("cut_within")?;
+        self.boolean(BooleanOp::Cut, targets, tool)
+    }
 }
 
 /// The shape of mock B-rep data ("<faces> <history>"), face i named

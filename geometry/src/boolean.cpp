@@ -7,6 +7,7 @@
 #include <cstddef>
 #include <cstdio>
 #include <cstdlib>
+#include <exception>
 #include <memory>
 #include <optional>
 #include <stdexcept>
@@ -14,21 +15,38 @@
 #include <utility>
 #include <vector>
 
+#include <BOPAlgo_Alerts.hxx>
 #include <BRepAlgoAPI_Common.hxx>
 #include <BRepAlgoAPI_Cut.hxx>
 #include <BRepAlgoAPI_Fuse.hxx>
+#include <BRepAdaptor_Curve.hxx>
+#include <BRepAdaptor_Surface.hxx>
 #include <BRepBndLib.hxx>
+#include <BRepBuilderAPI_MakeFace.hxx>
 #include <BRepBuilderAPI_MakeVertex.hxx>
+#include <BRepCheck_Analyzer.hxx>
 #include <BRepClass3d_SolidClassifier.hxx>
 #include <BRepExtrema_DistShapeShape.hxx>
 #include <BRep_Builder.hxx>
 #include <BRep_Tool.hxx>
 #include <Bnd_Box.hxx>
+#include <GCPnts_AbscissaPoint.hxx>
+#include <Geom2d_Curve.hxx>
+#include <NCollection_HSequence.hxx>
 #include <NCollection_List.hxx>
+#include <Precision.hxx>
+#include <ShapeAnalysis_FreeBounds.hxx>
+#include <ShapeBuild_ReShape.hxx>
+#include <ShapeFix_Face.hxx>
+#include <Standard_ErrorHandler.hxx>
+#include <Standard_Failure.hxx>
+#include <TopExp.hxx>
 #include <TopExp_Explorer.hxx>
 #include <TopoDS.hxx>
 #include <TopoDS_Compound.hxx>
+#include <TopoDS_Wire.hxx>
 #include <gp_Pnt.hxx>
+#include <gp_Pnt2d.hxx>
 #include <gp_XYZ.hxx>
 
 #include "far_features.hpp"
@@ -504,7 +522,7 @@ std::unique_ptr<BRepAlgoAPI_BooleanOperation> make_operation(BooleanOp op) {
 detail::FaceNamer run_operation(BooleanOp op, const std::vector<std::pair<const Shape*, int>>& targets,
                                 const Shape& tool, int tool_tag, bool simplify = true,
                                 std::vector<TopoDS_Shape>* seen = nullptr, bool reduce = true,
-                                bool* split = nullptr, double fuzzy = 0.0) {
+                                bool* split = nullptr, double fuzzy = 0.0, bool* lost = nullptr) {
   PhaseTrace trace(std::string(operation_name(op)));
   if (tracing()) {
     std::string faces;
@@ -560,6 +578,45 @@ detail::FaceNamer run_operation(BooleanOp op, const std::vector<std::pair<const 
   trace.mark("bop");
   if (!operation->IsDone() || operation->HasErrors()) {
     throw std::runtime_error("the boolean operation failed");
+  }
+  // Faces the solids of the result could not be built with (a face split
+  // wrongly where curves meet tangentially, edges a few micrometres apart
+  // that were not taken as one): the result lacks them. Or faces the
+  // result has inside its solids that its operands did not have (pieces
+  // of a tool put inside the body, where the pieces of the body they bound
+  // were not taken out): mitcad#235.
+  if (lost != nullptr) {
+    const auto internal_faces = [](const TopoDS_Shape& shape) {
+      int count = 0;
+      for (TopExp_Explorer it(shape, TopAbs_FACE); it.More(); it.Next()) {
+        count += it.Current().Orientation() == TopAbs_INTERNAL ? 1 : 0;
+      }
+      return count;
+    };
+    int before = 0;
+    for (const TopoDS_Shape& input : inputs) {
+      before += internal_faces(input);
+    }
+    // Faces of the result outside its solids: a join that left the tool's
+    // faces loose beside the target, which it gives back as it was
+    // (mitcad#235).
+    const auto loose_faces = [](const TopoDS_Shape& shape) {
+      ShapeMap in_solids;
+      for (TopExp_Explorer it(shape, TopAbs_SOLID); it.More(); it.Next()) {
+        TopExp::MapShapes(it.Current(), TopAbs_FACE, in_solids);
+      }
+      for (TopExp_Explorer it(shape, TopAbs_FACE); it.More(); it.Next()) {
+        if (!in_solids.Contains(it.Current())) {
+          return true;
+        }
+      }
+      return false;
+    };
+    *lost = operation->HasWarning(STANDARD_TYPE(BOPAlgo_AlertSolidBuilderUnusedFaces)) ||
+            internal_faces(operation->Shape()) > before || loose_faces(operation->Shape());
+    if (*lost) {
+      trace.note("unused or internal faces");
+    }
   }
   // Merge the coplanar faces and collinear edges the operation leaves behind.
   // The history then includes the merge.
@@ -618,7 +675,7 @@ detail::FaceNamer run_operation(BooleanOp op, const std::vector<std::pair<const 
     // corpus design: its merged faces made a shell that cannot be
     // oriented); then the result keeps the faces as the operation left
     // them.
-    return run_operation(op, targets, tool, tool_tag, false, seen, reduce, split, fuzzy);
+    return run_operation(op, targets, tool, tool_tag, false, seen, reduce, split, fuzzy, lost);
   }
   if (!simplify && !untouched) {
     detail::require_valid_where_changed(namer.result(), kept, "the boolean operation");
@@ -659,7 +716,7 @@ detail::FaceNamer run_operation(BooleanOp op, const std::vector<std::pair<const 
   const std::optional<detail::FarFeatures::Restored> restored = far->restore(operation->Shape(), *operation);
   trace.mark("restore");
   if (!restored) {
-    return run_operation(op, targets, tool, tool_tag, simplify, seen, false, split, fuzzy);
+    return run_operation(op, targets, tool, tool_tag, simplify, seen, false, split, fuzzy, lost);
   }
   ShapeMap replaced;
   for (const auto& entry : restored->replaced) {
@@ -808,6 +865,147 @@ std::optional<std::vector<detail::FaceNamer::Piece>> tiled_cut(const Shape& targ
   return current;
 }
 
+// Whether a face of a cylinder or cone has a seam that steps: seam edges
+// (on the face twice) that do not all run along one line of the surface
+// across its periodic direction (two faces merged whose seams lay a quarter
+// turn apart, joined by an arc of the circle between them used twice).
+bool steps_its_seam(const TopoDS_Face& face) {
+  const BRepAdaptor_Surface surface(face, false);
+  if (surface.GetType() != GeomAbs_Cylinder && surface.GetType() != GeomAbs_Cone) {
+    return false;
+  }
+  std::optional<double> at;
+  for (TopExp_Explorer it(face, TopAbs_EDGE); it.More(); it.Next()) {
+    const TopoDS_Edge& edge = TopoDS::Edge(it.Current());
+    if (!BRep_Tool::IsClosed(edge, face)) {
+      continue;
+    }
+    double first = 0.0;
+    double last = 0.0;
+    const occ::handle<Geom2d_Curve> pcurve = BRep_Tool::CurveOnSurface(edge, face, first, last);
+    if (pcurve.IsNull()) {
+      return false;
+    }
+    const gp_Pnt2d a = pcurve->Value(first);
+    const gp_Pnt2d b = pcurve->Value(last);
+    // Along the surface's line, u fixed (either of the seam's two sides).
+    const double u = std::remainder(a.X(), surface.UPeriod());
+    if (std::abs(a.X() - b.X()) > Precision::PConfusion() ||
+        (at && std::abs(std::remainder(u - *at, surface.UPeriod())) > Precision::PConfusion())) {
+      return true;
+    }
+    at = u;
+  }
+  return false;
+}
+
+// A copy of a target whose cylindrical and conical faces with a stepping
+// seam (steps_its_seam) are rebuilt with one straight seam through a vertex
+// of their boundary, the boundary edge it crosses split there in the
+// neighbouring faces too, the faces' names kept; null when none steps
+// (mitcad#235: OCCT's cut of a coil's helix removed nothing from the bore
+// of such a face, and gave the file's state from the rebuilt one).
+ShapePtr reseamed(const Shape& target) {
+  std::vector<TopoDS_Face> stepping;
+  for (int f = 0; f < target.face_count(); ++f) {
+    if (steps_its_seam(target.face(f))) {
+      stepping.push_back(target.face(f));
+    }
+  }
+  if (stepping.empty()) {
+    return nullptr;
+  }
+  // On a copy: healing adds p-curves to the edges it keeps.
+  const ShapePtr copy = detail::working_copy(target);
+  const Shape& own = *copy;
+  stepping.clear();
+  for (int f = 0; f < own.face_count(); ++f) {
+    if (steps_its_seam(own.face(f))) {
+      stepping.push_back(own.face(f));
+    }
+  }
+  try {
+    OCC_CATCH_SIGNALS
+    const occ::handle<ShapeBuild_ReShape> reshape = new ShapeBuild_ReShape;
+    BRep_Builder builder;
+    for (const TopoDS_Face& face : stepping) {
+      // The face's boundary without its seams, as closed wires.
+      const occ::handle<NCollection_HSequence<TopoDS_Shape>> edges = new NCollection_HSequence<TopoDS_Shape>;
+      std::vector<TopoDS_Edge> boundary;
+      for (TopExp_Explorer it(face.Oriented(TopAbs_FORWARD), TopAbs_EDGE); it.More(); it.Next()) {
+        const TopoDS_Edge& edge = TopoDS::Edge(it.Current());
+        if (!BRep_Tool::IsClosed(edge, face)) {
+          edges->Append(edge);
+          boundary.push_back(edge);
+        }
+      }
+      const occ::handle<NCollection_HSequence<TopoDS_Shape>> wires =
+          ShapeAnalysis_FreeBounds::ConnectEdgesToWires(edges, Precision::Confusion(), false);
+      if (wires.IsNull() || wires->IsEmpty()) {
+        return nullptr;
+      }
+      BRepBuilderAPI_MakeFace make(BRep_Tool::Surface(face), TopoDS::Wire(wires->Value(1)), true);
+      for (int w = 2; w <= wires->Length(); ++w) {
+        make.Add(TopoDS::Wire(wires->Value(w)));
+      }
+      if (!make.IsDone()) {
+        return nullptr;
+      }
+      // Shape healing adds the seam and splits the edge it crosses.
+      ShapeFix_Face fix(make.Face());
+      fix.FixOrientationMode() = 1;
+      fix.FixMissingSeamMode() = 1;
+      fix.Perform();
+      TopoDS_Face rebuilt = fix.Face();
+      // A boundary edge the face no longer has: its pieces in the face,
+      // everywhere.
+      for (const TopoDS_Edge& old : boundary) {
+        bool kept = false;
+        for (TopExp_Explorer it(rebuilt, TopAbs_EDGE); it.More() && !kept; it.Next()) {
+          kept = it.Current().IsSame(old);
+        }
+        if (kept) {
+          continue;
+        }
+        TopoDS_Compound pieces;
+        builder.MakeCompound(pieces);
+        int count = 0;
+        for (TopExp_Explorer it(rebuilt, TopAbs_EDGE); it.More(); it.Next()) {
+          const TopoDS_Edge& piece = TopoDS::Edge(it.Current());
+          if (BRep_Tool::IsClosed(piece, rebuilt) ||
+              std::any_of(boundary.begin(), boundary.end(), [&](const TopoDS_Edge& e) { return e.IsSame(piece); })) {
+            continue;
+          }
+          const BRepAdaptor_Curve curve(piece);
+          const gp_Pnt middle = curve.Value(0.5 * (curve.FirstParameter() + curve.LastParameter()));
+          BRepExtrema_DistShapeShape distance(BRepBuilderAPI_MakeVertex(middle).Vertex(), old);
+          if (distance.IsDone() && distance.Value() <= 1.0e-6) {
+            builder.Add(pieces, piece.Oriented(TopAbs_FORWARD));
+            ++count;
+          }
+        }
+        if (count == 0) {
+          return nullptr;
+        }
+        reshape->Replace(old.Oriented(TopAbs_FORWARD), pieces);
+      }
+      rebuilt.Orientation(TopAbs_FORWARD);
+      reshape->Replace(face.Oriented(TopAbs_FORWARD), rebuilt);
+    }
+    const TopoDS_Shape result = reshape->Apply(own.occt());
+    if (result.IsNull() || !BRepCheck_Analyzer(result, true, true).IsValid()) {
+      return nullptr;
+    }
+    detail::FaceNamer namer(result);
+    namer.carry(*reshape->History(), own);
+    namer.finish();
+    namer.set_valid(true); // checked above
+    return namer.shape();
+  } catch (const Standard_Failure&) {
+    return nullptr;
+  }
+}
+
 // The fuzzy values a join tries up to `reach` (at least kNearContact),
 // smallest first: kNearContact, then 3 and 10 times each power of ten above
 // it below `reach`, then `reach` (mitcad#298). The smallest that works
@@ -824,6 +1022,91 @@ std::vector<double> fuzzy_steps(double reach) {
   return steps;
 }
 
+// The edges of a shape shorter than kNearContact between two vertices of
+// their own: what a join leaves where it keeps two vertices of its operands
+// apart that lie within the noise of the file's geometry of each other. A
+// boss whose profile runs into a wall tangentially, its line's end found a
+// micrometre along the wall from the tangent edge already there, left a
+// strip of the wall that wide between the two halves of the boss's
+// cylinder, its ends edges of 1.2 µm (mitcad#326).
+int tiny_edges(const TopoDS_Shape& shape) {
+  ShapeMap seen;
+  int count = 0;
+  for (TopExp_Explorer it(shape, TopAbs_EDGE); it.More(); it.Next()) {
+    const int before = seen.Extent();
+    if (seen.Add(it.Current()) <= before) {
+      continue;
+    }
+    const TopoDS_Edge& edge = TopoDS::Edge(it.Current());
+    if (BRep_Tool::Degenerated(edge)) {
+      continue;
+    }
+    TopoDS_Vertex first;
+    TopoDS_Vertex last;
+    TopExp::Vertices(edge, first, last);
+    if (first.IsNull() || last.IsNull() || first.IsSame(last) ||
+        BRep_Tool::Pnt(first).Distance(BRep_Tool::Pnt(last)) >= kNearContact) {
+      continue;
+    }
+    BRepAdaptor_Curve curve(edge);
+    if (GCPnts_AbscissaPoint::Length(curve) < kNearContact) {
+      ++count;
+    }
+  }
+  return count;
+}
+
+// A cut of one target within a tolerance (mitcad#235), for an importer
+// whose bodies match a file's only within its geometric tolerance: where
+// the exact cut fails (an error, an invalid result, faces the result's
+// solids could not be built with, which the result then lacks, or pieces
+// of the tool left inside the body: section edges of a stored body's
+// neighbouring faces that end micrometres apart, where the tool lies on a
+// face of the body), it is retried with the smallest fuzzy value up to
+// `within` (fuzzy_steps) that gives a valid result of all its faces. A
+// cut that works exactly stays exact; where no fuzzy value works, the
+// exact cut's result or error stands. `seen` gets the copy of the target
+// the result was made from.
+std::vector<detail::FaceNamer::Piece> cut_within(const Shape& target, int tag, const Shape& tool, int tool_tag,
+                                                 double within, std::vector<TopoDS_Shape>& seen, PhaseTrace& trace) {
+  bool lost = false;
+  std::optional<std::vector<detail::FaceNamer::Piece>> exact;
+  std::exception_ptr failure;
+  try {
+    exact = run_operation(BooleanOp::Cut, {{&target, tag}}, tool, tool_tag, true, &seen, true, nullptr, 0.0, &lost)
+                .pieces();
+  } catch (const Cancelled&) {
+    throw;
+  } catch (...) {
+    failure = std::current_exception();
+  }
+  if (exact && !lost) {
+    return *exact;
+  }
+  for (const double step : fuzzy_steps(within)) {
+    std::vector<TopoDS_Shape> fuzzy_seen;
+    bool fuzzy_lost = false;
+    try {
+      std::vector<detail::FaceNamer::Piece> pieces =
+          run_operation(BooleanOp::Cut, {{&target, tag}}, tool, tool_tag, true, &fuzzy_seen, true, nullptr, step,
+                        &fuzzy_lost)
+              .pieces();
+      if (!fuzzy_lost) {
+        trace.note("cut fuzzy=" + std::to_string(step));
+        seen = std::move(fuzzy_seen);
+        return pieces;
+      }
+    } catch (const Cancelled&) {
+      throw;
+    } catch (...) {
+    }
+  }
+  if (exact) {
+    return *exact;
+  }
+  std::rethrow_exception(failure);
+}
+
 } // namespace
 
 // The contacts of a new Extrude's tool (contact.cpp, mitcad#289).
@@ -837,9 +1120,9 @@ BooleanResult boolean(BooleanOp op, const std::vector<const Shape*>& targets, co
     result.touched.assign(targets.size(), false);
     const Bnd_Box tool_box = box_of(tool);
     const int tool_tag = static_cast<int>(targets.size());
-    const auto pieces_of = [tool_tag](const detail::FaceNamer& namer) {
+    const auto to_pieces = [tool_tag](const std::vector<detail::FaceNamer::Piece>& solids) {
       std::vector<BooleanPiece> pieces;
-      for (const detail::FaceNamer::Piece& piece : namer.pieces()) {
+      for (const detail::FaceNamer::Piece& piece : solids) {
         BooleanPiece out{piece.shape, {}};
         for (int source : piece.sources) {
           if (source != tool_tag) {
@@ -850,6 +1133,7 @@ BooleanResult boolean(BooleanOp op, const std::vector<const Shape*>& targets, co
       }
       return pieces;
     };
+    const auto pieces_of = [&](const detail::FaceNamer& namer) { return to_pieces(namer.pieces()); };
 
     if (op == BooleanOp::Join) {
       // How far a tool that touches nothing reaches: kNearContact, or the
@@ -878,6 +1162,41 @@ BooleanResult boolean(BooleanOp op, const std::vector<const Shape*>& targets, co
           }
         }
         return run_operation(op, joined, tool, tool_tag, true, nullptr, false, nullptr, reach);
+      };
+      // Within a tolerance, an exact join that leaves more edges of zero
+      // length (tiny_edges) than its operands had, `allowed`, is tried again
+      // with the smallest fuzzy value that leaves no more than they had: the
+      // fuzzy value merges the vertices that lie within it of each other
+      // (mitcad#326). None when no fuzzy value does; the exact join stays.
+      const auto operands_tiny = [&](const std::vector<std::pair<const Shape*, int>>& joined) {
+        int count = tiny_edges(tool.occt());
+        for (const auto& entry : joined) {
+          count += tiny_edges(entry.first->occt());
+        }
+        return count;
+      };
+      const auto without_tiny_edges =
+          [&](const std::vector<std::pair<const Shape*, int>>& joined,
+              int allowed) -> std::optional<std::vector<detail::FaceNamer::Piece>> {
+        for (const double step : fuzzy_steps(reach)) {
+          std::vector<detail::FaceNamer::Piece> solids;
+          try {
+            solids = run_operation(op, joined, tool, tool_tag, true, nullptr, false, nullptr, step).pieces();
+          } catch (const Cancelled&) {
+            throw;
+          } catch (...) {
+            continue;
+          }
+          int count = 0;
+          for (const detail::FaceNamer::Piece& piece : solids) {
+            count += tiny_edges(piece.shape->occt());
+          }
+          if (count <= allowed) {
+            trace.note("tiny edges fuzzy=" + std::to_string(step));
+            return solids;
+          }
+        }
+        return std::nullopt;
       };
       // Only the targets the tool touches: fusing all of them would also
       // merge targets that overlap each other but not the tool.
@@ -912,9 +1231,25 @@ BooleanResult boolean(BooleanOp op, const std::vector<const Shape*>& targets, co
         }
         const int target = near.front().second;
         // A target the tool swallows has no face left: measured below.
-        const bool merged = std::any_of(solids.begin(), solids.end(), [&](const auto& piece) {
-          return piece.sources.count(tool_tag) > 0 && piece.sources.count(target) > 0;
-        });
+        const auto merges = [&](const std::vector<detail::FaceNamer::Piece>& pieces) {
+          return std::any_of(pieces.begin(), pieces.end(), [&](const auto& piece) {
+            return piece.sources.count(tool_tag) > 0 && piece.sources.count(target) > 0;
+          });
+        };
+        const bool merged = merges(solids);
+        if (merged && within > 0.0) {
+          int count = 0;
+          for (const detail::FaceNamer::Piece& piece : solids) {
+            count += tiny_edges(piece.shape->occt());
+          }
+          const int allowed = operands_tiny(near);
+          if (count > allowed) {
+            std::optional<std::vector<detail::FaceNamer::Piece>> fuzzy = without_tiny_edges(near, allowed);
+            if (fuzzy && merges(*fuzzy)) {
+              solids = std::move(*fuzzy);
+            }
+          }
+        }
         if (merged) {
           for (const detail::FaceNamer::Piece& piece : solids) {
             if (piece.sources.count(tool_tag) == 0) {
@@ -1006,14 +1341,44 @@ BooleanResult boolean(BooleanOp op, const std::vector<const Shape*>& targets, co
       // the operands meet within that noise) is retried with the smallest
       // fuzzy value that gives a valid result.
       std::vector<BooleanPiece> exact;
+      bool lost = false;
       try {
-        exact = pieces_of(run_operation(op, joined, tool, tool_tag));
+        exact = pieces_of(run_operation(op, joined, tool, tool_tag, true, nullptr, true, nullptr, 0.0, &lost));
       } catch (const Cancelled&) {
         throw;
       } catch (...) {
         trace.note("exact join failed: fuzzy");
         result.pieces = pieces_of(fuzzy_join(joined, 0.0));
         return result;
+      }
+      // An exact join that could not build its solids of all the faces
+      // (OCCT cannot orient them and leaves faces unused: no solid at all,
+      // where the tool lies on a face of the body and its sides meet the
+      // body's faces micrometres apart, mitcad#235) is retried with the
+      // smallest fuzzy value that builds a solid of the targets and the
+      // tool with every face; where none does, the exact result stands.
+      const auto holds_targets = [](const std::vector<BooleanPiece>& pieces) {
+        return std::any_of(pieces.begin(), pieces.end(),
+                           [](const BooleanPiece& piece) { return !piece.sources.empty(); });
+      };
+      if (lost || !holds_targets(exact)) {
+        for (const double step : fuzzy_steps(reach)) {
+          bool fuzzy_lost = false;
+          std::vector<BooleanPiece> pieces;
+          try {
+            pieces = pieces_of(
+                run_operation(op, joined, tool, tool_tag, true, nullptr, false, nullptr, step, &fuzzy_lost));
+          } catch (const Cancelled&) {
+            throw;
+          } catch (...) {
+            continue;
+          }
+          if (!fuzzy_lost && holds_targets(pieces)) {
+            trace.note("lost faces fuzzy=" + std::to_string(step));
+            result.pieces = std::move(pieces);
+            return result;
+          }
+        }
       }
       // A tool solid the exact join leaves on its own that comes within
       // the tolerance of a target (it touches the target only along an
@@ -1049,8 +1414,10 @@ BooleanResult boolean(BooleanOp op, const std::vector<const Shape*>& targets, co
       if (close_strays > 0) {
         for (const double step : fuzzy_steps(reach)) {
           std::vector<BooleanPiece> pieces;
+          bool fuzzy_lost = false;
           try {
-            pieces = pieces_of(run_operation(op, fused, tool, tool_tag, true, nullptr, false, nullptr, step));
+            pieces = pieces_of(
+                run_operation(op, fused, tool, tool_tag, true, nullptr, false, nullptr, step, &fuzzy_lost));
           } catch (const Cancelled&) {
             throw;
           } catch (...) {
@@ -1058,7 +1425,8 @@ BooleanResult boolean(BooleanOp op, const std::vector<const Shape*>& targets, co
           }
           const int left = static_cast<int>(std::count_if(
               pieces.begin(), pieces.end(), [](const BooleanPiece& piece) { return piece.sources.empty(); }));
-          if (left <= strays - close_strays) {
+          // (Not a result that lost the targets' solids or faces.)
+          if (left <= strays - close_strays && !fuzzy_lost && holds_targets(pieces)) {
             trace.note("strays fuzzy=" + std::to_string(step));
             for (const auto& entry : fused) {
               result.touched[static_cast<std::size_t>(entry.second)] = true;
@@ -1066,6 +1434,17 @@ BooleanResult boolean(BooleanOp op, const std::vector<const Shape*>& targets, co
             result.pieces = std::move(pieces);
             return result;
           }
+        }
+      }
+      int count = 0;
+      for (const BooleanPiece& piece : exact) {
+        count += tiny_edges(piece.shape->occt());
+      }
+      const int allowed = operands_tiny(joined);
+      if (count > allowed) {
+        if (const std::optional<std::vector<detail::FaceNamer::Piece>> fuzzy = without_tiny_edges(joined, allowed)) {
+          result.pieces = to_pieces(*fuzzy);
+          return result;
         }
       }
       result.pieces = std::move(exact);
@@ -1089,9 +1468,12 @@ BooleanResult boolean(BooleanOp op, const std::vector<const Shape*>& targets, co
         }
       }
       std::vector<TopoDS_Shape> seen;
-      const detail::FaceNamer namer =
-          run_operation(op, {{targets[i], static_cast<int>(i)}}, tool, tool_tag, true, &seen);
-      const std::vector<detail::FaceNamer::Piece> solids = namer.pieces();
+      std::vector<detail::FaceNamer::Piece> solids;
+      if (op == BooleanOp::Cut && within > 0.0) {
+        solids = cut_within(*targets[i], static_cast<int>(i), tool, tool_tag, within, seen, trace);
+      } else {
+        solids = run_operation(op, {{targets[i], static_cast<int>(i)}}, tool, tool_tag, true, &seen).pieces();
+      }
       // A single piece of the same volume is the target unchanged (a tool
       // touching a face shares the face but removes nothing); no piece at
       // all is a target cut away completely, or one the tool of an
@@ -1102,6 +1484,26 @@ BooleanResult boolean(BooleanOp op, const std::vector<const Shape*>& targets, co
         changed = volume_changed(*targets[i], seen.front(), *solids.front().shape);
       }
       trace.mark("volume");
+      // A cut that removes nothing from a target with a stepping seam
+      // (reseamed) is tried on the target rebuilt with straight seams.
+      if (!changed && op == BooleanOp::Cut) {
+        if (const ShapePtr straight = reseamed(*targets[i])) {
+          std::vector<TopoDS_Shape> straight_seen;
+          std::vector<detail::FaceNamer::Piece> straight_solids =
+              within > 0.0
+                  ? cut_within(*straight, static_cast<int>(i), tool, tool_tag, within, straight_seen, trace)
+                  : run_operation(op, {{straight.get(), static_cast<int>(i)}}, tool, tool_tag, true, &straight_seen)
+                        .pieces();
+          const bool straight_changed =
+              straight_solids.size() != 1 ||
+              volume_changed(*straight, straight_seen.front(), *straight_solids.front().shape);
+          if (straight_changed) {
+            trace.note("reseamed");
+            solids = std::move(straight_solids);
+            changed = true;
+          }
+        }
+      }
       if (!changed) {
         continue;
       }

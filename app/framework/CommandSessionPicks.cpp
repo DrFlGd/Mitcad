@@ -42,6 +42,10 @@ void CommandSession::valueFocused(const QString& key, bool focused) {
     return;
   }
   if (focused) {
+    m_valueKeyboard = true;
+    if (!m_autoFocusing) {
+      m_valueTouched = true;
+    }
     const bool same = key == m_pickTarget && !m_picker.isNull();
     m_pickTarget = key;
     m_pickFocused = true;
@@ -52,6 +56,7 @@ void CommandSession::valueFocused(const QString& key, bool focused) {
     }
     return;
   }
+  m_valueKeyboard = false;
   if (key != m_pickTarget) {
     return;
   }

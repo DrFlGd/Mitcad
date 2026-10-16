@@ -50,6 +50,12 @@
 #include <Geom2d_TrimmedCurve.hxx>
 #include <GeomAPI_Interpolate.hxx>
 #include <Geom_CylindricalSurface.hxx>
+#include <Geom_Line.hxx>
+#include <Geom_Plane.hxx>
+#include <TopoDS_Edge.hxx>
+#include <TopoDS_Face.hxx>
+#include <TopoDS_Vertex.hxx>
+#include <gp_Pln.hxx>
 #include <Geom_BSplineCurve.hxx>
 #include <Geom_OffsetCurve.hxx>
 #include <Geom_OffsetSurface.hxx>
@@ -607,6 +613,50 @@ void test_span_by_span_properties() {
                  11.0 + tall * (base * base + 2.0 * base * top_radius + 3.0 * top_radius * top_radius) / (4.0 * sum)));
 }
 
+// A face whose boundary curve stops short of its vertex, which the vertex's
+// tolerance bridges (a fillet's corner, mitcad#325: the curve on the blend
+// face 0.36 mm short of a vertex of 0.74 mm tolerance): the face is measured
+// to the vertex. A unit square on z = 0 whose right edge ends 0.1 short of
+// its upper corner, a vertex of 0.2 tolerance.
+void test_boundary_gap_bridged_by_a_vertex() {
+  BRep_Builder builder;
+  const auto vertex = [&](double x, double y, double tolerance) {
+    TopoDS_Vertex v;
+    builder.MakeVertex(v, gp_Pnt(x, y, 0.0), tolerance);
+    return v;
+  };
+  const TopoDS_Vertex corners[4] = {vertex(0.0, 0.0, 1e-7), vertex(1.0, 0.0, 1e-7), vertex(1.0, 1.0, 0.2),
+                                    vertex(0.0, 1.0, 1e-7)};
+  const auto edge = [&](int from, int to, double length) {
+    const gp_Pnt a = BRep_Tool::Pnt(corners[from]);
+    const gp_Pnt b = BRep_Tool::Pnt(corners[to]);
+    TopoDS_Edge e;
+    builder.MakeEdge(e, new Geom_Line(a, gp_Dir(gp_Vec(a, b))), 1e-7);
+    TopoDS_Vertex start = corners[from];
+    start.Orientation(TopAbs_FORWARD);
+    TopoDS_Vertex end = corners[to];
+    end.Orientation(TopAbs_REVERSED);
+    builder.Add(e, start);
+    builder.Add(e, end);
+    builder.Range(e, 0.0, length);
+    return e;
+  };
+  TopoDS_Wire wire;
+  builder.MakeWire(wire);
+  builder.Add(wire, edge(0, 1, 1.0));
+  builder.Add(wire, edge(1, 2, 0.9));
+  builder.Add(wire, edge(2, 3, 1.0));
+  builder.Add(wire, edge(3, 0, 1.0));
+  TopoDS_Face face;
+  builder.MakeFace(face, new Geom_Plane(gp_Pln()), 1e-7);
+  builder.Add(face, wire);
+  CHECK(near(mitcad::analysis::area(face), 1.0, 1e-12));
+  // The same with the face reversed, and a closed square stays as it was.
+  CHECK(near(mitcad::analysis::area(face.Reversed()), 1.0, 1e-12));
+  const TopoDS_Face square = BRepBuilderAPI_MakeFace(gp_Pln(), 0.0, 1.0, 0.0, 1.0).Face();
+  CHECK(near(mitcad::analysis::area(square), 1.0, 1e-12));
+}
+
 void test_products_and_several_bodies() {
   // Two 2 mm cubes centred at (5, 5, 0) and (-5, -5, 0): Ixy = -sum x y m.
   const TopoDS_Shape c1 = box(4, 4, -1, 2, 2, 2);
@@ -906,6 +956,7 @@ int main() {
     test_round_properties();
     test_spline_bounded_properties();
     test_span_by_span_properties();
+    test_boundary_gap_bridged_by_a_vertex();
     test_products_and_several_bodies();
     test_distances();
     test_angles();

@@ -269,6 +269,19 @@ pub struct Model {
     /// The editing episodes (`Global/History`), for the GlobalIds.
     #[serde(skip)]
     pub episodes: Vec<[u8; 16]>,
+    /// The geometry the file keeps of elements and types (their
+    /// `GElement`s, [`crate::brep`]), by element.
+    #[serde(skip)]
+    pub geometry: BTreeMap<i64, crate::brep::GRep>,
+    /// Geometry records that did not walk.
+    pub geometry_errors: usize,
+    /// Families' documents' element ids (a few), by family element.
+    #[serde(skip)]
+    pub family_docs: BTreeMap<i64, Vec<i64>>,
+    /// Profile families' profiles (their documents' curve elements, feet,
+    /// in the family's xy plane), by family element (mitcad#333).
+    #[serde(skip)]
+    pub profiles: BTreeMap<i64, Vec<crate::building::Curve>>,
 }
 
 /// Where an element's latest records are: (partition index, slot index).
@@ -280,6 +293,8 @@ impl Model {
         let partitions = file.partitions(schema)?;
         let mut model = Model::from_parts(schema, declared, &partitions);
         model.episodes = file.episodes();
+        model.read_geometry(file, schema);
+        model.read_profiles(file, schema);
         Ok(model)
     }
 
@@ -575,6 +590,11 @@ impl Model {
             .iter()
             .filter_map(|(&id, f)| Some((id, f.outline?)))
             .collect();
+        model.family_docs = facts
+            .iter()
+            .filter(|(_, f)| !f.foreign.is_empty())
+            .map(|(&id, f)| (id, f.foreign.clone()))
+            .collect();
         model.meshes = facts
             .iter_mut()
             .filter(|(_, f)| !f.meshes.is_empty())
@@ -594,6 +614,103 @@ impl Model {
         }
         model.building.finish(&link_symbols);
         model
+    }
+
+    /// The geometry of the elements (not view-specific) and of the types:
+    /// the record in the highest-numbered partition whose third chain has
+    /// one (a partition need not repeat an element's geometry).
+    pub fn read_geometry(&mut self, file: &RvtFile, schema: &Schema) {
+        let wanted: std::collections::HashSet<i64> = self
+            .elements
+            .iter()
+            .filter(|e| e.owner_view.is_none() && e.partition.is_some())
+            .map(|e| e.id)
+            .collect();
+        for number in file.partition_numbers() {
+            // (A partition that does not inflate has no geometry to give.)
+            let Ok(docs) = file.documents(number, schema, false) else {
+                self.geometry_errors += 1;
+                continue;
+            };
+            let Some(own) = docs.documents.first() else {
+                continue;
+            };
+            for slot in &own.geometry {
+                if slot.size <= 2 || !wanted.contains(&slot.id) {
+                    continue;
+                }
+                match walk::walk(schema, docs.bytes(slot)) {
+                    Ok(record) => {
+                        if let Some(g) = crate::brep::read(schema, &record)
+                            && (!g.is_empty() || !g.curves.is_empty() || !g.notes.is_empty())
+                        {
+                            self.geometry.insert(slot.id, g);
+                        }
+                    }
+                    Err(_) => self.geometry_errors += 1,
+                }
+            }
+        }
+    }
+
+    /// The profiles of the profile families the project's types name
+    /// (category -2003000): each family's document (the one after the
+    /// partition's chains holding the family's document's element ids)
+    /// read for its curve elements' curves (`CurveElem.m_pCurveDriver` →
+    /// `m_pCrv`).
+    pub fn read_profiles(&mut self, file: &RvtFile, schema: &Schema) {
+        let families: std::collections::BTreeSet<i64> = self
+            .elements
+            .iter()
+            .filter(|e| e.is_type && e.category == Some(-2_003_000))
+            .filter_map(|e| e.family_id)
+            .collect();
+        if families.is_empty() {
+            return;
+        }
+        // The partitions the families' records are in.
+        let mut partitions: std::collections::BTreeSet<u32> = Default::default();
+        for f in &families {
+            if let Some(p) = self.element(*f).and_then(|e| e.partition) {
+                partitions.insert(p);
+            }
+        }
+        for number in partitions {
+            let Ok(docs) = file.documents(number, schema, true) else {
+                continue;
+            };
+            for doc in docs.documents.iter().skip(1) {
+                let ids: std::collections::HashSet<i64> =
+                    doc.objects.iter().map(|s| s.id).collect();
+                // (Documents number their elements each in its own way: the
+                // family whose ids the document holds nearly all of.)
+                let share = |f: &i64| {
+                    let fs = &self.family_docs[f];
+                    fs.iter().filter(|x| ids.contains(x)).count() as f64 / fs.len() as f64
+                };
+                let Some(family) = families
+                    .iter()
+                    .filter(|f| !self.profiles.contains_key(f) && self.family_docs.contains_key(f))
+                    .copied()
+                    .max_by(|a, b| share(a).total_cmp(&share(b)))
+                    .filter(|f| share(f) >= 0.8)
+                else {
+                    continue;
+                };
+                let mut curves = Vec::new();
+                for slot in &doc.objects {
+                    let Ok(record) = walk::walk(schema, docs.bytes(slot)) else {
+                        continue;
+                    };
+                    if schema.class_name(record.root.class) == "CurveElem" {
+                        curves.extend(building::curve_elem(schema, &record));
+                    }
+                }
+                if !curves.is_empty() {
+                    self.profiles.insert(family, curves);
+                }
+            }
+        }
     }
 
     pub fn element(&self, id: i64) -> Option<&Element> {
@@ -672,6 +789,9 @@ struct Facts {
     deep_ids: Vec<i64>,
     /// `m_hasMonolithicSupport` of a stair run or landing type.
     monolithic: Option<bool>,
+    /// A family's document's element ids (`FamilyDocument.m_big2SmallMap2`
+    /// → `ForeignElemRef.m_id64`), a few.
+    foreign: Vec<i64>,
     /// The triangle meshes its record holds (`GPolyMesh`).
     meshes: Vec<Mesh>,
     /// What it gives the building model.
@@ -725,6 +845,7 @@ impl Facts {
                 .get(schema, "m_hasMonolithicSupport")
                 .and_then(Value::as_bool),
             meshes: Vec::new(),
+            foreign: Vec::new(),
             building: None,
         };
         let own_id = root.get(schema, "m_id").and_then(Value::as_id);
@@ -743,6 +864,29 @@ impl Facts {
                 .for_each(|(_, _, v)| collect_ids(v, &mut facts.deep_ids));
         }
         facts.deep_ids.retain(|id| Some(*id) != own_id);
+        if let Some(doc) = record
+            .pointees
+            .iter()
+            .find(|o| schema.class_name(o.class) == "FamilyDocument")
+        {
+            for pair in doc
+                .get(schema, "m_big2SmallMap2")
+                .and_then(Value::as_list)
+                .unwrap_or_default()
+                .iter()
+                .take(32)
+            {
+                let id = pair
+                    .as_object()
+                    .and_then(|p| p.fields.get(1))
+                    .and_then(|(_, _, v)| v.as_object())
+                    .and_then(|r| r.fields.first())
+                    .and_then(|(_, _, v)| v.as_u64());
+                if let Some(id) = id {
+                    facts.foreign.push(id as i64);
+                }
+            }
+        }
         for object in record
             .pointees
             .iter()

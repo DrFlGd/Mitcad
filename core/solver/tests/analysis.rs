@@ -520,6 +520,41 @@ fn rotated_copy_of_an_arc_and_a_circle_follows_the_original() {
     assert!((s.radius(arc2).unwrap() - 5.0).abs() < 1e-9);
 }
 
+/// An ellipse with fixed points on a short arc of it, all on the ellipse.
+fn ellipse_with_points_on_arc(count: usize, step: f64) -> System {
+    let mut s = System::new();
+    let c = s.add_point(0.0, 0.0);
+    let a = s.add_point(4.0, 0.0);
+    let e = s.add_ellipse(c, a, 2.0).unwrap();
+    for i in 0..count {
+        let t = 0.5 + step * i as f64;
+        let p = s.add_point(4.0 * t.cos(), 2.0 * t.sin());
+        s.add_constraint(FixPoint(p)).unwrap();
+        s.add_constraint(PointOnCurve(p, e)).unwrap();
+    }
+    s
+}
+
+/// Many nearly dependent equations on few unknowns: the Gram matrix of the
+/// rows is so ill-conditioned that the factorization's rounding error makes
+/// the pivot of a dependent row exceed the tolerance. The rank is bounded by
+/// the number of unknowns (the ellipse has five), so the degrees of freedom
+/// never go negative (that used to overflow the count).
+#[test]
+fn rank_is_bounded_by_the_unknowns_of_a_nearly_dependent_set() {
+    for count in [6, 8, 12, 20] {
+        for step in [0.1, 0.05, 0.03, 0.02, 0.01, 0.005] {
+            let mut s = ellipse_with_points_on_arc(count, step);
+            let _ = s.solve(&opts());
+            let a = s.analyze();
+            assert!(a.dof <= 5, "count {count} step {step}: dof {}", a.dof);
+            if count >= 12 && step >= 0.03 {
+                assert_eq!(a.dof, 0, "count {count} step {step}: well spread points");
+            }
+        }
+    }
+}
+
 #[test]
 fn translated_copies_of_an_ellipse_keep_its_size() {
     let mut s = System::new();

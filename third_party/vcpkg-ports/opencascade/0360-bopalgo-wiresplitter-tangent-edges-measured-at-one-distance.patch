@@ -1,0 +1,239 @@
+Mitcad's patch to OCCT 8.0.1, under OCCT's licence:
+SPDX-License-Identifier: LGPL-2.1-only WITH OCCT-exception-1.0
+
+BOPAlgo_WireSplitter: edges that leave a vertex tangentially to each
+other are ordered about it by their directions at one distance from it
+(mitcad#235).
+
+The wire splitter orders the edges at each vertex of a face being split
+by the angle of each edge's direction there (Angle2D), measured to a point
+at a step from the vertex: for a curve other than a line, a step from its
+curvature and the vertex's tolerance, used as a step in the curve's own
+parameter. On a circle (parametrised by its angle) that is a distance of
+about sqrt(2 R tol); on a B-spline it is a distance of that step times the
+curve's speed, often a tenth of it or less. Two edges that leave a vertex
+tangentially (the section of a thread's crest beside the circle of the
+hole it lies in, where a counterbore's end face meets them) differ in
+direction by less than their curvature turns them over those steps: the
+circle, measured farther out, had turned more than the B-spline beside
+it, though the B-spline turns faster. Their order about the vertex came
+out the wrong way round, the loops built from it crossed each other, and
+the face between the two curves came out with a hole of the other side's
+boundary and a negative area; the cut that split it left a body empty.
+
+Edges whose directions at a vertex lie within 0.1 radians of a different
+edge's are now measured again, each by the chord to the point where it
+first reaches one distance from the vertex, the same for all of them (half
+the shortest distance from the vertex to the middle of one of them),
+before the existing refinement (RefineAngles). Edges that do not cross
+each other keep their order there at any distance: their pieces up to
+there are arcs from the vertex to the circle of that radius that do not
+cross. Vertices whose edges are too short to tell apart within ten times
+the 2d tolerance are left as they were. The same split of a coil's body
+by a cut along the bore its thread crosses (the crest's section and the
+hole's section leaving their vertices 0.01 to 0.02 radians apart, as
+measured) lost faces with a window of 0.01.
+--- a/src/ModelingAlgorithms/TKBO/BOPAlgo/BOPAlgo_WireSplitter_1.cxx
++++ b/src/ModelingAlgorithms/TKBO/BOPAlgo/BOPAlgo_WireSplitter_1.cxx
+@@ -87,6 +87,13 @@ static double Tolerance2D(const TopoDS_Vertex& aV, const BRepAdaptor_Surface& aG
+ static double UTolerance2D(const TopoDS_Vertex& aV, const BRepAdaptor_Surface& aGAS);
+ static double VTolerance2D(const TopoDS_Vertex& aV, const BRepAdaptor_Surface& aGAS);
+ 
++static void RefineTangentAngles(const TopoDS_Face&                                   myFace,
++                                NCollection_IndexedDataMap<TopoDS_Shape,
++                                                           NCollection_List<BOPAlgo_EdgeInfo>,
++                                                           TopTools_ShapeMapHasher>& mySmartMap,
++                                const BRepAdaptor_Surface&                           aGAS,
++                                const occ::handle<IntTools_Context>&                 theContext);
++
+ static void RefineAngles(const TopoDS_Face& myFace,
+                          NCollection_IndexedDataMap<TopoDS_Shape,
+                                                     NCollection_List<BOPAlgo_EdgeInfo>,
+@@ -320,6 +327,9 @@ void BOPAlgo_WireSplitter::SplitBlock(const TopoDS_Face&                   myFac
+   // Theme: The treatment p-curves convergent in node.
+   // The refining the angles of p-curves taking into account
+   // bounding curves if exist.
++  // Edges leaving a vertex tangentially to each other measured again at
++  // one distance from it.
++  RefineTangentAngles(myFace, mySmartMap, aBAS, theContext);
+   RefineAngles(myFace, mySmartMap, theContext);
+   //
+   // 4. Do
+@@ -1123,3 +1133,177 @@ bool RefineAngle2D(const TopoDS_Vertex&                 aV,
+   } // for (i=0; i<2; ++i) {
+   return !bRet;
+ }
++
++//=================================================================================================
++// Edges that leave a vertex tangentially to each other (the section of a
++// thread's crest beside the circle of the hole it lies in) have angles that
++// differ by less than their curvature turns them within the steps Angle2D
++// measured them at, and those steps differ from edge to edge (each from its
++// own curve's resolution and parametrisation): their order then follows the
++// steps, not the curves, and the loops cross each other. Such edges are
++// measured again, each by the chord to its point at one distance from the
++// vertex, the same for all of them: half the shortest distance from the
++// vertex to the middle of one of them, where each first reaches it. Edges
++// that do not cross each other keep their order there, at any distance:
++// their pieces up to there are arcs from the vertex to the circle of that
++// radius that do not cross.
++static void RefineTangentAngles(
++  const TopoDS_Face&                                   myFace,
++  NCollection_IndexedDataMap<TopoDS_Shape,
++                             NCollection_List<BOPAlgo_EdgeInfo>,
++                             TopTools_ShapeMapHasher>& mySmartMap,
++  const BRepAdaptor_Surface&                           aGAS,
++  const occ::handle<IntTools_Context>&                 theContext)
++{
++  // Directions closer than this are measured again (the steps differ by up
++  // to a few hundredths of a millimetre, which turns an edge of a radius of
++  // a tenth of a millimetre by a few tenths of this).
++  const double aWindow = 0.1;
++  const double aTwoPI  = M_PI + M_PI;
++  const int    aNb     = mySmartMap.Extent();
++  for (int i = 1; i <= aNb; ++i)
++  {
++    NCollection_List<BOPAlgo_EdgeInfo>& aLEI = mySmartMap(i);
++    if (aLEI.Extent() < 3)
++    {
++      continue;
++    }
++    TopoDS_Vertex aV = *((TopoDS_Vertex*)&mySmartMap.FindKey(i));
++    aV.Orientation(TopAbs_FORWARD);
++    // The direction of each edge from the vertex.
++    NCollection_Sequence<BOPAlgo_EdgeInfo*> aInfos;
++    NCollection_Sequence<double>            aDirs;
++    for (NCollection_List<BOPAlgo_EdgeInfo>::Iterator aIt(aLEI); aIt.More(); aIt.Next())
++    {
++      BOPAlgo_EdgeInfo& aEI  = aIt.ChangeValue();
++      double            aDir = aEI.IsIn() ? aEI.Angle() + M_PI : aEI.Angle();
++      while (aDir >= aTwoPI)
++      {
++        aDir -= aTwoPI;
++      }
++      aInfos.Append(&aEI);
++      aDirs.Append(aDir);
++    }
++    const int aNbI = aInfos.Length();
++    // The edges whose directions lie within the window of another edge's.
++    NCollection_Sequence<bool> aClose;
++    bool                       bAny = false;
++    for (int j = 1; j <= aNbI; ++j)
++    {
++      bool bClose = false;
++      for (int k = 1; k <= aNbI && !bClose; ++k)
++      {
++        if (k == j || aInfos(k)->Edge().IsSame(aInfos(j)->Edge()))
++        {
++          continue;
++        }
++        double aD = std::abs(aDirs(j) - aDirs(k));
++        aD        = std::min(aD, aTwoPI - aD);
++        bClose    = aD < aWindow;
++      }
++      aClose.Append(bClose);
++      bAny = bAny || bClose;
++    }
++    if (!bAny)
++    {
++      continue;
++    }
++    // The curves of those edges, the parameter at the vertex and in the
++    // middle, and the common distance.
++    const double                           aTol2D = 2. * Tolerance2D(aV, aGAS);
++    NCollection_Sequence<occ::handle<Geom2d_Curve>> aCurves;
++    NCollection_Sequence<double>           aTVs, aTMs;
++    gp_Pnt2d                               aPV;
++    double                                 aDist = Precision::Infinite();
++    bool                                   bOk   = true;
++    for (int j = 1; j <= aNbI && bOk; ++j)
++    {
++      double                    aT1 = 0., aT2 = 0., aTol = 0.;
++      occ::handle<Geom2d_Curve> aC2D;
++      if (aClose(j))
++      {
++        BOPTools_AlgoTools2D::CurveOnSurface(aInfos(j)->Edge(), myFace, aC2D, aT1, aT2, aTol, theContext);
++      }
++      if (aC2D.IsNull())
++      {
++        aCurves.Append(aC2D);
++        aTVs.Append(0.);
++        aTMs.Append(0.);
++        continue;
++      }
++      // The vertex as the edge has it at this end (a closed edge has it at
++      // both).
++      TopoDS_Vertex aVV = aV;
++      aVV.Orientation(aInfos(j)->IsIn() ? TopAbs_REVERSED : TopAbs_FORWARD);
++      const double aTV = BRep_Tool::Parameter(aVV, aInfos(j)->Edge(), myFace);
++      const double aTM = 0.5 * (aT1 + aT2);
++      const gp_Pnt2d aP = aC2D->Value(aTV);
++      if (aDist == Precision::Infinite())
++      {
++        aPV = aP;
++      }
++      else if (aP.Distance(aPV) > aTol2D)
++      {
++        bOk = false; // the edges do not start at one point
++      }
++      aDist = std::min(aDist, 0.5 * aC2D->Value(aTM).Distance(aPV));
++      aCurves.Append(aC2D);
++      aTVs.Append(aTV);
++      aTMs.Append(aTM);
++    }
++    // Too short to tell apart within the tolerance: left as they were.
++    if (!bOk || aDist == Precision::Infinite() || aDist < 10. * aTol2D)
++    {
++      continue;
++    }
++    for (int j = 1; j <= aNbI; ++j)
++    {
++      if (!aClose(j))
++      {
++        continue;
++      }
++      const occ::handle<Geom2d_Curve>& aC2D = aCurves(j);
++      // The parameter where the edge first reaches the distance from the
++      // vertex (it is past it at the middle): the first of 32 steps towards
++      // the middle past it, then halving the step before it.
++      double aTa = aTVs(j), aTb = aTMs(j);
++      for (int k = 1; k <= 32; ++k)
++      {
++        const double aT = aTVs(j) + (aTMs(j) - aTVs(j)) * k / 32.;
++        if (aC2D->Value(aT).Distance(aPV) >= aDist)
++        {
++          aTb = aT;
++          break;
++        }
++        aTa = aT;
++      }
++      for (int k = 0; k < 60; ++k)
++      {
++        const double aT = 0.5 * (aTa + aTb);
++        if (aC2D->Value(aT).Distance(aPV) < aDist)
++        {
++          aTa = aT;
++        }
++        else
++        {
++          aTb = aT;
++        }
++      }
++      const gp_Vec2d aVec(aPV, aC2D->Value(0.5 * (aTa + aTb)));
++      if (aVec.Magnitude() < gp::Resolution())
++      {
++        continue;
++      }
++      double aA = Angle(gp_Dir2d(aVec));
++      if (aInfos(j)->IsIn())
++      {
++        aA += M_PI;
++        if (aA >= aTwoPI)
++        {
++          aA -= aTwoPI;
++        }
++      }
++      aInfos(j)->SetAngle(aA);
++    }
++  }
++}

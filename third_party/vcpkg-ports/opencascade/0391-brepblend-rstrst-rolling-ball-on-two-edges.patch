@@ -1,0 +1,907 @@
+Mitcad's patch to OCCT 8.0.1, under OCCT's licence:
+SPDX-License-Identifier: LGPL-2.1-only WITH OCCT-exception-1.0
+
+Fillets: a rounding whose faces are both narrower than the ball's contacts
+rolls on their far edges, the ball resting on both edges (mitcad#237, with
+0170).
+
+Where both faces of a rounded edge are narrower than the ball's contacts
+(the ridge of a roof whose faces end at sharp eaves), the ball rests on the
+far edges of both. The overflow start (0011) refused that case, and the
+fillet failed; OCCT's blend between two restrictions
+(BRepBlend_RstRstConstRad) put both contacts in the guide's normal plane,
+which is the ball only where the edges are square to it.
+
+- BRepBlend_RstRstConstRad (rolling by default; SetRollingBall(false) gives
+  OCCT's sections): the ball rests on both restrictions, each tangent to
+  it. BallOnTwoCurves finds its centre from the two contact points and
+  tangents: in both curves' normal planes and at the radius from both,
+  their sum fixing its part along the tangents and the radius the rest; the
+  equations are E(1) the contacts' mid-point in the guide's normal plane
+  (as 0075 and 0170) and E(2) the difference of the two tangencies, which
+  also holds where the edges are parallel (both points in one normal
+  plane). Derivatives by central differences; the sections are the ball's
+  arcs in its plane through both contacts (without their derivatives, as
+  the approximation allows). Decroch: where the ball reaches into a
+  restriction's reference face (SetRefSides, as 0170's SetRefSide).
+- BRepBlend_CurvPointRadInv (a restriction's end): the same ball, the
+  restriction's tangent at its end given by SetTangent
+  (Blend_CurvPointFuncInv, default ignored), which
+  BRepBlend_RstRstLineBuilder sets.
+- ChFi3d_FilBuilder: the reference sides, the rolling inverse functions.
+- ChFi3d_Builder::StartSolOverflow: both sides roll where their contacts
+  lie beyond sharp convex edges of the edge's faces: after both crossed
+  such edges at the same step and no ball touches both faces beyond, or
+  where one side rolls and the other's contact lies beyond such an edge.
+  Only on a closed contour: the corners where such a blend meets the faces
+  at a contour's ends are not made (they failed, or the result was
+  invalid), so an open contour fails as before.
+- ChFi3d_Builder::ComputeData (two restrictions): on a closed guide the
+  period starts where the path to the left ended, as for the other walks.
+
+Upstream: the rolling sections are behind SetRollingBall; the start
+change only takes cases that failed before.
+diff --git a/src/ModelingAlgorithms/TKFillet/BRepBlend/BRepBlend_CurvPointRadInv.cxx b/src/ModelingAlgorithms/TKFillet/BRepBlend/BRepBlend_CurvPointRadInv.cxx
+index 9df7002..ef0b65b 100644
+--- a/src/ModelingAlgorithms/TKFillet/BRepBlend/BRepBlend_CurvPointRadInv.cxx
++++ b/src/ModelingAlgorithms/TKFillet/BRepBlend/BRepBlend_CurvPointRadInv.cxx
+@@ -16,6 +16,8 @@
+ 
+ #include <Adaptor3d_Curve.hxx>
+ #include <BRepBlend_CurvPointRadInv.hxx>
++#include <BRepBlend_RstRstConstRad.hxx>
++#include <gp.hxx>
+ #include <gp_Pnt.hxx>
+ #include <math_Matrix.hxx>
+ 
+@@ -25,7 +27,10 @@ BRepBlend_CurvPointRadInv::BRepBlend_CurvPointRadInv(const occ::handle<Adaptor3d
+                                                      const occ::handle<Adaptor3d_Curve>& C2)
+     : curv1(C1),
+       curv2(C2),
+-      choix(0)
++      choix(0),
++      rolling(false),
++      pointOnSecond(false),
++      ray(0.)
+ {
+ }
+ 
+@@ -38,6 +43,68 @@ void BRepBlend_CurvPointRadInv::Set(const int Choix)
+ 
+ //=================================================================================================
+ 
++void BRepBlend_CurvPointRadInv::SetRollingBall(const double Radius, const bool PointOnSecond)
++{
++  rolling       = true;
++  pointOnSecond = PointOnSecond;
++  ray           = std::abs(Radius);
++}
++
++//=================================================================================================
++
++void BRepBlend_CurvPointRadInv::SetTangent(const gp_Vec& T)
++{
++  tangent = T;
++}
++
++namespace
++{
++//! The rolling ball's values: F(1) the contacts' mid-point in the guide's
++//! normal plane, F(2) the residual of the ball tangent to both restrictions.
++bool CurvPointRollingValue(const occ::handle<Adaptor3d_Curve>& Guide,
++                           const occ::handle<Adaptor3d_Curve>& Curve2,
++                           const gp_Pnt&                       Point,
++                           const gp_Vec&                       Tangent,
++                           const bool                          PointOnSecond,
++                           const double                        Radius,
++                           const int                           Choix,
++                           const math_Vector&                  X,
++                           math_Vector&                        F)
++{
++  gp_Pnt ptgui, ptcur2;
++  gp_Vec d1gui, d1cur2;
++  Guide->D1(X(1), ptgui, d1gui);
++  Curve2->D1(X(2), ptcur2, d1cur2);
++  if (d1gui.Magnitude() < gp::Resolution())
++  {
++    return false;
++  }
++  // (The ball's side as BRepBlend_RstRstConstRad's: from the first
++  // restriction's point to the second's.)
++  const gp_Pnt& P1    = PointOnSecond ? ptcur2 : Point;
++  const gp_Pnt& P2    = PointOnSecond ? Point : ptcur2;
++  const gp_Vec& T1    = PointOnSecond ? d1cur2 : Tangent;
++  const gp_Vec& T2    = PointOnSecond ? Tangent : d1cur2;
++  const gp_Vec  nplan = d1gui.Normalized();
++  gp_Vec        side  = gp_Vec(P1, P2).Crossed(nplan);
++  if (Choix > 2)
++  {
++    side.Reverse();
++  }
++  gp_Pnt C;
++  double res = 0.;
++  if (!BRepBlend_RstRstConstRad::BallOnTwoCurves(P1, T1, P2, T2, Radius, side, C, res))
++  {
++    return false;
++  }
++  F(1) = nplan.XYZ().Dot(0.5 * (Point.XYZ() + ptcur2.XYZ()) - ptgui.XYZ());
++  F(2) = res;
++  return true;
++}
++} // namespace
++
++//=================================================================================================
++
+ int BRepBlend_CurvPointRadInv::NbEquations() const
+ {
+   return 2;
+@@ -47,6 +114,10 @@ int BRepBlend_CurvPointRadInv::NbEquations() const
+ 
+ bool BRepBlend_CurvPointRadInv::Value(const math_Vector& X, math_Vector& F)
+ {
++  if (rolling)
++  {
++    return CurvPointRollingValue(curv1, curv2, point, tangent, pointOnSecond, ray, choix, X, F);
++  }
+   double theD;
+   gp_Pnt ptcur1, ptcur2;
+   gp_Vec d1cur1, d1cur2;
+@@ -64,6 +135,26 @@ bool BRepBlend_CurvPointRadInv::Value(const math_Vector& X, math_Vector& F)
+ 
+ bool BRepBlend_CurvPointRadInv::Derivatives(const math_Vector& X, math_Matrix& D)
+ {
++  if (rolling)
++  {
++    // Central differences.
++    math_Vector Xp(X), Xm(X), Fp(1, 2), Fm(1, 2);
++    for (int j = 1; j <= 2; j++)
++    {
++      const double h = std::max(1.e-7, (j == 1 ? curv1 : curv2)->Resolution(1.e-6));
++      Xp     = X;
++      Xm     = X;
++      Xp(j) += h;
++      Xm(j) -= h;
++      if (!Value(Xp, Fp) || !Value(Xm, Fm))
++      {
++        return false;
++      }
++      D(1, j) = (Fp(1) - Fm(1)) / (2. * h);
++      D(2, j) = (Fp(2) - Fm(2)) / (2. * h);
++    }
++    return true;
++  }
+   gp_Pnt ptcur1, ptcur2;
+   gp_Vec d1cur1, d2cur1, d1cur2, nplan, dnplan;
+   double dtheD, normd1cur1, unsurnormd1cur1;
+@@ -89,6 +180,10 @@ bool BRepBlend_CurvPointRadInv::Derivatives(const math_Vector& X, math_Matrix& D
+ 
+ bool BRepBlend_CurvPointRadInv::Values(const math_Vector& X, math_Vector& F, math_Matrix& D)
+ {
++  if (rolling)
++  {
++    return Derivatives(X, D) && Value(X, F);
++  }
+   Value(X, F);
+   Derivatives(X, D);
+ 
+@@ -125,6 +220,9 @@ void BRepBlend_CurvPointRadInv::GetBounds(math_Vector& InfBound, math_Vector& Su
+ bool BRepBlend_CurvPointRadInv::IsSolution(const math_Vector& Sol, const double Tol)
+ {
+   math_Vector valsol(1, 2);
+-  Value(Sol, valsol);
++  if (!Value(Sol, valsol))
++  {
++    return false;
++  }
+   return std::abs(valsol(1)) <= Tol && std::abs(valsol(2)) <= Tol;
+ }
+diff --git a/src/ModelingAlgorithms/TKFillet/BRepBlend/BRepBlend_CurvPointRadInv.hxx b/src/ModelingAlgorithms/TKFillet/BRepBlend/BRepBlend_CurvPointRadInv.hxx
+index f2c8b5f..ad41d65 100644
+--- a/src/ModelingAlgorithms/TKFillet/BRepBlend/BRepBlend_CurvPointRadInv.hxx
++++ b/src/ModelingAlgorithms/TKFillet/BRepBlend/BRepBlend_CurvPointRadInv.hxx
+@@ -87,11 +87,25 @@ public:
+   //! Tol is the tolerance used in 3d space.
+   Standard_EXPORT bool IsSolution(const math_Vector& Sol, const double Tol) override;
+ 
++  //! For a ball of radius Radius that rests on both restrictions (the rolling
++  //! ball, BRepBlend_RstRstConstRad): the ball tangent to the restriction
++  //! ending at the point (its tangent there given by SetTangent) and to
++  //! curve 2, the contacts' mid-point in the guide's normal plane. Without it,
++  //! both points lie in that plane. PointOnSecond: the point ends the second
++  //! restriction (curve 2 is the first one's).
++  Standard_EXPORT void SetRollingBall(const double Radius, const bool PointOnSecond);
++
++  Standard_EXPORT void SetTangent(const gp_Vec& T) override;
++
+ private:
+   occ::handle<Adaptor3d_Curve> curv1;
+   occ::handle<Adaptor3d_Curve> curv2;
+   gp_Pnt                       point;
+   int                          choix;
++  bool                         rolling;
++  bool                         pointOnSecond;
++  double                       ray;
++  gp_Vec                       tangent;
+ };
+ 
+ #endif // _BRepBlend_CurvPointRadInv_HeaderFile
+diff --git a/src/ModelingAlgorithms/TKFillet/BRepBlend/BRepBlend_RstRstConstRad.cxx b/src/ModelingAlgorithms/TKFillet/BRepBlend/BRepBlend_RstRstConstRad.cxx
+index ab62cbd..793009c 100644
+--- a/src/ModelingAlgorithms/TKFillet/BRepBlend/BRepBlend_RstRstConstRad.cxx
++++ b/src/ModelingAlgorithms/TKFillet/BRepBlend/BRepBlend_RstRstConstRad.cxx
+@@ -60,6 +60,7 @@ BRepBlend_RstRstConstRad::BRepBlend_RstRstConstRad(const occ::handle<Adaptor3d_S
+       surf2(Surf2),
+       rst1(Rst1),
+       rst2(Rst2),
++      rolling(true),
+       cons1(Rst1, Surf1),
+       cons2(Rst2, Surf2),
+       guide(CGuide),
+@@ -76,6 +77,179 @@ BRepBlend_RstRstConstRad::BRepBlend_RstRstConstRad(const occ::handle<Adaptor3d_S
+       distmin(RealLast()),
+       mySShape(BlendFunc_Rational)
+ {
++  refside[0] = refside[1] = 0;
++}
++
++//=================================================================================================
++
++void BRepBlend_RstRstConstRad::SetRollingBall(const bool OnOff)
++{
++  rolling = OnOff;
++}
++
++//=================================================================================================
++
++bool BRepBlend_RstRstConstRad::IsRollingBall() const
++{
++  return rolling;
++}
++
++//=================================================================================================
++
++void BRepBlend_RstRstConstRad::SetRefSides(const int Side1, const int Side2)
++{
++  refside[0] = Side1;
++  refside[1] = Side2;
++}
++
++//=================================================================================================
++
++bool BRepBlend_RstRstConstRad::BallOnTwoCurves(const gp_Pnt& P1,
++                                               const gp_Vec& T1,
++                                               const gp_Pnt& P2,
++                                               const gp_Vec& T2,
++                                               const double  R,
++                                               const gp_Vec& Side,
++                                               gp_Pnt&       C,
++                                               double&       F)
++{
++  // C = M + v (M the chord's mid-point, v square to the chord u = P2 - P1);
++  // the tangencies (C - P1).T1 = 0 and (C - P2).T2 = 0 are v.t1 = a1 and
++  // v.t2 = a2 for the tangents' unit parts t1, t2 square to the chord. Their
++  // sum (along s = t1 + t2) gives v's part along s, |v| = sqrt(R^2 - |u|^2/4)
++  // the part across; their difference is the residual F, which also holds
++  // where the curves are parallel (t1 = t2: both points in one normal plane).
++  const gp_Vec u(P1, P2);
++  const double nu = u.Magnitude();
++  if (nu < Eps)
++  {
++    return false;
++  }
++  const gp_Vec e1 = u / nu;
++  gp_Vec       t1 = T1 - T1.Dot(e1) * e1;
++  gp_Vec       t2 = T2 - T2.Dot(e1) * e1;
++  const double n1 = t1.Magnitude(), n2 = t2.Magnitude();
++  if (n1 < 1.e-9 * T1.Magnitude() || n2 < 1.e-9 * T2.Magnitude() || n1 < Eps || n2 < Eps)
++  {
++    return false;
++  }
++  double a1 = -0.5 * u.Dot(T1) / n1;
++  double a2 = 0.5 * u.Dot(T2) / n2;
++  t1 /= n1;
++  t2 /= n2;
++  if (t1.Dot(t2) < 0.)
++  {
++    t2.Reverse();
++    a2 = -a2;
++  }
++  gp_Vec       s  = t1 + t2;
++  const double ns = s.Magnitude();
++  s /= ns;
++  const gp_Vec n    = e1.Crossed(s);
++  const double p    = (a1 + a2) / ns;
++  const double rho2 = R * R - 0.25 * nu * nu;
++  double       q = 0., excess = 0.;
++  if (rho2 > p * p)
++  {
++    q = std::sqrt(rho2 - p * p);
++  }
++  else
++  {
++    excess = std::abs(p) - std::sqrt(std::max(rho2, 0.));
++  }
++  if (n.Dot(Side) < 0.)
++  {
++    q = -q;
++  }
++  const gp_Vec v = p * s + q * n;
++  C.SetXYZ(P1.XYZ() + 0.5 * u.XYZ() + v.XYZ());
++  F = v.Dot(t1 - t2) - (a1 - a2) + excess;
++  return true;
++}
++
++//=================================================================================================
++
++bool BRepBlend_RstRstConstRad::RollingValue(const math_Vector& X, math_Vector& F, gp_Pnt& C)
++{
++  gp_Vec d11, d21;
++  cons1.D1(X(1), ptrst1, d11);
++  cons2.D1(X(2), ptrst2, d21);
++  gp_Vec side = gp_Vec(ptrst1, ptrst2).Crossed(nplan);
++  if (choix > 2)
++  {
++    side.Reverse();
++  }
++  double res = 0.;
++  if (!BallOnTwoCurves(ptrst1, d11, ptrst2, d21, ray, side, C, res))
++  {
++    return false;
++  }
++  F(1) = nplan.XYZ().Dot(0.5 * (ptrst1.XYZ() + ptrst2.XYZ())) + theD;
++  F(2) = res;
++  return true;
++}
++
++//=================================================================================================
++
++bool BRepBlend_RstRstConstRad::RollingDerivatives(const math_Vector& X, math_Matrix& D)
++{
++  math_Vector Xp(X), Xm(X), Fp(1, 2), Fm(1, 2);
++  gp_Pnt      C;
++  for (int j = 1; j <= 2; j++)
++  {
++    const double h = std::max(1.e-7, (j == 1 ? cons1 : cons2).Resolution(1.e-6));
++    Xp      = X;
++    Xm      = X;
++    Xp(j)  += h;
++    Xm(j)  -= h;
++    if (!RollingValue(Xp, Fp, C) || !RollingValue(Xm, Fm, C))
++    {
++      return false;
++    }
++    D(1, j) = (Fp(1) - Fm(1)) / (2. * h);
++    D(2, j) = (Fp(2) - Fm(2)) / (2. * h);
++  }
++  // (The points of X itself.)
++  math_Vector F0(1, 2);
++  return RollingValue(X, F0, center);
++}
++
++//=================================================================================================
++
++gp_Vec BRepBlend_RstRstConstRad::BallPlane(const gp_Pnt& C,
++                                           const gp_Pnt& P1,
++                                           const gp_Pnt& P2,
++                                           const gp_Vec& np) const
++{
++  gp_Vec       bp   = gp_Vec(C, P1).Crossed(gp_Vec(C, P2));
++  const double norm = bp.Magnitude();
++  if (norm < Eps)
++  {
++    return np;
++  }
++  bp /= norm;
++  return bp.Dot(np) < 0. ? -bp : bp;
++}
++
++//=================================================================================================
++
++bool BRepBlend_RstRstConstRad::Centre(const math_Vector& Sol, gp_Pnt& C) const
++{
++  if (!rolling)
++  {
++    return false;
++  }
++  gp_Pnt p1, p2;
++  gp_Vec d11, d21;
++  cons1.D1(Sol(1), p1, d11);
++  cons2.D1(Sol(2), p2, d21);
++  gp_Vec side = gp_Vec(p1, p2).Crossed(nplan);
++  if (choix > 2)
++  {
++    side.Reverse();
++  }
++  double res = 0.;
++  return BallOnTwoCurves(p1, d11, p2, d21, ray, side, C, res);
+ }
+ 
+ //=================================================================================================
+@@ -96,6 +270,10 @@ int BRepBlend_RstRstConstRad::NbEquations() const
+ 
+ bool BRepBlend_RstRstConstRad::Value(const math_Vector& X, math_Vector& F)
+ {
++  if (rolling)
++  {
++    return RollingValue(X, F, center);
++  }
+   ptrst1 = cons1.Value(X(1));
+   ptrst2 = cons2.Value(X(2));
+ 
+@@ -109,6 +287,10 @@ bool BRepBlend_RstRstConstRad::Value(const math_Vector& X, math_Vector& F)
+ 
+ bool BRepBlend_RstRstConstRad::Derivatives(const math_Vector& X, math_Matrix& D)
+ {
++  if (rolling)
++  {
++    return RollingDerivatives(X, D);
++  }
+   gp_Vec d11, d21;
+ 
+   cons1.D1(X(1), ptrst1, d11);
+@@ -127,6 +309,10 @@ bool BRepBlend_RstRstConstRad::Derivatives(const math_Vector& X, math_Matrix& D)
+ 
+ bool BRepBlend_RstRstConstRad::Values(const math_Vector& X, math_Vector& F, math_Matrix& D)
+ {
++  if (rolling)
++  {
++    return RollingDerivatives(X, D) && RollingValue(X, F, center);
++  }
+   Value(X, F);
+   Derivatives(X, D);
+ 
+@@ -194,6 +380,52 @@ bool BRepBlend_RstRstConstRad::IsSolution(const math_Vector& Sol, const double T
+ 
+   double Cosa, Sina, Angle;
+ 
++  if (rolling)
++  {
++    if (!Values(Sol, valsol, gradsol) || std::abs(valsol(1)) > Tol || std::abs(valsol(2)) > Tol)
++    {
++      istangent = true;
++      return false;
++    }
++    prmrst1  = Sol(1);
++    pt2drst1 = rst1->Value(prmrst1);
++    prmrst2  = Sol(2);
++    pt2drst2 = rst2->Value(prmrst2);
++    cons1.D1(Sol(1), ptrst1, d11);
++    cons2.D1(Sol(2), ptrst2, d21);
++    // The parameters' derivatives along the guide: only F(1) depends on it.
++    dnplan.SetLinearForm(1. / normtg, d2gui, -1. / normtg * (nplan.Dot(d2gui)), nplan);
++    temp.SetXYZ(0.5 * (ptrst1.XYZ() + ptrst2.XYZ()) - ptgui.XYZ());
++    secmember(1) = normtg - dnplan.Dot(temp);
++    secmember(2) = 0.;
++    math_Gauss Resol(gradsol);
++    istangent = !Resol.IsDone();
++    if (!istangent)
++    {
++      Resol.Solve(secmember);
++      tgrst1 = secmember(1) * d11;
++      tgrst2 = secmember(2) * d21;
++      double a, b;
++      surf1->D1(pt2drst1.X(), pt2drst1.Y(), bid, d1urst1, d1vrst1);
++      t3dto2d(a, b, tgrst1, d1urst1, d1vrst1);
++      tg2drst1.SetCoord(a, b);
++      surf2->D1(pt2drst2.X(), pt2drst2.Y(), bid, d1urst2, d1vrst2);
++      t3dto2d(a, b, tgrst2, d1urst2, d1vrst2);
++      tg2drst2.SetCoord(a, b);
++    }
++    gp_Vec n1(center, ptrst1), n2(center, ptrst2);
++    if (n1.Magnitude() > Eps && n2.Magnitude() > Eps)
++    {
++      n1.Normalize();
++      n2.Normalize();
++      Angle = std::acos(std::max(-1., std::min(1., n1.Dot(n2))));
++      maxang = std::max(maxang, Angle);
++      minang = std::min(minang, Angle);
++    }
++    distmin = std::min(distmin, ptrst1.Distance(ptrst2));
++    return true;
++  }
++
+   Values(Sol, valsol, gradsol);
+ 
+   if (std::abs(valsol(1)) <= Tol && std::abs(valsol(2)) <= Tol)
+@@ -413,6 +645,74 @@ Blend_DecrochStatus BRepBlend_RstRstConstRad::Decroch(const math_Vector& Sol,
+   double norm, unsurnorm;
+   double u, v;
+ 
++  if (rolling)
++  {
++    // The ball leaves a restriction for its reference face where it reaches
++    // into that face (as BRepBlend_SurfRstConstRad's rolling ball): its
++    // centre beyond the restriction over the face, the disc it cuts from the
++    // face's tangent plane reaching into the face deeper than the confusion
++    // tolerance. Without the face's side, where the arc's tangent at the
++    // contact points into the face's side of its normal (OCCT's test).
++    gp_Pnt C;
++    if (!Centre(Sol, C))
++    {
++      return Blend_NoDecroch;
++    }
++    gp_Pnt P[2];
++    gp_Vec dd;
++    cons1.D1(Sol(1), P[0], dd);
++    cons2.D1(Sol(2), P[1], dd);
++    const gp_Vec np = choix % 2 == 1 ? -nplan : nplan;
++    const gp_Vec bp = BallPlane(C, P[0], P[1], np);
++    bool         off[2] = {false, false};
++    for (int k = 0; k < 2; k++)
++    {
++      const occ::handle<Adaptor2d_Curve2d>& rref = k == 0 ? rstref1 : rstref2;
++      const occ::handle<Adaptor3d_Surface>& sref = k == 0 ? surfref1 : surfref2;
++      gp_Vec&                               NR   = k == 0 ? NRst1 : NRst2;
++      gp_Vec&                               TR   = k == 0 ? TgRst1 : TgRst2;
++      gp_Pnt2d                              p2d;
++      gp_Vec2d                              t2d;
++      rref->D1(Sol(k + 1), p2d, t2d);
++      gp_Pnt pref;
++      sref->D1(p2d.X(), p2d.Y(), pref, d1u, d1v);
++      NR = d1u.Crossed(d1v);
++      centptrst.SetXYZ(P[k].XYZ() - C.XYZ());
++      TR = bp.Crossed(centptrst);
++      if (k == 1)
++      {
++        TR.Reverse();
++      }
++      gp_Vec       T  = t2d.X() * d1u + t2d.Y() * d1v;
++      gp_Vec       D  = refside[k] * (-t2d.Y() * d1u + t2d.X() * d1v);
++      const double nT = T.Magnitude(), nN = NR.Magnitude();
++      if (refside[k] != 0 && nT > Eps && nN > Eps)
++      {
++        T /= nT;
++        D.SetLinearForm(-D.Dot(T), T, D);
++        const gp_Vec nref = NR / nN;
++        D.SetLinearForm(-D.Dot(nref), nref, D);
++        if (D.Magnitude() > Eps)
++        {
++          const double delta = gp_Vec(P[k], C).Dot(D) / D.Magnitude();
++          off[k]             = delta > std::sqrt(2. * std::abs(ray) * Precision::Confusion());
++        }
++        continue;
++      }
++      if (centptrst.Dot(NR) < 0.)
++      {
++        NR.Reverse();
++      }
++      const double NT = NR.Magnitude() * TR.Magnitude();
++      off[k]          = NT > 1.e-7 && NR.Dot(TR) / NT > -1.e-10;
++    }
++    if (off[0])
++    {
++      return off[1] ? Blend_DecrochBoth : Blend_DecrochRst1;
++    }
++    return off[1] ? Blend_DecrochRst2 : Blend_NoDecroch;
++  }
++
+   rstref1->Value(Sol(1)).Coord(u, v);
+   surfref1->D1(u, v, PtTmp1, d1u, d1v);
+   // Normal to the reference surface 1
+@@ -558,6 +858,38 @@ void BRepBlend_RstRstConstRad::Section(const double Param,
+   ptrst1 = cons1.Value(U);
+   ptrst2 = cons2.Value(V);
+ 
++  if (rolling)
++  {
++    // The ball's arc, in its plane through both contacts.
++    math_Vector X(1, 2);
++    X(1)                   = U;
++    X(2)                   = V;
++    const gp_Vec savedplan = nplan;
++    nplan                  = np;
++    const bool ok          = Centre(X, Center);
++    nplan                  = savedplan;
++    if (ok)
++    {
++      C.SetRadius(std::abs(ray));
++      ns = gp_Vec(Center, ptrst1).Normalized();
++      gp_Vec bp = BallPlane(Center, ptrst1, ptrst2, choix % 2 != 0 ? -np : np);
++      C.SetPosition(gp_Ax2(Center, bp, ns));
++      Pdeb = 0;
++      Pfin = ElCLib::Parameter(C, ptrst2);
++      if (Pfin > 1.5 * M_PI)
++      {
++        bp.Reverse();
++        C.SetPosition(gp_Ax2(Center, bp, ns));
++        Pfin = ElCLib::Parameter(C, ptrst2);
++      }
++      if (Pfin < Precision::PConfusion())
++      {
++        Pfin += Precision::PConfusion();
++      }
++      return;
++    }
++  }
++
+   CenterCircleRst1Rst2(ptrst1, ptrst2, np, Center, NotUsed);
+ 
+   C.SetRadius(std::abs(ray));
+@@ -705,6 +1037,22 @@ void BRepBlend_RstRstConstRad::Section(const Blend_Point&            P,
+   }
+ 
+   // Calculate the center of the circle
++  if (rolling)
++  {
++    // The ball's arc, in its plane through both contacts.
++    math_Vector X(1, 2);
++    X(1) = u;
++    X(2) = v;
++    if (Centre(X, Center))
++    {
++      ns                = gp_Vec(Center, ptrst1).Normalized();
++      ns2               = gp_Vec(Center, ptrst2).Normalized();
++      const gp_Vec np   = choix % 2 != 0 ? -nplan : nplan;
++      const gp_Vec bp   = BallPlane(Center, ptrst1, ptrst2, np);
++      GeomFill::GetCircle(myTConv, ns, ns2, bp, ptrst1, ptrst2, std::abs(ray), Center, Poles, Weights);
++      return;
++    }
++  }
+   CenterCircleRst1Rst2(ptrst1, ptrst2, nplan, Center, NotUsed);
+ 
+   // normals to the section with points
+@@ -755,6 +1103,17 @@ bool BRepBlend_RstRstConstRad::Section(const Blend_Point&            P,
+   int    upp = Poles.Upper();
+   bool   istgt;
+ 
++  if (rolling)
++  {
++    // (The rolling ball's sections without their derivatives: the
++    // approximation goes by the sections alone.)
++    (void)DPoles;
++    (void)DPoles2d;
++    (void)DWeights;
++    Section(P, Poles, Poles2d, Weights);
++    return false;
++  }
++
+   tguide->D2(prm, ptgui, d1gui, d2gui);
+   normtg = d1gui.Magnitude();
+   nplan  = d1gui.Normalized();
+diff --git a/src/ModelingAlgorithms/TKFillet/BRepBlend/BRepBlend_RstRstConstRad.hxx b/src/ModelingAlgorithms/TKFillet/BRepBlend/BRepBlend_RstRstConstRad.hxx
+index 4b5b53e..7d5585b 100644
+--- a/src/ModelingAlgorithms/TKFillet/BRepBlend/BRepBlend_RstRstConstRad.hxx
++++ b/src/ModelingAlgorithms/TKFillet/BRepBlend/BRepBlend_RstRstConstRad.hxx
+@@ -133,6 +133,35 @@ public:
+ 
+   Standard_EXPORT void Set(const double Radius, const int Choix);
+ 
++  //! With True (the default) the blend is the rolling ball that rests on both
++  //! restrictions, each tangent to it; with False both contact points lie in
++  //! the guide's normal plane (OCCT's sections).
++  Standard_EXPORT void SetRollingBall(const bool OnOff);
++
++  Standard_EXPORT bool IsRollingBall() const;
++
++  //! The sides of the reference faces of the restrictions (their faces the
++  //! ball leaves the restrictions for), as BRepBlend_SurfRstConstRad::SetRefSide.
++  Standard_EXPORT void SetRefSides(const int Side1, const int Side2);
++
++  //! The ball's centre of the solution Sol (the rolling ball only).
++  Standard_EXPORT bool Centre(const math_Vector& Sol, gp_Pnt& C) const;
++
++  //! The ball of radius R through P1 and P2, tangent there to curves of
++  //! tangents T1 and T2: its centre C, at the radius from both, in both
++  //! curves' normal planes, on the side of Side from the chord P1P2; F the
++  //! residual of the two tangencies (zero for the ball; where the points are
++  //! too far apart for one ball, positive). Returns false where there is no
++  //! such centre (P1 and P2 coincide, or a tangent along the chord).
++  Standard_EXPORT static bool BallOnTwoCurves(const gp_Pnt& P1,
++                                              const gp_Vec& T1,
++                                              const gp_Pnt& P2,
++                                              const gp_Vec& T2,
++                                              const double  R,
++                                              const gp_Vec& Side,
++                                              gp_Pnt&       C,
++                                              double&       F);
++
+   //! Sets the type of section generation for the
+   //! approximations.
+   Standard_EXPORT void Set(const BlendFunc_SectionShape TypeSection);
+@@ -224,10 +253,24 @@ public:
+                                   double&      TolV) const override;
+ 
+ private:
++  //! The rolling ball's values: F(1) the contacts' mid-point in the guide's
++  //! normal plane, F(2) the residual of BallOnTwoCurves; its centre in C.
++  bool RollingValue(const math_Vector& X, math_Vector& F, gp_Pnt& C);
++
++  //! The rolling ball's derivatives (central differences).
++  bool RollingDerivatives(const math_Vector& X, math_Matrix& D);
++
++  //! The ball's plane (through the centre and both contacts), oriented as the
++  //! guide's plane is for the arc.
++  gp_Vec BallPlane(const gp_Pnt& C, const gp_Pnt& P1, const gp_Pnt& P2, const gp_Vec& np) const;
++
+   occ::handle<Adaptor3d_Surface> surf1;
+   occ::handle<Adaptor3d_Surface> surf2;
+   occ::handle<Adaptor2d_Curve2d> rst1;
+   occ::handle<Adaptor2d_Curve2d> rst2;
++  bool                           rolling;
++  int                            refside[2];
++  gp_Pnt                         center;
+   Adaptor3d_CurveOnSurface       cons1;
+   Adaptor3d_CurveOnSurface       cons2;
+   occ::handle<Adaptor3d_Curve>   guide;
+diff --git a/src/ModelingAlgorithms/TKFillet/BRepBlend/BRepBlend_RstRstLineBuilder.cxx b/src/ModelingAlgorithms/TKFillet/BRepBlend/BRepBlend_RstRstLineBuilder.cxx
+index 3f082c8..dc88ae4 100644
+--- a/src/ModelingAlgorithms/TKFillet/BRepBlend/BRepBlend_RstRstLineBuilder.cxx
++++ b/src/ModelingAlgorithms/TKFillet/BRepBlend/BRepBlend_RstRstLineBuilder.cxx
+@@ -1319,10 +1319,15 @@ bool BRepBlend_RstRstLineBuilder::Recadre1(Blend_CurvPointFuncInv&         FinvP
+   {
+     upoint = lastrst1;
+   }
+-  p2drst1         = rst1->Value(upoint);
+-  gp_Pnt thepoint = surf1->Value(p2drst1.X(), p2drst1.Y());
++  gp_Vec2d t2drst1;
++  rst1->D1(upoint, p2drst1, t2drst1);
++  gp_Pnt thepoint;
++  gp_Vec d1u1, d1v1;
++  surf1->D1(p2drst1.X(), p2drst1.Y(), thepoint, d1u1, d1v1);
+ 
+   FinvP.Set(thepoint);
++  // (The restriction's tangent there, for a ball rolling on it.)
++  FinvP.SetTangent(t2drst1.X() * d1u1 + t2drst1.Y() * d1v1);
+   math_Vector toler(1, 2), infb(1, 2), supb(1, 2);
+   FinvP.GetTolerance(toler, tolpoint3d);
+   FinvP.GetBounds(infb, supb);
+@@ -1392,10 +1397,15 @@ bool BRepBlend_RstRstLineBuilder::Recadre2(Blend_CurvPointFuncInv&         FinvP
+   {
+     vpoint = lastrst2;
+   }
+-  p2drst2         = rst2->Value(vpoint);
+-  gp_Pnt thepoint = surf2->Value(p2drst2.X(), p2drst2.Y());
++  gp_Vec2d t2drst2;
++  rst2->D1(vpoint, p2drst2, t2drst2);
++  gp_Pnt thepoint;
++  gp_Vec d1u2, d1v2;
++  surf2->D1(p2drst2.X(), p2drst2.Y(), thepoint, d1u2, d1v2);
+ 
+   FinvP.Set(thepoint);
++  // (The restriction's tangent there, for a ball rolling on it.)
++  FinvP.SetTangent(t2drst2.X() * d1u2 + t2drst2.Y() * d1v2);
+   math_Vector toler(1, 2), infb(1, 2), supb(1, 2);
+   FinvP.GetTolerance(toler, tolpoint3d);
+   FinvP.GetBounds(infb, supb);
+diff --git a/src/ModelingAlgorithms/TKFillet/Blend/Blend_CurvPointFuncInv.hxx b/src/ModelingAlgorithms/TKFillet/Blend/Blend_CurvPointFuncInv.hxx
+index b316f6f..ff6c93a 100644
+--- a/src/ModelingAlgorithms/TKFillet/Blend/Blend_CurvPointFuncInv.hxx
++++ b/src/ModelingAlgorithms/TKFillet/Blend/Blend_CurvPointFuncInv.hxx
+@@ -24,6 +24,7 @@
+ #include <math_FunctionSetWithDerivatives.hxx>
+ #include <Standard_Boolean.hxx>
+ #include <math_Vector.hxx>
++#include <gp_Vec.hxx>
+ class math_Matrix;
+ class gp_Pnt;
+ 
+@@ -82,6 +83,10 @@ public:
+   //! Returns true if Sol is a zero of the function.
+   //! Tol is the tolerance used in 3d space.
+   Standard_EXPORT virtual bool IsSolution(const math_Vector& Sol, const double Tol) = 0;
++
++  //! The tangent there of the restriction the point ends, for a ball that
++  //! rolls on it (tangent to it at the point). The default ignores it.
++  virtual void SetTangent(const gp_Vec& T) { (void)T; }
+ };
+ 
+ #endif // _Blend_CurvPointFuncInv_HeaderFile
+diff --git a/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_2.cxx b/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_2.cxx
+index ead6ce5..977ced2 100644
+--- a/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_2.cxx
++++ b/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_2.cxx
+@@ -1821,6 +1821,17 @@ int ChFi3d_Builder::StartSolOverflow(const occ::handle<ChFiDS_Stripe>&      Stri
+             roll(tangent0 ? 1 : 0);
+             break;
+           }
++          // Both crossed sharp convex edges (the faces of the spine's edge
++          // narrower than the ball's contacts on both sides): no ball touches
++          // both faces beyond; it rests on both edges.
++          if (!tangent0 && !tangent1 && before[0].IsSame(f1) && before[1].IsSame(f2)
++              && convexAt(entry[0], before[0], face[0], went[0])
++              && convexAt(entry[1], before[1], face[1], went[1]))
++          {
++            roll(0);
++            roll(1);
++            break;
++          }
+         }
+         const int    k  = lastMoved;
+         const gp_Pnt Pa = BRepAdaptor_Curve(entry[k]).Value(went[k]);
+@@ -1962,6 +1973,24 @@ int ChFi3d_Builder::StartSolOverflow(const occ::handle<ChFiDS_Stripe>&      Stri
+             roll(k);
+           }
+         }
++        // The other side's contact beyond an edge of its face across which
++        // the solid turns away (a sharp convex edge): the ball rests on that
++        // edge too, both faces narrower than its contacts. (Before, only the
++        // first side rolled, and the walk found no start with the other
++        // side's contact outside its face.)
++        for (int k = 0; k < 2 && !failed; k++)
++        {
++          if (rolls[k] || toRoll[k] || pos[k] != TopAbs_OUT || en[k].IsNull())
++          {
++            continue;
++          }
++          const TopoDS_Face aFk  = face[k];
++          const TopoDS_Face aFb  = otherFace(myEFMap, en[k], aFk);
++          if (!aFb.IsNull() && convexAt(en[k], aFk, aFb, wn[k]) && moveOn(k, en[k], wn[k]))
++          {
++            roll(k);
++          }
++        }
+         break;
+       }
+       bool moved = false;
+@@ -2002,9 +2031,16 @@ int ChFi3d_Builder::StartSolOverflow(const occ::handle<ChFiDS_Stripe>&      Stri
+       failed = false;
+       roll(blind);
+     }
+-    // (A ball rolling on edges on both sides touches no face: no rounding
+-    // of the edge, the faces are too narrow for the ball on both sides.)
+-    if (failed || (!rolls[0] && !rolls[1]) || (rolls[0] && rolls[1]))
++    // (Where both sides roll, the ball rests on the edges on both sides: the
++    // faces are too narrow for it on both sides.)
++    if (failed || (!rolls[0] && !rolls[1]))
++    {
++      continue;
++    }
++    // (The ends of a blend resting on both edges, the corners where it meets
++    // the faces at a contour's ends, are not made: only a closed contour
++    // rolls on both.)
++    if (rolls[0] && rolls[1] && !Spine->IsPeriodic())
+     {
+       continue;
+     }
+diff --git a/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_6.cxx b/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_6.cxx
+index b38abbb..9d8363c 100644
+--- a/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_6.cxx
++++ b/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_6.cxx
+@@ -1378,6 +1378,17 @@ bool ChFi3d_Builder::ComputeData(occ::handle<ChFiDS_SurfData>&           Data,
+       return false;
+     }
+ 
++    if (HGuide->IsPeriodic() && Inside)
++    {
++      // As for a blend between two faces or rolling on one edge: the period
++      // starts where the path to the left ended.
++      SpFirst = TheWalk.Line()->Point(1).Parameter();
++      SpLast  = SpFirst + HGuide->Period();
++      HGuide->FirstParameter(SpFirst);
++      HGuide->LastParameter(SpLast);
++      HGuide->SetOrigin(SpFirst);
++    }
++
+     if (reverse)
+     {
+       if (!TheWalk.Complete(Func, FInv1, FInvP1, FInv2, FInvP2, SpLast))
+diff --git a/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_FilBuilder.cxx b/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_FilBuilder.cxx
+index 8c13647..e475032 100644
+--- a/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_FilBuilder.cxx
++++ b/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_FilBuilder.cxx
+@@ -1841,6 +1841,12 @@ void ChFi3d_FilBuilder::SimulSurf(occ::handle<ChFiDS_SurfData>&           Data,
+     finvp2.Set(Choix);
+     func.Set(rad, Choix);
+     func.Set(myShape);
++    // The ball rolling on both edges.
++    func.SetRefSides(ChFi3d_RefSide(HSref1, PCref1), ChFi3d_RefSide(HSref2, PCref2));
++    finv1.SetRollingBall(true);
++    finv2.SetRollingBall(true);
++    finvp1.SetRollingBall(rad, false);
++    finvp2.SetRollingBall(rad, true);
+ 
+     done = SimulData(Data,
+                      HGuide,
+@@ -2743,6 +2749,12 @@ void ChFi3d_FilBuilder::PerformSurf(NCollection_Sequence<occ::handle<ChFiDS_Surf
+     finvp2.Set(Choix);
+     func.Set(rad, Choix);
+     func.Set(myShape);
++    // The ball rolling on both edges.
++    func.SetRefSides(ChFi3d_RefSide(HSref1, PCref1), ChFi3d_RefSide(HSref2, PCref2));
++    finv1.SetRollingBall(true);
++    finv2.SetRollingBall(true);
++    finvp1.SetRollingBall(rad, false);
++    finvp2.SetRollingBall(rad, true);
+ 
+     done = ComputeData(Data,
+                        HGuide,

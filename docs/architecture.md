@@ -373,7 +373,12 @@ the `Shape` type.
   face (its error estimate there starts at zero and is never set) and
   drops one span of a boundary curve of more than 1953 spans (a stored
   thread's crest bounded by helices of 2574 spans lost 1.4 % of its area).
-  Only FreeCAD's reference check measures with OCCT's fixed rule
+  Where a boundary curve ends short of the vertex it shares with the next
+  one, a gap the vertex's tolerance bridges in a valid shape, the loop in
+  the parameter space is closed by a straight segment (mitcad#325: a
+  fillet's blend face whose curve stopped 0.36 mm short of a vertex of
+  0.74 mm tolerance measured 4.38 mm² instead of 6.64, and the body 3.5 mm³
+  off the file's). Only FreeCAD's reference check measures with OCCT's fixed rule
   (`fixed_point_properties`), as FreeCAD does. `Shape` caches its measured properties and bounding box
   behind a lock. Operations may read the same input shapes on several
   threads at once (the `.f3d` import's workers, mitcad#95): they never
@@ -1717,19 +1722,24 @@ thousands of commands, not tens of thousands), types' shapes as
 components with occurrences, openings cut from their elements. The
 report accounts for every product of the file.
 
-`.rvt` projects and `.rfa` families (mitcad#274, mitcad#275): `core/rvt`
+`.rvt` projects and `.rfa` families (mitcad#274, mitcad#275, mitcad#333): `core/rvt`
 reads the container (the compound file module shared with `core/ipt` as
 the `mitcad-cfb` crate), the paged gzip streams, the metadata and the
 file's own serialisation schema, and walks the element records by that
 schema; its `building` module reads the building elements' parameters
 (location curves, joins, layers, boundary loops, sections, cut loops,
-grids, links). `mitcad_import::rvt` brings a project in through the
-model's kernel, one component per level with its construction plane:
-walls, floors, roofs, columns, beams and stair runs rebuilt as features
+grids, links), and its `brep` module the geometry the file keeps of its
+elements (winged-edge B-reps in their faces' parameters, types placed by
+transforms) from the partitions' geometry chains. `mitcad_import::rvt`
+brings a project in through the model's kernel, one component per level
+with its construction plane: walls, floors, roofs, ceilings, columns,
+beams and stair runs rebuilt as features
 (the IFC import's feature builder, one command per element), each checked
 against the IFC export of the same project when one is given (by
 GlobalId) or else its stored box and undone when it disagrees; every other
-element a body of its saved mesh or its box at its transform; linked
-models in components of their own (`core/ffi/src/rvt_import.rs`; the
+element a body: a mesh of the geometry the file keeps (triangulated in
+`mitcad_import::rvt::geometry`), else the reference's body, its saved
+mesh or its box (hidden unless structural); linked models (projects, IFC
+files) in components of their own (`core/ffi/src/rvt_import.rs`; the
 `import_rvt` command), in the import process like the others, under the
 memory guard.

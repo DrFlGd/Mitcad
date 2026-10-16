@@ -42,6 +42,8 @@ mod patterns;
 mod primitives;
 // Sheet-metal flanges and the sheet-metal rule (mitcad#211).
 mod sheet;
+// Derived designs (mitcad#324).
+mod derive;
 
 /// Helpers for the decoder's tests.
 #[cfg(test)]
@@ -2229,6 +2231,12 @@ impl Builder<'_> {
                 if let Some(loops) = self.profile_loops(fid) {
                     x.other.insert("_f3d_profile_loops".to_owned(), loops);
                 }
+                // Text profiles whose text is gone (mitcad#332).
+                let missing = self.missing_text_profiles(fid);
+                if !missing.is_empty() {
+                    x.other
+                        .insert("_f3d_missing_texts".to_owned(), serde_json::json!(missing));
+                }
                 // The bodies a join or cut works on: its body inputs
                 // (mitcad#96).
                 if matches!(
@@ -3048,6 +3056,8 @@ impl Builder<'_> {
             // The constraints of assembly relationships (mitcad#155).
             Some("GeometricRelationshipFeature") => self.geometric_relationship(it),
             _ if it.class == TANGENT_RELATIONSHIP => self.tangent_relationship(it),
+            // What a derive brings from other documents (mitcad#324).
+            _ if it.class == DERIVED_CONTEXT => self.derived_context(it),
             _ => Detail::empty(),
         }
     }

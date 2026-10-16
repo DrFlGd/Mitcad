@@ -191,4 +191,13 @@ struct ChecksWhereChanged {
 };
 ChecksWhereChanged checks_where_changed();
 
+// The vertices of a shape whose tolerance is inflated: above 1 mm and ten
+// times what the vertex's edges need (how far the vertex lies from their
+// curves' and p-curves' ends, or the edges' own tolerances) (mitcad#235: a
+// rounding left a corner's vertex a tolerance of 481 mm where its edge ends
+// 0.12 mm from it, and OCCT's booleans then took the vertex for touching
+// most of the body). With `tighten`, each such tolerance is set to what its
+// edges need, in place: only on a shape of one's own (a working copy).
+int inflated_vertices(const TopoDS_Shape& shape, bool tighten);
+
 } // namespace mitcad::geometry::detail

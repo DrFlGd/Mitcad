@@ -949,6 +949,48 @@ Decisions made while closing the import gaps of mitcad#211:
   front or back surface: across the thickness it is the same line. CLI
   `sheet_fold_back`: `800 + pi` either way.
 
+### Implementation notes (mitcad#288)
+
+- **Folds across holes and cut windows.** A fold line that crosses holes or
+  cut windows leaves the bend's lines (the stationary panel's new boundary,
+  the strip's two sides and the moving panel's new boundary) in stretches.
+  Each stretch gets its own piece number of its generated curve, in the
+  order of the axial coordinate (as a developed cut numbers its fragments),
+  and each pair of stretches facing each other is a seam of its own over
+  its part of the axial interval; the strip keeps the openings, so the
+  window stays a window through the bend. The pairs must cover the same
+  axial intervals (they come from one line through the same material).
+  Unfold, Refold and the Flat Pattern develop such a bend as any other (the
+  several seams between one panel and its bend close by construction). CLI
+  `sheet_fold_window`: a 60 x 20 panel (`t = 2`, `r = 3`, `K = 0.3`) with
+  a 10 x 4 window across the fold, `2320 + 6.4 pi` folded, `2320` and the
+  window again developed; a window across one line only, `2360 + 7.2 pi +
+  8/9` on either side; a thickness edit.
+- **Patterns of straight cuts with many copies.** A pattern whose copies
+  are all of one straight sheet cut cuts the copies that keep clear of the
+  bends' seams (the box of each copy's tool does not reach a seam's line on
+  the front or the back surface) at once: one boolean of all their tools
+  and one re-derivation of the domains, the result the same as cutting
+  them one after another; the copies that reach a seam are cut one by one
+  after them as before (an overlay where one crosses a bend). A vent
+  pattern of 228 copies on a folded sheet took over a minute copy by copy
+  and takes about ten seconds so. CLI `sheet_pattern_holes`: 60 copies of
+  a 2 x 2 cut in a 60 x 40 panel, `4320`, a flange after them and a
+  thickness edit.
+- **The intersection check of many holes.** The check that a folded
+  sheet's charts do not intersect compares every pair of faces whose boxes
+  meet; the walls of hundreds of holes each meet their panel's caps, and
+  the check took most of a minute. The charts with their holes filled (the
+  interior loops that carry no port) hold all of the sheet's material, so
+  where they do not intersect the sheet does not either: they are checked
+  instead, and only where they intersect (material through a window) is
+  the sheet itself checked (`geometry/src/sheet_chart.cpp`).
+- **Double bends in the Bend panel.** The panel's Bend Type (Bend, Double
+  Bend) writes `port_mode: "double"` and Whole Face the `fixed` boundary;
+  editing a double bend (the `.ipt` import's) loads both, so an edit keeps
+  it a double bend. The angle of a double bend has no Flip (the jog turns
+  towards the other face). UI test `tools/ui-sheet-double-bend-test.sh`.
+
 ## Kernel seam
 
 Add one sheet-metal family to `core/model/src/kernel.rs`, using default

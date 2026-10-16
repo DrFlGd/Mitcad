@@ -1,0 +1,937 @@
+Mitcad's patch to OCCT 8.0.1, under OCCT's licence:
+SPDX-License-Identifier: LGPL-2.1-only WITH OCCT-exception-1.0
+
+Fillets: a blend rolling on an edge that comes to an edge turning towards
+the ball touches that edge before the vertex and rolls on it from there,
+with a piece of the ball between the two blends (mitcad#237, with 0170).
+
+Where a rounding overflows its face onto the edge beyond (0170), the edge
+E1 it rolls on can end at a vertex V where the next edge E2 of the
+reference face (the face the ball overflows) turns towards the ball (a
+rib's far side that thickens towards the near side's offset, a thin rim
+whose inner edge turns into a spoke). The ball then touches E2 before it
+comes to V: with both contacts on the restriction the walk went on rolling
+on E1 into the solid beyond E2, up to V, and the next blend started on E2
+at V, past the ball that touches both (on a rib, radius 3: 2.6e-3 off).
+
+- Blend_SurfRstFunction::NextCurveAtEnd (default none), given by
+  BRepBlend_SurfRstConstRad::SetNextCurves: the curves of the next edges at
+  the restriction's ends, as ChFi3d_NextEdges finds them.
+- BRepBlend_SurfRstLineBuilder: where a section's ball reaches into such a
+  next edge at a point inside it (NextEdgeGap: its distance from the
+  centre less the radius), the walk finds where it touches it, between the
+  last section clear of it and this one (FindConcaveTurn: regula falsi on
+  the guide's parameter), and ends there on the restriction, inside it.
+- ChFi3d_Builder::StartSol: a side rolling on an edge that ended inside it
+  where its ball touches the next edge of the reference face at a vertex of
+  the edge (ChFi3d_ConcaveTurnEdge) goes on rolling on that edge, from the
+  ball's contact on it; PerformSetOfSurfOnElSpine starts the next blend
+  with that same ball, at the guide's parameter of its contacts' mid-point.
+- Between the two blends the rounding is the ball itself
+  (ChFi3d_ConcaveTurnWedge): A's last section and B's first are arcs of
+  the ball from its contact on the other face (q, shared) to E1 and to E2.
+  The pieces of its sphere between them, its pole at q, are SurfDatas whose
+  side on the other face is the point q (a degenerated edge, as 0171) and
+  whose other side runs where the sphere cuts the faces beyond E1 and E2,
+  across their common edge (one piece per face). E1 and E2 end at the
+  blends' contacts on both sides (the transitions EXTERNAL): before them
+  the blends' contacts take their place, beyond them the ball's piece
+  removes them. Where those pieces cannot be made (the edges' contacts
+  more than a right angle round the ball from q, so that the sphere cuts
+  neither face between the sections) the stripe fails.
+
+Upstream: the change is local to the walk on a restriction and the
+stripe's chaining; without an edge turning towards the ball nothing
+changes.
+diff --git a/src/ModelingAlgorithms/TKFillet/BRepBlend/BRepBlend_SurfRstConstRad.cxx b/src/ModelingAlgorithms/TKFillet/BRepBlend/BRepBlend_SurfRstConstRad.cxx
+index 33bc9fe..983b131 100644
+--- a/src/ModelingAlgorithms/TKFillet/BRepBlend/BRepBlend_SurfRstConstRad.cxx
++++ b/src/ModelingAlgorithms/TKFillet/BRepBlend/BRepBlend_SurfRstConstRad.cxx
+@@ -1258,6 +1258,24 @@ bool BRepBlend_SurfRstConstRad::NextEdgeAtEnd(const bool AtLast, gp_Vec& Into) c
+ 
+ //=================================================================================================
+ 
++void BRepBlend_SurfRstConstRad::SetNextCurves(const occ::handle<Adaptor3d_Curve>& First,
++                                              const occ::handle<Adaptor3d_Curve>& Last)
++{
++  nextcurve[0] = First;
++  nextcurve[1] = Last;
++}
++
++//=================================================================================================
++
++bool BRepBlend_SurfRstConstRad::NextCurveAtEnd(const bool                    AtLast,
++                                               occ::handle<Adaptor3d_Curve>& Curve) const
++{
++  Curve = nextcurve[AtLast ? 1 : 0];
++  return !Curve.IsNull();
++}
++
++//=================================================================================================
++
+ bool BRepBlend_SurfRstConstRad::RollingValues(const math_Vector& X, math_Vector& F, math_Matrix* D)
+ {
+   // F(1): the mid-point of the contact points in the guide's normal plane;
+diff --git a/src/ModelingAlgorithms/TKFillet/BRepBlend/BRepBlend_SurfRstConstRad.hxx b/src/ModelingAlgorithms/TKFillet/BRepBlend/BRepBlend_SurfRstConstRad.hxx
+index 7bc9a55..0570b39 100644
+--- a/src/ModelingAlgorithms/TKFillet/BRepBlend/BRepBlend_SurfRstConstRad.hxx
++++ b/src/ModelingAlgorithms/TKFillet/BRepBlend/BRepBlend_SurfRstConstRad.hxx
+@@ -102,6 +102,13 @@ public:
+ 
+   Standard_EXPORT bool NextEdgeAtEnd(const bool AtLast, gp_Vec& Into) const override;
+ 
++  //! The curves of those next edges (null where there is none).
++  Standard_EXPORT void SetNextCurves(const occ::handle<Adaptor3d_Curve>& First,
++                                     const occ::handle<Adaptor3d_Curve>& Last);
++
++  Standard_EXPORT bool NextCurveAtEnd(const bool                    AtLast,
++                                      occ::handle<Adaptor3d_Curve>& Curve) const override;
++
+   //! With True (the default) the blend is the rolling ball; with False both
+   //! contact points lie in the guide's normal plane (OCCT's sections).
+   Standard_EXPORT void SetRollingBall(const bool OnOff);
+@@ -313,6 +320,7 @@ private:
+   double                         pinW;
+   bool                           hasnext[2];
+   gp_Vec                         intonext[2];
++  occ::handle<Adaptor3d_Curve>   nextcurve[2];
+   double                         maxang;
+   double                         minang;
+   double                         distmin;
+diff --git a/src/ModelingAlgorithms/TKFillet/BRepBlend/BRepBlend_SurfRstLineBuilder.cxx b/src/ModelingAlgorithms/TKFillet/BRepBlend/BRepBlend_SurfRstLineBuilder.cxx
+index 34c7077..47f5cdb 100644
+--- a/src/ModelingAlgorithms/TKFillet/BRepBlend/BRepBlend_SurfRstLineBuilder.cxx
++++ b/src/ModelingAlgorithms/TKFillet/BRepBlend/BRepBlend_SurfRstLineBuilder.cxx
+@@ -31,6 +31,7 @@
+ #include <IntSurf.hxx>
+ #include <IntSurf_Transition.hxx>
+ #include <math_FunctionSetRoot.hxx>
++#include <Extrema_ExtPC.hxx>
+ #include <Precision.hxx>
+ #include <TopAbs.hxx>
+ 
+@@ -242,6 +243,113 @@ double BRepBlend_SurfRstLineBuilder::PivotSide(Blend_SurfRstFunction& Func, cons
+ 
+ //=================================================================================================
+ 
++bool BRepBlend_SurfRstLineBuilder::NextEdgeGap(Blend_SurfRstFunction& Func,
++                                               const math_Vector&     Sol,
++                                               double&                Gap) const
++{
++  gp_Pnt centre;
++  if (!Func.Centre(Sol, centre))
++  {
++    return false;
++  }
++  const double radius = centre.Distance(surf1->Value(Sol(1), Sol(2)));
++  bool         found  = false;
++  Gap                 = RealLast();
++  for (int k = 0; k < 2; k++)
++  {
++    occ::handle<Adaptor3d_Curve> next;
++    if (!Func.NextCurveAtEnd(k == 1, next) || next.IsNull())
++    {
++      continue;
++    }
++    const double  w1 = next->FirstParameter(), w2 = next->LastParameter();
++    const double  tolw = next->Resolution(tolpoint3d);
++    Extrema_ExtPC anExt(centre, *next, w1, w2, Precision::PConfusion());
++    if (!anExt.IsDone())
++    {
++      continue;
++    }
++    for (int i = 1; i <= anExt.NbExt(); i++)
++    {
++      // (The edge's ends: the vertex the ball turns about where the edge runs
++      // away from it, and its far end.)
++      const double w = anExt.Point(i).Parameter();
++      if (!anExt.IsMin(i) || w <= w1 + tolw || w >= w2 - tolw)
++      {
++        continue;
++      }
++      Gap   = std::min(Gap, std::sqrt(anExt.SquareDistance(i)) - radius);
++      found = true;
++    }
++  }
++  return found;
++}
++
++//=================================================================================================
++
++bool BRepBlend_SurfRstLineBuilder::FindConcaveTurn(Blend_SurfRstFunction& Func,
++                                                   const double           P0,
++                                                   const math_Vector&     S0)
++{
++  math_Vector tolerance(1, 3), infb(1, 3), supb(1, 3);
++  Func.GetTolerance(tolerance, tolpoint3d);
++  Func.GetBounds(infb, supb);
++  math_FunctionSetRoot rsnld(Func, tolerance, 30);
++  double      pa = P0, pb = param, ga = 0., gb = 0.;
++  math_Vector sa(S0), sb(sol), sm(1, 3);
++  if (!NextEdgeGap(Func, sa, ga) || !NextEdgeGap(Func, sb, gb) || ga < -tolpoint3d
++      || gb >= -tolpoint3d)
++  {
++    return false;
++  }
++  for (int it = 0; it < 100; it++)
++  {
++    // Regula falsi, bisecting every other step.
++    double pm = it % 2 == 0 ? pa + (pb - pa) * ga / (ga - gb) : 0.5 * (pa + pb);
++    Func.Set(pm);
++    rsnld.Perform(Func, sa, infb, supb);
++    double gm = 0.;
++    if (!rsnld.IsDone())
++    {
++      break;
++    }
++    rsnld.Root(sm);
++    if (!Func.IsSolution(sm, tolpoint3d) || !NextEdgeGap(Func, sm, gm))
++    {
++      break;
++    }
++    if (std::abs(gm) <= 0.1 * tolpoint3d || std::abs(pb - pa) <= 1.e-3 * tolgui)
++    {
++      param = pm;
++      sol   = sm;
++      return true;
++    }
++    if (gm > 0.)
++    {
++      pa = pm;
++      sa = sm;
++      ga = gm;
++    }
++    else
++    {
++      pb = pm;
++      sb = sm;
++      gb = gm;
++    }
++  }
++  // The last section clear of the edge.
++  if (std::abs(ga) > 10. * tolpoint3d)
++  {
++    return false;
++  }
++  param = pa;
++  sol   = sa;
++  Func.Set(param);
++  return Func.IsSolution(sol, tolpoint3d);
++}
++
++//=================================================================================================
++
+ bool BRepBlend_SurfRstLineBuilder::StartPivot(Blend_SurfRstFunction& Func)
+ {
+   math_Vector tolerance(1, 3), infbound(1, 3), supbound(1, 3);
+@@ -865,6 +973,25 @@ void BRepBlend_SurfRstLineBuilder::InternalPerform(Blend_SurfRstFunction&  Func,
+       State    = Blend_StepTooLarge;
+       bonpoint = false;
+     }
++    double nextGap = 0.;
++    if (bonpoint && rolling && !pivot && NextEdgeGap(Func, sol, nextGap) && nextGap < -tolpoint3d)
++    {
++      // The ball reaches into an edge that follows the restriction at a vertex
++      // (that edge turns towards the ball): it touched that edge before it
++      // came to the vertex. The blend ends where it touches it; the next one
++      // rolls on that edge from there.
++      bonpoint = false;
++      if (FindConcaveTurn(Func, parprec, parinit) && TestArret(Func, false, Blend_OK) == Blend_OK)
++      {
++        IsVtxrst = false;
++        decroch  = false;
++        State    = Blend_OnRst2;
++      }
++      else
++      {
++        State = Blend_StepTooLarge;
++      }
++    }
+     if (bonpoint)
+     {
+       wp = wrst = ws = Bound;
+diff --git a/src/ModelingAlgorithms/TKFillet/BRepBlend/BRepBlend_SurfRstLineBuilder.hxx b/src/ModelingAlgorithms/TKFillet/BRepBlend/BRepBlend_SurfRstLineBuilder.hxx
+index 2d0102b..856a311 100644
+--- a/src/ModelingAlgorithms/TKFillet/BRepBlend/BRepBlend_SurfRstLineBuilder.hxx
++++ b/src/ModelingAlgorithms/TKFillet/BRepBlend/BRepBlend_SurfRstLineBuilder.hxx
+@@ -187,6 +187,24 @@ private:
+   //! the side the restriction runs to, so that the ball rolls on it.
+   Standard_EXPORT double PivotSide(Blend_SurfRstFunction& Func, const math_Vector& Sol) const;
+ 
++  //! How far the ball of the solution Sol stays clear of the edges that
++  //! follow the restriction at its ends (Func.NextCurveAtEnd): the least of
++  //! their distances from its centre less its radius, over the points inside
++  //! those edges (negative where the ball reaches into one). Returns false
++  //! where the function gives no ball or no such edge.
++  Standard_EXPORT bool NextEdgeGap(Blend_SurfRstFunction& Func,
++                                   const math_Vector&     Sol,
++                                   double&                Gap) const;
++
++  //! Where the ball rolling on the restriction reaches into an edge that
++  //! follows it (a concave turn: that edge turns towards the ball, which
++  //! touches it before the vertex), between the guide's parameters P0 (clear,
++  //! solution S0) and param (sol, reaching into it): the section where it
++  //! touches that edge, in param and sol. Returns false where none is found.
++  Standard_EXPORT bool FindConcaveTurn(Blend_SurfRstFunction& Func,
++                                       const double           P0,
++                                       const math_Vector&     S0);
++
+   bool                             done;
+   occ::handle<BRepBlend_Line>      line;
+   math_Vector                      sol;
+diff --git a/src/ModelingAlgorithms/TKFillet/Blend/Blend_SurfRstFunction.hxx b/src/ModelingAlgorithms/TKFillet/Blend/Blend_SurfRstFunction.hxx
+index e68b93c..98389db 100644
+--- a/src/ModelingAlgorithms/TKFillet/Blend/Blend_SurfRstFunction.hxx
++++ b/src/ModelingAlgorithms/TKFillet/Blend/Blend_SurfRstFunction.hxx
+@@ -20,6 +20,7 @@
+ #include <Standard_DefineAlloc.hxx>
+ 
+ #include <Blend_AppFunction.hxx>
++#include <Adaptor3d_Curve.hxx>
+ #include <math_Vector.hxx>
+ #include <NCollection_Array1.hxx>
+ #include <GeomAbs_Shape.hxx>
+@@ -182,6 +183,16 @@ public:
+     return false;
+   }
+ 
++  //! The curve of that next edge at the restriction's last (AtLast) or first
++  //! end, where known (the default: none). Where that edge turns towards the
++  //! ball, the ball rolling on the restriction touches it before the end.
++  virtual bool NextCurveAtEnd(const bool AtLast, occ::handle<Adaptor3d_Curve>& Curve) const
++  {
++    (void)AtLast;
++    (void)Curve;
++    return false;
++  }
++
+   //! Returns if the section is rational
+   Standard_EXPORT bool IsRational() const override = 0;
+ 
+diff --git a/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_2.cxx b/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_2.cxx
+index 5408293..ead6ce5 100644
+--- a/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_2.cxx
++++ b/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_2.cxx
+@@ -110,6 +110,13 @@
+ #include <TopoDS_Vertex.hxx>
+ #include <TopOpeBRepBuild_HBuilder.hxx>
+ #include <TopOpeBRepDS_HDataStructure.hxx>
++#include <ElSLib.hxx>
++#include <GeomAPI_IntCS.hxx>
++#include <GeomAPI_IntSS.hxx>
++#include <GeomLProp_SLProps.hxx>
++#include <Geom_BSplineCurve.hxx>
++#include <Geom_SphericalSurface.hxx>
++#include <gp_Ax3.hxx>
+ 
+ namespace
+ {
+@@ -2184,6 +2191,81 @@ static bool ChFi3d_BallCentreAtEnd(const TopOpeBRepDS_DataStructure&   DStr,
+   return true;
+ }
+ 
++//=======================================================================
++// function : ChFi3d_ConcaveTurnEdge
++// purpose  : For a blend rolling on edge EHC (an edge of the reference face
++//            Fref) that ends inside it at its end isFirst: the edge of Fref
++//            next to EHC at one of its vertices that the ball there touches
++//            inside it (it turns towards the ball, which touched it before
++//            the vertex; BRepBlend_SurfRstLineBuilder stops there), not
++//            one across which Fref continues tangentially, and the
++//            parameter W of the ball's contact on it.
++//=======================================================================
++
++static bool ChFi3d_ConcaveTurnEdge(const TopOpeBRepDS_DataStructure&   DStr,
++                                   const occ::handle<ChFiDS_SurfData>& SD,
++                                   const bool                          isFirst,
++                                   const ChFiDS_CommonPoint&           CP,
++                                   const TopoDS_Edge&                  EHC,
++                                   const TopoDS_Face&                  Fref,
++                                   const ChFiDS_Map&                   EFMap,
++                                   const double                        Tol,
++                                   TopoDS_Edge&                        Next,
++                                   double&                             W)
++{
++  gp_Pnt C;
++  if (EHC.IsNull() || Fref.IsNull() || !ChFi3d_BallCentreAtEnd(DStr, SD, isFirst, C))
++  {
++    return false;
++  }
++  const double  R = C.Distance(CP.Point());
++  TopoDS_Vertex V1, V2;
++  TopExp::Vertices(EHC, V1, V2);
++  double best = Tol;
++  for (TopExp_Explorer ex(Fref, TopAbs_EDGE); ex.More(); ex.Next())
++  {
++    const TopoDS_Edge& En = TopoDS::Edge(ex.Current());
++    if (En.IsSame(EHC) || BRep_Tool::Degenerated(En))
++    {
++      continue;
++    }
++    bool atV = false;
++    for (TopExp_Explorer exv(En, TopAbs_VERTEX); exv.More() && !atV; exv.Next())
++    {
++      atV = exv.Current().IsSame(V1) || exv.Current().IsSame(V2);
++    }
++    if (!atV)
++    {
++      continue;
++    }
++    TopoDS_Face Fv;
++    if (IsG1(EFMap, En, Fref, Fv))
++    {
++      continue;
++    }
++    BRepAdaptor_Curve aCurve(En);
++    const double      w1 = aCurve.FirstParameter(), w2 = aCurve.LastParameter();
++    const double      tolw = aCurve.Resolution(Tol);
++    Extrema_ExtPC     anExt(C, aCurve, w1, w2, Precision::PConfusion());
++    if (!anExt.IsDone())
++    {
++      continue;
++    }
++    for (int i = 1; i <= anExt.NbExt(); i++)
++    {
++      const double w = anExt.Point(i).Parameter();
++      const double d = std::abs(std::sqrt(anExt.SquareDistance(i)) - R);
++      if (anExt.IsMin(i) && w > w1 + tolw && w < w2 - tolw && d < best)
++      {
++        best = d;
++        Next = En;
++        W    = w;
++      }
++    }
++  }
++  return !Next.IsNull();
++}
++
+ //=======================================================================
+ // function : ChFi3d_ConcaveCrease
+ // purpose  : Whether edge E of face F is a concave crease between F and a
+@@ -2534,6 +2616,37 @@ bool ChFi3d_Builder::StartSol(
+   } // End of Case Vertex && Obstacle
+   else if (aCommonPoint.IsOnArc() && !HC.IsNull() && !decroch)
+   {
++    // A blend rolling on the edge that ended inside it where the ball touches
++    // the next edge of the reference face (a concave turn): the next blend
++    // rolls on that edge from the ball's contact there.
++    TopoDS_Edge aNext;
++    double      aWNext = 0.;
++    if (!HSref.IsNull() && !HCref.IsNull()
++        && ChFi3d_ConcaveTurnEdge(DStr,
++                                  SD,
++                                  isfirst,
++                                  aCommonPoint,
++                                  HC->Edge(),
++                                  Fref,
++                                  myEFMap,
++                                  std::max(100. * tolapp3d, 1.e-4),
++                                  aNext,
++                                  aWNext))
++    {
++      TopoDS_Face aFv;
++      IsG1(myEFMap, aNext, Fref, aFv);
++      const TopoDS_Edge aNextOnFv = edgeInFace(aNext, aFv);
++      if (!aFv.IsNull() && !aNextOnFv.IsNull())
++      {
++        HS->Initialize(aFv);
++        HCref->Initialize(aNext, Fref);
++        HC->Initialize(aNextOnFv, aFv);
++        W          = aWNext;
++        pons       = HC->Value(W);
++        c1obstacle = true;
++        return true;
++      }
++    }
+     // Nothing is changed, the parameter is only updated.
+     W          = aCommonPoint.ParameterOnArc();
+     c1obstacle = true;
+@@ -3483,6 +3596,373 @@ static void InsertBefore(occ::handle<ChFiDS_Stripe>&   Stripe,
+   }
+ }
+ 
++//=======================================================================
++// function : ChFi3d_ConcaveTurnWedge
++// purpose  : The rounding between SurfData A and the next one B of a stripe
++//            whose side ons rolls on an edge E1 up to where the ball touches
++//            the next edge E2 of the reference face (a concave turn,
++//            ChFi3d_ConcaveTurnEdge): A's last section and B's first are
++//            arcs of that ball from its contact on the other side's face to
++//            its contacts on E1 and on E2. Between them the rounding is a
++//            piece of the ball's sphere: its side on the other face is the
++//            point both arcs start at, its side ons runs where the sphere
++//            cuts the faces beyond E1 and E2, across their common edge. The
++//            pieces, one per face, in the stripe's order; false where they
++//            cannot be made.
++//=======================================================================
++
++static bool ChFi3d_ConcaveTurnWedge(TopOpeBRepDS_DataStructure&                         DStr,
++                                    const occ::handle<ChFiDS_SurfData>&                 A,
++                                    const occ::handle<ChFiDS_SurfData>&                 B,
++                                    const int                                           ons,
++                                    const double                                        R,
++                                    const double                                        tol3d,
++                                    NCollection_Sequence<occ::handle<ChFiDS_SurfData>>& Pieces)
++{
++  const int opp = 3 - ons;
++  if (A.IsNull() || B.IsNull() || A->Index(ons) <= 0 || B->Index(ons) <= 0 || A->Index(opp) <= 0
++      || A->Surf() <= 0 || R <= Precision::Confusion())
++  {
++    return false;
++  }
++  const ChFiDS_CommonPoint&      Aq = A->Vertex(false, opp);
++  const ChFiDS_CommonPoint&      Ap = A->Vertex(false, ons);
++  const ChFiDS_CommonPoint&      Bp = B->Vertex(true, ons);
++  const gp_Pnt                   q = Aq.Point(), p1 = Ap.Point(), p2 = Bp.Point();
++  const double                   tolBall = std::max(1.e3 * tol3d, 1.e-4 * R);
++  const ChFiDS_FaceInterference& FAo     = A->Interference(opp);
++  const ChFiDS_FaceInterference& FAn     = A->Interference(ons);
++  if (q.Distance(B->Vertex(true, opp).Point()) > tolBall || FAo.PCurveOnFace().IsNull()
++      || FAo.PCurveOnSurf().IsNull() || FAn.PCurveOnSurf().IsNull())
++  {
++    return false;
++  }
++  // The ball's centre: at R from q along the other face's normal, at R from
++  // its contacts on E1 and E2.
++  const TopoDS_Face   Fo = TopoDS::Face(DStr.Shape(A->Index(opp)));
++  BRepAdaptor_Surface aSo(Fo, false);
++  const gp_Pnt2d      uvq = FAo.PCurveOnFace()->Value(FAo.LastParameter());
++  gp_Pnt              aPq;
++  gp_Vec              aDu, aDv;
++  aSo.D1(uvq.X(), uvq.Y(), aPq, aDu, aDv);
++  gp_Vec aN = aDu.Crossed(aDv);
++  if (aN.Magnitude() <= gp::Resolution())
++  {
++    return false;
++  }
++  aN.Normalize();
++  const gp_Pnt C1 = q.Translated(R * aN), C2 = q.Translated(-R * aN);
++  const gp_Pnt C  = std::abs(C1.Distance(p1) - R) <= std::abs(C2.Distance(p1) - R) ? C1 : C2;
++  if (std::abs(C.Distance(p1) - R) > tolBall || std::abs(C.Distance(p2) - R) > tolBall
++      || !A->IsOnCurve(ons) || !B->IsOnCurve(ons))
++  {
++    return false;
++  }
++  // E1 and E2 end there on both sides: up to their contacts the blends' own
++  // contacts take their place, beyond them the ball's piece removes them.
++  for (int k = 0; k < 2; k++)
++  {
++    const occ::handle<ChFiDS_SurfData>& D     = k == 0 ? A : B;
++    ChFiDS_CommonPoint&                 CP    = D->ChangeVertex(k != 0, ons);
++    const TopoDS_Edge                   anArc = TopoDS::Edge(DStr.Shape(D->IndexOfC(ons)));
++    const gp_Pnt                        aP    = CP.Point();
++    double                              aW    = 0.;
++    if (CP.IsOnArc() && CP.Arc().IsSame(anArc))
++    {
++      aW = CP.ParameterOnArc();
++    }
++    else
++    {
++      double                        f = 0., l = 0.;
++      const occ::handle<Geom_Curve> aC = BRep_Tool::Curve(anArc, f, l);
++      if (aC.IsNull())
++      {
++        return false;
++      }
++      GeomAPI_ProjectPointOnCurve aPr(aP, aC, f, l);
++      if (aPr.NbPoints() == 0 || aPr.LowerDistance() > tolBall)
++      {
++        return false;
++      }
++      aW = aPr.LowerDistanceParameter();
++    }
++    const double aTol = std::max(CP.Tolerance(), tol3d);
++    CP.Reset();
++    CP.SetPoint(aP);
++    CP.SetArc(aTol, anArc, aW, TopAbs_EXTERNAL);
++  }
++  // The sphere, its pole at q; longitudes increase from p1's to p2's, p1's at
++  // 0.5 (clear of the seam).
++  const gp_Dir Z(gp_Vec(C, q));
++  gp_Vec       X1(C, p1);
++  X1.SetLinearForm(-X1.Dot(gp_Vec(Z)), gp_Vec(Z), X1);
++  if (X1.Magnitude() <= gp::Resolution())
++  {
++    return false;
++  }
++  gp_Ax3 aFrame(C, Z, gp_Dir(X1));
++  if (gp_Vec(C, p2).Dot(gp_Vec(aFrame.YDirection())) < 0.)
++  {
++    aFrame.YReverse();
++  }
++  double u1 = 0., v1 = 0., u2 = 0., v2 = 0.;
++  for (const double anAngle : {-0.5, 1.})
++  {
++    aFrame.Rotate(gp_Ax1(C, aFrame.Direction()), anAngle);
++    ElSLib::SphereParameters(aFrame, R, p1, u1, v1);
++    if (std::abs(u1 - 0.5) <= 1.e-6)
++    {
++      break;
++    }
++  }
++  occ::handle<Geom_SphericalSurface> aSphere = new Geom_SphericalSurface(aFrame, R);
++  ElSLib::SphereParameters(aFrame, R, p2, u2, v2);
++  if (std::abs(u1 - 0.5) > 1.e-6 || u2 <= u1 || u2 >= M_PI)
++  {
++    return false;
++  }
++  // The faces beyond E1 and E2, and where the sphere crosses their common edge.
++  const TopoDS_Face F1 = TopoDS::Face(DStr.Shape(A->Index(ons)));
++  const TopoDS_Face F2 = TopoDS::Face(DStr.Shape(B->Index(ons)));
++  struct Part
++  {
++    TopoDS_Face        F;
++    double             ua = 0., ub = 0.;
++    gp_Pnt             Pa, Pb;
++    ChFiDS_CommonPoint CPa, CPb;
++  };
++  NCollection_Sequence<Part> aParts;
++  if (F1.IsSame(F2))
++  {
++    Part aPart;
++    aPart.F   = F1;
++    aPart.ua  = u1;
++    aPart.ub  = u2;
++    aPart.Pa  = p1;
++    aPart.Pb  = p2;
++    aPart.CPa = Ap;
++    aPart.CPb = Bp;
++    aParts.Append(aPart);
++  }
++  else
++  {
++    TopoDS_Edge Ec;
++    double      wK = 0., uK = 0.;
++    gp_Pnt      K;
++    for (TopExp_Explorer ex(F1, TopAbs_EDGE); ex.More() && Ec.IsNull(); ex.Next())
++    {
++      const TopoDS_Edge& E = TopoDS::Edge(ex.Current());
++      bool               inF2 = false;
++      for (TopExp_Explorer ex2(F2, TopAbs_EDGE); ex2.More() && !inF2; ex2.Next())
++      {
++        inF2 = ex2.Current().IsSame(E);
++      }
++      double                        f = 0., l = 0.;
++      const occ::handle<Geom_Curve> aC = BRep_Tool::Curve(E, f, l);
++      if (!inF2 || aC.IsNull())
++      {
++        continue;
++      }
++      GeomAPI_IntCS anInter(aC, aSphere);
++      for (int i = 1; anInter.IsDone() && i <= anInter.NbPoints(); i++)
++      {
++        double wu = 0., su = 0., sv = 0.;
++        anInter.Parameters(i, su, sv, wu);
++        if (wu < f - Precision::PConfusion() || wu > l + Precision::PConfusion() || su <= u1 || su >= u2)
++        {
++          continue;
++        }
++        Ec = E;
++        wK = wu;
++        uK = su;
++        K  = anInter.Point(i);
++      }
++    }
++    if (Ec.IsNull())
++    {
++      return false;
++    }
++    Part aPartA, aPartB;
++    aPartA.F   = F1;
++    aPartA.ua  = u1;
++    aPartA.ub  = uK;
++    aPartA.Pa  = p1;
++    aPartA.Pb  = K;
++    aPartA.CPa = Ap;
++    aPartA.CPb.SetPoint(K);
++    aPartA.CPb.SetArc(tol3d, Ec, wK, TopAbs_FORWARD);
++    aPartB.F   = F2;
++    aPartB.ua  = uK;
++    aPartB.ub  = u2;
++    aPartB.Pa  = K;
++    aPartB.Pb  = p2;
++    aPartB.CPa = aPartA.CPb;
++    aPartB.CPb = Bp;
++    aParts.Append(aPartA);
++    aParts.Append(aPartB);
++  }
++  // The blend's orientation: A's where the sphere's normal agrees with A's
++  // surface's at its last section.
++  TopAbs_Orientation anOr = A->Orientation();
++  {
++    const occ::handle<Geom_Surface>& SA  = DStr.Surface(A->Surf()).Surface();
++    const gp_Pnt2d                   uvA = FAo.PCurveOnSurf()->Value(FAo.LastParameter());
++    const gp_Pnt2d                   uvB = FAn.PCurveOnSurf()->Value(FAn.LastParameter());
++    const gp_Pnt2d                   uvM((uvA.XY() + uvB.XY()) * 0.5);
++    GeomLProp_SLProps                aPropA(SA, uvM.X(), uvM.Y(), 1, Precision::Confusion());
++    if (!aPropA.IsNormalDefined())
++    {
++      return false;
++    }
++    double us = 0., vs = 0.;
++    ElSLib::SphereParameters(aFrame, R, aPropA.Value(), us, vs);
++    GeomLProp_SLProps aPropS(aSphere, us, vs, 1, Precision::Confusion());
++    if (!aPropS.IsNormalDefined())
++    {
++      return false;
++    }
++    if (gp_Vec(aPropA.Normal()).Dot(gp_Vec(aPropS.Normal())) < 0.)
++    {
++      anOr = TopAbs::Reverse(anOr);
++    }
++  }
++  const double t1 = A->LastSpineParam(), t2 = B->FirstSpineParam();
++  for (int ip = 1; ip <= aParts.Length(); ip++)
++  {
++    Part& aPart = aParts.ChangeValue(ip);
++    // Where the sphere cuts the face: the arc from Pa to Pb within the piece's
++    // longitudes.
++    const occ::handle<Geom_Surface> SF = BRep_Tool::Surface(aPart.F);
++    GeomAPI_IntSS                   anInter(aSphere, SF, Precision::Confusion());
++    occ::handle<Geom_Curve>         Cc;
++    for (int i = 1; anInter.IsDone() && i <= anInter.NbLines() && Cc.IsNull(); i++)
++    {
++      const occ::handle<Geom_Curve>& L = anInter.Line(i);
++      GeomAPI_ProjectPointOnCurve    aPa(aPart.Pa, L), aPb(aPart.Pb, L);
++      if (aPa.NbPoints() == 0 || aPb.NbPoints() == 0 || aPa.LowerDistance() > tolBall
++          || aPb.LowerDistance() > tolBall)
++      {
++        continue;
++      }
++      double       ta = aPa.LowerDistanceParameter(), tb = aPb.LowerDistanceParameter();
++      const double um = [&]() {
++        double u = 0., v = 0.;
++        ElSLib::SphereParameters(aFrame, R, L->Value(0.5 * (ta + tb)), u, v);
++        return u;
++      }();
++      bool aReversed = ta > tb;
++      if (L->IsPeriodic() && (um <= aPart.ua || um >= aPart.ub))
++      {
++        // The other arc between the points.
++        if (ta < tb)
++        {
++          ta += L->Period();
++        }
++        else
++        {
++          tb += L->Period();
++        }
++        aReversed = !aReversed;
++      }
++      const double lo = std::min(ta, tb), hi = std::max(ta, tb);
++      if (hi - lo <= Precision::PConfusion())
++      {
++        continue;
++      }
++      occ::handle<Geom_Curve> aTrim = new Geom_TrimmedCurve(L, lo, hi);
++      if (aReversed)
++      {
++        aTrim = aTrim->Reversed();
++      }
++      Cc = aTrim;
++    }
++    if (Cc.IsNull())
++    {
++      return false;
++    }
++    const double                    c1 = Cc->FirstParameter(), c2 = Cc->LastParameter();
++    const occ::handle<Geom2d_Curve> Ps = GeomProjLib::Curve2d(Cc, c1, c2, aSphere);
++    const occ::handle<Geom2d_Curve> Pc = GeomProjLib::Curve2d(Cc, c1, c2, SF);
++    if (Ps.IsNull() || Pc.IsNull())
++    {
++      return false;
++    }
++    // The side on the other face: the point q, its parameters along the pole
++    // over the piece's longitudes (a degenerated edge of the blend's face).
++    NCollection_Array1<double> aKnots(1, 2);
++    NCollection_Array1<int>    aMults(1, 2);
++    aKnots(1) = c1;
++    aKnots(2) = c2;
++    aMults(1) = aMults(2) = 2;
++    NCollection_Array1<gp_Pnt>   aPoles3d(1, 2);
++    NCollection_Array1<gp_Pnt2d> aPolesS(1, 2), aPolesF(1, 2);
++    aPoles3d(1) = aPoles3d(2) = q;
++    aPolesS(1)                = gp_Pnt2d(aPart.ua, 0.5 * M_PI);
++    aPolesS(2)                = gp_Pnt2d(aPart.ub, 0.5 * M_PI);
++    aPolesF(1) = aPolesF(2) = uvq;
++    occ::handle<Geom_BSplineCurve>   Cq  = new Geom_BSplineCurve(aPoles3d, aKnots, aMults, 1);
++    occ::handle<Geom2d_BSplineCurve> PSq = new Geom2d_BSplineCurve(aPolesS, aKnots, aMults, 1);
++    occ::handle<Geom2d_BSplineCurve> PFq = new Geom2d_BSplineCurve(aPolesF, aKnots, aMults, 1);
++
++    occ::handle<ChFiDS_SurfData> G = new ChFiDS_SurfData();
++    G->ChangeSurf(DStr.AddSurface(TopOpeBRepDS_Surface(aSphere, tol3d)));
++    G->ChangeOrientation() = anOr;
++    G->ChangeIndexOfS1(opp == 1 ? A->IndexOfS1() : DStr.AddShape(aPart.F));
++    G->ChangeIndexOfS2(opp == 2 ? A->IndexOfS2() : DStr.AddShape(aPart.F));
++    {
++      ChFiDS_FaceInterference& GO = G->ChangeInterference(opp);
++      GO.SetInterference(DStr.AddCurve(TopOpeBRepDS_Curve(Cq, tol3d)), FAo.Transition(), PFq, PSq);
++      GO.SetFirstParameter(c1);
++      GO.SetLastParameter(c2);
++    }
++    const TopAbs_Orientation aTra =
++      TopAbs::Compose(FAn.Transition(), TopAbs::Compose(F1.Orientation(), aPart.F.Orientation()));
++    {
++      ChFiDS_FaceInterference& GI = G->ChangeInterference(ons);
++      GI.SetInterference(DStr.AddCurve(TopOpeBRepDS_Curve(Cc, tol3d)), aTra, Pc, Ps);
++      GI.SetFirstParameter(c1);
++      GI.SetLastParameter(c2);
++    }
++    // The ends: q on the other side; on side ons, E1's and E2's points and the
++    // common edge's crossing, its transitions those of a contact leaving the
++    // first face across it and entering the second.
++    G->ChangeVertex(true, opp)  = Aq;
++    G->ChangeVertex(false, opp) = Aq;
++    G->ChangeVertex(true, ons)  = aPart.CPa;
++    G->ChangeVertex(false, ons) = aPart.CPb;
++    for (int k = 0; k < 2; k++)
++    {
++      ChFiDS_CommonPoint& CP = G->ChangeVertex(k == 0, ons);
++      if (CP.IsOnArc() && (k == 0 ? ip > 1 : ip < aParts.Length()))
++      {
++        TopoDS_Face aFF = aPart.F;
++        aFF.Orientation(TopAbs_FORWARD);
++        const TopoDS_Edge aEInF = edgeInFace(CP.Arc(), aFF);
++        if (aEInF.IsNull())
++        {
++          return false;
++        }
++        const TopAbs_Orientation aTr = k == 0 ? TopAbs::Reverse(TopAbs::Compose(aTra, aEInF.Orientation()))
++                                              : TopAbs::Compose(aTra, aEInF.Orientation());
++        const TopoDS_Edge  anArc = CP.Arc();
++        const double       aW    = CP.ParameterOnArc();
++        const gp_Pnt       aP    = CP.Point();
++        CP.Reset();
++        CP.SetPoint(aP);
++        CP.SetArc(tol3d, anArc, aW, aTr);
++      }
++      const double ta = t1 + (t2 - t1) * (aPart.ua - u1) / (u2 - u1);
++      const double tb = t1 + (t2 - t1) * (aPart.ub - u1) / (u2 - u1);
++      CP.SetParameter(k == 0 ? ta : tb);
++      G->ChangeVertex(k == 0, opp).SetParameter(k == 0 ? ta : tb);
++    }
++    G->FirstSpineParam(t1 + (t2 - t1) * (aPart.ua - u1) / (u2 - u1));
++    G->LastSpineParam(t1 + (t2 - t1) * (aPart.ub - u1) / (u2 - u1));
++    Pieces.Append(G);
++  }
++  return true;
++}
++
+ //=================================================================================================
+ 
+ void ChFi3d_Builder::PerformSetOfSurfOnElSpine(const occ::handle<ChFiDS_ElSpine>&     HGuide,
+@@ -3736,6 +4216,10 @@ void ChFi3d_Builder::PerformSetOfSurfOnElSpine(const occ::handle<ChFiDS_ElSpine>
+   {
+     // are these the ends (no extension on periodic).
+     Ok1 = true, Ok2 = true;
++    // (A concave turn of a side rolling on an edge at this step's start: the
++    // side and the SurfData before the turn.)
++    int                          aTurnSide = 0;
++    occ::handle<ChFiDS_SurfData> aTurnRef;
+     if (!Spine->IsPeriodic())
+     {
+       if (wf < tolesp && (complete == Inside))
+@@ -3825,6 +4309,42 @@ void ChFi3d_Builder::PerformSetOfSurfOnElSpine(const occ::handle<ChFiDS_ElSpine>
+                      pp4,
+                      decroch2,
+                      Vref);
++      // A side that goes on rolling on another edge from inside the one it
++      // rolled on (a concave turn, ChFi3d_ConcaveTurnEdge): the next blend
++      // starts with the same ball, whose contacts' mid-point lies in another
++      // plane of the guide.
++      for (int k = 1; k <= 2; k++)
++      {
++        const occ::handle<BRepAdaptor_Curve2d>& HCk = k == 1 ? HC1 : HC2;
++        const bool                              Okk = k == 1 ? Ok1 : Ok2;
++        if (!Okk || HCk.IsNull() || !ref->IsOnCurve(k) || ref->Vertex(!forward, k).IsVertex()
++            || !ref->Vertex(!forward, k).IsOnArc()
++            || HCk->Edge().IsSame(DStr.Shape(ref->IndexOfC(k))))
++        {
++          continue;
++        }
++        const occ::handle<BRepAdaptor_Surface>& HSk = k == 1 ? HS1 : HS2;
++        const double                            wk  = k == 1 ? w1 : w2;
++        const gp_Pnt2d                          pk  = HCk->Value(wk);
++        const gp_Pnt                            Pk  = HSk->Value(pk.X(), pk.Y());
++        const gp_Pnt                            Po  = ref->Vertex(!forward, 3 - k).Point();
++        const gp_Pnt Pm((Pk.XYZ() + Po.XYZ()) * 0.5);
++        Extrema_ExtPC aPExt(Pm, Guide, Guide.FirstParameter(), Guide.LastParameter(), 1.e-10);
++        double        best = RealLast();
++        double        wbest = First;
++        for (int i = 1; aPExt.IsDone() && i <= aPExt.NbExt(); i++)
++        {
++          const double wi = aPExt.Point(i).Parameter();
++          if (aPExt.IsMin(i) && std::abs(wi - First) < best)
++          {
++            best  = std::abs(wi - First);
++            wbest = wi;
++          }
++        }
++        First     = wbest;
++        aTurnSide = k;
++        aTurnRef  = ref;
++      }
+     }
+ 
+     // No more connected faces. Construction of the tangent plane to continue the path
+@@ -4311,6 +4831,27 @@ void ChFi3d_Builder::PerformSetOfSurfOnElSpine(const occ::handle<ChFiDS_ElSpine>
+         }
+       }
+ 
++      // A concave turn at this step's start: between the blend before it and
++      // this one, the piece of the ball that touches both edges.
++      if (aTurnSide != 0 && !aTurnRef.IsNull() && SeqSD.Length() > 0)
++      {
++        occ::handle<ChFiDS_SurfData> aBefore = forward ? aTurnRef : SeqSD.Last();
++        const occ::handle<ChFiDS_SurfData> anAfter = forward ? SeqSD.First() : aTurnRef;
++        const occ::handle<ChFiDS_FilSpine> aFsp    = occ::down_cast<ChFiDS_FilSpine>(Spine);
++        NCollection_Sequence<occ::handle<ChFiDS_SurfData>> aWedge;
++        if (aFsp.IsNull() || !aFsp->IsConstant()
++            || !ChFi3d_ConcaveTurnWedge(DStr, aBefore, anAfter, aTurnSide, aFsp->Radius(), tolapp3d, aWedge))
++        {
++          throw Standard_Failure("PerformSetOfSurfOnElSpine : the ball's piece at a concave turn not made");
++        }
++        for (int iw = 1; iw <= aWedge.Length(); iw++)
++        {
++          occ::handle<ChFiDS_SurfData> aPiece = aWedge.Value(iw);
++          InsertAfter(Stripe, aBefore, aPiece);
++          aBefore = aPiece;
++        }
++      }
++
+       // (Where the extension is purged on the first side, it is no longer
+       // in the stripe: the second side must not remove the SurfData that is
+       // now at that end.)
+diff --git a/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_FilBuilder.cxx b/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_FilBuilder.cxx
+index e17eeba..8c13647 100644
+--- a/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_FilBuilder.cxx
++++ b/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_FilBuilder.cxx
+@@ -150,8 +150,9 @@ static void ChFi3d_NextEdges(const occ::handle<BRepAdaptor_Surface>& HSref,
+                              const ChFiDS_Map&                       EFMap,
+                              BRepBlend_SurfRstConstRad&              Func)
+ {
+-  bool   has[2] = {false, false};
+-  gp_Vec into[2];
++  bool                         has[2] = {false, false};
++  gp_Vec                       into[2];
++  occ::handle<Adaptor3d_Curve> curve[2];
+   if (!HSref.IsNull() && !PC.IsNull() && !HSref->Face().IsNull() && !PC->Edge().IsNull())
+   {
+     const TopoDS_Edge& E    = PC->Edge();
+@@ -211,12 +212,14 @@ static void ChFi3d_NextEdges(const occ::handle<BRepAdaptor_Surface>& HSref,
+         {
+           t.Reverse();
+         }
+-        has[atLast]  = true;
+-        into[atLast] = t;
++        has[atLast]   = true;
++        into[atLast]  = t;
++        curve[atLast] = new BRepAdaptor_Curve(En);
+       }
+     }
+   }
+   Func.SetNextEdges(has[0], into[0], has[1], into[1]);
++  Func.SetNextCurves(curve[0], curve[1]);
+ }
+ 
+ //=======================================================================

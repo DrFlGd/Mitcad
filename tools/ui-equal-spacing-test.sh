@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: MIT
-# check-all sources: app/sketch app/commands app/MainWindow.cpp core/model/src/sketch core/solver tools/cli
+# check-all sources: app/sketch app/commands app/MainWindow.cpp app/framework core/model/src/sketch core/model/src/api core/solver tools/cli
 # Equal spacing in sketches (mitcad#221) through the real UI, on a sketch
 # mitcad-cli makes: a fixed point p1 at (-20, 0), a circle c2 (centre
 # (45, 30), radius 10), a line c4 from (100, -10) to (120, 10) (its
@@ -95,6 +95,28 @@ select_at() {
   else
     ui_sketch_click "$1" "$2"
   fi
+}
+
+# select_curve_of "c7" x y [x y ...]: clicks on the curve at the sketch points
+# in turn until the app logs exactly that curve selected (a constraint symbol
+# or a dimension's text drawn over the first point takes the click; it is
+# not a failure of the curve); a failure shows what was selected last.
+select_curve_of() {
+  local curve=$1 x y
+  shift
+  while [ "$#" -ge 2 ]; do
+    x=$1 y=$2
+    shift 2
+    ui_mark
+    select_at "$x" "$y"
+    for _ in $(seq 1 15); do
+      tail -n +$((UI_MARK + 1)) "$UI_LOG" |
+        grep -qF -- "Selected: 1 sketch curve [sketch curve $curve of F1]" && { echo "ok   $curve selected"; return; }
+      sleep 0.2
+    done
+    echo "note: $curve not selected by the click at $x, $y: $(tail -n +$((UI_MARK + 1)) "$UI_LOG" | grep "Selected: " | tail -1)"
+  done
+  ui_fail "$curve could not be selected"
 }
 
 # glyph_at x y: the screen position of the first constraint symbol of the
@@ -259,12 +281,12 @@ ui_step "delete (Delete)"                  ui_key Delete
 ui_expect_new "Equal spacing k2 horizontal: p1, c2, c4, c7 (spacing k3 = 60.00)" \
   "the point left the chain, the others keep their order"
 # The arc's centre is at (160, 20) now, its radius 12: 30 degrees round it.
+ui_step "select the arc"                   select_curve_of c7 170.39 26 166 30.39 171.59 23.11
 ui_mark
-ui_step "select the arc"                   select_at 170.39 26
 ui_step "delete (Delete)"                  ui_key Delete
 ui_expect_new "Equal spacing k2 horizontal: p1, c2, c4 (spacing k3 = 60.00)" "three left"
+ui_step "select the line"                  select_curve_of c4 100 0 95 -5 105 5
 ui_mark
-ui_step "select the line"                  select_at 100 0
 ui_step "delete (Delete)"                  ui_key Delete
 ui_expect_new "Equal spacing k2 removed" "two left: the constraint and its dimension go"
 ui_mark

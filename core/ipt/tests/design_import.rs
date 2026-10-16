@@ -314,3 +314,61 @@ fn a_driven_dimensions_table_parameter_is_its_reference() {
         assert_eq!(references, 1, "major {major}");
     }
 }
+
+/// The directions of a rectangular pattern of features stored without a
+/// pattern direction record (mitcad#288): two directions `40df52ce…`, or a
+/// path whose first line the copies follow (reversed by its boolean); with
+/// a boolean of the pattern set the direction is left to the history.
+#[test]
+fn pattern_directions_without_a_direction_record_are_read() {
+    use mitcad_ipt::testdesign::{PatternDirections, feature_pattern_design};
+    let pattern = |major: u8, directions: PatternDirections, set: bool| {
+        let records = feature_pattern_design(major, directions, set);
+        let dc = Definitions::from_records(major, &records);
+        let design = mitcad_ipt::design::design(&dc, DisplayUnit::Mm, "pattern.ipt", None);
+        let dump = serde_json::to_value(&design.dump).unwrap();
+        let item = dump["timeline"]["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|i| i["objectType"] == "RectangularPatternFeature")
+            .cloned()
+            .unwrap_or_else(|| panic!("major {major}: no pattern: {:?}", design.notes));
+        (item["detail"].clone(), design.notes)
+    };
+    let close = |v: &serde_json::Value, e: [f64; 3]| {
+        let v: Vec<f64> = v
+            .as_array()
+            .unwrap_or_else(|| panic!("no direction: {v}"))
+            .iter()
+            .map(|x| x.as_f64().unwrap())
+            .collect();
+        v.len() == 3 && (0..3).all(|k| (v[k] - e[k]).abs() < 1e-12)
+    };
+    for major in [16, 24, 28] {
+        let (d, notes) = pattern(major, PatternDirections::Vectors, false);
+        assert!(
+            close(&d["directionOne"], [0.75f64.sqrt(), 0.0, -0.5]),
+            "{d}"
+        );
+        assert!(close(&d["directionTwo"], [0.0, 0.0, -1.0]), "{d}");
+        assert_eq!(d["quantityOne"]["name"], "d4", "{d}");
+        assert_eq!(d["distanceTwo"]["name"], "d7", "{d}");
+        // The third element along the first direction, second along the
+        // second: element 2 + 3 x 1.
+        assert_eq!(d["suppressedElementsIds"], serde_json::json!([5]), "{d}");
+        assert!(notes.is_empty(), "{notes:?}");
+        let (d, notes) = pattern(major, PatternDirections::Vectors, true);
+        assert!(d.get("directionOne").is_none(), "{d}");
+        assert!(
+            notes.iter().any(|n| n.contains("found with the history")),
+            "{notes:?}"
+        );
+    }
+    let (d, _) = pattern(16, PatternDirections::Path(false), false);
+    assert!(close(&d["directionOne"], [-1.0, 0.0, 0.0]), "{d}");
+    assert!(d.get("directionTwo").is_none(), "{d}");
+    assert_eq!(d["suppressedElementsIds"], serde_json::json!([]), "{d}");
+    let (d, _) = pattern(16, PatternDirections::Path(true), false);
+    assert!(close(&d["directionOne"], [1.0, 0.0, 0.0]), "{d}");
+}

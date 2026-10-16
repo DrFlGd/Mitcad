@@ -172,9 +172,25 @@ impl Factor {
     /// Factors `A + shift I`. A pivot below `tol` times its original diagonal
     /// is skipped. Returns the number of skipped pivots.
     pub fn factor(&mut self, sym: &Symbolic, shift: f64, tol: f64) -> usize {
+        self.factor_limited(sym, shift, tol, usize::MAX)
+    }
+
+    /// Like [`Factor::factor`], and once `max_rank` pivots are accepted every
+    /// later row is skipped. For a Gram matrix `J J^T` with `max_rank` the
+    /// number of columns of `J` this is exact: the accepted rows then span
+    /// the whole column space, so every later row depends on them, whatever
+    /// rounding error in an ill-conditioned factorization makes of its pivot.
+    pub fn factor_limited(
+        &mut self,
+        sym: &Symbolic,
+        shift: f64,
+        tol: f64,
+        max_rank: usize,
+    ) -> usize {
         let n = sym.n();
         let y = &mut self.work;
         let mut skipped = 0;
+        let mut accepted = 0;
         for j in 0..n {
             let (s, e) = (sym.lp[j], sym.lp[j + 1]);
             for p in s..e {
@@ -193,7 +209,8 @@ impl Factor {
                     y[sym.li[p]] -= self.lx[p] * f;
                 }
             }
-            if reference > 0.0 && dj > tol * reference {
+            if reference > 0.0 && dj > tol * reference && accepted < max_rank {
+                accepted += 1;
                 self.skipped[j] = false;
                 self.d[j] = dj;
                 let inv = 1.0 / dj;
@@ -418,6 +435,42 @@ mod tests {
                         s += g * x[plan.sym.pos[k]];
                     }
                     assert!((s - b[i]).abs() < 1e-9, "m={m} row {i}: {s} vs {}", b[i]);
+                }
+            }
+        }
+    }
+
+    /// Rows `(1, t, t^2, ...)` at closely spaced `t`: n columns, rank n, and
+    /// a Gram matrix whose rounding error exceeds the pivot tolerance.
+    fn vandermonde(m: usize, n: usize, h: f64) -> (Vec<Vec<usize>>, Vec<Vec<f64>>) {
+        let row_cols = vec![(0..n).collect::<Vec<_>>(); m];
+        let vals = (0..m)
+            .map(|i| {
+                let t = i as f64 * h;
+                (0..n).map(|k| t.powi(k as i32)).collect()
+            })
+            .collect();
+        (row_cols, vals)
+    }
+
+    #[test]
+    fn limited_factor_accepts_at_most_the_column_count() {
+        for n in [3usize, 4, 5, 6] {
+            for h in [1e-1, 3e-2, 1e-2, 3e-3, 1e-3] {
+                let m = 3 * n;
+                let (row_cols, vals) = vandermonde(m, n, h);
+                let jac = rows_of(&row_cols, &vals);
+                let order: Vec<usize> = (0..m).collect();
+                let plan = GramPlan::new(&row_cols, n, Some(&order));
+                let mut f = Factor::new(&plan.sym);
+                let mut w = Vec::new();
+                plan.fill(&jac, &vec![1.0; n], &mut f, &mut w, true);
+                let unlimited = m - f.factor(&plan.sym, 0.0, 1e-10);
+                let limited = m - f.factor_limited(&plan.sym, 0.0, 1e-10, n);
+                assert!(limited <= n, "n={n} h={h}: rank {limited}");
+                // Where the limit does not bind it changes nothing.
+                if unlimited <= n {
+                    assert_eq!(limited, unlimited, "n={n} h={h}");
                 }
             }
         }

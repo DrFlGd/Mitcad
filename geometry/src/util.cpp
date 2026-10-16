@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT
 #include "util.hpp"
 
+#include <algorithm>
 #include <atomic>
 #include <cctype>
 #include <cmath>
@@ -17,15 +18,23 @@
 #include <TopExp_Explorer.hxx>
 #include <BRepGProp.hxx>
 #include <BRep_Builder.hxx>
+#include <BRep_TVertex.hxx>
 #include <BRep_Tool.hxx>
 #include <Bnd_Box.hxx>
 #include <GProp_GProps.hxx>
+#include <Geom2d_Curve.hxx>
+#include <Geom_Curve.hxx>
+#include <Geom_Surface.hxx>
 #include <NCollection_IndexedDataMap.hxx>
 #include <NCollection_List.hxx>
+#include <Precision.hxx>
+#include <TopTools_ShapeMapHasher.hxx>
 #include <TopExp.hxx>
 #include <TopoDS.hxx>
 #include <TopoDS_Compound.hxx>
 #include <TopoDS_Iterator.hxx>
+#include <TopoDS_Vertex.hxx>
+#include <gp_Pnt2d.hxx>
 
 namespace mitcad::geometry::detail {
 namespace {
@@ -352,5 +361,64 @@ void require_valid_where_changed(const TopoDS_Shape& result, const ShapeMap& kep
 }
 
 ChecksWhereChanged checks_where_changed() { return {g_local_checks.load(), g_local_faces.load()}; }
+
+int inflated_vertices(const TopoDS_Shape& shape, bool tighten) {
+  // Above this (mm) a tolerance may be inflated.
+  constexpr double kInflated = 1.0;
+  using Ancestors = NCollection_IndexedDataMap<TopoDS_Shape, NCollection_List<TopoDS_Shape>, TopTools_ShapeMapHasher>;
+  Ancestors edges_of;
+  Ancestors faces_of;
+  TopExp::MapShapesAndUniqueAncestors(shape, TopAbs_VERTEX, TopAbs_EDGE, edges_of);
+  int count = 0;
+  for (int i = 1; i <= edges_of.Extent(); ++i) {
+    const TopoDS_Vertex& vertex = TopoDS::Vertex(edges_of.FindKey(i));
+    const double tolerance = BRep_Tool::Tolerance(vertex);
+    if (tolerance <= kInflated) {
+      continue;
+    }
+    if (faces_of.IsEmpty()) {
+      TopExp::MapShapesAndUniqueAncestors(shape, TopAbs_EDGE, TopAbs_FACE, faces_of);
+    }
+    // What the edges need: the vertex's distance from their ends, on their
+    // curves and on their p-curves' surfaces, and their own tolerances.
+    const gp_Pnt at = BRep_Tool::Pnt(vertex);
+    double needed = 0.0;
+    for (const TopoDS_Shape& e : edges_of(i)) {
+      const TopoDS_Edge& edge = TopoDS::Edge(e);
+      needed = std::max(needed, BRep_Tool::Tolerance(edge));
+      if (BRep_Tool::Degenerated(edge)) {
+        continue;
+      }
+      const double t = BRep_Tool::Parameter(vertex, edge);
+      double first = 0.0;
+      double last = 0.0;
+      if (const occ::handle<Geom_Curve> curve = BRep_Tool::Curve(edge, first, last); !curve.IsNull()) {
+        needed = std::max(needed, curve->Value(t).Distance(at));
+      }
+      const int index = faces_of.FindIndex(edge);
+      if (index == 0) {
+        continue;
+      }
+      for (const TopoDS_Shape& f : faces_of(index)) {
+        const TopoDS_Face& face = TopoDS::Face(f);
+        const occ::handle<Geom2d_Curve> pcurve = BRep_Tool::CurveOnSurface(edge, face, first, last);
+        if (!pcurve.IsNull()) {
+          const gp_Pnt2d uv = pcurve->Value(t);
+          needed = std::max(needed, BRep_Tool::Surface(face)->Value(uv.X(), uv.Y()).Distance(at));
+        }
+      }
+    }
+    needed = 1.01 * needed + Precision::Confusion();
+    if (tolerance <= 10.0 * needed) {
+      continue;
+    }
+    ++count;
+    if (tighten) {
+      // (Set directly: BRep_Builder only widens a tolerance.)
+      occ::down_cast<BRep_TVertex>(vertex.TShape())->Tolerance(needed);
+    }
+  }
+  return count;
+}
 
 } // namespace mitcad::geometry::detail

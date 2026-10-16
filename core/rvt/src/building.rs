@@ -301,6 +301,48 @@ pub struct Symbol {
     pub cut_dirs: Vec<P3>,
     /// Its geometry's materials.
     pub materials: Vec<i64>,
+    /// A curtain mullion's own symbol: its profile and path (mitcad#333).
+    pub mullion: Option<MullionSym>,
+    /// A curtain panel's own symbol: its cell and thickness.
+    pub panel: Option<PanelSym>,
+}
+
+/// A curtain mullion's own symbol (`SysMullionFamSym` with a
+/// `MullionSymFamRef`): its profile's class (`SysRectMullionProfile`, ...)
+/// and sizes (the type's built-in parameters: widths on the two sides
+/// -1007300 and -1007301, thickness -1007304, offset -1007351), its path
+/// (`m_pCurve`, in the symbol's coordinates), the normal its thickness
+/// runs along (`m_pathNorm`) and its flags (`m_flags`: 4 for a mullion
+/// at a border, whose width lies on one side of its path).
+#[derive(Debug, Clone, Serialize)]
+pub struct MullionSym {
+    pub profile: String,
+    /// A corner (quad) mullion's two depths (-1007357, -1007358).
+    pub depths: [f64; 2],
+    /// A custom profile's profile family type (`m_profileId`).
+    pub profile_id: Option<i64>,
+    pub widths: [f64; 2],
+    pub thickness: f64,
+    pub offset: f64,
+    pub path: Option<Curve>,
+    pub normal: P3,
+    pub flags: u64,
+}
+
+/// A curtain panel's own symbol (`SysPanelFamSym` with a
+/// `CurtainCellSymFamRef`): its cell's loops (`m_pCurveLoops`, in the
+/// symbol's coordinates) on its plane (`m_pSurf`), and its thickness and
+/// offset (`m_thickness`, `m_offset`: the middle of its thickness that far
+/// along y × x from the plane); an empty panel (`m_empty`) has none.
+#[derive(Debug, Clone, Serialize)]
+pub struct PanelSym {
+    pub loops: Vec<Vec<Curve>>,
+    pub plane: Option<Plane>,
+    pub thickness: f64,
+    pub offset: f64,
+    pub empty: bool,
+    /// `m_flipped` of its cell: its thickness runs the other way.
+    pub flipped: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -342,6 +384,57 @@ pub struct StairRun {
     pub support: Option<Curve>,
 }
 
+/// A stair run's or landing's type's parts (`StairsRunType`,
+/// `StairsLandingType`, mitcad#333): treads and risers (`m_hasTread`,
+/// `m_hasRiser`; their thicknesses `m_treadThickness`, `m_riserThickness`;
+/// the treads reach `m_nosingLength` over the riser below), a landing's
+/// thickness (`m_thickness`) and whether it is monolithic.
+#[derive(Debug, Clone, Copy, Default, Serialize)]
+pub struct StairParts {
+    pub monolithic: bool,
+    pub tread: Option<f64>,
+    pub riser: Option<f64>,
+    pub nosing: f64,
+    pub thickness: f64,
+}
+
+/// A stair landing (`StairsLanding`, mitcad#333): its boundary
+/// (`m_oBoundary`, at its top) and its top's elevation
+/// (`m_baseElevation`).
+#[derive(Debug, Clone, Serialize)]
+pub struct Landing {
+    pub id: i64,
+    pub boundary: Vec<Vec<Curve>>,
+    pub top: f64,
+}
+
+/// A profile swept along a path (mitcad#333): a wall sweep (`WallSweep`:
+/// the curves of its `WallSweepCurveGStep`, its profile
+/// `m_wallSweepInfo.m_profileId`), a slab edge, fascia or gutter
+/// (`SweepHost`: the `m_pathLoop` of each `SweepHostLoopData` with its
+/// `m_driveVec`, its type's profile, its offsets: parameters -1012825
+/// across and -1012827 up) or a rail (`ContinuousRail`: its `Path3d`'s
+/// loops, `m_oPathProvider.m_path3dId`, its profile
+/// `m_profileData.m_profileFamSymId`).
+#[derive(Debug, Clone, Serialize)]
+pub struct Sweep {
+    pub id: i64,
+    pub class: String,
+    pub paths: Vec<Vec<Curve>>,
+    pub path3d: Option<i64>,
+    /// The profile family's type, else the type that names one.
+    pub profile: Option<i64>,
+    pub type_id: Option<i64>,
+    /// The direction the profile's y axis keeps (else up).
+    pub up: Option<P3>,
+    /// Offsets across and up (feet).
+    pub offsets: [f64; 2],
+    pub flipped: bool,
+    /// A wall sweep's wall (`WallSweepCurveGStep.m_hostId`): its path runs
+    /// along the wall's location line, its profile at a face.
+    pub host: Option<i64>,
+}
+
 /// An opening element (a wall or floor opening, a shaft).
 #[derive(Debug, Clone, Serialize)]
 pub struct Opening {
@@ -374,7 +467,13 @@ pub(crate) enum Raw {
     ParamName(String),
     Opening(Box<Opening>),
     StairRun(Box<StairRun>),
-    RunType(bool, f64),
+    RunType(bool, f64, StairParts),
+    /// A stair run's or landing's type's parts (mitcad#333).
+    StairParts(StairParts),
+    Landing(Box<Landing>),
+    Sweep(Box<Sweep>),
+    Path3d(Vec<Vec<Curve>>),
+    ProfileType(i64),
     /// A building element of one of these kinds whose parameters did not
     /// read: why.
     Unread(String),
@@ -396,6 +495,15 @@ pub struct Building {
     /// Stair run types: monolithic (`m_hasMonolithicSupport`), and the
     /// depth of the support under the nosing line (`m_structuralDepth`).
     pub run_types: BTreeMap<i64, (bool, f64)>,
+    /// Stair run and landing types' treads and risers (mitcad#333).
+    pub stair_parts: BTreeMap<i64, StairParts>,
+    pub landings: BTreeMap<i64, Landing>,
+    /// Wall sweeps, slab edges (fascias, gutters) and rails (mitcad#333).
+    pub sweeps: BTreeMap<i64, Sweep>,
+    /// 3D paths (`Path3d`: a rail's path).
+    pub paths3d: BTreeMap<i64, Vec<Vec<Curve>>>,
+    /// Types' profiles (`m_profileId`: a profile family's type).
+    pub profile_types: BTreeMap<i64, i64>,
     /// Family parameters' names.
     pub param_names: BTreeMap<i64, String>,
     /// Elements of these kinds whose parameters did not read, and why.
@@ -426,8 +534,24 @@ impl Building {
             Raw::ParamName(n) => {
                 self.param_names.insert(id, n);
             }
-            Raw::RunType(m, d) => {
+            Raw::RunType(m, d, p) => {
                 self.run_types.insert(id, (m, d));
+                self.stair_parts.insert(id, p);
+            }
+            Raw::StairParts(p) => {
+                self.stair_parts.insert(id, p);
+            }
+            Raw::Landing(l) => {
+                self.landings.insert(id, *l);
+            }
+            Raw::Sweep(s) => {
+                self.sweeps.insert(id, *s);
+            }
+            Raw::Path3d(p) => {
+                self.paths3d.insert(id, p);
+            }
+            Raw::ProfileType(p) => {
+                self.profile_types.insert(id, p);
             }
             Raw::StairRun(r) => {
                 self.stair_runs.insert(id, *r);
@@ -843,9 +967,13 @@ impl<'a> Reader<'a> {
                 }
             }
         }
-        let type_id = ["m_floorAttributesId", "m_roofAttributesId"]
-            .iter()
-            .find_map(|f| self.id(root, f));
+        let type_id = [
+            "m_floorAttributesId",
+            "m_roofAttributesId",
+            "m_ceilingAttributesId",
+        ]
+        .iter()
+        .find_map(|f| self.id(root, f));
         Ok(Slab {
             id,
             class: self.class(root).to_string(),
@@ -961,7 +1089,53 @@ impl<'a> Reader<'a> {
             })
             .filter(|id| *id > 0)
             .collect();
+        s.mullion = self.mullion_sym(root);
+        s.panel = self.panel_sym(root);
         s
+    }
+
+    /// A curtain mullion's own symbol's profile and path.
+    fn mullion_sym(&self, root: &'a Object) -> Option<MullionSym> {
+        let r = self
+            .record
+            .pointees
+            .iter()
+            .find(|p| self.class(p) == "MullionSymFamRef")?;
+        let profile = self
+            .obj(root, "m_sysProfile")
+            .map(|p| self.class(p).to_string())
+            .unwrap_or_default();
+        let params = self.params(root);
+        let p = |id: i64| params.iter().find(|(k, _)| *k == id).map(|(_, v)| *v);
+        Some(MullionSym {
+            profile,
+            profile_id: self.id(root, "m_profileId").filter(|p| *p > 0),
+            widths: [p(-1_007_300).unwrap_or(0.0), p(-1_007_301).unwrap_or(0.0)],
+            depths: [p(-1_007_357).unwrap_or(0.0), p(-1_007_358).unwrap_or(0.0)],
+            thickness: p(-1_007_304).unwrap_or(0.0),
+            offset: p(-1_007_351).unwrap_or(0.0),
+            path: self.obj(r, "m_pCurve").and_then(|c| self.curve(c).ok()),
+            normal: self.vec3(r, "m_pathNorm")?,
+            flags: self.u64(r, "m_flags").unwrap_or(0),
+        })
+    }
+
+    /// A curtain panel's own symbol's cell.
+    fn panel_sym(&self, root: &'a Object) -> Option<PanelSym> {
+        let r = self
+            .record
+            .pointees
+            .iter()
+            .find(|p| self.class(p) == "CurtainCellSymFamRef")?;
+        let mut unread = Vec::new();
+        Some(PanelSym {
+            loops: self.loops(self.list(r, "m_pCurveLoops"), &mut unread),
+            plane: self.obj(r, "m_pSurf").and_then(|s| self.plane(s)),
+            thickness: self.f64(root, "m_thickness").unwrap_or(0.0),
+            offset: self.f64(root, "m_offset").unwrap_or(0.0),
+            empty: self.bool(root, "m_empty").unwrap_or(false),
+            flipped: self.bool(r, "m_flipped").unwrap_or(false),
+        })
     }
 
     fn structure(&self, root: &'a Object) -> Option<Vec<Layer>> {
@@ -1117,6 +1291,124 @@ impl<'a> Reader<'a> {
         }
     }
 
+    fn sweep(&self, id: i64, root: &'a Object) -> Sweep {
+        let mut paths = Vec::new();
+        let mut host = None;
+        let mut up = None;
+        let mut profile = None;
+        let class = self.class(root).to_string();
+        // A wall sweep's curves.
+        if let Some(steps) = self.obj(root, "m_geomSteps") {
+            for s in self.list(steps, "m_nonBRepGList") {
+                let Some(step) = self.deref(s) else { continue };
+                if self.class(step) == "WallSweepCurveGStep" {
+                    host = host.or_else(|| self.id(step, "m_hostId"));
+                    let curves: Vec<Curve> = self
+                        .list(step, "m_curves")
+                        .iter()
+                        .filter_map(|c| self.deref(c))
+                        .filter_map(|c| self.curve(c).ok())
+                        .collect();
+                    if !curves.is_empty() {
+                        paths.push(curves);
+                    }
+                }
+            }
+        }
+        if let Some(info) = self.get(root, "m_wallSweepInfo").and_then(Value::as_object) {
+            profile = self.id(info, "m_profileId");
+        }
+        // A slab edge's loops.
+        for d in self
+            .record
+            .pointees
+            .iter()
+            .filter(|p| self.class(p) == "SweepHostLoopData")
+        {
+            if let Some(l) = self.obj(d, "m_pathLoop") {
+                let curves: Vec<Curve> = self
+                    .list(l, "m_curves")
+                    .iter()
+                    .filter_map(|c| self.deref(c))
+                    .filter_map(|c| self.curve(c).ok())
+                    .collect();
+                if !curves.is_empty() {
+                    paths.push(curves);
+                }
+            }
+            up = up.or_else(|| self.vec3(d, "m_driveVec"));
+        }
+        // A rail's path and profile.
+        let path3d = self
+            .obj(root, "m_oPathProvider")
+            .and_then(|p| self.id(p, "m_path3dId"));
+        if let Some(pd) = self.get(root, "m_profileData").and_then(Value::as_object) {
+            profile = profile.or_else(|| self.id(pd, "m_profileFamSymId"));
+        }
+        let params = self.params(root);
+        let p = |k: i64| {
+            params
+                .iter()
+                .find(|(id, _)| *id == k)
+                .map_or(0.0, |(_, v)| *v)
+        };
+        Sweep {
+            id,
+            class,
+            paths,
+            path3d,
+            profile,
+            type_id: self.id(root, "m_typeId"),
+            up,
+            offsets: [p(-1_012_825), p(-1_012_827)],
+            flipped: self.bool(root, "m_flipped").unwrap_or(false),
+            host,
+        }
+    }
+
+    fn stair_parts(&self, root: &'a Object) -> StairParts {
+        let has = |f: &str| self.bool(root, f).unwrap_or(false);
+        let size = |f: &str| self.f64(root, f).filter(|v| *v > 1e-9);
+        StairParts {
+            monolithic: has("m_hasMonolithicSupport"),
+            tread: size("m_treadThickness").filter(|_| has("m_hasTread")),
+            riser: size("m_riserThickness").filter(|_| has("m_hasRiser")),
+            nosing: self.f64(root, "m_nosingLength").unwrap_or(0.0),
+            thickness: self.f64(root, "m_thickness").unwrap_or(0.0),
+        }
+    }
+
+    fn landing(&self, id: i64, root: &'a Object) -> Landing {
+        let mut unread = Vec::new();
+        let boundary = match self.obj(root, "m_oBoundary") {
+            Some(l) => {
+                let curves: Vec<Curve> = self
+                    .list(l, "m_curves")
+                    .iter()
+                    .filter_map(|c| self.deref(c))
+                    .filter_map(|c| match self.curve(c) {
+                        Ok(c) => Some(c),
+                        Err(e) => {
+                            unread.push(e);
+                            None
+                        }
+                    })
+                    .collect();
+                if curves.is_empty() || !unread.is_empty() {
+                    Vec::new()
+                } else {
+                    vec![curves]
+                }
+            }
+            None => Vec::new(),
+        };
+        Landing {
+            id,
+            boundary,
+            top: self.f64(root, "m_baseElevation").unwrap_or(0.0),
+        }
+    }
+
     fn opening(&self, id: i64, root: &'a Object) -> Opening {
         let mut unread = Vec::new();
         let mut loops = Vec::new();
@@ -1156,6 +1448,47 @@ impl<'a> Reader<'a> {
     }
 }
 
+/// A curve element's curve (`CurveElem.m_pCurveDriver` → `m_pCrv`), of
+/// some length: a line or an arc, an ellipse (`GEllipse`: `m_center`,
+/// `m_xVec`, `m_yVec`, `m_xLen`, `m_yLen`, `m_endParams`) as 32 chords.
+pub(crate) fn curve_elem(schema: &Schema, record: &Record) -> Vec<Curve> {
+    let r = Reader { schema, record };
+    let Some(c) = r
+        .obj(&record.root, "m_pCurveDriver")
+        .and_then(|d| r.obj(d, "m_pCrv"))
+    else {
+        return Vec::new();
+    };
+    if r.class(c) == "GEllipse" {
+        let (Some(o), Some(x), Some(y), Some(a), Some(b)) = (
+            r.vec3(c, "m_center"),
+            r.vec3(c, "m_xVec"),
+            r.vec3(c, "m_yVec"),
+            r.f64(c, "m_xLen"),
+            r.f64(c, "m_yLen"),
+        ) else {
+            return Vec::new();
+        };
+        let t = r.floats(c, "m_endParams");
+        if t.len() != 2 {
+            return Vec::new();
+        }
+        let at = |s: f64| add(o, add(scale(x, a * s.cos()), scale(y, b * s.sin())));
+        let n = 32;
+        return (0..n)
+            .map(|k| Curve::Line {
+                start: at(t[0] + (t[1] - t[0]) * k as f64 / n as f64),
+                end: at(t[0] + (t[1] - t[0]) * (k + 1) as f64 / n as f64),
+            })
+            .collect();
+    }
+    r.curve(c)
+        .ok()
+        .filter(|c| c.length() > 1e-9)
+        .into_iter()
+        .collect()
+}
+
 /// What a record gives the building model, by its class (None for
 /// classes it has nothing of).
 pub(crate) fn read(schema: &Schema, record: &Record, id: i64) -> Option<Raw> {
@@ -1181,6 +1514,20 @@ pub(crate) fn read(schema: &Schema, record: &Record, id: i64) -> Option<Raw> {
     if is("FamilySymbol") {
         return Some(Raw::Symbol(Box::new(r.symbol(id, root))));
     }
+    if is("Symbol")
+        && let Some(p) = r.id(root, "m_profileId").filter(|p| *p > 0)
+    {
+        return Some(Raw::ProfileType(p));
+    }
+    if class == "WallSweep" || is("SweepHost") || is("ContinuousRail") {
+        return Some(Raw::Sweep(Box::new(r.sweep(id, root))));
+    }
+    if class == "Path3d" {
+        let mut unread = Vec::new();
+        return Some(Raw::Path3d(
+            r.loops(r.list(root, "m_curveLoops"), &mut unread),
+        ));
+    }
     if is("Symbol") && root.get(schema, "m_pCompoundStructure").is_some() {
         return r.structure(root).map(Raw::Structure);
     }
@@ -1193,8 +1540,11 @@ pub(crate) fn read(schema: &Schema, record: &Record, id: i64) -> Option<Raw> {
             return Some(Raw::RunType(
                 r.bool(root, "m_hasMonolithicSupport").unwrap_or(false),
                 r.f64(root, "m_structuralDepth").unwrap_or(0.0),
+                r.stair_parts(root),
             ));
         }
+        "StairsLandingType" => return Some(Raw::StairParts(r.stair_parts(root))),
+        "StairsLanding" => return Some(Raw::Landing(Box::new(r.landing(id, root)))),
         "Opening" | "SWallRectOpening" | "ShaftOpening" => {
             return Some(Raw::Opening(Box::new(r.opening(id, root))));
         }

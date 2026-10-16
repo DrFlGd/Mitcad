@@ -1,0 +1,115 @@
+Mitcad's patch to OCCT 8.0.1, under OCCT's licence:
+SPDX-License-Identifier: LGPL-2.1-only WITH OCCT-exception-1.0
+
+Fillets: the end of an open stripe whose contact runs along a whole edge
+of the face it consumes (patch 0014) becomes that edge's vertex, and so
+does the stripe's point there, everywhere in the DS.
+
+E.g. a fin 1.5 thick standing on a wall, its top and bottom flush with the
+wall's: the edges round one side rounded with 0.75 (a tangent chain round
+the fin's rounded outer corners), then those round the other side with
+0.75. The second rounding's contacts on the fin's top and bottom run along
+the whole edges the first one left there, up to the wall. 0014 made those
+contacts' ends the edges' vertices (ChFiDS_CommonPoint::SetVertex), but at
+the stripe's start and end the stripe kept the index of the point it had
+made there (0321 replaced it for closed stripes only). ChFi3d_FilDS takes
+the kind of the stripe's end from its common point, now a vertex, so it
+put the point's index into the DS as a vertex's: with OCCT's exceptions
+off (release builds), ChFi3d_Builder::Compute read and updated the
+tolerance of the DS's shape of that index as a vertex's (here the solid's
+and a face's TShape), past the end of the object, corrupting the heap; the
+build then failed (TopoDS_Builder::Add) and the process crashed later
+freeing shapes or measuring them. Now the stripe's index there is the
+vertex's for open stripes too, and the curves and edges the DS already has
+at the old point (the end's) are put at the vertex (the new
+ChFi3d_StripeEndAtVertex). The fin builds, valid, each side's rounding
+taking off the same volume.
+diff --git a/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_0.cxx b/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_0.cxx
+index f5f5492..1a039de 100644
+--- a/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_0.cxx
++++ b/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_0.cxx
+@@ -3286,6 +3286,48 @@ static occ::handle<ChFiDS_SurfData> ChFi3d_SplitAtVertexOnLine(TopOpeBRepDS_Data
+   return aNext;
+ }
+ 
++// The stripe's end on side ons (its start with isFirst), a point of the DS
++// until now, is the vertex V: the stripe's index there becomes V's, and
++// whatever the DS has already put at that point (the end's or a corner's
++// curves and edges) is put at V. ChFi3d_FilDS takes the kind of the
++// stripe's index there from its common point, now a vertex: with the
++// point's index it read a shape of the DS that is no vertex as one (a
++// solid's or a face's TShape, past its end), and with the point kept the
++// curves met at a point beside the vertex (TopoDS_Builder::Add).
++static void ChFi3d_StripeEndAtVertex(TopOpeBRepDS_DataStructure&       DStr,
++                                     const occ::handle<ChFiDS_Stripe>& CorDat,
++                                     const bool                        isFirst,
++                                     const int                         ons,
++                                     const TopoDS_Vertex&              V)
++{
++  const int aPoint  = CorDat->IndexPoint(isFirst, ons);
++  const int aVertex = DStr.AddShape(V);
++  CorDat->SetIndexPoint(aVertex, isFirst, ons);
++  if (aPoint <= 0)
++  {
++    return;
++  }
++  const auto toVertex = [aPoint, aVertex](NCollection_List<occ::handle<TopOpeBRepDS_Interference>>& LI) {
++    for (NCollection_List<occ::handle<TopOpeBRepDS_Interference>>::Iterator it(LI); it.More(); it.Next())
++    {
++      const occ::handle<TopOpeBRepDS_Interference>& I = it.Value();
++      if (I->GeometryType() == TopOpeBRepDS_POINT && I->Geometry() == aPoint)
++      {
++        I->GeometryType(TopOpeBRepDS_VERTEX);
++        I->Geometry(aVertex);
++      }
++    }
++  };
++  for (int ic = 1; ic <= DStr.NbCurves(); ic++)
++  {
++    toVertex(DStr.ChangeCurveInterferences(ic));
++  }
++  for (int is = 1; is <= DStr.NbShapes(); is++)
++  {
++    toVertex(DStr.ChangeShapeInterferences(is));
++  }
++}
++
+ void ChFi3d_ContactsAlongFaceEdges(TopOpeBRepDS_DataStructure&       DStr,
+                                    const occ::handle<ChFiDS_Stripe>& CorDat,
+                                    const ChFiDS_Map&                 EFMap,
+@@ -3484,12 +3526,16 @@ void ChFi3d_ContactsAlongFaceEdges(TopOpeBRepDS_DataStructure&       DStr,
+         // A contact along a whole open edge: its ends, not on an arc, at
+         // the edge's vertices are those vertices (where the spine's edges
+         // meet, a contact along a line and an arc of one face's boundary).
+-        // Where such an end is the start or the end of a closed stripe
+-        // (the contacts of a closed contour of several edges run along the
+-        // edges of a face they consume all round), the stripe's point there
+-        // is that vertex too: the point the stripe had made for its start
+-        // stood beside the vertex, and the topological build failed on the
+-        // two (TopoDS_Builder::Add).
++        // Where such an end is the start or the end of the stripe, the
++        // stripe's point there is that vertex too (ChFi3d_StripeEndAtVertex):
++        // the point the stripe had made for its end stood beside the
++        // vertex. At the start of a closed stripe (the contacts of a closed
++        // contour of several edges run along the edges of a face they
++        // consume all round) the topological build failed on the two
++        // (TopoDS_Builder::Add); at the end of an open one (a fin's sides
++        // rounded one after the other, each as wide as half the fin, up to
++        // the wall the fin stands on) ChFi3d_FilDS also took the point's
++        // index for a vertex's and read another shape as a vertex.
+         for (const bool isFirst : {true, false})
+         {
+           ChFiDS_CommonPoint& CP = Fd->ChangeVertex(isFirst, ons);
+@@ -3502,10 +3548,9 @@ void ChFi3d_ContactsAlongFaceEdges(TopOpeBRepDS_DataStructure&       DStr,
+             if (CP.Point().Distance(BRep_Tool::Pnt(aV)) <= Tol3d + BRep_Tool::Tolerance(aV))
+             {
+               CP.SetVertex(aV);
+-              if ((aSpine->IsPeriodic() || aSpine->IsClosed())
+-                  && ((isFirst && j == 1) || (!isFirst && j == SeqFil.Length())))
++              if ((isFirst && j == 1) || (!isFirst && j == SeqFil.Length()))
+               {
+-                CorDat->SetIndexPoint(DStr.AddShape(aV), isFirst, ons);
++                ChFi3d_StripeEndAtVertex(DStr, CorDat, isFirst, ons, aV);
+               }
+               break;
+             }

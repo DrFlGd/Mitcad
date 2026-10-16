@@ -2,18 +2,51 @@
 // Join, Cut and Intersect with participant bodies: pieces, their sources and
 // the face names they carry.
 
+#include <algorithm>
+#include <cmath>
+#include <cstdio>
+#include <string>
 #include <utility>
+#include <vector>
 
+#include <BRepAdaptor_Curve.hxx>
+#include <BRepAlgoAPI_Common.hxx>
+#include <BRepAlgoAPI_Cut.hxx>
+#include <BRepAlgoAPI_Fuse.hxx>
+#include <BRepAlgoAPI_Splitter.hxx>
+#include <BRepBuilderAPI_MakeEdge.hxx>
 #include <BRepBuilderAPI_MakeFace.hxx>
+#include <BRepBuilderAPI_MakeVertex.hxx>
+#include <BRepBuilderAPI_MakeWire.hxx>
+#include <BRepCheck_Analyzer.hxx>
+#include <BRepFilletAPI_MakeFillet.hxx>
+#include <BRepGProp.hxx>
+#include <BRepPrimAPI_MakeBox.hxx>
+#include <BRepPrimAPI_MakeCylinder.hxx>
+#include <ShapeUpgrade_UnifySameDomain.hxx>
+#include <GProp_GProps.hxx>
+#include <GeomAPI_Interpolate.hxx>
+#include <Geom_BSplineCurve.hxx>
+#include <Geom_Circle.hxx>
+#include <NCollection_HArray1.hxx>
+#include <NCollection_List.hxx>
+#include <TopExp_Explorer.hxx>
+#include <TopoDS_Edge.hxx>
+#include <TopoDS_Face.hxx>
+#include <TopoDS_Vertex.hxx>
 #include <BRep_Builder.hxx>
+#include <BRep_Tool.hxx>
+#include <GCPnts_AbscissaPoint.hxx>
 #include <TopoDS.hxx>
 #include <TopoDS_Compound.hxx>
 #include <TopoDS_Shell.hxx>
 #include <TopoDS_Solid.hxx>
+#include <gp_Ax2.hxx>
 #include <gp_Pln.hxx>
 
 #include "../src/history.hpp"
 #include "check.hpp"
+#include "mitcad/geometry/path_sweep.hpp"
 
 namespace test {
 namespace {
@@ -348,6 +381,229 @@ void test_join_within_a_tolerance_on_a_near_coincident_face() {
   }
 }
 
+// A block 40 x 20 x 20 with half a cylinder (radius 12.5, axis z through
+// the middle of its front side y = 0) taken out of it, its two rims rounded
+// with radius 1, and the tool that fills the cavity again: half a cylinder
+// `dr` larger in radius, as high as the block (it meets the roundings
+// tangentially).
+std::pair<ShapePtr, ShapePtr> rounded_cavity_and_filler(double dr) {
+  const TopoDS_Shape box = BRepPrimAPI_MakeBox(gp_Pnt(-20, 0, 0), gp_Pnt(20, 20, 20)).Shape();
+  const TopoDS_Shape hole = BRepPrimAPI_MakeCylinder(gp_Ax2(gp_Pnt(0, 0, -1), gp_Dir(0, 0, 1)), 12.5, 22).Shape();
+  const TopoDS_Shape cavity = BRepAlgoAPI_Cut(box, hole).Shape();
+  BRepFilletAPI_MakeFillet rims(cavity);
+  for (TopExp_Explorer it(cavity, TopAbs_EDGE); it.More(); it.Next()) {
+    if (BRepAdaptor_Curve(TopoDS::Edge(it.Current())).GetType() == GeomAbs_Circle) {
+      rims.Add(1.0, TopoDS::Edge(it.Current()));
+    }
+  }
+  rims.Build();
+  const TopoDS_Shape filler_cylinder =
+      BRepPrimAPI_MakeCylinder(gp_Ax2(gp_Pnt(0, 0, 0), gp_Dir(0, 0, 1)), 12.5 + dr, 20).Shape();
+  const TopoDS_Shape filler =
+      BRepAlgoAPI_Common(filler_cylinder, BRepPrimAPI_MakeBox(gp_Pnt(-20, 0, -5), gp_Pnt(20, 20, 25)).Shape())
+          .Shape();
+  const auto named = [](const TopoDS_Shape& shape, const std::string& feature) {
+    std::vector<Shape::NamedFace> names;
+    int i = 0;
+    for (TopExp_Explorer it(shape, TopAbs_FACE); it.More(); it.Next()) {
+      names.push_back({it.Current(), {feature + ":import(" + std::to_string(i++) + ")"}});
+    }
+    return std::make_shared<Shape>(shape, names);
+  };
+  CHECK(rims.IsDone());
+  return {named(rims.IsDone() ? rims.Shape() : cavity, "F1"), named(filler, "F2")};
+}
+
+void test_join_within_a_tolerance_rebuilds_lost_solids() {
+  // The filler as large as the cavity: the exact join fills it, leaving
+  // the grooves at the rims.
+  const auto [exact_block, exact_filler] = rounded_cavity_and_filler(0.0);
+  const BooleanResult exact = run(BooleanOp::Join, {exact_block}, exact_filler);
+  CHECK(exact.pieces.size() == 1);
+  const double filled = exact.pieces.empty() ? 0.0 : volume(*exact.pieces[0].shape);
+  CHECK(filled > 16000.0 - 20.0 && filled < 16000.0);
+  // The filler 0.1 nm thinner than the cavity: OCCT's exact join builds no
+  // solid at all (it cannot orient the faces and leaves them unused); half
+  // a micrometre thinner, it leaves the filler's faces loose beside the
+  // block. Within 0.01 mm the join is retried with the smallest fuzzy value
+  // that builds solids of every face and the target (mitcad#235: an
+  // extrusion against a stored body's rounded cylindrical wall).
+  for (const double dr : {-1e-7, -5e-7}) {
+    const auto [block_with_cavity, filler] = rounded_cavity_and_filler(dr);
+    const BooleanResult within = run_within(block_with_cavity, filler, 0.01);
+    CHECK((within.touched == std::vector<bool>{true}));
+    CHECK(within.pieces.size() == 1);
+    if (within.pieces.size() == 1) {
+      CHECK((within.pieces[0].sources == std::vector<std::size_t>{0}));
+      CHECK_NEAR_TOL(volume(*within.pieces[0].shape), filled, 1e-6);
+      CHECK(BRepCheck_Analyzer(within.pieces[0].shape->occt()).IsValid());
+    }
+  }
+}
+
+// The edges of a shape shorter than 1e-5 mm (degenerate ones aside).
+int zero_length_edges(const Shape& shape) {
+  int count = 0;
+  for (int i = 0; i < shape.edge_count(); ++i) {
+    const TopoDS_Edge& e = shape.edge(i);
+    if (!BRep_Tool::Degenerated(e)) {
+      BRepAdaptor_Curve curve(e);
+      count += GCPnts_AbscissaPoint::Length(curve) < 1e-5 ? 1 : 0;
+    }
+  }
+  return count;
+}
+
+// A ring between radii 12 and 15 about the z axis that runs into a wall
+// (y >= 12) tangentially, as a boss of a design whose sketch put the end
+// of the line along the wall `delta` short of the point where its circle
+// touches the wall (the solver's noise along a tangent): the wall with the
+// ring's first quarter (x, y >= 0) joined to it, which ends exactly at the
+// tangent point (0, 12), and the rest of the ring (from the wall round to
+// the x axis) as the tool, all 10 high.
+struct TangentBoss {
+  ShapePtr target;
+  ShapePtr tool;
+};
+
+TangentBoss tangent_boss(double delta) {
+  const auto line = [](int curve, gp_Pnt2d a, gp_Pnt2d b) {
+    Segment s;
+    s.name = "c" + std::to_string(curve);
+    s.start = a;
+    s.end = b;
+    return s;
+  };
+  const auto arc = [](int curve, double radius, double from, double to) {
+    Segment s;
+    s.name = "c" + std::to_string(curve);
+    s.kind = SegmentKind::Arc;
+    s.center = gp_Pnt2d(0, 0);
+    s.radius = radius;
+    s.start_angle = from;
+    s.end_angle = to;
+    return s;
+  };
+  const auto region = [](std::vector<Segment> segments) {
+    Region r;
+    r.name = "r{";
+    for (const Segment& s : segments) {
+      r.name += (r.name.size() > 2 ? "," : "") + s.name;
+    }
+    r.name += "}";
+    Loop loop;
+    loop.segments = std::move(segments);
+    r.loops.push_back(std::move(loop));
+    return r;
+  };
+  const ShapePtr wall = extrude("F1", {rectangle(1, -20, 12, 40, 18)}, 0, 10);
+  const ShapePtr quarter = extrude("F2",
+                                   {region({line(5, {12, 0}, {15, 0}), arc(6, 15, 0, kPi / 2),
+                                            line(7, {0, 15}, {0, 12}), arc(8, 12, 0, kPi / 2)})},
+                                   0, 10);
+  TangentBoss boss;
+  boss.target = run(BooleanOp::Join, {wall}, quarter).pieces.at(0).shape;
+  const double touch = kPi / 2 + delta / 12;
+  const double rim = kPi - std::asin(12.0 / 15.0);
+  boss.tool = extrude("F3",
+                      {region({line(9, {15 * std::cos(rim), 12}, {12 * std::cos(touch), 12 * std::sin(touch)}),
+                               arc(10, 12, touch, 2 * kPi), line(11, {12, 0}, {15, 0}), arc(12, 15, rim, 2 * kPi)})},
+                      0, 10);
+  return boss;
+}
+
+void test_join_within_a_tolerance_of_a_boss_touching_a_wall_tangentially() {
+  // Exact, the join keeps the tool's end 1.17 micrometres from the
+  // target's tangent edge: a strip of the wall that wide is left between
+  // the two parts of the ring's inner cylinder, its ends edges of zero
+  // length (on which a chamfer of the ring failed, mitcad#326). Within the
+  // import's tolerance the join merges them: the body of an exact end.
+  const TangentBoss exact_end = tangent_boss(0.0);
+  const BooleanResult reference = run_within(exact_end.target, exact_end.tool, 0.01);
+  CHECK(reference.pieces.size() == 1);
+  const TangentBoss noisy = tangent_boss(1.17e-6);
+  const BooleanResult exact = run(BooleanOp::Join, {noisy.target}, noisy.tool);
+  CHECK(exact.pieces.size() == 1);
+  if (exact.pieces.size() == 1) {
+    // (The strip the exact join leaves: this test's premise.)
+    CHECK(zero_length_edges(*exact.pieces[0].shape) > 0);
+  }
+  const BooleanResult within = run_within(noisy.target, noisy.tool, 0.01);
+  CHECK((within.touched == std::vector<bool>{true}));
+  CHECK(within.pieces.size() == 1);
+  if (within.pieces.size() == 1 && reference.pieces.size() == 1) {
+    const Shape& joined = *within.pieces[0].shape;
+    CHECK((within.pieces[0].sources == std::vector<std::size_t>{0}));
+    CHECK(zero_length_edges(joined) == 0);
+    CHECK(joined.face_count() == reference.pieces[0].shape->face_count());
+    CHECK(near(volume(joined), volume(*reference.pieces[0].shape)));
+    CHECK(faces_named(joined, "F3:side(c10)") == 1);
+    CHECK(edge_names_unique(joined));
+  }
+}
+
+// A tube boss on a plate (along -x: the plate x 0..2, radius 20, the tube
+// x 2..12, radius 6.5) with a bore of radius 4 through both, made by two
+// cuts whose cylinders' seams lie `first` and `second` degrees about the
+// axis from +y, merged into one face: its seam steps between them at x = 2.
+ShapePtr bored_boss(double first, double second) {
+  const gp_Dir along(-1, 0, 0);
+  const auto seam = [](double degrees) {
+    const double a = degrees * M_PI / 180.0;
+    return gp_Dir(0, std::cos(a), std::sin(a));
+  };
+  const TopoDS_Shape plate = BRepPrimAPI_MakeCylinder(gp_Ax2(gp_Pnt(2, 0, 0), along), 20, 2).Shape();
+  const TopoDS_Shape tube = BRepPrimAPI_MakeCylinder(gp_Ax2(gp_Pnt(12, 0, 0), along), 6.5, 10).Shape();
+  const TopoDS_Shape low = BRepPrimAPI_MakeCylinder(gp_Ax2(gp_Pnt(2, 0, 0), along, seam(first)), 4, 3).Shape();
+  const TopoDS_Shape high = BRepPrimAPI_MakeCylinder(gp_Ax2(gp_Pnt(13, 0, 0), along, seam(second)), 4, 11).Shape();
+  TopoDS_Shape boss = BRepAlgoAPI_Fuse(plate, tube).Shape();
+  boss = BRepAlgoAPI_Cut(BRepAlgoAPI_Cut(boss, low).Shape(), high).Shape();
+  ShapeUpgrade_UnifySameDomain unify(boss, true, true, true);
+  unify.Build();
+  std::vector<Shape::NamedFace> names;
+  int i = 0;
+  for (TopExp_Explorer it(unify.Shape(), TopAbs_FACE); it.More(); it.Next()) {
+    names.push_back({it.Current(), {"F1:import(" + std::to_string(i++) + ")"}});
+  }
+  return std::make_shared<Shape>(unify.Shape(), names);
+}
+
+void test_cut_of_a_thread_in_a_bore_whose_seam_steps() {
+  // A thread cut into the bore: a circle of radius 1 on the bore's surface
+  // (in the plane y = 0, 13 from the plate's face), 12 turns of pitch 3 along
+  // -x, its pieces' seams shifted by a sixth of a turn. Where the bore's
+  // seam steps a quarter turn, OCCT's cut removed nothing; the bore rebuilt
+  // with one straight seam takes the thread (mitcad#235).
+  Frame xz;
+  xz.x_axis = gp_Dir(1, 0, 0);
+  xz.y_axis = gp_Dir(0, 0, 1);
+  HelixSweepSpec spec;
+  spec.feature = "F2";
+  spec.frame = xz;
+  spec.regions = {circle(1, 13, 4, 1)};
+  spec.axis = gp_Ax1(gp_Pnt(0, 0, 0), gp_Dir(-1, 0, 0));
+  spec.pitch = 3;
+  spec.revolutions = 12;
+  spec.piece_shift = 1.0 / 6.0;
+  const ShapePtr thread = helix_sweep(spec);
+  const ShapePtr straight = bored_boss(0, 0);
+  const BooleanResult reference = run(BooleanOp::Cut, {straight}, thread);
+  CHECK(reference.pieces.size() == 1);
+  const double removed = reference.pieces.empty() ? 0.0 : volume(*straight) - volume(*reference.pieces[0].shape);
+  // Half the thread's section along the 4 turns in the bore.
+  CHECK(removed > 150.0 && removed < 200.0);
+  for (const auto& [first, second] : {std::pair{0.0, 90.0}, std::pair{180.0, 270.0}}) {
+    const ShapePtr stepping = bored_boss(first, second);
+    const BooleanResult cut = run(BooleanOp::Cut, {stepping}, thread);
+    CHECK((cut.touched == std::vector<bool>{true}));
+    CHECK(cut.pieces.size() == 1);
+    if (cut.pieces.size() == 1) {
+      CHECK_NEAR_TOL(volume(*stepping) - volume(*cut.pieces[0].shape), removed, 1e-4);
+      CHECK(BRepCheck_Analyzer(cut.pieces[0].shape->occt()).IsValid());
+    }
+  }
+}
+
 void test_cut_hole_names_the_walls() {
   const ShapePtr drill = extrude("F4", {circle(5, 30, 20, 5)}, 0, 30);
   const BooleanResult result = run(BooleanOp::Cut, {block()}, drill);
@@ -460,9 +716,111 @@ void test_intersect() {
   CHECK(run(BooleanOp::Intersect, {block()}, around).touched == std::vector<bool>{false});
 }
 
+// A face split by curves that leave a vertex tangentially to each other
+// (OCCT port patch 0360, mitcad#235).
+struct TangentSplit {
+  int faces = 0;
+  bool valid = false;
+  double smallest = 0;   // the sliver's area as split
+  double expected = 0;   // the sliver's area from its own wire
+  double total = 0;
+};
+
+// A square split by a circle of radius 1.5 and a curve inside it that
+// leaves the circle's point (1.5, 0) tangentially (a B-spline through the
+// points of a circle of radius `inner` touching the circle there, up to
+// `sweep` radians round it, its parameters from 0 to `range`), and runs on
+// in a line to the circle at 120 degrees. The two vertices have
+// `tolerance`.
+TangentSplit split_by_tangent_curves(double inner, double sweep, double range, double tolerance) {
+  TangentSplit out;
+  const gp_Pln plane(gp_Pnt(0, 0, 0), gp_Dir(0, 0, 1));
+  const TopoDS_Face square = BRepBuilderAPI_MakeFace(plane, -2, 2, -2, 2).Face();
+  const occ::handle<Geom_Circle> outer = new Geom_Circle(gp_Ax2(gp_Pnt(0, 0, 0), gp_Dir(0, 0, 1)), 1.5);
+  const int count = 24;
+  occ::handle<NCollection_HArray1<gp_Pnt>> points = new NCollection_HArray1<gp_Pnt>(1, count);
+  occ::handle<NCollection_HArray1<double>> parameters = new NCollection_HArray1<double>(1, count);
+  for (int i = 0; i < count; ++i) {
+    const double angle = sweep * i / (count - 1);
+    points->SetValue(i + 1, gp_Pnt(1.5 - inner + inner * std::cos(angle), inner * std::sin(angle), 0));
+    parameters->SetValue(i + 1, range * i / (count - 1));
+  }
+  GeomAPI_Interpolate interpolate(points, parameters, false, 1e-9);
+  interpolate.Perform();
+  if (!interpolate.IsDone()) {
+    return out;
+  }
+  const gp_Pnt end = points->Value(count);
+  const gp_Pnt meet(1.5 * std::cos(2 * kPi / 3), 1.5 * std::sin(2 * kPi / 3), 0);
+  BRep_Builder builder;
+  const TopoDS_Vertex touch = BRepBuilderAPI_MakeVertex(gp_Pnt(1.5, 0, 0)).Vertex();
+  const TopoDS_Vertex corner = BRepBuilderAPI_MakeVertex(end).Vertex();
+  const TopoDS_Vertex on_circle = BRepBuilderAPI_MakeVertex(meet).Vertex();
+  builder.UpdateVertex(touch, tolerance);
+  builder.UpdateVertex(on_circle, tolerance);
+  const TopoDS_Edge circle_edge =
+      BRepBuilderAPI_MakeEdge(outer, touch, touch, 0, 2 * kPi).Edge();
+  const TopoDS_Edge curve_edge = BRepBuilderAPI_MakeEdge(interpolate.Curve(), touch, corner).Edge();
+  const TopoDS_Edge line_edge = BRepBuilderAPI_MakeEdge(corner, on_circle).Edge();
+  const TopoDS_Edge arc_edge = BRepBuilderAPI_MakeEdge(outer, touch, on_circle, 0, 2 * kPi / 3).Edge();
+  GProp_GProps sliver;
+  BRepGProp::SurfaceProperties(
+      BRepBuilderAPI_MakeFace(plane, BRepBuilderAPI_MakeWire(curve_edge, line_edge, arc_edge).Wire()).Face(), sliver);
+  out.expected = std::abs(sliver.Mass());
+  BRepAlgoAPI_Splitter splitter;
+  NCollection_List<TopoDS_Shape> arguments;
+  arguments.Append(square);
+  NCollection_List<TopoDS_Shape> tools;
+  tools.Append(circle_edge);
+  tools.Append(curve_edge);
+  tools.Append(line_edge);
+  splitter.SetArguments(arguments);
+  splitter.SetTools(tools);
+  splitter.Build();
+  if (!splitter.IsDone() || splitter.HasErrors()) {
+    return out;
+  }
+  out.valid = true;
+  out.smallest = 1e9;
+  for (TopExp_Explorer it(splitter.Shape(), TopAbs_FACE); it.More(); it.Next()) {
+    GProp_GProps props;
+    BRepGProp::SurfaceProperties(it.Current(), props);
+    ++out.faces;
+    out.total += props.Mass();
+    out.smallest = std::min(out.smallest, props.Mass());
+    out.valid = out.valid && BRepCheck_Analyzer(it.Current()).IsValid();
+  }
+  return out;
+}
+
+// The curve follows a circle 0.01 and 0.001 smaller for 1.5 radians, with
+// ten units of parameter over its 2.2 mm, and the vertices have the
+// tolerance of a thread's section edges (5e-6 mm). Each
+// curve's direction at the vertex was measured at a step of its own from it
+// (the circle's from its curvature and the vertex's tolerance, the curve's
+// from its parametrisation): the circle's farther away, where it had turned
+// more than the curve though the curve turns faster. Their order about the
+// vertex came out the wrong way round, and the sliver between them as a
+// face with the disc's boundary too, of negative area (a part's counterbore
+// through an internal thread whose crest lies on the hole's circle left the
+// body empty). The pieces are the square outside the circle, the disc less
+// the sliver and the sliver.
+void test_split_by_curves_tangent_at_a_vertex() {
+  for (const double inner : {1.49, 1.499}) {
+    const TangentSplit split = split_by_tangent_curves(inner, 1.5, 10, 5e-6);
+    if (split.faces != 3 || !split.valid || !near(split.smallest, split.expected, 1e-5) ||
+        !near(split.total, 16, 1e-6)) {
+      std::fprintf(stderr, "split by tangent curves, radius %g: %d faces, %s, sliver %.9g (%.9g), total %.9g\n", inner,
+                   split.faces, split.valid ? "valid" : "invalid", split.smallest, split.expected, split.total);
+      ++failures;
+    }
+  }
+}
+
 } // namespace
 
 void boolean_tests() {
+  guarded("test_split_by_curves_tangent_at_a_vertex", test_split_by_curves_tangent_at_a_vertex);
   test_join_keeps_names_and_names_new_edges();
   test_join_merges_flush_faces();
   guarded("test_join_merges_coaxial_cylinders_whatever_their_seams",
@@ -480,6 +838,9 @@ void boolean_tests() {
   // Joins within a tolerance (mitcad#298).
   test_join_within_a_tolerance_reaches_a_tool_micrometres_away();
   test_join_within_a_tolerance_on_a_near_coincident_face();
+  test_join_within_a_tolerance_rebuilds_lost_solids();
+  test_cut_of_a_thread_in_a_bore_whose_seam_steps();
+  test_join_within_a_tolerance_of_a_boss_touching_a_wall_tangentially();
 }
 
 } // namespace test

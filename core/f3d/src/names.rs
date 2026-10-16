@@ -682,6 +682,23 @@ impl<'a> NamedState<'a> {
         }
     }
 
+    /// How many of the faces a face recipe lists after its first (those
+    /// around the face, `entities[1..]`) are next to face `f`.
+    pub fn faces_around(&self, f: usize, entities: &[Vec<EntityName>]) -> usize {
+        let next: HashSet<usize> = self
+            .edges
+            .iter()
+            .filter(|e| e.faces.contains(&f))
+            .flat_map(|e| e.faces.iter().copied())
+            .filter(|&g| g != f)
+            .collect();
+        entities
+            .iter()
+            .skip(1)
+            .filter(|e| self.faces_named(e).into_iter().any(|g| next.contains(&g)))
+            .count()
+    }
+
     /// [`Self::find_face`], and where several faces fit the names, the
     /// first of them when all lie on one surface (the same cylinder or the
     /// same plane: a face the history split in pieces that keep its

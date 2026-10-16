@@ -541,6 +541,11 @@ stays on for the next sketch.
 - Imported designs: a dimension the file keeps driven gets the file's own
   parameter of it as its read-only reference, so expressions that use it
   follow what the sketch measures.
+- A command that starts with a selection (Offset, Fillet, Extrude, ...)
+  gives the keyboard to its first value field, text selected, as soon as
+  the required picks are made, so the number is typed without a click;
+  picks in the view still work, and a field you clicked into keeps the
+  keyboard.
 - A constraint button applies to the selected geometry, or picks it
   when nothing fitting is selected. Equal, Parallel, Perpendicular,
   Collinear, Concentric, Tangent and Coincident on more than two selected
@@ -1617,16 +1622,21 @@ An `.rvt` building project opens as a new document of reference geometry
 (File › Open, or `mitcad-cli import-rvt`): one component per level, named
 as the level, and in it a body for each building element (walls, floors,
 roofs, columns, beams, doors, windows, furniture, fixtures, ducts and pipes,
-…), named `Family:Type:Id` as the project names it. A body is the triangle
-mesh the file saves for the element where it has one (topography), else
-the element's box: a family instance's type box turned and placed as the
-instance is, other elements' boxes along the model's axes. The elements'
-real shapes come in a later version. Annotations, rooms, levels, grids,
-types and group definitions stay out; the import report counts them, lists
-the bodies per level and category and names the release that saved the
-file. An `.rfa` family file opens with its metadata only (its forms come
-later). The timeline's yellow badge notes that the bodies are boxes and
-saved meshes.
+…), named `Family:Type:Id` as the project names it. Walls, floors, roofs,
+ceilings, columns, beams and stair runs are rebuilt as features; every
+other element (doors, windows, furniture, curtain panels and mullions,
+railings, …) is a mesh of the shape the file keeps of it. An IFC export
+of the project next to it (of the same name, `project.ifc`) is used to
+check the elements and stands in for an element whose shape the file does
+not keep. Only an element of which nothing is kept comes in as its box,
+and such a box is hidden unless the element is structural (a wall, floor,
+roof, ceiling, stair run, column or beam): show its body in the browser
+to see it. Annotations, rooms, levels, grids, types and group definitions
+that are placed nowhere stay out; the import report counts them, lists the
+bodies per level and category, says for each box why, and names the
+release that saved the file. An `.rfa` family file opens with its metadata
+only (its forms come later). The timeline's yellow badge notes how many
+bodies are meshes and boxes.
 
 ## Command line
 

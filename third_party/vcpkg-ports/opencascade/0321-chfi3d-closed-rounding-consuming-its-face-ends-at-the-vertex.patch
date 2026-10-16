@@ -1,0 +1,48 @@
+Mitcad's patch to OCCT 8.0.1, under OCCT's licence:
+SPDX-License-Identifier: LGPL-2.1-only WITH OCCT-exception-1.0
+
+Fillets and chamfers: a closed contour of several edges whose blend
+consumes a face all round, its contact running along that face's edges.
+
+E.g. a slot (two lines and two half circles) under a counterbore of the
+same shape 0.5 wider: the counterbore's floor is a ledge 0.5 wide all round
+the slot's rim, and the rim rounded or chamfered with 0.5 consumes it. Each
+piece of the closed stripe has its contact along a whole edge of the
+ledge (ChFi3d_ContactsAlongFaceEdges, patch 0014), whose ends at the
+edge's vertices become those vertices. At the stripe's start and end,
+though, the stripe kept the point it had made for its start beside that
+vertex, and the topological build failed on the two (TopoDS_Builder::Add
+in TopOpeBRepBuild_Builder::MakeEdges); the fillet was built 0.1 % smaller
+by Mitcad, leaving a ledge of 0.5 micrometres on which the next rounding
+failed. As for a contact along a closed edge, the stripe's point there is
+now the vertex, for closed and periodic spines. A round hole (one closed
+edge) built before and builds the same.
+diff --git a/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_0.cxx b/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_0.cxx
+index e11bb77..f9f242d 100644
+--- a/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_0.cxx
++++ b/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_0.cxx
+@@ -3442,6 +3442,12 @@ void ChFi3d_ContactsAlongFaceEdges(TopOpeBRepDS_DataStructure&       DStr,
+         // A contact along a whole open edge: its ends, not on an arc, at
+         // the edge's vertices are those vertices (where the spine's edges
+         // meet, a contact along a line and an arc of one face's boundary).
++        // Where such an end is the start or the end of a closed stripe
++        // (the contacts of a closed contour of several edges run along the
++        // edges of a face they consume all round), the stripe's point there
++        // is that vertex too: the point the stripe had made for its start
++        // stood beside the vertex, and the topological build failed on the
++        // two (TopoDS_Builder::Add).
+         for (const bool isFirst : {true, false})
+         {
+           ChFiDS_CommonPoint& CP = Fd->ChangeVertex(isFirst, ons);
+@@ -3454,6 +3460,11 @@ void ChFi3d_ContactsAlongFaceEdges(TopOpeBRepDS_DataStructure&       DStr,
+             if (CP.Point().Distance(BRep_Tool::Pnt(aV)) <= Tol3d + BRep_Tool::Tolerance(aV))
+             {
+               CP.SetVertex(aV);
++              if ((aSpine->IsPeriodic() || aSpine->IsClosed())
++                  && ((isFirst && j == 1) || (!isFirst && j == SeqFil.Length())))
++              {
++                CorDat->SetIndexPoint(DStr.AddShape(aV), isFirst, ons);
++              }
+               break;
+             }
+           }

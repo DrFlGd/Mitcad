@@ -64,6 +64,7 @@ impl Document {
             openings: options.openings,
             occurrences: options.occurrences,
             progress: Some(progress.clone()),
+            ..Default::default()
         };
         let report = MemoryGuard::with_limit(options.memory_limit).around(&progress, || {
             mitcad_import::ifc::import_ifc(&mut self.0, &file, name, &import_options)

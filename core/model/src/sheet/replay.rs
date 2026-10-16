@@ -18,7 +18,7 @@
 //! Domains and curves each copy makes are the pattern's own (its feature
 //! identity, numbered per copy).
 
-use super::folded::cut::{straight_cut_on, straight_profiles};
+use super::folded::cut::{straight_cut_on, straight_cuts_at_once, straight_profiles};
 use super::folded::{boundary, flange, line, plane, read};
 use super::*;
 use crate::features::sheet_cut::SheetCutMode;
@@ -77,7 +77,18 @@ pub(crate) fn repeat<K: Kernel>(
     }
     let (mut state, rules) = read(ctx, body)?;
     let mut shape = ctx.body(body)?;
+    let mut done = std::collections::BTreeSet::new();
+    if let Some((next_shape, next_state, left)) =
+        straight_copies_at_once(ctx, copies, body, &state)?
+    {
+        shape = next_shape;
+        state = next_state;
+        done = (0..copies.len()).filter(|k| !left.contains(k)).collect();
+    }
     for (k, copy) in copies.iter().enumerate() {
+        if done.contains(&k) {
+            continue;
+        }
         let entry = ctx.feature_entry(copy.feature)?;
         let before = state.clone();
         let offset = 100_000 * (k as u32 + 1);
@@ -147,6 +158,78 @@ pub(crate) fn repeat<K: Kernel>(
     output.changes.push(BodyChange::Set(body, shape));
     output.sheets.insert(body, SheetChange::Set(state));
     Ok(Some(output))
+}
+
+/// Copies that are all of one straight sheet cut (mitcad#288: patterns of
+/// hundreds of vent holes), cut at once: each copy's tool from the copy of
+/// the sketch's plane along the copy of its direction, one boolean and one
+/// re-derivation of the domains for the copies clear of the bends' seams
+/// ([`straight_cuts_at_once`]), the result the same as cutting them one
+/// after another. Returns the shape, the sheet and the indices of the
+/// copies left to cut one by one; None when they are not such copies or
+/// cannot be taken together (then they are all cut one by one).
+#[allow(clippy::type_complexity)]
+fn straight_copies_at_once<K: Kernel>(
+    ctx: &mut EvalContext<'_, K>,
+    copies: &[Copy],
+    body: BodyUid,
+    before: &SheetState,
+) -> Result<Option<(K::Shape, SheetState, Vec<usize>)>, String> {
+    let Some(first) = copies.first() else {
+        return Ok(None);
+    };
+    if copies.len() < 2 || copies.iter().any(|c| c.feature != first.feature) {
+        return Ok(None);
+    }
+    let entry = ctx.feature_entry(first.feature)?;
+    let FeatureDef::SheetCut(def) = &entry.def else {
+        return Ok(None);
+    };
+    if def.mode != SheetCutMode::Straight {
+        return Ok(None);
+    }
+    let name = entry.name.clone();
+    let d = def.map_params(&mut |_, p| ctx.param(*p))?;
+    let (frame, profiles) = straight_profiles(&d, ctx)?;
+    let direction = frame.normal().map(|v| if d.flip { -v } else { v });
+    let cuts = copies
+        .iter()
+        .map(|copy| {
+            (
+                copy.transform.apply_frame(&frame),
+                profiles.clone(),
+                copy.transform.apply_vector(direction),
+            )
+        })
+        .collect();
+    let Some((shape, next, left)) = with_sheet_result(ctx, body, before, |child| {
+        straight_cuts_at_once(child, body, cuts, d.extent.as_ref())
+    })
+    .map_err(|e| format!("the copies of {name}: {e}"))?
+    else {
+        return Ok(None);
+    };
+    // Numbered apart from the copies cut one by one (offsets 100000 k).
+    let offset = 100_000 * (copies.len() as u32 + 1);
+    let state = renumber(before, next, ctx.uid, offset)?;
+    Ok(Some((shape, state, left)))
+}
+
+/// Runs `run` in a child context of the pattern on the current body and
+/// sheet (as [`with_sheet`] does for one copy).
+fn with_sheet_result<K: Kernel, T>(
+    ctx: &mut EvalContext<'_, K>,
+    body: BodyUid,
+    state: &SheetState,
+    run: impl FnOnce(&mut EvalContext<'_, K>) -> Result<T, String>,
+) -> Result<T, String> {
+    let shape = ctx.body(body)?;
+    let mut result = None;
+    with_sheet(ctx, body, &shape, state, |child| {
+        result = Some(run(child));
+        Ok(FeatureOutput::default())
+    })?;
+    result.expect("ran")
 }
 
 /// The copies of faces that made new sheet bodies (mitcad#280), when every

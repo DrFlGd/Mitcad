@@ -1,0 +1,153 @@
+Mitcad's patch to OCCT 8.0.1, under OCCT's licence:
+SPDX-License-Identifier: LGPL-2.1-only WITH OCCT-exception-1.0
+
+Chamfers and fillets: a closed chain of lines and arcs whose blend
+consumes a face beside it all round (mitcad#300).
+
+The case: a pocket in two steps, its upper wall standing on a ledge as wide
+as the chamfer round the deeper part, the wall's foot (four lines and four
+arcs) chamfered; or the wall as high as the chamfer too (both faces of the
+edges vanish). Two faults:
+
+- SplitKPart: the analytic blend's contact on the ledge, on the ledge's
+  boundary, is an unbounded line (ChFiKPart). The hatcher finds domains of
+  it where it runs on past the line's ends inside the ledge (beyond the
+  corners, where the ledge's edge turns away along the arcs), and
+  LineOnBoundary, which recognises a line along the boundary (0148, then
+  hatched a little inside, HatchOnBoundary), gave up on unbounded lines: the
+  line's pieces were dropped, and walking the gap failed ("Path failed", a
+  chamfer's walking not being implemented). LineOnBoundary now looks at an
+  unbounded line alongside the spine's edge, from abreast of one of its ends
+  to abreast of the other.
+- ChFi3d_ContactsAlongFaceEdges: the contacts along the face's edges have
+  their ends at the edges' vertices (0148). On a closed stripe the start's
+  point had been made before as a point beside that vertex, and ChFi3d_FilDS
+  gave the start's interferences the point's index for a vertex's; the
+  topological build failed (TopoDS_Builder::Add in
+  TopOpeBRepBuild_Builder::MakeEdges). The stripe's points at its start and
+  end are now the vertices its contacts end at there.
+- IsInput (ChFi3d_Builder_2.cxx), asked by SearchFace for those vertices:
+  where the spine's tangent stands square to the face's edges at the
+  vertex its projection is null, and its angle was measured from a
+  direction made of it (a construction error where gp_Dir checks, a
+  meaningless angle where it does not). Such a tangent does not run into
+  the face.
+
+Upstream: new.
+diff --git a/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_0.cxx b/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_0.cxx
+index e11bb77..5e9bcaf 100644
+--- a/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_0.cxx
++++ b/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_0.cxx
+@@ -3603,6 +3603,26 @@ void ChFi3d_ContactsAlongFaceEdges(TopOpeBRepDS_DataStructure&       DStr,
+       }
+     }
+   }
++  // A closed stripe whose first and last contacts on a side now end at a
++  // vertex (the contacts of a closed chain of several edges along the edges
++  // of a face they consume all round): the stripe's point there is that
++  // vertex. It had made its point at the start beside the vertex, and the
++  // topological build took that point's index for a vertex's
++  // (TopoDS_Builder::Add in TopOpeBRepBuild_Builder::MakeEdges).
++  if ((aSpine->IsPeriodic() || aSpine->IsClosed()) && !SeqFil.IsEmpty())
++  {
++    for (int ons = 1; ons <= 2; ons++)
++    {
++      for (const bool isFirst : {true, false})
++      {
++        const ChFiDS_CommonPoint& CP = (isFirst ? SeqFil.First() : SeqFil.Last())->Vertex(isFirst, ons);
++        if (CP.IsVertex())
++        {
++          CorDat->SetIndexPoint(DStr.AddShape(CP.Vertex()), isFirst, ons);
++        }
++      }
++    }
++  }
+ }
+ 
+ //=======================================================================
+diff --git a/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_2.cxx b/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_2.cxx
+index 7c0b472..122d580 100644
+--- a/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_2.cxx
++++ b/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_2.cxx
+@@ -506,6 +506,12 @@ static bool IsInput(const gp_Vec& Vec, const TopoDS_Vertex& Ve, const TopoDS_Fac
+   Transf.Invert();
+   Transf.Transforms(coord);
+   gp_Vec theProj(coord);
++  if (theProj.SquareMagnitude() <= gp::Resolution())
++  {
++    // Vec stands square to the face's edges at the vertex: it does not run
++    // into the face (no direction to measure its angle by).
++    return false;
++  }
+ 
+   // and finally...
+   double Angle = theProj.AngleWithRef(Vec3d[0], Normal);
+diff --git a/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_SpKP.cxx b/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_SpKP.cxx
+index ace627d..b875eb0 100644
+--- a/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_SpKP.cxx
++++ b/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_SpKP.cxx
+@@ -795,12 +795,43 @@ static int HatchOnBoundary(Geom2dHatch_Hatcher&                    H,
+ //=======================================================================
+ 
+ static bool LineOnBoundary(const occ::handle<Geom2d_Curve>&        C,
+-                           const occ::handle<Adaptor3d_TopolTool>& I)
++                           const occ::handle<Adaptor3d_TopolTool>& I,
++                           const TopoDS_Edge&                      E,
++                           const occ::handle<Adaptor3d_Surface>&   S)
+ {
+-  const double f = C->FirstParameter(), l = C->LastParameter();
++  double f = C->FirstParameter(), l = C->LastParameter();
+   if (Precision::IsInfinite(f) || Precision::IsInfinite(l))
+   {
+-    return false;
++    // An unbounded line (an analytic blend's contact on a plane) is looked
++    // at alongside the spine's edge E, an edge of its face: from abreast of
++    // one end of E to abreast of the other. Beyond them, along a closed
++    // chain, it runs past the face's boundary where that turns away.
++    const occ::handle<BRepAdaptor_Surface> aBS = occ::down_cast<BRepAdaptor_Surface>(S);
++    if (E.IsNull() || aBS.IsNull())
++    {
++      return false;
++    }
++    TopoDS_Face aF = aBS->Face();
++    aF.Orientation(TopAbs_FORWARD);
++    TopoDS_Edge anE = E;
++    anE.Orientation(TopAbs_FORWARD);
++    double                          a, b;
++    const occ::handle<Geom2d_Curve> aPC = BRep_Tool::CurveOnSurface(anE, aF, a, b);
++    if (aPC.IsNull())
++    {
++      return false;
++    }
++    Geom2dAPI_ProjectPointOnCurve aPa(aPC->Value(a), C), aPb(aPC->Value(b), C);
++    if (aPa.NbPoints() == 0 || aPb.NbPoints() == 0)
++    {
++      return false;
++    }
++    f = std::min(aPa.LowerDistanceParameter(), aPb.LowerDistanceParameter());
++    l = std::max(aPa.LowerDistanceParameter(), aPb.LowerDistanceParameter());
++    if (l - f <= Precision::PConfusion())
++    {
++      return false;
++    }
+   }
+   int aNbOn = 0;
+   for (int k = 1; k < 16; k++)
+@@ -1090,7 +1121,7 @@ bool ChFi3d_Builder::SplitKPart(const occ::handle<ChFiDS_SurfData>&
+       return false;
+     }
+     Nb1 = H1.NbDomains(iH1);
+-    if (Nb1 > 0 && snap1 == 0. && LineOnBoundary(C1, I1))
++    if (Nb1 > 0 && snap1 == 0. && LineOnBoundary(C1, I1, Spine->Edges(Iedge), S1))
+     {
+       // Domains found on a line lying on the boundary are partial (the
+       // hatcher sees it inside along some of it, on along the rest).
+@@ -1146,7 +1177,7 @@ bool ChFi3d_Builder::SplitKPart(const occ::handle<ChFiDS_SurfData>&
+       return false;
+     }
+     Nb2 = H2.NbDomains(iH2);
+-    if (Nb2 > 0 && snap2 == 0. && LineOnBoundary(C2, I2))
++    if (Nb2 > 0 && snap2 == 0. && LineOnBoundary(C2, I2, Spine->Edges(Iedge), S2))
+     {
+       const int aNb = HatchOnBoundary(H2, iH2, C2, I2, aShift);
+       if (aNb > 0)

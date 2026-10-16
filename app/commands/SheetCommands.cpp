@@ -525,6 +525,7 @@ CommandDef sheetBendCommand(const CommandContext& context) {
   def.keywords = {QStringLiteral("sheet metal"), QStringLiteral("join")};
   def.featureType = QStringLiteral("sheet_bend");
   const auto sheetPart = [](const SelectionItem& item) { return isWall(item) || isPanelFace(item); };
+  const auto isDouble = [](const CommandState& s) { return s.choice(QStringLiteral("mode")) == QStringLiteral("double"); };
   def.inputs = {
       selectionInput(QStringLiteral("stationary"), QObject::tr("Fixed"), SelectKind::Face | SelectKind::Edge, 1, 1)
           .withTooltip(QObject::tr("The flat face that stays, or its edge at the bend"))
@@ -532,8 +533,25 @@ CommandDef sheetBendCommand(const CommandContext& context) {
       selectionInput(QStringLiteral("moving"), QObject::tr("Moving"), SelectKind::Face | SelectKind::Edge, 1, 1)
           .withTooltip(QObject::tr("The flat face that turns, or its edge at the bend"))
           .withAccepts(sheetPart),
+      // mitcad#288: a double bend joins two parallel faces of two sheets
+      // by a jog (port mode `double`, commands.md "Folded sheet features").
+      choiceInput(QStringLiteral("mode"), QObject::tr("Bend Type"),
+                  {{QStringLiteral("bend"), QStringLiteral("Bend")},
+                   {QStringLiteral("double"), QStringLiteral("Double Bend")}},
+                  QStringLiteral("bend"))
+          .withTooltip(QObject::tr("Bend: one bend between the edges. Double Bend: two opposite bends of the "
+                                   "angle and a straight between them, joining parallel faces of two sheets")),
+      choiceInput(QStringLiteral("fixed"), QObject::tr("Whole Face"),
+                  {{QStringLiteral("stationary"), QStringLiteral("Fixed")},
+                   {QStringLiteral("moving"), QStringLiteral("Moving")}},
+                  QStringLiteral("stationary"))
+          .withTooltip(QObject::tr("The edge the double bend starts from: its face keeps all its material, the "
+                                   "other face is cut back"))
+          .withVisible(isDouble),
       angleInput(),
-      flipInput(QStringLiteral("flip"), QObject::tr("Flip")),
+      // A double bend turns towards the other face: its sign is not entered.
+      flipInput(QStringLiteral("flip"), QObject::tr("Flip"))
+          .withVisible([isDouble](const CommandState& s) { return !isDouble(s); }),
   };
   def.inputs += overrideInputs(true);
   def.enabled = [&context] { return hasSheets(context); };
@@ -541,8 +559,13 @@ CommandDef sheetBendCommand(const CommandContext& context) {
     Built result;
     const SelectionItem fixed = state.items(QStringLiteral("stationary")).first();
     const SelectionItem moving = state.items(QStringLiteral("moving")).first();
+    const bool twin = state.choice(QStringLiteral("mode")) == QStringLiteral("double");
     QJsonValue stationaryRef;
     QJsonValue movingRef;
+    if (twin && fixed.owner == moving.owner) {
+      return Built::failure(QObject::tr("A double bend joins two sheets: select an edge of each."),
+                            QStringLiteral("moving"));
+    }
     if (isPanelFace(fixed) && isPanelFace(moving)) {
       // Two panels of one sheet: the seam they share.
       if (fixed.owner != moving.owner) {
@@ -578,15 +601,22 @@ CommandDef sheetBendCommand(const CommandContext& context) {
                   {QStringLiteral("body"), fixed.owner},
                   {QStringLiteral("stationary"), stationaryRef},
                   {QStringLiteral("moving"), movingRef},
-                  {QStringLiteral("angle"), angleOf(state)}};
+                  {QStringLiteral("angle"), twin ? QJsonValue(state.expression(QStringLiteral("angle"))) : angleOf(state)}};
     if (moving.owner != fixed.owner) {
       result.def.insert(QStringLiteral("moving_body"), moving.owner);
+    }
+    if (twin) {
+      result.def.insert(QStringLiteral("port_mode"), QStringLiteral("double"));
+      result.def.insert(QStringLiteral("fixed"), state.choice(QStringLiteral("fixed")));
     }
     addOverrides(result.def, state);
     return result;
   };
   def.load = [](const QJsonObject& feature, CommandState& state, const CommandContext& model) {
     const QString body = str(feature, "body");
+    const bool twin = str(feature, "port_mode") == QStringLiteral("double");
+    state.setChoice(QStringLiteral("mode"), twin ? QStringLiteral("double") : QStringLiteral("bend"));
+    state.setChoice(QStringLiteral("fixed"), feature.value(QStringLiteral("fixed")).toString(QStringLiteral("stationary")));
     const QString movingBody = feature.value(QStringLiteral("moving_body")).toString(body);
     const QJsonObject fixed = feature.value(QStringLiteral("stationary")).toObject();
     const QJsonObject moving = feature.value(QStringLiteral("moving")).toObject();
@@ -602,6 +632,10 @@ CommandDef sheetBendCommand(const CommandContext& context) {
     loadOverrides(feature, state, model);
   };
   def.describe = [](const CommandState& state, const CommandContext&) {
+    if (state.choice(QStringLiteral("mode")) == QStringLiteral("double")) {
+      return QStringLiteral("Added double bend, angle %1, %2 face whole")
+          .arg(text(state, "angle"), state.choice(QStringLiteral("fixed")));
+    }
     return QStringLiteral("Added bend, angle %1%2")
         .arg(text(state, "angle"), state.checked(QStringLiteral("flip")) ? QStringLiteral(" flipped") : QString());
   };

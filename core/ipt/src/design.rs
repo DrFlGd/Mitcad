@@ -757,6 +757,164 @@ fn bounding_curves(
     }
 }
 
+/// Record types of what a sketch draws that the decoder leaves out: texts
+/// (`013cbb1f…`), splines through points (`46737b31…`) and their offsets
+/// (`47d9553e…`) *(seen)*.
+const UNDECODED_DRAWINGS: [&str; 3] = ["013cbb1f", "46737b31", "47d9553e"];
+
+/// Whether a sketch item left out something it draws
+/// ([`UNDECODED_DRAWINGS`]).
+fn draws_undecoded(item: &Value) -> bool {
+    item["detail"]["constraints"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|c| c["type"].as_str())
+        .any(|t| t.starts_with("NotDecoded") && UNDECODED_DRAWINGS.iter().any(|k| t.contains(k)))
+}
+
+/// The curves of the profiles features selected in a sketch that left out
+/// what it draws (texts, splines through points: their geometry is not
+/// decoded, and a text's needs its font): the edges of the selections'
+/// outlines that lie on none of the sketch's lines, arcs and circles come
+/// in as fixed curves, splines and lines through fixed points, so that the
+/// features find their profiles (mitcad#235). The file keeps each selected
+/// region's outline exactly (the selections' wire bodies).
+fn outline_curves(
+    items: &mut [Value],
+    sketches: &HashMap<usize, (i64, String)>,
+    outlines: &[(usize, Vec<crate::profile::OutlineEdge>)],
+) {
+    use crate::profile::OutlineEdge;
+    const TOLERANCE: f64 = 1e-6; // cm
+    let mut by_sketch: HashMap<usize, Vec<&OutlineEdge>> = HashMap::new();
+    for (s, edges) in outlines {
+        by_sketch.entry(*s).or_default().extend(edges.iter());
+    }
+    let mut order: Vec<usize> = by_sketch.keys().copied().collect();
+    order.sort_unstable();
+    for s in order {
+        let Some((index, _)) = sketches.get(&s) else {
+            continue;
+        };
+        let Some(detail) = items.get_mut(*index as usize).map(|i| &mut i["detail"]) else {
+            continue;
+        };
+        let xy = |v: &Value| -> Option<[f64; 2]> { Some([v[0].as_f64()?, v[1].as_f64()?]) };
+        // The sketch's lines, arcs and circles: whether a point lies on one.
+        let drawn: Vec<Value> = detail["curves"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .map(|c| c["geometry"].clone())
+            .collect();
+        let on_drawn = |p: [f64; 2]| {
+            drawn.iter().any(|g| match g["type"].as_str() {
+                Some("Line3D") => match (xy(&g["startPoint"]), xy(&g["endPoint"])) {
+                    (Some(a), Some(b)) => segment_distance(p, a, b) <= TOLERANCE,
+                    _ => false,
+                },
+                Some("Arc3D" | "Circle3D") => match (xy(&g["center"]), g["radius"].as_f64()) {
+                    (Some(c), Some(r)) => ((p[0] - c[0]).hypot(p[1] - c[1]) - r).abs() <= TOLERANCE,
+                    _ => false,
+                },
+                _ => false,
+            })
+        };
+        let samples = |e: &OutlineEdge| -> Vec<[f64; 2]> {
+            (0..=4).map(|k| e.at(f64::from(k) / 4.0)).collect()
+        };
+        let mut taken: Vec<Vec<[f64; 2]>> = Vec::new();
+        let near = |a: [f64; 2], b: [f64; 2]| (a[0] - b[0]).hypot(a[1] - b[1]) <= TOLERANCE;
+        let mut points: Vec<[f64; 2]> = Vec::new();
+        let mut new_points = Vec::new();
+        let mut new_curves = Vec::new();
+        let first_point = detail["points"].as_array().map_or(0, Vec::len);
+        let first_curve = detail["curves"].as_array().map_or(0, Vec::len);
+        for e in &by_sketch[&s] {
+            let at = samples(e);
+            if at.iter().all(|&p| on_drawn(p)) {
+                continue;
+            }
+            // Each edge once (the outlines of neighbouring regions share
+            // theirs), either way round.
+            let mut reversed = at.clone();
+            reversed.reverse();
+            let seen = |v: &[[f64; 2]]| {
+                taken
+                    .iter()
+                    .any(|t| t.iter().zip(v).all(|(a, b)| near(*a, *b)))
+            };
+            if seen(&at) || seen(&reversed) {
+                continue;
+            }
+            taken.push(at.clone());
+            let mut point_of = |p: [f64; 2]| -> String {
+                let k = match points.iter().position(|&q| near(p, q)) {
+                    Some(k) => k,
+                    None => {
+                        points.push(p);
+                        new_points
+                            .push(json!({"id": format!("p{}", first_point + points.len() - 1),
+                            "xyz": [p[0], p[1], 0.0], "isFixed": true}));
+                        points.len() - 1
+                    }
+                };
+                format!("p{}", first_point + k)
+            };
+            let (start, end) = (point_of(at[0]), point_of(at[4]));
+            let id = format!("c{}", first_curve + new_curves.len());
+            new_curves.push(match e {
+                OutlineEdge::Line(a, b) => json!({"id": id, "type": "SketchLine", "isFixed": true,
+                    "startSketchPoint": start, "endSketchPoint": end,
+                    "geometry": {"type": "Line3D", "startPoint": [a[0], a[1], 0.0],
+                                 "endPoint": [b[0], b[1], 0.0]}}),
+                OutlineEdge::Nurbs {
+                    degree,
+                    knots,
+                    poles,
+                    weights,
+                } => {
+                    let mut nurbs = json!({"degree": degree,
+                        "controlPoints": poles.iter().map(|q| [q[0], q[1], 0.0]).collect::<Vec<_>>(),
+                        "knots": knots, "isPeriodic": false, "isRational": weights.is_some()});
+                    if let Some(w) = weights {
+                        nurbs["weights"] = json!(w);
+                    }
+                    json!({"id": id, "type": "SketchFixedSpline", "isFixed": true,
+                        "startSketchPoint": start, "endSketchPoint": end,
+                        "geometry": {"type": "NurbsCurve3D", "nurbs": nurbs}})
+                }
+            });
+        }
+        if new_curves.is_empty() {
+            continue;
+        }
+        let added = new_curves.len();
+        if let Some(a) = detail["points"].as_array_mut() {
+            a.extend(new_points);
+        }
+        if let Some(a) = detail["curves"].as_array_mut() {
+            a.extend(new_curves);
+        }
+        detail["counts"]["points"] = json!(detail["points"].as_array().map_or(0, Vec::len));
+        detail["counts"]["curves"] = json!(detail["curves"].as_array().map_or(0, Vec::len));
+        detail["_ipt_outline_curves"] = json!(added);
+    }
+}
+
+/// The distance from a point to a segment.
+fn segment_distance(p: [f64; 2], a: [f64; 2], b: [f64; 2]) -> f64 {
+    let d = [b[0] - a[0], b[1] - a[1]];
+    let l2 = d[0] * d[0] + d[1] * d[1];
+    let t = if l2 > 0.0 {
+        (((p[0] - a[0]) * d[0] + (p[1] - a[1]) * d[1]) / l2).clamp(0.0, 1.0)
+    } else {
+        0.0
+    };
+    (p[0] - a[0] - t * d[0]).hypot(p[1] - a[1] - t * d[1])
+}
+
 /// Records the sketch at `index` as the maker of its dimensions'
 /// parameters.
 fn own(owners: &mut HashMap<usize, Value>, made: &[(usize, String)], index: i64) {
@@ -1150,6 +1308,24 @@ pub fn design_of_file(
         &flagged,
         &profiles.borrow().outlines,
     );
+    // The outlines of what sketches draw that is not decoded (texts,
+    // splines through points and their offsets), from the profiles the
+    // features selected in them (mitcad#235).
+    let outlines: Vec<(usize, Vec<crate::profile::OutlineEdge>)> = {
+        let mut p = profiles.borrow_mut();
+        let selected = p.selected.clone();
+        selected
+            .iter()
+            .filter(|(s, _, _)| {
+                sketch_items
+                    .get(s)
+                    .and_then(|(i, _)| items.get(*i as usize))
+                    .is_some_and(draws_undecoded)
+            })
+            .filter_map(|&(s, selection, m)| Some((s, p.outline_edges(dc, selection, &m)?)))
+            .collect()
+    };
+    outline_curves(&mut items, &sketch_items, &outlines);
     let (parameters_json, parameters, expressions) = parameters(&params, length, &owners);
     for u in &expressions.unused {
         notes.push(format!(
@@ -1192,6 +1368,77 @@ mod tests {
     fn cube(major: u8) -> Design {
         let dc = Definitions::from_records(major, &cube_design(major));
         design(&dc, DisplayUnit::Mm, "cube.ipt", Some("CUBE"))
+    }
+
+    #[test]
+    fn outlines_of_undecoded_drawings_come_in_as_fixed_curves() {
+        use crate::profile::OutlineEdge;
+        let sketch = |constraint: &str| {
+            json!({"objectType": "Sketch", "detail": {
+                "points": [{"id": "p0", "xyz": [0.0, 0.0, 0.0]}, {"id": "p1", "xyz": [1.0, 0.0, 0.0]}],
+                "curves": [{"id": "c0", "type": "SketchLine", "startSketchPoint": "p0",
+                            "endSketchPoint": "p1", "geometry": {"type": "Line3D",
+                            "startPoint": [0.0, 0.0, 0.0], "endPoint": [1.0, 0.0, 0.0]}}],
+                "constraints": [{"id": "k0", "type": constraint}],
+                "counts": {"points": 2, "curves": 1}}})
+        };
+        let text = "NotDecoded(record 5 of type 013cbb1fd2114d68a0009e9a3c3aa076: not decoded)";
+        let mut items = vec![
+            sketch(text),
+            sketch("NotDecoded(fix 4: an entity that was not read)"),
+        ];
+        assert!(draws_undecoded(&items[0]) && !draws_undecoded(&items[1]));
+        let square = |x: f64| {
+            let c = [[x, 0.0], [x + 1.0, 0.0], [x + 1.0, 1.0], [x, 1.0]];
+            (0..4)
+                .map(|i| OutlineEdge::Line(c[i], c[(i + 1) % 4]))
+                .collect::<Vec<_>>()
+        };
+        // Two regions side by side: the side on the sketch's line and the
+        // side they share come in once or not at all.
+        let sketches = HashMap::from([
+            (7, (0, "Sketch1".to_owned())),
+            (8, (1, "Sketch2".to_owned())),
+        ]);
+        outline_curves(&mut items, &sketches, &[(7, square(0.0)), (7, square(1.0))]);
+        let d = &items[0]["detail"];
+        assert_eq!(d["curves"].as_array().unwrap().len(), 7);
+        assert_eq!(d["points"].as_array().unwrap().len(), 8);
+        assert_eq!(d["counts"]["curves"], 7);
+        assert_eq!(d["_ipt_outline_curves"], 6);
+        let added = &d["curves"][1];
+        assert_eq!(added["type"], "SketchLine");
+        assert_eq!(added["isFixed"], true);
+        assert_eq!(added["geometry"]["startPoint"], json!([1.0, 0.0, 0.0]));
+        // Every new curve's ends are new fixed points where they lie.
+        for c in &d["curves"].as_array().unwrap()[1..] {
+            for key in ["startSketchPoint", "endSketchPoint"] {
+                let p = d["points"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .find(|p| p["id"] == c[key])
+                    .unwrap();
+                assert_eq!(p["isFixed"], true);
+            }
+        }
+        // A spline's piece comes in as a fixed spline.
+        let spline = OutlineEdge::Nurbs {
+            degree: 2,
+            knots: vec![0.0, 0.0, 0.0, 1.0, 1.0, 1.0],
+            poles: vec![[0.0, 2.0], [1.0, 3.0], [2.0, 2.0]],
+            weights: Some(vec![1.0, 0.5, 1.0]),
+        };
+        let mut items = vec![sketch(text)];
+        outline_curves(&mut items, &sketches, &[(7, vec![spline])]);
+        let c = &items[0]["detail"]["curves"][1];
+        assert_eq!(c["type"], "SketchFixedSpline");
+        assert_eq!(c["geometry"]["nurbs"]["isRational"], true);
+        assert_eq!(c["geometry"]["nurbs"]["weights"], json!([1.0, 0.5, 1.0]));
+        assert_eq!(
+            c["geometry"]["nurbs"]["controlPoints"][1],
+            json!([1.0, 3.0, 0.0])
+        );
     }
 
     #[test]

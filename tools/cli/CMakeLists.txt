@@ -74,6 +74,8 @@ if(BUILD_TESTING)
   # assembly saved, inserted linked and as a copy, edited, and the link
   # following the edit when the design opens again.
   add_test(NAME cli.f6_components COMMAND mitcad-cli run "${scripts}/f6_components.json")
+  # Derives: linked copies of other components' bodies (mitcad#324).
+  add_test(NAME cli.f6_derive COMMAND mitcad-cli run "${scripts}/f6_derive.json")
   # Explicit move destinations keep real OCCT geometry and external support
   # links in place across nested rotations, undo/redo and save/reopen (#201).
   set(move_destination "${CMAKE_CURRENT_BINARY_DIR}/move-destination.mitcad")
@@ -458,7 +460,7 @@ if(BUILD_TESTING)
   add_test(NAME cli.import_rvt_building
     COMMAND mitcad-cli import-rvt "${exchange}/rvt-building/building.rvt" --save "${exchange}/rvt-building/building.mitcad")
   set_tests_properties(cli.import_rvt_building PROPERTIES FIXTURES_REQUIRED cli_rvt_building PASS_REGULAR_EXPRESSION
-    "Built 6 elements as features \\(2 floor, 4 wall\\), checked against their stored boxes; of those kinds none came in as meshes or boxes.*4 level planes, 2 grid axes, 0 grid arcs, 2 appearances.*link linked\\.rvt: linked\\.rvt, 3 elements")
+    "Built 6 elements as features \\(2 floor, 4 wall\\), checked against their stored boxes; of those kinds none came in as meshes or boxes.*4 level planes, 2 grid axes, 0 grid arcs, 2 appearances.*link linked\\.rvt: linked\\.rvt, 4 elements")
   add_test(NAME rvt.corpus
     COMMAND "${CMAKE_COMMAND}" "-DCLI=$<TARGET_FILE:mitcad-cli>" "-DWORK=${CMAKE_CURRENT_BINARY_DIR}/rvt-corpus"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/rvt-corpus.cmake")
@@ -745,6 +747,10 @@ if(BUILD_TESTING)
   add_test(NAME cli.sheet_corner_round_past COMMAND mitcad-cli run "${scripts}/sheet_corner_round_past.json")
   add_test(NAME cli.sheet_fold_back COMMAND mitcad-cli run "${scripts}/sheet_fold_back.json")
   add_test(NAME cli.sheet_cut_on_seam COMMAND mitcad-cli run "${scripts}/sheet_cut_on_seam.json")
+  # A fold whose line crosses a cut window (mitcad#288).
+  add_test(NAME cli.sheet_fold_window COMMAND mitcad-cli run "${scripts}/sheet_fold_window.json")
+  # A pattern of a straight sheet cut with many copies, cut at once (mitcad#288).
+  add_test(NAME cli.sheet_pattern_holes COMMAND mitcad-cli run "${scripts}/sheet_pattern_holes.json")
 endif()
 
 # Sheet Unfold, Refold and Flat Pattern (mitcad#208): actual L, U and Z

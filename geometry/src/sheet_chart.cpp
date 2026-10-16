@@ -6,6 +6,7 @@
 #include <cmath>
 #include <functional>
 #include <limits>
+#include <optional>
 #include <set>
 #include <stdexcept>
 #include <tuple>
@@ -659,6 +660,37 @@ SheetChartGeometry planar_adapter(const SheetChartShapeSpec& spec) {
   return result;
 }
 
+// The spec with the holes of its regions filled: the interior loops none of
+// whose edges carries a port (mitcad#288). Its material holds the spec's,
+// so where its charts do not intersect, the spec's do not either. Empty
+// when no region has such a hole.
+std::optional<SheetChartShapeSpec> holes_filled(const SheetChartShapeSpec& spec) {
+  SheetChartShapeSpec filled = spec;
+  bool any = false;
+  for (auto& patch : filled.patches) {
+    for (auto& region : patch.regions) {
+      if (region.loops.size() < 2) continue;
+      std::vector<MaterialLoop> kept{region.loops.front()};
+      for (std::size_t l = 1; l < region.loops.size(); ++l) {
+        const auto& loop = region.loops[l];
+        const bool ported = std::any_of(loop.edges.begin(), loop.edges.end(), [&](const MaterialEdge& edge) {
+          return std::any_of(spec.ports.begin(), spec.ports.end(), [&](const ShapePort& port) {
+            return (port.first.boundary.domain == patch.domain && port.first.boundary.piece == edge.piece) ||
+                   (port.second.boundary.domain == patch.domain && port.second.boundary.piece == edge.piece);
+          });
+        });
+        if (ported) kept.push_back(loop);
+        else any = true;
+      }
+      region.loops = std::move(kept);
+    }
+  }
+  if (!any) return std::nullopt;
+  return filled;
+}
+
+SheetChartGeometry construct(const SheetChartShapeSpec& spec, bool check_collisions);
+
 } // namespace
 
 SheetChartGeometry sheet_shape(const SheetChartShapeSpec& spec) {
@@ -673,6 +705,29 @@ SheetChartGeometry sheet_shape(const SheetChartShapeSpec& spec) {
     // planar regions. They do not acquire artificial bend ports or two walls
     // at their shared boundary merely because the model now uses chart types.
     if (legacy_planar(spec)) return planar_adapter(spec);
+    // The check for intersecting charts compares every pair of faces whose
+    // boxes meet: the walls of hundreds of holes (a vent pattern) each meet
+    // their panel's caps, which took most of a minute (mitcad#288). The
+    // charts with their holes filled are checked instead; only where those
+    // intersect (material through a window) is the sheet itself checked.
+    if (const auto filled = holes_filled(spec)) {
+      bool clear = false;
+      try {
+        construct(*filled, true);
+        clear = true;
+      } catch (const std::invalid_argument&) {
+      } catch (const std::runtime_error&) {
+      }
+      return construct(spec, !clear);
+    }
+    return construct(spec, true);
+  });
+}
+
+namespace {
+
+SheetChartGeometry construct(const SheetChartShapeSpec& spec, bool check_collisions) {
+  {
     std::set<std::string> identities;
     std::vector<Embedding> embeddings;
     std::vector<RegionMembership> membership;
@@ -746,11 +801,13 @@ SheetChartGeometry sheet_shape(const SheetChartShapeSpec& spec) {
         // Topological validity alone permits intersecting nonadjacent walls
         // in a connected folded sheet. Check geometric self-interference as
         // well.
-        BRepAlgoAPI_Check collision;
-        collision.SetData(solid, false, true);
-        detail::interruptible([&](const Message_ProgressRange& range) { collision.Perform(range); });
-        if (collision.HasErrors() || !collision.IsValid()) {
-          throw std::invalid_argument("sheet material charts intersect in the current configuration");
+        if (check_collisions) {
+          BRepAlgoAPI_Check collision;
+          collision.SetData(solid, false, true);
+          detail::interruptible([&](const Message_ProgressRange& range) { collision.Perform(range); });
+          if (collision.HasErrors() || !collision.IsValid()) {
+            throw std::invalid_argument("sheet material charts intersect in the current configuration");
+          }
         }
         detail::FaceNamer namer(solid);
         std::set<std::size_t> members;
@@ -782,7 +839,9 @@ SheetChartGeometry sheet_shape(const SheetChartShapeSpec& spec) {
       }
     }
     return result;
-  });
+  }
 }
+
+} // namespace
 
 } // namespace mitcad::geometry

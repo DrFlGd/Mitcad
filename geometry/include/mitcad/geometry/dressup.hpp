@@ -38,6 +38,16 @@
 // revolution about its axis with straight sections, the dressup is built
 // as rings (src/ring_dressup.hpp): its cross-section turned about the
 // axis, cut from the body or joined to it, running over any face it meets.
+//
+// Where OCCT walks a rounding (a ball rolling on a narrow face's far edge,
+// a rounding between a plane and a cylinder it does not build in closed
+// form), it makes B-spline faces and edges even where they are exactly a
+// cylinder, lines and arcs. The new faces whose B-splines are a plane,
+// cylinder, cone, sphere or torus within 1e-7 get that surface, and their
+// B-spline edges that are lines or circles within it get those curves
+// (src/canonical.hpp, mitcad#328), as in the bodies the `.f3d` files
+// store: a later rounding along them failed in OCCT's walk on the
+// B-splines and builds on the analytic faces.
 
 #include <string>
 #include <utility>
@@ -104,7 +114,11 @@ enum class ChamferType { EqualDistance, TwoDistances, DistanceAngle };
 // Two distances and distance-angle chamfers measure `distance` (and the
 // angle, from that face) on one face of each edge: the reference face when
 // one is named, else the first face of the edge's name, E{<first>|<second>};
-// `flip` takes the other face.
+// `flip` takes the other face. Without a reference face the face is chosen
+// once per tangent chain, on the first edge the set lists that lies in it
+// (not per edge, and not on whichever edge of the chain has the lowest
+// index), and the geometry kernel measures that face's side along the whole
+// chain.
 struct ChamferSpec {
   ChamferType type = ChamferType::EqualDistance;
   double distance = 0.0;

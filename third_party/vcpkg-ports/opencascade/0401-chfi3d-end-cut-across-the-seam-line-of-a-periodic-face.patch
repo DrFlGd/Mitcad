@@ -1,0 +1,306 @@
+Mitcad's patch to OCCT 8.0.1, under OCCT's licence:
+SPDX-License-Identifier: LGPL-2.1-only WITH OCCT-exception-1.0
+
+Fillets: the cut of a rounding's end by a periodic face at the end is
+split where it crosses the face's seam, also where the seam starts at the
+corner's vertex (mitcad#330, with 0211).
+
+PerformOneCorner looks for the crossing of the cut (the blend's curve on
+the face at the end) with the face's seam by the extrema of the two 3d
+curves, and takes it only where they meet within Precision::Confusion().
+Where the seam starts at the corner's vertex, the cut passes it near its
+highest point, and the two curves meet only within the cut's approximation
+(2.4e-6 on a cylinder of radius 10 cut by a gable whose ridge ends on the
+seam); on a stored body the cut may also pass a few hundredths of a
+micrometre beyond the seam's start, within the vertex's tolerance. The
+crossing was missed: the cut was stored unsplit, its curve on the face
+running from one side of the seam to the other, the seam was lost, and
+the face came out unorientable (or the body without its floor).
+
+- ChFi3d_CutCrossesSeamLine: where the cut's curve on the face crosses the
+  seam's line (an iso-line of the periodic parameter, up to a period).
+- PerformOneCorner: where the extrema miss it, the cut is split at that
+  crossing. Within the tolerance of one of the seam's end vertices it is
+  split at that vertex, which keeps the whole seam (the pieces end at the
+  vertex, no point is put on the seam); else at the point of the seam's
+  curve there, as before. The two pieces' curves on the face are the cut's
+  own, each in the period of the arc it starts or ends on.
+
+diff --git a/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_C1.cxx b/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_C1.cxx
+index 63fbe1d..cea5d27 100644
+--- a/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_C1.cxx
++++ b/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_C1.cxx
+@@ -517,6 +517,78 @@ static void ComputeCurve2d(const occ::handle<Geom_Curve>& Ct,
+   }
+ }
+
++//=======================================================================
++// function : ChFi3d_CutCrossesSeamLine
++// purpose  : Where the curve Pc on the periodic face Fv (from Udeb to Ufin)
++//            crosses the line of the face's seam Seam (an iso-line of the
++//            periodic parameter, up to a period): its parameter T and point
++//            UV there.
++//=======================================================================
++
++static bool ChFi3d_CutCrossesSeamLine(const BRepAdaptor_Surface&       Bs,
++                                      const TopoDS_Face&               Fv,
++                                      const TopoDS_Edge&               Seam,
++                                      const occ::handle<Geom2d_Curve>& Pc,
++                                      const double                     Udeb,
++                                      const double                     Ufin,
++                                      double&                          T,
++                                      gp_Pnt2d&                        UV)
++{
++  if (Pc.IsNull() || Seam.IsNull())
++  {
++    return false;
++  }
++  TopoDS_Face F = Fv;
++  F.Orientation(TopAbs_FORWARD);
++  double                          f = 0., l = 0.;
++  const occ::handle<Geom2d_Curve> aSeam2d = BRep_Tool::CurveOnSurface(Seam, F, f, l);
++  if (aSeam2d.IsNull())
++  {
++    return false;
++  }
++  const gp_Pnt2d a = aSeam2d->Value(f), b = aSeam2d->Value(l);
++  for (int dir = 0; dir < 2; dir++)
++  {
++    const bool isU = dir == 0;
++    if (isU ? !Bs.IsUPeriodic() : !Bs.IsVPeriodic())
++    {
++      continue;
++    }
++    const double c0 = isU ? a.X() : a.Y(), c1 = isU ? b.X() : b.Y();
++    if (std::abs(c0 - c1) > Precision::PConfusion())
++    {
++      continue; // (the seam is no iso-line of this parameter)
++    }
++    const auto   coord = [&](const double t) { return isU ? Pc->Value(t).X() : Pc->Value(t).Y(); };
++    const double x0 = coord(Udeb), x1 = coord(Ufin);
++    const double lo = std::min(x0, x1), hi = std::max(x0, x1);
++    const double per = isU ? Bs.UPeriod() : Bs.VPeriod();
++    const double s   = ElCLib::InPeriod(c0, lo, lo + per);
++    if (!(s > lo && s < hi))
++    {
++      continue;
++    }
++    double ta = Udeb, tb = Ufin, ga = x0 - s;
++    for (int it = 0; it < 200 && tb - ta > Precision::PConfusion() * (Ufin - Udeb); it++)
++    {
++      const double tm = 0.5 * (ta + tb), gm = coord(tm) - s;
++      if ((gm < 0.) == (ga < 0.))
++      {
++        ta = tm;
++        ga = gm;
++      }
++      else
++      {
++        tb = tm;
++      }
++    }
++    T  = 0.5 * (ta + tb);
++    UV = Pc->Value(T);
++    return true;
++  }
++  return false;
++}
++
+ //=================================================================================================
+
+ static void ChFi3d_Recale(const BRepAdaptor_Surface& Bs,
+@@ -2301,6 +2373,10 @@ void ChFi3d_Builder::PerformOneCorner(const int Index, const bool thePrepareOnSa
+   int                            indpt = 0, Icurv1 = 0, Icurv2 = 0;
+   occ::handle<Geom_TrimmedCurve> curv1, curv2;
+   occ::handle<Geom2d_Curve>      c2d1, c2d2;
++  // (The cut split where its curve on the face crosses the seam's line, and
++  // the seam's end vertex where it is split at that vertex, see below.)
++  bool          seamOnFace = false;
++  TopoDS_Vertex seamVertex;
+
+   int Isurf = Fd->Surf();
+
+@@ -2445,6 +2521,54 @@ void ChFi3d_Builder::PerformOneCorner(const int Index, const bool thePrepareOnSa
+           }
+         }
+       }
++      double   tCross = 0.;
++      gp_Pnt2d uvCross;
++      const double Tol = 1.e-4;
++      if (!intcouture
++          && ChFi3d_CutCrossesSeamLine(Bs, Fv, edgecouture, Pc, Udeb, Ufin, tCross, uvCross)
++          && tCross - Udeb > Tol && Ufin - tCross > Tol)
++      {
++        // The extrema of the seam's and the cut's curves missed the
++        // crossing (they meet within the cut's tolerance only, where the
++        // seam starts at the corner's vertex and the cut passes it at its
++        // highest point): the crossing of the cut's curve on the face with
++        // the seam's line. On the seam's curve the cut is split there as
++        // above; past one of the seam's ends within that end vertex's
++        // tolerance it is split at that vertex, which keeps the whole seam.
++        const gp_Pnt  aPc = Cc->Value(tCross);
++        double        sf = 0., sl = 0.;
++        const occ::handle<Geom_Curve> aSeam = BRep_Tool::Curve(edgecouture, sf, sl);
++        TopoDS_Vertex aV1, aV2;
++        TopExp::Vertices(edgecouture, aV1, aV2);
++        const double aTolE = std::max(BRep_Tool::Tolerance(edgecouture), tolreached);
++        for (const TopoDS_Vertex& aV : {aV1, aV2})
++        {
++          if (seamVertex.IsNull() && !aV.IsNull()
++              && BRep_Tool::Pnt(aV).Distance(aPc) <= std::max(BRep_Tool::Tolerance(aV), aTolE))
++          {
++            seamVertex = aV;
++          }
++        }
++        if (seamVertex.IsNull() && !aSeam.IsNull())
++        {
++          GeomAPI_ProjectPointOnCurve aProj(aPc, aSeam, sf, sl);
++          if (aProj.NbPoints() > 0 && aProj.LowerDistance() <= aTolE)
++          {
++            par1  = aProj.LowerDistanceParameter();
++            indpt = DStr.AddPoint(TopOpeBRepDS_Point(aPc, std::max(Tol, aTolE)));
++          }
++        }
++        if (!seamVertex.IsNull() || indpt != 0)
++        {
++          seamOnFace = true;
++          par2       = tCross;
++          intcouture = true;
++          curv1      = new Geom_TrimmedCurve(Cc, Udeb, par2);
++          curv2      = new Geom_TrimmedCurve(Cc, par2, Ufin);
++          Icurv1     = DStr.AddCurve(TopOpeBRepDS_Curve(curv1, tolreached));
++          Icurv2     = DStr.AddCurve(TopOpeBRepDS_Curve(curv2, tolreached));
++        }
++      }
+     }
+   }
+   else
+@@ -2769,11 +2893,51 @@ void ChFi3d_Builder::PerformOneCorner(const int Index, const bool thePrepareOnSa
+     // one places stripe->InDS(isfirst);
+
+     // interferences of curv1 and curv2 on Fv
+-    ComputeCurve2d(curv1, Fv, c2d1);
++    if (seamOnFace)
++    {
++      // Split where its curve on Fv crosses the seam's line: the two pieces
++      // of that curve, each in the period of the arc it starts or ends on.
++      c2d1 = new Geom2d_TrimmedCurve(Pc, Udeb, par2);
++      c2d2 = new Geom2d_TrimmedCurve(Pc, par2, Ufin);
++      TopoDS_Face FvF = Fv;
++      FvF.Orientation(TopAbs_FORWARD);
++      for (int k = 1; k <= 2; k++)
++      {
++        const ChFiDS_CommonPoint&       CVk = k == 1 ? CV1 : CV2;
++        double                          af = 0., al = 0.;
++        const occ::handle<Geom2d_Curve> aArc2d = BRep_Tool::CurveOnSurface(CVk.Arc(), FvF, af, al);
++        if (aArc2d.IsNull())
++        {
++          continue;
++        }
++        const gp_Pnt2d aOnArc = aArc2d->Value(CVk.ParameterOnArc());
++        const gp_Pnt2d aOnCut = Pc->Value(k == 1 ? Udeb : Ufin);
++        gp_Vec2d       aShift(0., 0.);
++        if (Bs.IsUPeriodic())
++        {
++          const double T = Bs.UPeriod();
++          aShift.SetX(T * std::round((aOnArc.X() - aOnCut.X()) / T));
++        }
++        if (Bs.IsVPeriodic())
++        {
++          const double T = Bs.VPeriod();
++          aShift.SetY(T * std::round((aOnArc.Y() - aOnCut.Y()) / T));
++        }
++        if (aShift.SquareMagnitude() > 0.)
++        {
++          occ::handle<Geom2d_Curve>& aPiece = k == 1 ? c2d1 : c2d2;
++          aPiece = occ::down_cast<Geom2d_Curve>(aPiece->Translated(aShift));
++        }
++      }
++    }
++    else
++    {
++      ComputeCurve2d(curv1, Fv, c2d1);
++      ComputeCurve2d(curv2, Fv, c2d2);
++    }
+     occ::handle<TopOpeBRepDS_SurfaceCurveInterference> InterFv;
+     InterFv = ChFi3d_FilCurveInDS(Icurv1, IShape, c2d1, Et);
+     DStr.ChangeShapeInterferences(IShape).Append(InterFv);
+-    ComputeCurve2d(curv2, Fv, c2d2);
+     InterFv = ChFi3d_FilCurveInDS(Icurv2, IShape, c2d2, Et);
+     DStr.ChangeShapeInterferences(IShape).Append(InterFv);
+     // interferences of curv1 and curv2 on Isurf
+@@ -2788,26 +2952,29 @@ void ChFi3d_Builder::PerformOneCorner(const int Index, const bool thePrepareOnSa
+     InterFv = ChFi3d_FilCurveInDS(Icurv2, Isurf, c2d2, Et);
+     DStr.ChangeSurfaceInterferences(Isurf).Append(InterFv);
+
+-    // limitation of the sewing edge
+-    int                                              Iarc = DStr.AddShape(edgecouture);
+-    occ::handle<TopOpeBRepDS_CurvePointInterference> Interfedge;
+-    TopAbs_Orientation                               ori;
+-    TopoDS_Vertex                                    Vdeb, Vfin;
+-    Vdeb = TopExp::FirstVertex(edgecouture);
+-    Vfin = TopExp::LastVertex(edgecouture);
+-    double pard, parf;
+-    pard = BRep_Tool::Parameter(Vdeb, edgecouture);
+-    parf = BRep_Tool::Parameter(Vfin, edgecouture);
+-    if (std::abs(par1 - pard) < std::abs(parf - par1))
++    if (seamVertex.IsNull())
+     {
+-      ori = TopAbs_FORWARD;
+-    }
+-    else
+-    {
+-      ori = TopAbs_REVERSED;
++      // limitation of the sewing edge
++      int                                              Iarc = DStr.AddShape(edgecouture);
++      occ::handle<TopOpeBRepDS_CurvePointInterference> Interfedge;
++      TopAbs_Orientation                               ori;
++      TopoDS_Vertex                                    Vdeb, Vfin;
++      Vdeb = TopExp::FirstVertex(edgecouture);
++      Vfin = TopExp::LastVertex(edgecouture);
++      double pard, parf;
++      pard = BRep_Tool::Parameter(Vdeb, edgecouture);
++      parf = BRep_Tool::Parameter(Vfin, edgecouture);
++      if (std::abs(par1 - pard) < std::abs(parf - par1))
++      {
++        ori = TopAbs_FORWARD;
++      }
++      else
++      {
++        ori = TopAbs_REVERSED;
++      }
++      Interfedge = ChFi3d_FilPointInDS(ori, Iarc, indpt, par1);
++      DStr.ChangeShapeInterferences(Iarc).Append(Interfedge);
+     }
+-    Interfedge = ChFi3d_FilPointInDS(ori, Iarc, indpt, par1);
+-    DStr.ChangeShapeInterferences(Iarc).Append(Interfedge);
+
+     // creation of CurveInterferences from Icurv1 and Icurv2
+     stripe->InDS(isfirst);
+@@ -2816,10 +2983,22 @@ void ChFi3d_Builder::PerformOneCorner(const int Index, const bool thePrepareOnSa
+     occ::handle<TopOpeBRepDS_CurvePointInterference> interfprol =
+       ChFi3d_FilPointInDS(TopAbs_FORWARD, Icurv1, ind1, Udeb);
+     DStr.ChangeCurveInterferences(Icurv1).Append(interfprol);
+-    interfprol = ChFi3d_FilPointInDS(TopAbs_REVERSED, Icurv1, indpt, par2);
+-    DStr.ChangeCurveInterferences(Icurv1).Append(interfprol);
+-    interfprol = ChFi3d_FilPointInDS(TopAbs_FORWARD, Icurv2, indpt, par2);
+-    DStr.ChangeCurveInterferences(Icurv2).Append(interfprol);
++    if (seamVertex.IsNull())
++    {
++      interfprol = ChFi3d_FilPointInDS(TopAbs_REVERSED, Icurv1, indpt, par2);
++      DStr.ChangeCurveInterferences(Icurv1).Append(interfprol);
++      interfprol = ChFi3d_FilPointInDS(TopAbs_FORWARD, Icurv2, indpt, par2);
++      DStr.ChangeCurveInterferences(Icurv2).Append(interfprol);
++    }
++    else
++    {
++      // (The seam keeps its vertex: the pieces end at it.)
++      const int IVs = DStr.AddShape(seamVertex);
++      DStr.ChangeCurveInterferences(Icurv1).Append(
++        ChFi3d_FilVertexInDS(TopAbs_REVERSED, Icurv1, IVs, par2));
++      DStr.ChangeCurveInterferences(Icurv2).Append(
++        ChFi3d_FilVertexInDS(TopAbs_FORWARD, Icurv2, IVs, par2));
++    }
+     interfprol = ChFi3d_FilPointInDS(TopAbs_REVERSED, Icurv2, ind2, Ufin);
+     DStr.ChangeCurveInterferences(Icurv2).Append(interfprol);
+   }

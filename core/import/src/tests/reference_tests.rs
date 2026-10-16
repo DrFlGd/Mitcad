@@ -8,6 +8,9 @@ use super::*;
 use crate::references::{Referenced, link_references};
 use mitcad_model::OccurrenceUid;
 
+/// No bodies named by body objects (no derive names them).
+static NO_ENTITIES: std::collections::BTreeMap<u64, BodyUid> = std::collections::BTreeMap::new();
+
 /// The part: the block of [`block_dump`] with an occurrence of a component
 /// of its own (`Pin`, 3 cm up), which carries a GUID.
 fn part_dump() -> Dump {
@@ -97,6 +100,7 @@ fn components_of_other_documents_are_filled_from_their_imports() {
             occurrence_guids: &part_report.components.occurrence_guids,
             name: "Part".to_owned(),
             stored_bodies: &stored,
+            entity_bodies: &NO_ENTITIES,
         },
     )]);
     let outcome = link_references(&mut doc, &mut report, &sources);
@@ -229,6 +233,7 @@ fn components_filled_before_the_replay_take_the_joints_in_place() {
             occurrence_guids: &part_report.components.occurrence_guids,
             name: "Part".to_owned(),
             stored_bodies: &stored,
+            entity_bodies: &NO_ENTITIES,
         },
     )]);
     let mut doc = Document::new(MockKernel::default());
@@ -348,6 +353,7 @@ fn a_combine_takes_a_tool_in_a_component_of_another_document() {
             occurrence_guids: &part_report.components.occurrence_guids,
             name: "Part".to_owned(),
             stored_bodies: &stored,
+            entity_bodies: &NO_ENTITIES,
         },
     )]);
     let dump = cut_by_a_referenced_body_dump(guid);
@@ -469,6 +475,7 @@ fn a_component_placed_twice_inside_a_copy_gets_a_copy_for_each_arrangement() {
             occurrence_guids: &part_report.components.occurrence_guids,
             name: "Part".to_owned(),
             stored_bodies: &stored,
+            entity_bodies: &NO_ENTITIES,
         },
     )]);
     let mut sub = Document::new(MockKernel::default());
@@ -491,6 +498,7 @@ fn a_component_placed_twice_inside_a_copy_gets_a_copy_for_each_arrangement() {
             occurrence_guids: &sub_report.components.occurrence_guids,
             name: "Sub".to_owned(),
             stored_bodies: &stored,
+            entity_bodies: &NO_ENTITIES,
         },
     )]);
     let mut doc = Document::new(MockKernel::default());
@@ -560,6 +568,7 @@ fn a_tool_of_the_part_placed_twice_is_linked_through_the_occurrence_its_context_
             occurrence_guids: &part_report.components.occurrence_guids,
             name: "Part".to_owned(),
             stored_bodies: &stored,
+            entity_bodies: &NO_ENTITIES,
         },
     )]);
     let mut v = serde_json::to_value(cut_by_a_referenced_body_dump(guid)).unwrap();
@@ -630,6 +639,7 @@ fn two_occurrences_of_one_part_named_by_one_item_get_a_copy_each() {
             occurrence_guids: &part_report.components.occurrence_guids,
             name: "Part".to_owned(),
             stored_bodies: &stored,
+            entity_bodies: &NO_ENTITIES,
         },
     )]);
     let mut v = serde_json::to_value(cut_by_a_referenced_body_dump(guid)).unwrap();

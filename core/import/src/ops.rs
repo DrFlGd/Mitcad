@@ -2556,6 +2556,9 @@ impl<K: crate::ImportKernel> Importer<'_, K> {
         let mut internal = None;
         // The pieces of the faces that continue them (see [`Importer::thread`]).
         let mut pieces: Vec<(BodyUid, String, bool, Cylinder, Option<f64>)> = Vec::new();
+        // Per face, the chamfers at its ends its sizing moves with it
+        // ([`end_chamfers`]).
+        let mut chamfers: Vec<Vec<(FaceName, f64)>> = Vec::new();
         for r in &faces {
             let Reference::Face(fp) = r else {
                 return Err("a threaded face of another kind".to_owned());
@@ -2581,6 +2584,11 @@ impl<K: crate::ImportKernel> Importer<'_, K> {
             let target = if cylinder.internal { minor } else { major }
                 .map(|m| m / 2.0)
                 .filter(|m| (m - cylinder.radius).abs() > 1e-6);
+            if target.is_some() {
+                chamfers.push(end_chamfers(self.doc.kernel(), shape, &cylinder));
+            } else {
+                chamfers.push(Vec::new());
+            }
             threaded.push((body, face.to_string(), low_end, cylinder, target));
             starts.push((file_axis, fp.f3d.as_ref().and_then(|f| f.seam)));
             if join_pieces && !partial {
@@ -2599,6 +2607,7 @@ impl<K: crate::ImportKernel> Importer<'_, K> {
             if !threaded.iter().any(|t| t.0 == piece.0 && t.1 == piece.1) {
                 threaded.push(piece);
                 starts.push((None, None));
+                chamfers.push(Vec::new());
             }
         }
         let joined = threaded.len() > named;
@@ -2774,19 +2783,24 @@ impl<K: crate::ImportKernel> Importer<'_, K> {
             // stored body can take long (38 s where the tube below took
             // 1.3 s) or not build: it is given a few seconds
             // (`Importer::try_candidate`, mitcad#68).
-            let mut offsets: Vec<Value> = threaded
-                .iter()
-                .filter_map(|(body, face, _, c, target)| {
-                    let m = (*target)?;
-                    let distance = if c.internal {
-                        c.radius - m
-                    } else {
-                        m - c.radius
-                    };
-                    Some(json!({"type": "offset_face", "body": body.to_string(),
-                        "faces": [face], "distance": distance}))
-                })
-                .collect();
+            // The chamfers at the faces' ends move with them (mitcad#335).
+            let mut offsets: Vec<Value> = Vec::new();
+            for ((body, face, _, c, target), cones) in threaded.iter().zip(&chamfers) {
+                let Some(m) = *target else {
+                    continue;
+                };
+                let distance = if c.internal {
+                    c.radius - m
+                } else {
+                    m - c.radius
+                };
+                offsets.push(json!({"type": "offset_face", "body": body.to_string(),
+                    "faces": [face], "distance": distance}));
+                for (cone, cos) in cones {
+                    offsets.push(json!({"type": "offset_face", "body": body.to_string(),
+                        "faces": [cone.to_string()], "distance": distance * cos}));
+                }
+            }
             offsets.extend(plain.iter().cloned());
             candidates.push(Candidate {
                 defs: offsets,
@@ -3810,6 +3824,88 @@ fn coaxial_pieces<K: Kernel>(
     taken
 }
 
+/// The chamfers at the ends of a threaded face (`Cylinder`) that the
+/// file's sizing of the face moves with it (mitcad#335): the cones about
+/// the face's axis that meet it at one of its end circles and run on away
+/// from it towards the axis (an external face's chamfer) or away from it
+/// (an internal face's countersink), with the cosine of their angle to the
+/// axis. Moving a face along the radius by `d` moves such a cone by
+/// `d cos(angle)` along its normal: its edge with the face stays where it
+/// is, and the cone stays the chamfer of the sized face, as the bodies
+/// stored after a modelled thread show it (a 2 mm chamfer at a bolt's free
+/// end stays a 2 mm chamfer of the face sized to the major diameter).
+fn end_chamfers<K: Kernel>(kernel: &K, shape: &K::Shape, seed: &Cylinder) -> Vec<(FaceName, f64)> {
+    use mitcad_model::datum::SurfaceGeometry;
+    const TOLERANCE: f64 = 1e-5;
+    let Some(up) = geom::unit(seed.axis.direction) else {
+        return Vec::new();
+    };
+    let Some((reference, across)) = thread_reference(up) else {
+        return Vec::new();
+    };
+    let Ok(faces) = kernel.faces(shape) else {
+        return Vec::new();
+    };
+    let mut found = Vec::new();
+    for info in faces.iter().filter(|f| f.surface == "cone") {
+        let Some(name) = info.names.first().and_then(|n| n.parse::<FaceName>().ok()) else {
+            continue;
+        };
+        let Ok(SurfaceGeometry::Cone {
+            origin,
+            axis,
+            radius,
+            half_angle,
+        }) = kernel.face_geometry(shape, &name)
+        else {
+            continue;
+        };
+        let Some(axis) = geom::unit(axis) else {
+            continue;
+        };
+        // About the face's axis.
+        let from = geom::sub(origin, seed.axis.origin);
+        let off = geom::norm(geom::sub(from, geom::scale(up, geom::dot(from, up))));
+        if geom::dot(axis, up).abs() < 1.0 - 1e-9 || off > TOLERANCE {
+            continue;
+        }
+        // The cone's radius at a point along the face's axis.
+        let radius_at = |s: f64| {
+            let at = geom::add(seed.axis.origin, geom::scale(up, s));
+            radius + geom::dot(geom::sub(at, origin), axis) * half_angle.tan()
+        };
+        for (end, outward) in [(0.0, -1.0), (seed.length, 1.0)] {
+            if (radius_at(end) - seed.radius).abs() > TOLERANCE {
+                continue;
+            }
+            // Away from the face: narrowing outside, widening inside.
+            let beyond = radius_at(end + outward * 0.1);
+            if (beyond < seed.radius) == seed.internal {
+                continue;
+            }
+            // The cone's face itself holds the end circle (at one of four
+            // points: it may be a part of a turn).
+            let centre = geom::add(seed.axis.origin, geom::scale(up, end));
+            let meets = (0..4).any(|k| {
+                let theta = k as f64 * std::f64::consts::FRAC_PI_2;
+                let radial = geom::add(
+                    geom::scale(reference, theta.cos()),
+                    geom::scale(across, theta.sin()),
+                );
+                let point = geom::add(centre, geom::scale(radial, seed.radius));
+                kernel
+                    .face_point_normal(shape, &name, point)
+                    .is_ok_and(|near| geom::norm(geom::sub(near.point, point)) <= TOLERANCE)
+            });
+            if meets {
+                found.push((name.clone(), half_angle.abs().cos()));
+                break;
+            }
+        }
+    }
+    found
+}
+
 /// Whether an axis points "up" as a modelled thread's helix takes it
 /// (`geometry/include/mitcad/geometry/thread.hpp`): +Z, across Z +Y, else +X.
 fn thread_upwards(d: Vec3) -> bool {
@@ -4243,5 +4339,170 @@ mod coaxial_piece_tests {
         ] {
             assert!(pieces(vec![seed, other], "F8:side(c13)").is_empty());
         }
+    }
+}
+
+#[cfg(test)]
+mod end_chamfer_tests {
+    use super::*;
+    use mitcad_model::datum::{SurfaceGeometry, SurfacePoint};
+    use mitcad_model::{
+        Axis, BooleanOp, BooleanOutput, ExtrudeSpec, FaceInfo, FeatureUid, FilletSet, KernelError,
+    };
+
+    /// A cone about the Z axis: its name, its radius at `z0` and at `z1`
+    /// (the face's extent along Z).
+    type Cone = (&'static str, f64, f64, f64, f64);
+
+    /// A kernel that lists the cones as given.
+    struct Cones(Vec<Cone>);
+
+    impl Cones {
+        fn cone(&self, face: &FaceName) -> Result<Cone, KernelError> {
+            self.0
+                .iter()
+                .find(|c| c.0 == face.to_string())
+                .copied()
+                .ok_or_else(|| KernelError::failed("no such face"))
+        }
+    }
+
+    impl Kernel for Cones {
+        type Shape = ();
+
+        fn extrude(&self, _: &ExtrudeSpec<'_>) -> Result<(), KernelError> {
+            Err(KernelError::Unsupported("extrusions"))
+        }
+
+        fn boolean(
+            &self,
+            _: BooleanOp,
+            _: &[&()],
+            _: &(),
+        ) -> Result<BooleanOutput<()>, KernelError> {
+            Err(KernelError::Unsupported("booleans"))
+        }
+
+        fn fillet(
+            &self,
+            _: FeatureUid,
+            _: &(),
+            _: &[FilletSet<'_>],
+            _: bool,
+        ) -> Result<(), KernelError> {
+            Err(KernelError::Unsupported("fillets"))
+        }
+
+        fn solids(&self, _: &()) -> Result<Vec<()>, KernelError> {
+            Ok(vec![()])
+        }
+
+        fn count_edges(&self, _: &(), _: &mitcad_model::EdgeName) -> usize {
+            0
+        }
+
+        fn faces(&self, _: &()) -> Result<Vec<FaceInfo>, KernelError> {
+            Ok(self
+                .0
+                .iter()
+                .map(|c| FaceInfo {
+                    names: vec![c.0.to_owned()],
+                    surface: "cone".to_owned(),
+                    area: 1.0,
+                })
+                .collect())
+        }
+
+        fn face_geometry(&self, _: &(), face: &FaceName) -> Result<SurfaceGeometry, KernelError> {
+            let (_, z0, r0, z1, r1) = self.cone(face)?;
+            Ok(SurfaceGeometry::Cone {
+                origin: [0.0, 0.0, z0],
+                axis: [0.0, 0.0, 1.0],
+                radius: r0,
+                half_angle: ((r1 - r0) / (z1 - z0)).atan(),
+            })
+        }
+
+        /// The face's point at the height of `near` (within its extent),
+        /// towards it.
+        fn face_point_normal(
+            &self,
+            _: &(),
+            face: &FaceName,
+            near: Vec3,
+        ) -> Result<SurfacePoint, KernelError> {
+            let (_, z0, r0, z1, r1) = self.cone(face)?;
+            let z = near[2].clamp(z0.min(z1), z0.max(z1));
+            let r = r0 + (r1 - r0) * (z - z0) / (z1 - z0);
+            let across = near[0].hypot(near[1]);
+            let point = [near[0] / across * r, near[1] / across * r, z];
+            Ok(SurfacePoint {
+                point,
+                normal: [near[0] / across, near[1] / across, 0.0],
+            })
+        }
+    }
+
+    /// A face on a cylinder of radius 5 about the Z axis from 0 to 20.
+    fn shaft(internal: bool) -> Cylinder {
+        Cylinder {
+            axis: Axis {
+                origin: [0.0, 0.0, 0.0],
+                direction: [0.0, 0.0, 1.0],
+            },
+            radius: 5.0,
+            length: 20.0,
+            internal,
+        }
+    }
+
+    fn found(cones: Vec<Cone>, internal: bool) -> Vec<(String, f64)> {
+        end_chamfers(&Cones(cones), &(), &shaft(internal))
+            .into_iter()
+            .map(|(n, cos)| (n.to_string(), cos))
+            .collect()
+    }
+
+    #[test]
+    fn a_shafts_end_chamfers_move_with_it() {
+        // 45-degree chamfers at the free end and at the other end, and a
+        // 30-degree one (to the axis).
+        let tip = ("F4:chamfer(c1)", 20.0, 5.0, 21.5, 3.5);
+        let low = ("F5:chamfer(c2)", -1.0, 4.0, 0.0, 5.0);
+        let steep = ("F6:chamfer(c3)", 20.0, 5.0, 20.0 + 3f64.sqrt(), 4.0);
+        for (cone, cos) in [
+            (tip, 0.5f64.sqrt()),
+            (low, 0.5f64.sqrt()),
+            (steep, 3f64.sqrt() / 2.0),
+        ] {
+            let got = found(vec![cone], false);
+            assert_eq!(got.len(), 1, "{}", cone.0);
+            assert_eq!(got[0].0, cone.0);
+            assert!((got[0].1 - cos).abs() < 1e-9, "{}: {}", cone.0, got[0].1);
+        }
+    }
+
+    #[test]
+    fn only_chamfers_at_the_faces_ends_move() {
+        for cone in [
+            // Widening away from the face (towards a shoulder).
+            ("F4:chamfer(c1)", 20.0, 5.0, 21.0, 6.0),
+            // Narrowing, but off the end circle (another radius there).
+            ("F4:chamfer(c1)", 20.0, 4.9, 21.0, 3.9),
+            // On the cone through the end circle, but its face lies
+            // further on.
+            ("F4:chamfer(c1)", 20.5, 4.5, 21.5, 3.5),
+        ] {
+            assert!(found(vec![cone], false).is_empty(), "{cone:?}");
+        }
+    }
+
+    #[test]
+    fn a_bores_countersink_moves_with_it() {
+        // A bore's mouth widening away from it moves; one narrowing does not.
+        let sink = ("F4:chamfer(c1)", 20.0, 5.0, 21.0, 6.0);
+        assert_eq!(found(vec![sink], true).len(), 1);
+        let narrowing = ("F4:chamfer(c1)", 20.0, 5.0, 21.0, 4.0);
+        assert!(found(vec![narrowing], true).is_empty());
     }
 }

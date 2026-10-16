@@ -73,7 +73,7 @@ echo "--- the building test project with its link"
 "$TEST_EXCHANGE" --write-rvt-building "$WORK/building" || ui_fail "cannot write the building project"
 ui_mark
 ui_step "open the building project (Ctrl+O)" open_unsaved "$WORK/building/building.rvt"
-ui_expect_new "Import report: building.rvt: 0 saved meshes, 0 boxes at a family type's transform, 0 boxes on 0 levels; 6 elements as features; 1 of 1 links found" \
+ui_expect_new "Import report: building.rvt: 0 saved meshes, 0 boxes at a family type's transform, 2 boxes on 2 levels; 0 meshes of the geometry the file keeps, 0 reference bodies, 2 boxes hidden; 6 elements as features; 1 of 1 links found" \
   "its walls and floor as features, its link found next to it (no dialog)" 120
 close_report
 ui_expect_new "Imported building.rvt: " "the elements' bodies"

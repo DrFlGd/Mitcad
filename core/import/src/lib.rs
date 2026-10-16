@@ -745,6 +745,10 @@ pub(crate) struct Importer<'a, K: Kernel> {
     /// approximation (mitcad#181): only its decoded definitions there, its
     /// guesses on the state before it exactly ([`Importer::verified_at`]).
     defer_guesses: bool,
+    /// Set by [`Importer::try_state`] when a definition of the item failed
+    /// in the geometry kernel ([`kernel_failure`]): the item is then tried
+    /// again on the file's state before it exactly ([`Importer::verified_at`]).
+    kernel_failed: bool,
     /// The base features that brought the bodies to the state before an
     /// item from its start (`StoredGeometry::item_start`): the operations
     /// no item names right before its own, made by it (a split's first
@@ -830,6 +834,7 @@ impl<'a, K: Kernel> Importer<'a, K> {
             alternatives: HashMap::new(),
             guesses: None,
             defer_guesses: false,
+            kernel_failed: false,
             start_bases: HashMap::new(),
             deadline: None,
             captures: captures::Captures::default(),
@@ -949,6 +954,8 @@ pub fn import_design_with<K: ImportKernel>(
     importer.run();
     importer.light_bulbs();
     importer.appearances();
+    let dump = importer.dump;
+    importer.report.set_body_entities(dump);
     importer.timeline_notes();
     importer.learn_write();
     importer.finish_references();
@@ -988,6 +995,27 @@ const IN_PARTS: &str = "the file keeps no result for it in its own component (it
 
 /// The note of an item whose definitions built, none to the file's result.
 const NOT_IN_HISTORY: &str = "its result is not in the file's history";
+
+/// Whether a definition's error says only that its result is not the
+/// file's (it built another, or nothing of it reached a body), not why.
+fn symptom(error: &str) -> bool {
+    error.starts_with(NOT_IN_HISTORY)
+        || error.contains("does not cut into any participant body")
+        || error.contains("does not touch any participant body")
+        || error.contains("no bodies in the extrude direction")
+}
+
+/// Whether a definition's error is the geometry kernel's: an operation that
+/// failed or built an invalid shape on the bodies it was given.
+fn kernel_failure(error: &str) -> bool {
+    error.contains("produced an invalid shape")
+        || error.starts_with("the boolean operation failed")
+        || error.starts_with("fillet failed")
+        || error.starts_with("chamfer failed")
+        || error.starts_with("fillet: ")
+        || error.starts_with("chamfer: ")
+        || error.starts_with("the taper failed")
+}
 
 /// The note of a modelling item whose operation in the file's history left
 /// every body as it was, which none of its definitions does (mitcad#156:
@@ -1093,6 +1121,10 @@ pub use retry::{AskUser, RetryBodies, RetryChoice};
 use retry::{Retry, Stay};
 // The .rvt import, phase 1: elements by level as meshes and boxes (mitcad#274).
 pub mod rvt;
+// Derived designs: bodies of other documents (mitcad#324).
+pub mod derive;
+// The dressup failure dump (mitcad#107, mitcad#322).
+mod dressups;
 
 fn item_name(item: &TimelineItem) -> String {
     item.name().unwrap_or("?").to_owned()
@@ -1707,6 +1739,9 @@ impl<'a, K: ImportKernel> Importer<'a, K> {
             &mut self.components,
             &mut self.report.components,
         );
+        // The documents of derived bodies, placed where the derives put
+        // them, to be filled with the others (mitcad#324).
+        self.place_derive_sources();
         // The occurrences start where the file places them at the end of
         // its timeline: their last captured positions (mitcad#75).
         for (occurrence, placement) in self.captures.last() {
@@ -1991,6 +2026,12 @@ impl<'a, K: ImportKernel> Importer<'a, K> {
         // theirs (`Importer::within`).
         self.deadline = Some(started + seconds(self.options.item_seconds));
         let class = classify(object_type.as_deref());
+        // A derive that brings nothing (mitcad#324).
+        if class == Class::Geometry && derive::brings_nothing(item) {
+            self.note(at, Outcome::Skipped, derive::BRINGS_NOTHING);
+            self.deadline = None;
+            return;
+        }
         if suppressed && class == Class::Geometry {
             self.suppressed_item(at, index, item);
             self.deadline = None;
@@ -2069,7 +2110,12 @@ impl<'a, K: ImportKernel> Importer<'a, K> {
                 // and a removal use no sketch.)
                 let originals = if matches!(
                     object_type.as_deref(),
-                    Some("ComponentFromBodies" | "CopyPasteBodies" | "RemoveFeature")
+                    Some(
+                        "ComponentFromBodies"
+                            | "CopyPasteBodies"
+                            | "RemoveFeature"
+                            | "DerivedContext"
+                    )
                 ) {
                     Vec::new()
                 } else {
@@ -3521,6 +3567,11 @@ impl<'a, K: ImportKernel> Importer<'a, K> {
                                 short(&current),
                                 short(&next)
                             );
+                            for u in &uids {
+                                if let Some(e) = self.doc.status(*u).and_then(|s| s.error()) {
+                                    trace!("{}: {u} failed: {e}", item_name(item));
+                                }
+                            }
                         }
                         self.undo_to(inner);
                         last_error = NOT_IN_HISTORY.to_owned();
@@ -3535,6 +3586,7 @@ impl<'a, K: ImportKernel> Importer<'a, K> {
                     }
                     Err(e) => {
                         trace!("{}: {before:?} {} failed: {e}", item_name(item), summary(c));
+                        self.dump_dressup_failure(index, item, c, &e, None);
                         if e == OUT_OF_TIME {
                             turns.cut_short(k, ran, false);
                         }
@@ -3721,6 +3773,7 @@ impl<'a, K: ImportKernel> Importer<'a, K> {
             && start.is_some()
             && item.object_type() == Some("CombineFeature");
         self.defer_guesses = defer;
+        self.kernel_failed = false;
         let mut tried =
             self.try_state(at, index, item, states, &target, reference, carried, budget);
         self.defer_guesses = false;
@@ -3730,8 +3783,12 @@ impl<'a, K: ImportKernel> Importer<'a, K> {
         // the geometry kernel failed on the replay's bodies: the stored
         // state's edges are split otherwise, and a rounding that fails (or
         // crashes) on one builds on the other.
-        let kernel_failed = matches!(&item.detail, Some(Detail::Fillet(_) | Detail::Chamfer(_)))
-            && matches!(&tried, Err(e) if !e.starts_with(NOT_IN_HISTORY) && e != "nothing to try");
+        // (So is any item one of whose definitions the kernel failed on
+        // them, where none gave the state: an extrusion whose decoded cut
+        // came out invalid, mitcad#325.)
+        let kernel_failed = (matches!(&item.detail, Some(Detail::Fillet(_) | Detail::Chamfer(_)))
+            && matches!(&tried, Err(e) if !e.starts_with(NOT_IN_HISTORY) && e != "nothing to try"))
+            || (self.kernel_failed && tried.is_err());
         let again = matches!(&tried, Err(e) if !halts(e))
             && (carried > history::EXACT || kernel_failed)
             && self.give_up(index).is_none();
@@ -4029,6 +4086,11 @@ impl<'a, K: ImportKernel> Importer<'a, K> {
                 // few more definitions are tried for a closer one first.
                 let mut loose: Option<(usize, f64)> = None;
                 let mut closer_tries = 0;
+                // Misses traced (`MITCAD_IMPORT_TRACE_MISS`).
+                let mut misses = 0;
+                // Why the first of the decoded definitions failed, if it did:
+                // the note's cause when the guesses after it only missed.
+                let mut decoded_failure: Option<String> = None;
                 // Definitions cut short at their share of the time wait for
                 // the second round.
                 let mut turns = Turns::default();
@@ -4310,6 +4372,7 @@ impl<'a, K: ImportKernel> Importer<'a, K> {
                                     continue;
                                 }
                                 trace!("{name}: {} -> its state {state} ({d:.1e})", summary(c));
+                                self.dump_dressup_taken(index, item, c, Some(states));
                                 if !consumed.is_empty() {
                                     trace!(
                                         "{name}: the bodies it merged stay in the history; \
@@ -4332,6 +4395,16 @@ impl<'a, K: ImportKernel> Importer<'a, K> {
                                 short(&current),
                                 short(target)
                             );
+                            // (Where it differs, in numbers: the traces of
+                            // the first few misses.)
+                            if tracing()
+                                && misses < 3
+                                && std::env::var_os("MITCAD_IMPORT_TRACE_MISS").is_some()
+                                && self.take_over(index, c, item.name(), &evaluated).is_ok()
+                            {
+                                misses += 1;
+                                self.trace_miss(&name, &before_shapes, states);
+                            }
                             self.undo_to(inner);
                             last_error = NOT_IN_HISTORY.to_owned();
                         }
@@ -4348,6 +4421,7 @@ impl<'a, K: ImportKernel> Importer<'a, K> {
                         }
                         Err(e) => {
                             trace!("{name}: {} failed: {e}", summary(c));
+                            self.dump_dressup_failure(index, item, c, &e, Some(states));
                             if e == OUT_OF_TIME {
                                 turns.cut_short(k, ran, false);
                             }
@@ -4355,6 +4429,10 @@ impl<'a, K: ImportKernel> Importer<'a, K> {
                             // take the rest of a tangent chain.
                             if !e.contains("vertex") && !e.contains("continues tangentially") {
                                 failed_dressups.extend(dressup_edges(c));
+                            }
+                            self.kernel_failed |= kernel_failure(&e);
+                            if (c.first || !c.guess) && decoded_failure.is_none() {
+                                decoded_failure = Some(e.clone());
                             }
                             last_error = e;
                         }
@@ -4417,6 +4495,17 @@ impl<'a, K: ImportKernel> Importer<'a, K> {
                     && self.with_other_profiles(at, index, item, &candidates, target, own, states)
                 {
                     return Ok(());
+                }
+                // A decoded definition that failed is the item's cause where
+                // the definitions guessed after it only missed the state
+                // (the census counted a cut the kernel built invalid as one
+                // "not in the file's history", mitcad#325).
+                if let Some(decoded) = decoded_failure
+                    && !halts(&last_error)
+                    && symptom(&last_error)
+                    && !symptom(&decoded)
+                {
+                    last_error = format!("{decoded}; the other definitions: {last_error}");
                 }
                 // Which definition the time went to.
                 if !halts(&last_error)
@@ -5553,6 +5642,11 @@ fn def_component<K: Kernel>(
             .and_then(|b| doc.body_component(b))
     {
         return c;
+    }
+    // A derive (mitcad#324) copies the bodies of other components into the
+    // item's.
+    if def["type"] == "derive" {
+        return component;
     }
     // A sketch on another component's face or with projections of other
     // components' geometry (mitcad#225): the linked bodies are not its

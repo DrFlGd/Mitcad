@@ -2382,6 +2382,9 @@ fn prepare(path: &str, options: &TimelineOptions) -> Result<Prepared, ApiError> 
                 )
                 .collect();
             mitcad_f3d::design::resolve_external_inputs(&mut decoded, &documents);
+            // Derives' placements kept as occurrence paths of their source
+            // designs (mitcad#324).
+            mitcad_f3d::design::resolve_derive_placements(&mut decoded, &documents);
             trace_reading("inputs in other documents found", clock);
         }
     }

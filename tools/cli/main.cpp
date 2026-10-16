@@ -197,15 +197,18 @@ const char* const kUsage = R"(usage:
       element.
   mitcad-cli import-rvt <file.rvt|file.rfa> [--save <out.mitcad>] [--report <report.json>]
                         [--reference-ifc <export.ifc>] [--link-folder <dir>]
-                        [--report-only] [--mesh-only] [--json]
+                        [--report-only] [--mesh-only] [--no-reference-ifc] [--json]
       Imports an .rvt project's building elements: one component per level
       with its construction plane, the grids as construction axes; walls,
-      floors, roofs, columns and beams as features rebuilt from their
-      parameters, checked against the IFC export given with
-      --reference-ifc (each element's volume within 1 % and its box within
-      5 mm, by GlobalId) or else against their stored boxes; every other
-      element (and one that does not agree) a body named Family:Type:Id,
-      the triangle mesh its record saves or else its box. Linked models
+      floors, roofs, ceilings, columns and beams as features rebuilt from
+      their parameters, checked against the IFC export given with
+      --reference-ifc or found next to the project by its name (unless
+      --no-reference-ifc; each element's volume within 1 % and its box
+      within 5 mm, by GlobalId) or else against their stored boxes; every
+      other element (and one that does not agree) a body named
+      Family:Type:Id: a mesh of the geometry the file keeps of it, else
+      the reference's body, the triangle mesh its record saves or its box
+      (hidden unless structural). Linked models (projects or IFC files)
       found next to the project or in --link-folder come in as components
       of their own; a link not found leaves its component empty. An .rfa
       family file gives its metadata only. Prints the import report and

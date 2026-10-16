@@ -233,7 +233,103 @@ fn side(
     if edges.len() != 1 {
         return Err("tangent port must be one unique uninterrupted straight boundary".into());
     }
-    let edge = edges[0];
+    port_side(patch, edges[0], to_axial)
+}
+
+/// Every stretch of a straight boundary curve of a chart (each its own
+/// piece, [`number_stretches`]), in the order of their axial coordinates:
+/// one for an uninterrupted boundary, several where holes or cut windows
+/// cross the line (a fold across them, mitcad#288).
+fn sides(
+    patch: &SheetPatch,
+    piece: &CurvePieceRef,
+    to_axial: Isometry2,
+) -> Result<Vec<ShapePortSide>, String> {
+    let mut out = patch
+        .regions
+        .iter()
+        .flat_map(|r| &r.loops)
+        .flat_map(|l| &l.edges)
+        .filter(|e| e.piece.curve == piece.curve)
+        .map(|e| port_side(patch, e, to_axial))
+        .collect::<Result<Vec<_>, String>>()?;
+    if out.is_empty() {
+        return Err("tangent port must be one unique uninterrupted straight boundary".into());
+    }
+    out.sort_by(|a, b| coverage(a)[0].total_cmp(&coverage(b)[0]));
+    Ok(out)
+}
+
+/// Gives the stretches of the straight boundary `piece` of a domain's chart
+/// (a fold line across holes or cut windows, mitcad#288) distinct piece
+/// numbers in the order of their axial coordinates, as a developed cut
+/// numbers its fragments: each seam then names its own stretch. The
+/// lineage records of the stretches follow, keeping the new piece as an
+/// alias.
+fn number_stretches(
+    state: &mut SheetState,
+    domain: SheetDomainRef,
+    piece: &CurvePieceRef,
+    to_axial: Isometry2,
+) -> Result<(), String> {
+    let patch = state
+        .charts
+        .iter_mut()
+        .find(|p| p.domain == domain)
+        .ok_or("a fold's material domain is unavailable")?;
+    let mut stretches = Vec::new();
+    for (r, region) in patch.regions.iter().enumerate() {
+        for (l, lp) in region.loops.iter().enumerate() {
+            for (e, edge) in lp.edges.iter().enumerate() {
+                if &edge.piece == piece {
+                    let (a, b) = line(edge)?;
+                    let middle = (to_axial.point(a)[1] + to_axial.point(b)[1]) / 2.0;
+                    stretches.push((middle, r, l, e));
+                }
+            }
+        }
+    }
+    if stretches.len() < 2 {
+        return Ok(());
+    }
+    stretches.sort_by(|a, b| a.0.total_cmp(&b.0));
+    for (k, (_, r, l, e)) in stretches.into_iter().enumerate() {
+        let edge = &mut patch.regions[r].loops[l].edges[e];
+        let generation = CurveLineage::generation(&edge.curve);
+        let renamed = CurvePieceRef {
+            curve: piece.curve.clone(),
+            piece: k as u32,
+        };
+        edge.piece = renamed.clone();
+        for record in state.lineage.iter_mut().filter(|record| {
+            record.boundary.domain == domain
+                && &record.boundary.piece == piece
+                && record.curve_generation == generation
+        }) {
+            record.boundary.piece = renamed.clone();
+            if !record.aliases.contains(&renamed) {
+                record.aliases.push(renamed.clone());
+                record
+                    .aliases
+                    .sort_by_key(|p| serde_json::to_string(p).expect("curve identity"));
+            }
+        }
+    }
+    Ok(())
+}
+
+/// The axial interval a port side covers, lower end first.
+fn coverage(s: &ShapePortSide) -> [f64; 2] {
+    let a = s.axial.offset + s.axial.scale * s.span.first;
+    let b = s.axial.offset + s.axial.scale * s.span.last;
+    [a.min(b), a.max(b)]
+}
+
+fn port_side(
+    patch: &SheetPatch,
+    edge: &MaterialEdge,
+    to_axial: Isometry2,
+) -> Result<ShapePortSide, String> {
     let (a, b) = line(edge)?;
     let first = to_axial.point(a)[1];
     let last = to_axial.point(b)[1];
@@ -258,16 +354,21 @@ fn pair(
     second: ShapePortSide,
     width: f64,
 ) -> Result<(), String> {
-    let coverage = |s: &ShapePortSide| {
-        let a = s.axial.offset + s.axial.scale * s.span.first;
-        let b = s.axial.offset + s.axial.scale * s.span.last;
-        [a.min(b), a.max(b)]
-    };
     for values in [coverage(&first), coverage(&second)] {
         if values[0].abs() > TOLERANCE || (values[1] - width).abs() > TOLERANCE {
             return Err("tangent ports do not cover the same full axial interval".into());
         }
     }
+    push_port(state, [0.0, width], first, second);
+    Ok(())
+}
+
+fn push_port(
+    state: &mut SheetState,
+    interval: [f64; 2],
+    first: ShapePortSide,
+    second: ShapePortSide,
+) {
     let token = state
         .joins
         .iter()
@@ -277,12 +378,48 @@ fn pair(
     state.joins.push(ShapePort {
         token,
         axial_interval: ParamSpan {
-            first: 0.0,
-            last: width,
+            first: interval[0],
+            last: interval[1],
         },
         first,
         second,
     });
+}
+
+/// Seams between the stretches of two boundaries along one line: a single
+/// stretch each must cover the whole axial interval `[0, width]` (as
+/// [`pair`]); stretches interrupted by holes or cut windows (a fold across
+/// them, mitcad#288) pair one to one, each pair covering the same part of
+/// it, one seam per stretch.
+fn pair_all(
+    state: &mut SheetState,
+    first: Vec<ShapePortSide>,
+    second: Vec<ShapePortSide>,
+    width: f64,
+) -> Result<(), String> {
+    if first.len() == 1 && second.len() == 1 {
+        let (Some(a), Some(b)) = (first.into_iter().next(), second.into_iter().next()) else {
+            unreachable!()
+        };
+        return pair(state, a, b, width);
+    }
+    if first.len() != second.len() {
+        return Err("the stretches of a bend's seam do not pair up".into());
+    }
+    for (a, b) in first.into_iter().zip(second) {
+        let (ca, cb) = (coverage(&a), coverage(&b));
+        if (ca[0] - cb[0]).abs() > TOLERANCE
+            || (ca[1] - cb[1]).abs() > TOLERANCE
+            || ca[0] < -TOLERANCE
+            || ca[1] > width + TOLERANCE
+            || ca[1] - ca[0] <= TOLERANCE
+        {
+            return Err(
+                "the stretches of a bend's seam do not cover the same axial intervals".into(),
+            );
+        }
+        push_port(state, ca, a, b);
+    }
     Ok(())
 }
 
@@ -412,8 +549,8 @@ fn add_strip<K: Kernel>(
     metrics: &BendMetrics,
     construction: Construction,
     moving: SheetPatch,
-    stationary: ShapePortSide,
-    moving_side: ShapePortSide,
+    stationary: Vec<ShapePortSide>,
+    moving_side: Vec<ShapePortSide>,
     width: f64,
     strip_regions: Option<Vec<MaterialRegion>>,
 ) -> Result<(), String> {
@@ -434,15 +571,16 @@ fn add_strip<K: Kernel>(
 
 /// A bend of the feature (its `slot`) on `cylinder` between two port
 /// sides: its record, its strip (generated curves `40 + 100 slot` to `43 +
-/// 100 slot`) and its two seams.
+/// 100 slot`) and its two seams (each one seam per stretch where holes or
+/// cut windows interrupt the bend's lines, mitcad#288).
 #[allow(clippy::too_many_arguments)]
 fn add_bend_strip<K: Kernel>(
     ctx: &EvalContext<'_, K>,
     state: &mut SheetState,
     metrics: &BendMetrics,
     cylinder: CylinderEmbedding,
-    stationary: ShapePortSide,
-    moving_side: ShapePortSide,
+    stationary: Vec<ShapePortSide>,
+    moving_side: Vec<ShapePortSide>,
     width: f64,
     strip_regions: Option<Vec<MaterialRegion>>,
     slot: u32,
@@ -462,12 +600,15 @@ fn add_bend_strip<K: Kernel>(
         )?]),
         embedding: SheetEmbedding::Cylinder(cylinder.clone()),
     };
-    let left = side(&strip, &generated(ctx.uid, curves + 3), Isometry2::IDENTITY)?;
-    let right = side(&strip, &generated(ctx.uid, curves + 1), Isometry2::IDENTITY)?;
+    let left = sides(&strip, &generated(ctx.uid, curves + 3), Isometry2::IDENTITY)?;
+    let right = sides(&strip, &generated(ctx.uid, curves + 1), Isometry2::IDENTITY)?;
+    let (Some(first), Some(last)) = (stationary.first(), moving_side.first()) else {
+        return Err("tangent port must be one unique uninterrupted straight boundary".into());
+    };
     state.bends.push(BendDomain {
         id,
-        stationary: stationary.boundary.clone(),
-        moving: moving_side.boundary.clone(),
+        stationary: first.boundary.clone(),
+        moving: last.boundary.clone(),
         folded_embedding: cylinder,
         signed_angle: metrics.angle,
         k_factor: metrics.k,
@@ -480,8 +621,8 @@ fn add_bend_strip<K: Kernel>(
         rules: state.rules,
         rules_version: state.rules_version.clone(),
     });
-    pair(state, stationary, left, width)?;
-    pair(state, right, moving_side, width)?;
+    pair_all(state, stationary, left, width)?;
+    pair_all(state, right, moving_side, width)?;
     state.charts.push(strip);
     Ok(())
 }
@@ -741,8 +882,8 @@ pub(crate) fn flange<K: Kernel>(
         &metrics,
         constructed,
         moving,
-        stationary,
-        moving_side,
+        vec![stationary],
+        vec![moving_side],
         width,
         None,
     )?;
@@ -1035,6 +1176,14 @@ fn fold_panel<K: Kernel>(
         &removal,
         &[frame.to_operation],
     )?;
+    for (domain, slot) in [
+        (stationary_domain, 13),
+        (moving_domain, 53),
+        (strip_domain, 41),
+        (strip_domain, 43),
+    ] {
+        number_stretches(state, domain, &generated(ctx.uid, slot), frame.to_operation)?;
+    }
     let moving = state
         .charts
         .iter()
@@ -1051,12 +1200,14 @@ fn fold_panel<K: Kernel>(
     map.origin[0] -= tangent;
     let strip_regions = mapped_regions(&strip.regions, map);
     remap_lineage(&mut state.lineage, strip_domain, &strip.regions, map);
-    let stationary = side(
+    // A line across holes or cut windows leaves the panels' new boundaries
+    // in stretches: one seam each (mitcad#288).
+    let stationary = sides(
         chart(state, panel)?,
         &generated(ctx.uid, 13),
         frame.to_operation,
     )?;
-    let moving_side = side(&moving, &generated(ctx.uid, 53), frame.to_operation)?;
+    let moving_side = sides(&moving, &generated(ctx.uid, 53), frame.to_operation)?;
     let constructed = construction(frame, tangent, 0.0, metrics);
     let transform = moving_transform(frame, far_tangent, 0.0, &constructed);
     // Classify existing ports using their original material boundaries. A
@@ -1333,8 +1484,8 @@ fn virtual_bend<K: Kernel>(
         metrics,
         constructed,
         moving,
-        stationary,
-        moving_side,
+        vec![stationary],
+        vec![moving_side],
         frame.width,
         Some(strip_regions),
     )
@@ -1411,8 +1562,8 @@ fn positioned_bend<K: Kernel>(
         metrics,
         constructed,
         moving_patch,
-        stationary,
-        moving_side,
+        vec![stationary],
+        vec![moving_side],
         frame.width,
         None,
     )
@@ -1679,8 +1830,8 @@ fn double_bend<K: Kernel>(
         &mut state,
         &first,
         built.cylinder,
-        fixed_side,
-        jog_root,
+        vec![fixed_side],
+        vec![jog_root],
         width,
         None,
         0,
@@ -1691,8 +1842,8 @@ fn double_bend<K: Kernel>(
         &mut state,
         &second,
         back.cylinder,
-        jog_end,
-        cut_side,
+        vec![jog_end],
+        vec![cut_side],
         width,
         None,
         1,

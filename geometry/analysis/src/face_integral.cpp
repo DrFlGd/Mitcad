@@ -60,10 +60,12 @@
 #include <NCollection_Array1.hxx>
 #include <Precision.hxx>
 #include <Standard_Failure.hxx>
+#include <TopExp.hxx>
 #include <TopExp_Explorer.hxx>
 #include <TopLoc_Location.hxx>
 #include <TopoDS.hxx>
 #include <TopoDS_Edge.hxx>
+#include <TopoDS_Vertex.hxx>
 #include <gp_Dir2d.hxx>
 #include <gp_Mat.hxx>
 #include <gp_Pnt2d.hxx>
@@ -407,6 +409,7 @@ public:
     } else {
       TopLoc_Location location;
       const occ::handle<Geom_Surface> geometry = BRep_Tool::Surface(forward_, location);
+      std::vector<Piece> pieces;
       for (TopExp_Explorer it(forward_, TopAbs_EDGE); it.More(); it.Next()) {
         const TopoDS_Edge& edge = TopoDS::Edge(it.Current());
         const TopAbs_Orientation orientation = edge.Orientation();
@@ -427,7 +430,10 @@ public:
           curve = curve->Reversed();
         }
         boundary(Geom2dAdaptor_Curve(curve, first, last), total);
+        pieces.push_back(
+            {curve->Value(first), curve->Value(last), TopExp::FirstVertex(edge, true), TopExp::LastVertex(edge, true)});
       }
+      close_gaps(pieces, total);
     }
     if (integral_ == Integral::Volume) {
       // The divergence theorem: the volume r.N / 3, its moments r r.N / 4
@@ -612,6 +618,56 @@ private:
           }
         }
       }
+    }
+  }
+
+  // A boundary curve of the face as the face runs it: its ends in the
+  // parameter plane and its vertices.
+  struct Piece {
+    gp_Pnt2d start;
+    gp_Pnt2d end;
+    TopoDS_Vertex from;
+    TopoDS_Vertex to;
+  };
+
+  // Closes the loops in the parameter plane where a boundary curve ends
+  // short of the vertex it shares with the next one: a valid face can bridge
+  // such a gap with the vertex's tolerance (a fillet's result whose blend
+  // face's curve stopped 0.36 mm short of a vertex of 0.74 mm tolerance,
+  // mitcad#325), and the boundary integral then misses the strip between
+  // the gap and the face's first parameter (a third of that face's area).
+  // Each curve's end is joined to the start of a curve beginning at the same
+  // vertex (the nearest, where several do) by a straight segment, where the
+  // two lie apart on the surface; on a closed loop the segments add nothing.
+  void close_gaps(const std::vector<Piece>& pieces, Sums& total) const {
+    std::vector<bool> taken(pieces.size(), false);
+    for (const Piece& piece : pieces) {
+      if (piece.to.IsNull()) {
+        continue;
+      }
+      std::size_t next = pieces.size();
+      double nearest = 0.0;
+      for (std::size_t j = 0; j < pieces.size(); ++j) {
+        if (taken[j] || pieces[j].from.IsNull() || !pieces[j].from.IsSame(piece.to)) {
+          continue;
+        }
+        const double d = piece.end.Distance(pieces[j].start);
+        if (next == pieces.size() || d < nearest) {
+          next = j;
+          nearest = d;
+        }
+      }
+      if (next == pieces.size()) {
+        continue;
+      }
+      taken[next] = true;
+      const gp_Pnt2d& a = piece.end;
+      const gp_Pnt2d& b = pieces[next].start;
+      // (The same point of the surface, also a period apart: no gap.)
+      if (surface_.Value(a.X(), a.Y()).Distance(surface_.Value(b.X(), b.Y())) <= Precision::Confusion()) {
+        continue;
+      }
+      boundary(Geom2dAdaptor_Curve(new Geom2d_Line(a, gp_Dir2d(b.XY() - a.XY())), 0.0, a.Distance(b)), total);
     }
   }
 

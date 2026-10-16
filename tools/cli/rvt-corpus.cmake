@@ -5,7 +5,10 @@
 #
 # - the MIT-licensed 2024 project (c805df44) imported with mitcad-cli
 #   import-rvt against its IFC export (bfdf36ff): every building element
-#   on its level's component, and every wall, slab and column of the
+#   on its level's component, its curtain panels and mullions as features
+#   and its other family elements as meshes of the
+#   geometry the file keeps and no box (mitcad#333), and every wall, slab
+#   and column of the
 #   export agreed with by a feature (its volume within 1 %, its box within
 #   5 mm, by GlobalId); without the IFC corpus, only the first part;
 # - a 2024 structural sample project (aab838f8) next to the 2024
@@ -63,6 +66,17 @@ string(JSON bodies GET "${report}" import bodies)
 string(JSON not_built LENGTH "${report}" import not_built)
 string(JSON levels LENGTH "${report}" import levels)
 string(JSON memory GET "${report}" import memory_low)
+string(JSON meshes GET "${report}" import geometry_meshes)
+string(JSON panels GET "${report}" import built panel)
+string(JSON mullions GET "${report}" import built mullion)
+string(JSON boxes GET "${report}" import boxes)
+string(JSON oriented GET "${report}" import oriented_boxes)
+# The curtain panels and mullions as features, the doors, windows and
+# furniture as meshes of the geometry the file keeps, no box left
+# (mitcad#333).
+if(panels LESS 5000 OR mullions LESS 4000 OR meshes LESS 200 OR NOT boxes EQUAL 0 OR NOT oriented EQUAL 0)
+  message(FATAL_ERROR "${id}: ${panels} panels and ${mullions} mullions as features, ${meshes} meshes of its geometry, ${boxes} and ${oriented} boxes")
+endif()
 # The project's 854 building elements the reference reader lists (its 970
 # elements but 116 rooms, which are spaces) and its other elements of
 # building categories: every one placed, as features or a body

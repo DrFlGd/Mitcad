@@ -5,8 +5,9 @@ templates, `.rte` and `.rft`): the container, the metadata, the file's own
 serialisation schema, the element table and the element records, walked
 field by field by that schema, as typed views (category, class, level,
 family and type, transform, bounding box, saved meshes, levels,
-materials) and the building elements' parameters (mitcad#275). It has no
-geometry: the `.rvt` import (mitcad#274, mitcad#275,
+materials), the building elements' parameters (mitcad#275) and the
+geometry the file keeps of its elements (B-reps, mitcad#333). It builds no
+bodies: the `.rvt` import (mitcad#274, mitcad#275, mitcad#333,
 `mitcad_import::rvt`, `core/ffi/src/rvt_import.rs`, the `import_rvt`
 command in [commands.md](../model/src/api/commands.md#rvt-import),
 `mitcad-cli import-rvt`, File › Open) builds the bodies through the
@@ -31,12 +32,13 @@ further.
 | `info` | `BasicFileInfo` (release, build; personal keys left out), `PartAtom`, `TransmissionData`, the preview PNG. |
 | `schema` | The serialisation schema (`Formats/Latest`): classes, bases, fields, type encodings, the known unknowns. A writer for tests. |
 | `walk` | Records walked by the schema: objects, pointers and the objects behind them, partial walks. |
-| `partition` | The partition streams' two record chains (element headers, element objects). A writer for tests. |
+| `partition` | The partition streams' record chains (element headers, element objects, their geometry) and the loaded families' documents after them. A writer for tests. |
 | `elements` | The element table and the typed views: elements, levels, materials, type boxes, saved meshes, GlobalIds. |
+| `brep` | The elements' geometry as the file keeps it: bodies (winged-edge B-reps in their faces' parameters) and placed types (mitcad#333). |
 | `building` | The building elements' parameters: walls, floors, roofs, family instances and types, stair runs, grids, links (mitcad#275). |
 | `categories` | Built-in categories' names and which are building elements; system families by type kind. |
 | `testfile` | A small project and family written by the writers (the tests', the CLI's and the UI test's), and a building project with a link. |
-| `bin/mitcad-rvt-inspect` | `list`, `info [--json]`, `stream <path> [--raw]`, `schema [<class>] [--json]`, `table`, `elements [--json\|--csv] [--all]`, `levels`, `materials`, `record <id> [--all]`, `records <class>[,…]`, `building`, `classes [<class>]`, `preview`, `write-test`. |
+| `bin/mitcad-rvt-inspect` | `list`, `info [--json]`, `stream <path> [--raw]`, `schema [<class>] [--json]`, `table`, `elements [--json\|--csv] [--all]`, `levels`, `materials`, `record <id> [--all]`, `records <class>[,…]`, `building`, `classes [<class>]`, `documents`, `geometry [<id>]`, `preview`, `write-test`. |
 
 ## The container
 
@@ -186,9 +188,22 @@ every partition of the corpus)*:
    read)*, `u32` size, the element's object, the size again; ended by an
    `id` of all ones and a `u64` 1.
 
-What follows (the loaded families' own documents, with their own ids) is
-not read, and its members are not inflated: a partition is inflated only
-as far as its chains go. An element can have records in several
+Then *(verified on every partition of the 2023 to 2027 projects)*:
+
+3. a `u32` and a third chain like the second: per element a record of its
+   geometry, a `GElement` (see [The geometry](#the-geometry-mitcad333)), or
+   2 bytes (`SerializedDummy`) for an element without; ended by an `id` of
+   all ones and a `u64` 1;
+4. the documents of the loaded families, each a `u32`, its own two chains
+   (its elements under ids of their own: a family's forms `ExtrusionElem`,
+   `BlendElem`, `SweepElem`, `RevolutionElem` with their sketches, types,
+   parameters), a `u32` and its third chain *(seen: 46 documents in a
+   partition of the MIT project, every record walking to its end; not
+   used by the import, mitcad#276)*.
+
+The import reads a partition as far as its third chain (`Documents`);
+`mitcad-rvt-inspect documents` lists the families' documents too. An
+element can have records in several
 partitions; the one in the partition with the highest number is the
 element as last saved *(verified: on the MIT project the walls' types in
 the higher partition are the IFC export's, those in the lower an earlier
@@ -262,7 +277,8 @@ All values are fields the schema names, read by their names:
   and `u16` triangles *(verified on the corpus's topography surfaces,
   their points within their elements' boxes)*. B-rep snapshots of the
   elements' geometry steps (`SnapshotData`, `GElement`, `Face`, `Edge`)
-  are in the records too *(seen; phase 2)*.
+  are in the records too *(seen)*; the import uses the partitions' third
+  chains instead ([The geometry](#the-geometry-mitcad333)).
 
 Built-in categories are not named in the file; `categories` lists the
 public enumeration's names of the common ones.
@@ -345,6 +361,144 @@ column (256) built as features agrees with the export's solid (its volume
 within 0.1 %, its box within 0.001 mm). Elsewhere the features are
 checked against the elements' stored boxes (`rvt.corpus` imports a
 structural sample with the architectural sample it links).
+
+## The geometry (mitcad#333)
+
+The `brep` module reads the `GElement` of an element's third-chain record
+in the highest-numbered partition that has one (a partition need not
+repeat an unchanged element's) into its bodies and the types it places
+*(verified: every such record of the 2023 to 2027 projects walks to its
+end and reads, 13,979 elements of the MIT project, 11,644 of `33271010`)*:
+
+- **The tree.** `GElement`, `GGroup` and `GFilter` hold nodes
+  (`m_subNodes`); a `GFilter`'s `m_oConditions` say in which views its
+  nodes show (`GConditionDir`, `GConditionCut`, ...; not read: every body
+  is taken). `Geometry` is a body (`m_pFaces`, `m_pEdges`); `GInstance`
+  places a type's geometry (`m_instanceInfo` → `InstanceInfo`: `m_symbolId`,
+  `m_Trf`; or `m_oEmbeddedSymbolGRep`). Curves (`GLine`, `GArc`) are
+  symbolic lines. A family instance's own `GElement` is one `GInstance` of
+  its placed type (which may be the instance's own symbol, a mirrored copy
+  of its type); doors, windows, furniture, curtain panels and mullions are
+  such instances *(verified on the MIT project: 185 doors, 7 windows, 16
+  furniture, 3,359 panels, 3,786 mullions)*.
+- **The bodies** are winged-edge B-reps. A `Face` has a surface
+  (`m_pSurf`), loops (`m_pFirstLoop` → `EdgeLoop`, its `m_nextLoop`) and a
+  material (`m_renderStyleId`); a loop names its first edge (`m_next`) and
+  its last edge names the loop as its next. An `Edge` has two sides: its
+  faces (`m_pFace`, a null reference for the open side of a sheet's edge:
+  walls keep one face per body), its next and previous edges in each
+  face's loop (`m_next`, `m_prev`), and no curve of its own but its points
+  in each face's (u, v): the first and last (`m_firstAndLastEdgePnts`)
+  and, along a curved edge, those between (`m_interiorEdgePnts`). Faces
+  and edges name each other by reference pointers, numbers of the
+  record's objects (`Record::numbered`). A face can have no loops *(seen:
+  1,916 faces of the MIT project; left out)*.
+- **The surfaces**, (u, v) to a point *(verified: the model points of an
+  edge's two sides lie within 0.0005 ft (0.15 mm) of each other over every
+  corpus project, `mitcad-rvt-inspect geometry`)*: `Plane` `m_origin + u
+  m_xVec + v m_yVec`; `CylSurf` `m_center + m_radius (cos u m_xVec + sin
+  u m_yVec) + v m_zVec`; `ConeSurf` (the apex `m_center`) `m_center + v
+  (sin a (cos u m_xVec + sin u m_yVec) + cos a m_zVec)`, `a` its
+  `m_halfAngle`; `SurfRev` its `m_pProfileCurve` (in the frame `m_xVec`,
+  `m_yVec`, `m_zVec` about `m_center`) at v, turned by u about the frame's
+  z; `RuledSurf` the points at the fraction u of `m_pProfileCurve1` and
+  `m_pProfileCurve2` (`m_Point1`, `m_Point2` for a point) joined along v.
+  `HermiteSurf` bicubic Hermite patches between its nodes (`m_NodeArray`:
+  `m_iPoint`, `m_iTangent` in u and v, `m_iMixedDer`; u running fastest) at
+  the parameters `m_uParams` by `m_vParams` *(seen in 3 projects, 76 faces at
+  most)*. A surface of another class would take its faces' points from the
+  neighbouring faces.
+
+### Curtain walls, railings, stairs, sweeps (mitcad#333)
+
+What the import rebuilds these from, read by the `building` module. Each
+built element is checked against the IFC export by GlobalId or its stored
+box, so a misread shows as a fallback with its reason; *(verified)* below
+means the built solids lie within 5 mm of the elements' stored boxes on
+the 2024 projects `c805df44` and `33271010` for the share given in the
+import report (see the ticket's numbers).
+
+- **Curtain panels and mullions** are family instances whose own symbol
+  (`m_pInstanceInfo` → `m_symbolId`, a copy of the type per instance)
+  carries their shape in the symbol's coordinates, placed by the
+  instance's transform:
+  - a mullion's `SysMullionFamSym` holds a `MullionSymFamRef`: its path
+    (`m_pCurve`, a `GLine`), the normal its thickness runs along
+    (`m_pathNorm`) and `m_flags`; its profile is `m_sysProfile`'s class
+    with the type's built-in parameters: `SysRectMullionProfile` widths
+    -1007300 and -1007301 on the two sides of the path across
+    (`m_pathNorm × path`), thickness -1007304 along the normal about the
+    offset -1007351; with flag 4 (a border mullion) both widths lie on one
+    side, from the path towards `m_pathNorm × path` *(verified with the
+    corner mullions: 1,404 of 1,425 mullions of `33271010`)*;
+    `SysQuadMullionProfile` (a corner
+    mullion) a rectangle of its depths -1007357 and -1007358 about the
+    path *(verified)*; `SysCustMullionProfile` the profile family type
+    `m_profileId`, its profile's loops square to the path *(verified: every
+    mullion of `c805df44`, 6,160; its orientation and side are taken from
+    the stored box)*; `SysVMullionProfile`
+    (parameters -1007354, -1007355, -1007304; corner angles
+    `m_cornerAngles`) is not read;
+  - a panel's `SysPanelFamSym` holds a `CurtainCellSymFamRef`: its cell's
+    loops (`m_pCurveLoops`) on its plane (`m_pSurf`), `m_flipped`, and the
+    symbol's `m_thickness` and `m_offset`: the panel is the cell's loops
+    extruded by the thickness, its middle `m_offset` along `y × x` of the
+    plane (along `x × y` when flipped) *(verified: every system panel of
+    `c805df44`, 348 of `33271010`; the others are panel families, whose
+    shape is their family's, and empty panels)*;
+  - the curtain wall itself (its type `NewCurtainWallType`, no layers)
+    keeps only sheets of its faces: its panels and mullions are its shape.
+- **Railings** (`BaseRailing`): the railing's geometry places its
+  balusters and posts (family instances of category -2000948, elements of
+  their own) and its continuous rails' symbols; its type
+  (`StairsRailingAttr`) holds the baluster pattern
+  (`BalusterPlacement`, `BalusterPattern`, `BalusterInfo`: the family
+  type, spaces and offsets of each baluster and post) and the
+  non-continuous rails (`RailStructure.m_nonContinuousRails`: none in the
+  corpus). The balusters and posts are placed family instances already
+  (they come in with their family's geometry); a railing whose geometry
+  holds nothing else has no body of its own.
+- **Rails** (`TopRail`, `HandRail`: `ContinuousRail`): the path is the
+  `Path3d` element `m_oPathProvider.m_path3dId` (its `m_curveLoops`, model
+  coordinates, the rail's extensions included), the profile the profile
+  family type `m_profileData.m_profileFamSymId` (its type's `m_profileId`)
+  *(verified: 169 of 213 rails of `33271010`)*.
+- **Profile families** (category -2003000) keep no profile in the
+  project: their types' geometry is a box of reference lines *(seen)*.
+  The profile is in the family's document in its partition (the loaded
+  families' documents after the chains): the family's record's
+  `FamilyDocument.m_big2SmallMap2` maps project element ids to the
+  document's (`ForeignElemRef.m_id64`), and the document whose elements
+  hold all those ids is the family's; its `CurveElem`s' curves
+  (`m_pCurveDriver` → `m_pCrv`; an ellipse as 32 chords) are the profile,
+  in the family's xy plane
+  *(verified: the circular handrail's two arcs of radius 1/16 ft)*.
+- **Wall sweeps** (`WallSweep`): the path is the curves of the
+  `WallSweepCurveGStep` of its geometry steps (`m_curves`, its wall
+  `m_hostId`), the profile `m_wallSweepInfo.m_profileId`, its extents
+  `m_oProfileExtents` *(seen)*; the path runs along the wall's location
+  line and the profile stands at one of the wall's faces *(verified: 343
+  of 390 sweeps and slab edges of `33271010`)*.
+- **Slab edges, fascias, gutters** (`SweepHost`): the paths are the
+  `m_pathLoop`s of its `SweepHostLoopData` with `m_driveVec` (the
+  profile's up), the profile its type's `m_profileId`, the offsets the
+  parameters -1012825 (across) and -1012827 (up) *(verified as above)*.
+- **Stair runs of treads and risers** (`StairsRun` of a
+  non-monolithic `StairsRunType`): the type's `m_hasTread`,
+  `m_treadThickness`, `m_hasRiser`, `m_riserThickness`, `m_nosingLength`;
+  the treads' depths run from nosing to nosing, a riser stands the nosing
+  length behind its tread's front edge *(verified: 40 of 43 runs of
+  `33271010`)*.
+- **Landings** (`StairsLanding`): the boundary `m_oBoundary` at the top
+  `m_baseElevation`, down by its type's (`StairsLandingType`) `m_thickness`
+  when monolithic, else its `m_treadThickness` *(verified: 17 of 17)*.
+- **Groups**: a placed group (`ElementGroup`) places its members by
+  their element ids (a `GInstance` each, at its transform); the members of
+  every group type, placed or not, carry `m_unplacedOwnerId` *(verified on
+  the MIT project's 11 groups)*.
+
+`mitcad-rvt-inspect geometry` counts the faces by surface and the seam
+gaps; with an element id it lists that element's bodies and placed types.
 
 ## The test corpus
 

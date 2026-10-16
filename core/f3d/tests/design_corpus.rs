@@ -456,6 +456,8 @@ const DECODER_ONLY: &[&str] = &[
     // pattern's axis line, a hole's through-all flag beside its depth, a
     // mirror's combine.
     ".timeline.items[].detail._f3d_profile_loops",
+    // Text profiles whose texts the design no longer has (mitcad#332).
+    ".timeline.items[].detail._f3d_missing_texts",
     ".timeline.items[].detail._f3d_axis",
     ".timeline.items[].detail._f3d_through_all",
     ".timeline.items[].detail.isCombine",
@@ -544,6 +546,11 @@ const DECODER_ONLY: &[&str] = &[
     // without them (mitcad#186: see ADDED).
     ".timeline.items[].detail.constraints[].refs",
     ".timeline.items[].detail.constraints[]._f3d",
+    // What a derive brings from other documents (mitcad#324), which the
+    // reference decoder did not read.
+    ".timeline.items[].detail.source",
+    ".timeline.items[].detail.placements",
+    ".timeline.items[].detail.entities",
 ];
 
 /// Fields this decoder fills where the reference decoder has an empty

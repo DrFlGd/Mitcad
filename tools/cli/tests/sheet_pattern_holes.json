@@ -1,0 +1,19 @@
+[
+  {"comment":"SPDX-License-Identifier: MIT. A pattern of a straight sheet cut with many copies cut at once (mitcad#288): t=2, r=3, K=0.3, back reference; a 60 x 40 panel (4800) with a 2 x 2 straight cut patterned 10 x 6 at 5 mm: 4800 - 60 x 8 = 4320, the sheet kept (no overlay); a flange after it on the top edge (15 long, at the edge): + 15 x 2 x 60 + (pi/2)(25 - 9)/2 x 60 = 6120 + 240 pi; a thickness edit to 1: 2400 - 240 + 900 + (pi/2)(16 - 9)/2 x 60 = 3060 + 105 pi."},
+  {"cmd":"add_feature","def":{"type":"sheet_rules","thickness":2,"bend_radius":3,"allowance":{"type":"k_factor","k":0.3},"reference_side":"back","bend_relief":{"type":"rectangular","width":2,"depth":3},"corner_relief":{"type":"round","width":2,"depth":3}}},
+  {"cmd":"sketch.create"},
+  {"cmd":"sketch.add_rectangle","sketch":"F2","corner":[-30,0],"width":60,"height":40},
+  {"cmd":"add_feature","def":{"type":"sheet_face","rules":"F1","profiles":[{"sketch":"F2","region":"r{c1[c4,c2],c2[c1,c3],c3[c2,c4],c4[c3,c1]}"}]}},
+  {"expect":{"feature":"F3","status":"ok","body":"F3.b0","volume":4800}},
+  {"cmd":"sketch.create"},
+  {"cmd":"sketch.add_rectangle","sketch":"F4","corner":[-27,3],"width":2,"height":2},
+  {"cmd":"add_feature","def":{"type":"sheet_cut","body":"F3.b0","mode":"straight","extent":{"type":"through_all"},"flip":true,"profiles":[{"sketch":"F4","region":"r{c1[c4,c2],c2[c1,c3],c3[c2,c4],c4[c3,c1]}"}]}},
+  {"expect":{"feature":"F5","status":"ok","body":"F3.b0","volume":4792}},
+  {"cmd":"add_feature","def":{"type":"rectangular_pattern","objects":{"type":"features","features":["F5"]},"direction1":{"axis":{"origin":[0,0,0],"direction":[1,0,0]},"quantity":10,"distance":5},"direction2":{"axis":{"origin":[0,0,0],"direction":[0,1,0]},"quantity":6,"distance":5},"distance_type":"spacing","compute":"adjust","original_bodies":true}},
+  {"expect":{"feature":"F6","status":"ok","body":"F3.b0","volume":4320}},
+  {"expect":{"query":{"query":"sheet_state","body":"F3.b0"},"result":{"status":"valid"}}},
+  {"cmd":"add_feature","def":{"type":"sheet_flange","body":"F3.b0","boundary":{"panel":{"feature":"F3","slot":0},"curve":{"type":"sketch","sketch":"F2","segment":"c3[c2,c4]"}},"angle":1.5707963267948966,"length":{"mode":"tangent","value":15},"position":"edge"}},
+  {"expect":{"feature":"F7","status":"ok","body":"F3.b0","volume":6873.982236861551}},
+  {"cmd":"edit_feature","uid":"F1","def":{"type":"sheet_rules","thickness":1,"bend_radius":3,"allowance":{"type":"k_factor","k":0.3},"reference_side":"back","bend_relief":{"type":"rectangular","width":2,"depth":3},"corner_relief":{"type":"round","width":2,"depth":3}}},
+  {"expect":{"feature":"F7","status":"ok","body":"F3.b0","volume":3389.867228626928}}
+]

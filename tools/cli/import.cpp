@@ -536,7 +536,7 @@ int import_rvt(const std::vector<std::string>& args) {
   Arguments a;
   std::string problem;
   if (!parse_arguments(args, {"--save", "--report", "--reference-ifc", "--link-folder"},
-                       {"--json", "--report-only", "--mesh-only"}, a, problem)) {
+                       {"--json", "--report-only", "--mesh-only", "--no-reference-ifc"}, a, problem)) {
     return usage(problem);
   }
   if (a.positional.size() != 1) {
@@ -549,6 +549,9 @@ int import_rvt(const std::vector<std::string>& args) {
   }
   if (a.flag("--mesh-only")) {
     options += R"(, "mesh_only": true)";
+  }
+  if (a.flag("--no-reference-ifc")) {
+    options += R"(, "no_reference_ifc": true)";
   }
   if (const std::string* path = a.option("--reference-ifc")) {
     options += R"(, "reference_ifc": )" + json_string(*path);

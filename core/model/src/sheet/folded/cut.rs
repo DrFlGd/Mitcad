@@ -25,6 +25,10 @@ fn sub(a: V3, b: V3) -> V3 {
     std::array::from_fn(|i| a[i] - b[i])
 }
 
+fn add3(a: V3, b: V3) -> V3 {
+    std::array::from_fn(|i| a[i] + b[i])
+}
+
 /// A trimmed edge before its identity is settled.
 struct Pending {
     token: u32,
@@ -935,6 +939,155 @@ pub(crate) fn straight_cut_on<K: Kernel>(
     output.changes.push(BodyChange::Set(body, result));
     output.sheets.insert(body, SheetChange::Set(next));
     Ok(output)
+}
+
+/// The copies of one straight cut cut at once (a pattern of a straight
+/// sheet cut, mitcad#288): the tools of the copies that keep clear of every
+/// seam between a panel and a bend (their boxes do not reach the seam's line
+/// on the front or the back surface) cut from the sheet in one boolean, and the domains
+/// re-derived once from the result. Returns the result and the indices of
+/// the copies left out, which are cut one by one after it (a copy reaching
+/// a bend stays an overlay of its own, as it does alone). None when the
+/// copies cannot be taken together: no copy clear of the seams, a copy that
+/// does not reach the material, a result in several pieces, or a result the
+/// re-derivation does not take; the copies are then all cut one by one.
+#[allow(clippy::type_complexity)]
+pub(crate) fn straight_cuts_at_once<K: Kernel>(
+    ctx: &mut EvalContext<'_, K>,
+    body: BodyUid,
+    cuts: Vec<(
+        crate::profile::SketchFrame,
+        Vec<(crate::topo::RegionKey, SheetRegion)>,
+        [f64; 3],
+    )>,
+    extent: Option<&crate::features::sheet_cut::SheetCutExtent<f64>>,
+) -> Result<Option<(K::Shape, SheetState, Vec<usize>)>, String> {
+    use crate::features::sheet_cut::SheetCutExtent;
+    let (state, rules) = read(ctx, body)?;
+    let current = ctx.body(body)?;
+    let bounds = ctx
+        .kernel
+        .bounding_box(&current)
+        .map_err(|e| e.to_string())?
+        .ok_or("the sheet has no extent")?;
+    // The seams between panels and bends, as lines in model space, on the
+    // front and the back surface.
+    let mut seams: Vec<([f64; 3], [f64; 3])> = Vec::new();
+    for port in &state.joins {
+        for (here, there) in [(&port.first, &port.second), (&port.second, &port.first)] {
+            let (SheetDomainRef::Panel(panel), SheetDomainRef::Bend(_)) =
+                (here.boundary.domain, there.boundary.domain)
+            else {
+                continue;
+            };
+            let Ok((frame, parity)) = plane(chart(&state, panel)?) else {
+                continue;
+            };
+            let Some((a, b)) = port_ends(&state, here) else {
+                return Ok(None);
+            };
+            let back = frame.normal().map(|v| v * parity.sign() * rules.thickness);
+            seams.push((frame.point(a), frame.point(b)));
+            seams.push((add3(frame.point(a), back), add3(frame.point(b), back)));
+        }
+    }
+    let grow = 1.0e-4;
+    let mut tools = Vec::new();
+    let mut left = Vec::new();
+    for (index, (frame, profiles, direction)) in cuts.into_iter().enumerate() {
+        let end = match extent {
+            Some(SheetCutExtent::Distance { distance }) => *distance,
+            Some(SheetCutExtent::ThroughAll) => {
+                let reach = bounds
+                    .corners()
+                    .map(|c| dot(sub(c, frame.origin), direction))
+                    .fold(f64::NEG_INFINITY, f64::max);
+                if reach <= 0.0 {
+                    return Ok(None);
+                }
+                reach * 1.25 + 1.0
+            }
+            None => return Err("a straight sheet cut needs an extent".into()),
+        };
+        if !end.is_finite() || end <= TOLERANCE {
+            return Err("a straight sheet cut's distance must be positive".into());
+        }
+        let overlay = SheetOverlay {
+            feature: ctx.uid,
+            kind: SheetOverlayKind::Straight {
+                frame,
+                profiles,
+                direction,
+                start: 0.0,
+                end,
+            },
+            removed: 0.0,
+        };
+        let tool = straight_tool(ctx, &overlay)?;
+        let Some(boxed) = ctx.kernel.bounding_box(&tool).map_err(|e| e.to_string())? else {
+            return Ok(None);
+        };
+        let min = boxed.min.map(|v| v - grow);
+        let max = boxed.max.map(|v| v + grow);
+        if seams
+            .iter()
+            .any(|(a, b)| segment_meets_box(*a, *b, min, max))
+        {
+            left.push(index);
+        } else {
+            tools.push(tool);
+        }
+    }
+    if tools.is_empty() {
+        return Ok(None);
+    }
+    let Ok(tool) = ctx.kernel.compound(&tools) else {
+        return Ok(None);
+    };
+    let cut = ctx
+        .kernel
+        .boolean(crate::kernel::BooleanOp::Cut, &[&current], &tool)
+        .map_err(|e| e.to_string())?;
+    let [piece] = cut.pieces.as_slice() else {
+        return Ok(None);
+    };
+    if !cut.touched.first().copied().unwrap_or(false) {
+        return Ok(None);
+    }
+    let result = piece.shape.clone();
+    let warnings = ctx.warnings.len();
+    let derived =
+        crate::sheet::rederive::rederive_from(ctx, state.clone(), &rules, &current, &result);
+    ctx.warnings.truncate(warnings);
+    let Ok(mut next) = derived else {
+        return Ok(None);
+    };
+    next.shape_generation.clear();
+    Ok(Some((result, next, left)))
+}
+
+/// Whether the segment `a`-`b` meets the box `min`-`max` (slabs).
+fn segment_meets_box(a: [f64; 3], b: [f64; 3], min: [f64; 3], max: [f64; 3]) -> bool {
+    let (mut t0, mut t1) = (0.0f64, 1.0f64);
+    for k in 0..3 {
+        let d = b[k] - a[k];
+        if d.abs() <= f64::EPSILON {
+            if a[k] < min[k] || a[k] > max[k] {
+                return false;
+            }
+            continue;
+        }
+        let (mut lo, mut hi) = ((min[k] - a[k]) / d, (max[k] - a[k]) / d);
+        if lo > hi {
+            std::mem::swap(&mut lo, &mut hi);
+        }
+        t0 = t0.max(lo);
+        t1 = t1.min(hi);
+        if t0 > t1 {
+            return false;
+        }
+    }
+    true
 }
 
 /// The tool of a straight cut kept as an overlay.

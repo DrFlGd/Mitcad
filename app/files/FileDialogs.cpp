@@ -561,11 +561,15 @@ QString rvtCounts(const QJsonObject& report) {
     found += link.toObject().value(QStringLiteral("found")).isString() ? 1 : 0;
   }
   return QStringLiteral("%1 saved meshes, %2 boxes at a family type's transform, %3 boxes on %4 levels; "
-                        "%5 elements as features; %6 of %7 links found")
+                        "%5 meshes of the geometry the file keeps, %6 reference bodies, %7 boxes hidden; "
+                        "%8 elements as features; %9 of %10 links found")
       .arg(import.value(QStringLiteral("meshes")).toInt())
       .arg(import.value(QStringLiteral("oriented_boxes")).toInt())
       .arg(import.value(QStringLiteral("boxes")).toInt())
       .arg(levels)
+      .arg(import.value(QStringLiteral("geometry_meshes")).toInt())
+      .arg(import.value(QStringLiteral("reference_bodies")).toInt())
+      .arg(import.value(QStringLiteral("hidden_boxes")).toInt())
       .arg(import.value(QStringLiteral("features")).toInt())
       .arg(found)
       .arg(links.size());
@@ -950,7 +954,7 @@ void showImportReport(QWidget* parent, const QString& file, const QJsonObject& r
   int levelIndex = 0;
   for (const QJsonValue& value : rvtImport.value(QStringLiteral("levels")).toArray()) {
     const QJsonObject level = value.toObject();
-    const QString note = QObject::tr("%1 saved meshes, %2 boxes%3")
+    const QString note = QObject::tr("%1 meshes, %2 boxes%3")
                              .arg(level.value(QStringLiteral("meshes")).toInt())
                              .arg(level.value(QStringLiteral("boxes")).toInt())
                              .arg(level.value(QStringLiteral("elevation")).isDouble()

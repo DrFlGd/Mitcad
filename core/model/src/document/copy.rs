@@ -791,6 +791,23 @@ impl CopyReferences<'_> {
                     copy.links.insert(mapped, link);
                 }
             }
+            // A derive's bodies of other components (mitcad#324): as a
+            // combine's tools.
+            (FeatureDef::Derive(copy), FeatureDef::Derive(original)) => {
+                let mut bodies = HashMap::new();
+                copy.links.clear();
+                for (body, link) in &original.links {
+                    let (link, internal) = self.link(link, component)?;
+                    let mapped = if internal { self.body(*body) } else { *body };
+                    bodies.insert(*body, mapped);
+                    copy.links.insert(mapped, link);
+                }
+                copy.bodies = original
+                    .bodies
+                    .iter()
+                    .map(|b| bodies.get(b).copied().unwrap_or_else(|| self.body(*b)))
+                    .collect();
+            }
             // A split's tool bodies of other components: as a sweep's.
             (FeatureDef::SplitBody(copy), FeatureDef::SplitBody(original)) => {
                 copy.tool_links.clear();

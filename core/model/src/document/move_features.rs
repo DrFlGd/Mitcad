@@ -946,6 +946,7 @@ fn follow_references(
             FeatureDef::SplitBody(s) => !s.tool_links.is_empty(),
             FeatureDef::Extrude(x) => !x.object_links.is_empty(),
             FeatureDef::ConstructionPlane(p) => !p.links.is_empty(),
+            FeatureDef::Derive(d) => !d.links.is_empty(),
             def => has_origins(def),
         };
         if !changes {
@@ -990,6 +991,11 @@ fn follow_references(
             }
             FeatureDef::ConstructionPlane(plane) => {
                 for (body, link) in &mut plane.links {
+                    follow(link, &BTreeSet::from([body.feature]), own);
+                }
+            }
+            FeatureDef::Derive(derive) => {
+                for (body, link) in &mut derive.links {
                     follow(link, &BTreeSet::from([body.feature]), own);
                 }
             }

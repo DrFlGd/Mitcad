@@ -864,3 +864,139 @@ fn an_extrusion_goes_up_to_objects_of_another_component_by_their_link() {
     );
     assert!(error.contains("linked but not an object's"), "{error}");
 }
+
+#[test]
+fn a_derive_copies_bodies_of_another_component_and_follows_them() {
+    // A:1 (O1) at (100, 0, 10) holds a block; B:1 (O2) at (0, 50, -3)
+    // derives it (mitcad#324).
+    let (mut doc, body, _, b) = siblings();
+    let derive = |links: Value| {
+        json!({"cmd": "add_feature", "def": {"type": "derive", "bodies": [body],
+               "links": links}})
+    };
+    // Without the link the body is A's, which B's derive cannot see.
+    let unlinked = command(&mut doc, derive(json!({})))["uid"].clone();
+    let status = doc
+        .status(unlinked.as_str().unwrap().parse().unwrap())
+        .unwrap()
+        .clone();
+    assert!(
+        status.error().is_some_and(|e| e.contains("belongs to A")),
+        "{status:?}"
+    );
+    doc.undo();
+
+    // Linked: a copy in B, moved from A into B by (100, -50, 13), its faces
+    // the derive's; the source stays in A.
+    let link = json!({body.to_string(): {"source": "O1"}});
+    let uid: FeatureUid = command(&mut doc, derive(link.clone()))["uid"]
+        .as_str()
+        .unwrap()
+        .parse()
+        .unwrap();
+    assert!(doc.status(uid).unwrap().is_ok(), "{:?}", doc.status(uid));
+    assert_eq!(doc.feature(uid).unwrap().component, b);
+    assert_eq!(doc.feature(uid).unwrap().name, "Derive1");
+    let copy = BodyUid::new(uid, 0);
+    assert_eq!(doc.body_component(copy), Some(b));
+    assert_eq!(doc.body_component(body), Some(ComponentUid(1)));
+    let shape = doc.body_shape(copy).unwrap();
+    assert!(
+        shape.history.starts_with("moved(") && shape.history.ends_with(",100,-50,13,inst1)"),
+        "{}",
+        shape.history
+    );
+    assert!(
+        shape
+            .faces
+            .iter()
+            .all(|f| f.to_string().starts_with(&format!("{uid}:inst1("))),
+        "{:?}",
+        shape.faces
+    );
+    let def = query(&doc, json!({"query": "feature", "uid": uid.to_string()}));
+    assert_eq!(def["def"]["links"], link, "{def}");
+
+    // A moves up 10: the copy follows.
+    doc.set_occurrence_transform(OccurrenceUid(1), shift(100.0, 0.0, 20.0), false)
+        .unwrap();
+    let moved = doc.body_shape(copy).unwrap().history.clone();
+    assert!(moved.ends_with(",100,-50,23,inst1)"), "{moved}");
+
+    // Kept in the design file.
+    let saved = doc.to_json();
+    let mut loaded = Document::from_json(&saved, MockKernel::default()).unwrap();
+    loaded.recompute();
+    assert!(loaded.status(uid).unwrap().is_ok());
+    assert!(loaded.body_shape(copy).is_some());
+    assert_eq!(loaded.to_json(), saved);
+
+    // A link for a body that is not derived, and no bodies, are refused.
+    let error = rejected(
+        &mut doc,
+        json!({"cmd": "add_feature", "def": {"type": "derive", "bodies": [body],
+               "links": {"F99.b0": {"source": "O1"}}}}),
+    );
+    assert!(error.contains("linked but not derived"), "{error}");
+    let error = rejected(
+        &mut doc,
+        json!({"cmd": "add_feature", "def": {"type": "derive", "bodies": []}}),
+    );
+    assert!(error.contains("no bodies"), "{error}");
+}
+
+#[test]
+fn a_copied_component_keeps_its_derive_on_its_own_hidden_source() {
+    // B holds a hidden occurrence of A and derives A's block from it; a
+    // Paste New of B derives from its own copy's occurrence (mitcad#324).
+    let mut doc = Document::new(MockKernel::default());
+    let (a, _) = doc
+        .create_component(Some("A"), Transform::IDENTITY, true)
+        .unwrap();
+    let (_, body, _) = block(&mut doc);
+    doc.activate_component(ComponentUid::ROOT).unwrap();
+    let (b, ob) = doc
+        .create_component(Some("B"), shift(0.0, 50.0, 0.0), true)
+        .unwrap();
+    let inner = doc.add_occurrence(a, b, shift(5.0, 0.0, 0.0)).unwrap();
+    doc.set_occurrence_visible(inner, false).unwrap();
+    allow_attachments(&mut doc);
+    let link = json!({body.to_string(): {"source": format!("{ob}/{inner}"),
+                      "target": ob.to_string()}});
+    let uid: FeatureUid = command(
+        &mut doc,
+        json!({"cmd": "add_feature", "def": {"type": "derive", "bodies": [body],
+               "links": link}}),
+    )["uid"]
+        .as_str()
+        .unwrap()
+        .parse()
+        .unwrap();
+    assert!(doc.status(uid).unwrap().is_ok(), "{:?}", doc.status(uid));
+    let copied = doc
+        .body_shape(BodyUid::new(uid, 0))
+        .unwrap()
+        .history
+        .clone();
+    assert!(copied.ends_with(",5,0,0,inst1)"), "{copied}");
+
+    doc.activate_component(ComponentUid::ROOT).unwrap();
+    let (copy, _) = doc.paste_new(ob, Some(shift(0.0, -50.0, 0.0))).unwrap();
+    let derive = doc
+        .features()
+        .find(|f| f.component == copy && matches!(f.def, crate::features::FeatureDef::Derive(_)))
+        .cloned()
+        .expect("the copy's derive");
+    assert!(
+        doc.status(derive.uid).unwrap().is_ok(),
+        "{:?}",
+        doc.status(derive.uid)
+    );
+    let crate::features::FeatureDef::Derive(def) = &derive.def else {
+        unreachable!()
+    };
+    let link = def.links.values().next().unwrap();
+    // The copy's own hidden occurrence of A.
+    assert_eq!(link.source.0.len(), 2);
+    assert_ne!(link.source.0[0], ob);
+}

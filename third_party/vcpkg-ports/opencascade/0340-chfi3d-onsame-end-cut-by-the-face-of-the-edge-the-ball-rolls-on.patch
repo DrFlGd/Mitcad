@@ -1,0 +1,304 @@
+Mitcad's patch to OCCT 8.0.1, under OCCT's licence:
+SPDX-License-Identifier: LGPL-2.1-only WITH OCCT-exception-1.0
+
+Fillets: the OnSame end of a rounding wider than the face it ends against,
+whose ball rolls on that face's edge with the face beyond, up to the vertex
+(mitcad#236).
+
+The case: a rod with a ridge along part of it (a cylinder of radius 2.5
+whose axis lies on the rod's surface), the ridge's end face a lens 2.5
+high; the lens's edge with the rod rounded with 5. The ball touches the rod
+and rolls on the lens's other edge (Er, the arc where the lens meets the
+ridge's side, the face B beyond Er); Er runs from one end vertex of the
+spine to the other, and at both ends the edges are in the OnSame state.
+Past each end the ball rolls on until it comes tangent to the ridge's side
+(its surface prolonged past the lens), where the walk stops. The bodies
+stored in the .f3d files cut the blend there with the ridge's side: from
+that point on Er to the point where the rod's contact meets the ridge's
+side, the ridge's edges with the rod prolonged up to it, the lens and Er
+gone. OCCT took the face across Er (the lens) for the face at the end and
+failed ("bouchon non ecrit", or "no point on arc" where no end point lay
+on an edge).
+
+- ChFi3d_RolledEndOnItsFace: at an OnSame end, a SurfData rolling on side
+  s on an edge Er of its face B that holds the corner's vertex, whose ball
+  at the end is tangent to B (the blend's normal along B's normal within
+  0.05 rad at the contact): Er's point there is found.
+- PerformOneCorner, OnSame: for such an end the face at the end is B
+  itself, Er the arc, the other side's contact is intersected with B's
+  surface as at any OnSame end (IntersUpdateOnSame) and B's edge at the
+  vertex is prolonged to it; the point on Er is the end of the cap. Its
+  transition, for the cap's orientation on B, is the vertex's orientation
+  on Er; once the cap is stored it becomes EXTERNAL, so that Er goes from
+  B on both sides (the blend's contact takes its place along the blend,
+  B grows over it past the cap).
+
+Upstream: new.
+diff --git a/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_C1.cxx b/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_C1.cxx
+index c3f2822..ae47f35 100644
+--- a/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_C1.cxx
++++ b/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_C1.cxx
+@@ -1427,6 +1427,92 @@ static bool ChFi3d_CoplanarSplitEndFace(const TopOpeBRepDS_DataStructure&   DStr
+   return true;
+ }
+ 
++//=======================================================================
++// function : ChFi3d_RolledEndOnItsFace
++// purpose  : OnSame end of a SurfData whose blend rolls, on side IRolled,
++//            on an edge Er of its face Fr that runs to the corner's vertex
++//            Vtx (a rounding wider than the face at the end, rolling on
++//            that face's edge with Fr): the ball leaves Er where it comes
++//            tangent to Fr's surface, and the SurfData ends there. Fr's
++//            surface then cuts the blend from that point to the other
++//            contact, Fr's edge at Vtx with the other side's face
++//            prolonged to it.
++//=======================================================================
++
++static bool ChFi3d_RolledEndOnItsFace(const TopOpeBRepDS_DataStructure&   DStr,
++                                      const occ::handle<ChFiDS_SurfData>& Fd,
++                                      const bool                          isfirst,
++                                      const TopoDS_Vertex&                Vtx,
++                                      int&                                IRolled,
++                                      TopoDS_Edge&                        Er,
++                                      double&                             wEr)
++{
++  IRolled = 0;
++  for (int s = 1; s <= 2 && IRolled == 0; s++)
++  {
++    if (!Fd->IsOnCurve(s) || Fd->IndexOfC(s) <= 0 || Fd->Index(s) <= 0 || Fd->Index(3 - s) <= 0)
++    {
++      continue;
++    }
++    const TopoDS_Edge& E = TopoDS::Edge(DStr.Shape(Fd->IndexOfC(s)));
++    const TopoDS_Face& F = TopoDS::Face(DStr.Shape(Fd->Index(s)));
++    bool               atV = false, onF = false;
++    for (TopExp_Explorer ex(E, TopAbs_VERTEX); ex.More() && !atV; ex.Next())
++    {
++      atV = ex.Current().IsSame(Vtx);
++    }
++    for (TopExp_Explorer ex(F, TopAbs_EDGE); ex.More() && !onF; ex.Next())
++    {
++      onF = ex.Current().IsSame(E);
++    }
++    if (!atV || !onF)
++    {
++      continue;
++    }
++    // The ball at the end comes tangent to F at its point on E: the blend's
++    // normal there is along F's normal.
++    const ChFiDS_FaceInterference& Fi = Fd->Interference(s);
++    if (Fi.PCurveOnSurf().IsNull() || Fi.PCurveOnFace().IsNull())
++    {
++      continue;
++    }
++    const double                     t  = Fi.Parameter(isfirst);
++    const occ::handle<Geom_Surface>& SB = DStr.Surface(Fd->Surf()).Surface();
++    const gp_Pnt2d                   uvB = Fi.PCurveOnSurf()->Value(t);
++    const gp_Pnt2d                   uvF = Fi.PCurveOnFace()->Value(t);
++    gp_Pnt                           pB, pF;
++    gp_Vec                           duB, dvB, duF, dvF;
++    SB->D1(uvB.X(), uvB.Y(), pB, duB, dvB);
++    BRepAdaptor_Surface aF(F, false);
++    aF.D1(uvF.X(), uvF.Y(), pF, duF, dvF);
++    gp_Vec nB = duB.Crossed(dvB), nF = duF.Crossed(dvF);
++    if (nB.Magnitude() < gp::Resolution() || nF.Magnitude() < gp::Resolution())
++    {
++      continue;
++    }
++    const double anAngle = nB.Angle(nF);
++    if (std::min(anAngle, M_PI - anAngle) > 0.05 || pB.Distance(pF) > 1.e-4)
++    {
++      continue;
++    }
++    double                        f = 0., l = 0.;
++    const occ::handle<Geom_Curve> CE = BRep_Tool::Curve(E, f, l);
++    if (CE.IsNull())
++    {
++      continue;
++    }
++    GeomAPI_ProjectPointOnCurve aPr(pB, CE, f, l);
++    if (aPr.NbPoints() == 0 || aPr.LowerDistance() > 1.e-4)
++    {
++      continue;
++    }
++    IRolled = s;
++    Er      = E;
++    wEr     = aPr.LowerDistanceParameter();
++  }
++  return IRolled != 0;
++}
++
+ //=================================================================================================
+ 
+ void ChFi3d_Builder::PerformOneCorner(const int Index, const bool thePrepareOnSame)
+@@ -1549,9 +1635,25 @@ void ChFi3d_Builder::PerformOneCorner(const int Index, const bool thePrepareOnSa
+   ChFi3d_InitChron(ch); // init perf condition  if (onsame)
+ #endif
+ 
++  // (OnSame: the blend rolls on an edge of its face that runs to the vertex,
++  // and that face cuts it.)
++  int         IRolled = 0;
++  TopoDS_Edge ErRolled;
++  double      wRolled = 0.;
++  const bool  isRolledEnd =
++    onsame && ChFi3d_RolledEndOnItsFace(DStr, Fd, isfirst, Vtx, IRolled, ErRolled, wRolled);
+   if (onsame)
+   {
+-    if (!CV1.IsOnArc() && !CV2.IsOnArc())
++    if (isRolledEnd)
++    {
++      IFadArc = IRolled;
++      IFopArc = 3 - IRolled;
++      Arcpiv  = ErRolled;
++      Fad     = TopoDS::Face(DStr.Shape(Fd->Index(IFadArc)));
++      Fop     = TopoDS::Face(DStr.Shape(Fd->Index(IFopArc)));
++      Fv      = Fad;
++    }
++    else if (!CV1.IsOnArc() && !CV2.IsOnArc())
+     {
+       throw Standard_ConstructionError("Corner OnSame : no point on arc");
+     }
+@@ -1594,44 +1696,18 @@ void ChFi3d_Builder::PerformOneCorner(const int Index, const bool thePrepareOnSa
+     {
+       IFadArc = 2;
+     }
+-    IFopArc = 3 - IFadArc;
+-    // (A blend rolling on an obstacle edge up to a vertex of it: the face at
+-    // the end is that of the vertex holding Vtx, not the face the blend
+-    // consumes.)
+-    ChFi3d_ObstacleVertexOnEndFace(DStr, Fd, IFadArc, isfirst, Vtx, myVEMap, myEFMap, Fconsumed);
+-
+-    Arcpiv = Fd->Vertex(isfirst, IFadArc).Arc();
+-    Fad    = TopoDS::Face(DStr.Shape(Fd->Index(IFadArc)));
+-    Fop    = TopoDS::Face(DStr.Shape(Fd->Index(IFopArc)));
+     NCollection_List<TopoDS_Shape>::Iterator It;
+-    // The face at end is returned without check of its unicity.
+-    for (It.Initialize(myEFMap(Arcpiv)); It.More(); It.Next())
++    if (!isRolledEnd)
+     {
+-      if (!Fad.IsSame(It.Value()))
+-      {
+-        Fv = TopoDS::Face(It.Value());
+-        break;
+-      }
+-    }
++      IFopArc = 3 - IFadArc;
++      // (A blend rolling on an obstacle edge up to a vertex of it: the face at
++      // the end is that of the vertex holding Vtx, not the face the blend
++      // consumes.)
++      ChFi3d_ObstacleVertexOnEndFace(DStr, Fd, IFadArc, isfirst, Vtx, myVEMap, myEFMap, Fconsumed);
+ 
+-    // Does the face at bout contain the Vertex ?
+-    bool isinface = false;
+-    for (ex.Init(Fv, TopAbs_VERTEX); ex.More(); ex.Next())
+-    {
+-      if (ex.Current().IsSame(Vtx))
+-      {
+-        isinface = true;
+-        break;
+-      }
+-    }
+-    if (!isinface && Fd->Vertex(isfirst, 3 - IFadArc).IsOnArc())
+-    {
+-      IFadArc = 3 - IFadArc;
+-      IFopArc = 3 - IFopArc;
+-      Arcpiv  = Fd->Vertex(isfirst, IFadArc).Arc();
+-      Fad     = TopoDS::Face(DStr.Shape(Fd->Index(IFadArc)));
+-      Fop     = TopoDS::Face(DStr.Shape(Fd->Index(IFopArc)));
+-      // NCollection_List<TopoDS_Shape>::Iterator It;
++      Arcpiv = Fd->Vertex(isfirst, IFadArc).Arc();
++      Fad    = TopoDS::Face(DStr.Shape(Fd->Index(IFadArc)));
++      Fop    = TopoDS::Face(DStr.Shape(Fd->Index(IFopArc)));
+       // The face at end is returned without check of its unicity.
+       for (It.Initialize(myEFMap(Arcpiv)); It.More(); It.Next())
+       {
+@@ -1641,6 +1717,35 @@ void ChFi3d_Builder::PerformOneCorner(const int Index, const bool thePrepareOnSa
+           break;
+         }
+       }
++
++      // Does the face at bout contain the Vertex ?
++      bool isinface = false;
++      for (ex.Init(Fv, TopAbs_VERTEX); ex.More(); ex.Next())
++      {
++        if (ex.Current().IsSame(Vtx))
++        {
++          isinface = true;
++          break;
++        }
++      }
++      if (!isinface && Fd->Vertex(isfirst, 3 - IFadArc).IsOnArc())
++      {
++        IFadArc = 3 - IFadArc;
++        IFopArc = 3 - IFopArc;
++        Arcpiv  = Fd->Vertex(isfirst, IFadArc).Arc();
++        Fad     = TopoDS::Face(DStr.Shape(Fd->Index(IFadArc)));
++        Fop     = TopoDS::Face(DStr.Shape(Fd->Index(IFopArc)));
++        // NCollection_List<TopoDS_Shape>::Iterator It;
++        // The face at end is returned without check of its unicity.
++        for (It.Initialize(myEFMap(Arcpiv)); It.More(); It.Next())
++        {
++          if (!Fad.IsSame(It.Value()))
++          {
++            Fv = TopoDS::Face(It.Value());
++            break;
++          }
++        }
++      }
+     }
+ 
+     if (Fv.IsNull())
+@@ -1769,12 +1874,34 @@ void ChFi3d_Builder::PerformOneCorner(const int Index, const bool thePrepareOnSa
+                                 p2dbout,
+                                 wop); // out
+ 
+-    occ::handle<BRepAdaptor_Curve2d> pced = new BRepAdaptor_Curve2d();
+-    pced->Initialize(CPadArc.Arc(), Fv);
+-    // in the case of degenerated Fi, parameter difference can be even negative (eap, occ293)
+-    if ((FiadArc.LastParameter() - FiadArc.FirstParameter()) > 10 * tolesp)
++    if (isRolledEnd)
+     {
+-      Update(HBs, pced, HGs, FiadArc, CPadArc, isfirst);
++      // The point where the ball leaves the edge it rolls on: on that edge.
++      // (Its transition, for the cap's orientation on Er's face: that of
++      // Vtx on Er.)
++      TopAbs_Orientation aTr = TopAbs_FORWARD;
++      for (ex.Init(ErRolled.Oriented(TopAbs_FORWARD), TopAbs_VERTEX); ex.More(); ex.Next())
++      {
++        if (ex.Current().IsSame(Vtx))
++        {
++          aTr = ex.Current().Orientation();
++        }
++      }
++      const gp_Pnt aP = CPadArc.Point();
++      const double aTolP = CPadArc.Tolerance();
++      CPadArc.Reset();
++      CPadArc.SetPoint(aP);
++      CPadArc.SetArc(aTolP, ErRolled, wRolled, aTr);
++    }
++    else
++    {
++      occ::handle<BRepAdaptor_Curve2d> pced = new BRepAdaptor_Curve2d();
++      pced->Initialize(CPadArc.Arc(), Fv);
++      // in the case of degenerated Fi, parameter difference can be even negative (eap, occ293)
++      if ((FiadArc.LastParameter() - FiadArc.FirstParameter()) > 10 * tolesp)
++      {
++        Update(HBs, pced, HGs, FiadArc, CPadArc, isfirst);
++      }
+     }
+ 
+     if (thePrepareOnSame)
+@@ -2009,6 +2136,13 @@ void ChFi3d_Builder::PerformOneCorner(const int Index, const bool thePrepareOnSa
+ 
+     //
+   }
++  if (isRolledEnd)
++  {
++    // Er goes from the face at the end: along the blend the blend's contact
++    // takes its place, beyond the cap the face grows over it. Its point at
++    // the cap leaves it on both sides.
++    CPadArc.SetArc(CPadArc.Tolerance(), ErRolled, wRolled, TopAbs_EXTERNAL);
++  }
+ 
+ #ifdef OCCT_DEBUG
+   ChFi3d_ResultChron(ch, t_inter); // result perf condition if (inter)

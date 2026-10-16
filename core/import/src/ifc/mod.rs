@@ -61,6 +61,9 @@ pub struct IfcOptions {
     pub occurrences: bool,
     /// The import process's memory guard (mitcad#80).
     pub progress: Option<Arc<crate::Progress>>,
+    /// The component the spatial structure comes in under (the root; a
+    /// project's IFC link's component, mitcad#333).
+    pub parent: ComponentUid,
 }
 
 impl Default for IfcOptions {
@@ -69,6 +72,7 @@ impl Default for IfcOptions {
             openings: true,
             occurrences: true,
             progress: None,
+            parent: ComponentUid::ROOT,
         }
     }
 }
@@ -244,7 +248,7 @@ impl<K: Kernel> Importer<'_, K> {
     fn structure(&mut self) {
         let roots = self.model.roots.clone();
         for root in roots {
-            self.spatial_component(root, ComponentUid::ROOT, math::IDENTITY, 0);
+            self.spatial_component(root, self.options.parent, math::IDENTITY, 0);
         }
     }
 
@@ -313,7 +317,7 @@ impl<K: Kernel> Importer<'_, K> {
         self.model
             .spatial_parent(id)
             .and_then(|s| self.spatial.get(&s).copied())
-            .unwrap_or((ComponentUid::ROOT, math::IDENTITY))
+            .unwrap_or((self.options.parent, math::IDENTITY))
     }
 
     /// Storeys' elevations as construction planes and grids' axes as

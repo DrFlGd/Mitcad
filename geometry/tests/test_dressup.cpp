@@ -732,6 +732,69 @@ void test_chamfer_sets_and_reference_faces() {
   CHECK(throws_with([&] { chamfer("F5", *rounded, {rim}); }, "unsupported:"));
 }
 
+// The area of the face named (or split from) `name`.
+double named_face_area(const Shape& shape, const std::string& name) {
+  double area = 0.0;
+  for (int i = 0; i < shape.face_count(); ++i) {
+    if (face_matches(shape.face_names(i), name)) {
+      GProp_GProps props;
+      BRepGProp::SurfaceProperties(shape.face(i), props);
+      area += props.Mass();
+    }
+  }
+  return area;
+}
+
+void test_angle_chamfer_measures_one_face_along_a_chain() {
+  // The top outline of a block with its four corners rounded is one tangent
+  // chain of eight edges. The roundings are the feature "F1", so their faces
+  // sort before the top face: the arcs' names list the rounding first, the
+  // lines' names the top face first. A distance-angle chamfer without a
+  // reference face measures on the first face of the edge it is given, and
+  // OCCT takes that face's role along the whole chain: the chain's first
+  // listed edge decides, not the lowest index in the body.
+  FilletSet corners;
+  corners.edges = {corner_edge(0), corner_edge(1), corner_edge(2), corner_edge(3)};
+  corners.radius = 5;
+  const ShapePtr rounded = fillet("F1", *block(), {corners});
+  const std::string line = top_front();
+  const std::string arc = edge(end_cap("F2", 1), "F1:fillet(" + corner_edge(0) + ")");
+  CHECK(rounded->find_edges(arc).size() == 1);
+  const auto first_face = [&](const std::string& name) {
+    const std::vector<int> found = rounded->find_edges(name);
+    return found.size() == 1 ? rounded->edge_faces(found.front())[0] : -1;
+  };
+  // (The faces the two kinds of edges list first are of different roles.)
+  CHECK(face_matches(rounded->face_names(first_face(line)), end_cap("F2", 1)));
+  CHECK(!face_matches(rounded->face_names(first_face(arc)), end_cap("F2", 1)));
+
+  const double outline = 2.0 * (60 + 40) - 8.0 * 5 + 2.0 * kPi * 5;
+  const double top = 60.0 * 40.0 - (4 - kPi) * 25.0;
+  const double angle = kPi / 6;
+  const auto top_after = [&](double inset) { return top - outline * inset + kPi * inset * inset; };
+
+  ChamferSet angled;
+  angled.spec.type = ChamferType::DistanceAngle;
+  angled.spec.distance = 2;
+  angled.spec.angle = angle;
+  // The consistent reference face: 2 mm on the top face.
+  angled.edges = {line};
+  angled.spec.reference_face = end_cap("F2", 1);
+  const ShapePtr on_top = chamfer("F5", *rounded, {angled});
+  CHECK_NEAR_TOL(named_face_area(*on_top, end_cap("F2", 1)), top_after(2.0), 1e-5);
+  // The first listed edge a line: the top face again, whichever edge of the
+  // chain has the lowest index.
+  angled.spec.reference_face.clear();
+  const ShapePtr from_line = chamfer("F5", *rounded, {angled});
+  CHECK_NEAR_TOL(named_face_area(*from_line, end_cap("F2", 1)), top_after(2.0), 1e-5);
+  CHECK(near(volume(*from_line), volume(*on_top), 1e-9));
+  // The first listed edge an arc: its first face is the rounding, which the
+  // whole chain measures on (the top face is cut back by the other leg).
+  angled.edges = {arc};
+  const ShapePtr from_arc = chamfer("F5", *rounded, {angled});
+  CHECK_NEAR_TOL(named_face_area(*from_arc, end_cap("F2", 1)), top_after(2.0 * std::tan(angle)), 1e-5);
+}
+
 void test_dressups_that_take_a_face_away() {
   // A rib 2 mm wide: rounding both top edges by 1 mm (a full round) or
   // bevelling them by 1 mm leaves no top face, which OCCT cannot build;
@@ -1202,6 +1265,7 @@ void dressup_tests() {
   guarded("test_g2_fillets", test_g2_fillets);
   guarded("test_fillet_corner_types", test_fillet_corner_types);
   guarded("test_chamfer_sets_and_reference_faces", test_chamfer_sets_and_reference_faces);
+  guarded("test_angle_chamfer_measures_one_face_along_a_chain", test_angle_chamfer_measures_one_face_along_a_chain);
   guarded("test_dressups_that_take_a_face_away", test_dressups_that_take_a_face_away);
   guarded("test_dressups_of_circles_built_as_rings", test_dressups_of_circles_built_as_rings);
   guarded("test_dressups_of_faulty_inputs", test_dressups_of_faulty_inputs);

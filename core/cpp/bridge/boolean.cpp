@@ -73,4 +73,9 @@ std::unique_ptr<BooleanResult> boolean_join_within(const ShapeList& targets, con
   return run(geometry::BooleanOp::Join, targets, tool, tolerance);
 }
 
+std::unique_ptr<BooleanResult> boolean_cut_within(const ShapeList& targets, const geometry::Shape& tool,
+                                                  double tolerance) {
+  return run(geometry::BooleanOp::Cut, targets, tool, tolerance);
+}
+
 } // namespace mitcad::bridge

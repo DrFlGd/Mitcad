@@ -1,0 +1,52 @@
+Mitcad's patch to OCCT 8.0.1, under OCCT's licence:
+SPDX-License-Identifier: LGPL-2.1-only WITH OCCT-exception-1.0
+
+Fillets: a regularity (G1) is put on an edge between a blend and a face
+only where the two are tangent along it (mitcad#300).
+
+A rounding whose contact runs along the far edge of a face it consumes (a
+boss's foot rounded as high as the boss, the wall vanishing) records its
+regularity with the wall (ChFiDS_Regul). The topological build leaves the
+contact's edge between the blend and the face beyond (the boss's top), and
+SetRegul took that face for the wall's image and marked the edge G1, though
+the two meet at a right angle there; likewise for the edges a rounding's
+blend makes with the walls of a hole cut through it before. A later
+rounding of such an edge then went wrong: on the boss's top edge, one
+closed edge, ChFi3d_Builder::PerformElement took the spine as ending at its
+vertex (FaceTangency rejects the closed edge's vertex, the faces said to be
+tangent), the start was found on the guide's prolongation past the end and
+the walk stopped there ("Path failed", for any radius); at a hole's corner
+the walk went on past the corner's vertex onto the rounding's torus as if
+it continued the hole's wall, and failed. SetRegul now checks the faces'
+tangency along the edge (ChFi3d::IsTangentFaces, as for any edge) before it
+encodes the regularity.
+
+Upstream: new.
+diff --git a/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_FilBuilder.cxx b/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_FilBuilder.cxx
+index a0a90b8..8d5e9ac 100644
+--- a/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_FilBuilder.cxx
++++ b/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_FilBuilder.cxx
+@@ -32,6 +32,7 @@
+ #include <BRepBlend_SurfRstConstRad.hxx>
+ #include <BRepBlend_SurfRstEvolRad.hxx>
+ #include <BRepBlend_Walking.hxx>
++#include <ChFi3d.hxx>
+ #include <ChFi3d_Builder_0.hxx>
+ #include <ChFi3d_FilBuilder.hxx>
+ #include <ChFi3d_SearchSing.hxx>
+@@ -3222,6 +3223,15 @@ void ChFi3d_FilBuilder::SetRegul()
+       {
+         TopoDS_Face   F1   = TopoDS::Face(its1.Value());
+         TopoDS_Face   F2   = TopoDS::Face(its2.Value());
++        // A contact along the far edge of a face the blend consumes (a
++        // boss's foot rounded as high as its wall) leaves the contact's
++        // edge between the blend and the face beyond that edge, which the
++        // blend meets at an angle: the regularity holds only where the
++        // faces are tangent along the edge.
++        if (!ChFi3d::IsTangentFaces(E, F1, F2))
++        {
++          continue;
++        }
+         GeomAbs_Shape cont = ChFi3d_evalconti(E, F1, F2);
+         B.Continuity(E, F1, F2, cont);
+       }

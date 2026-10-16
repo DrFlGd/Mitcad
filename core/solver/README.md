@@ -146,7 +146,11 @@ to all equations.
   constraints as added). The LDL^T factorization of their Gram matrix in that
   order has as pivot each row's squared distance from the span of the rows
   before it; a pivot below `1e-10` marks a dependent row (relative distance
-  below about `1e-5`). DOF = unknowns - rank.
+  below about `1e-5`). DOF = unknowns - rank. The rank is at most the
+  number of unknowns: once that many rows are accepted, every later row is
+  dependent (the Gram matrix squares the Jacobian's condition number, so with
+  nearly dependent rows rounding error can lift the pivot of a dependent row
+  above the threshold).
 - **Culprits.** For a dependent row the factor gives the coefficients of the
   combination of earlier rows that reproduces it (`L^T c = l`). The
   constraints with non-zero coefficients form the dependent set. The same

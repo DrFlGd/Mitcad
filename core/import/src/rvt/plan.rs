@@ -11,6 +11,8 @@
 //!   whose geometry cuts it (`CutPairGStep`) cut it with their own solids.
 //! - A **floor** (and a flat roof): its boundary loops extruded down from
 //!   its top by its thickness (`m_top - m_bottom`, else its type's width).
+//! - A **ceiling** (mitcad#333): as a floor, between its two horizontal
+//!   reference faces (`m_pRefFaces`), else down by its type's width.
 //! - A **footprint roof** with slopes: the footprint's prism below every
 //!   top plane of its slopes, less the prism below every bottom plane (the
 //!   layer reference faces with the same normal: the outermost two).
@@ -35,12 +37,15 @@ use super::footprint::{self, P2, areas, circle, loop_path, polygon, profile_mm};
 /// What an element is built of.
 #[derive(Debug, Clone)]
 pub struct Plan {
-    /// `wall`, `floor`, `roof`, `column`, `beam`, `stair`.
+    /// `wall`, `floor`, `roof`, `ceiling`, `column`, `beam`, `stair`.
     pub kind: &'static str,
     /// The solid (a boolean of items for a sloped roof).
     pub solid: Item,
     /// The cuts made in it: what, and the tool.
     pub cuts: Vec<(String, Item)>,
+    /// Further solids of its own, bodies apart from the first (a sweep's
+    /// separate paths).
+    pub more: Vec<Item>,
     pub notes: Vec<String>,
     /// The material its appearance comes from.
     pub material: Option<i64>,
@@ -48,6 +53,15 @@ pub struct Plan {
 
 const OST_STRUCTURAL_COLUMNS: i64 = -2_001_330;
 const OST_STRUCTURAL_FRAMING: i64 = -2_001_320;
+const OST_CEILINGS: i64 = -2_000_038;
+const OST_CURTAIN_PANELS: i64 = -2_000_170;
+const OST_CURTAIN_MULLIONS: i64 = -2_000_171;
+
+/// Whether elements of a kind are structural: their boxes stay visible
+/// (mitcad#333; curtain panels and mullions are not).
+pub fn structural(kind: &str) -> bool {
+    !matches!(kind, "mullion" | "panel")
+}
 
 /// The kind an element is built as, if any.
 pub fn kind_of(model: &Model, e: &Element) -> Option<&'static str> {
@@ -59,16 +73,25 @@ pub fn kind_of(model: &Model, e: &Element) -> Option<&'static str> {
         return Some(match s.class.as_str() {
             "Floor" | "BuildingPad" => "floor",
             "Roof" | "ProfileRoof" | "FaceRoof" => "roof",
+            "Ceiling" => "ceiling",
             _ => return None,
         });
     }
     if b.stair_runs.contains_key(&e.id) {
         return Some("stair");
     }
+    if b.landings.contains_key(&e.id) {
+        return Some("landing");
+    }
+    if let Some(s) = b.sweeps.get(&e.id) {
+        return Some(sweep_kind(s));
+    }
     if b.instances.contains_key(&e.id) {
         return match e.category {
             Some(categories::OST_COLUMNS | OST_STRUCTURAL_COLUMNS) => Some("column"),
             Some(OST_STRUCTURAL_FRAMING) => Some("beam"),
+            Some(OST_CURTAIN_MULLIONS) => Some("mullion"),
+            Some(OST_CURTAIN_PANELS) => Some("panel"),
             _ => None,
         };
     }
@@ -76,6 +99,7 @@ pub fn kind_of(model: &Model, e: &Element) -> Option<&'static str> {
         Some(categories::OST_WALLS) => Some("wall"),
         Some(categories::OST_FLOORS) => Some("floor"),
         Some(categories::OST_ROOFS) => Some("roof"),
+        Some(OST_CEILINGS) => Some("ceiling"),
         _ => None,
     }
 }
@@ -129,13 +153,17 @@ pub fn plan(model: &Model, e: &Element) -> Result<Plan, String> {
             let w = b.walls.get(&e.id).ok_or("no wall parameters")?;
             wall(model, w)
         }
-        "floor" | "roof" => {
+        "floor" | "roof" | "ceiling" => {
             let s = b.slabs.get(&e.id).ok_or("no slab parameters")?;
             slab(model, s, kind, true)
         }
         "column" => column(model, e, b.instances.get(&e.id).ok_or("no instance")?),
         "beam" => beam(model, e, b.instances.get(&e.id).ok_or("no instance")?),
         "stair" => stair(model, e, b.stair_runs.get(&e.id).ok_or("no stair run")?),
+        "mullion" => mullion(model, e, b.instances.get(&e.id).ok_or("no instance")?),
+        "landing" => landing(model, e, b.landings.get(&e.id).ok_or("no landing")?),
+        "sweep" | "rail" => sweep(model, e, b.sweeps.get(&e.id).ok_or("no sweep")?),
+        "panel" => panel(b, b.instances.get(&e.id).ok_or("no instance")?),
         other => Err(format!("{other}s are not built")),
     }
 }
@@ -261,6 +289,7 @@ fn wall(model: &Model, w: &Wall) -> Result<Plan, String> {
         kind: "wall",
         solid,
         cuts,
+        more: Vec::new(),
         notes,
         material: layer_material(b, w.type_id),
     })
@@ -331,7 +360,11 @@ fn tool(model: &Model, id: i64) -> Result<Item, String> {
         return wall_solid(model, w).map(|(s, _)| s);
     }
     if let Some(s) = b.slabs.get(&id) {
-        let kind = if s.class == "Floor" { "floor" } else { "roof" };
+        let kind = match s.class.as_str() {
+            "Floor" | "BuildingPad" => "floor",
+            "Ceiling" => "ceiling",
+            _ => "roof",
+        };
         return slab(model, s, kind, false).map(|p| p.solid);
     }
     if let Some(e) = model.element(id)
@@ -388,7 +421,7 @@ fn slab(model: &Model, s: &Slab, kind: &'static str, with_cuts: bool) -> Result<
         .map(|l| l.iter().map(|l| l.width).filter(|w| *w > 1e-9).collect())
         .unwrap_or_default();
     let mut notes = Vec::new();
-    let solid = if s.class == "Floor" || s.class == "BuildingPad" {
+    let solid = if matches!(s.class.as_str(), "Floor" | "BuildingPad" | "Ceiling") {
         // The top and bottom: the floor's own, else its horizontal
         // reference faces' (a pad's).
         let level: Vec<f64> = s
@@ -438,6 +471,7 @@ fn slab(model: &Model, s: &Slab, kind: &'static str, with_cuts: bool) -> Result<
         kind,
         solid,
         cuts,
+        more: Vec::new(),
         notes,
         material: layer_material(b, s.type_id),
     })
@@ -807,6 +841,7 @@ fn column(model: &Model, e: &Element, i: &Instance) -> Result<Plan, String> {
         kind: "column",
         solid,
         cuts,
+        more: Vec::new(),
         notes,
         material,
     })
@@ -875,6 +910,7 @@ fn beam(model: &Model, e: &Element, i: &Instance) -> Result<Plan, String> {
         kind: "beam",
         solid: extrusion(position, profile, true, s1 - s0),
         cuts: Vec::new(),
+        more: Vec::new(),
         notes,
         material,
     })
@@ -905,8 +941,8 @@ fn stair(model: &Model, e: &Element, r: &building::StairRun) -> Result<Plan, Str
         .type_id
         .and_then(|t| model.building.run_types.get(&t).copied())
         .ok_or("its run type is not read")?;
-    if !monolithic || depth <= 0.0 {
-        return Err("not a monolithic run (its treads and risers are parts of their own)".into());
+    if monolithic && depth <= 0.0 {
+        return Err("a monolithic run without its support's depth".into());
     }
     let Some(Curve::Line { start: a, end: b }) = &r.start else {
         return Err("its start riser line is not read".into());
@@ -931,6 +967,9 @@ fn stair(model: &Model, e: &Element, r: &building::StairRun) -> Result<Plan, Str
         x = math::scale(x, -1.0);
     }
     let h = (r.top - r.bottom) / n as f64;
+    if !monolithic {
+        return stair_parts(model, e, r, n, h, a, b, w, x, width);
+    }
     let mut pts: Vec<P2> = vec![[0.0, 0.0]];
     let mut s = 0.0;
     for k in 0..n {
@@ -982,7 +1021,921 @@ fn stair(model: &Model, e: &Element, r: &building::StairRun) -> Result<Plan, Str
             depth: width * FOOT_MM,
         },
         cuts: Vec::new(),
+        more: Vec::new(),
         notes: vec![format!("a run of {n} risers")],
         material: None,
     })
+}
+
+/// A prism (mitcad#333): closed planar loops (model feet, the first the
+/// outer one) moved `depth` (feet) along the unit vector `z`, square to
+/// their plane.
+fn prism(loops: &[Vec<Curve>], z: P3, depth: f64) -> Result<Item, String> {
+    let origin = loops
+        .first()
+        .and_then(|l| l.first())
+        .ok_or("no loop")?
+        .start();
+    let z = math::normalize(z).ok_or("a direction of no length")?;
+    let x = loops
+        .iter()
+        .flatten()
+        .find_map(|c| {
+            let v = math::sub(c.end(), c.start());
+            math::normalize(math::sub(v, math::scale(z, math::dot(v, z))))
+        })
+        .ok_or("a loop of no extent")?;
+    let y = math::cross(z, x);
+    let frame = math::from_axes(origin, x, y, z);
+    let inverse = math::inverse(&frame).ok_or("a degenerate frame")?;
+    let paths: Vec<Path> = loops
+        .iter()
+        .map(|l| {
+            let local: Vec<Curve> = l.iter().map(|c| transformed(c, &inverse)).collect();
+            loop_path(&local, 1e-4).ok_or("a loop that does not close")
+        })
+        .collect::<Result<_, _>>()?;
+    if depth <= 1e-9 {
+        return Err(format!("no thickness ({depth} ft)"));
+    }
+    Ok(Item::Extrusion {
+        position: math::from_axes(mm(origin), x, y, z),
+        profile: profile_mm(areas(paths)),
+        direction: [0.0, 0.0, 1.0],
+        depth: depth * FOOT_MM,
+    })
+}
+
+/// A closed polygon of lines through points.
+fn polyline(points: &[P3]) -> Vec<Curve> {
+    (0..points.len())
+        .map(|k| Curve::Line {
+            start: points[k],
+            end: points[(k + 1) % points.len()],
+        })
+        .collect()
+}
+
+/// A curtain mullion (mitcad#333): its rectangular profile (its widths
+/// across its path, at a border both on one side; its thickness along its
+/// normal about its offset) along its straight path, from its own symbol
+/// at the instance's transform.
+fn mullion(model: &Model, e: &Element, i: &Instance) -> Result<Plan, String> {
+    let b = &model.building;
+    let m = i
+        .symbol
+        .and_then(|s| b.symbols.get(&s))
+        .and_then(|s| s.mullion.as_ref())
+        .ok_or("its symbol gives no mullion profile")?;
+    if m.profile == "SysCustMullionProfile" {
+        return custom_mullion(model, e, i, m);
+    }
+    let quad = m.profile == "SysQuadMullionProfile";
+    if m.profile != "SysRectMullionProfile" && !quad {
+        return Err(format!(
+            "a mullion profile of class {} (rectangular, corner and custom ones are built)",
+            m.profile
+        ));
+    }
+    let t = i.transform.ok_or("no transform")?;
+    let Some(Curve::Line { start, end }) = &m.path else {
+        return Err("a mullion along a curve".into());
+    };
+    let length = math::length(math::sub(*end, *start));
+    let d = math::normalize(math::sub(*end, *start)).ok_or("a path of no length")?;
+    let n = math::normalize(m.normal).ok_or("no normal")?;
+    let a = math::normalize(math::cross(n, d)).ok_or("a normal along the path")?;
+    let [w0, w1] = m.widths;
+    let (a0, a1, n0, n1) = if quad {
+        // A corner mullion: a rectangle of its two depths about its path.
+        let [d0, d1] = m.depths;
+        (
+            -d0 / 2.0,
+            d0 / 2.0,
+            m.offset - d1 / 2.0,
+            m.offset + d1 / 2.0,
+        )
+    } else {
+        let (a0, a1) = if m.flags & 4 != 0 {
+            (0.0, w0 + w1)
+        } else {
+            (-w0, w1)
+        };
+        (
+            a0,
+            a1,
+            m.offset - m.thickness / 2.0,
+            m.offset + m.thickness / 2.0,
+        )
+    };
+    if a1 - a0 <= 1e-9 || n1 - n0 <= 1e-9 {
+        return Err("a profile of no size".into());
+    }
+    let at = |u: f64, v: f64| {
+        building::apply(
+            &t,
+            math::add(*start, math::add(math::scale(a, u), math::scale(n, v))),
+        )
+    };
+    let outline = polyline(&[at(a0, n0), at(a1, n0), at(a1, n1), at(a0, n1)]);
+    let solid = prism(&[outline], building::turn(&t, d), length)?;
+    let material = i
+        .master
+        .and_then(|s| b.symbols.get(&s))
+        .and_then(|s| s.materials.first().copied());
+    Ok(Plan {
+        kind: "mullion",
+        solid,
+        cuts: Vec::new(),
+        more: Vec::new(),
+        notes: vec![format!(
+            "a {} mullion {:.0} × {:.0} mm",
+            if quad { "corner" } else { "rectangular" },
+            (a1 - a0) * FOOT_MM,
+            (n1 - n0) * FOOT_MM
+        )],
+        material,
+    })
+}
+
+/// A curtain panel (mitcad#333): its cell's loops moved to its offset and
+/// extruded by its thickness, from its own symbol at the instance's
+/// transform.
+fn panel(b: &Building, i: &Instance) -> Result<Plan, String> {
+    let p = i
+        .symbol
+        .and_then(|s| b.symbols.get(&s))
+        .and_then(|s| s.panel.as_ref())
+        .ok_or("its symbol gives no panel cell")?;
+    if p.empty {
+        return Err("an empty panel".into());
+    }
+    if p.thickness <= 1e-9 {
+        return Err(
+            "a panel family's panel (its shape is its family's, not a system panel's)".into(),
+        );
+    }
+    let t = i.transform.ok_or("no transform")?;
+    let plane = p.plane.as_ref().ok_or("its cell's plane did not read")?;
+    let mut nn = math::normalize(math::cross(plane.y, plane.x)).ok_or("a plane of no normal")?;
+    if p.flipped {
+        nn = math::scale(nn, -1.0);
+    }
+    let back = math::scale(nn, p.offset - p.thickness / 2.0);
+    let shift = [
+        1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, back[0], back[1], back[2],
+    ];
+    let loops: Vec<Vec<Curve>> = p
+        .loops
+        .iter()
+        .map(|l| {
+            l.iter()
+                .map(|c| c.transformed(&shift).transformed(&t))
+                .collect()
+        })
+        .collect();
+    if loops.is_empty() {
+        return Err("its cell has no loops".into());
+    }
+    let solid = prism(&loops, building::turn(&t, nn), p.thickness)?;
+    let material = i
+        .master
+        .and_then(|s| b.symbols.get(&s))
+        .and_then(|s| s.materials.first().copied());
+    Ok(Plan {
+        kind: "panel",
+        solid,
+        cuts: Vec::new(),
+        more: Vec::new(),
+        notes: vec![format!("a panel {:.0} mm thick", p.thickness * FOOT_MM)],
+        material,
+    })
+}
+
+/// A run of treads and risers (mitcad#333): per step its riser (its front
+/// on the riser line, its thickness behind it, up to the tread) and its
+/// tread (its top at the step's height, its thickness below, reaching the
+/// nosing length over the riser), in the run's vertical plane across its
+/// width.
+#[allow(clippy::too_many_arguments)]
+fn stair_parts(
+    model: &Model,
+    e: &Element,
+    r: &building::StairRun,
+    n: usize,
+    h: f64,
+    a: &P3,
+    b: &P3,
+    w: P3,
+    x: P3,
+    width: f64,
+) -> Result<Plan, String> {
+    let parts = e
+        .type_id
+        .and_then(|t| model.building.stair_parts.get(&t))
+        .ok_or("its run type's treads and risers are not read")?;
+    if parts.tread.is_none() && parts.riser.is_none() {
+        return Err("a run of neither treads nor risers".into());
+    }
+    let tt = parts.tread.unwrap_or(0.0);
+    let mut polys: Vec<Path> = Vec::new();
+    let mut s = 0.0;
+    for k in 0..n {
+        let top = (k + 1) as f64 * h;
+        let base = k as f64 * h;
+        let d = r.treads.get(k).copied();
+        // The riser: its front on the riser line, up to the tread above.
+        // (The treads' depths run from nosing to nosing: a riser stands the
+        // nosing length behind its tread's front edge.)
+        let r0 = s + parts.nosing;
+        if let Some(rt) = parts.riser {
+            let up_to = if d.is_some() { top - tt } else { top };
+            if up_to - base > 1e-9 {
+                polys.push(polygon(&[
+                    [r0, base],
+                    [r0 + rt, base],
+                    [r0 + rt, up_to],
+                    [r0, up_to],
+                ]));
+            }
+        }
+        if let (Some(d), Some(tt)) = (d, parts.tread) {
+            polys.push(polygon(&[
+                [s, top - tt],
+                [s + d, top - tt],
+                [s + d, top],
+                [s, top],
+            ]));
+        }
+        s += d.unwrap_or(0.0);
+    }
+    if polys.is_empty() {
+        return Err("no tread or riser".into());
+    }
+    let up = [0.0, 0.0, 1.0];
+    let z = math::cross(x, up);
+    let origin = if math::dot(z, w) > 0.0 { *a } else { *b };
+    let origin = [origin[0], origin[1], r.bottom];
+    let steps = polys.len();
+    Ok(Plan {
+        kind: "stair",
+        solid: Item::Extrusion {
+            position: math::from_axes(mm(origin), x, up, z),
+            profile: profile_mm(areas(polys)),
+            direction: [0.0, 0.0, 1.0],
+            depth: width * FOOT_MM,
+        },
+        cuts: Vec::new(),
+        more: Vec::new(),
+        notes: vec![format!("a run of {n} risers: {steps} treads and risers")],
+        material: None,
+    })
+}
+
+/// A stair landing (mitcad#333): its boundary down from its top by its
+/// type's thickness (monolithic) or tread thickness.
+fn landing(model: &Model, e: &Element, l: &building::Landing) -> Result<Plan, String> {
+    let parts = e
+        .type_id
+        .and_then(|t| model.building.stair_parts.get(&t))
+        .ok_or("its landing type is not read")?;
+    let thickness = if parts.monolithic {
+        parts.thickness
+    } else {
+        parts.tread.ok_or("a landing without a tread")?
+    };
+    if thickness <= 1e-9 {
+        return Err("a landing of no thickness".into());
+    }
+    if l.boundary.is_empty() {
+        return Err("its boundary did not read".into());
+    }
+    // The boundary at its top.
+    let lifted: Vec<Vec<Curve>> = l
+        .boundary
+        .iter()
+        .map(|lp| {
+            lp.iter()
+                .map(|c| {
+                    let dz = l.top - c.start()[2];
+                    c.transformed(&[1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, dz])
+                })
+                .collect()
+        })
+        .collect();
+    let paths: Vec<Path> = lifted
+        .iter()
+        .map(|lp| loop_path(lp, 1e-4).ok_or("a boundary that does not close"))
+        .collect::<Result<_, _>>()?;
+    Ok(Plan {
+        kind: "landing",
+        solid: extrusion(at_height(l.top), profile_mm(areas(paths)), false, thickness),
+        cuts: Vec::new(),
+        more: Vec::new(),
+        notes: vec![format!(
+            "a {} landing {:.0} mm thick",
+            if parts.monolithic {
+                "monolithic"
+            } else {
+                "tread"
+            },
+            thickness * FOOT_MM
+        )],
+        material: None,
+    })
+}
+
+/// Curves grouped into the loops their ends join them in.
+fn split_loops(curves: &[Curve], tolerance: f64) -> Vec<Vec<Curve>> {
+    let close = |a: P3, b: P3| math::length(math::sub(a, b)) <= tolerance;
+    let mut left: Vec<Curve> = curves.to_vec();
+    let mut out = Vec::new();
+    while let Some(first) = left.pop() {
+        let mut group = vec![first];
+        let mut grown = true;
+        while grown {
+            grown = false;
+            let ends: Vec<P3> = group.iter().flat_map(|c| [c.start(), c.end()]).collect();
+            if let Some(i) = left.iter().position(|c| {
+                ends.iter()
+                    .any(|p| close(*p, c.start()) || close(*p, c.end()))
+            }) {
+                group.push(left.remove(i));
+                grown = true;
+            }
+        }
+        out.push(group);
+    }
+    out
+}
+
+/// The kinds of sweeps: a wall sweep or slab edge (`sweep`), a rail.
+fn sweep_kind(s: &building::Sweep) -> &'static str {
+    if s.path3d.is_some() || s.class.contains("Rail") {
+        "rail"
+    } else {
+        "sweep"
+    }
+}
+
+/// Curves joined end to start into open or closed chains (each turned as
+/// needed), in order.
+fn chains(curves: &[Curve], tolerance: f64) -> Vec<Vec<Curve>> {
+    let close = |a: P3, b: P3| math::length(math::sub(a, b)) <= tolerance;
+    let reversed = |c: &Curve| match c {
+        Curve::Line { start, end } => Curve::Line {
+            start: *end,
+            end: *start,
+        },
+        Curve::Arc {
+            center,
+            x_axis,
+            y_axis,
+            radius,
+            start,
+            end,
+        } => Curve::Arc {
+            center: *center,
+            x_axis: *x_axis,
+            y_axis: math::scale(*y_axis, -1.0),
+            radius: *radius,
+            start: -end,
+            end: -start,
+        },
+    };
+    let mut left: Vec<Curve> = curves.to_vec();
+    let mut out = Vec::new();
+    while !left.is_empty() {
+        let mut chain = vec![left.remove(0)];
+        loop {
+            let tail = chain.last().expect("one").end();
+            let head = chain[0].start();
+            if let Some(i) = left
+                .iter()
+                .position(|c| close(c.start(), tail) || close(c.end(), tail))
+            {
+                let c = left.remove(i);
+                chain.push(if close(c.start(), tail) {
+                    c
+                } else {
+                    reversed(&c)
+                });
+            } else if let Some(i) = left
+                .iter()
+                .position(|c| close(c.end(), head) || close(c.start(), head))
+            {
+                let c = left.remove(i);
+                chain.insert(
+                    0,
+                    if close(c.end(), head) {
+                        c
+                    } else {
+                        reversed(&c)
+                    },
+                );
+            } else {
+                break;
+            }
+        }
+        out.push(chain);
+    }
+    out
+}
+
+/// A chain's lines: its lines, and its arcs as chords within a millimetre.
+fn chain_lines(chain: &[Curve]) -> Vec<(P3, P3)> {
+    let mut out = Vec::new();
+    for c in chain {
+        let n = match c {
+            Curve::Line { .. } => 1,
+            Curve::Arc {
+                radius, start, end, ..
+            } => {
+                let tol = 1.0 / FOOT_MM;
+                let step = 2.0 * (1.0 - tol / radius.max(tol)).clamp(-1.0, 1.0).acos();
+                (((end - start) / step.max(1e-3)).ceil() as usize).clamp(1, 256)
+            }
+        };
+        for k in 0..n {
+            let (a, b) = (c.at(k as f64 / n as f64), c.at((k + 1) as f64 / n as f64));
+            if math::length(math::sub(b, a)) > 1e-9 {
+                out.push((a, b));
+            }
+        }
+    }
+    out
+}
+
+/// A profile swept along paths (mitcad#333): the profile family's loops
+/// (its xy plane: x across the path, y along `up`, moved by the offsets)
+/// at right angles to the path, extruded along each of its lines (an arc's
+/// chords within a millimetre), each a body. Of the profile's four mirror
+/// images (and for a wall sweep, of its wall's faces) the one whose solid
+/// fits the element's stored box best.
+fn sweep(model: &Model, e: &Element, s: &building::Sweep) -> Result<Plan, String> {
+    let b = &model.building;
+    let symbol = s
+        .profile
+        .filter(|p| *p > 0)
+        .or_else(|| s.type_id.and_then(|t| b.profile_types.get(&t).copied()))
+        .ok_or("no profile")?;
+    let profile = profile_loops(model, symbol)?;
+    let paths: Vec<Vec<Curve>> = match s.path3d {
+        Some(p) => b.paths3d.get(&p).cloned().ok_or("its path is not read")?,
+        None => s.paths.clone(),
+    };
+    let all: Vec<Curve> = paths
+        .into_iter()
+        .flatten()
+        .filter(|c| c.length() > 1e-6)
+        .collect();
+    let chains = chains(&all, 1e-4);
+    if chains.is_empty() {
+        return Err("no path".into());
+    }
+    let up = s.up.and_then(math::normalize).unwrap_or([0.0, 0.0, 1.0]);
+    let (h, v) = (s.offsets[0], s.offsets[1]);
+    // A wall sweep's path is its wall's location line: its profile at one
+    // of the wall's faces (their offsets from the line, either way).
+    let mut shifts = vec![0.0];
+    if let Some(w) = s.host.and_then(|h| b.walls.get(&h)) {
+        let faces = w.faces.or_else(|| {
+            let width = w.type_id.and_then(|t| b.width(t))?;
+            Some([-width / 2.0, width / 2.0])
+        });
+        if let Some([lo, hi]) = faces {
+            shifts.extend([lo, hi, -lo, -hi]);
+        }
+    }
+    let mut best: Option<(f64, Vec<Item>)> = None;
+    let mirrors = [(1.0, 1.0), (-1.0, 1.0), (1.0, -1.0), (-1.0, -1.0)];
+    for ((mx, my), shift) in mirrors
+        .iter()
+        .flat_map(|m| shifts.iter().map(move |s| (*m, *s)))
+    {
+        // The profile in its own plane, mirrored and moved (feet).
+        let flat = [mx, 0.0, 0.0, 0.0, my, 0.0, 0.0, 0.0, 1.0, h + shift, v, 0.0];
+        let profile2: Vec<Vec<Curve>> = profile
+            .iter()
+            .map(|l| l.iter().map(|c| c.transformed(&flat)).collect())
+            .collect();
+        let mut items = Vec::new();
+        let mut lo = [f64::INFINITY; 3];
+        let mut hi = [f64::NEG_INFINITY; 3];
+        for chain in &chains {
+            let lines = chain_lines(chain);
+            // Across: square to the first line that is not along `up`.
+            let x0 = lines
+                .iter()
+                .find_map(|(a, b)| {
+                    let t = math::normalize(math::sub(*b, *a))?;
+                    math::normalize(math::cross(up, t))
+                })
+                .ok_or("a path along its up direction")?;
+            let mut last_x = x0;
+            let mut prisms = Vec::new();
+            for (a, z) in &lines {
+                let d = math::sub(*z, *a);
+                let length = math::length(d);
+                let t = math::scale(d, 1.0 / length);
+                let x = math::normalize(math::cross(up, t)).unwrap_or(last_x);
+                last_x = x;
+                let y = math::cross(t, x);
+                let m = [
+                    x[0], y[0], t[0], x[1], y[1], t[1], x[2], y[2], t[2], a[0], a[1], a[2],
+                ];
+                let placed: Vec<Vec<Curve>> = profile2
+                    .iter()
+                    .map(|l| l.iter().map(|c| c.transformed(&m)).collect())
+                    .collect();
+                for c in placed.iter().flatten() {
+                    for f in [0.0, 0.25, 0.5, 0.75, 1.0] {
+                        let p = c.at(f);
+                        for q in [p, math::add(p, d)] {
+                            for k in 0..3 {
+                                lo[k] = lo[k].min(q[k]);
+                                hi[k] = hi[k].max(q[k]);
+                            }
+                        }
+                    }
+                }
+                prisms.push((placed, t, length));
+            }
+            for (placed, t, length) in prisms {
+                items.push(prism(&placed, t, length)?);
+            }
+        }
+        let fit = e.bbox.map_or(0.0, |s| {
+            (0..3)
+                .map(|k| (s[k] - lo[k]).max(hi[k] - s[k + 3]).max(0.0))
+                .fold(0.0, f64::max)
+        });
+        if best.as_ref().is_none_or(|(f, _)| fit < *f - 1e-9) {
+            best = Some((fit, items));
+        }
+    }
+    let (_, mut items) = best.expect("four candidates");
+    let solid = items.remove(0);
+    Ok(Plan {
+        kind: sweep_kind(s),
+        solid,
+        cuts: Vec::new(),
+        more: items,
+        notes: vec![format!(
+            "its profile ({} loops) along {} paths",
+            profile.len(),
+            chains.len()
+        )],
+        material: None,
+    })
+}
+
+/// A profile family type's closed loops (feet, the family's xy plane), the
+/// largest first (mitcad#333).
+fn profile_loops(model: &Model, symbol: i64) -> Result<Vec<Vec<Curve>>, String> {
+    let family = model
+        .element(symbol)
+        .and_then(|p| p.family_id)
+        .ok_or("its profile's family is not read")?;
+    let curves = model
+        .profiles
+        .get(&family)
+        .ok_or("its profile family's document gives no profile")?;
+    let mut loops: Vec<(f64, Vec<Curve>)> = split_loops(curves, 1e-6)
+        .into_iter()
+        .filter_map(|g| {
+            let p = loop_path(&g, 1e-6)?;
+            Some((footprint::signed_area(&p).abs(), g))
+        })
+        .collect();
+    if loops.is_empty() {
+        return Err("its profile has no closed loop".into());
+    }
+    loops.sort_by(|a, b| b.0.total_cmp(&a.0));
+    Ok(loops.into_iter().map(|(_, g)| g).collect())
+}
+
+/// How far (feet) points reach out of a box (min and max corner).
+fn outside(points: impl Iterator<Item = P3>, bbox: Option<[f64; 6]>) -> f64 {
+    let Some(s) = bbox else { return 0.0 };
+    points
+        .map(|q| {
+            (0..3)
+                .map(|k| (s[k] - q[k]).max(q[k] - s[k + 3]).max(0.0))
+                .fold(0.0, f64::max)
+        })
+        .fold(0.0, f64::max)
+}
+
+/// A curtain mullion of a custom profile (mitcad#333): its profile
+/// family's loops square to its straight path, the profile's x across the
+/// path or along its normal, mirrored or not, at a border on one side of
+/// its path: the one that
+/// fits the element's stored box best.
+fn custom_mullion(
+    model: &Model,
+    e: &Element,
+    i: &Instance,
+    m: &building::MullionSym,
+) -> Result<Plan, String> {
+    let symbol = m.profile_id.ok_or("a custom mullion without its profile")?;
+    let profile = profile_loops(model, symbol)?;
+    let t = i.transform.ok_or("no transform")?;
+    let Some(Curve::Line { start, end }) = &m.path else {
+        return Err("a mullion along a curve".into());
+    };
+    let length = math::length(math::sub(*end, *start));
+    let d = math::normalize(math::sub(*end, *start)).ok_or("a path of no length")?;
+    let n = math::normalize(m.normal).ok_or("no normal")?;
+    let a = math::normalize(math::cross(n, d)).ok_or("a normal along the path")?;
+    let mut best: Option<(f64, Vec<Vec<Curve>>)> = None;
+    // The profile's points, for its extent across.
+    let samples: Vec<P3> = profile
+        .iter()
+        .flatten()
+        .flat_map(|c| [0.0, 0.25, 0.5, 0.75, 1.0].map(|f| c.at(f)))
+        .collect();
+    let borders: &[bool] = if m.flags & 4 != 0 {
+        &[false, true]
+    } else {
+        &[false]
+    };
+    for (swap, border) in [false, true]
+        .into_iter()
+        .flat_map(|s| borders.iter().map(move |b| (s, *b)))
+    {
+        for (sx, sy) in [(1.0, 1.0), (-1.0, 1.0), (1.0, -1.0), (-1.0, -1.0)] {
+            let (u, v) = if swap { (n, a) } else { (a, n) };
+            let (u, v) = (math::scale(u, sx), math::scale(v, sy));
+            // At a border its width lies on one side of its path.
+            let shift = if border {
+                -samples
+                    .iter()
+                    .map(|p| math::dot(u, a) * p[0] + math::dot(v, a) * p[1])
+                    .fold(f64::INFINITY, f64::min)
+            } else {
+                0.0
+            };
+            let o = math::add(
+                *start,
+                math::add(math::scale(n, m.offset), math::scale(a, shift)),
+            );
+            let local = [
+                u[0], v[0], d[0], u[1], v[1], d[1], u[2], v[2], d[2], o[0], o[1], o[2],
+            ];
+            let placed: Vec<Vec<Curve>> = profile
+                .iter()
+                .map(|l| {
+                    l.iter()
+                        .map(|c| c.transformed(&local).transformed(&t))
+                        .collect()
+                })
+                .collect();
+            let dm = building::turn(&t, math::scale(d, length));
+            let fit = outside(
+                placed.iter().flatten().flat_map(|c| {
+                    [0.0, 0.25, 0.5, 0.75, 1.0]
+                        .into_iter()
+                        .flat_map(move |f| [c.at(f), math::add(c.at(f), dm)])
+                }),
+                e.bbox,
+            );
+            if best.as_ref().is_none_or(|(f, _)| fit < *f - 1e-9) {
+                best = Some((fit, placed));
+            }
+        }
+    }
+    let (_, placed) = best.expect("eight candidates");
+    let solid = prism(&placed, building::turn(&t, d), length)?;
+    Ok(Plan {
+        kind: "mullion",
+        solid,
+        cuts: Vec::new(),
+        more: Vec::new(),
+        notes: vec![format!(
+            "a mullion of a custom profile ({} loops)",
+            profile.len()
+        )],
+        material: None,
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use mitcad_rvt::building::{MullionSym, PanelSym, Plane, StairParts, Symbol};
+
+    fn extrusion_of(item: &Item) -> (Matrix, f64, usize) {
+        match item {
+            Item::Extrusion {
+                position,
+                depth,
+                profile,
+                ..
+            } => (*position, *depth, profile.areas.len()),
+            other => panic!("{other:?}"),
+        }
+    }
+
+    fn with_symbol(symbol: Symbol) -> (Model, Element) {
+        let mut model = Model::default();
+        let inst = Instance {
+            id: 2,
+            symbol: Some(1),
+            transform: Some([1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 10.0, 0.0, 0.0]),
+            ..Instance::default()
+        };
+        model.building.symbols.insert(1, symbol);
+        model.building.instances.insert(2, inst);
+        let e = Element {
+            id: 2,
+            category: Some(OST_CURTAIN_MULLIONS),
+            ..Element::default()
+        };
+        (model, e)
+    }
+
+    #[test]
+    fn a_rectangular_mullion_along_its_path() {
+        let m = MullionSym {
+            profile: "SysRectMullionProfile".into(),
+            depths: [0.0; 2],
+            profile_id: None,
+            widths: [0.1, 0.1],
+            thickness: 0.4,
+            offset: 0.0,
+            path: Some(Curve::Line {
+                start: [0.0, 0.0, 0.0],
+                end: [0.0, 0.0, -8.0],
+            }),
+            normal: [0.0, 1.0, 0.0],
+            flags: 4,
+        };
+        let (model, e) = with_symbol(Symbol {
+            id: 1,
+            mullion: Some(m),
+            ..Symbol::default()
+        });
+        assert_eq!(kind_of(&model, &e), Some("mullion"));
+        assert!(!structural("mullion"));
+        let p = plan(&model, &e).unwrap();
+        let (position, depth, areas) = extrusion_of(&p.solid);
+        assert!((depth - 8.0 * FOOT_MM).abs() < 1e-9);
+        assert_eq!(areas, 1);
+        // Along -z from the instance's origin.
+        assert!((math::column(&position, 2)[2] + 1.0).abs() < 1e-9);
+        assert!((math::origin(&position)[0] - 10.0 * FOOT_MM).abs() < 0.5 * FOOT_MM);
+    }
+
+    #[test]
+    fn a_system_panel_from_its_cell() {
+        let square = vec![polyline(&[
+            [0.0, 0.0, 0.0],
+            [2.0, 0.0, 0.0],
+            [2.0, 0.0, 3.0],
+            [0.0, 0.0, 3.0],
+        ])];
+        let p = PanelSym {
+            loops: square,
+            plane: Some(Plane {
+                origin: [0.0; 3],
+                x: [1.0, 0.0, 0.0],
+                y: [0.0, 0.0, 1.0],
+                u: [0.0, 2.0],
+                v: [0.0, 3.0],
+            }),
+            thickness: 0.1,
+            offset: 0.2,
+            empty: false,
+            flipped: false,
+        };
+        let (model, mut e) = with_symbol(Symbol {
+            id: 1,
+            panel: Some(p),
+            ..Symbol::default()
+        });
+        e.category = Some(OST_CURTAIN_PANELS);
+        let plan = plan(&model, &e).unwrap();
+        let (position, depth, _) = extrusion_of(&plan.solid);
+        assert!((depth - 0.1 * FOOT_MM).abs() < 1e-9);
+        // From 0.15 ft along y × x (+y), through the thickness.
+        let o = math::origin(&position);
+        assert!((o[1] - 0.15 * FOOT_MM).abs() < 1e-6, "{o:?}");
+        assert!((math::column(&position, 2)[1] - 1.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn treads_and_risers_and_a_landing() {
+        let mut model = Model::default();
+        let run = building::StairRun {
+            id: 5,
+            bottom: 0.0,
+            top: 3.0,
+            risers: 3,
+            treads: vec![1.0, 1.0],
+            start: Some(Curve::Line {
+                start: [0.0, 0.0, 0.0],
+                end: [0.0, 4.0, 0.0],
+            }),
+            end: Some(Curve::Line {
+                start: [2.0, 0.0, 0.0],
+                end: [2.0, 4.0, 0.0],
+            }),
+            support: None,
+        };
+        model.building.stair_runs.insert(5, run);
+        model.building.run_types.insert(9, (false, 0.0));
+        model.building.stair_parts.insert(
+            9,
+            StairParts {
+                monolithic: false,
+                tread: Some(0.1),
+                riser: Some(0.05),
+                nosing: 0.1,
+                thickness: 0.0,
+            },
+        );
+        let e = Element {
+            id: 5,
+            type_id: Some(9),
+            ..Element::default()
+        };
+        let p = plan(&model, &e).unwrap();
+        // Three risers and two treads.
+        let (_, depth, areas) = extrusion_of(&p.solid);
+        assert_eq!(areas, 5);
+        assert!((depth - 4.0 * FOOT_MM).abs() < 1e-9);
+        // A landing down from its top by its tread.
+        let landing = building::Landing {
+            id: 6,
+            boundary: vec![polyline(&[
+                [0.0, 0.0, 3.0],
+                [4.0, 0.0, 3.0],
+                [4.0, 4.0, 3.0],
+                [0.0, 4.0, 3.0],
+            ])],
+            top: 3.0,
+        };
+        model.building.landings.insert(6, landing);
+        let e = Element {
+            id: 6,
+            type_id: Some(9),
+            ..Element::default()
+        };
+        assert_eq!(kind_of(&model, &e), Some("landing"));
+        let p = plan(&model, &e).unwrap();
+        let (position, depth, _) = extrusion_of(&p.solid);
+        assert!((depth - 0.1 * FOOT_MM).abs() < 1e-9);
+        assert!((math::origin(&position)[2] - 3.0 * FOOT_MM).abs() < 1e-9);
+    }
+
+    #[test]
+    fn a_profile_along_a_bent_path() {
+        // A 0.2 × 0.1 profile along an L of two lines: a body per line,
+        // the profile's mirror image the one that fits the stored box.
+        let mut model = Model::default();
+        let profile = polyline(&[
+            [0.0, 0.0, 0.0],
+            [0.2, 0.0, 0.0],
+            [0.2, 0.1, 0.0],
+            [0.0, 0.1, 0.0],
+        ]);
+        model.profiles.insert(70, profile);
+        model.elements.push(Element {
+            id: 71,
+            family_id: Some(70),
+            is_type: true,
+            ..Element::default()
+        });
+        let s = building::Sweep {
+            id: 72,
+            class: "SweepHost".into(),
+            paths: vec![vec![
+                Curve::Line {
+                    start: [0.0, 0.0, 0.0],
+                    end: [5.0, 0.0, 0.0],
+                },
+                Curve::Line {
+                    start: [5.0, 0.0, 0.0],
+                    end: [5.0, 5.0, 0.0],
+                },
+            ]],
+            path3d: None,
+            profile: Some(71),
+            type_id: None,
+            up: Some([0.0, 0.0, 1.0]),
+            offsets: [0.0, 0.0],
+            flipped: false,
+            host: None,
+        };
+        model.building.sweeps.insert(72, s);
+        let e = Element {
+            id: 72,
+            bbox: Some([-0.2, -0.2, 0.0, 5.2, 5.0, 0.1]),
+            ..Element::default()
+        };
+        assert_eq!(kind_of(&model, &e), Some("sweep"));
+        let p = plan(&model, &e).unwrap();
+        assert_eq!(p.more.len(), 1);
+    }
 }

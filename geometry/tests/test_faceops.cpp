@@ -9,6 +9,7 @@
 #include <BRepBuilderAPI_MakeVertex.hxx>
 #include <BRepBuilderAPI_NurbsConvert.hxx>
 #include <BRepExtrema_DistShapeShape.hxx>
+#include <BRep_Builder.hxx>
 #include <BRep_Tool.hxx>
 #include <GeomConvert.hxx>
 #include <Geom_BSplineSurface.hxx>
@@ -16,6 +17,7 @@
 #include <Geom_RectangularTrimmedSurface.hxx>
 #include <Precision.hxx>
 #include <TopoDS.hxx>
+#include <TopoDS_Compound.hxx>
 #include <gp_Ax3.hxx>
 
 #include "check.hpp"
@@ -227,6 +229,24 @@ void test_offset_faces() {
              60.0 * 40.0 * 25.0 - 25.0 * 25.0 * t / 2.0 * 60.0));
 
   CHECK(throws_with([&] { offset_faces("F5", *block(), {end_cap("F2", 1)}, 0); }, "not be zero"));
+
+  // A body that is a compound holding one solid (as dress-ups and booleans
+  // give theirs): a pin of diameter 15.9 whose side moves in to a thread's
+  // major diameter of 15.822 (mitcad#326; OCCT's offset of the compound
+  // gave a shell, no solid).
+  const ShapePtr pin = extrude("F6", {circle(9, 0, 0, 7.95)}, 0, 16.7);
+  BRep_Builder builder;
+  TopoDS_Compound wrapped;
+  builder.MakeCompound(wrapped);
+  builder.Add(wrapped, pin->occt());
+  std::vector<Shape::NamedFace> names;
+  for (int i = 0; i < pin->face_count(); ++i) {
+    names.push_back({pin->face(i), pin->face_names(i)});
+  }
+  const Shape compound(wrapped, names);
+  const ShapePtr sized = offset_faces("F7", compound, {"F6:side(c9)"}, -0.039);
+  CHECK_NEAR(volume(*sized), kPi * 7.911 * 7.911 * 16.7);
+  CHECK(faces_named(*sized, "F6:side(c9)") == 1);
 }
 
 void test_delete_faces() {

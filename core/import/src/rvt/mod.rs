@@ -1,22 +1,29 @@
 // SPDX-License-Identifier: MIT
-//! The `.rvt` import (mitcad#274, mitcad#275): a project's elements, one
-//! component per level, each level's elevation a construction plane of its
-//! component and each grid a construction axis (an arc grid a sketched arc).
+//! The `.rvt` import (mitcad#274, mitcad#275, mitcad#333): a project's
+//! elements, one component per level, each level's elevation a
+//! construction plane of its component and each grid a construction axis
+//! (an arc grid a sketched arc).
 //!
-//! - **Walls, floors, roofs, columns and beams** are rebuilt from their
-//!   parameters as features ([`plan`], [`footprint`]): a sketch and an
-//!   extrusion each, with the cuts of the inserts they host and of the
-//!   elements whose geometry cuts them, in one command per element. Each
-//!   element's result is checked: against the IFC export of the same
+//! - **Walls, floors, roofs, ceilings, columns and beams** are rebuilt
+//!   from their parameters as features ([`plan`], [`footprint`]): a sketch
+//!   and an extrusion each, with the cuts of the inserts they host and of
+//!   the elements whose geometry cuts them, in one command per element.
+//!   Each element's result is checked: against the IFC export of the same
 //!   project when one is given ([`Reference`], by the element's GlobalId:
 //!   its volume within 1 % and its box within 5 mm), else against its
 //!   stored box. An element whose features fail or disagree is undone and
 //!   comes in as below, with the reason on its report line.
 //! - **Every other element** comes in as a body named `Family:Type:Id`
-//!   (or by its class and id) of its level's base feature: the triangle
-//!   mesh its record saves where it has one (a mesh body), else its
-//!   bounding box: a family instance's type box at the instance's
-//!   transform, any other element's box in model coordinates.
+//!   (or by its class and id) of its level's base feature, from the first
+//!   source that gives one (mitcad#333): a mesh of the geometry the file
+//!   keeps of it ([`geometry`]: its own B-reps and the types it places),
+//!   checked like the features; the reference's bodies of its GlobalId;
+//!   the triangle mesh its record saves; else its bounding box (a family
+//!   instance's type box at the instance's transform, any other element's
+//!   box in model coordinates), hidden unless the element is structural
+//!   (of a kind [`plan::kind_of`] names).
+//! - **Groups**: the members a placed group places where they are come in
+//!   as any element.
 //! - **Materials** become appearances (colour, transparency) of the bodies
 //!   built as features: a layered type's exterior layer's material, a
 //!   family type's first.
@@ -32,6 +39,7 @@
 //! geometry goes through the model's [`Kernel`].
 
 pub mod footprint;
+pub mod geometry;
 pub mod plan;
 
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -99,12 +107,14 @@ pub struct ElementLine {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub link: Option<usize>,
     pub global_id: Option<String>,
-    /// `wall`, `floor`, `roof`, `column`, `beam`, or `other`.
+    /// `wall`, `floor`, `roof`, `ceiling`, `stair`, `column`, `beam`, or
+    /// `other`.
     pub kind: String,
     pub category: String,
     pub name: String,
     pub level: Option<String>,
-    /// `features`, `mesh` or `box`.
+    /// `features`, `mesh` (the geometry the file keeps, or a saved mesh),
+    /// `reference body`, `box` or `not built`.
     pub outcome: String,
     pub features: usize,
     pub bodies: usize,
@@ -117,6 +127,9 @@ pub struct ElementLine {
     /// mm.
     pub box_difference: Option<f64>,
     pub notes: Vec<String>,
+    /// Its body is hidden (a box of an element that is not structural).
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub hidden: bool,
 }
 
 /// A link's line of the report.
@@ -150,10 +163,24 @@ pub struct Report {
     /// that no element built as features agrees with: kind, name,
     /// GlobalId and why (at most 100).
     pub reference_unmatched: Vec<String>,
-    /// Bodies made of the other elements: saved meshes, boxes at a
-    /// transform, boxes in model coordinates.
+    /// Bodies made of the other elements: meshes of the geometry the
+    /// file keeps, the reference's bodies, saved meshes, boxes at a
+    /// transform, boxes in model coordinates (and of these the boxes
+    /// hidden).
     pub bodies: usize,
+    pub geometry_meshes: usize,
+    /// Their triangles.
+    pub geometry_triangles: usize,
+    pub reference_bodies: usize,
     pub meshes: usize,
+    pub hidden_boxes: usize,
+    /// Curtain walls whose panels and mullions are their shape (no body of
+    /// their own).
+    pub curtain_walls: usize,
+    /// Railings whose rails and balusters are their shape.
+    pub railings: usize,
+    /// Meshes of group members placed away from their definitions.
+    pub group_copies: usize,
     pub oriented_boxes: usize,
     pub boxes: usize,
     /// Construction planes of the levels, axes and sketches of the grids,
@@ -179,8 +206,39 @@ pub struct Report {
     pub elements: Vec<ElementLine>,
 }
 
-/// Why an element is not imported, or None.
-fn left_out(model: &Model, e: &Element) -> Option<String> {
+/// Where the placed groups place their members (mitcad#333): each placed
+/// group's (`ElementGroup`) geometry places its members' by their element
+/// ids (as a `GInstance` each), at their place (identity) or moved.
+pub type GroupPlacements = HashMap<i64, Vec<(i64, [f64; 12])>>;
+
+/// The identity transform.
+const IDENTITY: [f64; 12] = [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0];
+
+fn is_identity(t: &[f64; 12]) -> bool {
+    t.iter().zip(IDENTITY).all(|(a, b)| (a - b).abs() < 1e-9)
+}
+
+pub fn group_placements(model: &Model) -> GroupPlacements {
+    let mut out: GroupPlacements = HashMap::new();
+    for e in &model.elements {
+        if e.class.as_deref() != Some("ElementGroup") || e.owner_view.is_some() {
+            continue;
+        }
+        let Some(g) = model.geometry.get(&e.id) else {
+            continue;
+        };
+        for p in &g.instances {
+            if let Some(member) = p.symbol {
+                out.entry(member).or_default().push((e.id, p.transform));
+            }
+        }
+    }
+    out
+}
+
+/// Why an element is not imported, or None. A member of a group's
+/// definition comes in when a placed group places it where it is.
+fn left_out(model: &Model, e: &Element, groups: &GroupPlacements) -> Option<String> {
     if e.partition.is_none() {
         return Some("no records".into());
     }
@@ -190,8 +248,15 @@ fn left_out(model: &Model, e: &Element) -> Option<String> {
     if e.owner_view.is_some() {
         return Some("view-specific (annotations)".into());
     }
-    if e.unplaced_owner.is_some() {
-        return Some("in a group's definition".into());
+    if e.class.as_deref() == Some("ElementGroup") {
+        return Some("groups (their members come in)".into());
+    }
+    if e.unplaced_owner.is_some()
+        && !groups
+            .get(&e.id)
+            .is_some_and(|ts| ts.iter().any(|(_, t)| is_identity(t)))
+    {
+        return Some("in a group's definition (not placed where it is)".into());
     }
     let has_mesh = model.meshes.contains_key(&e.id);
     let solid_box = e
@@ -365,6 +430,11 @@ pub struct ReferenceSolid {
     pub name: String,
     pub volume: Option<f64>,
     pub bbox: Option<([f64; 3], [f64; 3])>,
+    /// Its bodies' B-rep data ([`Kernel::brep_data`], mm, model
+    /// coordinates): an element's body where the project file keeps none
+    /// (mitcad#333).
+    #[serde(skip)]
+    pub bodies: Vec<Vec<u8>>,
 }
 
 /// The reference the elements built as features are checked against.
@@ -383,6 +453,15 @@ pub struct LinkedModel {
     pub model: Model,
 }
 
+/// An IFC model found for a link instance (a project can link IFC files
+/// as well as projects, mitcad#333).
+pub struct IfcLink {
+    pub link: Link,
+    /// The file's name.
+    pub file: String,
+    pub ifc: mitcad_ifc::IfcFile,
+}
+
 /// The options of [`import_rvt`].
 #[derive(Default)]
 pub struct RvtOptions<'a> {
@@ -395,6 +474,9 @@ pub struct RvtOptions<'a> {
     pub links: Vec<LinkedModel>,
     /// The links not found: the link and why.
     pub missing_links: Vec<(Link, String)>,
+    /// The IFC models linked into the project that were found (imported
+    /// into their links' components by the IFC import).
+    pub ifc_links: Vec<IfcLink>,
     /// Every element as its mesh or box (phase 1), no features.
     pub mesh_only: bool,
 }
@@ -403,14 +485,47 @@ pub struct RvtOptions<'a> {
 pub const VOLUME_TOLERANCE: f64 = 0.01;
 /// How far (mm) the built box's sides may lie from the reference's.
 pub const BOX_TOLERANCE_MM: f64 = 5.0;
+/// How far a mesh of the geometry the file keeps may reach out of the
+/// element's stored box: this fraction of the box's largest extent (at
+/// least [`BOX_TOLERANCE_MM`]).
+pub const MESH_BOX_FRACTION: f64 = 0.1;
 
 type Bbox = ([f64; 3], [f64; 3]);
+
+/// An element waiting for its batch: its plan's items prepared by the
+/// kernel, its body's name and its report line.
+struct Pending<'m> {
+    e: &'m Element,
+    kind: &'static str,
+    line: ElementLine,
+    slot: usize,
+    component: ComponentUid,
+    label: String,
+    appearance: Option<String>,
+    body_name: String,
+    solid: Node,
+    more: Vec<Node>,
+    cuts: Vec<(String, Node)>,
+}
+
+/// An element's features and notes in a batch, or why they did not build.
+type Built = Result<(Vec<FeatureUid>, Vec<String>), String>;
+
+/// Elements built in one command.
+const BATCH: usize = 64;
+
+/// An element of a batch: what it was checked against, its features and
+/// its cuts that remove nothing, or why it is not built.
+type Verdict = Result<(&'static str, Vec<FeatureUid>, Vec<FeatureUid>), String>;
 
 /// A level's component, its report and the bodies of its base feature.
 struct LevelGroup<S> {
     entry: LevelReport,
     component: ComponentUid,
     bodies: Vec<ImportBody<S>>,
+    /// Its bodies (indices) hidden: boxes of elements that are not
+    /// structural.
+    hidden: Vec<usize>,
 }
 
 /// The volume and box (mm, the component's coordinates) of the bodies of
@@ -424,16 +539,25 @@ fn measure<K: Kernel>(
     let mut measured = false;
     let mut bbox: Option<Bbox> = None;
     let mut count = 0;
-    for body in document.bodies() {
-        if !features.contains(&body.uid.feature) {
-            continue;
-        }
+    // The features' bodies by their ids (not the document's every body:
+    // an import of many elements would measure in quadratic time).
+    let shapes = features.iter().flat_map(|f| {
+        let mut misses = 0;
+        (0u32..)
+            .map_while(move |i| {
+                let shape = document.body_shape(mitcad_model::BodyUid::new(*f, i));
+                misses = if shape.is_some() { 0 } else { misses + 1 };
+                (misses < 8).then_some(shape)
+            })
+            .flatten()
+    });
+    for shape in shapes {
         count += 1;
-        if let Ok(m) = kernel.mass_properties(body.shape) {
+        if let Ok(m) = kernel.mass_properties(shape) {
             volume += m.volume;
             measured = true;
         }
-        if let Ok(Some(b)) = kernel.bounding_box(body.shape) {
+        if let Ok(Some(b)) = kernel.bounding_box(shape) {
             bbox = Some(match bbox {
                 None => (b.min, b.max),
                 Some((lo, hi)) => (
@@ -525,9 +649,12 @@ struct Importer<'r, 'o, K: Kernel> {
     label: String,
     /// Import notes of the base features.
     notes: Vec<(FeatureUid, String)>,
-    /// The body name the element being built took (given back when its
-    /// features are undone).
-    reserved: Option<String>,
+    /// The triangulated geometries of the models (types placed many times
+    /// triangulated once).
+    tess: geometry::Cache,
+    /// The model's railing parts: balusters, rails and the rails' types,
+    /// left out of their railings' meshes.
+    parts: HashSet<i64>,
 }
 
 impl<K: Kernel> Importer<'_, '_, K> {
@@ -601,70 +728,128 @@ impl<K: Kernel> Importer<'_, '_, K> {
         out
     }
 
-    /// Builds an element's plan in its component; its features stay when
-    /// they agree with the reference, else they are undone and the reason
-    /// is the error.
-    fn build(
+    /// An element's plan made ready for a batch: its label, appearance,
+    /// body name (taken) and the kernel's prepared items.
+    #[allow(clippy::too_many_arguments)]
+    fn prepare<'m>(
         &mut self,
         model_key: usize,
         model: &Model,
-        e: &Element,
+        e: &'m Element,
+        kind: &'static str,
         plan: Plan,
         component: ComponentUid,
-        line: &mut ElementLine,
-    ) -> Result<(), String> {
+        slot: usize,
+        line: ElementLine,
+    ) -> Pending<'m> {
         let label = e.display_name();
         let appearance = plan
             .material
             .and_then(|m| self.appearance(model_key, model, m));
         let body_name = self.unique_body(&label);
-        self.reserved = Some(body_name.clone());
         let kernel = self.document.kernel();
-        let solid = crate::ifc::build::prepare(kernel, plan.solid);
-        let cuts: Vec<(String, Node)> = plan
-            .cuts
-            .into_iter()
-            .map(|(what, t)| (what, crate::ifc::build::prepare(kernel, t)))
-            .collect();
+        Pending {
+            e,
+            kind,
+            line,
+            slot,
+            component,
+            label,
+            appearance,
+            body_name,
+            solid: crate::ifc::build::prepare(kernel, plan.solid),
+            more: plan
+                .more
+                .into_iter()
+                .map(|t| crate::ifc::build::prepare(kernel, t))
+                .collect(),
+            cuts: plan
+                .cuts
+                .into_iter()
+                .map(|(what, t)| (what, crate::ifc::build::prepare(kernel, t)))
+                .collect(),
+        }
+    }
+
+    /// Adds the features of the pending elements (of those `only` keeps)
+    /// in one command: per element its features and notes, or why its
+    /// items did not build.
+    fn add_batch(
+        &mut self,
+        items: &[Pending<'_>],
+        only: Option<&[bool]>,
+    ) -> Result<Vec<Built>, String> {
         let names = &mut self.feature_names;
-        type Built = Result<(Vec<FeatureUid>, Vec<String>), String>;
-        let built: Built = self
-            .document
-            .add_features_with(&format!("Import {label}"), |batch| {
-                let mut b = Builder::new(batch, names, component, &label);
-                let bodies = match b.node(&solid, Op::New) {
-                    Ok(bodies) => bodies,
-                    Err(why) => return Ok(Err(why)),
-                };
-                let mut notes = Vec::new();
-                for (what, tool) in &cuts {
-                    b.label = format!("{label} cut");
-                    if let Err(why) = b.node(tool, Op::With("cut", bodies.clone())) {
-                        notes.push(format!("the cut of {what} is not made: {why}"));
+        let label = format!("Import {} elements", items.len());
+        self.document
+            .add_features_with(&label, |batch| {
+                let mut out = Vec::with_capacity(items.len());
+                for (k, p) in items.iter().enumerate() {
+                    if only.is_some_and(|o| !o[k]) {
+                        out.push(Err(String::new()));
+                        continue;
                     }
-                }
-                for (k, body) in bodies.iter().enumerate() {
-                    let name = if k == 0 {
-                        body_name.clone()
-                    } else {
-                        format!("{body_name} ({})", k + 1)
+                    let mut b = Builder::new(batch, names, p.component, &p.label);
+                    let mut bodies = match b.node(&p.solid, Op::New) {
+                        Ok(bodies) => bodies,
+                        Err(why) => {
+                            out.push(Err(why));
+                            continue;
+                        }
                     };
-                    let _ = b.batch.name_body(*body, &name);
-                    if let Some(a) = &appearance {
-                        let _ = b.batch.set_body_appearance(*body, a);
+                    let mut failed = None;
+                    for extra in &p.more {
+                        match b.node(extra, Op::New) {
+                            Ok(more) => bodies.extend(more),
+                            Err(why) => {
+                                failed = Some(why);
+                                break;
+                            }
+                        }
                     }
+                    if let Some(why) = failed {
+                        out.push(Err(why));
+                        continue;
+                    }
+                    let mut notes = Vec::new();
+                    for (what, tool) in &p.cuts {
+                        b.label = format!("{} cut", p.label);
+                        if let Err(why) = b.node(tool, Op::With("cut", bodies.clone())) {
+                            notes.push(format!("the cut of {what} is not made: {why}"));
+                        }
+                    }
+                    for (k, body) in bodies.iter().enumerate() {
+                        let name = if k == 0 {
+                            p.body_name.clone()
+                        } else {
+                            format!("{} ({})", p.body_name, k + 1)
+                        };
+                        let _ = b.batch.name_body(*body, &name);
+                        if let Some(a) = &p.appearance {
+                            let _ = b.batch.set_body_appearance(*body, a);
+                        }
+                    }
+                    notes.extend(b.notes.iter().cloned());
+                    out.push(Ok((b.features.clone(), notes)));
                 }
-                notes.extend(b.notes.iter().cloned());
-                Ok(Ok((b.features.clone(), notes)))
+                Ok(out)
             })
-            .map_err(|e| format!("its features were refused: {e}"))?;
-        let (features, notes) = built?;
-        line.notes.extend(notes);
+            .map_err(|e| format!("its features were refused: {e}"))
+    }
+
+    /// Whether an element's features built and agree with the reference
+    /// (else its stored box): what it was checked against, the cuts that
+    /// remove nothing (to suppress), or why not.
+    fn judge(
+        &self,
+        e: &Element,
+        features: &[FeatureUid],
+        line: &mut ElementLine,
+    ) -> Result<(&'static str, Vec<FeatureUid>), String> {
         // A cut that removes nothing stays, suppressed; another failing
         // feature fails the element.
-        let mut failed = None;
         let mut misses = Vec::new();
-        for uid in &features {
+        for uid in features {
             if let Some(error) = self.document.status(*uid).and_then(|s| s.error()) {
                 // (An intersection whose tool holds the whole body changes
                 // nothing either: an edited wall within its footprint.)
@@ -672,56 +857,351 @@ impl<K: Kernel> Importer<'_, '_, K> {
                     || error.contains("does not intersect any participant body")
                 {
                     misses.push(*uid);
-                } else if failed.is_none() {
-                    failed = Some(error.to_string());
+                } else {
+                    return Err(format!("a feature failed: {error}"));
                 }
             }
         }
-        if failed.is_none() {
-            for uid in misses {
-                if self.document.set_suppressed(uid, true).is_ok() {
-                    line.notes
-                        .push("a cut that removes nothing is suppressed".into());
-                }
-            }
+        let (volume, bbox, bodies) = measure(self.document, features);
+        line.volume = volume;
+        line.bodies = bodies;
+        check(line, e, self.options.reference, volume, bbox).map(|a| (a, misses))
+    }
+
+    /// Builds the pending elements' plans in one command (mitcad#333: one
+    /// command per element made an import of many elements take quadratic
+    /// time): the elements whose features fail or disagree with the
+    /// reference (else their stored boxes) are left out of it, built again
+    /// without them, and come in as their meshes or boxes with the reason.
+    fn flush(
+        &mut self,
+        model: &Model,
+        pending: &mut Vec<Pending<'_>>,
+        levels: &mut [LevelGroup<K::Shape>],
+        curtain_hosts: &HashSet<i64>,
+    ) {
+        if pending.is_empty() {
+            return;
         }
-        let result = match failed {
-            Some(error) => Err(format!("a feature failed: {error}")),
-            None => {
-                let (volume, bbox, bodies) = measure(self.document, &features);
-                line.volume = volume;
-                line.bodies = bodies;
-                check(line, e, self.options.reference, volume, bbox)
-            }
+        let mut items = std::mem::take(pending);
+        let mut lines: Vec<ElementLine> = items
+            .iter_mut()
+            .map(|p| std::mem::take(&mut p.line))
+            .collect();
+        let mut verdicts: Vec<Verdict> = match self.add_batch(&items, None) {
+            Ok(built) => built
+                .into_iter()
+                .zip(items.iter())
+                .zip(lines.iter_mut())
+                .map(|((b, p), line)| {
+                    let (features, notes) = b?;
+                    line.notes.extend(notes);
+                    let (against, misses) = self.judge(p.e, &features, line)?;
+                    Ok((against, features, misses))
+                })
+                .collect(),
+            Err(why) => items.iter().map(|_| Err(why.clone())).collect(),
         };
-        match result {
-            Ok(against) => {
-                line.checked_against = Some(against.to_string());
-                line.features = features.len();
-                self.document.merge_undo(self.depth, &self.label);
-                Ok(())
+        let keep: Vec<bool> = verdicts.iter().map(Result::is_ok).collect();
+        if keep.iter().any(|k| !k) {
+            // The batch again without the elements that failed.
+            while self.document.undo_depth() > self.depth + 1 {
+                if self.document.undo().is_none() {
+                    break;
+                }
             }
-            Err(why) => {
-                // The element's features (and suppressions) undone.
-                while self.document.undo_depth() > self.depth + 1 {
-                    if self.document.undo().is_none() {
-                        break;
+            if keep.iter().any(|k| *k) {
+                match self.add_batch(&items, Some(&keep)) {
+                    Ok(built) => {
+                        for (k, b) in built.into_iter().enumerate() {
+                            if !keep[k] {
+                                continue;
+                            }
+                            match b {
+                                Ok((features, _)) => {
+                                    let misses = features
+                                        .iter()
+                                        .copied()
+                                        .filter(|u| {
+                                            self.document
+                                                .status(*u)
+                                                .and_then(|s| s.error())
+                                                .is_some()
+                                        })
+                                        .collect();
+                                    if let Ok((against, _, _)) = &verdicts[k] {
+                                        verdicts[k] = Ok((against, features, misses));
+                                    }
+                                }
+                                Err(why) => verdicts[k] = Err(why),
+                            }
+                        }
+                    }
+                    Err(why) => {
+                        for v in verdicts.iter_mut() {
+                            *v = Err(why.clone());
+                        }
                     }
                 }
-                Err(why)
+            }
+        }
+        for (verdict, line) in verdicts.iter().zip(lines.iter_mut()) {
+            if let Ok((_, _, misses)) = verdict {
+                for uid in misses {
+                    if self.document.set_suppressed(*uid, true).is_ok() {
+                        line.notes
+                            .push("a cut that removes nothing is suppressed".into());
+                    }
+                }
+            }
+        }
+        self.document.merge_undo(self.depth, &self.label);
+        for ((p, verdict), mut line) in items.iter().zip(verdicts).zip(lines) {
+            match verdict {
+                Ok((against, features, _)) => {
+                    line.checked_against = Some(against.to_string());
+                    line.features = features.len();
+                    line.outcome = "features".into();
+                    self.report.features += 1;
+                    *self.report.built.entry(p.kind.to_string()).or_default() += 1;
+                    levels[p.slot].entry.features += 1;
+                    levels[p.slot].entry.elements.push(p.e.id);
+                    self.report.elements.push(line);
+                }
+                Err(why) => {
+                    line.notes.push(format!("not built as features: {why}"));
+                    self.body_names.remove(&p.body_name);
+                    self.fail(model, p.e, p.kind, &mut levels[p.slot], line, curtain_hosts);
+                }
             }
         }
     }
 
-    /// An element as its saved mesh or its box, in its level's base
-    /// feature.
+    /// An element of a kind built as features that is not: a curtain wall
+    /// has its panels and mullions; another comes in as its mesh or box.
+    fn fail(
+        &mut self,
+        model: &Model,
+        e: &Element,
+        kind: &str,
+        group: &mut LevelGroup<K::Shape>,
+        mut line: ElementLine,
+        curtain_hosts: &HashSet<i64>,
+    ) {
+        // A curtain wall: its panels and mullions are its shape, elements
+        // of their own (mitcad#333).
+        if curtain_hosts.contains(&e.id) {
+            line.outcome = "parts".into();
+            line.notes.push(
+                "a curtain wall: its panels and mullions come in as elements of their own".into(),
+            );
+            self.report.curtain_walls += 1;
+            self.report.elements.push(line);
+            return;
+        }
+        *self.report.fallbacks.entry(kind.to_string()).or_default() += 1;
+        self.fallback(model, e, plan::structural(kind), group, &mut line);
+        self.report.elements.push(line);
+    }
+
+    /// Whether an element's mesh (from the geometry the file keeps) agrees
+    /// with the reference's solid (its box within [`BOX_TOLERANCE_MM`],
+    /// a closed mesh's volume within [`VOLUME_TOLERANCE`]), else lies
+    /// within the element's stored box (but for [`MESH_BOX_FRACTION`] of
+    /// it): what it was checked against.
+    fn check_mesh(
+        &self,
+        e: &Element,
+        line: &mut ElementLine,
+        mesh: &geometry::ElementMesh,
+    ) -> Result<&'static str, String> {
+        let bbox = mesh.bounds().ok_or("has no points")?;
+        line.volume = mesh.volume;
+        let solid = self
+            .options
+            .reference
+            .and_then(|r| line.global_id.as_ref().and_then(|g| r.solids.get(g)));
+        if let Some(solid) = solid.filter(|s| s.bbox.is_some()) {
+            if let (Some(v), Some(rv)) = (mesh.volume, solid.volume.filter(|v| *v > 0.0)) {
+                let d = (v - rv).abs() / rv;
+                line.reference_volume = Some(rv);
+                line.volume_difference = Some(d);
+                if d > VOLUME_TOLERANCE {
+                    return Err(format!(
+                        "encloses {:.4} m³, the reference's solid {:.4} m³ ({:.2} % apart)",
+                        v * 1e-9,
+                        rv * 1e-9,
+                        d * 100.0
+                    ));
+                }
+            }
+            let rb = solid.bbox.as_ref().expect("filtered");
+            let d = box_difference(&bbox, rb);
+            line.box_difference = Some(d);
+            if d > BOX_TOLERANCE_MM {
+                return Err(format!("lies {d:.1} mm from the reference's box"));
+            }
+            return Ok("reference");
+        }
+        let Some(stored) = e.bbox else {
+            return Ok("nothing (no stored box)");
+        };
+        let s: Bbox = (
+            [stored[0], stored[1], stored[2]].map(|v| v * FOOT_MM),
+            [stored[3], stored[4], stored[5]].map(|v| v * FOOT_MM),
+        );
+        let out = (0..3)
+            .map(|k| (s.0[k] - bbox.0[k]).max(bbox.1[k] - s.1[k]))
+            .fold(f64::NEG_INFINITY, f64::max);
+        line.box_difference = Some(out.max(0.0));
+        // (The stored box need not hold every part of a type's geometry:
+        // a door's hardware reaches 19 mm out of it. A mesh misplaced lies
+        // much further.)
+        let extent = (0..3).map(|k| s.1[k] - s.0[k]).fold(0.0, f64::max);
+        let allowed = BOX_TOLERANCE_MM.max(MESH_BOX_FRACTION * extent);
+        if out > allowed {
+            return Err(format!(
+                "reaches {out:.1} mm outside the element's stored box (at most {allowed:.1} mm)"
+            ));
+        }
+        Ok("stored box")
+    }
+
+    /// Adds an element's body to its level's base feature.
+    fn add_body(
+        &mut self,
+        e: &Element,
+        shape: K::Shape,
+        group: &mut LevelGroup<K::Shape>,
+        line: &mut ElementLine,
+    ) {
+        line.bodies = 1;
+        group.entry.elements.push(e.id);
+        let name = self.unique_body(&e.display_name());
+        group.bodies.push(ImportBody {
+            name: Some(name),
+            color: None,
+            shape,
+        });
+    }
+
+    /// An element not built as features, in its level's base feature: the
+    /// first of its sources that gives a body (mitcad#333):
+    ///
+    /// 1. the geometry the file keeps of it (its own bodies and the types
+    ///    it places), as a mesh that agrees with the reference or lies in
+    ///    its stored box;
+    /// 2. the reference's (the IFC export's) bodies of its GlobalId;
+    /// 3. the triangle mesh its record saves;
+    /// 4. its box: a family instance's type box at its transform, else its
+    ///    stored box; hidden unless the element is structural.
+    ///
+    /// The line says which, and for a box why the others gave nothing.
     fn fallback(
         &mut self,
         model: &Model,
         e: &Element,
+        structural: bool,
         group: &mut LevelGroup<K::Shape>,
         line: &mut ElementLine,
     ) {
+        let mut why: Vec<String> = Vec::new();
+        // 1. The geometry the file keeps.
+        // A railing's rails and balusters are elements of their own.
+        let railing = e.class.as_deref() == Some("BaseRailing");
+        let empty = HashSet::new();
+        let skip = if railing { &self.parts } else { &empty };
+        let mesh = geometry::element_mesh(model, e.id, &mut self.tess, skip);
+        if railing && !matches!(mesh, Some(Ok(_))) {
+            line.outcome = "parts".into();
+            line.notes
+                .push("a railing: its rails and balusters come in as elements of their own".into());
+            self.report.railings += 1;
+            return;
+        }
+        match mesh {
+            Some(Ok(mesh)) => match self.check_mesh(e, line, &mesh) {
+                Ok(against) => match self
+                    .document
+                    .kernel()
+                    .triangle_body(&mesh.points, &mesh.triangles)
+                {
+                    Ok(shape) => {
+                        line.outcome = "mesh".into();
+                        line.checked_against = Some(against.to_string());
+                        line.notes.push(format!(
+                            "its geometry as the file keeps it, as a mesh: {} bodies, {} faces, {} triangles{}",
+                            mesh.bodies,
+                            mesh.faces,
+                            mesh.triangles.len(),
+                            if mesh.faces_left_out > 0 {
+                                format!(
+                                    " ({} left out: {})",
+                                    mesh.faces_left_out,
+                                    mesh.notes.join("; ")
+                                )
+                            } else {
+                                String::new()
+                            }
+                        ));
+                        group.entry.meshes += 1;
+                        self.report.geometry_meshes += 1;
+                        self.report.geometry_triangles += mesh.triangles.len();
+                        self.add_body(e, shape, group, line);
+                        return;
+                    }
+                    Err(err) => why.push(format!("its geometry's mesh was not built: {err}")),
+                },
+                Err(w) => why.push(format!("its geometry as the file keeps it {w}")),
+            },
+            Some(Err(w)) => why.push(format!("its geometry did not mesh: {w}")),
+            None => why.push("the file keeps no geometry of it".into()),
+        }
+        // 2. The reference's bodies.
+        let solid = self
+            .options
+            .reference
+            .and_then(|r| line.global_id.as_ref().and_then(|g| r.solids.get(g)));
+        match solid {
+            Some(s) if !s.bodies.is_empty() => {
+                let kernel = self.document.kernel();
+                let shapes: Result<Vec<K::Shape>, _> = s
+                    .bodies
+                    .iter()
+                    .map(|d| kernel.import_brep(FeatureUid(0), d, 0).map(|(s, _)| s))
+                    .collect();
+                let shape = shapes.and_then(|mut v| {
+                    if v.len() == 1 {
+                        Ok(v.remove(0))
+                    } else {
+                        kernel.compound(&v)
+                    }
+                });
+                match shape {
+                    Ok(shape) => {
+                        line.outcome = "reference body".into();
+                        line.checked_against = Some("reference".into());
+                        line.notes.push(format!(
+                            "the reference's body of its GlobalId ({} {}): {}",
+                            s.kind,
+                            s.name,
+                            why.join("; ")
+                        ));
+                        self.report.reference_bodies += 1;
+                        group.entry.meshes += 1;
+                        self.add_body(e, shape, group, line);
+                        return;
+                    }
+                    Err(err) => why.push(format!("the reference's body was not built: {err}")),
+                }
+            }
+            Some(_) => why.push("the reference's solid of its GlobalId has no body".into()),
+            None if self.options.reference.is_some() => {
+                why.push("the reference has no solid of its GlobalId".into())
+            }
+            None => {}
+        }
+        // 3. and 4. The saved mesh, the box.
         let shape = match shape_of(model, e) {
             Some(Shape::Mesh) => {
                 let meshes = &model.meshes[&e.id];
@@ -743,35 +1223,49 @@ impl<K: Kernel> Importer<'_, '_, K> {
             Some(Shape::Aligned(frame, size)) => {
                 make_box(self.document, frame, size).map(|s| (s, 2))
             }
-            None => return,
+            None => {
+                line.outcome = "not built".into();
+                line.notes.push(format!("no body: {}", why.join("; ")));
+                return;
+            }
         };
         match shape {
             Ok((shape, kind)) => {
-                match kind {
-                    0 => {
-                        group.entry.meshes += 1;
-                        self.report.meshes += 1;
-                        line.outcome = "mesh".into();
-                    }
-                    1 => {
-                        group.entry.boxes += 1;
+                if kind == 0 {
+                    group.entry.meshes += 1;
+                    self.report.meshes += 1;
+                    line.outcome = "mesh".into();
+                    line.notes
+                        .push(format!("its saved mesh: {}", why.join("; ")));
+                } else {
+                    group.entry.boxes += 1;
+                    if kind == 1 {
                         self.report.oriented_boxes += 1;
-                        line.outcome = "box".into();
-                    }
-                    _ => {
-                        group.entry.boxes += 1;
+                    } else {
                         self.report.boxes += 1;
-                        line.outcome = "box".into();
+                    }
+                    line.outcome = "box".into();
+                    line.notes.push(format!(
+                        "{}: {}",
+                        if kind == 1 {
+                            "its type's box at its transform"
+                        } else {
+                            "its stored box"
+                        },
+                        why.join("; ")
+                    ));
+                    if !structural {
+                        group.hidden.push(group.bodies.len());
+                        self.report.hidden_boxes += 1;
+                        line.hidden = true;
+                        line.notes.push(
+                            "its box is hidden (not a structural element); showing its body \
+                             shows it"
+                                .into(),
+                        );
                     }
                 }
-                line.bodies = 1;
-                group.entry.elements.push(e.id);
-                let name = self.unique_body(&e.display_name());
-                group.bodies.push(ImportBody {
-                    name: Some(name),
-                    color: None,
-                    shape,
-                });
+                self.add_body(e, shape, group, line);
             }
             Err(err) => {
                 line.outcome = "not built".into();
@@ -929,6 +1423,24 @@ impl<K: Kernel> Importer<'_, '_, K> {
 
         // The elements by level, in the table's order; every level has its
         // group.
+        let placed = group_placements(model);
+        // A railing's parts: its balusters, rails and rails' types.
+        self.parts = model
+            .elements
+            .iter()
+            .filter(|e| {
+                matches!(e.category, Some(-2_000_948..=-2_000_946))
+                    || e.class.as_deref() == Some("ContinuousRailSymbol")
+            })
+            .map(|e| e.id)
+            .collect();
+        // The curtain walls: the hosts of panels and mullions.
+        let curtain_hosts: HashSet<i64> = model
+            .elements
+            .iter()
+            .filter(|e| matches!(e.category, Some(-2_000_170 | -2_000_171)))
+            .filter_map(|e| model.building.instances.get(&e.id)?.host)
+            .collect();
         let mut groups: BTreeMap<Option<i64>, Vec<&Element>> = BTreeMap::new();
         for l in &model.levels {
             if group_of.get(&l.id) == Some(&l.id) {
@@ -936,7 +1448,7 @@ impl<K: Kernel> Importer<'_, '_, K> {
             }
         }
         for e in &model.elements {
-            if let Some(why) = left_out(model, e) {
+            if let Some(why) = left_out(model, e, &placed) {
                 *self.report.left_out.entry(why).or_default() += 1;
                 continue;
             }
@@ -987,6 +1499,7 @@ impl<K: Kernel> Importer<'_, '_, K> {
                 },
                 component,
                 bodies: Vec::new(),
+                hidden: Vec::new(),
             });
         }
         self.levels_and_grids(model, parent, &levels);
@@ -994,6 +1507,7 @@ impl<K: Kernel> Importer<'_, '_, K> {
 
         let global_ids = model.global_ids();
         let mut count = 0;
+        let mut pending: Vec<Pending<'_>> = Vec::new();
         for (slot, level) in order.iter().enumerate() {
             let component = levels[slot].component;
             for e in &groups[level] {
@@ -1027,46 +1541,139 @@ impl<K: Kernel> Importer<'_, '_, K> {
                     .entry(line.category.clone())
                     .or_default() += 1;
                 if let Some(kind) = kind {
-                    self.reserved = None;
-                    let built = plan::plan(model, e).and_then(|p| {
-                        line.notes.extend(p.notes.iter().cloned());
-                        self.build(model_key, model, e, p, component, &mut line)
-                    });
-                    match built {
-                        Ok(()) => {
-                            line.outcome = "features".into();
-                            self.report.features += 1;
-                            *self.report.built.entry(kind.to_string()).or_default() += 1;
-                            levels[slot].entry.features += 1;
-                            levels[slot].entry.elements.push(e.id);
-                            self.report.elements.push(line);
-                            continue;
+                    match plan::plan(model, e) {
+                        Ok(p) => {
+                            line.notes.extend(p.notes.iter().cloned());
+                            let ready =
+                                self.prepare(model_key, model, e, kind, p, component, slot, line);
+                            pending.push(ready);
+                            if pending.len() >= BATCH {
+                                self.flush(model, &mut pending, &mut levels, &curtain_hosts);
+                            }
                         }
                         Err(why) => {
                             line.notes.push(format!("not built as features: {why}"));
-                            if let Some(name) = self.reserved.take() {
-                                self.body_names.remove(&name);
-                            }
-                            *self.report.fallbacks.entry(kind.to_string()).or_default() += 1;
+                            self.fail(model, e, kind, &mut levels[slot], line, &curtain_hosts);
                         }
                     }
+                    continue;
                 } else {
                     line.notes.push(if self.options.mesh_only {
-                        "its saved mesh or its box (no features asked for)".to_string()
+                        "not built as features (none asked for)".to_string()
                     } else {
-                        "its saved mesh or its box: not an element of a kind built as \
-                         features (family instances until their families' forms are read)"
-                            .to_string()
+                        "not an element of a kind built as features".to_string()
                     });
                 }
-                self.fallback(model, e, &mut levels[slot], &mut line);
+                let structural = plan::kind_of(model, e).is_some_and(plan::structural);
+                self.fallback(model, e, structural, &mut levels[slot], &mut line);
                 self.report.elements.push(line);
             }
+        }
+
+        self.flush(model, &mut pending, &mut levels, &curtain_hosts);
+
+        // The members a placed group places away from where its definition
+        // keeps them: their meshes moved there, on the group's level
+        // (mitcad#333).
+        let mut moved: Vec<(i64, i64, [f64; 12])> = placed
+            .iter()
+            .flat_map(|(m, ts)| {
+                ts.iter()
+                    .filter(|(_, t)| !is_identity(t))
+                    .map(move |(g, t)| (*m, *g, *t))
+            })
+            .collect();
+        moved.sort_by_key(|(m, g, _)| (*g, *m));
+        for (member, group, t) in moved {
+            let Some(e) = model.element(member) else {
+                continue;
+            };
+            if left_out(model, e, &HashMap::new()).is_some_and(|w| !w.starts_with("in a group")) {
+                continue;
+            }
+            let slot = model
+                .element(group)
+                .and_then(|g| level_of(model, g))
+                .map(|(l, _)| group_of.get(&l).copied().unwrap_or(l))
+                .and_then(|l| order.iter().position(|o| *o == Some(l)))
+                .unwrap_or(0);
+            let mut line = ElementLine {
+                id: e.id,
+                link,
+                global_id: None,
+                kind: "other".into(),
+                category: e
+                    .category_name
+                    .map(str::to_string)
+                    .or_else(|| e.category.map(|c| format!("category {c}")))
+                    .unwrap_or_default(),
+                name: format!("{} (group {group})", e.display_name()),
+                level: Some(levels[slot].entry.name.clone()),
+                ..ElementLine::default()
+            };
+            let mesh = geometry::element_mesh(model, e.id, &mut self.tess, &HashSet::new());
+            let built = match mesh {
+                Some(Ok(mut m)) => {
+                    // The transform's translation is in feet, the mesh in mm.
+                    for p in &mut m.points {
+                        let q: [f64; 3] = std::array::from_fn(|r| {
+                            t[3 * r] * p[0]
+                                + t[3 * r + 1] * p[1]
+                                + t[3 * r + 2] * p[2]
+                                + t[9 + r] * FOOT_MM
+                        });
+                        *p = q;
+                    }
+                    let det = t[0] * (t[4] * t[8] - t[5] * t[7])
+                        - t[1] * (t[3] * t[8] - t[5] * t[6])
+                        + t[2] * (t[3] * t[7] - t[4] * t[6]);
+                    if det < 0.0 {
+                        for tr in &mut m.triangles {
+                            tr.swap(1, 2);
+                        }
+                    }
+                    self.document
+                        .kernel()
+                        .triangle_body(&m.points, &m.triangles)
+                        .map_err(|e| e.to_string())
+                }
+                Some(Err(w)) => Err(w),
+                None => Err("the file keeps no geometry of it".into()),
+            };
+            match built {
+                Ok(shape) => {
+                    line.outcome = "mesh".into();
+                    line.notes.push(format!(
+                        "a member of group {group} placed away from its definition: its \
+                         geometry as the file keeps it, moved there"
+                    ));
+                    self.report.group_copies += 1;
+                    self.report.geometry_meshes += 1;
+                    levels[slot].entry.meshes += 1;
+                    line.bodies = 1;
+                    levels[slot].entry.elements.push(e.id);
+                    let name = self.unique_body(&line.name);
+                    levels[slot].bodies.push(ImportBody {
+                        name: Some(name),
+                        color: None,
+                        shape,
+                    });
+                }
+                Err(why) => {
+                    line.outcome = "not built".into();
+                    line.notes.push(format!(
+                        "a member of group {group} placed away from its definition is not \
+                         built: {why}"
+                    ));
+                }
+            }
+            self.report.elements.push(line);
         }
 
         // The other elements' bodies: one base feature per level.
         let mut inputs: Vec<BaseInput<K::Shape>> = Vec::new();
         let mut notes_of: Vec<(usize, String)> = Vec::new();
+        let mut hidden_of: Vec<(usize, Vec<usize>)> = Vec::new();
         for (slot, group) in levels.iter_mut().enumerate() {
             if group.bodies.is_empty() {
                 continue;
@@ -1082,12 +1689,18 @@ impl<K: Kernel> Importer<'_, '_, K> {
             notes_of.push((
                 slot,
                 format!(
-                    "The {} elements of {} not built as features: {} saved meshes and {} boxes (a \
-                     family type's box at its instance's transform, or the element's box); the \
-                     import report's element lines say why",
-                    entry.bodies, entry.name, entry.meshes, entry.boxes
+                    "The {} elements of {} not built as features: {} meshes (of the geometry the \
+                     file keeps, the reference's bodies or saved meshes) and {} boxes (a family \
+                     type's box at its instance's transform, or the element's box; {} hidden); \
+                     the import report's element lines say why",
+                    entry.bodies,
+                    entry.name,
+                    entry.meshes,
+                    entry.boxes,
+                    group.hidden.len()
                 ),
             ));
+            hidden_of.push((slot, std::mem::take(&mut group.hidden)));
             inputs.push(BaseInput {
                 name: Some(feature_name),
                 source: Some(format!("{file}: {}", entry.name)),
@@ -1097,13 +1710,28 @@ impl<K: Kernel> Importer<'_, '_, K> {
         }
         if !inputs.is_empty() {
             let imported = self.document.add_base_features(&self.label, inputs)?;
-            for (imported, (slot, note)) in imported.iter().zip(notes_of) {
+            for ((imported, (slot, note)), (_, hidden)) in
+                imported.iter().zip(notes_of).zip(hidden_of)
+            {
                 levels[slot].entry.feature = Some(imported.feature.uid.to_string());
                 self.notes.push((imported.feature.uid, note));
+                // The boxes of elements that are not structural, hidden.
+                for index in hidden {
+                    let uid = mitcad_model::BodyUid::new(imported.feature.uid, index as u32);
+                    if let Err(e) = self.document.set_body_visible(uid, false) {
+                        self.report
+                            .warnings
+                            .push(format!("a box was not hidden: {e}"));
+                    }
+                }
             }
             self.document.merge_undo(self.depth, &self.label);
         }
-        self.report.bodies = self.report.meshes + self.report.oriented_boxes + self.report.boxes;
+        self.report.bodies = self.report.meshes
+            + self.report.geometry_meshes
+            + self.report.reference_bodies
+            + self.report.oriented_boxes
+            + self.report.boxes;
         self.report
             .levels
             .extend(levels.into_iter().map(|g| g.entry));
@@ -1147,7 +1775,8 @@ pub fn import_rvt<K: Kernel>(
         depth,
         label: label.clone(),
         notes: Vec::new(),
-        reserved: None,
+        tess: geometry::Cache::new(),
+        parts: HashSet::new(),
     };
     importer.import_model(0, file, model, ComponentUid::ROOT, None)?;
 
@@ -1211,6 +1840,30 @@ pub fn import_rvt<K: Kernel>(
                     }
                     continue;
                 }
+                // An IFC model linked into the project (mitcad#333).
+                if let Some(ifc) = options.ifc_links.iter().find(|l| l.link.id == link.id) {
+                    line.found = Some(ifc.file.clone());
+                    let ifc_options = crate::ifc::IfcOptions {
+                        parent: component,
+                        progress: None,
+                        ..Default::default()
+                    };
+                    let made = crate::ifc::import_ifc(
+                        importer.document,
+                        &ifc.ifc,
+                        &ifc.file,
+                        &ifc_options,
+                    );
+                    line.elements = made.products.len();
+                    line.note = Some(format!(
+                        "an IFC model: {} products, {} bodies",
+                        made.products.len(),
+                        made.bodies
+                    ));
+                    importer.document.merge_undo(depth, &label);
+                    importer.report.links.push(line);
+                    continue;
+                }
                 line.note =
                     Some(missing.unwrap_or_else(|| {
                         format!("{name} was not found: its component is empty")
@@ -1240,7 +1893,8 @@ pub fn import_rvt<K: Kernel>(
 }
 
 /// The reference's kinds of solids the features are built for.
-const REFERENCE_KINDS: [&str; 8] = [
+const REFERENCE_KINDS: [&str; 9] = [
+    "IFCCOVERING",
     "IFCWALL",
     "IFCWALLSTANDARDCASE",
     "IFCSLAB",
@@ -1518,8 +2172,37 @@ mod tests {
         let l = report.elements.iter().find(|l| l.id == t::WALL_A).unwrap();
         assert_eq!(l.outcome, "box");
         assert!(
-            l.notes.last().unwrap().contains("encloses no volume"),
+            l.notes.iter().any(|n| n.contains("encloses no volume")),
             "{l:?}"
         );
+        // Boxes are hidden but for structural elements' (mitcad#333): the
+        // wall's box shows, the chair's (furniture) does not, and showing
+        // it makes it visible.
+        let body_of = |name: &str| {
+            document
+                .bodies()
+                .into_iter()
+                .find(|b| b.name.starts_with(name))
+                .unwrap()
+                .uid
+        };
+        let wall = body_of("Basic Wall:Brick 6:30");
+        assert!(document.body_attributes(wall).visible);
+        assert!(!l.hidden);
+        let chair = report.elements.iter().find(|l| l.id == t::CHAIR).unwrap();
+        assert_eq!(chair.outcome, "box");
+        assert!(chair.hidden, "{chair:?}");
+        assert!(
+            chair
+                .notes
+                .iter()
+                .any(|n| n.contains("the file keeps no geometry")),
+            "{chair:?}"
+        );
+        assert_eq!(report.hidden_boxes, 1);
+        let chair = body_of(&format!("FamilyInstance-{}", t::CHAIR));
+        assert!(!document.body_attributes(chair).visible);
+        document.set_body_visible(chair, true).unwrap();
+        assert!(document.body_attributes(chair).visible);
     }
 }

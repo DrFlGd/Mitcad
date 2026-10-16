@@ -56,6 +56,8 @@ pub struct Object {
 pub struct Record {
     pub root: Object,
     pub pointees: Vec<Object>,
+    /// The pointees by their object numbers (what reference pointers name).
+    pub numbered: HashMap<u32, usize>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -314,8 +316,10 @@ pub fn walk_partial(schema: &Schema, data: &[u8]) -> (Option<Record>, usize, Opt
         }
     }
     let end = walker.at;
+    let numbered = std::mem::take(&mut walker.numbered);
     let classes: HashMap<usize, u16> = walker.queue.iter().copied().chain(failed).collect();
     let record = Record {
+        numbered,
         root,
         pointees: walker
             .pointees
@@ -422,18 +426,31 @@ impl Record {
         match value {
             Value::Pointer(Some(slot)) => self.pointees.get(*slot),
             Value::Object(object) => Some(object),
+            // A reference to a numbered object of the record (the B-rep's
+            // edges and faces naming each other).
+            Value::Reference(number) => self.pointees.get(*self.numbered.get(number)?),
             _ => None,
         }
     }
 
     /// The record as JSON: objects as `{"class": ..., field: value}`,
     /// pointers as their objects' indices, the objects behind them in
-    /// `pointees`.
+    /// `pointees`, and the numbered objects' indices by number (what
+    /// `reference`s name) when there are any.
     pub fn to_json(&self, schema: &Schema) -> Json {
-        json!({
+        let mut out = json!({
             "object": object_json(schema, &self.root),
             "pointees": self.pointees.iter().map(|o| object_json(schema, o)).collect::<Vec<_>>(),
-        })
+        });
+        if !self.numbered.is_empty() {
+            let numbered: std::collections::BTreeMap<String, usize> = self
+                .numbered
+                .iter()
+                .map(|(n, s)| (n.to_string(), *s))
+                .collect();
+            out["numbered"] = json!(numbered);
+        }
+        out
     }
 }
 

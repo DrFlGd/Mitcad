@@ -536,9 +536,22 @@ as the items whose definitions gave no state do.
 - Not decoded (the sketch comes in partial, these left out): sketch block
   instances (`4c12f14c…`, their geometry `7e71a918…` and constraints
   `cf8d56f2…`), texts (`013cbb1f…`: a text with its font codes, its
-  frame `7f341025…`; taken for splines before) and splines through points
-  (`47d9553e…`: the list of the points they pass through) with what
-  constrains them.
+  frame `7f341025…`; taken for splines before; its text holds the font
+  codes as `\F10;` naming entries of a font table, and the glyphs need
+  the font) and splines through points (`46737b31…`: the list of the
+  points they pass through, not the curve; the curve through them is the
+  authoring application's own fit) and their offsets (`47d9553e…`: the
+  spline, its two end points and the distance) with what constrains them.
+  What such a sketch draws comes in as the outlines of the profiles the
+  features selected in it (mitcad#235): the selections' wire bodies keep
+  each region's boundary exactly (a glyph's B-spline pieces, an offset
+  spline), and their edges that lie on none of the sketch's lines, arcs
+  and circles become fixed curves (lines, and B-splines trimmed to the
+  edges' ranges; an ellipse's arc as rational quadratic pieces) through
+  fixed points, each shared edge once. The features then find their
+  profiles (*seen: a text cut 0.1 mm deep and a pocket bounded by an
+  offset spline, both verified against their history states*); a text no
+  feature selects stays out.
 - **Splines** (`d42f37f9…`) *(seen: projected from the model, in 8 parts
   of the older corpus)*: the entity's list of its two end points (one, where it starts and ends, for a closed spline, whose first and last poles are that point), other
   lists, then its NURBS data twice: u32 degree, f64 tolerance, the knots
@@ -574,13 +587,36 @@ value), booleans (`284d8790…`: the value is the last byte), directions
 | Hole | 0 form (`117ccd43…`: 0 drilled, 1 countersink, 2 and 3 counterbore), 1 diameter, 2 depth, 3 counterbore or countersink diameter, 4 counterbore depth, 5 countersink angle, 6 drill point angle (0: flat), 7 its sketch points (`b1226593…`), 8 placement (a transform), 9 extent (1, 5, 7), 16 direction | position: the sketch points in the sketch (label child) the feature is on, else the placement's origin; up to a face as through all |
 | Fillet | 0 edge sets (`dae9481b…` of `1641d6aa…`: edges, radius, selection, a boolean), 11 form (`2788f278…`, 0 edge fillet) | radii; the edges are named by the file's topological naming, not decoded: the import finds them from the history state. The boolean (not a boolean record in the parts of `ipt.corpus`) is false in every fillet of the older parts below, while their history states show whole tangent chains rounded from an edge inside them, so it is not the tangent chain option: the sets follow tangent chains |
 | Chamfer | 0 edges, 2 distance, 3 second distance, 4 form (`3200aa7d…`: 0 equal, 1 distance and angle, 2 two distances), 10 angle | sizes; edges as for fillets |
-| Rectangular pattern, circular pattern, mirror | after the feature's list: u32, the list of the copied features, then properties as references at no fixed offsets: counts (integer parameters), spacings and directions (`7b4544a2…`: a flip, a start point, a vector and an end point; or a direction `40df52ce…` whose flip is not decoded, or a path `aa7b97a5…` *(seen)*), the angle and the axis, the mirror plane (a work plane) | all; the copied features in the timeline's order; a direction of another record is found with the history |
+| Rectangular pattern, circular pattern, mirror | after the feature's list: u32, the list of the copied features, then properties as references at no fixed offsets: counts (integer parameters), spacings and directions (`7b4544a2…`: a flip, a start point, a vector and an end point; or a direction `40df52ce…`, or a path `aa7b97a5…` *(seen)*), the angle and the axis, the mirror plane (a work plane) | all; the copied features in the timeline's order; directions `40df52ce…` and paths below (mitcad#288); other directions are found with the history |
 | Loft (`e0ef542f…` label class) | 0 its sections (a list `509e2f31…` of sections `e850314b…`: after the prefix an entity link as a profile selection's, its wire body the section's boundary), 1 operation *(seen: every loft of the test files)*; the label shows the sections' sketches, or records `7ca882b3…` of the sections | the sections as the profiles of the sketches whose planes hold them (the label's, else the latest before it); rails and conditions not decoded |
 | Work plane (`42df52ce…`) | its last nine f64: origin, x axis, y axis. Definitions (each the header, an i32, the plane, then references): offset `c0d8280d…` (the plane it is offset from, the offset parameter), mid plane `560a6ccb…` (the two planes), at an angle `8af4e674…` (the work axis it turns about, the plane it is at an angle to, the angle parameter, then data not decoded), through three work points `8a924209…` (the points), through two work axes `5abeff8a…` (the axes), of a work point and a work axis `62b73858…` (through both, or through the point normal to the axis: the plane's geometry tells), parallel to a plane through a work point `63b73858…` (the point, then the plane; the plane's origin is the point) and through a point of the model's geometry `eea9eab3…` (the plane, then an edge `4a068a52…` not decoded, and two f64) *(seen)*; a work point `3edf52ce…`: after the prefix 12 bytes (up to major 18; 16 from 24), its position (three f64, cm) and two empty lists *(seen)*; not decoded: `315417a7…` (a work point and an edge: normal to the edge at the point, by the plane's geometry). Planes the file keeps fixed: those no definition names (their flags after the prefix have `0x100000`; 33 of the 49 fixed planes of the older parts, among them planes of parts made from other formats), those of a definition `118e11a6…` with no references after the plane (7); `61b8480c…` defines a plane off the timeline as another one (its first reference, then the plane it copies) | offset, mid and angle planes (a plane off the timeline by its geometry: the import looks for the face in it); planes through three points, two lines, a line and a point, or normal to a line through a point, the work points and axes as the origin's or fixed where they are (work points and axes are not imported); parallel ones as offsets from their plane to where the point puts them (the point fixed where it is); the others fixed where they are |
 | Combine (`336723c0…`) | 0 the target (a list of bodies `83aadad5…`, one body), 1 the tools (a list of bodies `ae70680e…`), 2 operation (2 cut, 3 join, 4 intersection), 3 keep the tools *(verified: every combine of the test files)* | all |
 | Split (`baa87183…`) | 0 its kind (`1990e1b8…`: 2 split faces, 3 split bodies), 2 the faces to split (a list of face names `f1b2bc24…`), 4 the tool's sketch profiles (as an extrusion's), 5 a work plane as the tool, 7 the bodies (`83aadad5…`) *(seen: 77 face splits by sketch profiles, one body split by a work plane)* | kind, tool and bodies; the faces are found with the history |
 | Shell (`12963cb8…`) | 0 direction (`e469a1b3…`: 0 inside), 1 the faces removed (`f1b2bc24…`), 3 thickness, 9 its body (`ae70680e…`) *(seen: every shell of the test files, inside, removing no face or one)* | all but the faces: their number is given, the import finds them with the history |
 | Sweep (`05daba90…`) | 0 profiles, 1 the path (a profile selection, or a path selection `473f20fc…` of the same layout), 2 operation, 3 taper; the label shows the profile's sketch and the path's (they may be one) *(seen: every sweep of the test files)* | profiles, operation, taper; the path as the curves of the label's sketches on the selected wire |
+
+**Pattern directions without a pattern direction record** (mitcad#288):
+a rectangular pattern whose properties hold directions `40df52ce…` (a unit
+vector each, in the order of the counts and spacings) takes them as its
+directions; one that follows a path `aa7b97a5…` (u32 -1, a boolean, a
+work point `3edf52ce…` at the path's start, u32 n, n segments each of u16,
+u32 23 (a line), its start point and its vector (cm), then the end point,
+a byte and the item of the selected edge) moves its copies along the
+path's first line from its start, reversed when the boolean is set, where
+the copies stay on that line ((count - 1) × spacing at most the line's
+length). Each of these patterns has four booleans per direction and two
+more: none is set in the patterns seen, so which of them reverses a
+direction is not known; a pattern with any of them set keeps finding its
+direction with the history. The elements the pattern leaves out are a
+record `bef06e8d…` among its properties: after the prefix a list of kind 4
+(u32 `0x30000004`, the count, 8 bytes when not empty), then per element
+two u32, its place along the second direction and along the first (both
+from 1); the import makes them Mitcad's `suppressed_elements` (`k1 + n1
+k2` from 0) *(verified: the three such patterns of the sheet-metal parts,
+two with two directions 60 degrees apart and 101 and 122 elements left
+out (`fdcb8c30`, the copies that would reach the flanges' bends), one
+along a closed path of four lines with none (`b1b53e24`), give their
+states)*.
 
 **Bodies**: a solid body (`474d8790…`: the prefix and a u32, the body's
 number) is named by its label (`Solid1`). Every feature refers to a list
@@ -620,7 +656,12 @@ the selection of its outside and that of its hole *(seen: a plate's
 outline and a circle in it, both selected, make the plate with the hole,
 as its history state has it; four loops, the middle one twice, make the
 ring between the outer and the inner one)*; a selection that keeps a hole
-and the hole's own selection make the whole. The distinct loops nest in a
+and the hole's own selection make the whole. A selection inside another
+one that runs along the other's boundary for part of its own (at least a
+twentieth) is not a hole of it but adds nothing to it
+(`profile::subsumed`) *(seen: a lid's outline and the ring between it and
+an inner outline that touches it at two corners, both selected: the
+history state adds the whole outline's slab, mitcad#235)*. The distinct loops nest in a
 tree, each loop less its children one of the sketch's regions as far as
 the selections tell; the regions taken are given with their area and
 centroid. Without selections inside one another, a boundary selected more
@@ -811,6 +852,13 @@ Mitcad's native sheet features.
   1.5 mm, so which of them each dimension follows is not known; variant
   files are needed (the private reference-data ticket). The import refuses
   a flange on several edges with settings of its own, with that note.
+  Needed (mitcad#288; the reference application of that ticket cannot open
+  `.ipt` files, so they must be `.ipt` parts saved by the authoring
+  application): a flange on two or three meeting edges with corner
+  settings of its own, once each with only the gap, only the thickness
+  and only the bend radius changed (all three different, such as gap 0.5,
+  thickness 1 and radius 2 mm), and once for each corner relief shape of
+  slot 9's enumeration, each part with its history state.
 - **A cut**: a feature record of the extrusion's layout (slots 0
   operation 2, 1 profiles, 2 direction, 3 reversed, 4 distance, 6 extent)
   *(seen)*, and two booleans of its own in slots 31 and 33. Slot 31 true
@@ -872,8 +920,8 @@ Mitcad's native sheet features.
   the sketch's normal and the side away from the material are one, so
   which of them the turn follows is not told apart)*. The import makes it
   `sheet_fold` (position `edge`); that fold's line crosses the windows of
-  the cuts before it, which Mitcad's fold does not take (one uninterrupted
-  line is needed), and it falls back with that reason.
+  the cuts before it, which the model's fold takes since mitcad#288 (a seam
+  per stretch of material) *(verified: the fold gives its state)*.
 
 ### Results on the test files
 
@@ -1015,6 +1063,60 @@ coil cut all bodies first and ran out of memory (`4e6624b5`) imports in
 hole's wall where OCCT finds no intersection at a point where three
 surfaces meet tangentially, two coils whose booleans fail on the stored
 bodies, sketch texts and splines through points.
+
+Cuts along a hole's wall through threaded material (dev build,
+2026-10-15, mitcad#235, each part run alone). Two causes, both in the
+boolean that splits the body's and the tool's faces. Where the section of
+a thread's crest leaves the hole's circle tangentially (on a cut's end
+face, or on a tool lying on the bore), OCCT ordered the two edges about
+their vertex by directions measured at different distances from it and
+built a face with a negative area: the cut left the body empty or lost
+faces (OCCT port patch 0360). Where the tool lies on the bore of a stored
+body whose thread's faces carry 1e-4 to 4e-4 mm tolerances, the section
+edges of neighbouring thread faces end a few tenths of a micrometre
+apart and OCCT left the tool's pieces inside the body; an imported
+design's cuts are now retried within the join tolerance where the exact
+cut fails so (`Kernel::cut_within`, model `commands.md`, *Cuts within the
+join tolerance of imported designs*). Items before → after: `9452d970`
+Extrusion6 (a counterbore through threaded holes) 31 → 32 parametric of
+40, its result the file's state (4258.506 mm³, 2800.945 mm²);
+`547d59d1` Extrusion7 23 → 24 of 25, no fallback left; `01fb13c9`
+Extrusion9 25 → 26 of 31; `c2ed6f98` Extrusion13 25 → 26 of 31.
+`26fb87c7` has no such cut left (its two fallbacks are chamfers). Left:
+`5e552aad` Extrusion10 (the same cut as `01fb13c9`'s on a 24-tooth part:
+the exact cut and every fuzzy value up to 0.01 mm leave the tool's pieces
+inside the body) and its Extrusion11 (an invalid shape exactly and
+within the tolerance).
+
+The next round (dev build, 2026-10-16, mitcad#235, each part run alone):
+`3e0e22df` "top" (a lid's outline and the ring beside it, both selected:
+the outline's slab, `profile::subsumed`) parametric and verified, 43 → 44
+of 48. A parametric Fillet7 before Extrusion11 left a vertex with a
+tolerance of 481 mm where its rounding's edge ends 0.12 mm from it, and
+the join on that body built no solid; a dressup's vertex tolerances that
+OCCT inflated far beyond what their edges need are now cut down, and a
+result that is not valid without them (here the corner left open, faces
+that cannot be oriented) fails, so Fillet7 falls back as before and
+Extrusion11, Fillet9 and Fillet11 stay parametric and verified.
+`0f25d160` Extrusion19 (up to a plane, decoded right: OCCT's exact join
+against the stored body's rounded cylindrical wall built no solid at
+all; an imported design's join is now retried within the join tolerance
+where the solids are lost) 44 → 45 of 61. The texts and splines through
+points above: `c2ed6f98` 26 → 27 of 31 (the text's cut verified),
+`b266c91f` the text's cut and the pocket of an offset spline verified.
+Coil `033448e3` 11 → 12 of 12 (17669.006 mm³ against the file's
+17669.005): the pin's bore was one cylindrical face merged from two whose
+seams lay a quarter turn apart, its seam stepping along an arc, and
+OCCT's cut of the helix removed nothing from it; a cut that removes
+nothing from such a target is retried on it rebuilt with one straight
+seam (the boundary circle the seam crosses split in the neighbouring face
+too), and the coil with its pieces' seams shifted then cuts it. `517c1204`
+20 → 21 of 24 with it. Left: `8d946c8f` Extrusion9 (the tool's face lies
+exactly in a body face's plane over the cut: OCCT keeps the body's face
+whole and adds the tool's reversed, a zero-thickness double layer of 1060
+mm², the volume right; the same with every fuzzy value up to 0.01 mm);
+`5e552aad` Extrusion10 and Extrusion11 and `d9aec91e` Extrusion5
+unchanged.
 
 ### What the files do not tell (feasibility)
 

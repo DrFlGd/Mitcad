@@ -343,6 +343,12 @@ private:
   QString m_active; // the key of the active selection input
   QSet<QString> m_shownSelections; // the selection inputs shown at the last change
   bool m_selectionsComplete = false;
+  // Keyboard hand-over to the first value once the picks are done (mitcad#338).
+  bool selectionsSatisfied() const;
+  void moveKeyboardToValues();
+  bool m_valueKeyboard = false; // a value field has the keyboard now
+  bool m_valueTouched = false;  // the user put the keyboard in a field himself
+  bool m_autoFocusing = false;  // the session itself is focusing a field
   QTimer m_previewTimer;
   bool m_previewOk = false;
   QJsonObject m_shownReport; // the report of the preview shown (toggles)

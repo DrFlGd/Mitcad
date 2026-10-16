@@ -268,6 +268,11 @@ impl Rewrite<'_> {
                     changed |= self.link(link)?;
                 }
             }
+            FeatureDef::Derive(d) => {
+                for link in d.links.values_mut() {
+                    changed |= self.link(link)?;
+                }
+            }
             FeatureDef::Combine(c) => {
                 for link in c.tool_links.values_mut() {
                     changed |= self.link(link)?;

@@ -28,6 +28,8 @@ pub(crate) struct Imported {
     /// Its bodies by the stored bodies they match
     /// ([`Referenced::stored_bodies`]).
     stored: HashMap<String, BodyUid>,
+    /// Its bodies by the body objects its file names them by (mitcad#324).
+    entities: std::collections::BTreeMap<u64, BodyUid>,
     /// Its import's timeline items by outcome.
     items: BTreeMap<String, usize>,
     /// The documents it refers to in turn.
@@ -101,6 +103,7 @@ impl References {
                         occurrence_guids: &l.imported.guids,
                         name: l.name.clone(),
                         stored_bodies: &l.imported.stored,
+                        entity_bodies: &l.imported.entities,
                     },
                 )
             })
@@ -371,6 +374,7 @@ impl crate::Document {
             references: d.references.clone(),
             guids: d.components.occurrence_guids.clone(),
             stored,
+            entities: d.body_entities.clone(),
             document,
         }))
     }
@@ -387,7 +391,13 @@ pub(crate) fn external_files(
     options: &TimelineOptions,
     dump: &Dump,
 ) -> Vec<(String, String, mitcad_f3d::F3dFile)> {
-    let documents = external_documents(dump);
+    let mut documents = external_documents(dump);
+    // The derives' source designs, for their placements (mitcad#324).
+    for d in mitcad_import::derive::source_documents(dump) {
+        if !documents.iter().any(|x| x.urn == d.urn) {
+            documents.push(d);
+        }
+    }
     let mut out = Vec::new();
     if documents.is_empty() {
         return out;

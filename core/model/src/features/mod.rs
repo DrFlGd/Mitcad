@@ -87,6 +87,9 @@ pub use point_pattern::PointPatternDef;
 // Bodies taken out of the design.
 pub mod remove_body;
 pub use remove_body::RemoveBodyDef;
+// Bodies of other components copied, linked to them (mitcad#324).
+pub mod derive;
+pub use derive::DeriveDef;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
@@ -301,6 +304,8 @@ feature_types! {
     RemoveBody(RemoveBodyDef),
     // Sheet-metal corner relief (mitcad#209).
     SheetCornerRelief(SheetCornerReliefDef),
+    // Bodies of other components copied, linked to them (mitcad#324).
+    Derive(DeriveDef),
 }
 
 /// Brings a feature definition in an earlier form up to date before it is
@@ -680,25 +685,31 @@ impl<'a, K: Kernel> EvalContext<'a, K> {
         }
     }
 
-    /// [`Kernel::boolean`]; a join within the document's join tolerance
-    /// where it has one ([`Kernel::join_within`], mitcad#298: an importer's
-    /// bodies that match a file's only within its geometric tolerance). A
-    /// kernel without such joins joins exactly.
+    /// [`Kernel::boolean`]; a join or a cut within the document's join
+    /// tolerance where it has one ([`Kernel::join_within`], mitcad#298, and
+    /// [`Kernel::cut_within`], mitcad#235: an importer's bodies that match a
+    /// file's only within its geometric tolerance). A kernel without them
+    /// joins and cuts exactly.
     pub(crate) fn boolean(
         &mut self,
         op: crate::kernel::BooleanOp,
         targets: &[&K::Shape],
         tool: &K::Shape,
     ) -> Result<crate::kernel::BooleanOutput<K::Shape>, crate::kernel::KernelError> {
-        if op == crate::kernel::BooleanOp::Join {
+        if op != crate::kernel::BooleanOp::Intersect {
             let read = Read::JoinTolerance(self.env.join_tolerance.map(f64::to_bits));
             if !self.reads.contains(&read) {
                 self.reads.push(read);
             }
             if let Some(tolerance) = self.env.join_tolerance {
-                match self.kernel.join_within(targets, tool, tolerance) {
+                let widened = if op == crate::kernel::BooleanOp::Join {
+                    self.kernel.join_within(targets, tool, tolerance)
+                } else {
+                    self.kernel.cut_within(targets, tool, tolerance)
+                };
+                match widened {
                     Err(crate::kernel::KernelError::Unsupported(_)) => {}
-                    joined => return joined,
+                    result => return result,
                 }
             }
         }

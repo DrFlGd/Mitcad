@@ -4489,3 +4489,154 @@ fn hidden_occurrences_turn_their_light_bulbs_off() {
     // Without the objects every light bulb stays unknown.
     assert!(make(&[]).iter().all(|(_, b)| b.is_null()));
 }
+
+/// A derive item (mitcad#324): the source design (an assembly of another
+/// document, by its root component), the deriving design's placement in
+/// it, one body of a third document with the properties that stay linked
+/// and the placement of its occurrence; and a derive that lists no
+/// entities.
+#[test]
+fn derive_items_name_their_source_bodies_and_placements() {
+    const DERIVED_BODY_FEATURE: &str = "B1E5B971-C007-48C9-8FF5-F4CCD91F87A4";
+    let mut d = sample();
+    for (g, p, v) in [
+        (DERIVED_CONTEXT, ROOT, 3),
+        (PLACEMENT, ROOT, 5),
+        (BASE_FEATURE, ROOT, 4),
+        (DERIVED_BODY_FEATURE, BASE_FEATURE, 10),
+        (BODY, ROOT, 1),
+    ] {
+        d.class(g, p, v);
+    }
+    d.objects.retain(|o| o.0 != 3);
+    let (assembly, part) = (0x1111_2222_3333_4444u64, 0x5555_6666_7777_8888u64);
+    for (key, urn, guid) in [
+        (
+            assembly,
+            "urn:test:fs.file:vf.assembly?version=10",
+            "74c61ef7-0894-4b42-8532-24fb6b04aa22",
+        ),
+        (
+            part,
+            "urn:test:fs.file:vf.part?version=1",
+            "9016787c-cb67-4d88-bd1a-387e9083cdb3",
+        ),
+    ] {
+        d.externals.push(super::writer::WriterExternal {
+            key,
+            guids: [
+                "7A3F46D6-B137-489D-84BA-42A1B0ED13DF".into(),
+                "f7d6678d-a812-4537-98bd-7db7eea2ea52".into(),
+            ],
+            urn: urn.into(),
+            document_guid: guid.into(),
+        });
+    }
+    d.obj(
+        3,
+        TIMELINE,
+        cat(&[&[0, 0], &r(1), &u32b(4), &r(10), &r(20), &r(500), &r(600)]),
+    );
+    // The design in the assembly: turned half a turn about x, at (2, 1, 0).
+    let design = [
+        1.0, 0.0, 0.0, 2.0, 0.0, -1.0, 0.0, 1.0, 0.0, 0.0, -1.0, 0.0, 0.0, 0.0, 0.0, 1.0,
+    ];
+    // The body's occurrence: at (-4, 1, 0).
+    let body = [
+        1.0, 0.0, 0.0, -4.0, 0.0, 1.0, 0.0, 1.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0,
+    ];
+    for (id, m, item) in [(501, design, 500), (502, body, 500)] {
+        d.obj(
+            id,
+            PLACEMENT,
+            cat(&[&[0, 0], &[0; 4], &[0], &f64s(&m), &[0], &r(item)]),
+        );
+    }
+    d.obj(503, PLACEMENT, cat(&[&[0, 0], &[1], &r(500)]));
+    d.obj(510, DERIVED_BODY_FEATURE, cat(&[&[0, 0], &r(520), &r(500)]));
+    d.obj(520, BODY, vec![0, 0]);
+    d.obj(509, HEALTH, vec![0, 0]);
+    let source = |entities: &[u8], placements: (u64, u64)| {
+        cat(&[
+            &[0, 0],
+            &s16("120a1fde-0048-4244-9d5e-d8b4593296a3"),
+            &r(placements.0),
+            &[0; 8],
+            &s16("74c61ef7-0894-4b42-8532-24fb6b04aa22"),
+            &context_ref(3, assembly, COMPONENT),
+            &s16("Assembly"),
+            &s16("Assembly"),
+            &[1],
+            &[0; 8],
+            &r(placements.1),
+            &[0; 8],
+            entities,
+        ])
+    };
+    let entity = cat(&[
+        &u32b(1),
+        &r(510),
+        &[0],
+        &u32b(1),
+        &context_ref(2495, part, BODY),
+        &[0],
+        &u32b(2),
+        &s8("Geometry"),
+        &s8("Transform"),
+        &[0, 0, 0],
+        &context_ref(2495, part, BODY),
+        &r(502),
+    ]);
+    d.obj(
+        500,
+        DERIVED_CONTEXT,
+        cat(&[
+            &source(&entity, (501, 503)),
+            &tail(-1, "DerivedContext", 1, "", [0, 0, 0], 509),
+        ]),
+    );
+    d.obj(
+        600,
+        DERIVED_CONTEXT,
+        cat(&[
+            &source(&u32b(0), (501, 503)),
+            &tail(-1, "DerivedContext", 2, "", [0, 0, 0], 509),
+        ]),
+    );
+    let (m, b) = d.streams();
+    let v = serde_json::to_value(Design::parse(&m, b).unwrap().dump("x", "Design1")).unwrap();
+    let items = v["timeline"]["items"].as_array().unwrap();
+    let derive = &items[2];
+    assert_eq!(derive["objectType"], "DerivedContext");
+    let detail = &derive["detail"];
+    assert_eq!(detail["source"]["name"], "Assembly", "{derive}");
+    assert_eq!(
+        detail["source"]["_f3d"],
+        json!({"key": "1111222233334444", "urn": "urn:test:fs.file:vf.assembly?version=10",
+               "document_guid": "74c61ef7-0894-4b42-8532-24fb6b04aa22",
+               "component_object": 3})
+    );
+    assert_eq!(
+        detail["placements"][0]["transform"][1],
+        json!([0.0, -1.0, 0.0, 1.0])
+    );
+    let entities = detail["entities"].as_array().unwrap();
+    assert_eq!(entities.len(), 1);
+    let e = &entities[0];
+    assert_eq!(e["kind"], "body");
+    assert_eq!(e["placement"]["transform"][0], json!([1.0, 0.0, 0.0, -4.0]));
+    assert_eq!(e["_f3d"]["object_id"], 2495);
+    assert_eq!(e["_f3d"]["key"], "5555666677778888");
+    assert_eq!(e["_f3d"]["urn"], "urn:test:fs.file:vf.part?version=1");
+    assert_eq!(
+        e["_f3d"]["document_guid"],
+        "9016787c-cb67-4d88-bd1a-387e9083cdb3"
+    );
+    assert_eq!(e["_f3d"]["feature"], 510);
+    assert_eq!(e["_f3d"]["bodies"], json!([520]));
+    assert_eq!(e["_f3d"]["links"], json!(["Geometry", "Transform"]));
+    // A derive that lists none brings nothing.
+    let empty = &items[3]["detail"];
+    assert_eq!(empty["entities"], json!([]));
+    assert_eq!(empty["source"]["name"], "Assembly");
+}

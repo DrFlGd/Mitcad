@@ -1165,6 +1165,17 @@ fn cmd_objects(path: &str, class: &str, max: Option<usize>) -> Result<(), String
                 let t = seg.guid_of(r.id).unwrap_or("?");
                 println!("  ref @{p}..{} -> {} {}", r.end, r.id, &t[..8.min(t.len())]);
             }
+            // References into other documents: the object's id there, the
+            // document's key and the object's class.
+            for (p, r) in seg.context_refs_in(d, 0, d.len()) {
+                println!(
+                    "  other @{p}..{} -> {} in {:016x} {}",
+                    r.end,
+                    r.id,
+                    r.key,
+                    &r.guid[..8.min(r.guid.len())]
+                );
+            }
             for (i, chunk) in d.chunks(32).enumerate() {
                 let hex: Vec<String> = chunk.iter().map(|b| format!("{b:02x}")).collect();
                 println!("  {:5} {}", i * 32, hex.join(" "));

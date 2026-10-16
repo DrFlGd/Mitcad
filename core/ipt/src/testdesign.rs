@@ -1884,3 +1884,133 @@ pub fn driven_reference_design(major: u8) -> Vec<([u8; 16], Vec<u8>)> {
     w.top.push(sketch);
     w.finish()
 }
+
+/// The label class of rectangular patterns of features.
+pub const RECTANGULAR_PATTERN: [u8; 16] = crate::dc::type_id("dac27a76d2110d2e60002aab01f31bb0");
+
+/// How [`feature_pattern_design`]'s pattern stores its directions.
+pub enum PatternDirections {
+    /// Two directions `40df52ce…`: (√3/2, 0, -1/2) and (0, 0, -1).
+    Vectors,
+    /// A path `aa7b97a5…`: a closed loop of four lines from (1, 0, 1) cm,
+    /// the first 3 cm along -x; its boolean reversed when `true`.
+    Path(bool),
+}
+
+/// A 1 cm square on XY extruded by 1 cm (a new body) and a rectangular
+/// pattern of the extrusion (mitcad#288): counts `d4` = 3 (and `d6` = 2),
+/// spacings `d5` = 10 mm (and `d7` = 20 mm), the directions stored as
+/// `directions` says, four booleans per direction (the first set when
+/// `set`), no pattern direction record.
+pub fn feature_pattern_design(
+    major: u8,
+    directions: PatternDirections,
+    set: bool,
+) -> Vec<([u8; 16], Vec<u8>)> {
+    let mut w = DesignWriter::new(major);
+    let length = w.unit(LENGTH, 1.0);
+    let mm = w.unit(METRE, 1e-3);
+    let n = w.number(10.0, mm);
+    let d2 = w.parameter("d2", length, n, 1.0);
+    let angle = w.unit(ANGLE, 1.0);
+    let deg = w.unit(DEGREE, 1.0);
+    let n = w.number(0.0, deg);
+    let taper = w.parameter("d3", angle, n, 0.0);
+    let sketch = w.sketch();
+    let identity = [
+        [1.0, 0.0, 0.0, 0.0],
+        [0.0, 1.0, 0.0, 0.0],
+        [0.0, 0.0, 1.0, 0.0],
+        [0.0, 0.0, 0.0, 1.0],
+    ];
+    let transform = w.transform(identity);
+    let normal = w.direction([0.0, 0.0, 1.0]);
+    let corners = [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]];
+    let points: Vec<usize> = corners.iter().map(|&c| w.sketch_point(sketch, c)).collect();
+    let mut entities = points.clone();
+    entities.extend((0..4).map(|i| w.sketch_line(sketch, points[i], points[(i + 1) % 4], 0)));
+    w.finish_sketch(sketch, &entities, transform, normal);
+    w.label(sketch, "Sketch1", &[], [0; 16]);
+    let (extrusion, node) = w.extrusion(1, 1, d2, taper, [0.0, 0.0, 1.0], false, &[]);
+    w.label(extrusion, "Extrusion1", &[sketch], EXTRUSION);
+    w.top.push(extrusion);
+
+    let count = w.integer("d4", 3);
+    let n = w.number(10.0, mm);
+    let spacing = w.parameter("d5", length, n, 1.0);
+    let mut props = vec![count, spacing];
+    match directions {
+        PatternDirections::Vectors => {
+            let one = w.direction([0.75f64.sqrt(), 0.0, -0.5]);
+            let count_two = w.integer("d6", 2);
+            let n = w.number(20.0, mm);
+            let spacing_two = w.parameter("d7", length, n, 2.0);
+            let two = w.direction([0.0, 0.0, -1.0]);
+            props.extend([one, count_two, spacing_two, two]);
+        }
+        PatternDirections::Path(flip) => {
+            let flip = w.boolean(flip);
+            let start = w.work_point([1.0, 0.0, 1.0]);
+            let mut b = w.header(None);
+            b.extend_from_slice(&w.prefix());
+            b.extend_from_slice(&u32::MAX.to_le_bytes());
+            b.extend_from_slice(&r(flip));
+            b.extend_from_slice(&r(start));
+            let lines = [
+                ([1.0, 0.0, 1.0], [-3.0, 0.0, 0.0]),
+                ([-2.0, 0.0, 1.0], [0.0, 0.0, -1.0]),
+                ([-2.0, 0.0, 0.0], [3.0, 0.0, 0.0]),
+                ([1.0, 0.0, 0.0], [0.0, 0.0, 1.0]),
+            ];
+            b.extend_from_slice(&(lines.len() as u32).to_le_bytes());
+            for (p, v) in lines {
+                b.extend_from_slice(&0u16.to_le_bytes());
+                b.extend_from_slice(&23u32.to_le_bytes());
+                for x in p.into_iter().chain(v) {
+                    b.extend_from_slice(&f64::to_le_bytes(x));
+                }
+            }
+            for x in [1.0f64, 0.0, 1.0] {
+                b.extend_from_slice(&x.to_le_bytes());
+            }
+            b.push(1);
+            let path = w.push(crate::features::PATTERN_PATH, b);
+            props.push(path);
+        }
+    }
+    for k in 0..4 {
+        let b = w.boolean(set && k == 0);
+        props.push(b);
+    }
+    // The elements left out: with two directions the third along the
+    // first and the second along the second (Mitcad's element 5), else none.
+    let skipped: &[(u32, u32)] = if props.len() > 7 { &[(2, 3)] } else { &[] };
+    let mut b = w.header(None);
+    b.extend_from_slice(&w.prefix());
+    b.extend_from_slice(&0x3000_0004u32.to_le_bytes());
+    b.extend_from_slice(&(skipped.len() as u32).to_le_bytes());
+    if !skipped.is_empty() {
+        b.extend_from_slice(&[0; 8]);
+    }
+    for (second, first) in skipped {
+        b.extend_from_slice(&second.to_le_bytes());
+        b.extend_from_slice(&first.to_le_bytes());
+    }
+    props.push(w.push(crate::features::PATTERN_SKIPPED, b));
+    let mut b = w.header(None);
+    let pattern_node = w.node;
+    b.extend_from_slice(&2i32.to_le_bytes());
+    b.extend_from_slice(&0u32.to_le_bytes());
+    b.extend_from_slice(&list(2, &[]));
+    b.extend_from_slice(&0u32.to_le_bytes());
+    b.extend_from_slice(&list(2, &[extrusion]));
+    for p in props {
+        b.extend_from_slice(&r(p));
+        b.extend_from_slice(&[0; 4]);
+    }
+    let pattern = w.push(crate::dc::type_id("44326720d211c51d60002aab01f31bb0"), b);
+    w.label(pattern, "Rectangular Pattern1", &[], RECTANGULAR_PATTERN);
+    w.top.push(pattern);
+    w.states(&[(node, 2, 1), (pattern_node, 3, 2)]);
+    w.finish()
+}

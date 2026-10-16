@@ -1,0 +1,473 @@
+Mitcad's patch to OCCT 8.0.1, under OCCT's licence:
+SPDX-License-Identifier: LGPL-2.1-only WITH OCCT-exception-1.0
+
+Fillets: a rounding whose end section lies in a face at the vertex where it
+ends, the blend running on into that face tangentially (mitcad#236): e.g. a
+vault's end edge rounded with the radius of the block's rounded vertical
+corners under it. The ball overflows the corners onto the end face, and
+where the vault springs tangentially from the side walls its section is the
+corner's own quarter circle. OCCT found no face at the end holding both end
+points (one is the vertex, the other lies inside the end face, on its edge
+with the corner), went on to its corner of several faces and failed there
+("Failed to find edge").
+
+- ChFi3d_EndSectionOnFace, tried in PerformOneCorner (not OnSame) where no
+  face at the end is found otherwise: a face at the corner's vertex other
+  than the blend's two faces that holds the whole end section (five points
+  of it within ten times the approximation tolerance, its middle inside the
+  face) is the face at the end. An end point on no arc gets the edge of that
+  face it lies on that also bounds the blend's face on its side, with the
+  transition of a contact entering (first end) or leaving (last end) that
+  face across it; an end point at a vertex of that face is that vertex
+  only: no arc is cut there, so that the faces beyond the blend keep their
+  edges up to it.
+- The cap is then the end section itself (ChFi3d_ComputeArete on the blend
+  between the contacts' ends, its curve on the face at the end from the same
+  3d curve), not the intersection of two surfaces that are tangent along
+  it. Its orientation on the face at the end is taken from the arc on the
+  face.
+- The spine's edge at a vertex end point is cut at the vertex (as at a
+  singular end, ChFi3d_FilDS): no cut of an arc separates it from the faces
+  that keep it, and it went on to bound the blend's face and the face at the
+  end.
+- ChFi3d_Builder::PerformSetOfSurfOnElSpine: a walk whose blend reached
+  the vertex at the spine's end with one contact, at a section before the
+  guide's end, failed on the next step from that vertex and invalidated the
+  stripe. The blend now ends there (as where the walk past the end stops
+  outside a face), and the corner is built at the vertex. With the end
+  section in the corner's face the walk stops there or a little past it
+  depending on its steps.
+diff --git a/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_2.cxx b/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_2.cxx
+--- a/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_2.cxx
++++ b/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_2.cxx
+@@ -4001,6 +4001,27 @@ static bool ChFi3d_ConcaveTurnWedge(TopOpeBRepDS_DataStructure&
+ 
+ //=================================================================================================
+ 
++//=======================================================================
++// function : ChFi3d_ContactAtSpineEnd
++// purpose  : Whether a contact of the SurfData's end (its first end with
++//            isfirst) lies at the vertex V (the spine's end vertex).
++//=======================================================================
++
++static bool ChFi3d_ContactAtSpineEnd(const occ::handle<ChFiDS_SurfData>& SD,
++                                     const bool                          isfirst,
++                                     const TopoDS_Vertex&                V)
++{
++  for (int k = 1; k <= 2 && !V.IsNull(); k++)
++  {
++    const ChFiDS_CommonPoint& CP = SD->Vertex(isfirst, k);
++    if (CP.IsVertex() && CP.Vertex().IsSame(V))
++    {
++      return true;
++    }
++  }
++  return false;
++}
++
+ void ChFi3d_Builder::PerformSetOfSurfOnElSpine(const occ::handle<ChFiDS_ElSpine>&     HGuide,
+                                                occ::handle<ChFiDS_Stripe>&            Stripe,
+                                                occ::handle<BRepTopAdaptor_TopolTool>& It1,
+@@ -4805,6 +4826,24 @@ void ChFi3d_Builder::PerformSetOfSurfOnElSpine(const occ::handle<ChFiDS_ElSpine>
+           intf = 1;
+         }
+       }
++      else if (!Spine->IsPeriodic() && !ref.IsNull()
++               && ChFi3d_ContactAtSpineEnd(ref, !forward, forward ? Spine->LastVertex() : Spine->FirstVertex()))
++      {
++        // The walk before reached the vertex at the spine's end with a
++        // contact (the section through it lies before the guide's end, a
++        // rounding that runs into a face there tangentially): the blend ends
++        // there, its corner is built at that vertex.
++        done   = true;
++        Inside = false;
++        if (forward)
++        {
++          intl = 1;
++        }
++        else
++        {
++          intf = 1;
++        }
++      }
+       else
+       { // Otherwise invalidation of the stripe.
+         Spine->SetErrorStatus(ChFiDS_WalkingFailure);
+diff --git a/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_C1.cxx b/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_C1.cxx
+--- a/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_C1.cxx
++++ b/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_C1.cxx
+@@ -21,6 +21,7 @@
+ #include <Blend_FuncInv.hxx>
+ #include <BRepAlgo_NormalProjection.hxx>
+ #include <BRepBlend_Line.hxx>
++#include <BRepClass_FaceClassifier.hxx>
+ #include <BRepExtrema_ExtCC.hxx>
+ #include <BRepLib_MakeEdge.hxx>
+ #include <BRepTools.hxx>
+@@ -1745,6 +1746,199 @@ static void ChFi3d_CurveFromVertexToContact(TopOpeBRepDS_DataStructure&
+   box.Add(zob3d->Value(Ufin));
+ }
+ 
++//=======================================================================
++// function : ChFi3d_EndSectionOnFace
++// purpose  : The end section of a stripe that lies in a face at the
++//            corner's vertex other than the blend's two faces: the blend
++//            comes tangent to that face there and runs on into it (e.g. a
++//            vault's end edge rounded with the radius of the rounded
++//            vertical corner under it, the blend overflowing that corner
++//            onto the end wall: at the vault's springing the blend's
++//            section is the corner's own arc). The face at the end is that
++//            face, and the cap is the section itself, not an intersection
++//            of two surfaces tangent along it. An end point that lies on
++//            no arc is given the edge of that face it lies on, an edge of
++//            the blend's face on its side too; an end point at a vertex of
++//            that face is that vertex only, no arc cut there (the faces
++//            beyond keep their edges up to it). ArcSide is the side whose
++//            point lies on an edge of the face at the end (1 or 2).
++//=======================================================================
++
++static bool ChFi3d_EndSectionOnFace(const TopOpeBRepDS_DataStructure&   DStr,
++                                    const occ::handle<ChFiDS_SurfData>& Fd,
++                                    const bool                          isfirst,
++                                    const TopoDS_Vertex&                Vtx,
++                                    ChFiDS_CommonPoint&                 CV1,
++                                    ChFiDS_CommonPoint&                 CV2,
++                                    const ChFiDS_Map&                   VFMap,
++                                    const double                        tol,
++                                    TopoDS_Face&                        Fv,
++                                    int&                                ArcSide)
++{
++  if (!VFMap.Contains(Vtx) || Fd->IndexOfS1() <= 0 || Fd->IndexOfS2() <= 0 || Fd->Surf() <= 0)
++  {
++    return false;
++  }
++  const occ::handle<Geom_Surface>& S   = DStr.Surface(Fd->Surf()).Surface();
++  const ChFiDS_FaceInterference&   Fi1 = Fd->InterferenceOnS1();
++  const ChFiDS_FaceInterference&   Fi2 = Fd->InterferenceOnS2();
++  if (S.IsNull() || Fi1.PCurveOnSurf().IsNull() || Fi2.PCurveOnSurf().IsNull())
++  {
++    return false;
++  }
++  const gp_Pnt2d     p1 = Fi1.PCurveOnSurf()->Value(Fi1.Parameter(isfirst));
++  const gp_Pnt2d     p2 = Fi2.PCurveOnSurf()->Value(Fi2.Parameter(isfirst));
++  const TopoDS_Shape F1 = DStr.Shape(Fd->IndexOfS1());
++  const TopoDS_Shape F2 = DStr.Shape(Fd->IndexOfS2());
++  for (NCollection_List<TopoDS_Shape>::Iterator itF(VFMap(Vtx)); itF.More(); itF.Next())
++  {
++    TopoDS_Face F = TopoDS::Face(itF.Value());
++    if (F.IsSame(F1) || F.IsSame(F2))
++    {
++      continue;
++    }
++    F.Orientation(TopAbs_FORWARD);
++    // The whole section lies in F.
++    const occ::handle<Geom_Surface> SF = BRep_Tool::Surface(F);
++    bool                            on = !SF.IsNull();
++    for (int k = 0; k <= 4 && on; k++)
++    {
++      const gp_Pnt2d             uv = p1.XY() + (p2.XY() - p1.XY()) * (0.25 * k);
++      const gp_Pnt               P  = S->Value(uv.X(), uv.Y());
++      GeomAPI_ProjectPointOnSurf aPr(P, SF);
++      on = aPr.NbPoints() > 0 && aPr.LowerDistance() <= tol;
++      if (on && k == 2)
++      {
++        double u = 0., v = 0.;
++        aPr.LowerDistanceParameters(u, v);
++        BRepClass_FaceClassifier aCl(F, gp_Pnt2d(u, v), tol);
++        on = aCl.State() == TopAbs_IN || aCl.State() == TopAbs_ON;
++      }
++    }
++    if (!on)
++    {
++      continue;
++    }
++    // Each end point: at a vertex of F, on an edge of F, or put on the edge
++    // of F it lies on (an edge of the blend's face on that side too).
++    TopoDS_Edge        anArc[2];
++    double             aW[2]  = {0., 0.};
++    TopAbs_Orientation aTr[2] = {TopAbs_FORWARD, TopAbs_FORWARD};
++    int                aSide  = 0;
++    bool               ok     = true;
++    for (int j = 1; j <= 2 && ok; j++)
++    {
++      const ChFiDS_CommonPoint& CV = j == 1 ? CV1 : CV2;
++      if (CV.IsVertex())
++      {
++        bool inF = false;
++        for (TopExp_Explorer ex(F, TopAbs_VERTEX); ex.More() && !inF; ex.Next())
++        {
++          inF = ex.Current().IsSame(CV.Vertex());
++        }
++        ok = inF;
++        continue;
++      }
++      if (CV.IsOnArc())
++      {
++        bool inF = false;
++        for (TopExp_Explorer ex(F, TopAbs_EDGE); ex.More() && !inF; ex.Next())
++        {
++          inF = ex.Current().IsSame(CV.Arc());
++        }
++        ok = inF;
++        if (inF && aSide == 0)
++        {
++          aSide = j;
++        }
++        continue;
++      }
++      TopoDS_Face Fj = TopoDS::Face(j == 1 ? F1 : F2);
++      Fj.Orientation(TopAbs_FORWARD);
++      ok = false;
++      for (TopExp_Explorer ex(F, TopAbs_EDGE); ex.More() && !ok; ex.Next())
++      {
++        const TopoDS_Edge& E = TopoDS::Edge(ex.Current());
++        if (BRep_Tool::Degenerated(E))
++        {
++          continue;
++        }
++        TopoDS_Edge EinFj;
++        for (TopExp_Explorer exj(Fj, TopAbs_EDGE); exj.More() && EinFj.IsNull(); exj.Next())
++        {
++          if (exj.Current().IsSame(E))
++          {
++            EinFj = TopoDS::Edge(exj.Current());
++          }
++        }
++        if (EinFj.IsNull())
++        {
++          continue;
++        }
++        double                         f = 0., l = 0.;
++        const occ::handle<Geom_Curve>& C = BRep_Tool::Curve(E, f, l);
++        if (C.IsNull())
++        {
++          continue;
++        }
++        GeomAPI_ProjectPointOnCurve aPr(CV.Point(), C, f, l);
++        if (aPr.NbPoints() == 0 || aPr.LowerDistance() > tol)
++        {
++          continue;
++        }
++        // The contact enters Fj across E at the first end, leaves it at the
++        // last.
++        const ChFiDS_FaceInterference& Fij = j == 1 ? Fi1 : Fi2;
++        const TopAbs_Orientation       Tr  = TopAbs::Compose(Fij.Transition(), EinFj.Orientation());
++        anArc[j - 1] = E;
++        aW[j - 1]    = aPr.LowerDistanceParameter();
++        aTr[j - 1]   = isfirst ? TopAbs::Reverse(Tr) : Tr;
++        ok           = true;
++        if (aSide == 0)
++        {
++          aSide = j;
++        }
++      }
++    }
++    if (!ok || aSide == 0)
++    {
++      continue;
++    }
++    for (int j = 1; j <= 2; j++)
++    {
++      ChFiDS_CommonPoint& CV = j == 1 ? CV1 : CV2;
++      if (!anArc[j - 1].IsNull())
++      {
++        CV.SetArc(tol, anArc[j - 1], aW[j - 1], aTr[j - 1]);
++      }
++      else if (CV.IsVertex())
++      {
++        // A point at the vertex: no arc of it is cut there (the faces beyond
++        // keep their edges at the vertex).
++        const TopoDS_Vertex aV  = CV.Vertex();
++        const gp_Pnt        aP  = CV.Point();
++        const double        aTl = CV.Tolerance();
++        const double        aPr = CV.Parameter();
++        const bool          aHV = CV.HasVector();
++        const gp_Vec        aVc = aHV ? CV.Vector() : gp_Vec();
++        CV.Reset();
++        CV.SetVertex(aV);
++        CV.SetPoint(aP);
++        CV.SetTolerance(aTl);
++        CV.SetParameter(aPr);
++        if (aHV)
++        {
++          CV.SetVector(aVc);
++        }
++      }
++    }
++    Fv      = F;
++    ArcSide = aSide;
++    return true;
++  }
++  return false;
++}
++
+ //=======================================================================
+ // function : PerformRolledPastEnd
+ // purpose  : The end of a lone stripe at a vertex of more than three edges
+@@ -1888,6 +2082,10 @@ void ChFi3d_Builder::PerformOneCorner(const int Index, const bool thePrepareOnSa
+   // arc's part up to the vertex becomes their common edge, on face Fz.)
+   int         ZSide = 0;
+   TopoDS_Face Fz;
++  // (The end section lying in the face at the end, ChFi3d_EndSectionOnFace:
++  // the side whose point lies on an edge of that face.)
++  bool        isEndOnFace = false;
++  int         EndArcSide  = 0;
+   TopoDS_Edge Arcpiv, Arcprol, Arcspine;
+   if (isfirst)
+   {
+@@ -2277,16 +2475,25 @@ void ChFi3d_Builder::PerformOneCorner(const int Index, const bool thePrepareOnSa
+         ChFi3d_CoplanarSplitEndFace(DStr, Fd, CV1, CV2, Vtx, myVEMap, myEFMap, Fv, Fz, ZSide);
+     }
+     if (!inters)
++    {
++      isEndOnFace =
++        ChFi3d_EndSectionOnFace(DStr, Fd, isfirst, Vtx, CV1, CV2, myVFMap, 10. * tolapp3d, Fv, EndArcSide);
++      inters = isEndOnFace;
++    }
++    if (!inters)
+     {
+       PerformIntersectionAtEnd(Index);
+       return;
+     }
+     Bs.Initialize(Fv);
+-    occ::handle<BRepAdaptor_Curve2d> pced = new BRepAdaptor_Curve2d();
+-    pced->Initialize(CV1.Arc(), Fv);
+-    Update(HBs, pced, HGs, Fd->ChangeInterferenceOnS1(), CV1, isfirst);
+-    pced->Initialize(CV2.Arc(), Fv);
+-    Update(HBs, pced, HGs, Fd->ChangeInterferenceOnS2(), CV2, isfirst);
++    if (!isEndOnFace)
++    {
++      occ::handle<BRepAdaptor_Curve2d> pced = new BRepAdaptor_Curve2d();
++      pced->Initialize(CV1.Arc(), Fv);
++      Update(HBs, pced, HGs, Fd->ChangeInterferenceOnS1(), CV1, isfirst);
++      pced->Initialize(CV2.Arc(), Fv);
++      Update(HBs, pced, HGs, Fd->ChangeInterferenceOnS2(), CV2, isfirst);
++    }
+   }
+ 
+ #ifdef OCCT_DEBUG
+@@ -2316,6 +2523,11 @@ void ChFi3d_Builder::PerformOneCorner(const int Index, const bool thePrepareOnSa
+     {
+       pfac1 = p2dbout;
+     }
++    else if (isEndOnFace && CV1.IsVertex())
++    {
++      // (At a vertex of the face at the end, on no arc.)
++      pfac1 = BRep_Tool::Parameters(CV1.Vertex(), Fv);
++    }
+     else
+     {
+       Hc1 = BRep_Tool::CurveOnSurface(CV1.Arc(), Fv, Ubid, Ubid);
+@@ -2329,6 +2541,10 @@ void ChFi3d_Builder::PerformOneCorner(const int Index, const bool thePrepareOnSa
+     {
+       pfac2 = p2dbout;
+     }
++    else if (isEndOnFace && CV2.IsVertex())
++    {
++      pfac2 = BRep_Tool::Parameters(CV2.Vertex(), Fv);
++    }
+     else
+     {
+       Hc2 = BRep_Tool::CurveOnSurface(CV2.Arc(), Fv, Ubid, Ubid);
+@@ -2390,7 +2606,51 @@ void ChFi3d_Builder::PerformOneCorner(const int Index, const bool thePrepareOnSa
+     ChFi3d_Boite(pfac1, pfac2, uu1, uu2, vv1, vv2);
+     ChFi3d_BoundFac(Bs, uu1, uu2, vv1, vv2);
+ 
+-    if (!ChFi3d_ComputeCurves(HGs, HBs, Pardeb, Parfin, Cc, Ps, Pc, tolapp3d, tol2d, tolreached))
++    if (isEndOnFace)
++    {
++      // The cap is the blend's end section, which lies in the face at the
++      // end: on the blend from one contact's end to the other's, on the face
++      // between the points' parameters there.
++      occ::handle<Geom_Curve> C3d;
++      double                  pd = 0., pf = 0., tolr = tolapp3d;
++      ChFi3d_ComputeArete(CV1,
++                          pfil1,
++                          CV2,
++                          pfil2,
++                          DStr.Surface(Fd->Surf()).Surface(),
++                          C3d,
++                          Ps,
++                          pd,
++                          pf,
++                          tolapp3d,
++                          tol2d,
++                          tolreached,
++                          0);
++      if (C3d.IsNull() || Ps.IsNull())
++      {
++        throw Standard_Failure("OneCorner : end section not built");
++      }
++      ChFi3d_ComputeArete(CV1,
++                          pfac1,
++                          CV2,
++                          pfac2,
++                          BRep_Tool::Surface(Fv),
++                          C3d,
++                          Pc,
++                          pd,
++                          pf,
++                          tolapp3d,
++                          tol2d,
++                          tolr,
++                          2);
++      if (Pc.IsNull())
++      {
++        throw Standard_Failure("OneCorner : end section not on the face at the end");
++      }
++      tolreached = std::max(tolreached, tolr);
++      Cc         = new Geom_TrimmedCurve(C3d, pd, pf);
++    }
++    else if (!ChFi3d_ComputeCurves(HGs, HBs, Pardeb, Parfin, Cc, Ps, Pc, tolapp3d, tol2d, tolreached))
+     {
+       throw Standard_Failure("OneCorner : echec calcul intersection");
+     }
+@@ -2454,8 +2714,9 @@ void ChFi3d_Builder::PerformOneCorner(const int Index, const bool thePrepareOnSa
+   int                IShape = DStr.AddShape(Fv);
+   TopAbs_Orientation Et     = TopAbs_FORWARD;
+   // (On a face at the end split in two, Fv holds the arc of the side other
+-  // than ZSide.)
+-  if (ZSide == 0 ? IFadArc == 1 : ZSide == 2)
++  // than ZSide; with the end section in the face at the end, that of
++  // EndArcSide.)
++  if (isEndOnFace ? EndArcSide == 1 : (ZSide == 0 ? IFadArc == 1 : ZSide == 2))
+   {
+     TopExp_Explorer Exp;
+     for (Exp.Init(Fv.Oriented(TopAbs_FORWARD), TopAbs_EDGE); Exp.More(); Exp.Next())
+@@ -2496,6 +2757,36 @@ void ChFi3d_Builder::PerformOneCorner(const int Index, const bool thePrepareOnSa
+ 
+   stripe->SetIndexPoint(ChFi3d_IndexPointInDS(CV1, DStr), isfirst, 1);
+   stripe->SetIndexPoint(ChFi3d_IndexPointInDS(CV2, DStr), isfirst, 2);
++  if (isEndOnFace)
++  {
++    // A side of the end section at the corner's vertex: the spine's edge
++    // goes from the vertex on (as at a singular end, ChFi3d_FilDS), as
++    // no cut of an arc there separates it from the rest.
++    for (int j = 1; j <= 2; j++)
++    {
++      const ChFiDS_CommonPoint& CVj = j == 1 ? CV1 : CV2;
++      if (!CVj.IsVertex() || !CVj.Vertex().IsSame(Vtx))
++      {
++        continue;
++      }
++      const int          IArcspine = DStr.AddShape(Arcspine);
++      TopAbs_Orientation OVtx      = TopAbs_FORWARD;
++      for (ex.Init(Arcspine.Oriented(TopAbs_FORWARD), TopAbs_VERTEX); ex.More(); ex.Next())
++      {
++        if (Vtx.IsSame(ex.Current()))
++        {
++          OVtx = ex.Current().Orientation();
++          break;
++        }
++      }
++      DStr.ChangeShapeInterferences(IArcspine)
++        .Append(ChFi3d_FilVertexInDS(TopAbs::Reverse(OVtx),
++                                     IArcspine,
++                                     stripe->IndexPoint(isfirst, j),
++                                     BRep_Tool::Parameter(Vtx, Arcspine)));
++      break;
++    }
++  }
+ 
+   if (!intcouture)
+   {

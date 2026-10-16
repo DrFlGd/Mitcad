@@ -41,6 +41,10 @@ struct Options {
     /// are checked against its solids, by GlobalId (mitcad#275).
     #[serde(default)]
     reference_ifc: Option<String>,
+    /// Without `reference_ifc`, no IFC export next to the project (of its
+    /// name) is taken as the reference either (mitcad#333).
+    #[serde(default)]
+    no_reference_ifc: bool,
     /// Files of linked models, by the link's file name (the
     /// application's file dialogs).
     #[serde(default)]
@@ -305,11 +309,14 @@ fn summary(report: &Value) -> String {
             );
         }
         text += &format!(
-            "Imported {} bodies: {} saved meshes, {} boxes at a family type's transform, {} boxes; {} placed on a level by elevation\n",
+            "Imported {} bodies: {} saved meshes, {} boxes at a family type's transform, {} boxes; {} meshes of the geometry the file keeps, {} reference bodies, {} boxes hidden; {} placed on a level by elevation\n",
             import["bodies"],
             import["meshes"],
             import["oriented_boxes"],
             import["boxes"],
+            import["geometry_meshes"],
+            import["reference_bodies"],
+            import["hidden_boxes"],
             import["by_elevation"]
         );
         for level in import["levels"].as_array().into_iter().flatten() {
@@ -387,6 +394,7 @@ fn ifc_reference(path: &str) -> Result<mitcad_import::rvt::Reference, String> {
             continue;
         }
         let mut bbox: Option<([f64; 3], [f64; 3])> = None;
+        let mut bodies = Vec::new();
         for inst in instances
             .iter()
             .filter(|i| line.bodies.contains(&i.body.to_string()))
@@ -394,6 +402,14 @@ fn ifc_reference(path: &str) -> Result<mitcad_import::rvt::Reference, String> {
             let Some(shape) = doc.body_shape(inst.body) else {
                 continue;
             };
+            // The body placed, for elements the project keeps no
+            // geometry of (mitcad#333).
+            if let Ok(placed) =
+                mitcad_model::Kernel::transform_shape(kernel, shape, &inst.transform, None)
+                && let Ok(data) = mitcad_model::Kernel::brep_data(kernel, &placed)
+            {
+                bodies.push(data);
+            }
             let Ok(Some(b)) = mitcad_model::Kernel::bounding_box(kernel, shape) else {
                 continue;
             };
@@ -420,6 +436,7 @@ fn ifc_reference(path: &str) -> Result<mitcad_import::rvt::Reference, String> {
                 name: line.name.clone(),
                 volume: line.volume,
                 bbox,
+                bodies,
             },
         );
     }
@@ -473,7 +490,17 @@ impl Document {
         options: &Options,
         progress: &Arc<mitcad_import::Progress>,
     ) -> Result<mitcad_import::rvt::Report, String> {
-        let reference = match &options.reference_ifc {
+        // The reference: the IFC export given, else one next to the project
+        // by its name (mitcad#333).
+        let beside = Path::new(path).with_extension("ifc");
+        let (reference_path, found_beside) = match &options.reference_ifc {
+            Some(r) => (Some(r.clone()), false),
+            None if !options.no_reference_ifc && beside.is_file() => {
+                (Some(beside.display().to_string()), true)
+            }
+            None => (None, false),
+        };
+        let reference = match &reference_path {
             Some(r) => Some(ifc_reference(r)?),
             None => None,
         };
@@ -488,7 +515,44 @@ impl Document {
                 .file
                 .clone()
                 .unwrap_or_else(|| format!("link {}", link.id));
-            let Some(found) = find_link(path, link, options) else {
+            // A linked IFC model (mitcad#333): its cached project model
+            // (`<name>.RVT`) when there is one, else the IFC file itself.
+            let is_ifc = name.to_ascii_lowercase().ends_with(".ifc");
+            let cached = is_ifc
+                .then(|| {
+                    let mut l = link.clone();
+                    l.file = Some(format!("{name}.RVT"));
+                    l.path = None;
+                    find_link(path, &l, options)
+                })
+                .flatten();
+            if is_ifc && cached.is_none() {
+                match find_link(path, link, options) {
+                    Some(found) => {
+                        let read = mitcad_ifc::IfcFile::open_with(
+                            &found,
+                            &mitcad_ifc::ReadOptions::import(),
+                        );
+                        match read {
+                            Ok(ifc) => import_options.ifc_links.push(mitcad_import::rvt::IfcLink {
+                                link: link.clone(),
+                                file: file_name(&found.display().to_string()).to_string(),
+                                ifc,
+                            }),
+                            Err(e) => import_options.missing_links.push((
+                                link.clone(),
+                                format!("{} did not read: {e}", found.display()),
+                            )),
+                        }
+                    }
+                    None => import_options.missing_links.push((
+                        link.clone(),
+                        format!("the IFC model {name} (or its cached {name}.RVT) was not found: its component is empty"),
+                    )),
+                }
+                continue;
+            }
+            let Some(found) = cached.or_else(|| find_link(path, link, options)) else {
                 import_options.missing_links.push((
                     link.clone(),
                     format!("{name} was not found next to the project or where it was given: its component is empty"),
@@ -514,8 +578,15 @@ impl Document {
                 )),
             }
         }
-        mitcad_import::rvt::import_rvt(&mut self.0, file, model, &import_options)
-            .map_err(|e| e.to_string())
+        let mut report = mitcad_import::rvt::import_rvt(&mut self.0, file, model, &import_options)
+            .map_err(|e| e.to_string())?;
+        if found_beside {
+            report.warnings.push(format!(
+                "the IFC export next to the project ({}) is the reference the elements are checked against",
+                file_name(&beside.display().to_string())
+            ));
+        }
+        Ok(report)
     }
 }
 

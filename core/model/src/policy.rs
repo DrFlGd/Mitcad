@@ -280,6 +280,7 @@ fn links(def: &FeatureDef) -> Vec<(LinkKind, &OccurrenceLink)> {
         FeatureDef::SplitBody(s) => s.tool_links.values().collect(),
         FeatureDef::Extrude(x) => x.object_links.values().collect(),
         FeatureDef::ConstructionPlane(p) => p.links.values().collect(),
+        FeatureDef::Derive(d) => d.links.values().collect(),
         _ => Vec::new(),
     };
     let mut out: Vec<(LinkKind, &OccurrenceLink)> = references

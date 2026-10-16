@@ -124,9 +124,6 @@ fn not_translated(object_type: &str) -> Option<&'static str> {
         "MirrorComponent" => {
             "mirrors a component into a new one: not translated (the stored bodies stand in)"
         }
-        "DerivedContext" => {
-            "brings in bodies of another design: not translated (the stored bodies stand in)"
-        }
         "ComponentFromBodies" => {
             "moves bodies into a new component: not translated (the stored bodies stand in)"
         }
@@ -1677,6 +1674,8 @@ impl<K: crate::ImportKernel> Importer<'_, K> {
             (Some(Detail::Primitive(d)), t) => self.primitive(index, t, d),
             (Some(Detail::Coil(d)), _) => self.coil_primitive(index, d),
             (_, "BaseFeature") => Err("a base feature: the file's bodies as they are".to_owned()),
+            // Bodies of other documents (mitcad#324).
+            (_, "DerivedContext") => self.derive(index, item),
             (
                 _,
                 t @ ("CombineFeature"
@@ -2448,13 +2447,42 @@ impl<K: crate::ImportKernel> Importer<'_, K> {
         if d.is_solid == Some(false) {
             return Err("surface extrusions are not supported".to_owned());
         }
+        // Text profiles whose texts the file no longer has (mitcad#332): the
+        // history keeps the extrusion's result, but no sketch has its
+        // profile, so no region of the sketch can stand in for it.
+        if let Some(texts) = d
+            .other
+            .get("_f3d_missing_texts")
+            .and_then(Value::as_array)
+            .filter(|t| !t.is_empty())
+        {
+            let sketch = profiles_of(&d.profile, &d.other)
+                .into_iter()
+                .find_map(|p| match p {
+                    Reference::Profile(p) => p.sketch.flatten(),
+                    _ => None,
+                });
+            return Err(format!(
+                "its profile is {} sketch text{} the file no longer has{}",
+                texts.len(),
+                if texts.len() == 1 { "" } else { "s" },
+                sketch
+                    .map(|s| format!(" (deleted from {s})"))
+                    .unwrap_or_default()
+            ));
+        }
         // The faces of bodies the profile selects (mitcad#169), and the
         // profiles of its sketch.
         let (face_refs, profiles): (Vec<Reference>, Vec<Reference>) =
             profiles_of(&d.profile, &d.other)
                 .into_iter()
                 .partition(|p| matches!(p, Reference::Face(_)));
-        let profile_faces = self.profile_faces(&face_refs);
+        let participants = d
+            .participant_bodies
+            .as_deref()
+            .and_then(|b| self.bodies_of_refs(b))
+            .unwrap_or_default();
+        let profile_faces = self.profile_faces(&face_refs, &participants);
         // The faces are read when each is named by the file's own names
         // (the decoder found it in the history) and is the only face of
         // the replay that fits.
@@ -3133,14 +3161,25 @@ impl<K: crate::ImportKernel> Importer<'_, K> {
     /// The faces of bodies an extrusion's profile selects (mitcad#169),
     /// each with its area (mm²), as the replay has them; none unless every
     /// one is found.
-    fn profile_faces(&self, faces: &[Reference]) -> Vec<(BodyUid, FaceName, f64)> {
+    fn profile_faces(
+        &self,
+        faces: &[Reference],
+        participants: &[BodyUid],
+    ) -> Vec<(BodyUid, FaceName, f64)> {
         let kernel = self.doc.kernel();
         let mut out = Vec::new();
         for f in faces {
             let Reference::Face(fp) = f else {
                 return Vec::new();
             };
-            let found = refs::resolve_face(self.doc, fp).and_then(|(body, face)| {
+            // A face of the bodies the extrusion works on first: where
+            // another body has a face through the same point and plane (a
+            // body the extrusion's own lies against), the faces' order
+            // chose either, and half of a cut's ten profile faces went to
+            // the other body (mitcad#325).
+            let resolved = refs::resolve_face_where(self.doc, fp, &|b| participants.contains(&b))
+                .or_else(|| refs::resolve_face(self.doc, fp));
+            let found = resolved.and_then(|(body, face)| {
                 let shape = self.doc.bodies().into_iter().find(|b| b.uid == body)?.shape;
                 let area = kernel
                     .faces(shape)
@@ -3158,7 +3197,15 @@ impl<K: crate::ImportKernel> Importer<'_, K> {
                 Some((body, face, area))
             });
             match found {
-                Some(f) => out.push(f),
+                Some(f) => {
+                    if crate::tracing() {
+                        eprintln!(
+                            "import: the profile selects {} of {} ({:.4} mm²)",
+                            f.1, f.0, f.2
+                        );
+                    }
+                    out.push(f);
+                }
                 None => {
                     if crate::tracing() {
                         eprintln!(

@@ -50,6 +50,8 @@ pub mod writer;
 pub mod package;
 // The curves edge inputs store beside their recipes (mitcad#306).
 pub mod curve;
+// Where derives' placements without a matrix are (mitcad#324).
+pub mod derive_sources;
 
 use std::path::Path;
 
@@ -266,6 +268,19 @@ pub fn resolve_external_inputs(design: &mut FileDesign, documents: &[inputs::Ext
     if let Some(dump) = &mut design.dump {
         inputs::resolve_external(dump, documents);
     }
+}
+
+/// The placements of the design's derives that keep no matrix, from their
+/// source designs' occurrence trees (mitcad#324): `documents` as for
+/// [`resolve_external_inputs`], the source designs' files among them.
+pub fn resolve_derive_placements(
+    design: &mut FileDesign,
+    documents: &[inputs::ExternalFile<'_>],
+) -> usize {
+    design
+        .dump
+        .as_mut()
+        .map_or(0, |dump| derive_sources::resolve(dump, documents))
 }
 
 /// Decodes every design of an `.f3d` or `.f3z` file.

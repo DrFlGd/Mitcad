@@ -1,0 +1,181 @@
+Mitcad's patch to OCCT 8.0.1, under OCCT's licence:
+SPDX-License-Identifier: LGPL-2.1-only WITH OCCT-exception-1.0
+
+Chamfers and fillets: a contact along a chain of edges of the face the
+blend consumes (mitcad#334).
+
+ChFi3d_ContactsAlongFaceEdges puts a contact that runs along an edge E of
+its face F (a strip as wide as the chamfer or the rounding, consumed) onto
+the face beyond E, along a whole edge (0140) or along a part of it (0148).
+Two cases were left:
+
+- A contact along several edges of F end to end (the strip's far side split
+  at a vertex where nothing else meets it, or where another face does) was
+  along none of them: F kept a strip of no width along them, a face of zero
+  area with open wires. Such a contact's SurfData is now split at the
+  chain's inner vertices (ChFi3d_SplitAtVertexOnLine, as for a closed edge's
+  vertex, 0144), each part along one edge; the chain's first and last edges
+  may go on past the contact's ends.
+- A contact along a part of an edge (the chamfered chain ending inside the
+  strip's far side, the strip going on past the chain's end) whose other
+  end is at a vertex of E kept a point of its own there, while the next
+  SurfData's contact along the next edge of F ended at that vertex: the
+  edges of the face beyond took two vertices at one place and its wires were
+  not closed. That end is now the vertex too, as for a contact along a whole
+  edge.
+
+A boss on a slab 2 wider all round, the boss's foot chamfered (or rounded)
+by 2 along three sides and the corner arcs: the slab's top vanishes along
+them and stays along the fourth side. Before, the result was invalid (and
+with the far side split, one face too many); now it is valid with the exact
+volume.
+
+Upstream: new.
+diff --git a/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_0.cxx b/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_0.cxx
+--- a/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_0.cxx
++++ b/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_0.cxx
+@@ -3329,6 +3329,88 @@ static void ChFi3d_StripeEndAtVertex(TopOpeBRepDS_DataStructure&       DStr,
+   }
+ }
+ 
++// The inner vertex of face F nearest to the start of the contact curve C on
++// [T1, T2] where C runs along a chain of edges of F end to end (not edges
++// of the spine): a vertex V of F strictly inside the contact, on C within
++// Tol, whose two edges in F both lie along C. Its parameter on C in tV.
++static TopoDS_Vertex chainVertexOnContact(const occ::handle<Geom_Curve>&   C,
++                                          const double                     T1,
++                                          const double                     T2,
++                                          const TopoDS_Face&               F,
++                                          const occ::handle<ChFiDS_Spine>& Spine,
++                                          const double                     Tol,
++                                          double&                          tV)
++{
++  const double tmin = std::min(T1, T2), tmax = std::max(T1, T2);
++  // Whether edge E lies on C (on its whole curve: the first and the last
++  // edge of the chain may go on past the contact's ends).
++  const auto along = [&](const TopoDS_Edge& E) {
++    double                        f = 0., l = 0.;
++    const occ::handle<Geom_Curve> aCE = BRep_Tool::Curve(E, f, l);
++    if (aCE.IsNull())
++    {
++      return false;
++    }
++    for (int i = 0; i <= 8; i++)
++    {
++      GeomAPI_ProjectPointOnCurve aProj(aCE->Value(f + (l - f) * i / 8.), C);
++      if (aProj.NbPoints() == 0 || aProj.LowerDistance() > Tol)
++      {
++        return false;
++      }
++    }
++    return true;
++  };
++  NCollection_IndexedDataMap<TopoDS_Shape, NCollection_List<TopoDS_Shape>, TopTools_ShapeMapHasher> aVE;
++  TopExp::MapShapesAndAncestors(F, TopAbs_VERTEX, TopAbs_EDGE, aVE);
++  TopoDS_Vertex aBest;
++  double        aBestDist = RealLast();
++  for (int iv = 1; iv <= aVE.Extent(); iv++)
++  {
++    const TopoDS_Vertex&        V = TopoDS::Vertex(aVE.FindKey(iv));
++    GeomAPI_ProjectPointOnCurve aProj(BRep_Tool::Pnt(V), C, tmin, tmax);
++    if (aProj.NbPoints() == 0 || aProj.LowerDistance() > Tol)
++    {
++      continue;
++    }
++    const double t = aProj.LowerDistanceParameter();
++    if (t <= tmin + Precision::PConfusion() || t >= tmax - Precision::PConfusion())
++    {
++      continue;
++    }
++    NCollection_List<TopoDS_Shape> anEdges;
++    for (NCollection_List<TopoDS_Shape>::Iterator it(aVE(iv)); it.More(); it.Next())
++    {
++      bool onSpine = BRep_Tool::Degenerated(TopoDS::Edge(it.Value()));
++      for (int ie = 1; ie <= Spine->NbEdges() && !onSpine; ie++)
++      {
++        onSpine = Spine->Edges(ie).IsSame(it.Value());
++      }
++      if (onSpine)
++      {
++        anEdges.Clear();
++        break;
++      }
++      if (!containsSame(anEdges, it.Value()))
++      {
++        anEdges.Append(it.Value());
++      }
++    }
++    if (anEdges.Extent() != 2 || !along(TopoDS::Edge(anEdges.First())) || !along(TopoDS::Edge(anEdges.Last())))
++    {
++      continue;
++    }
++    const double aDist = std::abs(t - T1);
++    if (aDist < aBestDist)
++    {
++      aBestDist = aDist;
++      aBest     = V;
++      tV        = t;
++    }
++  }
++  return aBest;
++}
++
+ void ChFi3d_ContactsAlongFaceEdges(TopOpeBRepDS_DataStructure&       DStr,
+                                    const occ::handle<ChFiDS_Stripe>& CorDat,
+                                    const ChFiDS_Map&                 EFMap,
+@@ -3363,6 +3445,24 @@ void ChFi3d_ContactsAlongFaceEdges(TopOpeBRepDS_DataStructure&       DStr,
+         continue;
+       }
+       const TopoDS_Face F = TopoDS::Face(DStr.Shape(anIndex));
++      {
++        // A contact along a chain of edges of F end to end (a strip's far
++        // side split where other faces meet it, the strip consumed): the
++        // SurfData is split at the chain's inner vertices, each part then
++        // along one edge (the parts after it are taken in turn).
++        double              tV = 0.;
++        const TopoDS_Vertex aV = chainVertexOnContact(C, T1, T2, F, aSpine, 0.1 * Tol3d, tV);
++        if (!aV.IsNull())
++        {
++          const occ::handle<ChFiDS_SurfData> aNext = ChFi3d_SplitAtVertexOnLine(DStr, aSpine, Fd, ons, tV, aV, F);
++          if (!aNext.IsNull())
++          {
++            CorDat->ChangeSetOfSurfData()->ChangeSequence().InsertAfter(j, aNext);
++            ons--; // (this side of the shortened Fd again)
++            continue;
++          }
++        }
++      }
+       TopoDS_Edge       E;
+       for (TopExp_Explorer ex(F, TopAbs_EDGE); ex.More() && E.IsNull(); ex.Next())
+       {
+@@ -3522,11 +3622,15 @@ void ChFi3d_ContactsAlongFaceEdges(TopOpeBRepDS_DataStructure&       DStr,
+         Fd->ChangeIndexOfS2(DStr.AddShape(Fv));
+         Fd->SetIndexOfC2(DStr.AddShape(E));
+       }
+-      if (!isPart && !TopExp::FirstVertex(E).IsSame(TopExp::LastVertex(E)))
++      if (!TopExp::FirstVertex(E).IsSame(TopExp::LastVertex(E)))
+       {
+-        // A contact along a whole open edge: its ends, not on an arc, at
+-        // the edge's vertices are those vertices (where the spine's edges
+-        // meet, a contact along a line and an arc of one face's boundary).
++        // A contact along a whole open edge, or along a part of it (the
++        // inner ends are cut below): its ends, not on an arc, at the edge's
++        // vertices are those vertices (where the spine's edges meet, a
++        // contact along a line and an arc of one face's boundary). A part's
++        // end at a vertex kept its point, and the next SurfData's contact,
++        // along the next edge from that vertex, ended at the vertex: the
++        // edges at the vertex took two vertices (wires not closed).
+         // Where such an end is the start or the end of the stripe, the
+         // stripe's point there is that vertex too (ChFi3d_StripeEndAtVertex):
+         // the point the stripe had made for its end stood beside the
+@@ -3539,6 +3643,10 @@ void ChFi3d_ContactsAlongFaceEdges(TopOpeBRepDS_DataStructure&       DStr,
+         // index for a vertex's and read another shape as a vertex.
+         for (const bool isFirst : {true, false})
+         {
++          if (isPart && anInner[isFirst ? 0 : 1])
++          {
++            continue;
++          }
+           ChFiDS_CommonPoint& CP = Fd->ChangeVertex(isFirst, ons);
+           if (CP.IsOnArc() || CP.IsVertex())
+           {

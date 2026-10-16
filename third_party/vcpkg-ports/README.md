@@ -57,9 +57,33 @@ contacts cross part of the way (mitcad#239), 0280 to 0283 build more
 corners where a rounding ends among several faces (mitcad#236),
 0290 and 0291 walk round a corner's vertex through a face met at a point
 and end a rounding past the spine's end where one contact ran off its
-face (mitcad#236), and 0300 gives the pieces of an edge prolonged at a
+face (mitcad#236), 0300 gives the pieces of an edge prolonged at a
 rounding's end across a seam their p-curves on the right face
-(mitcad#239).
+(mitcad#239), 0320 tells where a fillet that is not done stopped, 0321
+builds a closed rounding of several edges that consumes a face all round
+(mitcad#322), 0322 ends an open stripe whose contact runs along a whole
+edge at that edge's vertex without corrupting memory (mitcad#331), 0330
+tells which corner a fillet failed to build at a vertex and why, 0331
+builds a rounding rolled on a straight edge beside a plane as its exact
+cylinder (mitcad#323), 0340 to 0342 end roundings wider than a top or an end
+face, whose balls roll on that face's edge, where the faces at the ends
+cut them (mitcad#236), 0350 to 0352 put a fillet's regularity only on
+edges whose faces are tangent and build chamfers and roundings that
+consume both faces of a closed chain of edges (mitcad#300), 0360 orders
+the edges that leave a vertex tangentially to each other about it when a
+boolean splits a face (mitcad#235), 0380 and 0381 end a walked
+chamfer at a vertex where the face at the end is tangent to both its
+faces and keep a chamfer's guide on its edges (mitcad#263), 0390 and
+0391 let a blend rolling on an edge pass an edge turning towards the ball
+and let the ball rest on the edges of both faces (mitcad#237), 0400 ends a
+rounding that vanishes where its faces come tangent at the vertex where
+its contacts reach it and 0401 splits a rounding's end cut where it
+crosses the seam's line of a periodic face at the end (mitcad#330), 0410
+ends a rounding whose end section lies in the face it runs into
+tangentially (mitcad#236), 0420 rounds a boss's rim on a cylinder whose
+seam runs in steps (mitcad#337), and 0440 builds chamfers and roundings
+whose contact runs along a chain of edges of the face they consume
+(mitcad#334).
 
 - `0006-shapeupgrade-unifysamedomain-seam-search-by-vertex.patch`: the face
   merge after booleans (`ShapeUpgrade_UnifySameDomain`) looks up the edges
@@ -970,7 +994,11 @@ not along the contour (mitcad#308).
   continued the contact and the fillet failed ("Chaining is impossible").
   A face that borders an edge of the spine (`faceAlongSpine`) now
   continues the contact's face whatever its curvature along the spine;
-  0160's test applies to the other faces.
+  0160's test applies to the other faces. It also lets a top rounding go
+  on round vertical corners rounded with a smaller radius than its own
+  (mitcad#297: a rim of tabs and notches with corners rounded with 1 under
+  a rounding of 1.5; there the corner's cylinder bends towards the ball
+  inside the solid).
 
 The patch 0260 goes on with 0241's roundings across a notch (mitcad#307);
 Mitcad's fillets use it.
@@ -1124,6 +1152,330 @@ The patch 0300 goes on with 0150 to 0153 (mitcad#239).
   several mm tolerance, an unorientable end face). They now take the
   intersection's own p-curve on the end face, trimmed at the seam.
 
+The patches 0320 and 0321 come from the split of the fillets the `.f3d`
+import's census found failing along their edges (mitcad#322,
+`core/import/README.md`, *Fillets that fail along their edges*).
+
+- `0320-chfi3d-where-a-fillet-stops.patch`: a fillet that is not done
+  told its faulty contours with a status and its faulty vertices, but not
+  where it stopped. `ChFi3d_Builder::Failure()` (also
+  `BRepFilletAPI_MakeFillet::Failure()`) now gives the stage: a contour's
+  blend finding no start, its walk between two faces or rolling on an edge
+  stopping, a twisted surface or another failure (an exception in the
+  stripe's computation); blends overlapping or crossing on a face that fail
+  when computed again; the blends of two contours intersecting each other
+  (`ChFi3d_StripeEdgeInter`, whose stripe kept the status Ok); a corner, or
+  a corner built in part only. `FailedContour()` is the contour it stopped
+  at. The computation is unchanged; Mitcad's dressup names the stage in
+  its error.
+- `0321-chfi3d-closed-rounding-consuming-its-face-ends-at-the-vertex.patch`:
+  a slot's rim (two lines and two half circles) under a counterbore 0.5
+  wider, rounded or chamfered with 0.5: the blend consumes the ledge between
+  the two all round, each piece's contact running along a whole edge of
+  the ledge (0014's blend on the edge). Those ends become the edges'
+  vertices, but at the closed stripe's start and end the stripe kept the
+  point it had made beside that vertex, and the topological build failed
+  (`TopoDS_Builder::Add`). The stripe's point there is now the vertex, as
+  0014 does for a contact along a closed edge (a round hole built before).
+- `0322-chfi3d-open-stripe-end-at-the-vertex-of-the-edge-its-contact-runs-along.patch`
+  (mitcad#331): the same at the ends of an open stripe, where it corrupted
+  memory. A fin 1.5 thick on a wall, its top and bottom flush with the
+  wall's, the edges round one side rounded with 0.75 and then those round
+  the other side: the second rounding's contacts run along the whole edges
+  the first one left on the fin's top and bottom, up to the wall, and 0014
+  made their ends there the edges' vertices while the stripe kept the
+  indices of its own points. `ChFi3d_FilDS` takes the kind of a stripe's
+  end from its common point, so it put those points' indices into the DS
+  as vertices'; with OCCT's exceptions off (release builds)
+  `ChFi3d_Builder::Compute` then read and updated the tolerance of the
+  DS's shapes of those indices (the solid's, a face's) as vertices', past
+  the ends of those objects, the build failed (`TopoDS_Builder::Add`) and
+  the process crashed later on the corrupted heap (an `.f3d` import, in
+  freeing the fillet's copy of its input or in comparing faces). Now the
+  stripe's index at such an end is the vertex's for open stripes too, and
+  what the DS already has at the old point (the end's curves and edges) is
+  put at the vertex (`ChFi3d_StripeEndAtVertex`); the fin builds, valid,
+  each side's rounding taking off its exact volume.
+
+The patches 0330 and 0331 come from the split of the fillets the `.f3d`
+import's census found failing at a vertex (mitcad#323,
+`core/import/README.md`, *Fillets that cannot end or join at a vertex*).
+
+- `0330-chfi3d-which-corner-a-fillet-fails-at.patch`: a fillet whose
+  corner at a vertex failed told the vertex (`FaultyVertex`, with 0320
+  `Failure_Corner`), but not which corner it tried there nor why. For
+  each faulty vertex `ChFi3d_Builder::FailedCorner(IV)` (also
+  `BRepFilletAPI_MakeFillet`) now gives the corner `PerformFilletOnVertex`
+  chose (a rounding's end, mitred, over several pieces or where more than
+  three sharp edges meet; two or three roundings meeting; more; roundings
+  ending in points), `FailedCornerBlends(IV)` and `FailedCornerEdges(IV)`
+  the roundings and sharp edges meeting there, and
+  `FailedCornerMessage(IV)` the message of the exception it failed with.
+  The computation is unchanged; Mitcad's dressup names the corner and the
+  cause in its error.
+- `0331-chfi3d-rounding-rolled-on-a-straight-edge-exactly.patch`: a
+  rounding wider than the face beside its edge rolls on that face's far
+  edge (0170's rolling ball). Where the ball touches a plane and rolls on
+  a straight edge parallel to it along a straight guide, its centres lie on
+  a line and the rounding is a cylinder; OCCT stored the walked
+  approximation (a B-spline surface and curves). The stored designs have
+  the cylinder, and a later rounding of edges of the result failed on the
+  approximation. The SurfData now gets the cylinder and the contacts'
+  lines, on the same parameters (`ChFi3d_ExactRollOnLine`, after
+  `CompleteData` in the two `PerformSurf` of a constant blend rolling on a
+  restriction, only where the walked contacts lie on the exact ones; the
+  cylinder trimmed in U to the section, as the walked surface is, so that
+  0390's ball at the blend's end is found from its bounds). The
+  edge on the rolled edge, where the rounding meets the face beyond at an
+  angle, gets no regularity with 0350.
+
+The patches 0340 to 0342 go on with the corners where a rounding ends
+(mitcad#236): OnSame ends of roundings wider than the face they end
+against or than their top, whose balls roll on that face's edge (0170).
+
+- `0340-chfi3d-onsame-end-cut-by-the-face-of-the-edge-the-ball-rolls-on.patch`:
+  a ridge on a rod, its lens-shaped end face (2.5 high) rounded with 5: the
+  ball touches the rod and rolls on the lens's edge with the ridge's side,
+  an edge from one end of the spine to the other, and past each end rolls
+  on until it comes tangent to the ridge's side. OCCT took the lens for
+  the face at the end and failed ("bouchon non ecrit", "no point on
+  arc"). Now the ridge's side itself is the face at the end
+  (`ChFi3d_RolledEndOnItsFace`, `PerformOneCorner`): it cuts the blend from
+  the point of tangency to the rod's contact, its edge with the rod
+  prolonged; the rolled edge goes from it on both sides of that point.
+- `0341-chfi3d-rolling-blend-walked-again-across-a-seam-past-its-ends.patch`:
+  the same where the rod's seam runs past an end between the lens's tip and
+  the point of tangency: the walk stopped on the seam (0011 then ends a
+  rolling blend at the spine's end), short of that point. The blend is
+  walked again from its middle with the rod's surface grown, its seam half
+  a period away (`RolledEndToEndAcrossSeam`).
+- `0342-chfi3d-rounding-rolled-on-past-its-edge-cut-by-the-faces-at-the-ends.patch`:
+  an ear on a boss, its top narrower than the radius between the boss and a
+  chamfer, the top's edge with the boss rounded: the ball rolls on the
+  top's edge with the chamfer, whose ends lie on the ear's sides; OCCT
+  turned it about the ends (0171) and rolled it on the sides' edges, and
+  the corners failed or the result was invalid. The blend is walked again
+  rolling on the edge's line, the edge of a strip of the chamfer's surface,
+  up to the spine's ends (`RolledOnProlongedEdge`), and each end is an
+  OnSame corner cut by the ear's side from the edge's end
+  (`ChFi3d_RolledPastEdgeVertex`), also at a vertex of more than three
+  edges where the side meets the boss at the vertex only, their new edge
+  the surfaces' intersection from there (`PerformRolledPastEnd`,
+  `ChFi3d_CurveFromVertexToContact`).
+
+The patches 0350 to 0352 go on with roundings and chamfers that consume a
+face beside their edges (mitcad#300).
+
+- `0350-chfi3d-regularity-only-where-the-faces-are-tangent.patch`: a
+  rounding whose contact runs along the far edge of a face it consumes (a
+  boss's foot rounded as high as the boss) marked that edge, now between
+  the blend and the face beyond (the boss's top, at a right angle), as
+  tangent (`SetRegul` took the face beyond for the image of the consumed
+  face the blend is tangent to); so did a rounding with the walls of a hole
+  cut through it before. A later rounding of such an edge failed: the
+  boss's top edge, one closed edge, was taken for a spine ending at its
+  vertex, and the walk stopped at once ("Path failed", for any radius); at
+  a hole's corner the walk went on past the corner onto the torus. The
+  regularity is now encoded only where `ChFi3d::IsTangentFaces` finds the
+  faces tangent along the edge.
+- `0351-chfi3d-closed-chain-consuming-a-face-all-round.patch`: a pocket's
+  wall foot of four lines and four arcs on a ledge as wide as its chamfer
+  (or rounding): the contact on the ledge is an unbounded line along the
+  ledge's boundary, which the hatcher found inside the ledge only beyond
+  the line's ends; `LineOnBoundary` (0148) now looks at such a line
+  alongside the spine's edge, and the line is hatched on the boundary. And
+  the closed stripe's start, its contacts ending at the vertices of the
+  ledge's edges (0148), keeps those vertices as its points
+  (`ChFi3d_ContactsAlongFaceEdges`); the topological build took the point
+  made before for a vertex (TopoDS_Builder::Add). `IsInput`, asked for
+  those vertices, takes a spine tangent square to the face's edges there
+  as not running into the face (its angle was measured from a null
+  vector). Before, the chamfer failed ("Path failed") or threw.
+- `0352-chfi3d-contact-on-a-face-beyond-at-an-acute-angle.patch`: the
+  transition of a contact put onto the face beyond its face's edge (0014,
+  `ChFi3d_ContactsAlongFaceEdges`) is taken on the side of the edge outside
+  that face, from the edge's direction in it; before, the side toward the
+  other contact, which lies under the face beyond where the blend folds
+  back under it (a convex lip over a wider pocket chamfered as far as its
+  wall's top and its underside's far edge): an invalid shape. The same
+  wrong side made a wall's foot on a flange chamfered as wide as the
+  flange's top, the flange's rim rounded on beyond it tangentially, invalid
+  (mitcad#327).
+
+The patches 0380 and 0381 go on with 0140 to 0149 for chamfers
+(mitcad#263): a chamfer up a crease between a straight side and an arc
+and on over the rim's roundings to the top.
+
+- `0380-chfi3d-chamfer-end-where-the-face-at-the-end-is-tangent-to-both-faces.patch`:
+  the walk reaches the vertex on the top where the chain's edge meets the
+  two rims' edges, along which the roundings join the top tangentially;
+  its contact on the straight side's rounding ends on that rim, the other
+  inside the arc's rounding. The corner by intersection with the top found
+  nothing, the top being tangent to both faces, and the general corner
+  threw in its projection: the chamfer failed. A ruled piece now closes
+  such an end (`ChFi3d_ChamferEndOnTangentFace`, after `WalkedCutToEnd`):
+  from the end section to the point of the other rim as far from the
+  vertex as the section's point on the first, its sides along lines of the
+  top's and of the rounding's parameters; the stripe ends in that point,
+  and `ChFi3d_FilDS` cuts the rim there although the end has a degenerated
+  edge.
+- `0381-chfi3d-chamfer-guide-deformed-by-a-hundredth-of-its-distance-at-most.patch`:
+  `ChFi3d_PerformElSpine` made the chain's guide C2 by removing knots
+  within up to a tenth of its length; along the wall the guide ran 0.03 to
+  0.08 off the crease, and the chamfer's contacts, at its distance from
+  the guide, moved with it. A chamfer's guide now keeps knots whose
+  removal would move it by more than a hundredth of the chamfer's smallest
+  distance (`ChFi3d_ChamferGuideDeformation`); fillets are unchanged.
+
+The patch 0360 lets a boolean split a face where two of its new edges
+leave a vertex tangentially to each other (mitcad#235).
+
+- `0360-bopalgo-wiresplitter-tangent-edges-measured-at-one-distance.patch`:
+  the wire splitter (`BOPAlgo_WireSplitter`) orders the edges at each
+  vertex by their directions, each measured at a step of its own from the
+  vertex: on a circle about sqrt(2 R tol) away, on a B-spline a step of
+  its parameter, often a tenth of that distance. A counterbore cut through
+  an internal thread whose crest lies on the hole's circle splits its end
+  face by the circle and by the thread's section, which leaves the circle
+  tangentially: the circle, measured farther out, had turned more than the
+  section beside it though the section turns faster, the two came out in
+  the wrong order, and the face between them came out with a negative
+  area; the cut left the body empty (a part's counterbores through
+  threaded holes). Edges within 0.1 radians of each other at a vertex are
+  now measured again by the chord to their points at one distance from it
+  (`RefineTangentAngles`).
+
+The patches 0390 and 0391 go on with 0170 to 0172 (mitcad#237): a ball
+rolling on an edge that meets an edge turning towards it, and a ball
+resting on the edges of both faces; `geometry/tests/test_fillet_rolling_ball.cpp`
+checks them with OCCT alone.
+
+- `0390-chfi3d-rolling-ball-touches-the-next-edge-before-the-vertex.patch`:
+  where the edge E1 the ball rolls on ends at a vertex whose next edge E2
+  of the reference face turns towards the ball (a rib's far side that
+  thickens towards the ball, a thin rim's inner edge turning into a spoke),
+  the ball touches E2 before the vertex. The walk rolled on through E2 into
+  the solid up to the vertex, and the next blend started on E2 at the
+  vertex (a rib, radius 3: 2.6 · 10⁻³ off the ball). Now the walk stops
+  where the ball touches E2 (`NextEdgeGap`, `FindConcaveTurn`, with the
+  next edges' curves from `ChFi3d_NextEdges`), `StartSol` goes on rolling on
+  E2 from the ball's contact there (`ChFi3d_ConcaveTurnEdge`) with the same
+  ball, and between the two blends the rounding is that ball: pieces of its
+  sphere whose side on the other face is the shared contact (a degenerated
+  edge, as 0171) and whose other side runs where the sphere cuts the faces
+  beyond E1 and E2, across their common edge (`ChFi3d_ConcaveTurnWedge`).
+  E1 and E2 end at the blends' contacts. Where the edges' contacts lie more
+  than a right angle round the ball from the other contact (the sections
+  rising over the ball's top), the sphere cuts neither face between the
+  sections and the stripe fails.
+- `0391-brepblend-rstrst-rolling-ball-on-two-edges.patch`: where both
+  faces of the rounded edge are narrower than the ball's contacts (a ridge
+  whose roof faces end at sharp eaves), the ball rests on the far edges of
+  both. The overflow start refused it and the fillet failed or became
+  another rounding. `StartSolOverflow` now lets both sides roll where their
+  contacts lie beyond sharp convex edges, on closed contours only (the
+  corners where such a blend meets the faces at an open contour's ends are
+  not made: an open contour fails as before), and the blend between two edges
+  (`BRepBlend_RstRstConstRad`, `BRepBlend_CurvPointRadInv` at an edge's end)
+  is the ball tangent to both (`BallOnTwoCurves`: its centre in both
+  edges' normal planes at the radius from both; the guide only picks the
+  ball, as 0075), its sections the ball's arcs; on a closed guide the walk's
+  period starts where it ended to the left, as for the other walks.
+
+The patches 0400 and 0401 (mitcad#330) fix two exceptions inside a
+rounding's computation; `geometry/tests/test_fillet_corners.cpp` checks
+each with OCCT alone, and each check fails without its patch.
+
+- `0400-chfi3d-rounding-vanishing-at-its-end-stops-at-the-vertex.patch`:
+  where a rounding's two faces come tangent at the end vertex of its spine
+  (a tangency extremity), its walk's last piece may end a little short of
+  the guide's end, where both contacts reach the edges that end at the
+  vertex within the vertex's tolerance (on stored bodies whose edges lie
+  within their tolerance of it). The face beyond them continued the
+  contour, and the stripe went on with a piece from the vertex whose
+  sections, both contacts on that face, had no width; its approximation
+  threw (`BlendFunc::GetMinimalWeights` on a zero angle,
+  "Geom_TrimmedCurve::U1 == U2"). Now such a piece ends the stripe
+  (`ContactsAtTangentEnd`), and the end is the singular corner, a point at
+  the vertex, as where the walk reaches it exactly.
+- `0401-chfi3d-end-cut-across-the-seam-line-of-a-periodic-face.patch`:
+  `PerformOneCorner` split the cut of a rounding's end by a periodic face
+  at the end only where the extrema of the cut's and the seam's 3d curves
+  met within `Precision::Confusion()`. Where the seam starts at the
+  corner's vertex the two curves meet only within the cut's approximation
+  (2.4 · 10⁻⁶ on a gable's ridge ending on a cylinder's seam), or the cut
+  passes just beyond the seam's start within the vertex's tolerance (a
+  stored body): the cut was stored unsplit, running across the seam, the
+  seam was lost and the face came out unorientable (or the body without
+  its floor). Now the cut is also split where its curve on the face
+  crosses the seam's line (`ChFi3d_CutCrossesSeamLine`): at the seam's end
+  vertex where it passes within that vertex's tolerance (the seam keeps
+  its vertex), else at the seam's point there as before; the pieces'
+  curves on the face are the cut's own, each in the period of its arc.
+
+The patch 0410 goes on with the corners where a rounding ends (mitcad#236,
+sixth round); `geometry/tests/test_fillet_corners.cpp` checks it with OCCT
+alone.
+
+- `0410-chfi3d-rounding-ending-in-the-face-it-runs-into.patch`: a vault's
+  end edge rounded with the radius of the block's rounded vertical corners
+  under it. The ball overflows the corners onto the end face, and where the
+  vault springs tangentially from the side walls the blend's end section is
+  the corner's own quarter circle: the blend runs on into the corner
+  tangentially. OCCT found no face at the end holding both end points (one
+  is the vertex, the other lies on the end face's edge with the corner, on
+  no arc), went on to its corner of several faces and failed there
+  ("Failed to find edge"). Now `ChFi3d_EndSectionOnFace` (in
+  `PerformOneCorner`, not OnSame, where no face at the end is found
+  otherwise) takes the face at the vertex that holds the whole end section
+  for the face at the end, gives a point on no arc the edge of that face it
+  lies on (with the transition of a contact crossing it), and keeps a point
+  at the vertex on no arc, so that the faces beyond keep their edges up to
+  it; the cap is the section itself, not the intersection of two surfaces
+  tangent along it, and the spine's edge is cut at the vertex as at a
+  singular end. A walk that reached the spine's end vertex with one contact
+  at a section before the guide's end failed on the next step from there
+  and invalidated the stripe; the blend now ends there
+  (`ChFi3d_ContactAtSpineEnd` in `PerformSetOfSurfOnElSpine`).
+
+The patch 0420 (mitcad#337) rounds a closed edge on a cylinder whose seam
+runs in steps; `geometry/tests/test_fillet_kernel.cpp` checks it with OCCT
+alone.
+
+- `0420-chfi3d-kpart-round-a-closed-edge-on-a-face-with-a-stepped-seam.patch`:
+  two coaxial cylinders of one radius joined with their seams at different
+  angles (a boss extruded on in a second step) merge into one face whose
+  seam runs up the first seam, along the circle between the parts and up
+  the second one. The analytic rounding (a torus) of the boss's end circle
+  has the circle's parameters, one period round it; where the end part
+  extends before the first seam in the face's parameters (the second seam
+  at a smaller angle), the split of the blend into the face's domain
+  (`SplitKPart`) found that domain a period off, the piece covered half
+  the spine and the walk for the rest failed. The tangency line on the
+  face is now moved by those whole periods of the surface, and its
+  domains with it (`DomainsIntoPeriod`). Left: with a radius smaller than
+  the end part's height (the contact above the step), OCCT's rebuild of
+  the cylinder keeps one of the step's two uses, and the result does not
+  check valid (it failed before; the dressup rejects it as before).
+
+The patch 0440 goes on with 0148 and 0351 for chamfers and roundings that
+consume a strip beside their edges (mitcad#334): a boss on a slab 2 wider,
+the boss's foot chamfered by 2 along three sides and its corner arcs, the
+slab's top going on along the fourth side.
+
+- `0440-chfi3d-contact-along-a-chain-of-edges-of-a-consumed-strip.patch`:
+  `ChFi3d_ContactsAlongFaceEdges` took a contact along a whole edge of its
+  face or along a part of one. A contact along several edges end to end
+  (the strip's far side split at a vertex) was along none of them, and the
+  strip stayed as a face of no width; such a contact's SurfData is now split
+  at the chain's inner vertices (`ChFi3d_SplitAtVertexOnLine`, as 0144 does
+  at a closed edge's vertex), each part along one edge. And a contact along
+  a part of an edge (starting inside it, where the chamfered chain ends)
+  kept its own point at its other end, the edge's vertex, where the next
+  contact began at the vertex: the slab's walls took two vertices there and
+  their wires were not closed. That end is now the vertex, as for a contact
+  along a whole edge. Before, the results were invalid; fillets likewise.
+
 Each patch has a report for OCCT, with a reproduction that uses OCCT alone
 and measurements: mitcad#84 (0006), mitcad#90 (0007), mitcad#91 (0008) and
 mitcad#92 (0009); for 0010 to 0019 and 0050 to 0077, mitcad#121 and the tests in
@@ -1139,12 +1491,15 @@ without the patch; for 0090 and 0091, mitcad#160 and
 `geometry/tests/test_chamfer_kernel.cpp`, which aborts without them; for
 0120 and 0121, mitcad#119 and `geometry/tests/test_large_bodies.cpp`, whose
 statuses are OCCT's without them; for 0130 to 0139, 0210 to 0219,
-0280 to 0289 and 0290 to 0299, mitcad#236 and `geometry/tests/test_fillet_corners.cpp`,
-whose tests of 0280 to 0283, 0290 and 0291 each fail without their patch; for 0140 to 0149, mitcad#240, mitcad#263 and
-`geometry/tests/test_chamfer_overflow.cpp`; for 0150 to 0159, mitcad#239
+0280 to 0289, 0290 to 0299, 0340 to 0349 and 0410 to 0419, mitcad#236 and `geometry/tests/test_fillet_corners.cpp`,
+whose tests of 0280 to 0283, 0290, 0291, 0340 to 0342 and 0410 each fail without their patch; for 0360, mitcad#235 and
+the split by tangent curves in `geometry/tests/test_boolean.cpp`, which fails without it; for 0140 to 0149, mitcad#240, mitcad#263 and
+`geometry/tests/test_chamfer_overflow.cpp`; for 0380 and 0381, mitcad#263
+and the rounded crease in `geometry/tests/test_chamfer_overflow.cpp`,
+which fails without either; for 0150 to 0159, mitcad#239
 and `geometry/tests/test_fillet_results.cpp`; for 0160, mitcad#238 and the
 rounded-rim tests in `geometry/tests/test_fillet_overflow.cpp`, which fail
-without it; for 0170 to 0179, mitcad#237
+without it; for 0170 to 0179 and 0390 to 0399, mitcad#237
 and `geometry/tests/test_fillet_rolling_ball.cpp`, which fails without them;
 for 0180, mitcad#241 and `geometry/tests/test_fillet_chains.cpp`; for 0190,
 mitcad#261 and the turned-disc test in
@@ -1155,15 +1510,37 @@ mitcad#261 and the turned-disc test in
 `geometry/tests/test_boolean.cpp`, which fails without it; for 0240 and
 0241, mitcad#239 and the seam and notch tests in
 `geometry/tests/test_fillet_results.cpp`, which fail without them; for
-0250, mitcad#308 and the chamfered box with rounded corners in
-`geometry/tests/test_fillet_overflow.cpp`, which fails without it; for
+0250, mitcad#308, mitcad#297 and the chamfered box with rounded corners and
+the box whose top rounding is larger than its rounded corners in
+`geometry/tests/test_fillet_overflow.cpp`, which fail without it; for
 0260, mitcad#307 and the rounding carried across a notch in
 `geometry/tests/test_fillet_results.cpp`, which fails without it; for
 0270 and 0271, mitcad#239 and the ribs and the slot rounded to a full
 round and the narrowing top and channel in
 `geometry/tests/test_fillet_results.cpp`, which fail without them; for
 0300, mitcad#239 and the rib's foot rounded across the rod's seam in
-`geometry/tests/test_fillet_results.cpp`, which fails without it.
+`geometry/tests/test_fillet_results.cpp`, which fails without it; for
+0320 and 0321, mitcad#322 and the tests of where a fillet stops and of the
+slot's rim rounded as wide as its ledge in
+`geometry/tests/test_fillet_kernel.cpp` (the first needs 0320's API to
+compile, the second fails without 0321); for 0322, mitcad#331 and the fin
+whose sides are rounded one after the other in the same file, which fails
+without it; for 0330 and 0331, mitcad#323 and the tests of which corner a
+fillet failed at and of the block's top edge rounded wider than its side
+in the same file (the first needs 0330's API to compile, the second fails
+without 0331); for
+0350, mitcad#300 and the boss's top rounded after its foot in
+`geometry/tests/test_fillet_overflow.cpp`; for 0351 and 0352, mitcad#300
+and the stepped pockets' wall feet in
+`geometry/tests/test_chamfer_overflow.cpp` (for 0352 also mitcad#327's
+flange with a rounded rim there); for 0400 and 0401, mitcad#330
+and the valley whose floor's rounding vanishes short of its end and the
+gable's ridge ending on a cylinder's seam in
+`geometry/tests/test_fillet_corners.cpp`; for 0420, mitcad#337 and the
+boss's rim rounded across a stepped seam in
+`geometry/tests/test_fillet_kernel.cpp`; for 0440, mitcad#334 and the
+boss on a slab in `geometry/tests/test_chamfer_overflow.cpp`; each fails
+without its patch.
 Sending them upstream is the
 maintainers' step. When the
 baseline moves to a newer OCCT, check which of the changes OCCT has made;

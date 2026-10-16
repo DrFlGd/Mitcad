@@ -25,9 +25,9 @@ cmake_minimum_required(VERSION 3.24)
 set(designs
     # A circuit board with a pole round it (150 items, 78 occurrences):
     # its fillet between the pole's chamfer and a band 0.3 mm high where
-    # flats cut the pole fails in the geometry kernel also on the file's
-    # own bodies (mitcad#311).
-    "e3c34193|Revolve1,Revolve2,Revolve3,Fillet5,Extrude8,Extrude11,Sketch12,Plane1,Fillet10|Fillet9")
+    # flats cut the pole runs over the flats: built with them filled and cut
+    # out again (mitcad#311). Nothing falls back.
+    "e3c34193|Revolve1,Revolve2,Revolve3,Fillet5,Extrude8,Extrude11,Sketch12,Plane1,Fillet9,Fillet10|")
 
 # Seconds as the trace gives them (two decimals) in hundredths.
 function(hundredths seconds out)

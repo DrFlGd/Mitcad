@@ -3,7 +3,10 @@
 //! content id under `MITCAD_RVT_CORPUS`; skipped without it), on the mock
 //! kernel: every building element the reference reader lists (its 970
 //! elements but the rooms, which are spaces) comes in as a body named after
-//! it, in the component of the level the reference names.
+//! it, in the component of the level the reference names; its doors,
+//! windows, curtain panels and mullions and furniture as features or
+//! meshes of the geometry the file keeps (mitcad#333), every box with its
+//! reason.
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -92,6 +95,48 @@ fn the_mit_project_by_level() {
         compared += 1;
     }
     assert_eq!(compared, 854);
+
+    // The family elements come in with their geometry, not as boxes
+    // (mitcad#333): doors, windows, curtain panels and mullions, furniture
+    // (the members of the placed groups among them).
+    let mut by_category: HashMap<&str, usize> = HashMap::new();
+    for line in &report.elements {
+        let wanted = [
+            "OST_Doors",
+            "OST_Windows",
+            "OST_CurtainWallPanels",
+            "OST_CurtainWallMullions",
+            "OST_Furniture",
+        ];
+        if wanted.contains(&line.category.as_str()) {
+            assert!(
+                matches!(line.outcome.as_str(), "mesh" | "features"),
+                "{line:?}"
+            );
+            *by_category.entry(line.category.as_str()).or_default() += 1;
+        }
+        // A box says why, and is hidden unless structural.
+        if line.outcome == "box" {
+            assert!(line.notes.iter().any(|n| n.contains("box: ")), "{line:?}");
+            assert_eq!(
+                line.hidden,
+                line.kind == "other" || !mitcad_import::rvt::plan::structural(&line.kind),
+                "{line:?}"
+            );
+        }
+    }
+    for (category, least) in [
+        ("OST_Doors", 185),
+        ("OST_Windows", 7),
+        ("OST_CurtainWallPanels", 5000),
+        ("OST_CurtainWallMullions", 6000),
+        ("OST_Furniture", 16),
+    ] {
+        assert!(
+            by_category.get(category).copied().unwrap_or(0) >= least,
+            "{category}: {by_category:?}"
+        );
+    }
     eprintln!(
         "{PROJECT}: {} bodies ({} meshes, {} oriented boxes, {} boxes) on {} levels, {} by elevation; \
          the reference's {compared} building elements each on its level",

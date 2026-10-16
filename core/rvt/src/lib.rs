@@ -14,11 +14,14 @@
 //! - [`partition`]: the element records of the partition streams;
 //! - [`elements`]: the element table and typed views of the elements
 //!   (levels, categories, families and types, materials, transforms,
-//!   bounding boxes).
+//!   bounding boxes);
+//! - [`brep`]: the elements' geometry as the file keeps it (B-reps in
+//!   their faces' parameters, types placed by transforms).
 //!
-//! There is no geometry here: the import builds bodies from these views
-//! through the model's geometry kernel.
+//! The import builds bodies from these through the model's geometry
+//! kernel.
 
+pub mod brep;
 pub mod building;
 pub mod categories;
 pub mod elements;
@@ -37,7 +40,7 @@ pub use mitcad_cfb as cfb;
 use mitcad_cfb::{CfbError, CompoundFile, EntryKind};
 
 use crate::info::{BasicFileInfo, ExternalFile, PartAtom};
-use crate::partition::Partition;
+use crate::partition::{Documents, Partition};
 use crate::schema::Schema;
 
 /// The stream that holds the preview image (as the files name it).
@@ -235,6 +238,19 @@ impl RvtFile {
     pub fn partition(&self, number: u32, schema: &Schema) -> Result<Partition, RvtError> {
         let raw = self.raw(&format!("/Partitions/{number}"))?;
         Partition::read(number, &gzip::strip_pages(&raw), schema.id_width)
+            .map_err(|e| RvtError::Stream(format!("Partitions/{number}: {e}")))
+    }
+
+    /// The documents a partition carries after its own chains (the loaded
+    /// families'), the whole stream inflated.
+    pub fn documents(
+        &self,
+        number: u32,
+        schema: &Schema,
+        families: bool,
+    ) -> Result<Documents, RvtError> {
+        let raw = self.raw(&format!("/Partitions/{number}"))?;
+        Documents::read(number, &gzip::strip_pages(&raw), schema.id_width, families)
             .map_err(|e| RvtError::Stream(format!("Partitions/{number}: {e}")))
     }
 

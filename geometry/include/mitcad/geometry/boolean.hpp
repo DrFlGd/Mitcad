@@ -40,7 +40,11 @@ struct BooleanResult {
 // geometric tolerance: a tool that touches no target still joins those
 // within `within` of it, and a join whose result is invalid is retried with
 // a fuzzy value of up to `within`. Each takes the smallest fuzzy value that
-// works; a join that works exactly stays exact.
+// works; a join that works exactly stays exact. It widens a Cut alike
+// (mitcad#235): a cut of a target that fails exactly (an error, an invalid
+// result, faces its result's solids could not be built with, or pieces of
+// the tool left inside the body) is retried with the smallest fuzzy value
+// up to `within` that gives a valid result of all its faces.
 BooleanResult boolean(BooleanOp op, const std::vector<const Shape*>& targets, const Shape& tool,
                       double within = 0.0);
 

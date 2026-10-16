@@ -1,0 +1,76 @@
+Mitcad's patch to OCCT 8.0.1, under OCCT's licence:
+SPDX-License-Identifier: LGPL-2.1-only WITH OCCT-exception-1.0
+
+Chamfers and fillets: a contact along the edge of a face beyond that the
+blend meets at an acute angle (mitcad#300).
+
+ChFi3d_ContactsAlongFaceEdges puts a contact that runs along an edge E of
+its face onto the face beyond E (Fv), with a transition on Fv. It took the
+side of the contact where the blend lies as the side toward the other
+contact, projected onto Fv: outside Fv where the blend meets Fv at an
+obtuse angle. A convex edge chamfered as far as the edges of both its faces
+where one meets the face beyond at a right angle (the lip of an opening, a
+narrow upper opening over a wider pocket: the lip's inner wall and its
+underside both vanish; a tab as wide and as high as its edge's chamfer)
+gives an acute angle: the chamfer folds back under Fv, the other contact
+lies under Fv's material, and Fv got a transition into itself (an invalid
+shape of 18 faces where 23 were due). The side outside Fv is now taken
+from E's direction in Fv (Fv lies on the left of its edges about its
+parametric normal).
+
+Upstream: new.
+diff --git a/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_0.cxx b/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_0.cxx
+index 5e9bcaf..39982c6 100644
+--- a/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_0.cxx
++++ b/src/ModelingAlgorithms/TKFillet/ChFi3d/ChFi3d_Builder_0.cxx
+@@ -3410,7 +3410,49 @@ void ChFi3d_ContactsAlongFaceEdges(TopOpeBRepDS_DataStructure&       DStr,
+       }
+       const gp_Vec aToBlend(aPm, aPo);
+       const gp_Vec aBF = aToBlend - gp_Vec(NF) * aToBlend.Dot(gp_Vec(NF));
+-      const gp_Vec aBv = aToBlend - gp_Vec(Nv) * aToBlend.Dot(gp_Vec(Nv));
++      gp_Vec       aBv = aToBlend - gp_Vec(Nv) * aToBlend.Dot(gp_Vec(Nv));
++      {
++        // The side of E outside Fv, from E's direction in Fv: the blend may
++        // fold back under Fv (a convex edge chamfered as far as an edge of
++        // its face where that face meets Fv at an acute angle, the lip of an
++        // opening: the other contact lies under Fv's material), where the
++        // other contact's side is not the side outside Fv.
++        TopoDS_Face aFvF = Fv;
++        aFvF.Orientation(TopAbs_FORWARD);
++        for (TopExp_Explorer ex(aFvF, TopAbs_EDGE); ex.More(); ex.Next())
++        {
++          if (!ex.Current().IsSame(E)
++              || (ex.Current().Orientation() != TopAbs_FORWARD && ex.Current().Orientation() != TopAbs_REVERSED))
++          {
++            continue;
++          }
++          double                        fe = 0., le = 0.;
++          const occ::handle<Geom_Curve> aCE = BRep_Tool::Curve(E, fe, le);
++          if (aCE.IsNull())
++          {
++            break;
++          }
++          GeomAPI_ProjectPointOnCurve aPrE(aPm, aCE, fe, le);
++          if (aPrE.NbPoints() == 0)
++          {
++            break;
++          }
++          gp_Pnt aPe;
++          gp_Vec aTe;
++          aCE->D1(aPrE.LowerDistanceParameter(), aPe, aTe);
++          if (ex.Current().Orientation() == TopAbs_REVERSED)
++          {
++            aTe.Reverse();
++          }
++          // (Fv lies on the left of its edges about its parametric normal.)
++          const gp_Vec anOut = aTe.Crossed(gp_Vec(Nv));
++          if (anOut.Magnitude() > gp::Resolution())
++          {
++            aBv = anOut;
++          }
++          break;
++        }
++      }
+       const double aSF = gp_Vec(NF).Crossed(aT).Dot(aBF);
+       const double aSv = gp_Vec(Nv).Crossed(aT).Dot(aBv);
+       if (std::abs(aSF) <= gp::Resolution() || std::abs(aSv) <= gp::Resolution())

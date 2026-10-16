@@ -676,9 +676,7 @@ void CommandSession::setPresenter(CommandPresenter& presenter) {
     }
   }
   const QVector<Slot> shown = slotsOf(true);
-  m_selectionsComplete = !std::any_of(shown.begin(), shown.end(), [this](const Slot& s) {
-    return s.def->type == InputDef::Type::Selection && m_state.items(s.key).size() < s.def->min;
-  });
+  m_selectionsComplete = selectionsSatisfied();
   for (const Slot& slot : shown) {
     if (slot.def->type == InputDef::Type::Selection) {
       m_shownSelections.insert(slot.key);
@@ -903,6 +901,27 @@ void CommandSession::picked(const Selection& items, Qt::KeyboardModifiers modifi
   }
   selectionChanged(key);
   advanceIfFull();
+  moveKeyboardToValues();
+}
+
+bool CommandSession::selectionsSatisfied() const {
+  const QVector<Slot> shown = slotsOf(true);
+  return !std::any_of(shown.begin(), shown.end(), [this](const Slot& s) {
+    return s.def->type == InputDef::Type::Selection && m_state.items(s.key).size() < s.def->min;
+  });
+}
+
+// A command that starts with a selection has no field to type in until the
+// required picks are there: then the first value gets the keyboard, its
+// text selected. Not while a field has it already, nor after the user chose
+// a field himself (mitcad#338).
+void CommandSession::moveKeyboardToValues() {
+  if (m_done || !m_presenter || m_valueKeyboard || m_valueTouched || !selectionsSatisfied()) {
+    return;
+  }
+  m_autoFocusing = true;
+  m_presenter->focusFirstValue();
+  m_autoFocusing = false;
 }
 
 void CommandSession::advanceIfFull() {

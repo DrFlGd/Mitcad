@@ -268,6 +268,10 @@ pub struct DesignReport {
     /// exact state do with the bodies that match it (mitcad#283).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub retry_question: Option<RetryQuestionReport>,
+    /// The design's bodies by the body objects the file names them by: what
+    /// a design that derives them names (mitcad#324).
+    #[serde(skip)]
+    pub body_entities: BTreeMap<u64, mitcad_model::BodyUid>,
 }
 
 /// A document a design refers to (mitcad#196; filled in by the caller that

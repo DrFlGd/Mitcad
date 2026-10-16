@@ -1100,7 +1100,11 @@ between two walls), so an edit highlights what the feature uses.
   common seam, `virtual_sharp`; where the kernel joined their caps into one
   face, a click on each side of the seam) or an edge of each at the bend
   (placed sheets, `tangent_ports`; another body becomes `moving_body`), Angle,
-  Flip, overrides.
+  Flip, overrides. Bend Type Double Bend (mitcad#288): an edge each of two
+  sheets in parallel planes joined by a jog (`port_mode: "double"`), Whole
+  Face (`fixed`: the Fixed or the Moving edge's face keeps all its material),
+  the angle of each of the two bends without Flip; editing a double bend
+  loads it as one.
 - **Fold** (`sheet.fold`): the flat face, a sketch line on it, Fixed Side,
   Angle, Flip, Position, overrides.
 - **Corner Round**, **Corner Chamfer** (`sheet.corner_round`,

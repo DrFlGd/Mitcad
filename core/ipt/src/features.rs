@@ -786,6 +786,12 @@ fn profiles(
             .collect()
     });
     // The boundaries the file selected, for the sketch's curves on them.
+    if let (Some(s), Some(m)) = (sketch, m) {
+        cx.profiles
+            .borrow_mut()
+            .selected
+            .extend(selections.iter().map(|&selection| (s, selection, m)));
+    }
     if let (Some(s), Some(each), Some(patch)) = (sketch, &each, patch) {
         let mut p = cx.profiles.borrow_mut();
         p.outlines.extend(
@@ -811,6 +817,13 @@ fn profiles(
     let measured: Option<Vec<crate::profile::Measured>> = each
         .and_then(|each| each.into_iter().collect::<Option<Vec<_>>>())
         .and_then(|all| {
+            // A selection within another one and along its boundary adds
+            // nothing to it (`profile::subsumed`).
+            let all: Vec<crate::profile::Measured> = all
+                .iter()
+                .filter(|m| !all.iter().any(|o| crate::profile::subsumed(o, m)))
+                .cloned()
+                .collect();
             let mut distinct: Vec<crate::profile::Measured> = Vec::new();
             for m in &all {
                 if !distinct.iter().any(|d| same(d, m)) {
@@ -1362,6 +1375,50 @@ pub fn rectangular_pattern(
         .copied()
         .filter(|&p| cx.dc.is(p, &PATTERN_DIRECTION))
         .collect();
+    if directions.is_empty()
+        && let Some(read) = other_directions(cx, &props, &counts, &spacings)
+    {
+        let directions = read.len();
+        for (k, v) in read.into_iter().enumerate() {
+            let (quantity, distance, vector) = [
+                ("quantityOne", "distanceOne", "directionOne"),
+                ("quantityTwo", "distanceTwo", "directionTwo"),
+            ][k];
+            d[quantity] = cx
+                .parameter(Some(counts[k]), &mut t.parameters)
+                .ok_or("a count")?;
+            d[distance] = cx
+                .parameter(Some(spacings[k]), &mut t.parameters)
+                .ok_or("a spacing")?;
+            d[vector] = json!(v);
+        }
+        let count = |k: usize| {
+            cx.params
+                .by_record(counts[k])
+                .map(|p| p.value.round() as u64)
+        };
+        let (one, two) = (
+            count(0).ok_or("a count")?,
+            if directions > 1 {
+                count(1).ok_or("a count")?
+            } else {
+                1
+            },
+        );
+        match props
+            .iter()
+            .find(|&&p| cx.dc.is(p, &PATTERN_SKIPPED))
+            .map(|&p| skipped_elements(cx, p, one, two))
+        {
+            Some(Some(ids)) => d["suppressedElementsIds"] = json!(ids),
+            Some(None) => t
+                .notes
+                .push("its skipped elements were not read".to_owned()),
+            None => {}
+        }
+        t.detail = d;
+        return Ok(t);
+    }
     for (k, (quantity, distance, vector)) in [
         ("quantityOne", "distanceOne", "directionOne"),
         ("quantityTwo", "distanceTwo", "directionTwo"),
@@ -1399,6 +1456,120 @@ pub fn rectangular_pattern(
     }
     t.detail = d;
     Ok(t)
+}
+
+/// The elements a rectangular pattern leaves out (`bef06e8d…`, mitcad#288).
+pub const PATTERN_SKIPPED: [u8; 16] = type_id("bef06e8d354cc7aad7c88db7ea9b0ffb");
+
+/// The elements a rectangular pattern leaves out (`bef06e8d…`: after the
+/// prefix a list of kind 4: u32 0x30000004, the count, 8 bytes when not
+/// empty, then per element u32 its place along the second direction and
+/// u32 its place along the first, both from 1) as Mitcad's element numbers
+/// (`k1 + n1 k2`, from 0) for `one` × `two` elements. None when a place is
+/// outside the pattern or names the original.
+fn skipped_elements(cx: &Context, record: usize, one: u64, two: u64) -> Option<Vec<u64>> {
+    let mut r = cx.dc.body(record);
+    r.skip(cx.dc.prefix_len()).ok()?;
+    if r.u32().ok()? != 0x3000_0004 {
+        return None;
+    }
+    let n = r.u32().ok()? as usize;
+    if n == 0 {
+        return Some(Vec::new());
+    }
+    r.skip(8).ok()?;
+    let mut ids = Vec::with_capacity(n);
+    for _ in 0..n {
+        let (second, first) = (u64::from(r.u32().ok()?), u64::from(r.u32().ok()?));
+        if !(1..=one).contains(&first) || !(1..=two).contains(&second) || (first, second) == (1, 1)
+        {
+            return None;
+        }
+        ids.push(first - 1 + one * (second - 1));
+    }
+    ids.sort_unstable();
+    Some(ids)
+}
+
+/// A path a rectangular pattern follows (`aa7b97a5…`, mitcad#288).
+pub const PATTERN_PATH: [u8; 16] = type_id("aa7b97a57045795897b51396ffc5d631");
+
+/// The directions of a rectangular pattern stored without a pattern
+/// direction record (mitcad#288), in the order of its counts and spacings:
+/// directions `40df52ce…` (a unit vector each), or a path `aa7b97a5…`
+/// (below). None when any of the pattern's booleans is set (which of them
+/// would reverse a direction is not known: none is set in the patterns
+/// seen), when the directions and the counts do not pair up, or when a
+/// path's copies leave its first line.
+fn other_directions(
+    cx: &Context,
+    props: &[usize],
+    counts: &[usize],
+    spacings: &[usize],
+) -> Option<Vec<[f64; 3]>> {
+    if props
+        .iter()
+        .any(|&p| cx.dc.is(p, &BOOLEAN) && cx.boolean(Some(p)) != Some(false))
+    {
+        return None;
+    }
+    let vectors: Vec<[f64; 3]> = props
+        .iter()
+        .filter(|&&p| cx.dc.is(p, &DIRECTION))
+        .map(|&p| cx.direction(Some(p)))
+        .collect::<Option<_>>()?;
+    let paths: Vec<usize> = props
+        .iter()
+        .copied()
+        .filter(|&p| cx.dc.is(p, &PATTERN_PATH))
+        .collect();
+    let read = match (vectors.is_empty(), paths.as_slice()) {
+        (false, []) => vectors,
+        (true, [path]) => {
+            let value = |r: usize| cx.params.by_record(r).map(|p| p.value);
+            let reach = (value(*counts.first()?)?.round() - 1.0) * value(*spacings.first()?)?;
+            vec![path_direction(cx, *path, reach)?]
+        }
+        _ => return None,
+    };
+    (!read.is_empty()
+        && read.len() <= 2
+        && counts.len() >= read.len()
+        && spacings.len() >= read.len())
+    .then_some(read)
+}
+
+/// The direction of a pattern along a path (`aa7b97a5…`: u32 -1, a boolean,
+/// the start point, u32 n, then n segments, each u16, u32 23 (a line), its
+/// start point and its vector (cm), then the end point, a byte and the
+/// selected edge's item) *(seen: one pattern of a major-16 part, a closed
+/// loop of four lines; later majors are read after their prefix, not
+/// seen)*: the first line's direction from the start, reversed when the
+/// boolean is set, where the copies (`reach` cm from the original) stay on
+/// that line.
+fn path_direction(cx: &Context, record: usize, reach: f64) -> Option<[f64; 3]> {
+    let mut r = cx.dc.body(record);
+    r.skip(cx.dc.prefix_len()).ok()?;
+    if r.u32().ok()? != u32::MAX {
+        return None;
+    }
+    let flip = cx.boolean(r.reference().ok()?)?;
+    r.reference().ok()?;
+    if r.u32().ok()? == 0 {
+        return None;
+    }
+    r.u16().ok()?;
+    if r.u32().ok()? != 23 {
+        return None;
+    }
+    r.skip(24).ok()?;
+    let v = [r.f64().ok()?, r.f64().ok()?, r.f64().ok()?];
+    let length = (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt();
+    if !(reach >= 0.0 && reach <= length + 1e-9) {
+        return None;
+    }
+    let v = unit(v)?;
+    Some(if flip { v.map(|x| -x) } else { v })
 }
 
 /// A pattern direction's vector, reversed when flipped.
